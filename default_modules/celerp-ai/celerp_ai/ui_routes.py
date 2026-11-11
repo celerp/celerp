@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
-from ui.components.encode import html_response, js
+from ui.components.encode import as_js, html_response, js, safe_url
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -110,7 +110,7 @@ def _quota_exceeded_card(detail: dict, lang: str = "en") -> tuple[FT, FT]:
             Div(
                 P(t("msg.need_more_topup_credits_never_expire", lang), cls="ai-upgrade-label"),
                 A(t("msg.buy_more_credits", lang),
-                  href=topup_url(),
+                  href=safe_url(topup_url()),
                   target="_blank", cls="btn btn--primary"),
                 cls="ai-upgrade-cta",
             ),
@@ -125,7 +125,7 @@ def _upgrade_cta(label: str, lang: str) -> FT:
     """``label`` above the one action that opens the Connect + AI plan."""
     return Div(
         P(label, cls="ai-upgrade-label"),
-        A(t("msg.get_the_ai_plan", lang), href=subscribe_url("ai"), target="_blank", cls="btn btn--primary"),
+        A(t("msg.get_the_ai_plan", lang), href=safe_url(subscribe_url("ai")), target="_blank", cls="btn btn--primary"),
         cls="ai-upgrade-cta",
     )
 
@@ -253,7 +253,7 @@ def _plan_cards(counts: dict, lang: str) -> FT:
             *count_line("ai.plan_lifetime_credits", "cloud", "ai-showcase__cta-feature--highlight"),
             Div(
                 A(t("msg.start_with_cloud_relay", lang),
-                  href=subscribe_url("cloud"),
+                  href=safe_url(subscribe_url("cloud")),
                   target="_blank", cls="btn btn--outline"),
                 P(t("msg.cancel_anytime", lang), cls="ai-showcase__cta-fine"),
                 cls="ai-showcase__cta-actions",
@@ -269,7 +269,7 @@ def _plan_cards(counts: dict, lang: str) -> FT:
             P(t("msg.agentic_record_creation", lang), cls="ai-showcase__cta-feature"),
             Div(
                 A(t("msg.get_the_ai_plan", lang),
-                  href=subscribe_url("ai"),
+                  href=safe_url(subscribe_url("ai")),
                   target="_blank", cls="btn btn--accent"),
                 P(t("msg.cancel_anytime", lang), cls="ai-showcase__cta-fine"),
                 cls="ai-showcase__cta-actions",
@@ -1023,7 +1023,7 @@ def _quota_section(status: dict | None) -> FT:
                 else (t("ai.resets_on", date=resets_at) if resets_at else ""),
                 cls="ai-settings__reset-date",
             ),
-            *([A(t("msg.buy_more_credits"), href=topup_url(), target="_blank",
+            *([A(t("msg.buy_more_credits"), href=safe_url(topup_url()), target="_blank",
                  cls="ai-settings__buy-link")] if status.get("tier") in PAID_TIERS else []),
             cls="ai-settings__quota-footer",
         ),
@@ -1562,7 +1562,7 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
     and a link to the record when one was created."""
     ok, text = _outcome_text(outcome, lang)
     title = outcome.get("title") or ""
-    link = _record_link(outcome)
+    link = safe_url(_record_link(outcome))
     parts = [f"{title}: {text}" if title else text]
     if link:
         parts += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
@@ -1592,7 +1592,7 @@ def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
         return [_outcome_line(outcome, lang, message_id=message_id)]
     dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
     ok, text = _outcome_text(outcome, lang)
-    link = _record_link(outcome)
+    link = safe_url(_record_link(outcome))
     if retryable or pending:
         cell = [Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
                      cls="badge badge--proposal"),
@@ -1724,7 +1724,7 @@ def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also
     replaced by what it returns: the one way the thread follows a running job. A poll
     that may save something (``method="post"``) is never a GET."""
     poll = f"load delay:{delay_s:g}s" if delay_s else "load"
-    return Div(*children, cls=cls, hx_trigger=", ".join(filter(None, (poll, also_on))),
+    return Div(*children, cls=cls, hx_trigger=f"{poll}{', ' if also_on else ''}{also_on}",
                hx_swap="outerHTML", **({"hx_post": poll_url} if method == "post" else {"hx_get": poll_url}), **attrs)
 
 
@@ -2139,7 +2139,7 @@ def _chat_view(
                 cls="ai-input",
                 id="ai-chat-form",
             ),
-            Script(_chat_text(lang)),
+            Script(as_js(_chat_text(lang))),
             Script(_CHAT_JS),
             cls="ai-chat__main",
         ),

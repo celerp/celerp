@@ -28,6 +28,7 @@ from ui.routes.settings import (
     claim_notice_text,
 )
 from ui.routes.settings_general import _section_breadcrumb
+from ui.components.encode import safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
     ]
     return Div(
         *[
-            A(label, href=href, cls=f"tab {'tab--active' if key == active else ''}")
+            A(label, href=safe_url(href), cls=f"tab {'tab--active' if key == active else ''}")
             for key, label, href in tabs
         ],
         cls="settings-tabs",
@@ -172,7 +173,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
         *([Div(price, Span(interval_label), cls="cloud-plan-card__price")] if price else []),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
-        A(cta_label or t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
+        A(cta_label or t("cloud.start_trial", lang), href=safe_url(subscribe_url), target="_blank", cls="btn btn--primary btn--sm"),
         cls=card_cls,
     )
 
@@ -254,7 +255,7 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
         children.append(Div(*cards, cls="cloud-plans"))
     else:
         children.append(A(
-            partner_label, href=partner_url, target="_blank",
+            partner_label, href=safe_url(partner_url), target="_blank",
             cls="btn btn--primary btn--sm cloud-partner-offer__contact"))
     children.append(Div(
         t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
@@ -646,7 +647,7 @@ def _append_renewal(children: list, lang: str) -> None:
     from ui.components.cloud_gate import commercial_cta
     children.append(P(t("grace.renew", lang), cls="settings-hint"))
     href, label = commercial_cta("subscribe", "cloud", t("cloud.start_trial", lang), lang)
-    children.append(A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"))
+    children.append(A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"))
 
 
 def _grace_notice(state: dict, lang: str = "en") -> FT | None:
@@ -865,10 +866,10 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     # partner page cannot reach back through window.opener nor read the referrer.
     from celerp.gateway.state import safe_support_email, safe_support_url
     support_email = safe_support_email(identity.get("support_email"))
-    support_url = safe_support_url(identity.get("support_url"))
+    support_url = safe_url(safe_support_url(identity.get("support_url")))
     support_children: list = []
     if support_email:
-        support_children.append(A(support_email, href=f"mailto:{support_email}",
+        support_children.append(A(support_email, href=safe_url(f"mailto:{support_email}"),
                                    cls="settings-value", style="margin:4px 0;"))
     if support_url:
         support_children.append(A(

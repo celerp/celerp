@@ -65,7 +65,7 @@ from celerp.importers import tabular
 from celerp.modules.registry import uses_module
 
 from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, MODULE, RESPONSIBLE
-from ui.components.encode import js
+from ui.components.encode import js, safe_url
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ async def _error_box(request: Request, e: APIError):
 
 def _refusal_box(text: str, params: dict, cls: str = "flash flash--error") -> FT:
     """A refusal's text with its links and its way on (``href`` and ``action``, or ``fill``)."""
-    fix = [" ", A(t(params["action"]), href=params["href"])] if params.get("href") and params.get("action") else []
+    fix = [" ", A(t(params["action"]), href=safe_url(params["href"]))] if params.get("href") and params.get("action") else []
     if params.get("fill"):
         fix += [" ", _fill_button(params["fill"])]
     return Div(*_linked(text, params.get("links") or []), *fix, cls=cls)
@@ -152,12 +152,12 @@ def _linked(text: str, links: list[dict]) -> list:
     for piece in re.split(rf"(?<!\w)({labels})(?!\w)", text):
         if piece in hrefs and piece not in seen:
             seen.add(piece)
-            out.append(A(piece, href=hrefs[piece]))
+            out.append(A(piece, href=safe_url(hrefs[piece])))
         elif piece:
             out.append(piece)
     for label in hrefs:
         if label not in seen:
-            out += [" ", A(label, href=hrefs[label])]
+            out += [" ", A(label, href=safe_url(hrefs[label]))]
     return out
 
 
@@ -1536,7 +1536,7 @@ def _exception_card(asset: dict, currency: str) -> FT:
                P(t("fixed_assets.exception_months", months=months), " ",
                  t("fixed_assets.exception_amount"), ": ", _money(held.get("amount"), currency)),
                P(Strong(t(f"fixed_assets.action.{held['action']}")), " ", t(f"fixed_assets.action_hint.{held['action']}")),
-               *([A(t(fix[0]), href=fix[1], cls="btn btn--sm btn--primary write-only")] if fix else []),
+               *([A(t(fix[0]), href=safe_url(fix[1]), cls="btn btn--sm btn--primary write-only")] if fix else []),
                cls="flash flash--warning", id="fa-exception")
 
 
@@ -1710,7 +1710,7 @@ def _class_accounts_banner(classes: list[dict]) -> FT | str:
         return ""
     return Div(H3(t("fixed_assets.class_accounts_title")),
                Ul(*[Li(t(f"fixed_assets.class_account_{p['problem']}", asset_class=c["name"], account=p["label"]),
-                       " ", A(t("fixed_assets.action.fix_account"), href=p["href"])) for c, p in found],
+                       " ", A(t("fixed_assets.action.fix_account"), href=safe_url(p["href"]))) for c, p in found],
                   cls="error-list"),
                cls="flash flash--error", id="fa-class-accounts")
 
@@ -1781,7 +1781,7 @@ def _recon_cause(d: dict) -> str:
 def _recon_next(a: dict, d: dict) -> FT | str:
     """The page that clears the difference, and the date the fix takes when its own is locked."""
     route = _RECON_ACTIONS.get(d.get("action") or "")
-    href = route(a, d) if route else None
+    href = safe_url(route(a, d)) if route else None
     if not href:
         return EMPTY
     when = [P(t("fixed_assets.recon_fix_from", day=d["fix_from"]), cls="form-hint")] if d.get("fix_from") else []
@@ -1891,7 +1891,7 @@ def _asset_fields(kind: str, classes: list[dict], chart: list[dict], *, with_nam
 
 def _tabs(base: str, param: str, current: str, choices, label_prefix: str, **query) -> FT:
     """One button per choice, the current one highlighted, each passing its choice (after ``query``) in the URL."""
-    return Div(*[A(t(f"{label_prefix}.{c}"), href=f"{base}?{urlencode({**query, param: c})}",
+    return Div(*[A(t(f"{label_prefix}.{c}"), href=safe_url(f"{base}?{urlencode({**query, param: c})}"),
                    cls="btn btn--sm " + ("btn--primary" if c == current else "btn--secondary")) for c in choices],
                cls="flex-row flex-wrap gap-sm mb-md")
 
@@ -2078,7 +2078,7 @@ def _tax_chooser(regimes: list[dict], regime: str, year: int, action: str) -> FT
                        name="regime", cls="form-input", aria_label=t("fixed_assets.tax_regime")),
                 _input("year", year, type_="number", step="1", min="1900", aria_label=t("fixed_assets.year")),
                 Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
-                method="get", action=action, cls="flex-row")
+                method="get", action=safe_url(action), cls="flex-row")
 
 
 def _tax_status(row: dict) -> FT | str:
@@ -2190,7 +2190,7 @@ def _year_end_table(report: dict, currency: str, *, printed: bool = False) -> FT
             rows.append(Tr(Td(i["label"]), _money_td(i.get("amount"), currency), status, Td(_text(i.get("reason"))),
                            Td(_text(i.get("effect")))))
         else:
-            rows += _expandable(i["key"], [Td(A(i["label"], href=i["href"]), *lapsed),
+            rows += _expandable(i["key"], [Td(A(i["label"], href=safe_url(i["href"])), *lapsed),
                                            _money_td(i.get("amount"), currency), _state_cell(i)],
                                 _mark_form(f"/fixed-assets/year-end/{report['year']}/marks", i))
     head = [Th(t("fixed_assets.ye_item")), _money_th(t("fixed_assets.amount")), Th(t("fixed_assets.status")),
@@ -2252,7 +2252,7 @@ def _revalue_files_card(request: Request, class_id: str, report: dict | None) ->
                               Input(type="file", name="file", cls="form-input", aria_label=t("fixed_assets.valuer_report")),
                               t("fixed_assets.valuer_report_hint")),
                        Button(t("fixed_assets.valuer_report_upload"), type="submit", cls="btn btn--secondary"),
-                       method="post", action=_page_company_action(request, f"{base}/report"), enctype="multipart/form-data", cls=_STACK)
+                       method="post", action=safe_url(_page_company_action(request, f"{base}/report")), enctype="multipart/form-data", cls=_STACK)
     values_form = Form(_field(t("fixed_assets.fair_values_file"),
                               Input(type="file", name="csv_file", accept=".csv,.xlsx", cls="form-input",
                                     aria_label=t("fixed_assets.fair_values_file")),
@@ -2297,7 +2297,7 @@ def setup_ui_routes(app) -> None:
                    A(t("fixed_assets.runs_title"), href="/fixed-assets/runs", cls="btn btn--secondary"),
                    A(t("fixed_assets.register_from_bills"), href="/fixed-assets/intake", cls="btn btn--secondary"),
                    A(t("fixed_assets.add_asset"), href="/fixed-assets/assets/new", cls="btn btn--primary"),
-                   _more_menu(*[A(t(key), href=href, cls="row-menu-item") for key, href in (
+                   _more_menu(*[A(t(key), href=safe_url(href), cls="row-menu-item") for key, href in (
                        ("fixed_assets.year_end_title", "/fixed-assets/year-end"),
                        ("fixed_assets.corrections_title", "/fixed-assets/corrections"),
                        ("fixed_assets.checks_title", "/fixed-assets/checks"),
@@ -2346,7 +2346,7 @@ def setup_ui_routes(app) -> None:
         else:
             # A depreciation line is not an asset: it is linked to the assets it depreciated.
             rows = [Tr(Td(_text(ln.get("date"))),
-                       Td(A(_source_name(ln["source"], ln.get("document_ref")), href=ln["href"])),
+                       Td(A(_source_name(ln["source"], ln.get("document_ref")), href=safe_url(ln["href"]))),
                        Td(t(f"fixed_assets.line_kind.{ln['kind']}")),
                        Td(_text(ln.get("description"))), Td(_text(ln.get("account_label"))),
                        Td(_text(ln.get("quantity")), cls="cell--number"), _money_td(ln.get("amount"), currency),

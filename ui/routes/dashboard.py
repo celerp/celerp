@@ -25,7 +25,7 @@ from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
-from ui.components.encode import js, raw_html
+from ui.components.encode import js, raw_html, safe_url
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
@@ -1008,7 +1008,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
             return None
         if allowed(settings, role):
             links.append(A(import_icon(), t(label),
-                           href=f"{href}?hint=import", cls="getting-started-link"))
+                           href=safe_url(f"{href}?hint=import"), cls="getting-started-link"))
     if not links:
         return None
     options = ""
@@ -1103,7 +1103,7 @@ def _kpi_card(spec: dict, values: dict) -> FT:
     label = _dl(spec["label"])
     value_key = spec["value_fn"]
     sub_key = spec.get("sub_fn")
-    href = spec.get("href")
+    href = safe_url(spec.get("href"))
     alert_key = spec.get("alert_fn")
 
     value_str = values.get(value_key, "-")
@@ -1348,7 +1348,7 @@ def _quick_links(cfg: dict) -> FT:
                 A(
                     Strong(_dl(label)),
                     P(_dl(desc), cls="quick-link-desc"),
-                    href=href,
+                    href=safe_url(href),
                     cls="quick-link-card",
                 )
                 for href, label, desc in links

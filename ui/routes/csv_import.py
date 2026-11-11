@@ -55,7 +55,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     validate_cell,
     validate_column_mapping,
 )
-from ui.components.encode import js
+from ui.components.encode import js, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ def _import_rows_label(n: int) -> str:
 
 def import_back_link(home: str) -> Any:
     """An upload page's Back, to the list the import belongs to."""
-    return A(t("btn.back"), href=home, cls="btn btn--secondary")
+    return A(t("btn.back"), href=safe_url(home), cls="btn btn--secondary")
 
 
 def _mapping_js_labels() -> dict[str, str]:
@@ -422,11 +422,11 @@ def column_mapping_form(
                 Button(t("btn.continue_to_preview"), type="button", cls="btn btn--primary",
                        data_busy=t("import.processing"),
                        onclick="this.disabled=true;this.textContent=this.dataset.busy;this.classList.add('btn--disabled');this.form.submit()"),
-                A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
             method="post",
-            action=confirm_action,
+            action=safe_url(confirm_action),
         ),
         Script(js('var _MAPPING_OPTIONS = {0};', option_defs)),
         Script(js('var _MUTEX_GROUPS = {0};', _mutex_groups)),
@@ -810,7 +810,7 @@ def _source_choice_form(error: UploadError, preview_action: str) -> FT:
         ) if error.header_lines else "",
         Button(t("btn.continue"), cls="btn btn--primary", type="submit"),
         method="post",
-        action=preview_action,
+        action=safe_url(preview_action),
         enctype="multipart/form-data",
         cls="import-source-choice",
     )
@@ -839,7 +839,7 @@ def upload_form(
                 Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),
                 Div(
-                    A(t("btn.download_template"), href=template_href, cls="link",
+                    A(t("btn.download_template"), href=safe_url(template_href), cls="link",
                       onclick="event.stopPropagation()"),
                     cls="import-dropzone-template",
                 ),
@@ -848,7 +848,7 @@ def upload_form(
             ),
             Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title=t("import.upload_first_hint"), style="margin-top: 12px;"),
             method="post",
-            action=preview_action,
+            action=safe_url(preview_action),
             enctype="multipart/form-data",
         ),
         Script(_DROPZONE_JS),
@@ -1174,7 +1174,7 @@ def _fix_errors_panel(
                     A(t("msg.download_error_report"), href="#",
                       onclick="document.getElementById('csv-err-dl').submit(); return false",
                       cls="btn btn--secondary btn--sm"),
-                    A(t("btn.cancel"), href=back_href, cls="btn btn--ghost btn--sm"),
+                    A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--ghost btn--sm"),
                     cls="csv-fix-actions",
                 ),
                 hx_post=revalidate_action,
@@ -1186,7 +1186,7 @@ def _fix_errors_panel(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
                 id="csv-err-dl",
                 method="post",
-                action=error_report_action,
+                action=safe_url(error_report_action),
                 style="display:none",
             ),
             cls="csv-fix-panel",
@@ -1363,7 +1363,7 @@ def _confirm_panel(
                     id="import-spinner",
                     cls="htmx-indicator import-spinner-label",
                 ),
-                A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
             cls="import-panel",
@@ -1530,7 +1530,7 @@ def plan_review_panel(
                     A(t("msg.download_error_report"), href="#", cls="btn btn--ghost btn--sm",
                       onclick="document.getElementById('import-err-dl').submit(); return false")
                     if errors else "",
-                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--ghost btn--sm"),
+                    A(t("import.upload_corrected_file"), href=safe_url(upload_href), cls="btn btn--ghost btn--sm"),
                     Button(t("btn.cancel"), type="button", hx_post=cancel_action, cls="btn btn--ghost btn--sm"),
                     cls="csv-fix-actions flex-row gap-sm mt-md",
                 ),
@@ -1539,7 +1539,7 @@ def plan_review_panel(
                 hx_swap="outerHTML",
             ),
             Form(Input(type="hidden", name="csv_ref", value=csv_ref), id="import-err-dl",
-                 method="post", action=error_report_action, style="display:none"),
+                 method="post", action=safe_url(error_report_action), style="display:none"),
             cls="import-panel",
         ),
         Script(_INLINE_FIX_JS),
@@ -1598,8 +1598,8 @@ def import_abort_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         P(message, cls="flash flash--error"),
         Div(
-            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
-            A(t("btn.cancel"), href=back_href, cls="btn btn--ghost"),
+            A(import_icon(), t("msg.import_more"), href=safe_url(import_more_href), cls="btn btn--secondary"),
+            A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--ghost"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",
@@ -1687,8 +1687,8 @@ def import_result_panel(
         extra,
         error_block,
         Div(
-            A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
-            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("import.view_entity", label=label_title), href=safe_url(back_href), cls="btn btn--primary"),
+            A(import_icon(), t("msg.import_more"), href=safe_url(import_more_href), cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",

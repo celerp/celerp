@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
-from ui.components.encode import html_response, inert_media_type, js
+from ui.components.encode import html_response, inert_media_type, js, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +334,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
         )
         content = [label_el, Div(value, cls="financial-card-value")]
         if href:
-            return A(*content, href=href, cls="financial-card financial-card--link")
+            return A(*content, href=safe_url(href), cls="financial-card financial-card--link")
         return Div(*content, cls="financial-card")
 
     ytd_filter = "&preset=this_fy"

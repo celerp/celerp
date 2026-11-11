@@ -25,6 +25,7 @@ from celerp.tax_regimes import tax_entries
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
 from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate
 from ui.components.deleted_items import deleted_label
+from ui.components.encode import safe_url
 
 # Known ledger event types. The label for each is resolved at render time via
 # ``t("event.<event_type>")`` (see event_label); values here are those i18n keys,
@@ -137,7 +138,7 @@ def _file_event_detail(e: dict, data: dict, event_type: str):
     if op == "deleted" or not (seg and file_id and entity_id):
         name_ft = filename
     else:
-        name_ft = A(filename, href=f"/{seg}/{entity_id}/files/{file_id}/download", cls="table-link")
+        name_ft = A(filename, href=safe_url(f"/{seg}/{entity_id}/files/{file_id}/download"), cls="table-link")
     suffix = ""
     if op == "tagged" and data.get("document_tag"):
         suffix = f" → {data['document_tag']}"
@@ -975,7 +976,7 @@ def _item_link(entity_id, label: str, anchor=None) -> FT:
     url = entity_url(str(entity_id or ""))
     if url and anchor is not None:
         url = f"{url}#evt-{anchor}"
-    return A(label, href=url, cls="table-link") if url else Span(label)
+    return A(label, href=safe_url(url), cls="table-link") if url else Span(label)
 
 
 def _qpw_delta(d: dict, currency: str | None = None) -> str:
@@ -1037,7 +1038,7 @@ def _doc_link(doc_id, doc_number=None) -> FT:
     Falls back to the entity_id suffix as the label when no explicit doc_number was stored."""
     did = str(doc_id or "")
     label = str(doc_number or "") or (did[4:] if did.startswith("doc:") else did)
-    url = entity_url(did)  # "doc:..." -> /docs/{id}
+    url = safe_url(entity_url(did))  # "doc:..." -> /docs/{id}
     return A(label, href=url, cls="table-link") if (url and label) else Span(label or did)
 
 
@@ -1232,7 +1233,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
 
         # Generic rendering
         display_text, url = _event_display(e)
-        content = A(display_text, href=url, cls="table-link") if url else display_text
+        content = A(display_text, href=safe_url(url), cls="table-link") if url else display_text
 
         data = e.get("data") or {}
         # File events (any entity): filename linked to the file (name only once deleted).
@@ -1263,7 +1264,7 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         footer = ""
     elif history_url:
         footer = P(
-            footer_text + " - ", A(t("activity.see_all"), href=history_url, cls="table-link"),
+            footer_text + " - ", A(t("activity.see_all"), href=safe_url(history_url), cls="table-link"),
             cls="table-footer-note",
         )
     else:

@@ -47,7 +47,7 @@ from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
-from ui.components.encode import html_response, js
+from ui.components.encode import html_response, js, safe_url
 
 
 def _moved_to(path: str):
@@ -134,8 +134,8 @@ def setup_routes(app):
                 # creative actions left, export/print right.
                 Div(
                     A(t("btn.new_entry"),
-                      href=_href("/accounting/journal/new",
-                                 _date_params(d_from or "", d_to or "")),
+                      href=safe_url(_href("/accounting/journal/new",
+                                 _date_params(d_from or "", d_to or ""))),
                       cls="btn btn--primary"),
                     action_bar("/accounting/print/journal", "/accounting/export/journal/csv",
                                params),
@@ -757,7 +757,7 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
             Div(
                 Button(t("btn.post"), type="submit", cls="btn btn--primary"),
                 A(t("btn.cancel"),
-                  href=_href("/accounting", {"tab": "journal", "from": date_from, "to": date_to}),
+                  href=safe_url(_href("/accounting", {"tab": "journal", "from": date_from, "to": date_to})),
                   cls="btn btn--secondary"),
                 cls="flex-row gap-sm",
             ),

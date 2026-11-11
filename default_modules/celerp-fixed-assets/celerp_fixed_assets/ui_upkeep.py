@@ -23,6 +23,7 @@ from celerp_fixed_assets.upkeep import KINDS, MAINT_EDITABLE, REMINDERS_URL
 from celerp_fixed_assets.ui_routes import (
     _STACK, _context, _error_text, _field, _hx_write, _input, _members, _money_td, _money_th, _page, _picker, _refused,
     _send, _send_form, _subhead, _text, _token)
+from ui.components.encode import safe_url
 
 # The reminder fields edited in place, with the editor each one uses.
 _CELLS = {"due": "date", "every_months": "number", "lead_days": "number", RESPONSIBLE: "select", "policy": "text",
@@ -410,7 +411,7 @@ def setup_upkeep_routes(app) -> None:
         except APIError as e:
             return await _refused(request, e, "fixed_assets.due_soon_title")
         crumbs = breadcrumbs([(t("fixed_assets.title"), "/fixed-assets"), (t("fixed_assets.due_soon_title"), None)])
-        rows = [Tr(Td(A(r["number"], href=_back(r["asset_id"]))), Td(_text(r.get("name"))),
+        rows = [Tr(Td(A(r["number"], href=safe_url(_back(r["asset_id"])))), Td(_text(r.get("name"))),
                    Td(t(f"fixed_assets.reminder_kind.{r['kind']}")), Td(_text(r["detail"])), Td(r["due"]),
                    Td(Span(t("fixed_assets.overdue"), cls="badge badge--overdue") if r["overdue"] else ""))
                 for r in items]

@@ -61,7 +61,7 @@ from ui.routes import (
 from fasthtml.common import *
 from starlette.responses import PlainTextResponse
 
-from ui.components.encode import html_response, inert_media_type
+from ui.components.encode import html_response, inert_media_type, safe_url
 
 # Public paths that don't require auth
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
@@ -385,7 +385,7 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
         page = minimal_shell(
             page_header(t("page.api_unavailable")),
             Div(P(str(exc.detail or ""), cls="flash flash--error"),
-                A(t("btn.retry"), href=str(request.url.replace(scheme="", netloc="")), cls="btn btn--primary"),
+                A(t("btn.retry"), href=safe_url(str(request.url.replace(scheme="", netloc=""))), cls="btn btn--primary"),
                 cls="content-area"),
             title=t("page.api_unavailable"),
             request=request,
@@ -524,7 +524,7 @@ async def ui_company_settings_unavailable_handler(request: Request, exc) -> Resp
         Div(
             P(message, cls="flash flash--error"),
             Div(
-                A(t("btn.retry"), href=str(request.url), cls="btn btn--primary"),
+                A(t("btn.retry"), href=safe_url(str(request.url)), cls="btn btn--primary"),
                 Button(t("label.back"), type="button", onclick="history.back()", cls="btn btn--secondary"),
                 cls="flex-row",
             ),

@@ -77,7 +77,7 @@ from ui.routes.migrations import (
     wizard_table,
 )
 from ui.streaming import ClosingStreamingResponse
-from ui.components.encode import html_response, js
+from ui.components.encode import html_response, js, safe_url
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -224,7 +224,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
             *(sign_in_fields(email) if mode is START_COMPANY else []),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/read", enctype="multipart/form-data", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/read"), enctype="multipart/form-data", cls="auth-form",
         ),
         # First run offers restore once, here; a backup of a whole installation
         # (not one company) is recovered from its own page.
@@ -333,7 +333,7 @@ async def _module_section(mode: WizardMode, preview: dict) -> list:
                 cls="form-group"),
             code,
             Button(t("company_backup.import_module"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/import-module", enctype="multipart/form-data", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/import-module"), enctype="multipart/form-data", cls="auth-form"))
     elif _INCOMPATIBLE not in statuses:
         consent = [Label(Input(type="checkbox", name="consent", value=m["name"]),
                          " " + t("company_backup.module_consent", name=m.get("label") or m["name"]),
@@ -349,9 +349,9 @@ async def _module_section(mode: WizardMode, preview: dict) -> list:
             code,
             Button(t("company_backup.enable_and_open" if opens else "company_backup.prepare_modules"),
                    type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/prepare", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/prepare"), cls="auth-form"))
         out.append(Form(Button(t("company_backup.decline_modules"), type="submit", cls="btn btn--secondary btn--full"),
-                        method="post", action=f"{mode.base}/decline", cls="auth-alt-action"))
+                        method="post", action=safe_url(f"{mode.base}/decline"), cls="auth-alt-action"))
     return out
 
 
@@ -375,9 +375,9 @@ def _cancel(mode: WizardMode):
     """Choosing another file deletes this upload. A login with no company has no session to
     delete it with; its upload expires on its own."""
     if mode is START_COMPANY:
-        return P(A(t("company_backup.choose_other"), href=mode.base, cls="auth-link"), cls="auth-alt-action")
+        return P(A(t("company_backup.choose_other"), href=safe_url(mode.base), cls="auth-link"), cls="auth-alt-action")
     return Form(Button(t("company_backup.choose_other"), type="submit", cls="btn btn--secondary btn--full"),
-                method="post", action=f"{mode.base}/discard", cls="auth-alt-action")
+                method="post", action=safe_url(f"{mode.base}/discard"), cls="auth-alt-action")
 
 
 async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, values: dict | None = None,
@@ -399,7 +399,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
             *_start_company_fields(mode, values),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t(_BUTTONS.get(action, _BUTTONS[_CREATE])), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         )]
     else:
         step = await _module_section(mode, preview)
@@ -476,7 +476,7 @@ def _replace_section(mode: WizardMode, preview: dict, replace: dict) -> list:
             P(t("company_backup.replace_saved_first", company=company), cls="form-hint"),
             Button(t("company_backup.replace_button", company=company), type="submit",
                    cls="btn btn--danger btn--full"),
-            method="post", action=f"{mode.base}/replace", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/replace"), cls="auth-form"))
     else:
         lines.append(P(t("company_backup.err_replace_owner_only", company=company), cls="flash flash--warning"))
     lines.append(H2(t("company_backup.replace_or_separate"), cls="mt-md"))
@@ -602,9 +602,9 @@ async def _opening_page(request: Request, mode: WizardMode):
         Div(Div(style=f"width:{job.percent or 0}%", cls="import-progress-fill", id="opening-bar"),
             cls="import-progress"),
         P(t("company_backup.opening_nothing_imported"), cls="form-hint"),
-        Noscript(A(t("company_backup.check_again"), href=f"{mode.base}/opening", cls="btn btn--secondary btn--full")),
+        Noscript(A(t("company_backup.check_again"), href=safe_url(f"{mode.base}/opening"), cls="btn btn--secondary btn--full")),
         Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary btn--full"),
-             method="post", action=f"{mode.base}/opening/cancel"),
+             method="post", action=safe_url(f"{mode.base}/opening/cancel")),
         Script(js("""
         (function () {{
           var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
@@ -743,7 +743,7 @@ def _opening_chosen_page(request: Request, mode: WizardMode, preview: dict):
         auth_header(t(_TITLE)),
         P(t("company_backup.opening_chosen", name=preview["open_now"].get("company_name") or ""), cls="form-hint"),
         Form(Button(t("company_backup.open_chosen"), type="submit", cls="btn btn--primary btn--full"),
-             method="post", action=f"{mode.base}/staged", id="open-chosen", cls="auth-form"),
+             method="post", action=safe_url(f"{mode.base}/staged"), id="open-chosen", cls="auth-form"),
         Script("document.getElementById('open-chosen').submit();"),
         _cancel(mode),
         title=_TITLE,
@@ -770,7 +770,7 @@ async def _open_now(request: Request, mode: WizardMode, upload_token: str, previ
 async def _restarting_page(request: Request, mode: WizardMode, message: str | None = None, status_code: int = 200):
     """Celerp is restarting to load modules. The page asks for the staged backup until
     Celerp answers with it, then shows it."""
-    staged = f"{mode.base}/staged"
+    staged = safe_url(f"{mode.base}/staged")
     return wizard_page(
         request,
         auth_header(t(_TITLE)),
@@ -909,7 +909,7 @@ async def _resolving_page(request: Request, mode: WizardMode, e: APIError, targe
             *_start_company_fields(mode, values),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("company_backup.check_again"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         ),
         status_code=_status(e),
         title=_TITLE,
@@ -927,7 +927,7 @@ async def _password_again_page(request: Request, mode: WizardMode, e: APIError, 
             Input(type="hidden", name="company_name", value=str(form.get("company_name", ""))),
             *_start_company_fields(mode, values),
             Button(t(_BUTTONS[_CREATE]), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         ),
         _cancel(mode),
         title=_TITLE,
@@ -1468,7 +1468,7 @@ async def _ready_page(request: Request, values: dict, sent: dict):
         Div(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--primary btn--full",
                    **{"data-copy": "", "data-copy-text": sent["link"]}),
             A(t("company_backup.ready_download"), href=DOWNLOAD, cls="btn btn--secondary btn--full"),
-            A(t("migration.move_another"), href=COMPANY.base, cls="btn btn--secondary btn--full"),
+            A(t("migration.move_another"), href=safe_url(COMPANY.base), cls="btn btn--secondary btn--full"),
             cls="flex-col gap-sm"),
         H2(t("company_backup.ready_next"), cls="mt-md"),
         Ul(Li(t("company_backup.ready_receives", email=values["recipient"], firm=values["firm_name"])),

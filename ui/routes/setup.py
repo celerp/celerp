@@ -32,7 +32,7 @@ from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
 from celerp.tax_regimes import TAX_COUNTRIES, country_name, tax_country
-from ui.components.encode import js
+from ui.components.encode import js, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +642,7 @@ def _cloud_form() -> FT:
         ),
         Div(
             A(cloud_cta_label,
-                href=cloud_href,
+                href=safe_url(cloud_href),
                 target="_blank",
                 cls="btn btn--primary btn--full",
             ),

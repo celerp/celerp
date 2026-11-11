@@ -13,7 +13,7 @@ from fasthtml.common import *
 from ui.components.attrs import hx_vals
 from ui.components.table import searchable_select
 from ui.i18n import t
-from ui.components.encode import as_js, html_response, js
+from ui.components.encode import as_js, html_response, js, safe_url
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
 _DOCUMENT_TAGS: tuple[str, ...] = (
@@ -333,9 +333,9 @@ def files_section(
         desc = f.get("description") or ""
         uploaded_at = _fmt_date(f.get("uploaded_at"))
         linked_ref = f.get("linked_ref") or ""
-        linked_url = f.get("linked_url") or ""
+        linked_url = safe_url(f.get("linked_url") or "")
         # Files from a foreign entity carry their own URL overrides.
-        file_download_url = f.get("_download_url") or f"{base_url}/{fid}/download"
+        file_download_url = safe_url(f.get("_download_url") or f"{base_url}/{fid}/download")
         # Action base: tag/describe/hero/delete target (defaults to this entity's base_url)
         file_action_base = f.get("_action_base_url") or base_url
         no_delete = bool(f.get("_no_delete"))

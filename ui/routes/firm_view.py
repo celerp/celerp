@@ -16,6 +16,7 @@ from ui.components.activity import relative_time
 from ui.components.table import search_results
 from ui.config import get_token as _token
 from ui.i18n import get_lang, t
+from ui.components.encode import safe_url
 
 SYNC_STATES = ("on", "off", "failing", "expiring")
 MOVE_PAGE = "/setup/new-company/migrate"
@@ -35,7 +36,7 @@ def _attention_link(row: dict, item: dict, lang: str) -> FT | str:
         return ""
     if not href.startswith("/migrations/"):
         href = _switch(row["company_id"], href)
-    return A(t("firm_view.go_there", lang), href=href, cls="btn btn--secondary btn--xs")
+    return A(t("firm_view.go_there", lang), href=safe_url(href), cls="btn btn--secondary btn--xs")
 
 
 def _attention(row: dict, lang: str) -> FT:
@@ -60,7 +61,7 @@ def _attention(row: dict, lang: str) -> FT:
 def _actions(row: dict, lang: str) -> FT:
     if row.get("role") is None:  # a move that has not finished opens from its own page
         [move] = [i for i in row["attention"] if i["kind"] == "migration"]
-        return A(t("firm_view.continue_move", lang), href=move["href"], cls="btn btn--secondary btn--sm")
+        return A(t("firm_view.continue_move", lang), href=safe_url(move["href"]), cls="btn btn--secondary btn--sm")
     cid = row["company_id"]
     return Div(
         A(t("firm_view.open", lang), href=_switch(cid), cls="btn btn--secondary btn--sm"),

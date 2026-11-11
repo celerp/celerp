@@ -300,19 +300,19 @@ class TestAuthRouting:
         assert b"inactivity" in r.content.lower()
 
     def test_idle_logout_js_wired_through_renderer(self):
-        """The idle timer is a template interpolated per render: the module constant
-        keeps the placeholder, and the renderer substitutes the effective minutes
+        """The idle timer is a js() template filled per render: the module constant
+        keeps the hole, and the renderer substitutes the effective minutes
         while preserving the logout mechanics. (The deployment-aware minutes matrix
         lives in test_idle_policy.py.)"""
         from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_js
         import re
-        # The module-level template is uninterpolated: the placeholder survives and
+        # The module-level template is uninterpolated: the hole survives and
         # no concrete "<n> * 60000" is baked in at import time.
-        assert "__IDLE_MIN__" in _IDLE_LOGOUT_JS
+        assert "{0} * 60000" in _IDLE_LOGOUT_JS
         assert not re.search(r"\d+ \* 60000", _IDLE_LOGOUT_JS)
         # The renderer fills the placeholder with an integer and keeps the mechanics.
         js = _idle_logout_js()
-        assert "__IDLE_MIN__" not in js
+        assert "{0}" not in js
         assert re.search(r"\d+ \* 60000", js)
         assert "/logout?reason=idle" in js
         assert "addEventListener" in js

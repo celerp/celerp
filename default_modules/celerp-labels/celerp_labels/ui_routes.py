@@ -1704,7 +1704,7 @@ def setup_ui_routes(app) -> None:
     def _source_args(params) -> tuple[str, list[str], str]:
         from celerp.services.app_paths import is_app_local_path
 
-        back = str(params.get("back") or "")
+        back = safe_url(str(params.get("back") or ""))
         return (str(params.get("source") or ""), [i for i in str(params.get("ids") or "").split(",") if i.strip()],
                 back if is_app_local_path(back) else "/")
 

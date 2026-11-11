@@ -22,7 +22,7 @@ from ui.components.shell import base_shell, load_error, page_header, visible_nav
 from ui.config import get_role
 from ui.config import get_token as _token
 from ui.i18n import get_lang, t
-from ui.components.encode import html_response
+from ui.components.encode import html_response, safe_url
 
 _LOGIN = "/login"
 
@@ -121,7 +121,7 @@ def _related(ids: list[str], lang: str) -> list[FT]:
 
 def _steps(body: dict) -> FT:
     return Ol(*[Li(P(step["text"]),
-                   *([Img(src=step["image_url"], alt=f"{body['title']} {n}", loading="lazy",
+                   *([Img(src=safe_url(step["image_url"]), alt=f"{body['title']} {n}", loading="lazy",
                           cls="help-step__img")] if step["image_url"] else []),
                    cls="help-step")
                 for n, step in enumerate(body["steps"], start=1)], cls="help-steps")

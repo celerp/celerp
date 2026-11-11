@@ -829,7 +829,12 @@ class PyScan(ast.NodeVisitor):
             return True
         return False
 
-    def _check_hole(self, value, code, encoders, depth=0):
+    def _check_hole(self, value, code, encoders, depth=0, at=None):
+        """Hit every non-constant, unencoded part of *value*; *at* is the use site when the
+        value is a constant imported from another module (its nodes carry that module's lines)."""
+        if at is None and isinstance(value, ast.Name) and value.id in self.imported \
+                and value.id not in self.consts and not any(value.id in sc for sc in self.locals):
+            at = value
         value = self._resolve(value)
         if value is None or self._is_const(value) or depth > 8:
             return
@@ -837,15 +842,15 @@ class PyScan(ast.NodeVisitor):
             for v in value.values:
                 if isinstance(v, ast.FormattedValue) and not self._is_const(v.value) \
                         and _call_name(v.value) not in encoders:
-                    hit(code, self.path, value.lineno, self.snip(v.value))
+                    hit(code, self.path, (at or value).lineno, self.snip(at or v.value))
             return
-        if isinstance(value, ast.BinOp):
-            self._check_hole(value.left, code, encoders, depth + 1)
-            self._check_hole(value.right, code, encoders, depth + 1)
+        if isinstance(value, (ast.BinOp, ast.IfExp)):
+            for part in (value.left, value.right) if isinstance(value, ast.BinOp) else (value.body, value.orelse):
+                self._check_hole(part, code, encoders, depth + 1, at)
             return
         if _call_name(value) in encoders:
             return
-        hit(code, self.path, getattr(value, "lineno", 0), self.snip(value))
+        hit(code, self.path, getattr(at or value, "lineno", 0), self.snip(at or value))
 
     def _lead(self, node, depth=0):
         """The literal text a URL expression starts with, when it is known."""
@@ -874,6 +879,10 @@ class PyScan(ast.NodeVisitor):
     def _check_url(self, value):
         value = self._resolve(value)
         if value is None:
+            return
+        if isinstance(value, ast.IfExp):
+            self._check_url(value.body)
+            self._check_url(value.orelse)
             return
         lead = self._lead(value)
         if lead is not None and (SAFE_PATH_RE.match(lead) or (self._is_const(value) and not SCHEME_RE.search(lead))):

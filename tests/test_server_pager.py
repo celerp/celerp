@@ -57,7 +57,7 @@ def test_navigation_modes():
     swap = _html(0, 100, 250, hx_target="#sec")
     assert 'hx-target="#sec"' in swap and 'hx-select="#sec"' in swap and "onclick" not in swap
     js = _html(0, 100, 250, nav_js="goTo")
-    assert "goTo(this.getAttribute('href'))" in js and "hx-get" not in js
+    assert 'window["goTo"](this.getAttribute(' in js and "hx-get" not in js
     plain = _html(0, 100, 250)
     assert "hx-get" not in plain and "window.location=this.value" in plain
 

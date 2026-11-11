@@ -29,7 +29,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import html_response, inert_media_type, js, raw_html
+from ui.components.encode import as_js, html_response, inert_media_type, js, raw_html, safe_url
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -4961,7 +4961,7 @@ def _slot_action_link(action: dict, **values: str) -> FT:
     href = action.get("href_template", "")
     for name, value in values.items():
         href = href.replace("{" + name + "}", quote(str(value), safe=""))
-    return A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
+    return A(_slot_label(action, t("inv.action")), href=safe_url(href), cls="btn btn--secondary btn--sm")
 
 
 def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
@@ -5083,7 +5083,7 @@ def _bulk_context_templates(
                 *loc_opts,
                 loc_new_opt,
                 name="bulk_location_id", cls="form-input form-input--sm",
-                onchange=loc_new_js,
+                onchange=as_js(loc_new_js),
             ),
             Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
             hx_post="/api/items/bulk/transfer",
@@ -5199,7 +5199,7 @@ def _bulk_context_templates(
         elif is_navigate:
             form = Form(
                 Button(_slot_label(action, t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
-                action=action["form_action"],
+                action=safe_url(action["form_action"]),
                 method="post",
                 target="_blank",
                 onsubmit="submitBulkAction(this)",
@@ -6622,7 +6622,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     # Clicking a thumbnail makes that image the hero (the large one) — it does not open a new tab.
     thumbs = (
         Div(*[
-            Button(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
+            Button(Img(src=safe_url(_src(f)), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
                    type="button", title=t("inventory.set_main_image"),
                    hx_post=f"/api/items/{entity_id}/gallery-hero/{f['id']}",
                    hx_target="#wf-gallery", hx_swap="outerHTML",
@@ -6633,7 +6633,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     )
     return Div(
         H3(t("inventory.product_images"), cls="section-title"),
-        Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
+        Img(src=safe_url(_src(hero)), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
         thumbs,
         P(t("inventory.click_thumb_main"), cls="hint") if len(images) > 1 else "",
         cls="detail-card wf-gallery",
@@ -7284,7 +7284,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
 
     demand_rows = [
         Tr(
-            Td(A(d.get("doc_number") or d.get("doc_id"), href=doc_href(d.get("doc_id")), cls="table-link")),
+            Td(A(d.get("doc_number") or d.get("doc_id"), href=safe_url(doc_href(d.get("doc_id"))), cls="table-link")),
             Td(doc_type_label(d.get("doc_type") or "")),
             Td(d.get("contact_name") or EMPTY),
             Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
@@ -7346,7 +7346,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
         if src_id and src_no:
-            return A(src_no, href=doc_href(src_id), cls="table-link")
+            return A(src_no, href=safe_url(doc_href(src_id)), cls="table-link")
         return Span(t("inventory.to_stock"), cls="hint")  # no linked order = made to stock
 
     def _wo_row(run: dict) -> FT:

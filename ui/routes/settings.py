@@ -33,7 +33,7 @@ from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
-from ui.components.encode import html_response, inert_media_type, js
+from ui.components.encode import html_response, inert_media_type, js, safe_url
 
 
 def _refusal_message(e: APIError) -> str:
@@ -2039,7 +2039,7 @@ def setup_routes(app):
             dot_href = "/settings/cloud"
             dot_target = "_self"
         dot = Span(
-            A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+            A(Span(cls=dot_cls, title=dot_title), href=safe_url(dot_href), target=dot_target,
               cls="relay-dot-link", onclick="event.stopPropagation()"),
             id="relay-dot-wrap",
         )
@@ -3551,7 +3551,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
                hx_post=f"/settings/{prefix}/new", hx_swap="none", hx_trigger="click delay:250ms"),
     ]
     if import_path:
-        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
+        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=safe_url(import_path), cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -4043,7 +4043,7 @@ def _cloud_relay_unconnected(
     children.append(
         Div(
             *(
-                [A(subscribe_label, href=subscribe_href, target="_blank", cls="btn btn--primary")]
+                [A(subscribe_label, href=safe_url(subscribe_href), target="_blank", cls="btn btn--primary")]
                 if show_header else []
             ),
             Button(t("btn.connect_to_cloud"),
@@ -4283,7 +4283,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # Show team URL (subdomain) if configured
         if public_url:
             rows.append(Tr(Td(t("settings.team_url"), cls="detail-label"), Td(
-                A(public_url, href=public_url, target="_blank", cls="cell--mono"),
+                A(public_url, href=safe_url(public_url), target="_blank", cls="cell--mono"),
                 P(t("settings.share_this_url_with_your_team_members_to_access_ce"), cls="settings-hint",
                   style="margin:4px 0 0;"),
             )))
@@ -4332,7 +4332,7 @@ def _company_backup_section() -> FT:
         P(t("company_backup.contents"), cls="settings-hint"),
         Div(
             A(t("company_backup.download"), href=DOWNLOAD, cls="btn btn--primary btn--sm"),
-            A(t("company_backup.restore_title"), href=SETTINGS.base, cls="btn btn--secondary btn--sm"),
+            A(t("company_backup.restore_title"), href=safe_url(SETTINGS.base), cls="btn btn--secondary btn--sm"),
             A(t("company_backup.send_title"), href=SEND, cls="btn btn--secondary btn--sm"),
             A(t("company_backup.saved_title"), href=SAVED, cls="btn btn--secondary btn--sm"),
             cls="flex-row gap-sm flex-wrap",

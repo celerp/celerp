@@ -41,7 +41,7 @@ from ui.routes.reports import (
     OPERATIONAL_REPORTS, _date_filter_bar, _get_company, _parse_dates,
     _resolve_preset,
 )
-from ui.components.encode import html_response
+from ui.components.encode import html_response, safe_url
 
 # Financial report cards on the /reports index, in reading order: the summary
 # statements first, then the detail an accountant works down into.
@@ -152,7 +152,7 @@ def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
         label = t(REPORTS[key][3])
         if key == current_key:
             return Span(label, cls="report-nav-current")
-        return A(label, href=href(REPORTS[key][0], page_params(key, d_from, d_to)),
+        return A(label, href=safe_url(href(REPORTS[key][0], page_params(key, d_from, d_to))),
                  cls="drilldown-link")
 
     return Div(
@@ -354,7 +354,7 @@ def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str =
     rows = [
         Tr(
             Td(l.get("code", ""), cls="cell--mono"),
-            Td(A(l.get("name", ""), href=_ledger_href(l.get("code", "")), cls="drilldown-link")),
+            Td(A(l.get("name", ""), href=safe_url(_ledger_href(l.get("code", ""))), cls="drilldown-link")),
             Td(fmt_money(l.get('total_debit', 0), currency), cls="cell--number"),
             Td(fmt_money(l.get('total_credit', 0), currency), cls="cell--number"),
         )
@@ -402,7 +402,7 @@ def _tie_out_view(data: dict, currency: str | None = None) -> FT:
         ))
         for a in c.get("by_account") or []:
             rows.append(Tr(
-                Td(A(a["account"], href=_drill_ledger_href(a["account"], "opening-tie-out", "", as_of),
+                Td(A(a["account"], href=safe_url(_drill_ledger_href(a["account"], "opening-tie-out", "", as_of)),
                      cls="drilldown-link"), cls="cell--mono"), Td(as_of),
                 Td(fmt_money(a["ledger"], currency), cls=num), Td(fmt_money(a["expected"], currency), cls=num),
                 Td(fmt_money(a["difference"], currency), cls=num), Td(empty_mark()),
@@ -511,7 +511,7 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
             amt = float(l.get("amount", 0) or 0)
             code = l.get("code", "")
             label = f"{code} {l.get('name', '')}".strip()
-            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
+            name_cell = Td(A(label, href=safe_url(_ledger_href(code)), cls="drilldown-link") if code else label)
             cells = [
                 name_cell,
                 Td(fmt_money(amt, currency), cls="cell--number"),
@@ -526,7 +526,7 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
         )
         total_el = fmt_money(section_data.get('total', 0), currency)
         total_content = (
-            A(Strong(total_el), href=total_href, cls="drilldown-link", target="_blank")
+            A(Strong(total_el), href=safe_url(total_href), cls="drilldown-link", target="_blank")
             if total_href else Strong(total_el)
         )
         return Div(
@@ -580,7 +580,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
             if synthetic and l.get("href_pnl"):
                 label = t("financial.unclosed_net_income")
                 name_cell = Td(
-                    A(label, href=_pnl_href(), cls="drilldown-link"),
+                    A(label, href=safe_url(_pnl_href()), cls="drilldown-link"),
                     title=t("financial.retained_earnings_tooltip"),
                 )
             elif is_parent:
@@ -588,7 +588,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 name_cell = Td(Strong(label), style=indent)
             elif code and not synthetic:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style=indent)
+                name_cell = Td(A(label, href=safe_url(_ledger_href(code)), cls="drilldown-link"), style=indent)
             else:
                 name_cell = Td(l.get("name", ""))
 
@@ -601,7 +601,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         return Div(
             H3(title, cls="report-section-title"),
             Table(Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(A(Strong(total_el), href=_tb_href(), cls="drilldown-link"), cls="section-total"),
+            P(A(Strong(total_el), href=safe_url(_tb_href()), cls="drilldown-link"), cls="section-total"),
             cls="report-section",
         )
 
@@ -643,7 +643,7 @@ def _general_ledger_view(data: dict, currency: str | None = None,
         Tr(
             Td(r.get("code", ""), cls="cell--mono"),
             Td(A(r.get("name", ""),
-                 href=_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to),
+                 href=safe_url(_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to)),
                  cls="drilldown-link")),
             _num_cell(r.get("opening", 0)),
             _num_cell(r.get("debit", 0)),
@@ -978,7 +978,7 @@ def setup_routes(app):
                 Label(t("label.as_of_date"), cls="form-label"),
                 Input(type="date", name="as_of", value=as_of, cls="date-input"),
                 Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
-                action=_report_path("balance-sheet"), method="get", cls="date-custom-form",
+                action=safe_url(_report_path("balance-sheet")), method="get", cls="date-custom-form",
             )
             content = Div(
                 report_nav("balance-sheet", "", as_of),
@@ -1108,7 +1108,7 @@ def setup_routes(app):
             filters = journal_filters(request)
             params = {**date_params(d_from, d_to), **filters}
             data = await api.get_extended_journal(token, params)
-            path = _report_path("extended-journal")
+            path = safe_url(_report_path("extended-journal"))
             # The period as the reader set it, so applying a filter does not turn
             # their preset into a fixed range that no longer moves with the year.
             carried = ({"preset": preset} if preset and preset != "custom"
@@ -1158,7 +1158,7 @@ def setup_routes(app):
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=f"&src={origin}"),
-                A(t(back_key), href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
+                A(t(back_key), href=safe_url(href(back_path, back_qs)), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
             elsewhere_note(data.get("elsewhere") or []),
@@ -1282,8 +1282,8 @@ def setup_routes(app):
         ]
         return Div(
             *[A(label,
-                href=href(_report_path("statement"),
-                          [("pick", key), ("from", d_from), ("to", d_to)]),
+                href=safe_url(href(_report_path("statement"),
+                          [("pick", key), ("from", d_from), ("to", d_to)])),
                 cls="btn btn--ghost btn--sm")
               for key, label in picks],
             cls="picker-quickpicks",
@@ -1320,7 +1320,7 @@ def setup_routes(app):
             Input(type="hidden", name="from", value=d_from or ""),
             Input(type="hidden", name="to", value=d_to or ""),
             Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
-            method="get", action=_report_path("statement"), cls="flex-row gap-sm",
+            method="get", action=safe_url(_report_path("statement")), cls="flex-row gap-sm",
         )
         # Say so when the list on screen is part of the contact list, so nobody
         # reads a short list as the whole one.

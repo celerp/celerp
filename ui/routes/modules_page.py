@@ -49,7 +49,7 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
 from ui.security import not_permitted_redirect, owner_refusal
-from ui.components.encode import html_response, js, raw_html
+from ui.components.encode import html_response, js, raw_html, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def _license_upsell(lang: str) -> FT:
     return Div(
         Strong(t("modules.license_move_title", lang), cls="small"),
         P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),
-        A(label, href=url, target="_blank", rel="noopener noreferrer",
+        A(label, href=safe_url(url), target="_blank", rel="noopener noreferrer",
           cls="btn btn--sm btn--primary"),
         cls="module-license-upsell",
     )
@@ -180,7 +180,7 @@ def _turn_off_items(found: dict | None, lang: str):
     parts = []
     for kind, key in (("blocking", "modules.turn_off_finish_first"), ("listed", "modules.turn_off_kept")):
         if found.get(kind):
-            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=item["href"])) for item in found[kind]))]
+            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=safe_url(item["href"]))) for item in found[kind]))]
     return Div(*parts, cls="module-turn-off small") if parts else ""
 
 
@@ -477,15 +477,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
     if load_error_toasts:
         payload = [{"key": f"{n}|{e}", "msg": _load_error_message(lbl, e, lang)}
                    for n, lbl, e in load_error_toasts]
-        errors_json = json.dumps(payload).replace("</", "<\\/")
-        load_error_js = Script(
-            "(function(){if(!window.celerpToast)return;"
-            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{};"
-            "var errs=" + errors_json + ";"
-            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown[x.key])return;"
-            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);});"
-            "})();"
-        )
+        load_error_js = Script(js(
+            "(function(){{if(!window.celerpToast)return;"
+            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{{}};"
+            "var errs={0};"
+            "errs.forEach(function(x){{if(window.__moduleLoadErrorsShown[x.key])return;"
+            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);}});"
+            "}})();", payload))
     else:
         load_error_js = ""
 
@@ -640,7 +638,7 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
     # The Stripe URL is only known on the FIRST render (from /modules/buy). On a
     # re-poll (url is None) we keep waiting without a stale reopen link.
     if url:
-        actions.insert(0, A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+        actions.insert(0, A(t("marketplace.open_checkout", lang), href=safe_url(url), target="_blank",
                             rel="noopener noreferrer", cls="btn btn--sm btn--secondary"))
 
     parts = [
@@ -755,10 +753,10 @@ def _marketplace_module_cell(m: dict, lang: str) -> FT:
         parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", str(m["network_calls"]), cls="community-disclosure"))
     parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = [A(t("marketplace.view_page", lang),
-               href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
+               href=safe_url(m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}"),
                target="_blank", rel="noopener noreferrer")]
     if m.get("feedback"):
-        links.append(A(t("marketplace.feedback", lang), href=m["feedback"],
+        links.append(A(t("marketplace.feedback", lang), href=safe_url(m["feedback"]),
                        target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
     return Td(*parts, data_filter_value=m["name"], cls="module-cell")
@@ -926,11 +924,11 @@ def _community_module_cell(m: dict, lang: str) -> FT:
     parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = []
     if source := catalog.source_url(m):
-        links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.view_source", lang), href=safe_url(source), target="_blank", rel="noopener noreferrer"))
     if m.get("repo"):
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"] + "/issues", target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=safe_url(m["repo"] + "/issues"), target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
-                   href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
+                   href=safe_url(m.get("feedback") or "https://github.com/celerp/community-modules/discussions"),
                    target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
     return Td(*parts, data_filter_value=m["name"], cls="module-cell")

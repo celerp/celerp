@@ -17,7 +17,7 @@ from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, rea
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
 from ui.components.doc_money import DOC_MONEY_JS
-from ui.components.encode import js_value
+from ui.components.encode import as_js, js, js_value, safe_url
 from ui.components.icons import icon
 from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
 from ui.components.table import searchable_select
@@ -36,24 +36,24 @@ _CSS_VER = _css_version()
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. The
 # effective minutes are decided per render by effective_idle_logout_minutes() so the timer is on only
 # when the installation is exposed as a server (no token-TTL surgery); an active user's interactions
-# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the placeholder below.
+# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the js() template below.
 _IDLE_LOGOUT_JS = ("""
-(function(){
-  var IDLE_MS = __IDLE_MIN__ * 60000;
+(function(){{
+  var IDLE_MS = {0} * 60000;
   if (IDLE_MS <= 0) return;
   var t;
-  function out(){ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }
-  function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
+  function out(){{ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }}
+  function reset(){{ clearTimeout(t); t = setTimeout(out, IDLE_MS); }}
   // capture:true so scroll counts as activity: scroll events do not bubble, so a
   // document listener only sees them in the capture phase. Without it, scrolling an
   // inner overflow container (e.g. the reconciliation line panels) never resets the
   // timer and the session logs out mid-work despite the user actively scrolling.
-  ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){
-    document.addEventListener(ev, reset, {passive:true, capture:true});
-  });
+  ['mousemove','mousedown','keydown','touchstart','scroll','wheel'].forEach(function(ev){{
+    document.addEventListener(ev, reset, {{passive:true, capture:true}});
+  }});
   document.addEventListener('htmx:afterRequest', reset);
   reset();
-})();
+}})();
 """)
 
 
@@ -64,7 +64,7 @@ def _idle_logout_js() -> str:
     headless change is picked up on the next navigation without a process restart.
     """
     from celerp.config import effective_idle_logout_minutes
-    return _IDLE_LOGOUT_JS.replace("__IDLE_MIN__", str(effective_idle_logout_minutes()))
+    return js(_IDLE_LOGOUT_JS, effective_idle_logout_minutes())
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 # Escape exits a plain form field, on every page including the sign-in and setup pages,
@@ -2436,7 +2436,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Script(ESC_BLURS_FIELD),
         Script(PREVIEW_CONFIRM_JS),
         Script(DOC_MONEY_JS),
-        Script(_idle_logout_js()),
+        Script(as_js(_idle_logout_js())),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
         Script(_BACKUP_BANNER_JS),
@@ -2774,7 +2774,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             dot_target = "_self"
         if relay_known:
             relay_dot = Span(
-                A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+                A(Span(cls=dot_cls, title=dot_title), href=safe_url(dot_href), target=dot_target,
                   cls="relay-dot-link", onclick="event.stopPropagation()"),
                 id="relay-dot-wrap",
             )
@@ -2801,7 +2801,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 Div(
                     A(
                         _menu_icon("bug"), t("nav.report_bug", lang, default="Report a bug"),
-                        href=_bug_report_url(),
+                        href=safe_url(_bug_report_url()),
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
@@ -3050,7 +3050,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         key = item.get("key", "")
         label_key = item.get("label_key")
         label = t(label_key, lang) if label_key else item.get("label", "")
-        href = item.get("href", "#")
+        href = safe_url(item.get("href", "#"))
         is_active = key == active or (not key and href.strip("/") == active)
         if item.get("probe_href"):
             # Shown only when its probe answers with the link (slots.py, nav probe_href).
@@ -3069,7 +3069,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         if group_label == label_key:
             group_label = group
         # Check if any item in the group declares a settings_href
-        settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
+        settings_href = safe_url(next((i["settings_href"] for i in items if i.get("settings_href")), None))
         if settings_href:
             header = Div(
                 A(_menu_icon("settings"), group_label, href=settings_href, cls="sidebar-group-settings-link"),
@@ -3284,7 +3284,7 @@ def load_error(message: str, lang: str = "en", *, href: str | None = None,
                hx_get: str | None = None, target: str | None = None) -> FT:
     """Recoverable read failure with its retry. Empty-state copy is reserved for successful reads."""
     if href:
-        retry: FT = A(t("btn.retry", lang), href=href, cls="btn btn--secondary btn--sm")
+        retry: FT = A(t("btn.retry", lang), href=safe_url(href), cls="btn btn--secondary btn--sm")
     else:
         retry = Button(
             t("btn.retry", lang), type="button", cls="btn btn--secondary btn--sm",

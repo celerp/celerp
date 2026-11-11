@@ -35,7 +35,7 @@ from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.currencies import is_email
-from ui.components.encode import html_response, js
+from ui.components.encode import html_response, js, safe_url
 
 
 logger = logging.getLogger(__name__)
@@ -880,7 +880,7 @@ def _setup_import_form(
             Div(
                 A(
                     t("auth.continue_to_login"),
-                    href=continue_to or "/login?imported=1",
+                    href=safe_url(continue_to or "/login?imported=1"),
                     cls="btn btn--primary btn--full",
                 ),
                 A(
@@ -947,7 +947,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
     # under partner_managed or an unknown mode) and, on a direct install, always
     # returns the anonymous celerp.com/subscribe URL with no instance_id, since
     # this pre-auth path can never mint the handoff token a named checkout needs.
-    handoff_url = build_public_acquisition_url("cloud")
+    handoff_url = safe_url(build_public_acquisition_url("cloud"))
     # Keep the label in lockstep with that destination: the direct price/trial
     # label only when the URL is the direct subscribe page, a partner-support
     # label when it resolves to a partner support URL or mailto, and a

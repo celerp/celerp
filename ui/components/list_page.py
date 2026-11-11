@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl
 
 from fasthtml.common import A, Button, Div, Form, Input, Label, Option, Select, Span
 
+from ui.components.encode import as_js, js, safe_url
 from ui.components.shell import page_header
 from ui.i18n import t
 
@@ -54,18 +55,18 @@ def filter_field(label: str, control, *, field_id: str, wide: bool = False) -> o
 
 def select_field(name: str, label: str, options: list[tuple[str, str]], value: str, *,
                  lang: str | None = None, locked: bool = False,
-                 on_change: str = "this.form.submit()") -> object:
+                 on_change: str = js("this.form.submit()")) -> object:
     """A labelled select that submits its form on change. options: [(value, label)], labels
     already translated. locked=True means the page fixes the value (a menu entry chose it), so
     only a hidden field carries it. on_change replaces the plain submit, e.g. to drop fields
-    that the new value makes stale first."""
+    that the new value makes stale first; it is built with js()."""
     if locked:
         return Input(type="hidden", name=name, value=value)
     field_id = f"filter-{name}"
     return filter_field(label, Select(
         *[Option(text, value=key, selected=key == value) for key, text in options],
         name=name, id=field_id, cls="form-input form-input--sm filter-select",
-        onchange=on_change,
+        onchange=as_js(on_change),
     ), field_id=field_id)
 
 
@@ -103,10 +104,10 @@ def filter_panel(action: str, *fields, hidden: dict[str, str] | None = None, res
         Div(
             Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm period-custom",
                    hidden=not show_apply),
-            A(t("btn.reset", lang), href=reset_href, cls="btn btn--ghost btn--sm filter-reset"),
+            A(t("btn.reset", lang), href=safe_url(reset_href), cls="btn btn--ghost btn--sm filter-reset"),
             cls="filter-actions",
         ),
-        action=action, method="get", cls="list-filters", **({"id": panel_id} if panel_id else {}),
+        action=safe_url(action), method="get", cls="list-filters", **({"id": panel_id} if panel_id else {}),
     )
 
 
@@ -141,5 +142,5 @@ def date_range_select(base_url: str, date_from: str, date_to: str, preset: str,
             Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
             cls="date-range-custom", hidden=not is_custom,
         ),
-        action=base_url, method="get", cls="date-range-form",
+        action=safe_url(base_url), method="get", cls="date-range-form",
     )

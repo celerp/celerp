@@ -49,7 +49,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import EVENT_TYPE_LABELS, activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
-from ui.components.encode import as_js, html_response, js, raw_html, to_markup
+from ui.components.encode import as_js, html_response, js, raw_html, safe_url, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
@@ -806,9 +806,9 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int,
 
 # A select in the /docs panel keeps every other filter, as the old date and sync controls did;
 # dates the user never chose (the company default) and a hidden custom range are not sent.
-_DOC_FILTER_ON_CHANGE = (
+_DOC_FILTER_ON_CHANGE = js(
     "var f=this.form;"
-    "f.querySelectorAll('[data-unchosen],.period-custom[hidden] input').forEach(function(i){i.disabled=true;});"
+    "f.querySelectorAll('[data-unchosen],.period-custom[hidden] input').forEach(function(i){{i.disabled=true;}});"
     "f.submit();"
 )
 # The panel's own fields; every other state key rides along hidden (the type fixed by the menu
@@ -853,7 +853,7 @@ def _export_link(base: str, state: dict[str, str], can_export: bool, *, oob: boo
     response sends it again out of band (oob=True)."""
     if not can_export:
         return ""
-    return A(t("btn.export_csv"), href=f"/{base}/export/csv?" + _state_query(state), cls="btn btn--secondary",
+    return A(t("btn.export_csv"), href=safe_url(f"/{base}/export/csv?" + _state_query(state)), cls="btn btn--secondary",
              id=f"{base}-export", **({"hx_swap_oob": "true"} if oob else {}))
 
 
@@ -895,10 +895,10 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int,
 # Changing Type starts a fresh status filter for the new type and keeps the search, the dates
 # and the page size. Dates the user never chose (the company default) and a hidden custom range
 # are not sent, so they do not become a chosen range.
-_LIST_TYPE_ON_CHANGE = (
+_LIST_TYPE_ON_CHANGE = js(
     "var f=this.form;"
     "f.querySelectorAll('.list-status-filter,[data-unchosen],.period-custom[hidden] input')"
-    ".forEach(function(i){i.disabled=true;});f.submit();"
+    ".forEach(function(i){{i.disabled=true;}});f.submit();"
 )
 
 
@@ -1087,7 +1087,7 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
                 A(label, href=f"/inventory/{eid}", title=t("documents.view_in_catalog"), cls="badge__doc-link")
                 if eid else label,
                 ": ",
-                A(doc_number, href=doc_href(doc_id),
+                A(doc_number, href=safe_url(doc_href(doc_id)),
                   title=t("documents.view_reserving_document"), cls="badge__doc-link"),
                 cls=f"badge {badge_cls}",
             )
@@ -4767,7 +4767,7 @@ celerpUpdateBulkAlloc();
         EMPTY = "--"
         def _row(e: dict):
             display_text, url = _event_display(e)
-            event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
+            event_cell = Td(A(display_text, href=safe_url(url), cls="table-link") if url else display_text)
             ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
             data = e.get("data") or {}
             raw_type = str(e.get("event_type") or "")
@@ -4854,7 +4854,7 @@ celerpUpdateBulkAlloc();
         _settings = company.get("settings") or {}
         _new_url, _ = _new_list_target(list_type)
         if list_type == "audit":
-            _new_btn = A(t("documents.new_audit"), href=_new_url, cls="btn btn--primary")
+            _new_btn = A(t("documents.new_audit"), href=safe_url(_new_url), cls="btn btn--primary")
         elif list_type == "shipping_doc":
             _new_btn = Button(t("page.new_shipping_doc"), hx_post=_new_url,
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
@@ -7341,7 +7341,7 @@ def _from_memo_link(li: dict):
     if not drawn.get("memo_id"):
         return ""
     return Div(A(t("documents.line_from_memo", memo=drawn.get("memo_number") or drawn["memo_id"]),
-                 href=doc_href(drawn["memo_id"]), cls="auth-link"), cls="text-muted drawn-from")
+                 href=safe_url(doc_href(drawn["memo_id"])), cls="auth-link"), cls="text-muted drawn-from")
 
 
 def _memo_take_labels(li: dict) -> list:
@@ -7358,7 +7358,7 @@ def _memo_take_labels(li: dict) -> list:
             labels.append(Span(t("documents.line_label_returned"), cls="badge badge--inactive"))
             continue
         key = "documents.line_invoiced_draft" if take.get("status") == "draft" else "documents.line_sold_on"
-        labels.append(A(t(key, number=take.get("doc_number") or ""), href=doc_href(take.get("invoice_id")),
+        labels.append(A(t(key, number=take.get("doc_number") or ""), href=safe_url(doc_href(take.get("invoice_id"))),
                         cls="badge badge--inactive"))
     return labels
 
@@ -7391,7 +7391,7 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
         fixed = doc.get("memo_fixed_amounts") or {}
         takes = [tk for tk in fixed.get("takes") or [] if _fixed_amounts_text(tk, currency)]
         taken = [Div(Span(t("documents.memo_fixed_taken"), cls="total-label"), cls="total-row"),
-                 *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=doc_href(tk.get("invoice_id")),
+                 *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=safe_url(doc_href(tk.get("invoice_id"))),
                               cls="auth-link"), cls="total-label"),
                        Span(_fixed_amounts_text(tk, currency), cls="total-value"), cls="total-row")
                    for tk in takes)] if takes else []
@@ -7404,7 +7404,7 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
                  if fixed.get("still_on_memo") is not None else [])
         return [*taken, *still]
     return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
-                    memo=tk.get("memo_number") or tk.get("memo_id")), href=doc_href(tk.get("memo_id"))),
+                    memo=tk.get("memo_number") or tk.get("memo_id")), href=safe_url(doc_href(tk.get("memo_id")))),
                 cls="total-row total-label--conversion")
             for tk in doc.get("memo_fixed_taken") or [] if _fixed_amounts_text(tk, currency)]
 
@@ -8161,14 +8161,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # commercial invoice; tooltips name the paper each one produces.
             action_btns_print.append(A(raw_html(_ICON_PRINT), href=_print_href, target="_blank",
                                        cls="btn btn--ghost btn--icon", title=t("btn.print_delivery_note")))
-            action_btns_print.append(A(raw_html(_ICON_GLOBE), href=f"{_print_href}?layout=commercial_invoice",
+            action_btns_print.append(A(raw_html(_ICON_GLOBE), href=safe_url(f"{_print_href}?layout=commercial_invoice"),
                                        target="_blank", cls="btn btn--ghost btn--icon",
                                        title=t("btn.print_commercial_invoice")))
         else:
             action_btns_print.append(A(raw_html(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
-            A(raw_html(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
+            A(raw_html(_ICON_CSV_EXPORT), href=safe_url(f"{_base}/items/csv"),
               cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
         )
         if is_draft:
@@ -9024,7 +9024,7 @@ window._L = {15};
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
 window._CELERP_STATUS_BADGE = {0};""",
-    {k: {'label': t(v[0]), 'cls': v[1]} for k, v in _STATUS_BADGE.items()}) if _draft_show_item_status else "") + f"""
+    {k: {'label': t(v[0]), 'cls': v[1]} for k, v in _STATUS_BADGE.items()}) if _draft_show_item_status else js("")) + js("""
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -9100,7 +9100,7 @@ function _celerpSaveRefused(text) {{
         // Locked audit scanning is not a draft-line mutation and stays untouched.
         const lockDraftLines = _CELERP_IS_DRAFT === 'true' && _CELERP_CAN_EDIT_LINES;
         if (lockDraftLines) {{
-            const lineBody = document.getElementById('{line_body_id}');
+            const lineBody = document.getElementById({0});
             if (lineBody) lineBody.inert = true;
             clearTimeout(_celerpSaveTimer);
             _celerpSaveTimer = null;
@@ -9209,7 +9209,7 @@ function _celerpSaveRefused(text) {{
                 await performScan();
             }}
         }} finally {{
-            const currentBody = lockDraftLines ? document.getElementById('{line_body_id}') : null;
+            const currentBody = lockDraftLines ? document.getElementById({0}) : null;
             if (currentBody) currentBody.inert = false;
             scanInput.disabled = false;
             if (addBtn) addBtn.disabled = keepAddLocked;
@@ -9248,7 +9248,7 @@ function celerpFindPhysicalDuplicate(row, data) {{
     const id = data.entity_id || null;
     const barcode = data.barcode || null;
     if (!id && !barcode) return null;
-    const rows = document.querySelectorAll('#{line_body_id} tr');
+    const rows = document.querySelectorAll('#' + {0} + ' tr');
     for (const other of rows) {{
         if (other === row) continue;
         if (id) {{
@@ -9394,15 +9394,15 @@ function celerpFillRow(row, data) {{
             _celerpApplyDefaultTaxes(cell);
         }}
     }}
-""" + ("""    // Item status column (status-column pages only): populate with the rest of the
+""", str(line_body_id)) + (js("""    // Item status column (status-column pages only): populate with the rest of the
     // row, same markup as the server-rendered cell (see _item_status_badge_cell),
     // so no reload is needed.
     const statusCell = row.querySelector('.col-item-status');
-    if (statusCell) {
+    if (statusCell) {{
         const badge = data.status ? _CELERP_STATUS_BADGE[data.status] : null;
-        if (badge && data.entity_id) {
+        if (badge && data.entity_id) {{
             const invHref = '/inventory/' + data.entity_id;
-            if (data.status_doc_id) {
+            if (data.status_doc_id) {{
                 const docNum = data.status_doc_number || String(data.status_doc_id).replace(/^doc:/, '');
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls;
@@ -9414,7 +9414,7 @@ function celerpFillRow(row, data) {{
                 docA.className = 'badge__doc-link'; docA.textContent = docNum;
                 span.append(invA, ': ', docA);
                 statusCell.replaceChildren(span);
-            } else {
+            }} else {{
                 const invA = document.createElement('a');
                 invA.href = invHref; invA.title = _L.view_in_catalog;
                 const span = document.createElement('span');
@@ -9422,20 +9422,20 @@ function celerpFillRow(row, data) {{
                 span.textContent = badge.label;
                 invA.appendChild(span);
                 statusCell.replaceChildren(invA);
-            }
-        } else {
+            }}
+        }} else {{
             const dash = document.createElement('span');
             dash.className = 'cell-empty'; dash.textContent = '--';
             statusCell.replaceChildren(dash);
-        }
+        }}
         const cb = row.querySelector('.li-select');
-        if (cb) {
+        if (cb) {{
             // Bind the checkbox to the item so bulk status actions work on a
             // freshly added row without a reload.
             cb.value = data.entity_id || '';
-        }
-    }
-""" if _draft_show_item_status else "") + js("""    return true;
+        }}
+    }}
+""") if _draft_show_item_status else js("")) + js("""    return true;
 }}
 /* ── Catalog autocomplete ── */
 window._celerpAcTimer = null;
@@ -10249,13 +10249,13 @@ async function _celerpInstallLineBody(html, version) {{
     return true;
 }}
 """,
-    line_body_id, str(line_body_id), str(currency), t('btn.remove'), t('btn.cancel')) + (f"""/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
+    line_body_id, str(line_body_id), str(currency), t('btn.remove'), t('btn.cancel')) + (js("""/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
    can change it. After a save, put each reserved row's stored status cell in place, leaving
    the rest of the rows (and any field being edited) alone. Only the latest save's refresh
    lands. (Status-column pages only.) */
 window._celerpHeldRefresh = window._celerpHeldRefresh || 0;
 async function _celerpRefreshHeldBadges() {{
-    const tbody = document.getElementById('{line_body_id}');
+    const tbody = document.getElementById({0});
     if (!tbody || !tbody.querySelector('.col-item-status .badge--reserved')) return;
     const seq = ++window._celerpHeldRefresh;
     const fresh = await _celerpFetchLineBody();
@@ -10273,7 +10273,7 @@ async function _celerpRefreshHeldBadges() {{
         if (cell && now) cell.replaceWith(document.importNode(now, true));
     }});
 }}
-""" if _draft_show_item_status else "") + js("""async function _celerpPersistOnce() {{
+""", str(line_body_id)) if _draft_show_item_status else js("")) + js("""async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
@@ -11383,7 +11383,7 @@ async function celerpCsvImport(input, entityId) {{
     _converted_to = list_fact(doc, "converted_to") if is_list else None
     if _converted_to:
         _contact_rows.append(Div(Div(t("doc.converted_to"), cls="form-label"),
-                                 A(_converted_to.split(":", 1)[-1], href=doc_href(_converted_to), cls="table-link"),
+                                 A(_converted_to.split(":", 1)[-1], href=safe_url(doc_href(_converted_to)), cls="table-link"),
                                  cls="form-group"))
     # Currency row: always show (except money-less internal docs); rate row only when foreign.
     # Shipping documents keep it - the commercial invoice declares values in this currency.
@@ -11440,7 +11440,7 @@ async function celerpCsvImport(input, entityId) {{
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
             (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
-                   href=doc_href(doc["original_doc_id"])),
+                   href=safe_url(doc_href(doc["original_doc_id"]))),
                  cls="meta-cell") if original else ""),
             *(subscription_meta_cells(doc) if _is_sub_template else (
                 Div(Div(t("doc.issue_date"), cls="meta-label"), _cell("issue_date", issue_date_value), cls="meta-cell"),

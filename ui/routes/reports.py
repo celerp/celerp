@@ -19,6 +19,7 @@ from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_r
 from ui.i18n import t, get_lang, category_label
 from celerp.services.business_time import business_today
 from celerp.services.permissions import role_has_permission
+from ui.components.encode import safe_url
 
 
 def _show_margin(request, settings: dict | None) -> bool:
@@ -282,7 +283,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
     for key, label in _date_presets(lang):
         if key == "custom":
             continue
-        href = f"{base_url}?preset={key}{extra_params}"
+        href = safe_url(f"{base_url}?preset={key}{extra_params}")
         preset_links.append(
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
@@ -312,7 +313,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             "t.addEventListener('change',function(){if(t.value)f.max=t.value;});"
             "})();"
         ),
-        action=base_url,
+        action=safe_url(base_url),
         method="get",
         cls="date-custom-form",
     )
@@ -322,7 +323,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
         custom_form,
     ]
     if settings_link:
-        parts.append(A("⚙", href=settings_link, cls="settings-gear", title=t("reports.related_settings", lang)))
+        parts.append(A("⚙", href=safe_url(settings_link), cls="settings-gear", title=t("reports.related_settings", lang)))
 
     return Div(*parts, cls="date-filter-bar")
 
@@ -651,7 +652,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
             v = float(val or 0)
             color_cls = " report-kpi__value--positive" if v >= 0 else " report-kpi__value--negative"
             return Td(Span(f"{v:.1f}%", cls=f"report-kpi__value{color_cls}"), cls=css)
-        link = l.get("_link", "")
+        link = safe_url(l.get("_link", ""))
         if key == "label" and link:
             return Td(A(str(val) or EMPTY, href=link, cls="link"), cls=css)
         return Td(str(val) if val != "" else EMPTY, cls=css)

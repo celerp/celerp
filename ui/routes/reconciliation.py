@@ -29,7 +29,7 @@ from ui.components.table import (
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.reports import _get_company
-from ui.components.encode import js
+from ui.components.encode import as_js, js
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -234,7 +234,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Label(t("th.account"), cls="form-label"),
                 Select(*account_options, _acct_opt, name="account_code",
-                       cls="form-input cell-input--select", onchange=_acct_js),
+                       cls="form-input cell-input--select", onchange=as_js(_acct_js)),
                 cls="form-field",
             ),
             Div(
@@ -293,7 +293,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
                 *[
                     Div(
                         Select(*account_options, _acct_opt, name="account_code_0",
-                               cls="form-input cell-input--select w-auto", onchange=_acct_js),
+                               cls="form-input cell-input--select w-auto", onchange=as_js(_acct_js)),
                         Input(type="number", name="amount_0", placeholder=t("label.amount"),
                               step=money_step(currency), cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
@@ -736,7 +736,7 @@ def setup_routes(app):
                 name="bank_account_id",
                 cls="form-input cell-input--select",
                 required=True,
-                onchange=_bank_js,
+                onchange=as_js(_bank_js),
             )
         else:
             bank_select_or_msg = P(t("acct.no_bank_accounts_configured"),

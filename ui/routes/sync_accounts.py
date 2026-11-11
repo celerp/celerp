@@ -19,7 +19,7 @@ from ui.components.table import EMPTY, searchable_select
 from ui.config import get_token as _token
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.financial_reports import ledger_path
-from ui.components.encode import html_response
+from ui.components.encode import html_response, safe_url
 
 PAGE = "/accounting/sync-accounts"
 _SWAP = {"hx_target": "#sync-accounts", "hx_swap": "outerHTML"}
@@ -44,7 +44,7 @@ def _hold_fix(item: dict, chart: list[dict], lang: str) -> FT:
     if fix.get("fixed"):
         return Span(t("sync_accounts.fixed", lang))
     if kind == "role":
-        return A(t("sync_accounts.choose_posting", lang), href=fix.get("href") or "/settings/accounting#posting-accounts",
+        return A(t("sync_accounts.choose_posting", lang), href=safe_url(fix.get("href") or "/settings/accounting#posting-accounts"),
                  cls="btn btn--secondary btn--xs")
     by_code = {a["code"]: a for a in chart if a.get("is_active", True)}
     quick = []

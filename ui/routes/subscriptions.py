@@ -472,9 +472,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
             stops.append(_cancel_button(entity_id))
         return [_status_badge(status), warning], stops
 
-    def _bill_vals():
-        fields = {"period_index": period_index} if period_index is not None else {}
-        return operation_key_vals(**fields)
+    bill_fields = {"period_index": period_index} if period_index is not None else {}
 
     if status == "draft":
         return [
@@ -490,9 +488,9 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     if status == "active":
         left.extend([
             Button(t("btn.generate_due"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate-due",
-                   hx_swap="none", hx_vals=_bill_vals()),
+                   hx_swap="none", hx_vals=operation_key_vals(**bill_fields)),
             Button(t("btn.bill_early"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/bill-early",
-                   hx_swap="none", hx_vals=_bill_vals()),
+                   hx_swap="none", hx_vals=operation_key_vals(**bill_fields)),
         ])
         right.append(_pause_button(entity_id))
     elif status == "paused":

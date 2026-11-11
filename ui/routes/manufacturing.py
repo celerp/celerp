@@ -28,7 +28,7 @@ from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
 from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
-from ui.components.encode import html_response, js
+from ui.components.encode import html_response, js, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def _order_row(order: dict, deleted: dict[str, dict], today: str = "") -> FT:
     )
     src_id, src_no = order.get("source_doc_id"), order.get("source_doc_number")
     if src_id and src_no:
-        src_cell = A(src_no, href=doc_href(src_id), cls="table-link")
+        src_cell = A(src_no, href=safe_url(doc_href(src_id)), cls="table-link")
     else:
         src_cell = Span(t("manufacturing.to_stock"), cls="hint")
     return Tr(
@@ -215,7 +215,7 @@ def _demand_row(l: dict) -> FT:
     unit = l.get("unit")
     doc_type = l.get("doc_type") or ""
     doc_no = l.get("doc_number") or EMPTY
-    doc_cell = (A(doc_no, href=_doc_href(l.get("doc_id"), doc_type), cls="table-link")
+    doc_cell = (A(doc_no, href=safe_url(_doc_href(l.get("doc_id"), doc_type)), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
         # value carries the demand line (product + its document) so each makes a 1:1-linked work order.

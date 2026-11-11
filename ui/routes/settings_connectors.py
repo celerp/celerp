@@ -29,7 +29,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
-from ui.components.encode import html_response, js
+from ui.components.encode import html_response, js, safe_url
 
 log = logging.getLogger(__name__)
 
@@ -204,13 +204,13 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     counts = _changes(run)
     status = _sync_status_label(run.status)
     if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
-        status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+        status = A(status, href=safe_url(f"{href}#{_SYNC_REASONS_ID}"))
     elif run.status == "success" and attention:
         # The sync finished, but records it processed are still waiting on a person.
         status_cls = "connector-sync-info--warn"
         status = t("connectors.needs_attention")
         if href:
-            status = A(status, href=f"{href}#{_ATTENTION_ID}")
+            status = A(status, href=safe_url(f"{href}#{_ATTENTION_ID}"))
     parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
@@ -795,7 +795,7 @@ def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
     href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
     return Div(
         P(t("connectors.connect_lapsed", lang, service=get_connector(cid).display_name)),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
@@ -1122,7 +1122,7 @@ def _entitlement_cta(lang: str = "en") -> FT:
     href, label = commercial_cta("subscribe", "cloud", t("connectors.start_trial", lang), lang)
     return Div(
         P(t("connectors.no_subscription", lang), cls="settings-hint"),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
@@ -1148,7 +1148,7 @@ def _connect_required(platform: str, exc: Exception, lang: str) -> FT | None:
     href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
     return Div(
         P(t("connectors.peer_needs_connect", lang), cls="settings-hint"),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
@@ -1661,7 +1661,7 @@ def setup_routes(app):
         if "error" in result:
             return Span(result["error"], cls="flash flash--warning")
 
-        url = result.get("authorize_url", "")
+        url = safe_url(result.get("authorize_url", ""))
         if not url:
             return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 

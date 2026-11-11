@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import html_response, js
+from ui.components.encode import as_js, html_response, js, safe_url
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -171,7 +171,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         ]
         if total is not None:
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
-        card = A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
+        card = A(*inner, href=safe_url(href), cls=cls, **({"title": title} if title else {}))
         if is_active:
             # Set after the class so the card's markup still opens href, class (pages and tests read it so).
             card.attrs["aria-current"] = "true"
@@ -708,7 +708,7 @@ def empty_state_cta(
                 Button(*label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
             )
         elif action_url:
-            inner.append(A(*label, href=action_url, cls="empty-state-cta-btn"))
+            inner.append(A(*label, href=safe_url(action_url), cls="empty-state-cta-btn"))
     if more:
         inner.append(Div(inner.pop(), *more, cls="empty-state-cta-actions"))
     return Div(*inner, cls="empty-state-cta")
@@ -724,7 +724,7 @@ def period_empty_text(period: tuple[str, str, str] | None, lang: str | None = No
 
 
 def period_all_time_link(period: tuple[str, str, str], lang: str | None = None, cls: str | None = None) -> FT:
-    return A(t("filter.all_time", lang), href=period[2], cls=cls)
+    return A(t("filter.all_time", lang), href=safe_url(period[2]), cls=cls)
 
 
 def period_empty_note(period: tuple[str, str, str] | None, lang: str | None = None) -> FT | str:
@@ -1247,7 +1247,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
     linking to the document.
     domain: for status cells only - the enum domain (see display_enum) used to
             translate the raw status value's label; omit when unknown."""
-    s = str(value).strip() if value is not None else ""
+    s = safe_url(str(value).strip()) if value is not None else ""
     if cell_type == "bool":
         is_true = str(value).strip().lower() in ("true", "1", "yes")
         return Span(t("settings.yes") if is_true else t("settings.no"),
@@ -1257,7 +1257,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         label = display_enum(s, domain) if s else ""
         if s and status_doc:
             doc_id, doc_number = status_doc
-            return Span(label, ": ", A(doc_number, href=doc_href(doc_id), cls="badge__doc-link"), cls=badge_cls)
+            return Span(label, ": ", A(doc_number, href=safe_url(doc_href(doc_id)), cls="badge__doc-link"), cls=badge_cls)
         return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
@@ -1337,7 +1337,7 @@ def display_cell(
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
+            return Td(A(inner, href=safe_url(link_href), cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
         return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
@@ -1366,7 +1366,7 @@ def display_cell(
 
     if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
         return Td(
-            A(inner, href=link_href, cls="table-link"),
+            A(inner, href=safe_url(link_href), cls="table-link"),
             id=_cell_id,
             title=t("label.dblclick_to_edit"),
             hx_get=_edit,
@@ -1495,7 +1495,7 @@ def data_row(
     action_cell = [] if not show_row_menu else [
         row_menu(
             safe_id,
-            A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
+            A(t("btn.edit"), href=safe_url(f"/{entity_type}/{entity_id}"), cls="row-menu-item"),
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
@@ -1960,220 +1960,218 @@ def data_table(
 }})();
 """,
         str(page_key), entity_type, _schema_defaults, _virtual_followers, bool(auto_hide_empty))
-    _bulk_i18n_prelude = (
-        "var I18N_CONFIRM_MERGE=" + _json.dumps(t("table.confirm_merge")) + ";\n"
-        "var I18N_A_NEW_SKU=" + _json.dumps(t("table.a_new_sku")) + ";\n"
-        "var I18N_NEW_DOC_TYPE=" + _json.dumps(t("table.new_doc_type")) + ";\n"
-        "var I18N_N_SELECTED=" + _json.dumps(t("label.n_selected")) + ";\n"
-    )
-    _bulk_js = _bulk_i18n_prelude + """
-var CelerpSelection=(function(){
-  var KEY='celerp_inv_selection',_map={};
-  function _save(){try{sessionStorage.setItem(KEY,JSON.stringify(_map))}catch(e){}}
-  function _load(){try{_map=JSON.parse(sessionStorage.getItem(KEY)||'{}')}catch(e){_map={}}}
+    _bulk_js = js(r"""var I18N_CONFIRM_MERGE={0};
+var I18N_A_NEW_SKU={1};
+var I18N_NEW_DOC_TYPE={2};
+var I18N_N_SELECTED={3};
+
+var CelerpSelection=(function(){{
+  var KEY={4},_map={{}};
+  function _save(){{try{{sessionStorage.setItem(KEY,JSON.stringify(_map))}}catch(e){{}}}}
+  function _load(){{try{{_map=JSON.parse(sessionStorage.getItem(KEY)||'{{}}')}}catch(e){{_map={{}}}}}}
   _load();
-  return {
-    add:function(id,meta){_map[id]=meta;_save()},
-    remove:function(id){delete _map[id];_save()},
-    has:function(id){return id in _map},
-    clear:function(){_map={};_save()},
-    count:function(){return Object.keys(_map).length},
-    ids:function(){return Object.keys(_map)},
-    all:function(){return Object.assign({},_map)},
-    syncCheckboxes:function(){
-      document.querySelectorAll('.row-select').forEach(function(cb){cb.checked=!!_map[cb.value]});
-    }
-  };
-})();
-function submitBulkAction(formEl){
-  formEl.querySelectorAll('input[name="selected"]').forEach(function(el){el.remove()});
-  CelerpSelection.ids().forEach(function(id){
+  return {{
+    add:function(id,meta){{_map[id]=meta;_save()}},
+    remove:function(id){{delete _map[id];_save()}},
+    has:function(id){{return id in _map}},
+    clear:function(){{_map={{}};_save()}},
+    count:function(){{return Object.keys(_map).length}},
+    ids:function(){{return Object.keys(_map)}},
+    all:function(){{return Object.assign({{}},_map)}},
+    syncCheckboxes:function(){{
+      document.querySelectorAll('.row-select').forEach(function(cb){{cb.checked=!!_map[cb.value]}});
+    }}
+  }};
+}})();
+function submitBulkAction(formEl){{
+  formEl.querySelectorAll('input[name="selected"]').forEach(function(el){{el.remove()}});
+  CelerpSelection.ids().forEach(function(id){{
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     formEl.appendChild(inp);
-  });
+  }});
   return true;
-}
-function _clearBulkResult(){
+}}
+function _clearBulkResult(){{
   var r=document.getElementById('bulk-action-result');
   if(r) r.innerHTML='';
-}
-function _resetBulkActions(){
+}}
+function _resetBulkActions(){{
   var sel=document.getElementById('bulk-action-select');
   if(sel) sel.value='';
   var ctx=document.getElementById('bulk-context');
   if(ctx) ctx.innerHTML='';
   _clearBulkResult();
-}
-function bulkActionChanged(action){
+}}
+function bulkActionChanged(action){{
   var ctx=document.getElementById('bulk-context');
   if(!ctx) return;
   ctx.innerHTML='';
   _clearBulkResult();
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
-  if(action==='archive'){
+  if(action==='archive'){{
     // Archiving retires the product but leaves any remaining stock on the books. When stock is
     // still held the user must choose (keep on books vs write off) - never a silent ledger move.
-    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
-    celerpConfirm('Archive selected items? They will be hidden from the default view.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
-  }
-  if(action==='restore'){
-    celerpConfirm('Restore selected items to the catalog? They will become available again.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
-  }
-  if(action==='expire'){
+    if(_selectedStockedIds().length){{_stockGuardChoice(function(){{_bulkImmediate('/api/items/bulk/status','bulk_status','archived');}});return;}}
+    celerpConfirm({5}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');}});return;
+  }}
+  if(action==='restore'){{
+    celerpConfirm({6}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');}});return;
+  }}
+  if(action==='expire'){{
     // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
-    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/expire',null,null);});return;}
+    if(_selectedStockedIds().length){{_stockGuardChoice(function(){{_bulkImmediate('/api/items/bulk/expire',null,null);}});return;}}
     _bulkImmediate('/api/items/bulk/expire',null,null);return;
-  }
-  if(action==='write_off'){
+  }}
+  if(action==='write_off'){{
     _bulkWriteOff();return;
-  }
-  if(action==='make_available'){
-    celerpConfirm('Make selected draft items available? They will count as real stock.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
-  }
-  if(action==='revert_to_draft'){
-    celerpConfirm('Revert selected items to draft? Only items with no circulation history can revert.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
-  }
-  if(action==='delete'){
+  }}
+  if(action==='make_available'){{
+    celerpConfirm({7}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);}});return;
+  }}
+  if(action==='revert_to_draft'){{
+    celerpConfirm({8}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);}});return;
+  }}
+  if(action==='delete'){{
     // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
     var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
-    celerpConfirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
-  }
-  if(action==='restore_deleted'){
+    celerpConfirm(samples?{10}:{9}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);}});return;
+  }}
+  if(action==='restore_deleted'){{
     _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
-  }
-  if(action==='duplicate'){
-    celerpConfirm('Duplicate selected items? A copy of each will be created.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
-  }
+  }}
+  if(action==='duplicate'){{
+    celerpConfirm({11}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);}});return;
+  }}
   // Context-driven actions - clone template (includes module actions via mod: prefix)
-  // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
+  // mod: actions use tpl-mod-{{action_id}} where action_id strips the mod: prefix.
   // The option value and template id must be derived the same way to stay in sync.
   var tplId=action.startsWith('mod:')?'tpl-mod-'+action.slice(4):'tpl-'+action;
   if(action==='send_to') tplId='tpl-send-to';
   var tpl=document.getElementById(tplId);
   if(!tpl) return;
   // Validate selection count constraints
-  if(action==='split'&&n!==1){alert('Select exactly 1 item to split.');return;}
-  if(action==='transform'&&n!==1){alert('Select exactly 1 item to transform.');return;}
-  if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
+  if(action==='split'&&n!==1){{alert({12});return;}}
+  if(action==='transform'&&n!==1){{alert({13});return;}}
+  if(action==='merge'&&n<2){{alert({14});return;}}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
   // Split: auto-load preview immediately; no qty input needed
-  if(action==='split'){
+  if(action==='split'){{
     if(window.htmx) htmx.process(ctx);
     if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
     return;
-  }
+  }}
   // Transform: auto-load preview immediately
-  if(action==='transform'){
+  if(action==='transform'){{
     var ids = CelerpSelection.ids();
     if(!ids.length) return;
     var entityId = ids[0];
     var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
-    htmx.ajax('GET', url, { target: '#bulk-transform-preview', swap: 'innerHTML' })
-      .then(function() {
+    htmx.ajax('GET', url, {{ target: '#bulk-transform-preview', swap: 'innerHTML' }})
+      .then(function() {{
         if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview'));
         if (typeof transformPreviewInit === 'function') transformPreviewInit('bulk-transform-preview-form');
-      });
+      }});
     return;
-  }
+  }}
   // Merge: populate target dropdown with selected items
   if(action==='merge') _populateMergeTargets();
   // Re-process htmx on new content
   if(window.htmx) htmx.process(ctx);
-}
-function _bulkImmediate(url,extraName,extraValue){
+}}
+function _bulkImmediate(url,extraName,extraValue){{
   var form=document.createElement('form');
-  CelerpSelection.ids().forEach(function(id){
+  CelerpSelection.ids().forEach(function(id){{
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     form.appendChild(inp);
-  });
-  if(extraName){
+  }});
+  if(extraName){{
     var ex=document.createElement('input');ex.type='hidden';ex.name=extraName;ex.value=extraValue;
     form.appendChild(ex);
-  }
+  }}
   document.body.appendChild(form);
   // Remove the form only after the request completes (see merge handler note) so HX-Trigger
   // events fired on the source element still reach the document-level listeners.
-  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-    .then(function(){form.remove();},function(){form.remove();});
-}
-function _selectedStockedIds(){
+  htmx.ajax('POST',url,{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
+    .then(function(){{form.remove();}},function(){{form.remove();}});
+}}
+function _selectedStockedIds(){{
   // Selected items that still hold stock (quantity > 0). Prefer the live rendered qty - an inline
   // edit re-renders the row's checkbox - and fall back to the selection snapshot for rows not on
   // the current page, so the guard is never skipped on stale zero data.
   var all=CelerpSelection.all();
-  return Object.keys(all).filter(function(id){
-    var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+  return Object.keys(all).filter(function(id){{
+    var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
     var q=(cb&&cb.dataset.qty!=null&&cb.dataset.qty!=='')?cb.dataset.qty:(all[id].qty||'0');
     return parseFloat(q)>0;
-  });
-}
-function _stockGuardChoice(keepFn){
+  }});
+}}
+function _stockGuardChoice(keepFn){{
   // The unmissable two-way choice for archiving/expiring still-stocked items (GDR 2d): keep the
   // stock on the books, or write it off. Cancel and Esc are the way back; no action fires until
   // the user picks, so nothing moves on the ledger automatically.
   var existing=document.getElementById('stock-guard-choice');
-  if(existing){existing.close();existing.remove();}
+  if(existing){{existing.close();existing.remove();}}
   var dlg=document.createElement('dialog');
   dlg.className='modal-dialog';dlg.id='stock-guard-choice';
   var body=document.createElement('div');body.className='modal-body';
   var msg=document.createElement('p');
-  msg.textContent='Some selected items still hold stock. Archiving retires the product but leaves its stock on the books. What should happen to the remaining stock?';
+  msg.textContent={15};
   body.appendChild(msg);
   var acts=document.createElement('div');acts.className='modal-actions';
-  function mkBtn(label,cls,fn){var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){dlg.close();dlg.remove();if(fn)fn();});return b;}
-  acts.appendChild(mkBtn('Keep stock on books','btn--secondary',keepFn));
-  acts.appendChild(mkBtn('Write off remaining stock','btn--primary',_bulkWriteOff));
-  acts.appendChild(mkBtn('Cancel','btn--ghost',null));
+  function mkBtn(label,cls,fn){{var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){{dlg.close();dlg.remove();if(fn)fn();}});return b;}}
+  acts.appendChild(mkBtn({16},'btn--secondary',keepFn));
+  acts.appendChild(mkBtn({17},'btn--primary',_bulkWriteOff));
+  acts.appendChild(mkBtn({18},'btn--ghost',null));
   body.appendChild(acts);dlg.appendChild(body);
   document.body.appendChild(dlg);
-  dlg.addEventListener('cancel',function(){dlg.remove();});
+  dlg.addEventListener('cancel',function(){{dlg.remove();}});
   dlg.showModal();
-}
-function _bulkWriteOff(){
+}}
+function _bulkWriteOff(){{
   // Seed a draft write-off list from the current selection and navigate to it (the server proxy
   // replies with HX-Redirect to the new list). Data entry happens on-page in that list.
   var form=document.createElement('form');
-  CelerpSelection.ids().forEach(function(id){
+  CelerpSelection.ids().forEach(function(id){{
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     form.appendChild(inp);
-  });
+  }});
   document.body.appendChild(form);
-  htmx.ajax('POST','/api/items/bulk/write-off',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-    .then(function(){form.remove();},function(){form.remove();});
-}
-function _liveMergeMeta(id){
+  htmx.ajax('POST','/api/items/bulk/write-off',{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
+    .then(function(){{form.remove();}},function(){{form.remove();}});
+}}
+function _liveMergeMeta(id){{
   // The SKU/name shown here must reflect the CURRENT value: an inline edit changes the
   // cell without re-selecting the row, so the meta snapshotted at select time (and kept
   // in sessionStorage) goes stale. Read the live row when it is on the page; fall back to
   // the stored snapshot only for selected rows not currently rendered (other pages).
-  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
-  if(cb){
+  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
+  if(cb){{
     var tr=cb.closest('tr');
     var skuCell=tr&&tr.querySelector('[data-col="sku"]');
     var nameCell=tr&&tr.querySelector('[data-col="name"]');
-    return {sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
-            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()};
-  }
-  var m=CelerpSelection.all()[id]||{};
-  return {sku:m.sku||'',name:m.name||''};
-}
-function _populateMergeTargets(){
+    return {{sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
+            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()}};
+  }}
+  var m=CelerpSelection.all()[id]||{{}};
+  return {{sku:m.sku||'',name:m.name||''}};
+}}
+function _populateMergeTargets(){{
   var sel=document.getElementById('merge-target-select');
   if(!sel) return;
   var all=CelerpSelection.all();
-  Object.keys(all).forEach(function(id){
+  Object.keys(all).forEach(function(id){{
     var meta=_liveMergeMeta(id);
     var opt=document.createElement('option');
     opt.value=id;
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');
     sel.appendChild(opt);
-  });
+  }});
   // Keep "New SKU" as the last choice, below the item options.
   var newSkuOpt=document.getElementById('merge-new-sku-opt');
   if(newSkuOpt) sel.appendChild(newSkuOpt);
-  sel.addEventListener('change',function(){
+  sel.addEventListener('change',function(){{
     var confirmDiv=document.getElementById('merge-confirm');
     if(!confirmDiv) return;
     var n=CelerpSelection.count();
@@ -2185,15 +2183,15 @@ function _populateMergeTargets(){
     confirmDiv.style.gap='0.5rem';
     confirmDiv.style.marginTop='0.5rem';
     var msg=document.createElement('span');
-    msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';
+    msg.textContent=I18N_CONFIRM_MERGE.replace('{{n}}',n).replace('{{target}}',isNewSku?I18N_A_NEW_SKU:targetText);
     msg.style.fontSize='0.85rem';
     // "New SKU" reveals [dropdown] -> [enter SKU]; picking an item hides it
     // (that item's SKU wins, so there is nothing extra to show).
     var skuInput=document.getElementById('merge-resulting-sku');
     var skuArrow=document.getElementById('merge-sku-arrow');
-    if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
-    if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
-    if(isNewSku&&skuInput){skuInput.focus();}
+    if(skuInput){{skuInput.style.display=isNewSku?'':'none';skuInput.value='';}}
+    if(skuArrow){{skuArrow.style.display=isNewSku?'':'none';}}
+    if(isNewSku&&skuInput){{skuInput.focus();}}
     // Items held in different inventory accounts: say how much value the merge moves
     // between them before the user confirms.
     var survivor=isNewSku?CelerpSelection.ids()[0]:sel.value;
@@ -2203,17 +2201,17 @@ function _populateMergeTargets(){
     note.style.display='none';
     // The confirmation carries the fingerprint of a preview of exactly what it asks
     // for, so the merge refuses if the items change after the user saw this.
-    function preview(resultingSku){
+    function preview(resultingSku){{
       var pf=new FormData();
-      CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
+      CelerpSelection.ids().forEach(function(id){{pf.append('selected',id);}});
       pf.append('target_sku_from',survivor);
       if(resultingSku) pf.append('resulting_sku',resultingSku);
-      return fetch('/api/items/merge/preview',{method:'POST',body:pf})
-        .then(function(r){return r.json();})
-        .then(function(d){return {message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''};})
-        .catch(function(){return {message:'',fingerprint:''};});
-    }
-    function show(p){note.textContent=p.message;note.style.display=p.message?'':'none';}
+      return fetch('/api/items/merge/preview',{{method:'POST',body:pf}})
+        .then(function(r){{return r.json();}})
+        .then(function(d){{return {{message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''}};}})
+        .catch(function(){{return {{message:'',fingerprint:''}};}});
+    }}
+    function show(p){{note.textContent=p.message;note.style.display=p.message?'':'none';}}
     var planned=preview('');
     planned.then(show);
     // One key per confirmation, so a repeated click merges once.
@@ -2222,148 +2220,148 @@ function _populateMergeTargets(){
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
     var btn=document.createElement('button');
-    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent='Confirm';
-    btn.addEventListener('click',function(){
+    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent={19};
+    btn.addEventListener('click',function(){{
       var skuEl=document.getElementById('merge-resulting-sku');
       // "New SKU" mode needs a typed SKU; the merge bases on the first selected
       // item (deterministic - the pick only decides the SKU, not the survivor).
-      if(isNewSku && (!skuEl || !skuEl.value.trim())){
+      if(isNewSku && (!skuEl || !skuEl.value.trim())){{
         if(skuEl) skuEl.focus();
         return;
-      }
+      }}
       var resultingSku=isNewSku?skuEl.value.trim():'';
       // The typed SKU is part of the merge, so it is previewed with it. If what the
       // merge moves changed since the user read it, show the new note and wait for
       // another click.
       var reviewed=planned;
-      if(resultingSku){
-        reviewed=preview(resultingSku).then(function(p){
-          if(p.message!==note.textContent){show(p);return null;}
+      if(resultingSku){{
+        reviewed=preview(resultingSku).then(function(p){{
+          if(p.message!==note.textContent){{show(p);return null;}}
           return p;
-        });
-      }
-      reviewed.then(function(p){
+        }});
+      }}
+      reviewed.then(function(p){{
         if(!p) return;
         var fingerprint=p.fingerprint;
         var form=document.createElement('form');
-        CelerpSelection.ids().forEach(function(id){
+        CelerpSelection.ids().forEach(function(id){{
           var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
           form.appendChild(inp);
-        });
-        var fields={target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint};
-        Object.keys(fields).forEach(function(name){
+        }});
+        var fields={{target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint}};
+        Object.keys(fields).forEach(function(name){{
           if(!fields[name]) return;
           var inp=document.createElement('input');inp.type='hidden';inp.name=name;inp.value=fields[name];
           form.appendChild(inp);
-        });
+        }});
         document.body.appendChild(form);
         // Keep the form attached until the request finishes - removing it early detaches the htmx
         // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
-        htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
-          .then(function(){form.remove();},function(){form.remove();});
-      });
-    });
+        htmx.ajax('POST','/api/items/bulk/merge',{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
+          .then(function(){{form.remove();}},function(){{form.remove();}});
+      }});
+    }});
     var cancel=document.createElement('button');
-    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';
-    cancel.addEventListener('click',function(){
+    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent={18};
+    cancel.addEventListener('click',function(){{
       confirmDiv.style.display='none';
       sel.value='';
-      if(skuInput){skuInput.style.display='none';skuInput.value='';}
-      if(skuArrow){skuArrow.style.display='none';}
+      if(skuInput){{skuInput.style.display='none';skuInput.value='';}}
+      if(skuArrow){{skuArrow.style.display='none';}}
       _clearBulkResult();
-    });
+    }});
     confirmDiv.appendChild(msg);
     confirmDiv.appendChild(note);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);
-  });
-}
-function sendToTypeChanged(docType, docLabel){
+  }});
+}}
+function sendToTypeChanged(docType, docLabel){{
   var targetSel=document.getElementById('send-to-target-select');
   if(!targetSel) return;
   // Reset to just "New <type>", using the type's display label not its raw key
   targetSel.innerHTML='';
   var newOpt=document.createElement('option');
-  newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);
+  newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{{type}}',(docLabel||docType));
   targetSel.appendChild(newOpt);
   if(!docType) return;
   // Fetch matching docs
   fetch('/api/items/send-to/search?doc_type='+encodeURIComponent(docType))
-    .then(function(r){return r.json()})
-    .then(function(docs){
-      docs.forEach(function(d){
+    .then(function(r){{return r.json()}})
+    .then(function(docs){{
+      docs.forEach(function(d){{
         var opt=document.createElement('option');
         opt.value=d.id||d.entity_id||'';
         opt.textContent=(d.label||d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
         targetSel.appendChild(opt);
-      });
-    }).catch(function(){});
-}
-(function(){
-  function _meta(cb){return {sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||'',status:cb.dataset.status||''};}
-  function updateBulkToolbar(){
+      }});
+    }}).catch(function(){{}});
+}}
+(function(){{
+  function _meta(cb){{return {{sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||'',status:cb.dataset.status||''}};}}
+  function updateBulkToolbar(){{
     var n=CelerpSelection.count();
     var toolbar=document.getElementById('bulk-toolbar');
     var countEl=document.getElementById('bulk-count');
     var clearBtn=document.getElementById('bulk-clear-btn');
-    if(countEl) countEl.textContent=n+' selected';
-    if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
-    if(clearBtn){clearBtn.style.display=n>0?'':'none'}
+    if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{{n}}',n);
+    if(toolbar){{if(n>0){{toolbar.classList.add('is-active')}}else{{toolbar.classList.remove('is-active')}}}}
+    if(clearBtn){{clearBtn.style.display=n>0?'':'none'}}
     var all=CelerpSelection.all();
     // A deleted row is still a draft mistake: Delete erases it once nothing names it.
     var hasDraft=false,hasDeleted=false,hasNonDraft=false;
-    Object.keys(all).forEach(function(id){
+    Object.keys(all).forEach(function(id){{
       var s=all[id].status||'';
-      if(s==='draft'){hasDraft=true}else if(s==='deleted'){hasDeleted=true}else{hasNonDraft=true}
-    });
+      if(s==='draft'){{hasDraft=true}}else if(s==='deleted'){{hasDeleted=true}}else{{hasNonDraft=true}}
+    }});
     var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
     var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
     if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||((hasDraft||hasDeleted)&&!hasNonDraft));
-  }
+  }}
   var table=document.getElementById('data-table');
   if(!table) return;
   var selectAll=table.querySelector('thead .col-checkbox input');
-  if(selectAll){
+  if(selectAll){{
     selectAll.type='checkbox';
-    selectAll.addEventListener('change',function(){
-      table.querySelectorAll('tbody .row-select').forEach(function(cb){
-        if(selectAll.checked){CelerpSelection.add(cb.value,_meta(cb));cb.checked=true}
-        else{CelerpSelection.remove(cb.value);cb.checked=false}
-      });
+    selectAll.addEventListener('change',function(){{
+      table.querySelectorAll('tbody .row-select').forEach(function(cb){{
+        if(selectAll.checked){{CelerpSelection.add(cb.value,_meta(cb));cb.checked=true}}
+        else{{CelerpSelection.remove(cb.value);cb.checked=false}}
+      }});
       _resetBulkActions();
       updateBulkToolbar();
-    });
-  }
-  table.addEventListener('change',function(e){
-    if(e.target&&e.target.classList.contains('row-select')){
-      if(e.target.checked){CelerpSelection.add(e.target.value,_meta(e.target))}
-      else{CelerpSelection.remove(e.target.value)}
+    }});
+  }}
+  table.addEventListener('change',function(e){{
+    if(e.target&&e.target.classList.contains('row-select')){{
+      if(e.target.checked){{CelerpSelection.add(e.target.value,_meta(e.target))}}
+      else{{CelerpSelection.remove(e.target.value)}}
       _resetBulkActions();
       updateBulkToolbar();
-    }
-  });
-  document.body.addEventListener('celerpSelectionClear',function(){
+    }}
+  }});
+  document.body.addEventListener('celerpSelectionClear',function(){{
     CelerpSelection.clear();
-    document.querySelectorAll('.row-select').forEach(function(cb){cb.checked=false});
+    document.querySelectorAll('.row-select').forEach(function(cb){{cb.checked=false}});
     var selectAll=document.querySelector('#data-table thead .col-checkbox input');
     if(selectAll) selectAll.checked=false;
     updateBulkToolbar();
     _resetBulkActions();
-  });
-  document.body.addEventListener('htmx:afterSwap',function(e){
-    if(e.detail&&e.detail.target){
+  }});
+  document.body.addEventListener('htmx:afterSwap',function(e){{
+    if(e.detail&&e.detail.target){{
       var tid=e.detail.target.id;
-      if(tid==='inventory-content'||tid==='data-table'){
+      if(tid==='inventory-content'||tid==='data-table'){{
         CelerpSelection.syncCheckboxes();updateBulkToolbar();
-      }
-    }
-  });
+      }}
+    }}
+  }});
   // Guard: register body-level htmx handlers only once per page load
-  if(!window.__celerpHtmxHandlers){
+  if(!window.__celerpHtmxHandlers){{
     window.__celerpHtmxHandlers=true;
   // Preserve horizontal scroll position across an HTMX request that may replace
   // the table or its scroll container (cell edits, sort, search, pagination, etc.):
@@ -2372,66 +2370,87 @@ function sendToTypeChanged(docType, docLabel){
   // user scrolled. Saved on htmx:beforeRequest for that request and restored when
   // that same request settles, using requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
-  document.body.addEventListener('htmx:beforeRequest',function(e){
+  document.body.addEventListener('htmx:beforeRequest',function(e){{
     var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;
-    if(sw&&t&&(t.contains(sw)||sw.contains(t))){window.__celerpScrollSnap={xhr:e.detail.xhr,left:sw.scrollLeft};}
-  });
-  document.body.addEventListener('htmx:afterSettle',function(e){
+    if(sw&&t&&(t.contains(sw)||sw.contains(t))){{window.__celerpScrollSnap={{xhr:e.detail.xhr,left:sw.scrollLeft}};}}
+  }});
+  document.body.addEventListener('htmx:afterSettle',function(e){{
     var snap=window.__celerpScrollSnap;
-    if(snap&&snap.xhr===e.detail.xhr){
+    if(snap&&snap.xhr===e.detail.xhr){{
       window.__celerpScrollSnap=null;
-      requestAnimationFrame(function(){
+      requestAnimationFrame(function(){{
         var sw=document.querySelector('.table-scroll-wrap');
         if(sw)sw.scrollLeft=snap.left;
-      });
-    }
-  });
+      }});
+    }}
+  }});
   // Sync derived cells (weight/pieces) after a quantity PATCH.
   // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
   // then re-query the live DOM after the swap completes via htmx:afterSettle.
-  document.body.addEventListener('htmx:afterSettle',function(e){
+  document.body.addEventListener('htmx:afterSettle',function(e){{
     var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
              (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
-    if(!path){return;}
-    var m=path.match(/\\/api\\/items\\/([^/]+)\\/field\\/quantity/);
-    if(!m){return;}
+    if(!path){{return;}}
+    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
+    if(!m){{return;}}
     var eid=m[1];
     var safeId=eid.replace(/:/g,'-');
     var tr=document.getElementById('row-'+safeId);
-    if(!tr){return;}
+    if(!tr){{return;}}
     var qtyTd=tr.querySelector('[data-col="quantity"]');
-    if(!qtyTd){return;}
+    if(!qtyTd){{return;}}
     var primSpan=qtyTd.querySelector('.paired-primary');
     var secSpan=qtyTd.querySelector('.paired-secondary');
     // Use the raw numeric value from the paired-primary span for precise formatting
     var rawQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
     var newUnit=secSpan?secSpan.textContent.trim():'';
-    function fmtNum(val, decimals) {
+    function fmtNum(val, decimals) {{
       var n=parseFloat(val);
-      if(isNaN(n)){return val||'--';}
-      if(decimals===''||decimals===null||decimals===undefined){return String(n);}
+      if(isNaN(n)){{return val||'--';}}
+      if(decimals===''||decimals===null||decimals===undefined){{return String(n);}}
       return n.toFixed(parseInt(decimals,10));
-    }
-    tr.querySelectorAll('.cell-derived').forEach(function(span){
+    }}
+    tr.querySelectorAll('.cell-derived').forEach(function(span){{
       var derivedTd=span.closest('td');
-      if(!derivedTd){return;}
+      if(!derivedTd){{return;}}
       var col=derivedTd.dataset.col;
       var decimals=derivedTd.dataset.decimals;
       var fmt=fmtNum(rawQty, decimals);
-      if(col==='weight'){
+      if(col==='weight'){{
         span.textContent=(rawQty&&rawQty!=='--'&&newUnit&&newUnit!=='--')
-          ?fmt+'\u00a0'+newUnit:(fmt||'--');
-      } else if(col==='pieces'){
+          ?fmt+' '+newUnit:(fmt||'--');
+      }} else if(col==='pieces'){{
         span.textContent=fmt||'--';
-      }
+      }}
       span.classList.toggle('cell-empty',span.textContent==='--');
-    });
-  });
-  } // end if(!window.__celerpHtmxHandlers)
+    }});
+  }});
+  }} // end if(!window.__celerpHtmxHandlers)
   CelerpSelection.syncCheckboxes();
   updateBulkToolbar();
-})();
-"""
+}})();
+""",
+        t("table.confirm_merge"),
+        t("table.a_new_sku"),
+        t("table.new_doc_type"),
+        t("label.n_selected"),
+        selection_key,
+        t("table.confirm_archive_selected"),
+        t("table.confirm_restore_selected"),
+        t("table.confirm_make_available_selected"),
+        t("table.confirm_revert_to_draft_selected"),
+        t("table.confirm_delete_drafts_selected"),
+        t("table.confirm_delete_selected"),
+        t("table.confirm_duplicate_selected"),
+        t("inv.select_exactly_1_item_to_split"),
+        t("table.select_exactly_1_to_transform"),
+        t("inv.select_at_least_2_items_to_merge"),
+        t("table.stock_guard_prompt"),
+        t("table.keep_stock_on_books"),
+        t("table.write_off_remaining_stock"),
+        t("btn.cancel"),
+        t("btn.confirm"),
+    )
     # Phantom top-scrollbar: a zero-height scrollable div that mirrors .table-scroll-wrap.
     # Only injected when the table has more than 10 rows, otherwise not needed.
     _top_scroll_js = Script("""
@@ -2464,54 +2483,7 @@ function sendToTypeChanged(docType, docLabel){
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
     scripts = [Script(_js)]
     if show_checkboxes:
-        _bulk_js_localized = (
-            _bulk_js
-            .replace("'celerp_inv_selection'", f"'{selection_key}'")
-            .replace("'Archive selected items? They will be hidden from the default view.'",
-                     _json.dumps(t("table.confirm_archive_selected")))
-            .replace("'Restore selected items to the catalog? They will become available again.'",
-                     _json.dumps(t("table.confirm_restore_selected")))
-            .replace("'Make selected draft items available? They will count as real stock.'",
-                     _json.dumps(t("table.confirm_make_available_selected")))
-            .replace("'Revert selected items to draft? Only items with no circulation history can revert.'",
-                     _json.dumps(t("table.confirm_revert_to_draft_selected")))
-            .replace("'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. "
-                     "A draft another record still names moves to Deleted, where Restore brings it back.'",
-                     _json.dumps(t("table.confirm_delete_drafts_selected")))
-            .replace("'Delete selected items? This cannot be undone.'",
-                     _json.dumps(t("table.confirm_delete_selected")))
-            .replace("'Duplicate selected items? A copy of each will be created.'",
-                     _json.dumps(t("table.confirm_duplicate_selected")))
-            .replace("'Select exactly 1 item to split.'",
-                     _json.dumps(t("inv.select_exactly_1_item_to_split")))
-            .replace("'Select exactly 1 item to transform.'",
-                     _json.dumps(t("table.select_exactly_1_to_transform")))
-            .replace("'Select at least 2 items to merge.'",
-                     _json.dumps(t("inv.select_at_least_2_items_to_merge")))
-            .replace(
-                "'Some selected items still hold stock. Archiving retires the product but "
-                "leaves its stock on the books. What should happen to the remaining stock?'",
-                _json.dumps(t("table.stock_guard_prompt")),
-            )
-            .replace("'Keep stock on books'", _json.dumps(t("table.keep_stock_on_books")))
-            .replace("'Write off remaining stock'", _json.dumps(t("table.write_off_remaining_stock")))
-            .replace("'Cancel'", _json.dumps(t("btn.cancel")))
-            .replace("'Confirm'", _json.dumps(t("btn.confirm")))
-            .replace(
-                "msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';",
-                "msg.textContent=I18N_CONFIRM_MERGE.replace('{n}',n)"
-                ".replace('{target}',isNewSku?I18N_A_NEW_SKU:targetText);",
-            )
-            .replace(
-                "newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);",
-                "newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{type}',(docLabel||docType));",
-            )
-            .replace(
-                "if(countEl) countEl.textContent=n+' selected';",
-                "if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{n}',n);",
-            )
-        )
-        scripts.append(Script(_bulk_js_localized))
+        scripts.append(Script(_bulk_js))
     if top_scroll:
         scripts.append(_top_scroll_js)
     return Div(
@@ -2706,13 +2678,13 @@ def server_pager(offset: int, limit: int, total: int, href, *,
 
     def _nav_attrs(url: str) -> dict:
         if nav_js:
-            return {"onclick": f"event.preventDefault();{nav_js}(this.getAttribute('href'))"}
+            return {"onclick": js("event.preventDefault();window[{0}](this.getAttribute('href'))", nav_js)}
         if hx_target:
             return {"hx_get": url, "hx_target": hx_target, "hx_select": hx_target, "hx_swap": "outerHTML"}
         return {}
 
     def _link(label: str, p: int, *, current: bool = False) -> FT:
-        url = href((p - 1) * limit, limit)
+        url = safe_url(href((p - 1) * limit, limit))
         extra = {"aria-current": "page"} if current else {}
         return A(label, href=url, cls="page-btn" + (" page-btn--active" if current else ""),
                  **_nav_attrs(url), **extra)
@@ -2733,15 +2705,15 @@ def server_pager(offset: int, limit: int, total: int, href, *,
     else:
         label = t("table.page_range_none", total=f"{total:,}")
     if nav_js:
-        onchange = f"{nav_js}(this.value)"
+        onchange = js("window[{0}](this.value)", nav_js)
     elif hx_target:
-        onchange = f"htmx.ajax('GET',this.value,{{target:'{hx_target}',select:'{hx_target}',swap:'outerHTML'}})"
+        onchange = js("htmx.ajax('GET',this.value,{{target:{0},select:{0},swap:'outerHTML'}})", hx_target)
     else:
-        onchange = "window.location=this.value"
+        onchange = js("window.location=this.value")
     sizes = sorted(set(page_sizes) | {limit})
     size_select = Select(
         *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],
-        onchange=onchange, cls="filter-select per-page-select",
+        onchange=as_js(onchange), cls="filter-select per-page-select",
     )
     return Nav(*controls,
                Span(label, cls="page-count"),
@@ -2838,7 +2810,7 @@ def breadcrumbs(crumbs: list[tuple[str, str | None]]) -> FT:
         if i > 0:
             parts.append(Span("›", cls="breadcrumb-sep"))
         if href is not None:
-            parts.append(A(label, href=href, cls="breadcrumb-link"))
+            parts.append(A(label, href=safe_url(href), cls="breadcrumb-link"))
         else:
             parts.append(Span(label, cls="breadcrumb-current"))
     return Div(*parts, cls="breadcrumbs")
@@ -2862,11 +2834,10 @@ def bank_account_options(bank_accounts: list[dict] | None, default_code: str | N
 
 
 def add_new_option(label: str = "", redirect_url: str = "#") -> tuple:
-    """Return (Option element, onchange JS snippet) for 'add new' in dynamic selects."""
+    """Return (Option element, onchange script built with js()) for 'add new' in dynamic selects."""
     label = label or t("label._add_new")
     option = Option(label, value="__new__")
-    js = f"if(this.value==='__new__')window.location='{redirect_url}'"
-    return option, js
+    return option, js("if(this.value==='__new__')celerpGo({0})", redirect_url)
 
 
 def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: str = "") -> FT:

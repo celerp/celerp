@@ -37,7 +37,7 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
-from ui.components.encode import as_js, html_response, js
+from ui.components.encode import as_js, html_response, js, safe_url
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
 
@@ -370,7 +370,7 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
     # A packaged binary may fail to spawn the system browser; keep the Google
     # authorize URL visible as a manual fallback, but only when it is safe to
     # render as a link (a hostile broker payload never reaches an href).
-    safe_authorize = authorize_url if (authorize_url and is_safe_authorize_url(authorize_url)) else None
+    safe_authorize = safe_url(authorize_url) if (authorize_url and is_safe_authorize_url(authorize_url)) else None
     parts = [
         H4(t("account.title", lang), cls="account-panel__title"),
         P(t(text_key, lang), cls="text-muted"),

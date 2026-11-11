@@ -36,7 +36,7 @@ _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
-from ui.components.encode import js
+from ui.components.encode import as_js, js, safe_url
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -245,7 +245,7 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
             Div(
                 Label(t("label.bank_account"), cls="form-label"),
                 Select(*bank_options, _bank_opt, name="bank_account_id",
-                       cls="form-input cell-input--select", onchange=_bank_js),
+                       cls="form-input cell-input--select", onchange=as_js(_bank_js)),
                 cls="form-field",
             ),
             Div(
@@ -576,7 +576,7 @@ def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None
         return None
     state = rec["state"]
     reasons = [Li(refusal_text({"message": "", "message_key": r.get("body", ""), "params": r.get("params") or {}}),
-                  " ", A(t("older_stock.state.fix"), href=r["action_url"])
+                  " ", A(t("older_stock.state.fix"), href=safe_url(r["action_url"]))
                   if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
                for r in rec.get("reasons") or []]
     opened = [Li(_uncertain_text(o, currency) if o["kind"] == "uncertain" else
@@ -598,8 +598,8 @@ def _placement_failure(failed: dict | None) -> FT | None:
     report pre-filled with the kind of error only."""
     if not failed:
         return None
-    report = bug_report_url(area="Accounting",
-                            current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
+    report = safe_url(bug_report_url(area="Accounting",
+                                     current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'})."))
     return Div(
         H4(t("notice.older_stock_failed.title")),
         P(t("older_stock.failed")),

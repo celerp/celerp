@@ -16,6 +16,7 @@ from ui.components.table import display_enum, match_field_label, match_value
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from celerp.services.app_paths import is_app_local_path
+from ui.components.encode import safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ def setup_routes(app):
                     Small(f" ({sub})") if sub else "",
                     *_match_tags(record, ("name", "sku")),
                     _status_tag(status_fn(record, status)),
-                    href=href_fn(record),
+                    href=safe_url(href_fn(record)),
                     cls="search-result-item search-result-item--inactive" if inactive else "search-result-item",
                 )))
         # Generic third-party modules: any module the aggregator returned that the
@@ -210,7 +211,7 @@ def setup_routes(app):
             for _key, rows in (buckets or {}).items():
                 for record in (rows or [])[:5]:
                     label = record.get("label") or ""
-                    href = _safe_local_search_href(record.get("href"))
+                    href = safe_url(_safe_local_search_href(record.get("href")))
                     if not label or not href:
                         continue
                     subtitle = record.get("subtitle") or ""
