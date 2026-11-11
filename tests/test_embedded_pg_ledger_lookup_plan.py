@@ -118,6 +118,12 @@ def test_cost_scope_lookup_uses_the_partial_index_on_a_libc_locale(cluster):
                 SELECT :c, 'je:auto:doc:' || (g % 2000) || ':cost:' || g, 'journal_entry',
                        'acc.journal_entry.created', '{}', 'test', 'c' || g, '{}'
                 FROM generate_series(1, 20000) g"""), {"c": COMPANY})
+            # Most of a ledger is other events (items, documents), which the journal entry
+            # indexes leave out and a scan of the company still reads.
+            conn.execute(text("""
+                INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key, metadata)
+                SELECT :c, 'item:' || g, 'item', 'item.created', '{}', 'test', 'i' || g, '{}'
+                FROM generate_series(1, 300000) g"""), {"c": COMPANY})
             conn.execute(text("ANALYZE ledger"))
 
             prepare, values = _prepared(_lookup_statement("doc:7"))
