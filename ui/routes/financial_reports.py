@@ -931,7 +931,7 @@ def setup_routes(app):
                   for path, name, desc in OPERATIONAL_REPORTS
                   if path.split("?")[0] in registered]
         content = Div(
-            *[A(Strong(name), P(desc, cls="quick-link-desc"), href=path, cls="quick-link-card")
+            *[A(Strong(name), P(desc, cls="quick-link-desc"), href=safe_url(path), cls="quick-link-card")
               for path, name, desc in cards],
             cls="quick-links-grid",
         )
@@ -1108,7 +1108,7 @@ def setup_routes(app):
             filters = journal_filters(request)
             params = {**date_params(d_from, d_to), **filters}
             data = await api.get_extended_journal(token, params)
-            path = safe_url(_report_path("extended-journal"))
+            path = _report_path("extended-journal")
             # The period as the reader set it, so applying a filter does not turn
             # their preset into a fixed range that no longer moves with the year.
             carried = ({"preset": preset} if preset and preset != "custom"

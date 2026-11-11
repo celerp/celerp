@@ -1103,7 +1103,7 @@ def _kpi_card(spec: dict, values: dict) -> FT:
     label = _dl(spec["label"])
     value_key = spec["value_fn"]
     sub_key = spec.get("sub_fn")
-    href = safe_url(spec.get("href"))
+    href = spec.get("href")
     alert_key = spec.get("alert_fn")
 
     value_str = values.get(value_key, "-")
@@ -1117,7 +1117,7 @@ def _kpi_card(spec: dict, values: dict) -> FT:
         P(sub_str, cls="kpi-sub") if sub_str else "",
     )
     if href:
-        return A(inner, href=href, cls=card_cls)
+        return A(inner, href=safe_url(href), cls=card_cls)
     return Div(inner, cls=card_cls)
 
 

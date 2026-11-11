@@ -866,7 +866,7 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     # partner page cannot reach back through window.opener nor read the referrer.
     from celerp.gateway.state import safe_support_email, safe_support_url
     support_email = safe_support_email(identity.get("support_email"))
-    support_url = safe_url(safe_support_url(identity.get("support_url")))
+    support_url = safe_support_url(identity.get("support_url"))
     support_children: list = []
     if support_email:
         support_children.append(A(support_email, href=safe_url(f"mailto:{support_email}"),
@@ -874,7 +874,7 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     if support_url:
         support_children.append(A(
             t("cloud.partner_support", lang),
-            href=support_url, target="_blank", rel="noopener noreferrer",
+            href=safe_url(support_url), target="_blank", rel="noopener noreferrer",
             cls="btn btn--outline btn--sm", style="margin-top:4px;"))
     return Div(
         H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),

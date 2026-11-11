@@ -211,14 +211,14 @@ def setup_routes(app):
             for _key, rows in (buckets or {}).items():
                 for record in (rows or [])[:5]:
                     label = record.get("label") or ""
-                    href = safe_url(_safe_local_search_href(record.get("href")))
+                    href = _safe_local_search_href(record.get("href"))
                     if not label or not href:
                         continue
                     subtitle = record.get("subtitle") or ""
                     rendered.append((False, A(
                         f"🔎 {label}",
                         Small(f" ({subtitle})") if subtitle else "",
-                        href=href,
+                        href=safe_url(href),
                         cls="search-result-item",
                     )))
 

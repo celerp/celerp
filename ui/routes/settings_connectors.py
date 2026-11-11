@@ -1661,7 +1661,7 @@ def setup_routes(app):
         if "error" in result:
             return Span(result["error"], cls="flash flash--warning")
 
-        url = safe_url(result.get("authorize_url", ""))
+        url = result.get("authorize_url", "")
         if not url:
             return Span(t("connectors.authorize_error", lang, service=service_name(platform)), cls="flash flash--warning")
 
@@ -1677,7 +1677,7 @@ def setup_routes(app):
                    default="Opening authorization in a new tab, complete it there, then return here."),
                  cls="flash flash--info"),
             A(t("connectors.authorize_link", lang, default="If nothing opened, click here to authorize"),
-              href=url, target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
+              href=safe_url(url), target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
         )
 
     @app.post("/settings/connectors/{platform}/frequency")

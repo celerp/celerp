@@ -770,13 +770,13 @@ async def _open_now(request: Request, mode: WizardMode, upload_token: str, previ
 async def _restarting_page(request: Request, mode: WizardMode, message: str | None = None, status_code: int = 200):
     """Celerp is restarting to load modules. The page asks for the staged backup until
     Celerp answers with it, then shows it."""
-    staged = safe_url(f"{mode.base}/staged")
+    staged = f"{mode.base}/staged"
     return wizard_page(
         request,
         auth_header(t(_TITLE)),
         P(message or t("company_backup.restarting"), cls="form-hint"),
         P(t("company_backup.restart_slow"), cls="flash flash--warning", id="restart-timeout", style="display:none;"),
-        A(t("company_backup.check_again"), href=staged, cls="btn btn--secondary btn--full"),
+        A(t("company_backup.check_again"), href=safe_url(staged), cls="btn btn--secondary btn--full"),
         Script(js("""
         (function () {{
           var tries = 0, MAX = 40;

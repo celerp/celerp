@@ -1,5 +1,5 @@
 from fasthtml.common import A, Script
-from ui.components.encode import js
+from ui.components.encode import js, safe_url
 from ui.consts_mod import GOOD_JS, BAD_JS, Line
 def a(c, q): return Script(js("var a={0};", q) if c else js(""))
 def b(c, q): return Script(js("var a={0};", q) if c else f"var b={q};")
@@ -14,3 +14,9 @@ def g(q, form):
 def h(side):
     def amount(): return {side: 1}
     return Line(**amount())
+def k(x):
+    u = safe_url(x)
+    return A("x", href=u)
+def m(rows):
+    path = "/a"
+    return [A(name, href=path) for path, name in rows]

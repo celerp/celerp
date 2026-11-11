@@ -598,14 +598,14 @@ def _placement_failure(failed: dict | None) -> FT | None:
     report pre-filled with the kind of error only."""
     if not failed:
         return None
-    report = safe_url(bug_report_url(area="Accounting",
-                                     current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'})."))
+    report = bug_report_url(area="Accounting",
+                                     current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
     return Div(
         H4(t("notice.older_stock_failed.title")),
         P(t("older_stock.failed")),
         Div(Button(t("btn.retry"), type="button", cls="btn btn--sm btn--primary",
                    hx_post=f"{_OLDER_STOCK_URL}/retry", hx_target="#older-stock-card", hx_swap="outerHTML"),
-            A(t("nav.report_bug"), href=report, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
+            A(t("nav.report_bug"), href=safe_url(report), target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
             cls="form-actions"),
         cls="error-banner mb-md",
     )

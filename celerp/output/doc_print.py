@@ -66,7 +66,7 @@ _IMPORT_FROM_PAGE_JS = (
     "a.search='?link='+encodeURIComponent(location.origin+location.pathname);}})();"
 )
 
-_BRAND_URL = safe_url(_brand_url("doc-print"))
+_BRAND_URL = _brand_url("doc-print")
 
 CURRENCY_SYMBOLS = {
     "AED": "AED ", "ARS": "AR$", "AUD": "A$", "BDT": "৳", "BRL": "R$",
@@ -256,7 +256,7 @@ def _doc_footer(import_url: str | None, import_from_page: bool = False):
     so a printed or PDF'd copy never carries a URL that 404s. On the share
     page itself (``import_from_page``) the link is pointed at the page's own
     address once it loads."""
-    brand = A(_BRAND_LABEL, href=_BRAND_URL, target="_blank", rel="noopener")
+    brand = A(_BRAND_LABEL, href=safe_url(_BRAND_URL), target="_blank", rel="noopener")
     if not import_url:
         return Div(brand, cls="dp-footer")
     return Div(

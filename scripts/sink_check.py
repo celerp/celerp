@@ -52,7 +52,9 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
                than a numeric expression or css_color(...)
   PY-URLHOLE   a non-constant URL attribute value, before or after construction, that
                neither starts with a literal same-origin path ("/x", "?", "#") nor is
-               safe_url(...); a meta refresh with a non-constant content
+               safe_url(...); a meta refresh with a non-constant content; a safe_url(...)
+               result bound to a name (it reads "#" for an empty or refused value, which
+               is truthy, so call it at the attribute)
   JS-HTML      write to innerHTML/outerHTML/srcdoc; insertAdjacentHTML, createContextualFragment,
                setHTMLUnsafe, parseHTMLUnsafe, execCommand('insertHTML'), htmx.swap and
                jQuery-style .html(x) calls; write/writeln on document, contentDocument,
@@ -454,12 +456,11 @@ class PyScan(ast.NodeVisitor):
         counts: dict[str, int] = {}
         found: dict[str, ast.AST] = {}
         for sub in ast.walk(node):
-            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target] if isinstance(
-                sub, (ast.AugAssign, ast.AnnAssign, ast.For, ast.NamedExpr)) else []
-            for tg in targets:
-                if isinstance(tg, ast.Name):
-                    counts[tg.id] = counts.get(tg.id, 0) + 1
-                    if isinstance(sub, ast.Assign):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):  # every binding form
+                counts[sub.id] = counts.get(sub.id, 0) + 1
+            elif isinstance(sub, ast.Assign):
+                for tg in sub.targets:
+                    if isinstance(tg, ast.Name):
                         found[tg.id] = sub.value
         args = node.args.args + node.args.kwonlyargs + node.args.posonlyargs
         for a in args:
@@ -536,7 +537,21 @@ class PyScan(ast.NodeVisitor):
     def visit_Assign(self, node):
         for tg in node.targets:
             self._check_write(tg, node.value, node.lineno)
+        self._check_bound_url(node.value)
         self.generic_visit(node)
+
+    def visit_AnnAssign(self, node):
+        self._check_bound_url(node.value)
+        self.generic_visit(node)
+
+    def visit_NamedExpr(self, node):
+        self._check_bound_url(node.value)
+        self.generic_visit(node)
+
+    def _check_bound_url(self, value):
+        for v in [value.body, value.orelse] if isinstance(value, ast.IfExp) else [value]:
+            if isinstance(v, ast.Call) and self.leaf(v.func) == "safe_url":
+                hit("PY-URLHOLE", self.path, v.lineno, self.snip(v))
 
     def visit_AugAssign(self, node):
         self._check_write(node.target, node.value, node.lineno)

@@ -370,7 +370,7 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
     # A packaged binary may fail to spawn the system browser; keep the Google
     # authorize URL visible as a manual fallback, but only when it is safe to
     # render as a link (a hostile broker payload never reaches an href).
-    safe_authorize = safe_url(authorize_url) if (authorize_url and is_safe_authorize_url(authorize_url)) else None
+    safe_authorize = authorize_url if (authorize_url and is_safe_authorize_url(authorize_url)) else None
     parts = [
         H4(t("account.title", lang), cls="account-panel__title"),
         P(t(text_key, lang), cls="text-muted"),
@@ -386,7 +386,7 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
     if safe_authorize:
         parts.append(P(t("account.google_open_hint", lang), cls="text-muted"))
         parts.append(A(t("account.google_open_link", lang),
-                       href=safe_authorize, target="_blank", rel="noopener",
+                       href=safe_url(safe_authorize), target="_blank", rel="noopener",
                        cls="btn btn--sm btn--outline"))
     if n < POLL_MAX:
         link_q = f"&google_url={quote(safe_authorize, safe='')}" if safe_authorize else ""

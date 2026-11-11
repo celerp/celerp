@@ -283,9 +283,9 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
     for key, label in _date_presets(lang):
         if key == "custom":
             continue
-        href = safe_url(f"{base_url}?preset={key}{extra_params}")
+        href = f"{base_url}?preset={key}{extra_params}"
         preset_links.append(
-            A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
+            A(label, href=safe_url(href), cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
     # Carry the non-date params (tab, group_by, contact_id, ...) through the custom-range

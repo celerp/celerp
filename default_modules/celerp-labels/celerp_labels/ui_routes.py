@@ -1681,7 +1681,7 @@ def setup_ui_routes(app) -> None:
     def _source_args(params) -> tuple[str, list[str], str]:
         from celerp.services.app_paths import is_app_local_path
 
-        back = safe_url(str(params.get("back") or ""))
+        back = str(params.get("back") or "")
         return (str(params.get("source") or ""), [i for i in str(params.get("ids") or "").split(",") if i.strip()],
                 back if is_app_local_path(back) else "/")
 
@@ -1693,7 +1693,7 @@ def setup_ui_routes(app) -> None:
     async def _source_page(request: Request, back: str, *content):
         from fasthtml.common import A
 
-        return await base_shell(*content, A(t("label.back"), href=back, cls="btn btn--secondary"),
+        return await base_shell(*content, A(t("label.back"), href=safe_url(back), cls="btn btn--secondary"),
                                 title="Labels - Celerp", nav_active="labels", request=request)
 
     async def _source_error(request: Request, back: str, e):

@@ -2138,9 +2138,9 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
                     id="xero-attachments-form", hx_post=base, method="post", action=base, **swap)
 
     if status == "signing_in":
-        url = safe_url(fetch.get("authorize_url") or "")
+        url = fetch.get("authorize_url") or ""
         body = [P(t("migration.xero_attachments_sign_in_hint")),
-                Div(A(t("migration.xero_attachments_sign_in"), href=url, target="_blank", rel="noopener",
+                Div(A(t("migration.xero_attachments_sign_in"), href=safe_url(url), target="_blank", rel="noopener",
                       cls="btn btn--primary btn--sm") if url else "",
                     Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
                            **{"data-copy": "", "data-copy-text": url}) if url else "",

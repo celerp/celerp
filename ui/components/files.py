@@ -335,7 +335,7 @@ def files_section(
         linked_ref = f.get("linked_ref") or ""
         linked_url = f.get("linked_url") or ""
         # Files from a foreign entity carry their own URL overrides.
-        file_download_url = safe_url(f.get("_download_url") or f"{base_url}/{fid}/download")
+        file_download_url = f.get("_download_url") or f"{base_url}/{fid}/download"
         # Action base: tag/describe/hero/delete target (defaults to this entity's base_url)
         file_action_base = f.get("_action_base_url") or base_url
         no_delete = bool(f.get("_no_delete"))
@@ -432,9 +432,9 @@ def files_section(
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
             Td(
-                Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                Img(src=safe_url(file_download_url), style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
                 if (show_preview and f.get("mime", "").startswith("image/")) else "",
-                A(fname, href=file_download_url, target="_blank", rel="noopener",
+                A(fname, href=safe_url(file_download_url), target="_blank", rel="noopener",
                   cls="file-link file-link--clip", title=fname),
                 cls="files-name-cell",
             ),

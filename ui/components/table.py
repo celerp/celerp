@@ -2683,9 +2683,9 @@ def server_pager(offset: int, limit: int, total: int, href, *,
         return {}
 
     def _link(label: str, p: int, *, current: bool = False) -> FT:
-        url = safe_url(href((p - 1) * limit, limit))
+        url = href((p - 1) * limit, limit)
         extra = {"aria-current": "page"} if current else {}
-        return A(label, href=url, cls="page-btn" + (" page-btn--active" if current else ""),
+        return A(label, href=safe_url(url), cls="page-btn" + (" page-btn--active" if current else ""),
                  **_nav_attrs(url), **extra)
 
     def _edge(label: str, p: int, enabled: bool) -> FT:

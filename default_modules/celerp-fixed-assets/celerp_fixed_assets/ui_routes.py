@@ -1781,11 +1781,11 @@ def _recon_cause(d: dict) -> str:
 def _recon_next(a: dict, d: dict) -> FT | str:
     """The page that clears the difference, and the date the fix takes when its own is locked."""
     route = _RECON_ACTIONS.get(d.get("action") or "")
-    href = safe_url(route(a, d)) if route else None
+    href = route(a, d) if route else None
     if not href:
         return EMPTY
     when = [P(t("fixed_assets.recon_fix_from", day=d["fix_from"]), cls="form-hint")] if d.get("fix_from") else []
-    return Div(A(t(f"fixed_assets.recon_action.{d['action']}"), href=href), *when)
+    return Div(A(t(f"fixed_assets.recon_action.{d['action']}"), href=safe_url(href)), *when)
 
 
 def _difference_detail(a: dict, d: dict) -> FT:

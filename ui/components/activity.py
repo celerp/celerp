@@ -1038,8 +1038,8 @@ def _doc_link(doc_id, doc_number=None) -> FT:
     Falls back to the entity_id suffix as the label when no explicit doc_number was stored."""
     did = str(doc_id or "")
     label = str(doc_number or "") or (did[4:] if did.startswith("doc:") else did)
-    url = safe_url(entity_url(did))  # "doc:..." -> /docs/{id}
-    return A(label, href=url, cls="table-link") if (url and label) else Span(label or did)
+    url = entity_url(did)  # "doc:..." -> /docs/{id}
+    return A(label, href=safe_url(url), cls="table-link") if (url and label) else Span(label or did)
 
 
 # Verbs for doc-tied item events, keyed by doc_type (memo = consignment).
