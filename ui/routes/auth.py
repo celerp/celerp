@@ -115,11 +115,9 @@ def setup_routes(app):
             notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":
             ip_note = t("auth.evicted_from_ip", ip=by_ip) if by_ip else ""
-            notice = flash(
-                t("auth.evicted_message", ip_note=ip_note),
-                kind="warning",
-                raw=True,
-            )
+            pre, _, post = t("auth.evicted_message", ip_note=ip_note, relay_link="{relay_link}").partition("{relay_link}")
+            relay = A(t("auth.evicted_relay_link"), href="https://celerp.com/pricing", target="_blank", rel="noopener noreferrer")
+            notice = flash((pre, relay, post), kind="warning")
         elif reason == "expired":
             notice = flash(t("auth.session_expired_signin"), kind="warning")
         elif reason == "idle":
@@ -947,7 +945,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
     # under partner_managed or an unknown mode) and, on a direct install, always
     # returns the anonymous celerp.com/subscribe URL with no instance_id, since
     # this pre-auth path can never mint the handoff token a named checkout needs.
-    handoff_url = safe_url(build_public_acquisition_url("cloud"))
+    handoff_url = build_public_acquisition_url("cloud")
     # Keep the label in lockstep with that destination: the direct price/trial
     # label only when the URL is the direct subscribe page, a partner-support
     # label when it resolves to a partner support URL or mailto, and a
@@ -978,7 +976,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
             ),
             Div(
                 A(cta_label,
-                  href=handoff_url, target="_blank",
+                  href=safe_url(handoff_url), target="_blank",
                   cls="btn btn--primary"),
                 Form(
                     Input(type="hidden", name="email", value=email),

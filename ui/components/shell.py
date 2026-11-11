@@ -3051,13 +3051,13 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         key = item.get("key", "")
         label_key = item.get("label_key")
         label = t(label_key, lang) if label_key else item.get("label", "")
-        href = safe_url(item.get("href", "#"))
+        href = item.get("href", "#")
         is_active = key == active or (not key and href.strip("/") == active)
         if item.get("probe_href"):
             # Shown only when its probe answers with the link (slots.py, nav probe_href).
             return Div(hx_get=f"{item['probe_href']}?active={int(is_active)}", hx_trigger="load",
                        hx_swap="outerHTML")
-        return A(label, href=href, cls=f"nav-link {'nav-link--active' if is_active else ''}")
+        return A(label, href=safe_url(href), cls=f"nav-link {'nav-link--active' if is_active else ''}")
 
     sections: list[FT] = [_link(item) for item in top_level]
 
@@ -3070,10 +3070,10 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         if group_label == label_key:
             group_label = group
         # Check if any item in the group declares a settings_href
-        settings_href = safe_url(next((i["settings_href"] for i in items if i.get("settings_href")), None))
+        settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:
             header = Div(
-                A(_menu_icon("settings"), group_label, href=settings_href, cls="sidebar-group-settings-link"),
+                A(_menu_icon("settings"), group_label, href=safe_url(settings_href), cls="sidebar-group-settings-link"),
                 Span("›", cls="sidebar-group-arrow"),
                 cls="sidebar-group-header",
             )
@@ -3195,7 +3195,7 @@ def _menu_icon(name: str) -> FT:
     return Span(icon(name), cls="menu-icon")
 
 
-def flash(msg: str, kind: str = "error") -> FT:
+def flash(msg: str | tuple, kind: str = "error") -> FT:
     return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
