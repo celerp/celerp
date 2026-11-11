@@ -28752,5 +28752,10 @@
     "tests/test_browser/test_clean_save_keeps_lines.py::test_a_clean_save_leaves_stored_lines_unchanged[chromium-transfer]": 1.139,
     "tests/test_browser/test_clean_save_keeps_lines.py::test_the_clean_save_check_sees_a_changed_line": 0.391,
     "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it[drop_indexes2-invalid_indexes2-u4v5w6x7y8z9]": 0.413,
-    "tests/test_auto_stamp.py::test_every_schema_change_in_a_revision_is_read_by_the_walker[u4v5w6x7y8z9_json_text_unescape_all_encodings]": 0.004
+    "tests/test_auto_stamp.py::test_every_schema_change_in_a_revision_is_read_by_the_walker[u4v5w6x7y8z9_json_text_unescape_all_encodings]": 0.004,
+    "tests/test_migrations/test_backfills_run_once.py::test_every_data_backfill_runs_once_per_database[release_at_u4v5w6x7y8z9_tracked]": 1.644937235978432,
+    "tests/test_migrations/test_backfills_run_once.py::test_every_data_backfill_runs_once_per_database[release_at_u4v5w6x7y8z9_untracked]": 1.3786653719726019,
+    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_data_helpers_write_a_lone_surrogate_row_back_escaped[SQL_ASCII]": 0.2611050060368143,
+    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_data_helpers_write_a_lone_surrogate_row_back_escaped[UTF8]": 0.44154803798301145,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/u4v5w6x7y8z9_json_text_unescape_all_encodings.py]": 0.0034097309107892215
 }
