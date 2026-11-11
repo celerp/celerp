@@ -1090,7 +1090,7 @@ def _printable_label_sheet(
     from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
                                        display_label, resolve_field_value)
 
-    def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float):
+    def _barcode_tag(val: str, module_height: int, left_mm: float, top_mm: float, avail_mm: float):
         res = _make_barcode_svg(val, module_height=module_height, stretch=True)
         if res:
             svg, natural_mm, _ = res
@@ -1100,13 +1100,13 @@ def _printable_label_sheet(
             bc_w = min(avail_mm, max(20.0, natural_mm))
             h_px = max(4, int(module_height) * 4)
             return Div(svg, cls="label-field label-field--barcode", data_value=str(val),
-                       style=f"{wrap_style}width:{bc_w:.2f}mm;height:{h_px}px;")
-        return Div(str(val), cls="label-field label-field--barcode", style=wrap_style)
+                       style=f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;width:{bc_w:.2f}mm;height:{h_px}px;")
+        return Div(str(val), cls="label-field label-field--barcode", style=f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;")
 
-    def _qr_tag(val: str, wrap_style: str = ""):
+    def _qr_tag(val: str, left_mm: float, top_mm: float):
         svg = _make_qr_svg(val, stretch=True)
         # QR is a fixed 10mm square in the editor preview; match it here.
-        qr_style = f"{wrap_style}width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
+        qr_style = f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
         if svg:
             return Div(svg, cls="label-field label-field--qr", data_value=str(val), style=qr_style)
         return Div(str(val), cls="label-field label-field--qr", style=qr_style)
@@ -1151,10 +1151,10 @@ def _printable_label_sheet(
             else:
                 left_mm, top_mm = 2.0, auto_y
                 auto_y += _auto_step(ftype, f.get("fontSize"))
-            pos = f"left:{left_mm}mm;top:{top_mm}mm;"
+            pos = f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;"
             if ftype == "barcode":
                 bc_height = int(f.get("barcode_height") or BARCODE_HEIGHT_DEFAULT)
-                field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
+                field_lines.append(_barcode_tag(val, bc_height, left_mm, top_mm, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")
                 # The human-readable number is a caption, not body copy: it exists so a
@@ -1166,7 +1166,7 @@ def _printable_label_sheet(
                 field_lines.append(Div(Span(str(val), cls="bc-human", style=f"font-size:{fs_pt}pt;"),
                                        cls="label-field label-field--barcode-text", style=pos))
             elif ftype == "qr":
-                field_lines.append(_qr_tag(val, wrap_style=pos))
+                field_lines.append(_qr_tag(val, left_mm, top_mm))
             else:
                 # Honor the designer's per-field font size (points) when set; otherwise the
                 # label-item default applies, so existing labels look exactly as before.
@@ -1177,8 +1177,8 @@ def _printable_label_sheet(
                 # still printed regular. Emit it here too.
                 bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(Div(str(display), cls="label-field", style=f"{pos}{fs_style}{bold_style}"))
-        label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {w_mm}mm; height: {h_mm}mm;"))
+                field_lines.append(Div(str(display), cls="label-field", style=pos + fs_style + bold_style))
+        label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {float(w_mm)}mm; height: {float(h_mm)}mm;"))
 
     page = Html(
         Head(

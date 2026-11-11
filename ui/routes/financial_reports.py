@@ -575,7 +575,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
             synthetic = l.get("synthetic", False)
             is_parent = l.get("is_parent", False)
             # Accounts nest as deep as the chart does; each level indents one step.
-            indent = f"padding-left:{1.5 * l['depth']}rem" if l.get("depth") else None
+            indent = f"padding-left:{1.5 * float(l['depth'])}rem" if l.get("depth") else None
 
             if synthetic and l.get("href_pnl"):
                 label = t("financial.unclosed_net_income")

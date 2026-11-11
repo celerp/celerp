@@ -18,6 +18,7 @@ import pytest
 from ui.components.encode import (
     Admitted,
     as_js,
+    css_color,
     hole_positions,
     inert_media_type,
     js,
@@ -78,6 +79,13 @@ def test_encoders_encode_hostile_values():
 def test_safe_url_never_raises():
     for value in ("http://[x", "[", None, "x" * 1000 + "\x00\x1f" * 500, 42, b"http://example.com"):
         assert safe_url(value) == "#"
+
+
+def test_css_color_keeps_only_a_hex_colour():
+    for value in ("#6366f1", "#FFF", "#11223344"):
+        assert css_color(value) == value
+    for value in ("red;background:url(//x)", "#6366f1;color:red", "#12", "", None, 42, "#gggggg"):
+        assert css_color(value) is None, value
 
 
 def test_raw_html_escapes_holes_once():

@@ -429,7 +429,7 @@ class TestColumnManagerUi:
         ]
         rows = [{"id": "item:1", "name": "Ruby"}]
         html = to_xml(data_table(schema, rows, entity_type="inventory"))
-        assert "celerp_col_widths_inventory" in html, (
+        assert "'celerp_col_widths_' + \"inventory\"" in html, (
             "WIDTH_KEY for inventory not found in data_table JS output"
         )
 

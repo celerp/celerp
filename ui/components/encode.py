@@ -172,6 +172,16 @@ def safe_url(v) -> str:
     return v
 
 
+# ---------------------------------------------------------------- styles
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}")
+
+
+def css_color(v) -> str | None:
+    """*v* when it is a hex colour (what a colour input submits), otherwise None, so a stored
+    value can never add its own declarations to a style attribute."""
+    return v if isinstance(v, str) and _HEX_COLOR.fullmatch(v) else None
+
+
 # ---------------------------------------------------------------- markup
 class Admitted(str):
     """Markup built by this module: every hole in it was encoded for its position.

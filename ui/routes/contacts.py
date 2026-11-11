@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
-from ui.components.encode import html_response, inert_media_type, js, safe_url
+from ui.components.encode import css_color, html_response, inert_media_type, js, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,8 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None, *
     tag_pills = []
     for tag in tags:
         v = vocab_map.get(tag)
-        pill_style = f"background:{v['color']};color:#fff" if v and v.get("color") else ""
+        tag_color = css_color(v.get("color")) if v else None
+        pill_style = f"background:{tag_color};color:#fff" if tag_color else ""
         tag_pills.append(
             Span(
                 tag,

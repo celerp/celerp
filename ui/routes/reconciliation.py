@@ -323,10 +323,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
 # ── Progress bar ──────────────────────────────────────────────────────────────
 
 def _recon_progress(total: int, matched: int, created: int, skipped: int) -> FT:
-    if total == 0:
-        pct = 0
-    else:
-        pct = int((matched + created + skipped) / total * 100)
+    pct = int((matched + created + skipped) / total * 100) if total else 0
     return Div(
         Div(
             Span(t("recon.progress_resolved", done=matched + created, total=total),

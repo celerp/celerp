@@ -11,6 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.encode import css_color
 from ui.components.shell import base_shell, page_header, page_title
 from ui.config import COOKIE_NAME
 
@@ -42,8 +43,9 @@ def _tags_tab(tags: list[dict]) -> FT:
     for tag in tags:
         name = tag.get("name", "")
         color = tag.get("color") or ""
+        swatch = css_color(color)
         category = tag.get("category") or ""
-        color_swatch = Span("", cls="tag-swatch", style=f"background:{color}" if color else "background:#ccc")
+        color_swatch = Span("", cls="tag-swatch", style=f"background:{swatch}" if swatch else "background:#ccc")
         rows.append(Tr(
             Td(name),
             Td(color_swatch, Span(color or "--", cls="text--muted" if not color else "")),

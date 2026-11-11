@@ -45,7 +45,7 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
                hx_vals/hx_headers starting "js:", a hole inside an hx_trigger filter) that
                is not js_value(...), js(constant_template, ...) or as_js(...)
   PY-CSSHOLE   a non-constant value in Style(...), ft("style") or a style attribute, other
-               than a numeric expression
+               than a numeric expression or css_color(...)
   PY-URLHOLE   a non-constant URL attribute value, before or after construction, that
                neither starts with a literal same-origin path ("/x", "?", "#") nor is
                safe_url(...); a meta refresh with a non-constant content
@@ -100,6 +100,7 @@ RAW_FRAMEWORK_ONLY = {"raw"}  # an ordinary word: refused only when imported fro
 RAW_STRINGS = {"NotStr", "Safe", "Markup", "__html__"}
 ENCODERS_JS = {"js_value", "js", "as_js"}
 ENCODERS_URL = {"safe_url"}
+ENCODERS_CSS = {"css_color"}
 LOWER_BUILDERS = {"ft", "ft_hx", "ft_html", "ft_datastar"}
 RESPONSES = {"Response", "StreamingResponse", "FileResponse"}
 URL_ATTR_TAG = {"data": "object", "poster": "video"}  # these names are URLs only on one element
@@ -728,24 +729,30 @@ class PyScan(ast.NodeVisitor):
 
     def _check_css(self, value):
         value = self._resolve(value)
-        if value is None or self._is_const(value) or self._numeric(value):
+        if value is None or self._css_safe(value):
+            return
+        if isinstance(value, ast.IfExp):
+            self._check_css(value.body)
+            self._check_css(value.orelse)
             return
         if isinstance(value, ast.JoinedStr):
             for v in value.values:
-                if isinstance(v, ast.FormattedValue) and not (self._is_const(v.value) or self._numeric(v.value)):
+                if isinstance(v, ast.FormattedValue) and not self._css_safe(v.value):
                     hit("PY-CSSHOLE", self.path, value.lineno, self.snip(v.value))
             return
         hit("PY-CSSHOLE", self.path, getattr(value, "lineno", 0), self.snip(value))
 
-    def _numeric(self, node):
+    def _css_safe(self, node):
+        """A constant, a number, or css_color(...) (a hex colour or None): none can add a declaration."""
         node = self._resolve(node)
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        if self._is_const(node):
             return True
-        if isinstance(node, ast.BinOp):
-            return self._numeric(node.left) and self._numeric(node.right)
+        if isinstance(node, (ast.BinOp, ast.IfExp)):
+            parts = (node.left, node.right) if isinstance(node, ast.BinOp) else (node.body, node.orelse)
+            return all(self._css_safe(p) for p in parts)
         if isinstance(node, ast.UnaryOp):
-            return self._numeric(node.operand)
-        return _call_name(node) in NUMERIC_CALLS
+            return self._css_safe(node.operand)
+        return _call_name(node) in NUMERIC_CALLS | ENCODERS_CSS
 
     def _check_response(self, node, name):
         kws = {k.arg: k.value for k in node.keywords if k.arg}

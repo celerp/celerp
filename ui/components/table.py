@@ -69,21 +69,21 @@ def doc_href(doc_id) -> str:
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
-_DEFAULT_COL_WIDTHS: dict[str, str] = {
-    "sku": "110px",
-    "name": "200px",
-    "barcode": "130px",
-    "category": "130px",
-    "quantity": "110px",
-    "status": "90px",
-    "weight": "100px",
-    "weight_unit": "80px",
-    "sell_by": "90px",
-    "location_name": "140px",
-    "pieces": "80px",
-    "created_at": "120px",
-    "updated_at": "120px",
-    "_attr_default": "120px",
+_DEFAULT_COL_WIDTHS: dict[str, int] = {  # px
+    "sku": 110,
+    "name": 200,
+    "barcode": 130,
+    "category": 130,
+    "quantity": 110,
+    "status": 90,
+    "weight": 100,
+    "weight_unit": 80,
+    "sell_by": 90,
+    "location_name": 140,
+    "pieces": 80,
+    "created_at": 120,
+    "updated_at": 120,
+    "_attr_default": 120,
 }
 
 
@@ -1629,7 +1629,7 @@ def data_table(
     def _th(f: dict) -> FT:
         key = f["key"]
         default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
-        th_style = f"width:{default_width}"
+        th_style = f"width:{int(default_width)}px"
         spec = (column_filters or {}).get(key)
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
                                     field_label(f)) if spec else ""

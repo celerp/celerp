@@ -4197,12 +4197,12 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             style="display:flex;align-items:center;margin-top:12px;",
         )
 
-    def _link_subscription_button(*, style: str | None = None) -> FT:
+    def _link_subscription_button() -> FT:
         return Button(
             t("btn.link_subscription"), type="button",
             hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
             hx_target="#account-gate-host", hx_swap="outerHTML",
-            cls="btn btn--sm btn--outline", style=style,
+            cls="btn btn--sm btn--outline", style="margin-top:8px;",
         )
 
     if relay_status == "inactive" and token_bound and not entitlement_known:
@@ -4246,7 +4246,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         if relay_status == "error":
             recovery.append(_reconnect_controls())
             if not entitlement_known or entitled is False:
-                recovery.append(_link_subscription_button(style="margin-top:8px;"))
+                recovery.append(_link_subscription_button())
             if token_bound:
                 recovery.append(disconnect_button)
         return Div(
@@ -4301,7 +4301,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                 Li(t("cloud.free_b4")),
                 style="margin:6px 0 0;padding-left:20px;",
             ),
-            _link_subscription_button(style="margin-top:8px;"),
+            _link_subscription_button(),
             style="margin-top:12px;",
         ) if entitlement_known and tier == "free" else ""
 
@@ -4312,7 +4312,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             _reconnect_controls()
             if relay_status == "inactive" and entitlement_known and tier != "free"
             else "",
-            _link_subscription_button(style="margin-top:8px;")
+            _link_subscription_button()
             if entitlement_known and entitled is False and tier != "free"
             else "",
             disconnect_button,

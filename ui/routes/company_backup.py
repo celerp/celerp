@@ -599,7 +599,7 @@ async def _opening_page(request: Request, mode: WizardMode):
         request,
         auth_header(t(_TITLE), t("company_backup.opening_subtitle")),
         P(_stage_text(job), id="opening-stage", aria_live="polite"),
-        Div(Div(style=f"width:{job.percent or 0}%", cls="import-progress-fill", id="opening-bar"),
+        Div(Div(style=f"width:{int(job.percent or 0)}%", cls="import-progress-fill", id="opening-bar"),
             cls="import-progress"),
         P(t("company_backup.opening_nothing_imported"), cls="form-hint"),
         Noscript(A(t("company_backup.check_again"), href=safe_url(f"{mode.base}/opening"), cls="btn btn--secondary btn--full")),
