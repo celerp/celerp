@@ -33,7 +33,8 @@ from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
-    NUMBER_FIELDS, NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_key, strip_number,
+    NUMBER_FIELDS, NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, shown_state, strip_key,
+    strip_number,
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
@@ -1253,7 +1254,7 @@ def _doc_row(r: Projection, contact_name: str | None, issue_date: str | None) ->
     """The list row for a document: its displayed state (``_doc_display``) with ``id``,
     ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``). A document with
     no issue_date shows ``issue_date``, the ``_doc_issue_date`` it is windowed and sorted by."""
-    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    row = shown_state(r.state) | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
                      "contact_name": contact_name}
     if not row.get("issue_date") and issue_date:
         row["issue_date"] = issue_date
@@ -1909,7 +1910,7 @@ async def _memo_fixed_taken(session: AsyncSession, company_id, entity_id: str, s
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    doc = row.state | {"id": row.entity_id, "version": row.version}
+    doc = shown_state(row.state) | {"id": row.entity_id, "version": row.version}
     # Payments Stripe reported are refunded or reversed in Stripe, never here.
     if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
         doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
@@ -3973,7 +3974,7 @@ async def renumber_doc(
     old_ref = state.get("ref_id") or ""
     if new_ref == old_ref:
         # No-op: return current state without emitting an event
-        return row.state | {"id": entity_id}
+        return shown_state(row.state) | {"id": entity_id}
 
     entry = await emit_event(
         session,
@@ -3994,7 +3995,7 @@ async def renumber_doc(
     await session.commit()
 
     updated = await _get_doc(session, company_id, entity_id)
-    return updated.state | {"id": entity_id}
+    return shown_state(updated.state) | {"id": entity_id}
 
 
 @router.post("/{entity_id}/unvoid")
@@ -9146,7 +9147,7 @@ async def get_list(
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
     state = await _fill_list_issue_date(session, company_id, entity_id, row.state)
-    return state | {"id": row.entity_id, "version": row.version,
+    return shown_state(state) | {"id": row.entity_id, "version": row.version,
                     "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
@@ -9208,7 +9209,7 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    header = await _fill_list_issue_date(session, company_id, entity_id, dict(head.header or {}))
+    header = await _fill_list_issue_date(session, company_id, entity_id, shown_state(head.header or {}))
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)

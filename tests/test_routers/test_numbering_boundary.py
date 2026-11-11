@@ -801,14 +801,22 @@ async def test_padded_key_is_absent_from_every_json_body(client, session, monkey
 
     # The relay-backed settings and footer reads take their unreachable path on this machine.
     monkeypatch.setattr(settings, "gateway_http_url", "http://127.0.0.1:9")
+    # Search answers through every bundled module's provider, as a booted app registers them.
+    from celerp.modules import slots
+    from celerp.modules.loader import read_manifest
+    manifests = {pkg.name: read_manifest(pkg) for pkg in sorted((_REPO / "default_modules").iterdir()) if pkg.is_dir()}
+    providers = [provider | {"_module": name, "_first_party": True} for name, m in manifests.items()
+                 if (provider := (m.get("slots") or {}).get("search_provider"))]
+    monkeypatch.setitem(slots._slots, "search_provider", providers)
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
     n = f"PADK-{uuid.uuid4().hex[:4].upper()}"
     keys = {}
     for kind in ("doc", "list"):
-        keys[kind] = f"{kind}:\xa0{n}{kind[0].upper()}\xa0"
+        number = f"{n}{kind[0].upper()}"
+        keys[kind] = f"{kind}:\xa0{number}\xa0"
         await emit_event(session, company_id=auth["company_id"], entity_id=keys[kind], entity_type=kind,
-                         event_type=f"{kind}.created", data=_imported(kind, keys[kind], None)["data"],
+                         event_type=f"{kind}.created", data=_imported(kind, keys[kind], number)["data"],
                          actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
     await session.commit()
     for kind, key in keys.items():
@@ -838,6 +846,9 @@ async def test_padded_key_is_absent_from_every_json_body(client, session, monkey
     for door in ("/docs {}", "/docs/{entity_id} {}", "/lists/{entity_id} {}", "/search {'q': '%s', 'number': '%s'}" % (n, n)):
         assert shown.get(door) == 200, (door, shown.get(door))
     assert shown["POST renumber new number"] == shown["POST renumber same number"] == 200
+    # Search reached both records through the docs provider, so its rows were walked too.
+    found = json.dumps((await client.get("/search", headers=h, params={"q": n})).json())
+    assert all(json.dumps(key)[1:-1] in found for key in keys.values()), found[:300]
     assert not leaks, leaks
 
 

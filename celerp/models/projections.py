@@ -38,8 +38,13 @@ NUMBER_FIELDS = ("ref_id", "doc_number")
 
 # The state field that holds the number a Document or List storage key holds, stripped, when
 # the key carries spaces around it (an earlier version stored a record under its number as
-# sent). Only strip_numbers writes it; no user surface shows it.
+# sent). Only strip_numbers writes it; no user surface shows it (JSON bodies drop it via shown_state).
 KEY_FIELD = "key_number"
+
+
+def shown_state(state: dict) -> dict:
+    """``state`` as a JSON body shows it: without KEY_FIELD, which numbering alone reads."""
+    return {f: v for f, v in state.items() if f != KEY_FIELD}
 
 
 def _key_text(key: str) -> str:

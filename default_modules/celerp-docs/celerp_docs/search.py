@@ -13,7 +13,7 @@ import sqlalchemy as _sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.models.projections import Projection
+from celerp.models.projections import Projection, shown_state
 from celerp_contacts.references import party_name_sql
 
 _SEARCH_FIELDS = ("doc_number", "ref_id", "contact_name", "contact_id", "ref")
@@ -72,5 +72,5 @@ async def global_search(
         .limit(limit)
     )
     rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id, "kind": r.entity_type} for r in rows]
+    out = [shown_state(r.state) | {"id": r.entity_id, "kind": r.entity_type} for r in rows]
     return {"items": out}
