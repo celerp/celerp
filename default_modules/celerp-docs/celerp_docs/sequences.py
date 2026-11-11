@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable
 from datetime import date
+from typing import NamedTuple
 
 from fastapi import HTTPException
 import sqlalchemy as sa
@@ -223,10 +224,17 @@ def draft_counter(doc_type: str) -> str:
 _NUMBERS = (NUMBER_SHOWN, NUMBER_KEPT, NUMBER_KEYED)
 
 
+class Holder(NamedTuple):
+    """The record holding a number: its kind ("doc" or "list"), the number it shows and its id."""
+    kind: str
+    shown: str
+    entity_id: str
+
+
 async def number_holder(session: AsyncSession, company_id, number: str, *,
                         exclude_entity_id: str | None = None,
-                        doc_type: str | None = None) -> tuple[str, str] | None:
-    """(kind, number shown) for the Document or List ("doc" or "list") other than
+                        doc_type: str | None = None) -> Holder | None:
+    """The Holder (kind, number shown, id) for the Document or List other than
     ``exclude_entity_id`` that shows, keeps or is stored under ``number``, both sides compared in
     their canonical form; None when the number is free. A number a record is stored under stays
     its own for good, so no other record takes it even after that record is renumbered. Documents
@@ -241,7 +249,7 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
     if doc_type:
         shown_or_kept = and_(shown_or_kept, or_(Projection.entity_type == "list",
                                                 Projection.state["doc_type"].as_string() == doc_type))
-    query = select(Projection.entity_type, Projection.state["ref_id"].as_string(),
+    query = select(Projection.entity_type, Projection.entity_id, Projection.state["ref_id"].as_string(),
                    Projection.state["doc_number"].as_string(), KEY_NUMBER).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
@@ -253,8 +261,8 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
     row = (await session.execute(query.limit(1))).first()
     if row is None:
         return None
-    kind, *numbers = row
-    return kind, next(n for n in (strip_number(str(n or "")) for n in numbers) if n)
+    kind, entity_id, *numbers = row
+    return Holder(kind, next(n for n in (strip_number(str(n or "")) for n in numbers) if n), entity_id)
 
 
 async def require_number_free(session: AsyncSession, company_id, number: object, *,
@@ -271,9 +279,9 @@ async def require_number_free(session: AsyncSession, company_id, number: object,
     holder = await number_holder(session, company_id, number, exclude_entity_id=exclude_entity_id,
                                  doc_type=doc_type)
     if holder is not None:
-        kind, shown = holder
         raise HTTPException(status_code=409, detail=catalog_refusal(
-            "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken", number=shown))
+            "documents.err_doc_number_taken" if holder.kind == "doc" else "documents.err_list_number_taken",
+            number=holder.shown))
     return number
 
 

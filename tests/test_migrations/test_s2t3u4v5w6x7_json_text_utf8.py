@@ -105,7 +105,7 @@ def test_a_database_with_escaped_and_raw_thai_upgrades_numbers_imports_and_resto
 
         _assert_readable(sync_url, cid)
         holders, stored, refused = asyncio.run(_number(async_url, cid))
-        assert holders == [("doc", f"{THAI}-1"), ("doc", f"{THAI}-2")]
+        assert [h[:2] for h in holders] == [("doc", f"{THAI}-1"), ("doc", f"{THAI}-2")]
         assert (stored, refused) == (f"{THAI}-3", 409)
         # A save writes UTF-8 text, which every later query reads.
         _sql(sync_url, "UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = 'doc:raw'",

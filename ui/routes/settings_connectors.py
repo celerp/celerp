@@ -611,11 +611,14 @@ def _cell(value) -> str:
 
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
-    (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
-    date holds links to Period lock. ``error`` explains why the last Mark or Undo did not apply."""
+    (it carries a signature) offers Mark reconciled, and Undo once marked; an order whose
+    number another record holds links to that record and also offers Import as the next
+    free number; one the lock date holds links to Period lock. ``error`` explains why the
+    last action did not apply."""
     record_id = str(entry.get("id", ""))
     item_id = f"connector-attention-{platform}-{record_id}"
     action = Span()
+    held = entry.get("number_held")
     if entry.get("signature"):
         url = f"/settings/connectors/{platform}/attention/{record_id}/reconciled"
         common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
@@ -630,7 +633,11 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 t("connectors.attention_mark_reconciled", lang),
                 cls="btn btn--xs btn--outline", hx_post=url,
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
-            ))
+            ), *((" ", Button(
+                t("connectors.attention_import_as", lang, number=held["next_number"]),
+                cls="btn btn--xs btn--outline",
+                hx_post=f"/settings/connectors/{platform}/attention/{record_id}/import-next", **common,
+            )) if held else ()))
     if entry.get("kind") == "conflict":
         url = f"/settings/connectors/{platform}/attention/{record_id}/resolve"
         common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
@@ -651,9 +658,11 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
     from ui.components.shell import flash
     locked = Span(" ", t("connectors.attention_locked", lang), " ",
                   A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
+    holder = Span(" ", A(t("connectors.attention_open_holder", lang, holder=held["holder"]), href=f"/{'lists' if held['holder_kind'] == 'list' else 'docs'}/"
+                                              f"{held['holder_id']}")) if held else Span()
     return Li(
         Strong(str(entry.get("label", record_id))), ": ", refusal_text(entry.get("reason", "")),
-        locked, action, flash(error) if error else Span(), id=item_id,
+        holder, locked, action, flash(error) if error else Span(), id=item_id,
     )
 
 
@@ -1994,6 +2003,30 @@ def setup_routes(app):
             entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
             return _attention_item(platform, entry, lang, error=str(exc.detail))
         return _attention_item(platform, result["entry"], lang)
+
+    @app.post("/settings/connectors/{platform}/attention/{record_id}/import-next")
+    async def connector_import_next(request: Request, platform: str, record_id: str):
+        """HTMX: import a WooCommerce order whose number another record holds under the next
+        free number, then show the number it took in the entry's place, linked to the order.
+        Only WooCommerce orders carry this action."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.session_expired"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if platform != "woocommerce":
+            return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
+        from ui.api_client import APIError, import_woocommerce_order_next
+
+        lang = get_lang(request)
+        try:
+            result = await import_woocommerce_order_next(token, record_id)
+        except APIError as exc:
+            entries = await _attention(_request_company_id(request), platform)
+            entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
+            return _attention_item(platform, entry, lang, error=refusal_text(exc.detail) or str(exc.detail))
+        return Li(A(t("connectors.attention_imported_as", lang, number=result["number"]),
+                    href=f"/docs/{result['doc_id']}"), id=f"connector-attention-{platform}-{record_id}")
 
     @app.post("/settings/connectors/{platform}/attention/{record_id}/resolve")
     async def connector_resolve_conflict(request: Request, platform: str, record_id: str):

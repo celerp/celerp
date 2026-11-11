@@ -169,8 +169,14 @@ async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_ses
             line = to_xml(_attention_item("woocommerce", result.attention[0], lang))
         finally:
             _current_lang.reset(token)
-        assert t("documents.err_doc_number_taken", lang, number="WOO-1001") in line, line
+        assert t("documents.err_woo_number_held", lang, number="WOO-1001", holder="WOO-1001",
+                 next="WOO-1001-2") in line, line
         assert "409:" not in line and "{'code'" not in line, line
+        # The line names the holder as a link and offers both ways out.
+        assert 'href="/docs/doc:typed"' in line, line
+        assert 'hx-post="/settings/connectors/woocommerce/attention/61/reconciled"' in line, line
+        assert 'hx-post="/settings/connectors/woocommerce/attention/61/import-next"' in line, line
+        assert t("connectors.attention_import_as", lang, number="WOO-1001-2") in line, line
     assert await number_holder(session, str(cid), "WOO-1001", exclude_entity_id="doc:typed") is None
     assert (await _state(session, cid, "woocommerce:order:62"))["ref_id"] == "WOO-1002"
     written = await session.scalar(text(

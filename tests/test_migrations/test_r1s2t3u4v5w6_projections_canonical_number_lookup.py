@@ -146,7 +146,7 @@ def test_every_server_encoding_upgrades_stores_padded_numbers_stripped_and_holds
         assert sorted(r for r in stored if r[1]) == sorted((f"LEG-{n}-\u00c9",) * 2 for n in _PADS)
         numbers = [f"{p}-{n.lower()}-\u00c9" for p in ("leg", "key") for n in sorted(_PADS)]
         holders, statements, plan = asyncio.run(_lookups(async_url, cid, numbers))
-        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)] + [
+        assert [h[:2] for h in holders] == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)] + [
             ("doc", f"MOVED-{n}") for n in sorted(_PADS)], holders
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
