@@ -2364,7 +2364,7 @@ async def general_ledger(
 
     base = await _base_currency(session, company_id)
     rows_out = []
-    tot_opening = tot_debit = tot_credit = tot_closing = Decimal(0)
+    tot_debit = tot_credit = Decimal(0)
     raw_closing_total = Decimal(0)
     # Sorted by account code: stable across replays, unlike dict encounter order.
     for code in sorted(set(opening_raw) | set(period_debit) | set(period_credit)):
@@ -2380,10 +2380,8 @@ async def general_ledger(
         raw_closing_total += raw_closing
         signed_opening = opening if debit_normal else -opening
         signed_closing = raw_closing if debit_normal else -raw_closing
-        tot_opening += signed_opening
         tot_debit += d
         tot_credit += c
-        tot_closing += signed_closing
         row_out = {
             "code": code,
             "name": acc.name if acc else code,
@@ -2406,10 +2404,8 @@ async def general_ledger(
         "contact_id": contact_id,
         "rows": rows_out,
         "totals": {
-            "opening": to_stored_float(round_money(tot_opening, base)),
             "debit": to_stored_float(round_money(tot_debit, base)),
             "credit": to_stored_float(round_money(tot_credit, base)),
-            "closing": to_stored_float(round_money(tot_closing, base)),
         },
         "balanced": abs(raw_closing_total) < Decimal("0.01"),
     }

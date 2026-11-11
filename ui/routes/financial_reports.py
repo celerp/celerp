@@ -655,10 +655,10 @@ def _general_ledger_view(data: dict, currency: str | None = None,
     body.append(Tr(
         Td(""),
         Td(Strong(t("label.total"))),
-        _num_cell(totals.get("opening", 0), strong=True),
+        Td("", cls="cell--number"),
         _num_cell(totals.get("debit", 0), strong=True),
         _num_cell(totals.get("credit", 0), strong=True),
-        _num_cell(totals.get("closing", 0), strong=True),
+        Td("", cls="cell--number"),
     ))
     return Table(
         Thead(Tr(
@@ -1059,7 +1059,11 @@ def setup_routes(app):
                                  settings_link="/settings/general?tab=company"),
                 totals_chips(float(totals.get("debit", 0) or 0),
                              float(totals.get("credit", 0) or 0),
-                             bool(data.get("balanced", True)), currency),
+                             bool(data.get("balanced", True)), currency,
+                             extra=[A(t("acct.tab_trial_balance"),
+                                      href=href(_report_path("trial-balance"),
+                                                page_params("trial-balance", d_from or "", d_to or "")),
+                                      cls="btn btn--ghost btn--sm")]),
                 Div(_bars("general-ledger", params), cls="flex-row mt-md mb-md"),
                 _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or "",
                                      period=(d_from, d_to, f"{_report_path('general-ledger')}?preset=all")),

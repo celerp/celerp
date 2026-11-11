@@ -996,7 +996,9 @@ async def test_gl_totals_carry_no_opening_or_closing(client):
     """The total row sums debits and credits only: signed opening and closing
     balances of mixed account types add up to nothing a reader can use."""
     tok = await _reg(client)
-    empty = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    # A period before the company's first posting: nothing to total.
+    empty = (await client.get("/accounting/general-ledger", headers=_h(tok),
+                              params={"date_from": "2000-01-01", "date_to": "2000-01-31"})).json()
     assert set(empty["totals"]) == {"debit", "credit"}
     assert empty["totals"] == {"debit": 0, "credit": 0}
     assert empty["balanced"] is True
