@@ -14,7 +14,7 @@ from typing import Callable
 
 import sqlalchemy as sa
 
-from celerp.json_text import dump_json
+from celerp.json_text import dump_existing_json
 from celerp.migrations._locks import lock_tables
 
 
@@ -45,15 +45,9 @@ def _update_json_column(conn, table, col, mutate, where, params, extra_cols) -> 
         if data is None:
             continue
         if mutate(data, row):
-            conn.execute(upd, {"__v": dump_json(data), "__ctid": str(row["ctid"])})
+            conn.execute(upd, {"__v": dump_existing_json(data), "__ctid": str(row["ctid"])})
             n += 1
     return n
-
-
-def is_sql_ascii(conn) -> bool:
-    """Whether the connected PostgreSQL database uses the legacy SQL_ASCII encoding."""
-    value = conn.execute(sa.text("SHOW server_encoding")).scalar()
-    return str(value or "").upper() == "SQL_ASCII"
 
 
 def _non_ascii(text: str) -> int:
@@ -61,13 +55,15 @@ def _non_ascii(text: str) -> int:
 
 
 def unescape_json_text(conn) -> int:
-    """On a SQL_ASCII database, rewrite every json value an earlier version stored with
-    characters past ASCII as \\u escapes so it holds those characters as UTF-8 text
-    (dump_json), the only form such a database can read back with ->>. Every json column of
-    the schema is covered, each locked for the pass; a value already free of such escapes is
-    left as it is, so a second run changes nothing. Returns the number of values rewritten.
-    A no-op on any other encoding or database, where an escape reads back as its character."""
-    if conn.dialect.name != "postgresql" or not is_sql_ascii(conn):
+    """Rewrite every json value an earlier version stored with characters past ASCII as \\u
+    escapes so it holds those characters as UTF-8 text (dump_existing_json), on every encoding:
+    a SQL_ASCII database cannot read such an escape back with ->>, and a UTF8 install's backup
+    holding one cannot be restored into a SQL_ASCII install. Escapes with no text form stay as
+    they are (NUL and other control characters, a lone surrogate), so such a row reads as
+    before. Every json column of the schema is covered, each locked for the pass; a value with
+    no escape to turn into text is left as it is, so a second run changes nothing. Returns the
+    number of values rewritten. A no-op on any other database."""
+    if conn.dialect.name != "postgresql":
         return 0
     columns = conn.execute(sa.text(
         "SELECT table_name, column_name FROM information_schema.columns "
@@ -82,7 +78,7 @@ def unescape_json_text(conn) -> int:
         for ctid, text in conn.execute(sa.text(
                 f"SELECT ctid, CAST({c} AS text) FROM {t} WHERE CAST({c} AS text) LIKE '%\\\\u%'")).all():
             # An escape past ASCII turned into its character adds one; nothing else does.
-            if _non_ascii(new := dump_json(json.loads(text))) > _non_ascii(text):
+            if _non_ascii(new := dump_existing_json(json.loads(text))) > _non_ascii(text):
                 conn.execute(upd, {"v": new, "ctid": str(ctid)})
                 n += 1
     return n

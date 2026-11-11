@@ -114,37 +114,54 @@ def _migration_text_uses() -> set[tuple[str, str]]:
 
 
 def test_migration_engines_write_existing_rows_through_dump_existing_json(monkeypatch):
+    """Each engine migration code runs on writes existing rows through dump_existing_json: env.py
+    with no held fence (plain alembic), env.py under the held fence (from the released head the
+    upgrade runs s2t3u4v5w6x7 and u4v5w6x7y8z9 itself), and the data-backfill replay (from
+    t3u4v5w6x7y8 the stamp walks past u4v5w6x7y8z9 and the replay runs it)."""
     from celerp.json_text import MIGRATION_TEXT, dump_existing_json
     from celerp.migrations import _data_reconcile, _json_compat
     from celerp.migrations.compatibility import mutating_scope
 
-    seen: dict[str, list] = {"migration": [], "replay": []}
+    rewrites: list = []
+    replays: list = []
     rewrite, replay = _json_compat.unescape_json_text, _data_reconcile.replay_data_backfills
 
     def recording_rewrite(conn):
-        seen["migration"].append(conn.engine.dialect._json_serializer)
         bound = sa.bindparam("v", {"t": LONE}, type_=sa.JSON)
-        seen["migration"].append(conn.execute(sa.select(sa.cast(bound, sa.Text))).scalar_one())
+        rewrites.append((conn.engine.dialect._json_serializer,
+                         conn.execute(sa.select(sa.cast(bound, sa.Text))).scalar_one()))
         return rewrite(conn)
 
     def recording_replay(engine):
-        seen["replay"].append(engine.dialect._json_serializer)
+        replays.append(engine.dialect._json_serializer)
         return replay(engine)
+
+    def taken() -> list:
+        out = list(rewrites)
+        rewrites.clear()
+        return out
 
     monkeypatch.setattr(_json_compat, "unescape_json_text", recording_rewrite)
     monkeypatch.setattr(_data_reconcile, "replay_data_backfills", recording_replay)
     with throwaway_db("jsonfence", "UTF8") as (async_url, sync_url):
-        upgrade_to(sync_url, "t3u4v5w6x7y8")  # plain alembic: env.py's branch with no held fence
-        no_fence = list(seen["migration"])
-        seen["migration"].clear()
-        _migrate(async_url)  # the held fence, then the data-backfill replay
-        with mutating_scope(sync_url) as held, held.engine() as other:
+        upgrade_to(sync_url, RELEASED_HEAD)  # plain alembic: env.py's branch with no held fence
+        no_fence = taken()
+        _migrate(async_url)  # the held fence runs every revision past the released head
+        held = taken()
+        assert replays == [dump_existing_json], replays
+    with throwaway_db("jsonreplay", "UTF8") as (async_url, sync_url):
+        upgrade_to(sync_url, "t3u4v5w6x7y8")
+        taken()
+        _migrate(async_url)  # the stamp walks past u4v5w6x7y8z9; the replay runs it
+        replayed = taken()
+        with mutating_scope(sync_url) as fence, fence.engine() as other:
             other_serializer = other.dialect._json_serializer
 
-    escaped = '{"t": "\\ud83d"}'
-    assert no_fence[-2:] == [dump_existing_json, escaped], no_fence
-    assert seen["migration"] == [dump_existing_json, escaped], seen
-    assert seen["replay"] == [dump_existing_json], seen
+    escaped = (dump_existing_json, '{"t": "\\ud83d"}')
+    assert no_fence and set(no_fence) == {escaped}, no_fence
+    assert held == [escaped, escaped], held  # s2t3u4v5w6x7, then u4v5w6x7y8z9
+    assert replayed == [escaped], replayed
+    assert replays == [dump_existing_json, dump_existing_json], replays
     assert other_serializer is dump_json
     assert MIGRATION_TEXT == {**SYNC_TEXT, "json_serializer": dump_existing_json}
     assert _migration_text_uses() == {("celerp/migrations/env.py", "run_migrations_online"),
@@ -192,6 +209,26 @@ def test_u4v5w6x7y8z9_second_run_rewrites_nothing(encoding):
         finally:
             engine.dispose()
         assert _stored(sync_url) == first
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_data_helpers_write_a_lone_surrogate_row_back_escaped(encoding):
+    """A data backfill that edits a row holding a lone surrogate (the update_* helpers, through
+    _update_json_column) writes that escape back as it was and the edit beside it."""
+    from celerp.json_text import MIGRATION_TEXT
+    from celerp.migrations._json_compat import update_company_settings
+
+    with throwaway_db("jsonhelper", encoding) as (_async_url, sync_url):
+        upgrade_to(sync_url, "t3u4v5w6x7y8")
+        _note_rows(sync_url, _company(sync_url))
+        engine = create_engine(sync_url, **MIGRATION_TEXT)
+        try:
+            with engine.begin() as conn:
+                assert update_company_settings(conn, lambda settings, _row: settings.update(seen=True) or True,
+                                               where="slug = 'lone'") == 1
+        finally:
+            engine.dispose()
+        assert _stored(sync_url)["lone"] == '{"title": "\\ud83d", "seen": true}'
 
 
 @pytest.fixture(params=ENCODINGS)

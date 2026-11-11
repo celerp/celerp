@@ -25,9 +25,9 @@ the key format the connectors emit. Then add the functional index the lookup use
 Without this, the first post-upgrade re-import of a pre-existing Shopify order/customer
 would duplicate it.
 
-This is the first index on an expression over projection state. On a SQL_ASCII database,
-json values an earlier version stored with \\u escapes past ASCII are first rewritten as
-UTF-8 text, which the expression can read (unescape_json_text).
+This is the first index on an expression over projection state. Json values an earlier
+version stored with \\u escapes past ASCII are first rewritten as UTF-8 text, which the
+expression can read on a SQL_ASCII database too (unescape_json_text).
 """
 
 from __future__ import annotations

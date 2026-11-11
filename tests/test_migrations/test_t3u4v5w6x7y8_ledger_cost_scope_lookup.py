@@ -11,7 +11,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine, text
 
 from alembic_support import apply_migrations
-from .conftest import throwaway_db, upgrade_to
+from .conftest import head_rev, throwaway_db, upgrade_to
 
 REVISION = "t3u4v5w6x7y8"
 DOWN_REVISION = "r1s2t3u4v5w6"
@@ -54,4 +54,4 @@ def test_a_stamped_database_missing_the_cost_scope_index_rebuilds_it_next_start(
         apply_migrations(async_url)
 
         assert _query(sync_url, _VALID) is True
-        assert _query(sync_url, "SELECT version_num FROM alembic_version") == REVISION
+        assert _query(sync_url, "SELECT version_num FROM alembic_version") == head_rev()
