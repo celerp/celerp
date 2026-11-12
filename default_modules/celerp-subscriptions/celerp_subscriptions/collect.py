@@ -38,8 +38,18 @@ ACTIVE = frozenset({*collection.IN_FLIGHT, "failed"})
 WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 
 
+def require_sales(terms: dict) -> None:
+    """409 for a purchasing agreement: it bills what the company owes its supplier, so it
+    never collects from a card."""
+    from celerp_subscriptions.billing import doc_kind
+    if doc_kind(terms) != "invoice":
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_collection_sales_only"))
+
+
 async def require_collectable(session, company_id, terms: dict) -> None:
-    """409 unless Cloud offers collection and the agreement's payer has a card on file."""
+    """409 unless the agreement is a sales one, Cloud offers collection and its payer has a
+    card on file."""
+    require_sales(terms)
     if not collection.offered():
         raise HTTPException(status_code=409, detail=t("subscriptions.err_collection_off"))
     if not collection.card_on_file(await collection.payer(session, company_id, terms.get("contact_id"))):
@@ -210,6 +220,7 @@ async def _agreement(session, company_id, entity_id: str) -> dict:
     state = await billing.doc_state(session, company_id, entity_id) if "\x00" not in entity_id else None
     if not state or state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+    require_sales(state)
     return state
 
 

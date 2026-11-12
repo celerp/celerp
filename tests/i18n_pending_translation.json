@@ -2075,6 +2075,10 @@
       "params": [
         "reason"
       ]
+    },
+    "subscriptions.err_collection_sales_only": {
+      "en": "Only a sales agreement can collect from a card. A purchasing agreement records what you owe a supplier.",
+      "params": []
     }
   },
   "modules": {

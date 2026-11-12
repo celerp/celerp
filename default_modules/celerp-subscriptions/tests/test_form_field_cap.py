@@ -70,6 +70,9 @@ RENDERERS = {
     # One quantity box per line of the agreement, the lines its own page shows.
     "_quantities_section": lambda n: subs_ui._quantities_section("doc:SUB-0", {"line_items": [
         {"line_id": f"line:{i}", "description": f"Seat {i}", "quantity": 1} for i in range(n)]}, date(2026, 1, 1)),
+    # A card on file action posts its own fixed fields, whatever the agreement holds.
+    "_collection_button": lambda n: subs_ui._collection_button(
+        "doc:SUB-0", "Email setup link", "setup-link", {"delivery": "email", "resend_receipt": "true"}),
     # The Revenue range is three fixed boxes whatever the data.
     "_revenue_filter": lambda n: subs_ui._revenue_filter(QueryParams()),
     "_subscriber_form": lambda n: subs_ui._subscriber_form(
