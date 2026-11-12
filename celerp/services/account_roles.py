@@ -131,8 +131,13 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict], claim=frozens
 
 
 def unmapped_roles(settings: dict | None) -> list[str]:
+    """The roles with no account, leaving out restricted net assets while funds are off:
+    it is mapped when funds are first turned on, and no posting reaches it before."""
+    from celerp.services.journal_accounts import funds_enabled
+
     current = role_map(settings)
-    return [role.value for role in AccountRole if not current.get(role.value)]
+    return [role.value for role in AccountRole if not current.get(role.value)
+            and (role is not AccountRole.RESTRICTED_NET_ASSETS or funds_enabled(settings or {}))]
 
 
 async def reconcile_company(session: AsyncSession, company_id, claim=frozenset()) -> list[str]:

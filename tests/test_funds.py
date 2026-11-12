@@ -190,6 +190,18 @@ async def test_no_funds_company_posts_as_before(session, auth):
     await _emit(session, auth, [("1111", 5, 0, None), ("4100", 0, 5, None)])
 
 
+async def test_restricted_net_assets_unmapped_only_once_funds_are_on(client, session, auth):
+    """A seeded company with funds off has every role it reconciles mapped, so placing its
+    stock at a start or a restore raises no posting-account notice; with funds on and
+    restricted net assets unmapped, the role is reported."""
+    from celerp.models.company import Company
+    from celerp.services.account_roles import reconcile_company, unmapped_roles
+
+    assert await reconcile_company(session, auth["company_id"]) == []
+    settings = dict((await session.get(Company, auth["company_id"])).settings or {})
+    assert unmapped_roles({**settings, "funds_enabled": True}) == ["restricted_net_assets"]
+
+
 _STOCK_ROLES = ("inventory", "inventory_purchased", "inventory_opening", "cogs", "work_in_progress",
                 "landed_freight", "landed_insurance", "landed_duty", "landed_import_vat", "consignor_payable")
 
