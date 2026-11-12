@@ -20,10 +20,25 @@ async def _emit(session, company_id, user_id, entity_id: str, entity_type: str, 
                             source="fixed_assets", idempotency_key=key or str(uuid.uuid4()))
 
 
-async def _state(session, company_id, entity_id: str) -> dict | None:
+async def _row(session, company_id, entity_id: str) -> dict | None:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
                             populate_existing=True)
     return row.state if row is not None else None
+
+
+async def _state(session, company_id, entity_id: str) -> dict | None:
+    """The module's own entity, or a document. A journal is read through :func:`_journal`."""
+    if entity_id.startswith("je:"):
+        raise ValueError(f"Read journal {entity_id} through store._journal.")
+    return await _row(session, company_id, entity_id)
+
+
+async def _journal(session, company_id, je_id: str) -> dict | None:
+    """The journal standing for ``je_id`` now: the entry itself, or the copy Change fund
+    posted again in its place (auto_je.current_entry)."""
+    from celerp.services.auto_je import current_entry
+
+    return await _row(session, company_id, await current_entry(session, company_id, je_id))
 
 
 async def _entities(session, company_id, entity_type: str) -> list[tuple[str, dict]]:

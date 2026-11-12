@@ -32,7 +32,7 @@ from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
 from celerp_fixed_assets import setup, sources
 from celerp_fixed_assets.projections import BUCKETS, _dec, money, said
-from celerp_fixed_assets.store import _emit, _entities, _state, recorded
+from celerp_fixed_assets.store import _emit, _entities, _journal, _state, recorded
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -991,7 +991,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         locked = sorted(s["posting_date"] for s in movements.values() if s and lock and s["posting_date"] <= lock)
         if locked:
             raise conflict(f"{locked[0]} is in a locked period, so this can no longer be undone. Use Correct instead.")
-        journals = {j: await _state(session, company_id, j) for j in effects.get("journals", [])}
+        journals = {j: await _journal(session, company_id, j) for j in effects.get("journals", [])}
         shown = {"assets": [{"number": a["number"]} for _, a, _ in created],
                  "journals": [_reversed_lines(je, books_currency(settings)) for je in journals.values() if je and je.get("status") == "posted"]}
         return shown, {"effects": effects, "movements": movements, "claims": claims}

@@ -48,7 +48,7 @@ from celerp_fixed_assets.operations import (
     label_lines,
     reverse_move,
 )
-from celerp_fixed_assets.store import _emit, _state
+from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
 from sqlalchemy import select
 
@@ -115,7 +115,7 @@ async def _held(session, company_id, settings: dict, sale: dict) -> dict[str, li
     were first posted: ``{account: [roles it served, credit less debit]}``."""
     held: dict[str, list] = {}
     for je_id in sale.get("journals") or ():
-        je = await _state(session, company_id, je_id) or {}
+        je = await _journal(session, company_id, je_id) or {}
         if je.get("status") != "posted":
             continue
         for e in je.get("entries") or []:
@@ -491,7 +491,7 @@ async def view(session, company_id, asset_id: str) -> dict:
         return out
     credited = _credited(sale)
     drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
-    je = await _state(session, company_id, sale["journal_id"]) if sale.get("journal_id") else None
+    je = await _journal(session, company_id, sale["journal_id"]) if sale.get("journal_id") else None
     out.update(proceeds=money(_dec(sale["proceeds"]), currency), credited=money(credited, currency),
                remaining=money(_dec(sale["proceeds"]) - credited, currency),
                carrying_amount=sale.get("carrying_amount"),
@@ -622,7 +622,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     lines = [JournalLine(account=cls["asset_account"], debit=gone_cost),
              *disposal.accumulated_lines(cls["accumulated_depreciation_account"], gone_ad, gone_imp, "credit")]
     # The surplus the sale released returns to the accounts the sale moved it between.
-    sold = await _state(session, company_id, sale["journal_id"]) or {}
+    sold = await _journal(session, company_id, sale["journal_id"]) or {}
     for e in sold.get("entries") or []:
         role = next(iter(set(line_roles(books.settings, e)) & _CARRIED_ROLES), None)
         if role:

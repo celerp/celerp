@@ -47,7 +47,7 @@ from celerp_fixed_assets.calc.engine import (
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import MODULE, _dec, _move, conflict
 from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
-from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
+from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -348,12 +348,8 @@ class Charge:
                 if not str(c.get("journal_id")).startswith(_JOURNAL):
                     key = (c["journal_id"], c.get("line_index"))
                     net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
-        from celerp.services.auto_je import live_entries
-
-        # A journal Change fund replaced is read at the copy standing for it.
-        journals = await live_entries(session, company_id, [je for (je, _), amount in net.items() if amount])
-        for je in journals.values():
-            state = await _state(session, company_id, je)
+        for je in dict.fromkeys(je for (je, _), amount in net.items() if amount):
+            state = await _journal(session, company_id, je)
             if state is not None and state.get("status") == "void":
                 return True
         return False
@@ -633,7 +629,7 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         if changed:
             raise await operations.changed_since(session, company_id, changed, "run", lead=catalog_refusal(
                 "fixed_assets.err_run_not_reversible", month=label))
-        journals = [await _state(session, company_id, j) for j in record.get("journal_ids") or []]
+        journals = [await _journal(session, company_id, j) for j in record.get("journal_ids") or []]
         shown = {"month": label, "journals": [operations._reversed_lines(je, books.currency) for je in journals if je]}
         return shown, {"record": record}
 

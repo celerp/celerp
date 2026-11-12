@@ -38,7 +38,7 @@ from celerp_fixed_assets.operations import (
     in_use,
     reverse_move,
 )
-from celerp_fixed_assets.store import _emit, _state
+from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
 
 REASONS = ("scrapped", "lost", "donated", "other")
@@ -369,7 +369,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             raise refusal
         books = await runs._books(session, company_id)
         day = latest["effective_date"]
-        je = await _state(session, company_id, latest["journal_id"])
+        je = await _journal(session, company_id, latest["journal_id"])
         shown = {"number": asset["number"], "date": day,
                  "journals": [_reversed_lines(je, books.currency)] if je and je.get("status") == "posted" else []}
         return shown, {"asset": asset, "movement": latest,

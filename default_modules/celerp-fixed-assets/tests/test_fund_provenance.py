@@ -394,3 +394,34 @@ async def test_change_fund_then_undo_leaves_every_fund_zero_for_a_bought_asset(f
     assert await _standing(fa.session, fa.auth, prefix) == own
     fa.session.expire_all()
     assert await _fa_standing(fa) == assets
+
+
+async def test_journal_reads_follow_change_fund(fa):
+    """A car bought on a bill's line, depreciated and scrapped, then the bill moved from R to U:
+    undoing the disposal shows the disposal journal Change fund posted again on U, the entry
+    standing for the one the disposal stored, not nothing. The module reads a stored journal id
+    only through store._journal, which follows Change fund; store._state refuses a journal id."""
+    from celerp_fixed_assets import store
+
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    await fa.operate("/runs", {"month": "2026-01"}, key="run-jan")
+    await fa.operate(f"/assets/{car}/dispose", {"date": "2026-02-10", "reason": "scrapped"}, key="scrap")
+    shown = (await fa.ok(await fa.post(f"/assets/{car}/undo-disposal", {"preview": True, "op_key": "u1"})))["journals"]
+    assert len(shown) == 1, shown
+
+    assert (await _change_bill(fa, bill, funds["U"])).status_code == 200
+    after = await fa.ok(await fa.post(f"/assets/{car}/undo-disposal", {"preview": True, "op_key": "u2"}))
+    assert after["journals"] == shown, after
+    await fa.ok(await fa.post(f"/assets/{car}/undo-disposal", {"preview": False, "op_key": "u2",
+                                                              "fingerprint": after["fingerprint"]}))
+    assert not any(fund == funds["R"] for fund, _ in await _fa_standing(fa))
+
+    disposal = next(m for m in await fa.entities("fa_movement") if m["asset_id"] == car and m.get("journal_id")
+                    and m["operation"] == "disposal")
+    with pytest.raises(ValueError):
+        await store._state(fa.session, fa.auth["company_id"], disposal["journal_id"])
+    live = await store._journal(fa.session, fa.auth["company_id"], disposal["journal_id"])
+    assert live["status"] == "void" and {e.get("fund_id") for e in live["entries"]} == {funds["U"]}
