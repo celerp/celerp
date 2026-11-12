@@ -147,3 +147,61 @@ async def test_recognition_roll_forward_lists_void_sources(ui_client):
     text = r.text
     assert "Source document void" in text and 'hx-post="/accounting/recognition/2026-01/reverse"' in text
     assert "Differs from the deferred revenue accounts by 10.00." in text
+
+
+_FLAG = "/accounting/recognition/flag"
+_SELF = {"headers": {}}  # owner_ui.api carries its own token
+
+
+async def test_item_recognize_flag_click_to_edit(owner_ui):
+    """The item page shows "Recognize over the service period" as a click-to-edit Yes/No; saving it
+    sets the item's flag and shows the cell again, and No turns it back off."""
+    from test_income_accounts import _item
+
+    item = await _item(owner_ui.api, _SELF, "Annual plan")
+    page = (await owner_ui.get(f"/inventory/{item}")).text
+    assert "Recognize over the service period" in page
+    assert f'hx-get="{_FLAG}/edit?kind=item&amp;key={item.replace(":", "%3A")}"' in page
+
+    edit = (await owner_ui.get(f"{_FLAG}/edit", params={"kind": "item", "key": item})).text
+    assert f'hx-patch="{_FLAG}?kind=item&amp;key={item.replace(":", "%3A")}"' in edit and "Escape" in edit
+
+    r = await owner_ui.patch(_FLAG, params={"kind": "item", "key": item}, data={"value": "true"})
+    assert r.status_code == 200 and "Yes" in r.text and "cell--editing" not in r.text
+    assert (await owner_ui.api.get(f"/items/{item}")).json()["recognize_over_service_period"] is True
+
+    await owner_ui.patch(_FLAG, params={"kind": "item", "key": item}, data={"value": "false"})
+    assert (await owner_ui.api.get(f"/items/{item}")).json()["recognize_over_service_period"] is False
+
+
+async def test_category_gift_click_to_edit(owner_ui):
+    """A category's view in Settings > Inventory shows "Gifts" as a click-to-edit Yes/No; Yes marks the
+    category a gift category (its sales never defer) and No unmarks it."""
+    from test_income_accounts import _category
+
+    key = await _category(owner_ui.api, _SELF, "Donation")
+    view = (await owner_ui.get("/settings/inventory", params={"tab": "categories", "cat": key})).text
+    assert "Gifts" in view and f'hx-get="{_FLAG}/edit?kind=category&amp;key={key}"' in view
+
+    r = await owner_ui.patch(_FLAG, params={"kind": "category", "key": key}, data={"value": "true"})
+    assert r.status_code == 200 and "Yes" in r.text
+    settings = (await owner_ui.api.get("/companies/me")).json()["settings"]
+    assert key in settings["gift_categories"]
+
+    r = await owner_ui.patch(_FLAG, params={"kind": "category", "key": key}, data={"value": "false"})
+    assert "No" in r.text
+    assert key not in (await owner_ui.api.get("/companies/me")).json()["settings"]["gift_categories"]
+
+
+async def test_recognition_flag_refused_keeps_editor_with_reason(ui_client):
+    """A refused save keeps the Yes/No open with the API's reason under it; an unknown kind is 404."""
+    refused = AsyncMock(side_effect=APIError(403, "You do not have permission to change accounting settings."))
+    with _api(set_category_gift=refused):
+        r = await ui_client.patch(_FLAG, params={"kind": "category", "key": "Gems"}, data={"value": "true"})
+    assert refused.await_args.args[1:] == ("Gems", True)
+    assert r.status_code == 200 and "cell--error" in r.text
+    assert "You do not have permission to change accounting settings." in r.text
+
+    with _api():
+        assert (await ui_client.get(f"{_FLAG}/display", params={"kind": "invoice", "key": "x"})).status_code == 404
+        assert (await ui_client.patch(_FLAG, params={"kind": "invoice", "key": "x"}, data={"value": "1"})).status_code == 404
