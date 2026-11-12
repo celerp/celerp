@@ -7545,5 +7545,11 @@
   "posting.fund.import_funds_off": "Funds are turned off, so this import can't choose them. Turn funds on in Accounting settings, or import without fund choices.",
   "posting.fund.choice_record_unknown": "{record} isn't in this import. Choose funds only for the records it brings.",
   "posting.fund.import_line_unknown": "{record} has no line {line}. Choose funds only for lines the file has, by their number.",
-  "posting.fund.line_without_choice": "Line {line} has no fund of its own."
+  "posting.fund.line_without_choice": "Line {line} has no fund of its own.",
+  "docs_import.fund_title": "Fund for each document and line",
+  "docs_import.fund_hint": "Choose the fund these documents belong to, or Unrestricted. A line left at -- takes the fund chosen for its document.",
+  "docs_import.fund_set_all": "Set all imported documents to",
+  "th.fund": "Fund",
+  "th.line": "Line",
+  "label.unrestricted": "Unrestricted"
 }

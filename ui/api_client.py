@@ -485,8 +485,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
 # Generic helpers
 # ---------------------------------------------------------------------------
 
-async def batch_import(token: str, path: str, records: list[dict], upsert: bool = False) -> dict:
-    """POST a CIF batch import payload to an API path.
+async def batch_import(token: str, path: str, records: list[dict], upsert: bool = False,
+                       fund_choices: dict | None = None) -> dict:
+    """POST a CIF batch import payload to an API path, with the funds an import screen chose
+    for its records when given.
 
     This is intentionally generic so UI routes can reuse it for items/docs/lists/crm/etc.
     Timeout is set high (300s) because large batches involve many DB writes server-side.
@@ -494,7 +496,10 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
     rather than pinning an interactive slot a page fan-out needs.
     """
     async with _bulk_api_client(token, timeout=300.0) as c:
-        r = _raise(await c.post(path, json={"records": records, "upsert": upsert}))
+        payload = {"records": records, "upsert": upsert}
+        if fund_choices:
+            payload["fund_choices"] = fund_choices
+        r = _raise(await c.post(path, json=payload))
         return r.json()
 
 
@@ -938,6 +943,12 @@ async def get_company(token: str) -> dict:
     async with _api_client(token) as c:
         data = _raise(await c.get("/companies/me")).json()
         return _flatten_company(data)
+
+
+async def list_funds(token: str) -> dict:
+    """The company's funds, archived ones included, by name."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds")).json()
 
 
 def role_from_company(company: dict) -> str:

@@ -65,6 +65,7 @@ async def test_the_opening_balance_date_prefills_each_document_newest_first(monk
     assert _choice(html, "bill", "B-NEW") == "record_now"
     assert _choice(html, "invoice", "I-1") == "record_now"
     assert _choice(html, "quotation", "Q-1") is None
+    assert "fund_all" not in html  # funds are off: no fund controls
     assert html.index("treatment:bill:B-NEW") < html.index("treatment:invoice:I-1") < html.index(
         "treatment:bill:B-OLD")
     assert "2026-01-31" in html
@@ -85,7 +86,7 @@ async def test_with_no_opening_balance_date_a_bill_waits_for_a_choice(monkeypatc
 async def test_the_chosen_treatment_travels_with_the_document(client, session, auth, monkeypatch):
     from ui.routes import docs_import
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=auth["headers"], json={"records": records,
                                                                        "upsert": upsert})).json()
 
@@ -112,7 +113,7 @@ async def test_docs_import_result_links_tie_out_for_opening_documents(client, au
     of those balances against them; a file recorded now has nothing to check."""
     from ui.routes import docs_import
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=auth["headers"], json={"records": records,
                                                                        "upsert": upsert})).json()
 

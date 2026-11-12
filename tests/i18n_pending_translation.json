@@ -436,6 +436,30 @@
       "params": [
         "line"
       ]
+    },
+    "docs_import.fund_title": {
+      "en": "Fund for each document and line",
+      "params": []
+    },
+    "docs_import.fund_hint": {
+      "en": "Choose the fund these documents belong to, or Unrestricted. A line left at -- takes the fund chosen for its document.",
+      "params": []
+    },
+    "docs_import.fund_set_all": {
+      "en": "Set all imported documents to",
+      "params": []
+    },
+    "th.fund": {
+      "en": "Fund",
+      "params": []
+    },
+    "th.line": {
+      "en": "Line",
+      "params": []
+    },
+    "label.unrestricted": {
+      "en": "Unrestricted",
+      "params": []
     }
   }
 }
