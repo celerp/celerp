@@ -185,3 +185,46 @@ async def test_fund_lock_order_no_deadlock_with_concurrent_finalize(real_engine,
         responses = await _race(real_engine, b.cid, *(requests[name] for name in order))
         assert [r.status_code for r in responses] == [200, 200, 200], (order, [r.text for r in responses])
     assert await _fund_balance(real_engine, b.cid, f["U2"]) == 10 * len(orders)
+
+
+async def _gift_invoice(b: _Books, f: dict, gift: float, ticket: float) -> str:
+    """An issued invoice: a gift line of ``gift`` for R and a ticket line of ``ticket`` with no fund."""
+    item = (await b.ok("/items", name=f"Seat {uuid.uuid4().hex[:4]}", sell_by="piece", inventory_type="service",
+                       quantity=0, status="available"))["id"]
+    doc = (await b.ok("/docs", doc_type="invoice", ref_id=f"INV-{uuid.uuid4().hex[:6]}", total=gift + ticket,
+                      subtotal=gift + ticket, line_items=[
+                          {"item_id": item, "name": "Gift", "quantity": 1, "unit_price": gift, "line_total": gift,
+                           "fund_id": f["R"]},
+                          {"item_id": item, "name": "Ticket", "quantity": 1, "unit_price": ticket,
+                           "line_total": ticket}]))["id"]
+    await b.ok(f"/docs/{doc}/finalize")
+    return doc
+
+
+async def test_concurrent_partial_receipts_respect_open_fund_shares(real_engine, real_client):
+    """An invoice open R 100 and unrestricted 50; two receipts of 70 allocated to R race:
+    one posts, the other is refused on the 30 R has left open."""
+    b, f = await _books(real_engine, real_client)
+    doc = await _gift_invoice(b, f, 100, 50)
+    receipt = lambda: b.post(f"/docs/{doc}/payment", amount=70, payment_date=DATE, bank_account="1111",  # noqa: E731
+                             idempotency_key=uuid.uuid4().hex, fund_allocation={f["R"]: 70})
+    refused = _one_refused(await _race(real_engine, b.cid, receipt, receipt), "posting.fund.allocation_exceeds_open")
+    assert refused.json()["detail"]["params"]["open"] == "30.00"
+    assert await _fund_balance(real_engine, b.cid, f["R"]) == 70
+
+
+async def test_concurrent_note_applications_respect_open_fund_shares(real_engine, real_client):
+    """An invoice open R 20 and unrestricted 80, a credit note of R 50; two applications of
+    15 race: one posts, the other is refused on the 5 of R the invoice has left open."""
+    b, f = await _books(real_engine, real_client)
+    doc = await _gift_invoice(b, f, 20, 80)
+    item = (await b.ok("/items", name="Gift back", sell_by="piece", inventory_type="service", quantity=0,
+                       status="available"))["id"]
+    note = (await b.ok("/docs", doc_type="credit_note", ref_id=f"CN-{uuid.uuid4().hex[:6]}", total=50, subtotal=50,
+                       line_items=[{"item_id": item, "name": "Gift", "quantity": 1, "unit_price": 50,
+                                    "line_total": 50, "fund_id": f["R"]}]))["id"]
+    await b.ok(f"/docs/{note}/finalize")
+    apply = lambda: b.post(f"/docs/{note}/apply-to-invoice", target_doc_id=doc, amount=15,  # noqa: E731
+                           idempotency_key=uuid.uuid4().hex)
+    refused = _one_refused(await _race(real_engine, b.cid, apply, apply), "posting.fund.note_exceeds_open")
+    assert refused.json()["detail"]["params"]["open"] == "5.00"

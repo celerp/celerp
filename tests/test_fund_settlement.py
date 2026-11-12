@@ -1,0 +1,195 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+"""Money settling a document stays with the funds its lines posted to (attribution rules S,
+SM, P and V).
+
+Initial conditions per test: a fresh company with the seeded chart, funds turned on, a
+restricted fund and two board-designated (unrestricted) funds (test_fund_movements._setup),
+service items made through POST /items. Invoices are finalized through POST /docs; payments,
+refunds and note applications go through their routes; the posted entries are read from
+their projections.
+"""
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from celerp.models.projections import Projection
+from test_fund_legs import _by_fund
+from test_fund_movements import _setup
+from test_income_accounts import _issued, _item, _line
+
+pytestmark = pytest.mark.asyncio
+
+BANK = "1111"
+
+
+async def _entry(session, auth, je_id: str) -> dict:
+    session.expire_all()
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": je_id})
+    assert row is not None and row.state.get("status") == "posted", je_id
+    return row.state
+
+
+def _account_by_fund(entries: list[dict], account: str) -> dict:
+    out: dict = {}
+    for e in entries:
+        if e["account"] == account:
+            out[e.get("fund_id")] = round(out.get(e.get("fund_id"), 0) + (e.get("debit") or 0) - (e.get("credit") or 0), 2)
+    return out
+
+
+async def _pay(client, auth, doc: str, amount: float, **extra):
+    return await client.post(f"/docs/{doc}/payment", headers=auth["headers"], json={
+        "amount": amount, "payment_date": "2026-03-02", "bank_account": BANK,
+        "idempotency_key": uuid.uuid4().hex, **extra})
+
+
+async def _gift_and_ticket(client, auth, f, gift_amount=100, ticket_amount=50, **extra) -> str:
+    gift, ticket = await _item(client, auth, "Gift"), await _item(client, auth, "Ticket")
+    total = gift_amount + ticket_amount
+    return await _issued(client, auth, "invoice", [
+        _line(gift, "Gift", gift_amount, fund_id=f["R"]), _line(ticket, "Ticket", ticket_amount)],
+        subtotal=total, total=total, **extra)
+
+
+def _refusal(r, key: str) -> dict:
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == key, detail
+    return detail["params"]
+
+
+async def test_partial_receipt_fixed_rule_and_explicit_override(client, session, auth):
+    """A partial receipt settles each fund's open share of the receivable pro rata; an
+    explicit allocation by fund replaces the split and is recorded on the entry; an
+    allocation that does not add up to the receipt or asks more of a fund than it has open
+    is refused naming the fund."""
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f)
+
+    r = await _pay(client, auth, doc, 60)
+    assert r.status_code == 200, r.text
+    first = await _entry(session, auth, f"je:auto:{doc}:pay:0")
+    assert _by_fund(first["entries"], "receivable") == {f["R"]: -40.0, None: -20.0}
+    assert _account_by_fund(first["entries"], BANK) == {f["R"]: 40.0, None: 20.0}
+    assert first["fund_allocation"] == {"rule": "open_share", "shares": {f["R"]: 40.0, "unrestricted": 20.0}}
+    assert all(e.get("posted_from") == f"je:auto:{doc}:fin" for e in first["entries"])
+
+    # Open now: R 60, unrestricted 30.
+    params = _refusal(await _pay(client, auth, doc, 70, fund_allocation={f["R"]: 70}),
+                      "posting.fund.allocation_exceeds_open")
+    assert params["fund"] == "Library gift" and params["open"] == "60.00"
+    _refusal(await _pay(client, auth, doc, 30, fund_allocation={f["R"]: 10}), "fund.transfer_allocation_total")
+    _refusal(await _pay(client, auth, doc, 30, fund_allocation={f["U1"]: 30}),
+             "posting.fund.allocation_exceeds_open")
+
+    r = await _pay(client, auth, doc, 30, fund_allocation={"unrestricted": 30})
+    assert r.status_code == 200, r.text
+    second = await _entry(session, auth, f"je:auto:{doc}:pay:1")
+    assert _by_fund(second["entries"], "receivable") == {None: -30.0}
+    assert second["fund_allocation"] == {"rule": "explicit", "shares": {"unrestricted": 30.0}}
+
+    # The rest is all R's: the fixed rule takes it from R alone.
+    r = await _pay(client, auth, doc, 60)
+    assert r.status_code == 200, r.text
+    third = await _entry(session, auth, f"je:auto:{doc}:pay:2")
+    assert _by_fund(third["entries"], "receivable") == {f["R"]: -60.0}
+
+
+async def test_fx_and_fee_lines_follow_receipt_fund_split(client, session, auth):
+    """A foreign-currency receipt at a rate other than the invoice's books its exchange
+    difference fund by fund as the receipt splits; the processor fees of that receipt
+    split the same way."""
+    from datetime import datetime, timezone
+
+    from celerp.services import auto_je
+
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f, currency="EUR", conversion_rate=1.10)
+    r = await _pay(client, auth, doc, 150, conversion_rate=1.20)
+    assert r.status_code == 200, r.text
+    receipt = await _entry(session, auth, f"je:auto:{doc}:pay:0")
+    assert _by_fund(receipt["entries"], "receivable") == {f["R"]: -110.0, None: -55.0}
+    assert _by_fund(receipt["entries"], "fx_gain") == {f["R"]: -10.0, None: -5.0}
+
+    session.expire_all()
+    payment = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc})).state["payments"][0]
+    await auto_je.create_for_online_fees(
+        session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id=doc, reference="pi_fund",
+        payment=payment, fees={"version": 1, "currency": "eur", "transaction_id": f"txn_{doc}",
+                               "total_minor": 300, "processor_minor": 300, "platform_minor": 0, "other_minor": 0},
+        occurred_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc))
+    await session.commit()
+    rows = [row for row in (await session.execute(Projection.__table__.select().where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{doc}:online-fees:")))).all()]
+    assert len(rows) == 1
+    fees = rows[0].state["entries"]
+    assert _by_fund(fees, "online_payment_fees") == {f["R"]: 2.4, None: 1.2}
+    assert _account_by_fund(fees, BANK) == {f["R"]: -2.4, None: -1.2}
+
+
+async def test_refund_and_payment_void_keep_receipt_fund(client, session, auth):
+    """A refund (or a chargeback recorded as one) and a payment void give back each fund's
+    share of the receipt they reverse, read from the receipt's own entry."""
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f)
+    assert (await _pay(client, auth, doc, 90)).status_code == 200  # R 60, unrestricted 30
+    r = await client.post(f"/docs/{doc}/refund", headers=auth["headers"], json={
+        "payment_index": 0, "amount": 30, "payment_date": "2026-03-04", "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    rows = (await session.execute(Projection.__table__.select().where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{doc}:payrefund:")))).all()
+    assert len(rows) == 1
+    refund = rows[0].state["entries"]
+    assert _by_fund(refund, "receivable") == {f["R"]: 20.0, None: 10.0}
+    assert _account_by_fund(refund, BANK) == {f["R"]: -20.0, None: -10.0}
+    assert all(e.get("posted_from") == f"je:auto:{doc}:pay:0" for e in refund)
+
+    r = await client.post(f"/docs/{doc}/void-payment", headers=auth["headers"], json={
+        "payment_index": 0, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    rows = (await session.execute(Projection.__table__.select().where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{doc}:payvoid:")))).all()
+    assert len(rows) == 1
+    assert _by_fund(rows[0].state["entries"], "receivable") == {f["R"]: 40.0, None: 20.0}
+
+
+async def test_note_application_matched_by_fund(client, session, auth):
+    """A credit note of R 50 applied to an invoice open U 80 / R 20: at most 20 applies,
+    all of it R's; more is refused naming the fund. The note never moves value between
+    funds."""
+    f = await _setup(client, auth)
+    gift, ticket = await _item(client, auth, "Gift"), await _item(client, auth, "Ticket")
+    invoice = await _issued(client, auth, "invoice", [
+        _line(ticket, "Ticket", 80), _line(gift, "Gift", 20, fund_id=f["R"])], subtotal=100, total=100)
+    note = await _issued(client, auth, "credit_note", [_line(gift, "Gift", 50, fund_id=f["R"])],
+                         subtotal=50, total=50)
+
+    r = await client.post(f"/docs/{note}/apply-to-invoice", headers=auth["headers"], json={
+        "target_doc_id": invoice, "amount": 30, "idempotency_key": uuid.uuid4().hex})
+    params = _refusal(r, "posting.fund.note_exceeds_open")
+    assert params["fund"] == "Library gift" and params["open"] == "20.00"
+
+    r = await client.post(f"/docs/{note}/apply-to-invoice", headers=auth["headers"], json={
+        "target_doc_id": invoice, "amount": 20, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    session.expire_all()
+    rows = (await session.execute(Projection.__table__.select().where(
+        Projection.company_id == auth["company_id"],
+        Projection.entity_id.startswith(f"je:auto:{invoice}:cnapply:")))).all()
+    assert len(rows) == 1
+    entries = rows[0].state["entries"]
+    assert {e.get("fund_id") for e in entries} == {f["R"]}
+    assert sorted(e["posted_from"] for e in entries) == sorted([f"je:auto:{invoice}:fin", f"je:auto:{note}:fin"])
+
+    # The invoice's R share is settled: a payment now settles only the unrestricted 80.
+    r = await _pay(client, auth, invoice, 80)
+    assert r.status_code == 200, r.text
+    receipt = await _entry(session, auth, f"je:auto:{invoice}:pay:0")
+    assert _by_fund(receipt["entries"], "receivable") == {None: -80.0}
