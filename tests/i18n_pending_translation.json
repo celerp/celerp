@@ -1266,6 +1266,58 @@
     "subscriptions.grace_days": {
       "en": "Grace days",
       "params": []
+    },
+    "nav.retainers": {
+      "en": "Retainers",
+      "params": []
+    },
+    "nav.members": {
+      "en": "Members",
+      "params": []
+    },
+    "page.new_retainer": {
+      "en": "New retainer",
+      "params": []
+    },
+    "page.new_membership": {
+      "en": "New membership",
+      "params": []
+    },
+    "subscriptions.retainers_empty": {
+      "en": "No retainers yet.",
+      "params": []
+    },
+    "subscriptions.members_empty": {
+      "en": "No members yet. Add a membership tier, then New membership.",
+      "params": []
+    },
+    "subscriptions.members_intro": {
+      "en": "Each member's standing comes from their latest bill: current until it falls due, in grace for the agreement's grace days after that, then lapsed. A paid or fully credited bill reads current again.",
+      "params": []
+    },
+    "subscriptions.paid_by": {
+      "en": "Paid by",
+      "params": []
+    },
+    "subscriptions.standing": {
+      "en": "Standing",
+      "params": []
+    },
+    "enum.member_standing.current": {
+      "en": "Current",
+      "params": []
+    },
+    "enum.member_standing.in_grace": {
+      "en": "In grace",
+      "params": []
+    },
+    "enum.member_standing.lapsed": {
+      "en": "Lapsed",
+      "params": []
+    },
+    "enum.member_standing.lifetime": {
+      "en": "Lifetime",
+      "params": []
     }
   },
   "modules": {

@@ -654,12 +654,12 @@ async def _new_subscription(client, session, auth, doc_type: str, qty: float) ->
 async def test_an_unnamed_subscription_is_named_as_the_subscriptions_list_names_it(client, session, auth):
     from fasthtml.common import to_xml
 
-    from ui.routes.subscriptions import _sub_table
+    from ui.routes.subscriptions import _list_state, _sub_table
 
     assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
     sub = await _new_subscription(client, session, auth, "subscription_invoice", 0.275)
     ref = (await _state(session, auth, sub))["ref_id"]
-    assert ref in to_xml(_sub_table([{**await _state(session, auth, sub), "id": sub}], "sales"))
+    assert ref in to_xml(_sub_table([{**await _state(session, auth, sub), "id": sub}], _list_state({})))
 
     r = await _set_carat_decimals(client, auth, 2)
     assert r.status_code == 422, r.text

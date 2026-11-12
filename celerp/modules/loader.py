@@ -2733,7 +2733,7 @@ _LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
 # destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
 _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
-            "order": (_NUMBER, False)},
+            "order": (_NUMBER, False), "verticals": ((list,), False)},
     "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
     "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
     "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),

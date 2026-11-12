@@ -88,9 +88,9 @@ def test_subscription_copy_says_documents_are_generated_when_due():
 def test_the_list_shows_when_each_subscription_is_next_due():
     from fasthtml.common import to_xml
 
-    from ui.routes.subscriptions import _sub_table
+    from ui.routes.subscriptions import _list_state, _sub_table
 
     html = to_xml(_sub_table([{"id": "doc:s1", "ref_id": "SUB-1", "frequency": "monthly",
-                               "next_bill_date": "2026-02-01", "status": "active"}], "sales"))
+                               "next_bill_date": "2026-02-01", "status": "active"}], _list_state({})))
     assert f">{t('th.next_due')}<" in html and t("th.next_due") == "Next Due"
     assert "Next Run" not in html and "2026-02-01" in html

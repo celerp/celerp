@@ -146,7 +146,8 @@ search_provider   Contributes rows to the global search bar. Exactly one descrip
 
 Every slot entry is checked before any of its module's code runs
 (celerp.modules.loader): an entry is a dict; every key its slot reads has the
-type it is read as (nav "key" text, "group" text or None, "order" a number;
+type it is read as (nav "key" text, "group" text or None, "order" a number,
+"verticals" a list of the business types whose sidebar shows it;
 send_to_targets "doc_type", catalog_channel "id", label_source "entity_type" and
 import_target "kind" non-empty text, label_source "keys" a list of text and "preset"
 a dict, catalog_channel "can_create" true or false; category_schema "category" non-empty text and

@@ -994,10 +994,8 @@ def setup_routes(app):
                 await api.set_category_income_account(token, key, code or None)
         except APIError as e:
             api.raise_if_signed_out(e)
-            try:
-                _, _, chart = await income_account_state(token, kind, key)
-            except APIError:
-                chart = []
+            # The picker reopens over the chart as read now; a failed read reaches the app's handler.
+            _, _, chart = await income_account_state(token, kind, key)
             return income_account_editor(kind, key, code, chart, error=error_message(e))
         return await income_account_display(request, kind, key)
 

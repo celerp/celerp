@@ -39,7 +39,7 @@ from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
-from ui.components.encode import as_js, html_response, to_markup
+from ui.components.encode import as_js, html_response, safe_url, to_markup
 
 logger = logging.getLogger(__name__)
 
@@ -296,12 +296,12 @@ def _direction_tabs(direction: str, status: str = "") -> FT:
     return Nav(_tab(t("dashboard.sales"), "sales"), _tab(t("subscriptions.purchasing"), "purchasing"), cls="tab-nav")
 
 
-def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> FT:
+def _sub_status_cards(items: list[dict], state: dict) -> FT:
     counts: dict[str, int] = {}
     for it in items:
         s = it.get("status", "draft")
         counts[s] = counts.get(s, 0) + 1
-    base = f"/subscriptions?direction={direction}"
+    base, active_status = _list_base(state), state["status"]
     issued_total = sum(counts.get(s, 0) for s in ("active", "paused", "cancelled"))
     # Draft first, then All Issued, then lifecycle statuses
     cards = [
@@ -326,13 +326,13 @@ def _sentence_cell(*content, cls: str = "") -> FT:
     return Td(*content, cls=f"cell--note {cls}".rstrip())
 
 
-def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
-    if not subs and review:
+def _sub_table(subs: list[dict], state: dict) -> FT:
+    if not subs and state["review"]:
         return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
-                                   f"/subscriptions?direction={direction}"), id="sub-table")
+                                   _list_base(state)), id="sub-table")
     if not subs:
-        return Div(empty_state_cta(t("label.no_subscription_templates_found"), t("page.new_subscription"),
-                                   f"/subscriptions/new?direction={direction}", hx_post=True), id="sub-table")
+        text = _LIST_TEXT[state["kind"]]
+        return Div(empty_state_cta(t(text["empty"]), t(text["new"]), _new_url(state), hx_post=True), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
@@ -360,13 +360,41 @@ def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
     )
 
 
-def _review_banner(items: list[dict], direction: str, review: bool) -> FT | str:
+_STANDING_CSS = {"current": "badge--active", "in_grace": "badge--paused", "lapsed": "badge--void",
+                 "lifetime": "badge--active"}
+
+
+def _members_table(rows: list[dict]) -> FT:
+    """Members newest first: who, who pays, their standing and the bill or invoice it is read from."""
+    if not rows:
+        return empty_state_cta(t("subscriptions.members_empty"), t("page.new_membership"),
+                               "/subscriptions/new?direction=sales&kind=membership", hx_post=True)
+
+    def _row(m: dict) -> FT:
+        source = (f"/subscriptions/{m['entity_id']}" if m.get("entity_id") else f"/docs/{m['doc_id']}")
+        return Tr(
+            Td(m.get("member_name") or EMPTY),
+            Td(m.get("contact_name") or EMPTY),
+            Td(Span(display_enum(m["standing"], "member_standing"),
+                    cls=f"badge {_STANDING_CSS.get(m['standing'], 'badge--draft')}")),
+            Td(m.get("due_date") or EMPTY),
+            Td(A(m.get("ref") or source, href=source)),
+        )
+
+    return _data_table(
+        Thead(Tr(*[Th(t(k)) for k in ("subscriptions.member", "subscriptions.paid_by", "subscriptions.standing",
+                                       "th.due_date", "th.ref")])),
+        Tbody(*[_row(m) for m in rows]),
+    )
+
+
+def _review_banner(items: list[dict], state: dict) -> FT | str:
     """Names how many agreements wait for history review, with the filter that lists them."""
     n = sum(1 for i in items if i.get("history_review"))
-    if not n or review:
+    if not n or state["review"]:
         return ""
     return Div(t("subscriptions.review_banner", n=n), " ",
-               A(t("subscriptions.review_open"), href=f"/subscriptions?direction={direction}&review=1"),
+               A(t("subscriptions.review_open"), href=safe_url(f"{_list_base(state)}&review=1")),
                cls="flash flash--warning")
 
 
@@ -988,13 +1016,14 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
     return catch_up, summary, errors
 
 
-async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False) -> list[dict]:
+async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False,
+                          kind: str = "") -> list[dict]:
     """Read every server page, without silently truncating large agreement sets."""
     items: list[dict] = []
     offset = 0
     while True:
         params = {"limit": 1000, "offset": offset, **({"direction": direction} if direction else {}),
-                  **({"review": "true"} if review else {})}
+                  **({"review": "true"} if review else {}), **({"kind": kind} if kind else {})}
         resp = await api.list_subscriptions(token, params)
         batch = resp if isinstance(resp, list) else resp.get("items", [])
         items.extend(batch)
@@ -1003,16 +1032,35 @@ async def _all_agreements(token: str, direction: str | None = None, *, review: b
             return items
 
 
-def _list_state(params) -> dict:
-    """What a list view of agreements shows, from its query params: the list page's URL, or the
-    page an action was taken from."""
+# The pages that list agreements, by the kind they list ("" lists every kind), and their words.
+# Members lists standing, not agreements, so it has its own page.
+_LIST_PATHS = {"": "/subscriptions", "retainer": "/retainers"}
+_LIST_TEXT = {"": {"new": "page.new_subscription", "empty": "label.no_subscription_templates_found"},
+              "retainer": {"new": "page.new_retainer", "empty": "subscriptions.retainers_empty", "title": "nav.retainers"}}
+
+
+def _list_state(params, path: str = "/subscriptions") -> dict:
+    """What a list view of agreements shows, from its path and query params: the list page's URL,
+    or the page an action was taken from."""
     try:
         page = max(int(params.get("page", 1)), 1)
     except (TypeError, ValueError):
         page = 1
-    return {"direction": params.get("direction") or "sales", "status": params.get("status", ""), "q": params.get("q", ""),
+    kind = next(k for k, p in _LIST_PATHS.items() if p == path)
+    return {"direction": "sales" if kind else params.get("direction") or "sales", "kind": kind,
+            "status": params.get("status", ""), "q": params.get("q", ""),
             "review": params.get("review", "") in {"1", "true"}, "page": page,
             "per_page": per_page_value(params.get("per_page"), _PER_PAGE)}
+
+
+def _list_base(state: dict) -> str:
+    """The list page's own URL, without its status, search or page."""
+    return f"{_LIST_PATHS[state['kind']]}?direction={state['direction']}"
+
+
+def _new_url(state: dict) -> str:
+    """Where the list page's New button posts: a draft of the kind the page lists."""
+    return f"/subscriptions/new?{urlencode({'direction': state['direction'], **({'kind': state['kind']} if state['kind'] else {})})}"
 
 
 def _listed(items: list[dict], state: dict) -> list[dict]:
@@ -1028,8 +1076,8 @@ def _list_views(all_items: list[dict], state: dict) -> tuple[FT, FT, int]:
     """The status cards and the table of one page of a list view, and how many rows it has in all."""
     listed = _listed(all_items, state)
     page, per_page = state["page"], state["per_page"]
-    return (_sub_status_cards(all_items, state["status"], state["direction"]),
-            _sub_table(listed[(page - 1) * per_page: page * per_page], state["direction"], state["review"]), len(listed))
+    return (_sub_status_cards(all_items, state),
+            _sub_table(listed[(page - 1) * per_page: page * per_page], state), len(listed))
 
 
 async def _agreements(token: str, direction: str | None = None) -> dict[str, dict]:
@@ -1087,10 +1135,10 @@ def setup_routes(app) -> None:
             answer = _due_results(result, await _agreements(token), str(form[FIELD]))
             # Run from the list: its cards and rows show what the run changed.
             page = urlsplit(request.headers.get("HX-Current-URL", ""))
-            if page.path != "/subscriptions":
+            if page.path not in _LIST_PATHS.values():
                 return answer
-            state = _list_state(QueryParams(page.query))
-            listed = await _all_agreements(token, state["direction"], review=state["review"])
+            state = _list_state(QueryParams(page.query), page.path)
+            listed = await _all_agreements(token, state["direction"], review=state["review"], kind=state["kind"])
             cards, table, _ = _list_views(listed, state)
             return answer, cards(hx_swap_oob="true"), table(hx_swap_oob="true")
         return await _redrawn(draw, lambda: _due_results(result, {}, str(form[FIELD])))
@@ -1224,32 +1272,36 @@ def setup_routes(app) -> None:
 
     # --- List page ---
 
-    @app.get("/subscriptions")
-    async def subscriptions_list(request: Request, direction: str = "sales", status: str = "", review: bool = False):
+    async def list_page(request: Request, path: str):
+        """An agreement list page: every agreement on one side (/subscriptions), or those of one kind
+        (/retainers), with its own title, New button and empty state."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
-        state = _list_state(request.query_params)
+        state = _list_state(request.query_params, path)
+        direction, status, review, kind = state["direction"], state["status"], state["review"], state["kind"]
         q, page, per_page = state["q"], state["page"], state["per_page"]
-        all_items = await _all_agreements(token, direction, review=review)
+        all_items = await _all_agreements(token, direction, review=review, kind=kind)
         cards, table, total = _list_views(all_items, state)
         side = "sales" if direction == "sales" else "purchasing"
-        title = t(f"nav.subscriptions_{side}")
+        nav_key = f"subscriptions_{side}" if not kind else path.lstrip("/")
+        text = _LIST_TEXT[kind]
+        title = t(text.get("title") or f"nav.subscriptions_{side}")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
                                              "review": "1" if review else ""}.items() if v})
         can_import = await _check_permission(request, "import_export_data") is None
         catch_up, summary, banner_errors = await _held_and_unread(token)
+        search_url = "/subscriptions/search?" + urlencode({k: v for k, v in {
+            "direction": direction, "status": status, "review": "1" if review else "", "kind": kind}.items() if v})
 
         content = Div(
             page_header(
                 title,
                 search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
-                           url=f"/subscriptions/search?direction={direction}&status={status}{'&review=1' if review else ''}",
-                           label=t(f"subscriptions.search_{side}")),
-                Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
-                       hx_swap="none", cls="btn btn--primary"),
+                           url=search_url, label=t(f"subscriptions.search_{side}")),
+                Button(t(text["new"]), hx_post=_new_url(state), hx_swap="none", cls="btn btn--primary"),
                 Button(t("btn.generate_all_due"), hx_get=f"/subscriptions/due?direction={direction}",
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
@@ -1257,31 +1309,58 @@ def setup_routes(app) -> None:
             ),
             *_list_banners(catch_up, summary),
             *[Div(error, cls="flash flash--warning") for error in banner_errors],
-            _review_banner(all_items, direction, review),
+            _review_banner(all_items, state),
             Div(id="sub-due-panel", data_esc_clear="1"),
             _PANEL_ESC_JS,
             cards,
             table,
-            pagination(page, total, per_page, "/subscriptions", extra),
+            pagination(page, total, per_page, path, extra),
             cls="page-content",
         )
-        return await base_shell(content, title=title, request=request,
-                          nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
+        return await base_shell(content, title=title, request=request, nav_active=nav_key)
+
+    @app.get("/subscriptions")
+    async def subscriptions_list(request: Request):
+        return await list_page(request, "/subscriptions")
+
+    @app.get("/retainers")
+    async def retainers_list(request: Request):
+        return await list_page(request, "/retainers")
+
+    @app.get("/members")
+    async def members_list(request: Request):
+        """Members and their standing, read from each membership's latest bill."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
+            return r
+        rows = (await api.subscriptions_members(token)).get("items") or []
+        title = t("nav.members")
+        content = Div(
+            page_header(title, Button(t("page.new_membership"),
+                                      hx_post="/subscriptions/new?direction=sales&kind=membership",
+                                      hx_swap="none", cls="btn btn--primary")),
+            P(t("subscriptions.members_intro"), cls="text-muted"),
+            _members_table(rows),
+            cls="page-content",
+        )
+        return await base_shell(content, title=title, request=request, nav_active="members")
 
     # --- Search (HTMX) ---
 
     @app.get("/subscriptions/search")
-    async def subscriptions_search(request: Request, direction: str = "sales", status: str = "", review: bool = False):
+    async def subscriptions_search(request: Request, kind: str = ""):
         token = _token(request)
         if not token:
             return Div(t("error.session_expired"), id="sub-table")
-        q = request.query_params.get("q", "")
+        state = _list_state(request.query_params, _LIST_PATHS.get(kind, "/subscriptions"))
         try:
-            items = await _all_agreements(token, direction, review=review)
+            items = await _all_agreements(token, state["direction"], review=state["review"], kind=state["kind"])
         except APIError as exc:
             api.raise_if_signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
-        return _sub_table(_listed(items, _list_state(request.query_params)), direction, review)
+        return _sub_table(_listed(items, state), state)
 
     # --- Create blank draft → redirect to detail ---
 

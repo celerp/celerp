@@ -9,6 +9,7 @@ business day. No payment provider is configured, so payments are recorded by han
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -62,7 +63,7 @@ async def test_new_retainer_without_stripe(owner_ui, session, monkeypatch):
     page = await owner_ui.get("/retainers")
     assert page.status_code == 200 and "New retainer" in page.text, page.text[:300]
     r = await owner_ui.post("/subscriptions/new", params={"direction": "sales", "kind": "retainer"})
-    assert r.status_code == 200, r.text[:300]
+    assert r.status_code == 204, r.text[:300]
     eid = r.headers["HX-Redirect"].rsplit("/", 1)[-1]
     assert (await template(owner_ui.api, {}, eid)).get("kind") == "retainer"
     payer = await contact(owner_ui.api, {}, f"client-{uuid.uuid4().hex[:6]}@test.test")
@@ -135,8 +136,12 @@ async def test_page_scoped_labels_no_global_customer_swap(owner_ui, session, mon
     members = await owner_ui.get("/members")
     assert members.status_code == 200 and ">Member<" in members.text.replace(" ", ""), members.text[:300]
     assert t("enum.contact_type.customer") == "Customer" and t("th.customer") == "Customer"
-    contacts = await owner_ui.get("/contacts")
-    assert contacts.status_code == 200 and "Member" not in contacts.text
+    contacts = await owner_ui.get("/contacts/customers")
+    # The page's own words (headings, column headers, sidebar) stay Customer; the agreement kit's
+    # contacts are named "Member", so their rows may say it.
+    assert contacts.status_code == 200
+    assert not re.search(r"<(th|h1|title)[^>]*>\s*Members?\b", contacts.text), contacts.text[:300]
+    assert 'href="/members"' not in contacts.text
 
 
 @pytest.mark.parametrize(("path", "empty", "new"), [
@@ -191,3 +196,17 @@ async def test_agreement_kind_member_grace_checked_and_changed_on_schedule(owner
     r = await api.patch(f"/subscriptions/{eid}/schedule", json={"kind": "club"})
     assert r.status_code == 422 and "subscription, retainer or membership" in r.text, r.text
     assert (await api.get("/subscriptions", params={"kind": "club"})).status_code == 422
+
+
+@pytest.mark.parametrize(("vertical", "shown", "hidden"), [
+    ("consulting", "retainers", "members"), ("nonprofit", "members", "retainers"), (None, None, "members"),
+])
+async def test_retainers_and_members_in_the_sidebar_of_their_business_type_only(vertical, shown, hidden):
+    """Retainers is a consulting firm's page and Members a nonprofit's: each shows in the sidebar
+    of its business type, and neither in any other, nor in the menu editor's list."""
+    from ui.components.shell import module_nav
+
+    keys = {item.get("key") for item in module_nav({"vertical": vertical} if vertical else {})}
+    assert "subscriptions_sales" in keys and hidden not in keys and (shown is None or shown in keys)
+    if vertical is None:
+        assert "retainers" not in keys

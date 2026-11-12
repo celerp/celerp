@@ -44,7 +44,7 @@ def _drawn() -> dict:
                   "status": "active", "total": 120, "currency": "USD", "next_bill_date": "2026-07-01"}}
     items = [{"entity_id": eid, "periods": [period, {**period, "period_index": 1}]}]
     return {
-        "_sub_table": lambda: page._sub_table([{**subs[eid], "schedule_error": long}], "sales"),
+        "_sub_table": lambda: page._sub_table([{**subs[eid], "schedule_error": long}], page._list_state({})),
         "_periods_table": lambda: page._periods_table(eid, {"rows": [
             {**period, "status": "due", "reason": long}, {**period, "status": "billed", "state": "billed",
                                                           "doc_id": "doc:bill", "ref_id": _REF, "send": "failed",

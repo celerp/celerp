@@ -18,6 +18,7 @@ from fasthtml.common import Div, to_xml
 from ui import i18n
 from ui.routes.subscriptions import (
     _status_badge,
+    _list_state,
     _sub_table,
     _sub_status_cards,
     _schedule_section,
@@ -62,14 +63,14 @@ def test_status_badge_translates_enum_label():
 def test_sub_table_translates_status_and_frequency():
     # Mechanisms: enum status badge + enum frequency label in a table row.
     row = {"id": "sub:1", "frequency": "monthly", "status": "active"}
-    html = to_xml(_sub_table([row], "sales"))
+    html = to_xml(_sub_table([row], _list_state({})))
     assert "XX_MONTHLY" in html
     assert "XX_ACTIVE" in html
 
 
 def test_status_cards_translate_labels():
     # Mechanisms: enum card label + plain reused-key label ("All Issued").
-    html = to_xml(_sub_status_cards([{"status": "active"}], "", "sales"))
+    html = to_xml(_sub_status_cards([{"status": "active"}], _list_state({})))
     assert "XX_ALLISSUED" in html
     assert "XX_ACTIVE" in html
 

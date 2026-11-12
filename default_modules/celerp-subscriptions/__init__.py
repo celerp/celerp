@@ -15,6 +15,8 @@ PLUGIN_MANIFEST = {
         "nav": [
             {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
             {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
+            {"group": "Subscriptions", "key": "retainers", "href": "/retainers", "label": "Retainers", "label_key": "nav.retainers", "order": 27, "permission": "view_subscriptions", "verticals": ["consulting"]},
+            {"group": "Subscriptions", "key": "members", "href": "/members", "label": "Members", "label_key": "nav.members", "order": 28, "permission": "view_subscriptions", "verticals": ["nonprofit"]},
         ],
         "on_modules_ready": [{"handler": "celerp_subscriptions.migration:migrate_schedules_hook"}],
         "on_company_restored": [{"handler": "celerp_subscriptions.migration:reconcile_restored_company_schedules"}],
