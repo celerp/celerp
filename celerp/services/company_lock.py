@@ -193,15 +193,19 @@ async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
 
 
 async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:
-    """Lock the company, then the given Projection rows in entity-id order.
+    """Lock the company and its fund ledger, then the given Projection rows in entity-id order.
 
-    The one way to take row locks for a write: company first, then rows sorted by
-    entity id, so two writers sharing rows always meet in the same order. A caller
-    locking documents and items takes the documents in one call and the items in a
-    later one. populate_existing replaces any stale copy already in the session.
-    Ids with no row are absent from the result.
+    The one way to take row locks for a write: company first, then the fund ledger when
+    the company has funds turned on (journal_accounts.hold_fund_ledger: the posting that
+    follows holds it shared anyway, and it ranks before every projection row), then rows
+    sorted by entity id, so two writers sharing rows always meet in the same order. A
+    caller locking documents and items takes the documents in one call and the items in
+    a later one. populate_existing replaces any stale copy already in the session. Ids
+    with no row are absent from the result.
     """
-    await lock_company(session, company_id)
+    from celerp.services.journal_accounts import hold_fund_ledger
+
+    await hold_fund_ledger(session, company_id)
     want = sorted({str(e) for e in entity_ids if e})
     if not want:
         return {}
