@@ -24,7 +24,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from celerp.services.permissions import missing_permission_text
-from test_helpers import make_test_token
+from test_helpers import make_test_token, script_cfg
 from ui.api_client import APIError, _api_error
 from ui.i18n import t
 
@@ -860,8 +860,9 @@ async def test_je_form_js_knows_the_book_currency_and_its_decimals(ui_client):
     decimal places come from the server rather than a hardcoded two."""
     r = await _get(ui_client, "/accounting/journal/new")
     html = r.text
-    assert 'celerpJeBase = "THB"' in html
-    assert '"JPY": 0' in html and '"KWD": 3' in html
+    cfg = script_cfg(html, "var celerpJeBase = _celerpJeCfg.base")
+    assert cfg["base"] == "THB"
+    assert cfg["dp"]["JPY"] == 0 and cfg["dp"]["KWD"] == 3
     # The old fixed-cent arithmetic is gone.
     assert "* 100)" not in html.split("celerpJeTotals")[-1]
 
