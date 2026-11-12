@@ -1909,19 +1909,9 @@
       "en": "it is for more than the payment.",
       "params": []
     },
-    "subscriptions.mode_auto_invoice_collect": {
-      "en": "Bill and collect automatically",
-      "params": []
-    },
     "subscriptions.bills_and_collects": {
       "en": "Bills and collects automatically",
       "params": []
-    },
-    "subscriptions.consent_collection": {
-      "en": "Automatic collection authorized on {date}",
-      "params": [
-        "date"
-      ]
     },
     "subscriptions.consent_collection_withdrawn": {
       "en": "Automatic collection authorization withdrawn",
