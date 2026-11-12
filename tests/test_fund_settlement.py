@@ -194,3 +194,53 @@ async def test_note_application_matched_by_fund(client, session, auth):
     assert r.status_code == 200, r.text
     receipt = await _entry(session, auth, f"je:auto:{invoice}:pay:1")
     assert _by_fund(receipt["entries"], "receivable") == {None: -80.0}
+
+
+async def test_accounting_system_document_takes_fund_choice(client, session, auth, monkeypatch, connector_modules_running):
+    """An open QuickBooks invoice in a company with funds has no posted entry of its own: the
+    fund-choices route accepts it, the standing default for the accounting system fills it
+    at its first arrival tagged with that source, and a later local payment posts on the
+    chosen fund by rule S."""
+    import celerp.connectors.upsert as upsert
+    from celerp.models.connector_config import ConnectorConfig
+    from test_helpers import own_sessions_on
+
+    f = await _setup(client, auth)
+    session.add(ConnectorConfig(company_id=str(auth["company_id"]), connector="quickbooks"))
+    await session.commit()
+    monkeypatch.setattr("celerp.db.SessionLocal", await own_sessions_on(session))
+
+    async def arrive(qid: str) -> str:
+        assert await upsert.upsert_invoice_from_quickbooks(str(auth["company_id"]), {
+            "Id": qid, "DocNumber": f"INV-{qid}", "Balance": 30.0, "TotalAmt": 30.0, "CurrencyRef": {"value": "USD"},
+            "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 30.0, "Description": "Service",
+                      "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 30.0}}]}) == "created"
+        doc = f"doc:quickbooks:invoice:{qid}"
+        state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
+        assert state["status"] == "open", state
+        return doc
+
+    before = await arrive(uuid.uuid4().hex[:8])
+    state = (await client.get(f"/docs/{before}", headers=auth["headers"])).json()
+    assert state.get("fund_choice") is None, state
+    r = await client.post(f"/docs/{before}/fund-choices", headers=auth["headers"],
+                          json={"expected_version": state["version"], "document": f["U1"]})
+    assert r.status_code == 200, r.text
+    state = (await client.get(f"/docs/{before}", headers=auth["headers"])).json()
+    assert (state["fund_choice"], state.get("fund_choice_source")) == (f["U1"], "user"), state
+
+    r = await client.put("/accounting/funds/connection-defaults", headers=auth["headers"], json={
+        "origin": "accounting_system", "source_key": "quickbooks", "value": f["R"], "expected_version": 0,
+        "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    doc = await arrive(uuid.uuid4().hex[:8])
+    state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
+    assert (state["fund_choice"], state["fund_choice_source"]) == (f["R"], "default:accounting_system:quickbooks"), state
+    session.expire_all()
+    assert await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc}:fin"}) is None
+
+    r = await _pay(client, auth, doc, 30)
+    assert r.status_code == 200, r.text
+    paid = await _entry(session, auth, f"je:auto:{doc}:pay:0")
+    assert _by_fund(paid["entries"], "receivable") == {f["R"]: -30.0}, paid["entries"]
+    assert _account_by_fund(paid["entries"], BANK) == {f["R"]: 30.0}, paid["entries"]
