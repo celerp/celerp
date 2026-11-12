@@ -181,7 +181,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
-    from celerp_docs.routes import apply_doc_payment
+    from celerp_docs.routes import _get_doc, apply_doc_payment
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
             "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
             "method": "stripe", "reference": reference}
@@ -199,6 +199,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         raise
     if getattr(entry, "was_deduped", False):
         return None
+    from celerp.services.collection import charge_recorded
+    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
     return entry
 
 

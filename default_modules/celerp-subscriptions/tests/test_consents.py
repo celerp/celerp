@@ -108,20 +108,6 @@ async def test_turning_on_billing_that_would_send_needs_the_sending_permission(c
     assert (await template(client, hd, eid)).get("generation_mode", "manual_due") == "manual_due"
 
 
-@pytest.mark.parametrize("role", ["owner", "admin", "manager"])
-async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, role):
-    """Automatic collection is not offered in this release: every role gets the same refusal
-    as for any unknown mode, and the page offers only billing by hand or automatically."""
-    freeze_day(monkeypatch, "2026-03-15")
-    hd = await register(client)
-    eid = await agreement(client, hd, start="2026-04-01")
-    who = hd if role == "owner" else (await member(client, session, hd, role))[0]
-    r = await schedule(client, who, eid, generation_mode="auto_invoice_collect")
-    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "subscriptions.err_generation_mode"
-    html = to_xml(_billing_section(eid, await template(client, hd, eid), defers=False))
-    assert "collect" not in html.lower()
-
-
 # One value for each schedule setting that differs from what a running automatic agreement starting
 # 2026-07-01 holds; every ScheduleBody field is listed, so a new setting has to be classified here.
 _CHANGED_TERM = {"anchor_date": "2026-07-05", "trial_end": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,

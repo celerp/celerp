@@ -496,7 +496,8 @@ def test_hello_payload_never_carries_deployment_credential(credential):
         "instance_id": "test-instance-id",
         "tos_version": "v2025",
         "version": "9.9.9",
-        "delivery_types": ["invoice.fees", "invoice.payment", "invoice.payment_release", "invoice.refund"],
+        "delivery_types": ["collection.attempt", "collection.binding", "invoice.fees", "invoice.payment",
+                           "invoice.payment_release", "invoice.refund"],
         "tunnel": {"chunked": 1},
     }
 

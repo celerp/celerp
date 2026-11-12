@@ -115,6 +115,8 @@ NON_JOURNAL_EMITTERS: dict[str, str] = {
     "celerp.events.engine:connector_upsert": "callers pass crm.contact.created, doc.created, item.created",
     "celerp.routers.companies:batch_import_settings": "refuses every record whose event_type is not sys.company.created",
     "celerp.services.attachments:attach_file": "FILE_ATTACHED_EVENTS map of *.file_attached types",
+    "celerp.services.collection:record_binding": "constant BINDING_EVENT (crm.contact.collection_binding) on the payer contact",
+    "celerp.services.collection:set_attempt": "constant ATTEMPT_EVENT (doc.collection) on the invoice",
     "celerp.services.lot_origin:_record": "lot_origin constants item.inventory_account.* and item.inventory_on_books.recorded",
     "celerp.services.lot_origin:correct_placements": "lot_origin constant sys.older_stock.corrected",
     "celerp_accounting.funds:_emit": "callers pass only fund.* literals",

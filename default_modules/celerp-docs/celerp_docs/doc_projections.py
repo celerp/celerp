@@ -472,6 +472,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
         current["status"] = payment_status(current, paid, outstanding)
+    elif event_type == "doc.collection":
+        current["collection"] = dict(data)
     elif event_type == "doc.payment.stripe_released":
         target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
         if target is not None:

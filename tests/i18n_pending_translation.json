@@ -1767,6 +1767,56 @@
     "subscriptions.err_metrics_currency": {
       "en": "That currency code isn't recognized. Use a three-letter code such as USD.",
       "params": []
+    },
+    "perm.name.automate_collection": {
+      "en": "Enable automatic collection",
+      "params": []
+    },
+    "subscriptions.err_collection_off": {
+      "en": "Automatic collection is not available. Connect Stripe through Celerp Cloud to turn it on.",
+      "params": []
+    },
+    "subscriptions.err_no_card_on_file": {
+      "en": "The payer has no card on file. Send them a setup link first.",
+      "params": []
+    },
+    "subscriptions.err_payer_not_contact": {
+      "en": "The payer is not one of your contacts. Choose a contact as the payer first.",
+      "params": []
+    },
+    "subscriptions.err_payer_no_email": {
+      "en": "The payer has no email address. Add one to the contact first.",
+      "params": []
+    },
+    "subscriptions.err_cloud_unreachable": {
+      "en": "Could not reach Celerp Cloud. Try again.",
+      "params": []
+    },
+    "subscriptions.err_setup_link_daily_limit": {
+      "en": "Too many setup links for this payer today. Try again tomorrow.",
+      "params": []
+    },
+    "subscriptions.err_setup_email_daily_limit": {
+      "en": "Too many setup emails for this payer today. Copy the link instead, or try again tomorrow.",
+      "params": []
+    },
+    "subscriptions.err_collection_refused": {
+      "en": "Celerp Cloud refused the request ({reason}).",
+      "params": [
+        "reason"
+      ]
+    },
+    "subscriptions.err_no_active_binding": {
+      "en": "The payer has no card on file to remove.",
+      "params": []
+    },
+    "collection.access_removed_title": {
+      "en": "Automatic collection stopped: Stripe access was removed",
+      "params": []
+    },
+    "collection.access_removed_body": {
+      "en": "Cards on file can no longer be charged. Invoices still bill and wait to be paid. Reconnect Stripe, then send each payer a new setup link.",
+      "params": []
     }
   },
   "modules": {

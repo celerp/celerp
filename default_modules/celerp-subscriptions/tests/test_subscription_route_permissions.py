@@ -46,6 +46,10 @@ EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("POST", "/{entity_id}/history/{doc_id}/withdraw"): BILL,
     ("POST", "/{entity_id}/periods/{k}/send"): EDIT,
     ("PATCH", "/{entity_id}/schedule"): EDIT,
+    ("GET", "/{entity_id}/collection"): VIEW,
+    # Sending a payer a card setup link or removing their card is consent to charge it.
+    ("POST", "/{entity_id}/collection/setup-link"): "automate_collection",
+    ("POST", "/{entity_id}/collection/revoke"): "automate_collection",
     ("POST", "/{entity_id}/pause"): EDIT,
     ("POST", "/{entity_id}/resume"): EDIT,
     ("POST", "/{entity_id}/cancel"): EDIT,

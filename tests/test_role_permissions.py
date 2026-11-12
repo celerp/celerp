@@ -86,6 +86,7 @@ EXPECTED_CATALOGUE = {
     "manage_users": ("admin", True, "viewer"),
     "manage_company_settings": ("admin", True, "admin"),
     "manage_integrations": ("admin", True, "viewer"),
+    "automate_collection": ("admin", True, "viewer"),
     # fixed rows: owner-only, never grantable
     "manage_permissions": ("owner", False, "owner"),
     "manage_company_lifecycle": ("owner", False, "owner"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from celerp.schemas.numbers import PositiveFloat
 
@@ -635,6 +635,14 @@ class CrmContactAddressRemoved(BaseModel):
     address_id: str
 
 
+class CrmContactCollectionBinding(BaseModel):
+    """The contact's card on file for automatic collection, as Celerp Cloud last reported it."""
+    state: str
+    card_brand: str | None = None
+    card_last4: str | None = None
+    receipt_sent: bool
+
+
 class CrmContactStatementSent(BaseModel):
     """A donor statement emailed to the contact: its period, wording version, total and address."""
     date_from: str
@@ -736,6 +744,23 @@ class DocReopened(BaseModel):
 class DocSent(BaseModel):
     sent_via: str | None = None
     sent_to: str | None = None
+
+
+class DocCollection(BaseModel):
+    """The invoice's automatic card collection as it stands after the change (celerp.services.collection)."""
+    model_config = ConfigDict(extra="forbid")
+    state: str
+    asked: bool | None = None
+    attempt_number: int | None = None
+    request_key: str | None = None
+    amount_minor: int | None = None
+    currency: str | None = None
+    failure_code: str | None = None
+    retry_eligible_at: str | None = None
+    action_url: str | None = None
+    definitive: bool | None = None
+    cancel: str | None = None
+    reason: str | None = None
 
 
 class PaymentBooks(BaseModel):
@@ -1646,6 +1671,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "crm.contact.address_updated": CrmContactAddressUpdated,
     "crm.contact.address_removed": CrmContactAddressRemoved,
     "crm.contact.statement_sent": CrmContactStatementSent,
+    "crm.contact.collection_binding": CrmContactCollectionBinding,
     "crm.contact.file_attached": EntityFileAttached,
     "crm.contact.file_tagged": EntityFileTagged,
     "crm.contact.file_deleted": EntityFileDeleted,
@@ -1674,6 +1700,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.reopened": DocReopened,
     "doc.converted_to_bill": DocConvertedToBill,
     "doc.sent": DocSent,
+    "doc.collection": DocCollection,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.refund_reversed": DocPaymentRefundReversed,

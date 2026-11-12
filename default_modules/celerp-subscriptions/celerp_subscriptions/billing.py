@@ -46,7 +46,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import (AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SCHEDULE_FIELDS, SKIPPED,
+from celerp_subscriptions.periods import (AUTO_MODES, BILLED, COLLECT_MODE, CLAIMED_STATES, RELEASED, SCHEDULE_FIELDS, SKIPPED,
                                           UNRESOLVED, TERMS, Schedule, ScheduleError, check_terms, shown, term_error)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
@@ -55,11 +55,14 @@ log = logging.getLogger(__name__)
 
 MODULE = "celerp-subscriptions"
 # Each unattended mode and the permission its authorizer must keep holding.
-MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
-MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents"}
+MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending",
+                   "collection": "automate_collection"}
+MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents",
+                            "collection": "record_payments"}
 # The settings each mode's consent covers: changing one while the mode runs is a new consent.
 # Automatic billing covers every setting its decision reads (unattended_due, outside_window).
-CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
+CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",),
+                 "collection": ("generation_mode",)}
 # The longest a send waits for the mail server, and the longest a send can take with recording its
 # answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server (send_state).
 TRANSPORT_TIMEOUT = timedelta(minutes=4)
@@ -278,6 +281,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     needed = [m for m in choosing if m not in chosen or any(f in changes for f in CONSENT_TERMS[m])]
     await require_mode_permissions(session, company_id, actor_id,
                                    [*needed, *(m for m in entering_modes(before, merged) if m not in needed)])
+    if "collection" in needed:
+        from celerp_subscriptions.collect import require_collectable
+        await require_collectable(session, company_id, merged)
     kept = before.get("consents") or {}
     consents = {**{m: kept[m] for m in choosing if m in kept},
                 **{m: {"by": str(actor_id), "at": now_stamp()} for m in needed}}
@@ -743,6 +749,9 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         doc_id = await issue_document(session, company, tid, state, doc, actor, claim_key)
     except (HTTPException, KeyedRefusal) as exc:
         raise BillRefused(state, tid, exc) from exc
+    if state.get("generation_mode") == COLLECT_MODE:
+        from celerp.services.collection import open_attempt
+        await open_attempt(session, company.id, (await lock_projections(session, company.id, [doc_id]))[doc_id], 1)
     periods = periods_of(state)
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto}
@@ -1229,7 +1238,8 @@ def configured_modes(state: dict) -> list[str]:
     Send automatically on a manual agreement is not one of them."""
     if state.get("generation_mode") not in AUTO_MODES:
         return []
-    return ["generation", *(["sending"] if state.get("auto_send") else [])]
+    return ["generation", *(["sending"] if state.get("auto_send") else []),
+            *(["collection"] if state.get("generation_mode") == COLLECT_MODE else [])]
 
 
 def modes_in_force(state: dict) -> list[str]:
@@ -1345,6 +1355,8 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
     if held:
         await notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
     report.after_commit.append(_expire_attempts_for(company_id))
+    from celerp_subscriptions.collect import pass_for
+    report.after_commit.append(pass_for(company_id))
     return report
 
 

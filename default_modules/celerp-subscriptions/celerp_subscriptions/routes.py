@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -24,7 +25,7 @@ from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_subscriptions import billing, members, metrics, migration, summary
+from celerp_subscriptions import billing, collect, members, metrics, migration, summary
 from celerp_subscriptions.periods import (
     AUTO_MODES, BILLED, CLAIMED_STATES, KINDS, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
@@ -109,6 +110,11 @@ class SendBody(BaseModel):
 
 class CatchUpBody(BaseModel):
     items: list[CatchUpItem] = Field(..., max_length=1000)
+
+
+class SetupLinkBody(BaseModel):
+    delivery: Literal["email", "copy"]
+    resend_receipt: bool = False
 
 
 class ScheduleBody(BaseModel):
@@ -567,6 +573,39 @@ def _build_router() -> APIRouter:
         await billing.deliver(lambda: billing.same_session(session), company_id, entity_id, k,
                               retry_by=user.id, attempt=body.attempt, again=body.again)
         return await summary.send_answer(session, company_id, entity_id, k)
+
+    @router.get("/{entity_id}/collection")
+    async def collection_view(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Whether Celerp Cloud offers automatic collection, and the payer's card on file."""
+        return await collect.view(session, company_id, entity_id)
+
+    @router.post("/{entity_id}/collection/setup-link")
+    async def collection_setup_link(
+        entity_id: str,
+        body: SetupLinkBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("automate_collection"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """The link where the payer puts a card on file, emailed or to copy; or the receipt of
+        the card on file emailed to the payer again."""
+        return await collect.setup_link(session, company_id, entity_id, body.delivery, body.resend_receipt)
+
+    @router.post("/{entity_id}/collection/revoke")
+    async def collection_revoke(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("automate_collection"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Withdraw the payer's card on file, so nothing more is charged to it."""
+        return await collect.revoke(session, company_id, entity_id, user.id)
 
     @router.patch("/{entity_id}/schedule")
     async def change_schedule(

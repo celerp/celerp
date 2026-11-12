@@ -7850,5 +7850,19 @@
   "subscriptions.def_currency": "Subscriptions in another currency are converted at their own exchange rate. Pick a currency to see only the subscriptions in it, without conversion.",
   "subscriptions.err_metrics_order": "The From date is after the To date. Choose a From date on or before the To date.",
   "subscriptions.err_metrics_range": "The range is longer than 10 years. Choose a To date within 10 years of the From date.",
-  "subscriptions.err_metrics_currency": "That currency code isn't recognized. Use a three-letter code such as USD."
+  "subscriptions.err_metrics_currency": "That currency code isn't recognized. Use a three-letter code such as USD.",
+  "perm.name.automate_collection": "Enable automatic collection",
+  "subscriptions.err_collection_off": "Automatic collection is not available. Connect Stripe through Celerp Cloud to turn it on.",
+  "subscriptions.err_no_card_on_file": "The payer has no card on file. Send them a setup link first.",
+  "subscriptions.err_payer_not_contact": "The payer is not one of your contacts. Choose a contact as the payer first.",
+  "subscriptions.err_payer_no_email": "The payer has no email address. Add one to the contact first.",
+  "subscriptions.err_cloud_unreachable": "Could not reach Celerp Cloud. Try again.",
+  "subscriptions.err_setup_link_daily_limit": "Too many setup links for this payer today. Try again tomorrow.",
+  "subscriptions.err_setup_email_daily_limit": "Too many setup emails for this payer today. Copy the link instead, or try again tomorrow.",
+  "subscriptions.err_collection_refused": "Celerp Cloud refused the request ({reason}).",
+  "subscriptions.err_no_active_binding": "The payer has no card on file to remove.",
+  "collection.access_removed_title": "Automatic collection stopped: Stripe access was removed",
+  "collection.access_removed_body": "Cards on file can no longer be charged. Invoices still bill and wait to be paid. Reconnect Stripe, then send each payer a new setup link.",
+  "event.crm.contact.collection_binding": "Kartu tersimpan diperbarui",
+  "event.doc.collection": "Penagihan otomatis diperbarui"
 }

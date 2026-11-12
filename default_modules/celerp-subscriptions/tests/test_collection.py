@@ -134,7 +134,7 @@ def _at(monkeypatch, instant: datetime) -> None:
 
 async def _pay(client, hd, doc_id: str, amount: float):
     r = await client.post(f"/docs/{doc_id}/payment", headers=hd, json={
-        "amount": amount, "method": "bank_transfer", "payment_date": "2026-07-02"})
+        "amount": amount, "method": "bank_transfer", "payment_date": "2026-07-02", "bank_account": "1111"})
     assert r.status_code in (200, 201), r.text
 
 
