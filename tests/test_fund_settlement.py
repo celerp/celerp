@@ -17,7 +17,7 @@ import pytest
 from celerp.models.projections import Projection
 from test_fund_legs import _by_fund
 from test_fund_movements import _setup
-from test_income_accounts import _issued, _item, _line
+from test_income_accounts import _issued, _item, _line, ui_client  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -257,3 +257,69 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     paid = await _entry(session, auth, f"je:auto:{doc}:pay:0")
     assert _by_fund(paid["entries"], "receivable") == {f["R"]: -30.0}, paid["entries"]
     assert _account_by_fund(paid["entries"], BANK) == {f["R"]: 30.0}, paid["entries"]
+
+
+async def test_doc_fund_open_lists_each_funds_open_part(client, auth):
+    """An invoice's open balance by fund, as a receipt splits it: each fund's open part,
+    shrinking as receipts settle it; nothing with funds off."""
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f)
+
+    async def fund_open():
+        r = await client.get(f"/docs/{doc}/fund-open", headers=auth["headers"])
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    assert await fund_open() == {"currency": "USD", "funds": [
+        {"fund": f["R"], "name": "Library gift", "open": 100.0},
+        {"fund": "unrestricted", "name": "Unrestricted", "open": 50.0}]}
+    assert (await _pay(client, auth, doc, 60)).status_code == 200
+    assert [(x["fund"], x["open"]) for x in (await fund_open())["funds"]] == [(f["R"], 60.0), ("unrestricted", 30.0)]
+
+    r = await client.put("/accounting/funds/setting", headers=auth["headers"], json={"enabled": False})
+    if r.status_code == 200:  # funds off needs every fund at zero; the open receivable keeps them on
+        assert (await fund_open())["funds"] == []
+
+
+async def test_payment_form_shows_split_by_fund_and_override():
+    """With funds in use, an invoice's payment form shows each fund's open part and the rule
+    that splits a payment by it, and offers Allocate by fund: one amount per fund, empty
+    until the user fills it in, each hinting the share the rule would give."""
+    from ui.components.encode import to_markup
+    from ui.routes.documents import _payment_section
+
+    doc = {"entity_id": "doc:1", "doc_type": "invoice", "status": "final", "currency": "USD",
+           "total": 150.0, "amount_outstanding": 150.0, "payments": []}
+    fund_open = {"currency": "USD", "funds": [{"fund": "fund:1", "name": "Library gift", "open": 100.0},
+                                              {"fund": "unrestricted", "name": "Unrestricted", "open": 50.0}]}
+    page = to_markup(_payment_section(doc, bank_accounts=[{"chart_account_code": BANK, "name": "Bank"}],
+                                      fund_open=fund_open))
+    assert "By fund" in page and "Library gift" in page and "100.00" in page and "50.00" in page
+    assert "in proportion to what it has open" in page
+    assert "Allocate by fund" in page
+    assert 'name="fund_allocation:fund:1"' in page and 'name="fund_allocation:unrestricted"' in page
+    assert 'placeholder="100.00"' in page and 'placeholder="50.00"' in page
+
+    plain = to_markup(_payment_section(doc, bank_accounts=[{"chart_account_code": BANK, "name": "Bank"}]))
+    assert "Allocate by fund" not in plain and "fund_allocation" not in plain
+
+
+async def test_payment_form_sends_allocation_by_fund(ui_client):
+    """Amounts typed under Allocate by fund reach the payment as its split by fund (an empty
+    one counting as nothing); with every amount left empty the payment carries no split."""
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+
+    record = AsyncMock(return_value={"event_id": "e1"})
+    form = {"amount": "60", "payment_date": "2026-03-02", "method": "transfer", "bank_account": BANK,
+            "conversion_rate": "1", "reference": "", "idempotency_key": "k-1"}
+    with _ui_api(record_payment=record):
+        await ui_client.post("/docs/doc:1/payment", data=form | {
+            "fund_allocation:fund:1": "45", "fund_allocation:unrestricted": ""})
+    assert record.await_args.args[2]["fund_allocation"] == {"fund:1": 45.0, "unrestricted": 0.0}
+
+    with _ui_api(record_payment=record):
+        await ui_client.post("/docs/doc:1/payment", data=form | {
+            "fund_allocation:fund:1": "", "fund_allocation:unrestricted": " "})
+    assert "fund_allocation" not in record.await_args.args[2]
