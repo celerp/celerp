@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Sample agreements for a demo company of a business type that bills by agreement: a
 consulting firm's monthly and quarterly retainers, a nonprofit's annual and monthly
-memberships, so the Retainers and Members pages have something to show.
+memberships, a SaaS company's seat subscriptions (one still in its trial), so the Retainers,
+Members and Subscribers pages have something to show.
 
 Seeded once per agreement, only while the company keeps no books of its own, and kept in the
 books' currency until then. Each is an ordinary agreement created as a demo record and
@@ -11,20 +12,41 @@ activated as Activate does; it bills nothing until someone bills it.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
+from typing import NamedTuple
 
 from celerp.services.money import books_currency
 
-# key, kind, customer, line name, unit price, frequency, grace days
-_AGREEMENTS: dict[str, tuple[tuple[str, str, str, str, str, str, int | None], ...]] = {
+class _Sample(NamedTuple):
+    key: str
+    kind: str
+    customer: str
+    name: str
+    price: str
+    frequency: str
+    grace_days: int | None = None
+    quantity: int = 1
+    trial_days: int | None = None  # its trial ends this many days after seeding
+
+
+_AGREEMENTS: dict[str, tuple[_Sample, ...]] = {
     "consulting": (
-        ("advisory", "retainer", "[DEMO] Harbor Logistics", "Monthly advisory retainer", "2500", "monthly", None),
-        ("strategy", "retainer", "[DEMO] Northwind Foods", "Quarterly strategy review", "6000", "quarterly", None),
+        _Sample("advisory", "retainer", "[DEMO] Harbor Logistics", "Monthly advisory retainer", "2500", "monthly"),
+        _Sample("strategy", "retainer", "[DEMO] Northwind Foods", "Quarterly strategy review", "6000", "quarterly"),
     ),
     "nonprofit": (
-        ("individual", "membership", "[DEMO] Alex Morgan", "Annual membership - Individual", "60", "annually", 30),
-        ("family", "membership", "[DEMO] Sam Rivera", "Annual membership - Family", "120", "annually", 30),
-        ("supporter", "membership", "[DEMO] Jordan Lee", "Monthly supporter membership", "10", "monthly", 14),
+        _Sample("individual", "membership", "[DEMO] Alex Morgan", "Annual membership - Individual", "60", "annually", 30),
+        _Sample("family", "membership", "[DEMO] Sam Rivera", "Annual membership - Family", "120", "annually", 30),
+        _Sample("supporter", "membership", "[DEMO] Jordan Lee", "Monthly supporter membership", "10", "monthly", 14),
+    ),
+    "saas": (
+        _Sample("starter", "subscription", "[DEMO] Brightline Studio", "Starter plan - monthly", "29", "monthly",
+                quantity=5),
+        _Sample("professional", "subscription", "[DEMO] Copperfield Analytics", "Professional plan - annual", "990",
+                "annually", quantity=12),
+        _Sample("api", "subscription", "[DEMO] Lumen Health", "API add-on - monthly", "49", "monthly",
+                trial_days=14),
     ),
 }
 
@@ -51,25 +73,28 @@ async def seed_demo_agreements(session, company_id, user_id) -> None:
     settings = company.settings or {}
     vertical = settings.get("vertical") or ""
     currency = books_currency(settings)
-    start = business_today(settings.get("timezone")).replace(day=1).isoformat()
+    today = business_today(settings.get("timezone"))
+    start = today.replace(day=1)
     actor = SimpleNamespace(id=user_id)
     seeded = []
-    for key, kind, customer, name, price, frequency, grace in _AGREEMENTS.get(vertical, ()):
-        idem = _key(vertical, key)
+    for sample in _AGREEMENTS.get(vertical, ()):
+        idem = _key(vertical, sample.key)
         if await find_event_by_idempotency(session, company_id, idem) is not None:
             seeded.append(idem)
             continue
-        line = {"line_id": str(uuid.uuid4()), "name": name, "description": name, "quantity": 1,
-                "unit_price": float(price)}
+        line = {"line_id": str(uuid.uuid4()), "name": sample.name, "description": sample.name,
+                "quantity": sample.quantity, "unit_price": float(sample.price)}
         money = document_money({}, [line], currency, keep_unrated_tax=True)
         ref = await claim_number(session, company, draft_counter("subscription_invoice"))
         doc_id = f"doc:{ref}"
-        data = {"doc_type": "subscription_invoice", "ref_id": ref, "contact_name": customer,
+        data = {"doc_type": "subscription_invoice", "ref_id": ref, "contact_name": sample.customer,
                 "line_items": [line], "currency": currency, **money, "amount_paid": 0.0,
-                "amount_outstanding": money["total"], "issue_date": start, "start_date": start,
-                "frequency": frequency, "kind": kind}
-        if grace is not None:
-            data["grace_days"] = grace
+                "amount_outstanding": money["total"], "issue_date": start.isoformat(),
+                "start_date": start.isoformat(), "frequency": sample.frequency, "kind": sample.kind}
+        if sample.grace_days is not None:
+            data["grace_days"] = sample.grace_days
+        if sample.trial_days is not None:
+            data["trial_end"] = (today + timedelta(days=sample.trial_days)).isoformat()
         await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc",
                          event_type="doc.created", data=data, actor_id=user_id, location_id=None,
                          source=DEMO_SOURCE, idempotency_key=idem)

@@ -108,9 +108,9 @@ async def test_saas_demo_has_subscriptions_with_seats(client, monkeypatch):
     assert (await client.post("/companies/me/demo/reseed", headers=h)).status_code == 200
     subs = (await client.get("/subscriptions", headers=h, params={"kind": "subscription"})).json()["items"]
     assert len(subs) == 3, subs
-    docs = [(await client.get(f"/docs/{s['entity_id']}", headers=h)).json() for s in subs]
-    assert any(li["quantity"] > 1 for d in docs for li in d["line_items"]), docs
-    assert sum(1 for d in docs if d.get("trial_end")) == 1, docs
+    assert any(li["quantity"] > 1 for s in subs for li in s["line_items"]), subs
+    trials = [s for s in subs if s.get("trial_end")]
+    assert len(trials) == 1 and trials[0]["next_bill_date"] == trials[0]["trial_end"], subs
     assert "celerp-subscriptions" in load_preset("saas", allow_hidden=True)["modules"]
 
 
