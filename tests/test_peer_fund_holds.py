@@ -376,3 +376,148 @@ async def test_peer_document_held_for_fund_choices(real_client, real_engine, mon
     assert results["documents_out"].ok, results["documents_out"].errors
     assert await _held(real_client, firm_tok, "doc_funds") == []
     assert await _copy_of(real_engine, firm_company, invoice) is None
+
+
+async def _state(real_client, tok: str, doc: str) -> dict:
+    r = await real_client.get(f"/docs/{doc}", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _revise(real_client, tok: str, doc: str, **fields) -> None:
+    version = (await _state(real_client, tok, doc))["version"]
+    r = await real_client.patch(f"/docs/{doc}", headers=auth(tok), json={
+        "expected_version": version, "fields_changed": {key: {"new": value} for key, value in fields.items()}})
+    assert r.status_code == 200, r.text
+
+
+async def _choose_on(real_client, tok: str, doc: str, **body):
+    version = (await _state(real_client, tok, doc))["version"]
+    r = await real_client.post(f"/docs/{doc}/fund-choices", headers=auth(tok),
+                               json={"expected_version": version, **body})
+    assert r.status_code == 200, r.text
+
+
+def _chosen(state: dict) -> tuple:
+    return state.get("fund_choice"), [(li.get("fund_choice"), li.get("fund_id")) for li in state["line_items"]]
+
+
+def _reason(state: dict) -> str | None:
+    return (state.get("fund_choice_reason") or {}).get("message_key")
+
+
+_LINES = [{"name": "Electricity", "quantity": 1, "unit_price": 50.0, "line_total": 50.0,
+           "account_code": "6300", "receive_as": "expense"},
+          {"name": "Water", "quantity": 1, "unit_price": 30.0, "line_total": 30.0,
+           "account_code": "6300", "receive_as": "expense"}]
+
+
+async def _connected_draft(real_client, real_engine, monkeypatch):
+    """A client's draft bill of two expense lines copied as a draft into the firm's books,
+    which use funds. Returns (tok, firm_tok, client_company, credential, fund, bill, copy)."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    fund = await _funds_client(real_client, firm_tok)
+    vendor = await real_client.post("/crm/contacts", json={"name": "Utility Co", "contact_type": "vendor"},
+                                    headers=auth(tok))
+    assert vendor.status_code in (200, 201), vendor.text
+    r = await real_client.post("/docs", headers=auth(tok), json={
+        "doc_type": "bill", "contact_id": vendor.json()["id"], "date": DAY, "line_items": _LINES,
+        "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code in (200, 201), r.text
+    bill = r.json()["id"]
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+    copy = await _copy_of(real_engine, _company_of(firm_tok), bill)
+    assert copy and (await _state(real_client, firm_tok, copy))["status"] == "draft"
+    return tok, firm_tok, client_company, credential, fund, bill, copy
+
+
+async def _synced(real_client, firm_tok, client_company, credential, copy) -> dict:
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+    return await _state(real_client, firm_tok, copy)
+
+
+@pytest.mark.parametrize("shape", ["document", "firm_journal"])
+async def test_local_fund_choice_survives_unchanged_peer_revision(real_client, real_engine, monkeypatch, shape):
+    """A firm user chose the fund on both lines of a client's draft bill: a revision that
+    changes no money keeps them; one changing only the shipping clears every choice; one
+    changing line 2's quantity and adding line 3 clears them and Finalize names lines 1 to 3;
+    every line keeps where it came from. A held firm journal stores no choice, so a refused
+    post leaves the hold as it was and its next revision starts with none."""
+    if shape == "firm_journal":
+        tok, _, client_company, credential, fund, item, _ = await _held_firm_journal(
+            real_client, real_engine, monkeypatch, [(EXPENSE, 40.0, 0.0), (BANK, 0.0, 40.0)])
+        assert (await _post_held(real_client, tok, item, lines={1: fund})).status_code == 409
+        await _two_way(client_company, credential)
+        [again] = await _held(real_client, tok)
+        assert again["fix"] == item["fix"] and fund not in str(again["fix"])
+        return
+    tok, firm_tok, client_company, credential, fund, bill, copy = await _connected_draft(
+        real_client, real_engine, monkeypatch)
+    lines = (await _state(real_client, firm_tok, copy))["line_items"]
+    await _choose_on(real_client, firm_tok, copy, lines={li["line_id"]: fund for li in lines})
+    chosen = (None, [(fund, fund), (fund, fund)])
+
+    await _revise(real_client, tok, bill, notes="Meter read on the 30th")
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert state["notes"] == "Meter read on the 30th"
+    assert _chosen(state) == chosen and _reason(state) is None
+
+    await _revise(real_client, tok, bill, shipping=5.0)
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert _chosen(state) == (None, [(None, None), (None, None)])
+    assert _reason(state) == "fund.choices_cleared_by_source.total"
+
+    await _choose_on(real_client, firm_tok, copy, lines={li["line_id"]: fund for li in state["line_items"]})
+    assert _chosen(await _state(real_client, firm_tok, copy)) == chosen
+    revised = [_LINES[0], {**_LINES[1], "quantity": 2, "line_total": 60.0},
+               {"name": "Sewer", "quantity": 1, "unit_price": 10.0, "line_total": 10.0,
+                "account_code": "6300", "receive_as": "expense"}]
+    await _revise(real_client, tok, bill, line_items=revised)
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert _chosen(state) == (None, [(None, None)] * 3)
+    assert _reason(state) == "fund.choices_cleared_by_source.lines"
+    assert [li.get("origin") for li in state["line_items"]] == ["connected_company"] * 3
+    r = await real_client.post(f"/docs/{copy}/finalize", headers=auth(firm_tok))
+    assert r.status_code == 409 and r.json()["fix"]["lines"] == [1, 2, 3], r.text
+    assert (await _state(real_client, firm_tok, copy))["status"] == "draft"
+
+
+async def test_outside_money_change_clears_document_choice_with_reason(real_client, real_engine, monkeypatch):
+    """A firm user chose the document's fund on a client's draft bill: a revision changing the
+    tax clears it with the reason naming the tax and where it came from; chosen again, an
+    unchanged revision keeps it; a price change clears it naming the total, and when the
+    client then issues the bill it is held for funds with that reason shown in the hold."""
+    tok, firm_tok, client_company, credential, fund, bill, copy = await _connected_draft(
+        real_client, real_engine, monkeypatch)
+    await _choose_on(real_client, firm_tok, copy, document=fund)
+    assert _chosen(await _state(real_client, firm_tok, copy))[0] == fund
+
+    await _revise(real_client, tok, bill, doc_taxes=[
+        {"code": "VAT", "rate": 7.0, "order": 1, "is_compound": False, "label": "VAT"}])
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert _chosen(state) == (None, [(None, None), (None, None)])
+    reason = state["fund_choice_reason"]
+    assert reason["message_key"] == "fund.choices_cleared_by_source.tax"
+    assert reason["params"]["source"]["message_key"] == "fund.origin.connected_company"
+
+    await _choose_on(real_client, firm_tok, copy, document=fund)
+    state = await _state(real_client, firm_tok, copy)
+    assert _chosen(state)[0] == fund and _reason(state) is None
+    await _revise(real_client, tok, bill, notes="Second notice")
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert _chosen(state)[0] == fund and _reason(state) is None
+
+    lines = (await _state(real_client, tok, bill))["line_items"]
+    await _revise(real_client, tok, bill, line_items=[{**lines[0], "unit_price": 55.0, "line_total": 55.0}, lines[1]])
+    state = await _synced(real_client, firm_tok, client_company, credential, copy)
+    assert _chosen(state)[0] is None and _reason(state) == "fund.choices_cleared_by_source.total"
+
+    assert (await real_client.post(f"/docs/{bill}/finalize", headers=auth(tok))).status_code == 200
+    results = await _two_way(client_company, credential)
+    assert not results["documents_out"].ok
+    [item] = await _held(real_client, firm_tok, "doc_funds")
+    assert item["fix"]["reason"]["message_key"] == "fund.choices_cleared_by_source.total"
+    assert (await _state(real_client, firm_tok, copy))["status"] == "draft"
