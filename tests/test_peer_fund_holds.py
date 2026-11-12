@@ -19,7 +19,7 @@ from sqlalchemy import select
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
-from test_peer_sync_end_to_end import _route_to_app
+from test_peer_sync_end_to_end import _company_of, _route_to_app
 from test_peer_two_way_sync import _attention, _from_firm, _journals, _notices, _pair_journals, _two_way
 
 pytestmark = pytest.mark.asyncio
@@ -38,8 +38,8 @@ async def _funds_client(real_client, tok: str) -> str:
     return await _fund(real_client, headers, "Building fund")
 
 
-async def _firm_journal(real_client, firm_tok: str, memo: str, lines: list[tuple[str, float, float]]) -> str:
-    r = await real_client.post("/accounting/journal-entries", headers=auth(firm_tok), json={
+async def _journal(real_client, tok: str, memo: str, lines: list[tuple[str, float, float]]) -> str:
+    r = await real_client.post("/accounting/journal-entries", headers=auth(tok), json={
         "ts": DAY, "memo": memo, "idempotency_token": uuid.uuid4().hex,
         "entries": [{"account": a, "debit": d, "credit": c} for a, d, c in lines]})
     assert r.status_code == 200, r.text
@@ -63,11 +63,40 @@ async def _post_held(real_client, tok: str, item: dict, *, every=None, lines: di
 async def _held_firm_journal(real_client, real_engine, monkeypatch, lines):
     tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
     fund = await _funds_client(real_client, tok)
-    firm_je = await _firm_journal(real_client, firm_tok, "Reclass program costs", lines)
+    firm_je = await _journal(real_client, firm_tok, "Reclass program costs", lines)
     _route_to_app(monkeypatch, [])
     await _two_way(client_company, credential)
     [item] = await _held(real_client, tok)
     return tok, firm_tok, client_company, credential, fund, item, firm_je
+
+
+def _from_client(journals: dict) -> dict[str, dict]:
+    return {eid: s for eid, s in journals.items() if s.get("peer_source")}
+
+
+async def _held_client_journal(real_client, real_engine, monkeypatch, lines):
+    """The firm's copy uses funds and has a restricted fund; the client's manual journal is
+    held there. Returns (tok, firm_tok, client_company, credential, fund, item, client_je)."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    fund = await _funds_client(real_client, firm_tok)
+    client_je = await _journal(real_client, tok, "Petty cash rent", lines)
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, credential)
+    assert not results["journals_out"].ok, results["journals_out"]
+    [item] = await _held(real_client, firm_tok)
+    return tok, firm_tok, client_company, credential, fund, item, client_je
+
+
+async def _held_on(shape, real_client, real_engine, monkeypatch, lines):
+    """A journal held for funds in the books that ``shape`` names: (posting user's token, the
+    books' company, credential, client company, fund, hold, memo, origin, posted-entry filter)."""
+    if shape == "firm_journal":
+        tok, _, client_company, credential, fund, item, _ = await _held_firm_journal(
+            real_client, real_engine, monkeypatch, lines)
+        return tok, client_company, credential, client_company, fund, item, "Reclass program costs", "accountant", _from_firm
+    _, firm_tok, client_company, credential, fund, item, _ = await _held_client_journal(
+        real_client, real_engine, monkeypatch, lines)
+    return firm_tok, _company_of(firm_tok), credential, client_company, fund, item, "Petty cash rent", "client", _from_client
 
 
 async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client, real_engine, monkeypatch):
@@ -100,38 +129,77 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
     assert _from_firm(await _journals(real_engine, client_company)) == {}
 
 
-@pytest.mark.parametrize("shape", ["firm_journal"])
+@pytest.mark.parametrize("shape", ["firm_journal", "client_journal"])
 async def test_held_journal_line_without_choice_refused(real_client, real_engine, monkeypatch, shape):
     """With no entry choice and one line's choice missing, or cleared to null, Post is refused
     by check_outside_record naming that line, nothing posts and the hold stays; with the entry
     choice Unrestricted it posts with no fund on any line, as the posting user, and a repeat
-    with the same request key returns the same entry."""
-    tok, _, client_company, credential, fund, item, _ = await _held_firm_journal(
-        real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
+    with the same request key returns the same entry. The same on the client for a journal of
+    the firm's and on the firm for a journal of the client's."""
+    tok, books, credential, client_company, fund, item, memo, origin, posted = await _held_on(
+        shape, real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
     for lines in ({1: fund}, {1: fund, 2: None}):
         r = await _post_held(real_client, tok, item, lines=lines)
         assert r.status_code == 409 and r.json()["detail"]["message_key"] == "posting.fund.choice_needed", r.text
-        assert r.json()["detail"]["params"]["record"] == "Reclass program costs"
-        assert r.json()["detail"]["params"]["source"]["message_key"] == "fund.origin.accountant"
+        assert r.json()["detail"]["params"]["record"] == memo
+        assert r.json()["detail"]["params"]["source"]["message_key"] == f"fund.origin.{origin}"
         assert r.json()["fix"]["lines"] == [2], r.json()
-        assert _from_firm(await _journals(real_engine, client_company)) == {}
+        assert posted(await _journals(real_engine, books)) == {}
         assert len(await _held(real_client, tok)) == 1
 
     key = uuid.uuid4().hex
     r = await _post_held(real_client, tok, item, every="unrestricted", key=key)
     assert r.status_code == 200, r.text
-    [(je_id, state)] = _from_firm(await _journals(real_engine, client_company)).items()
+    [(je_id, state)] = posted(await _journals(real_engine, books)).items()
     assert r.json()["id"] == je_id
     assert state["fund_choice"] == "unrestricted" and state["status"] == "posted"
     assert [e.get("fund_id") for e in state["entries"]] == [None, None]
+    assert {e.get("origin") for e in state["entries"]} == {origin}
     assert await _held(real_client, tok) == []
     assert (await _post_held(real_client, tok, item, every="unrestricted", key=key)).json()["id"] == je_id
-    assert len(_from_firm(await _journals(real_engine, client_company))) == 1
+    assert len(posted(await _journals(real_engine, books))) == 1
 
-    actor = await _actor(real_engine, client_company, je_id)
+    actor = await _actor(real_engine, books, je_id)
     assert actor is not None and actor == await _user_of(tok)
-    await _two_way(client_company, credential)  # the posted entry is not posted again
-    assert len(_from_firm(await _journals(real_engine, client_company))) == 1
+    results = await _two_way(client_company, credential)  # the posted entry is not posted again
+    assert all(r.ok for r in results.values()), {k: r.errors for k, r in results.items()}
+    assert len(posted(await _journals(real_engine, books))) == 1
+    assert await _held(real_client, tok) == []
+
+
+async def test_client_journal_held_at_fund_firm_copy(real_client, real_engine, monkeypatch):
+    """The firm's copy of a client uses funds: the client's journal is refused there with the
+    funds fix, recorded once as a hold with the lines marked as the client's, and nothing
+    posts; the client sends it again on each sync until a firm user posts it with a fund.
+    The client's void of it then voids the firm's entry, with no choice asked."""
+    tok, firm_tok, client_company, credential, fund, item, client_je = await _held_client_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
+    firm_company = _company_of(firm_tok)
+    assert _from_client(await _journals(real_engine, firm_company)) == {}
+    fix = item["fix"]
+    assert fix["memo"] == "Petty cash rent" and fix["ts"] == DAY and fix["revision"] >= 1
+    assert [(e["account"], e["debit"], e["credit"], e["origin"]) for e in fix["entries"]] == [
+        (BANK, 100.0, 0.0, "client"), (EXPENSE, 0.0, 100.0, "client")]
+    assert fix["lines"] == [1, 2]
+
+    results = await _two_way(client_company, credential)  # sent again, still held once
+    assert not results["journals_out"].ok
+    assert len(await _held(real_client, firm_tok)) == 1
+    assert _from_client(await _journals(real_engine, firm_company)) == {}
+
+    r = await _post_held(real_client, firm_tok, item, every=fund)
+    assert r.status_code == 200, r.text
+    [(je_id, state)] = _from_client(await _journals(real_engine, firm_company)).items()
+    assert state["peer_source"]["journal"] == client_je
+    assert {e.get("fund_id") for e in state["entries"]} == {fund}
+
+    r = await real_client.post(f"/accounting/journal-entries/{client_je}/void", headers=auth(tok), json={"reason": "Wrong"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert all(r.ok for r in results.values()), {k: r.errors for k, r in results.items()}
+    assert await _held(real_client, firm_tok) == []
+    state = (await _journals(real_engine, firm_company))[je_id]
+    assert state["status"] == "void"
 
 
 async def _actor(engine, company_id: str, entity_id: str):
@@ -191,7 +259,7 @@ async def test_firm_journal_fund_id_refused(real_client, real_engine, monkeypatc
     declined naming the key; nothing posts and nothing is held for funds."""
     tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
     await _funds_client(real_client, tok)
-    await _firm_journal(real_client, firm_tok, "Carries a fund", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
+    await _journal(real_client, firm_tok, "Carries a fund", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
     _feed_with(monkeypatch, key, "fund:elsewhere")
     _route_to_app(monkeypatch, [])
     results = await _two_way(client_company, credential)
@@ -205,7 +273,7 @@ async def test_firm_journal_from_release_before_funds_posts(real_client, real_en
     """A firm on a release before funds sends its lines with account_roles: the journal is not
     declined; it posts in books without funds, each line with the roles these books give it."""
     tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
-    await _firm_journal(real_client, firm_tok, "Older firm", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
+    await _journal(real_client, firm_tok, "Older firm", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
     _feed_with(monkeypatch, "account_roles", ["sent_by_firm"])
     _route_to_app(monkeypatch, [])
     results = await _two_way(client_company, credential)

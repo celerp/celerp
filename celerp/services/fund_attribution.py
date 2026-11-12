@@ -81,6 +81,8 @@ FUND_ATTRIBUTION: dict[str, str] = {
     "celerp.services.module_journals:reverse_journal": "X",
     "celerp.services.peer_journals:apply_firm_journal": "O",
     "celerp.services.peer_journals:receive_journal": "O",
+    "celerp.services.peer_journals:_post": "O",
+    "celerp.services.peer_journals:_post_client_journal": "O",
     "celerp.services.peer_journals:reverse": "V",
     "celerp_accounting.funds:post_fund_movement": "FM",
     "celerp_accounting.import_service:import_journal_records": "O",
