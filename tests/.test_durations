@@ -30248,5 +30248,13 @@
     "tests/test_woocommerce_held_number.py::test_import_as_refuses_a_signature_the_order_no_longer_has": 0.6097794079687446,
     "tests/test_woocommerce_held_number.py::test_two_import_as_requests_at_once_book_the_order_once": 1.1422738219844177,
     "tests/test_browser/test_js_template_hostile_values.py::test_hostile_values_never_run_in_any_js_template[chromium]": 1.0581975640379824,
-    "tests/test_shard_durations.py::test_refresh_times_each_job_s_tests_in_a_run_of_their_own": 0.024571612069848925
+    "tests/test_shard_durations.py::test_refresh_times_each_job_s_tests_in_a_run_of_their_own": 0.024571612069848925,
+    "tests/test_encode.py::test_hole_positions_admits_allowed_shapes[html-<a href=/x>{v}</a>]": 0.028530227078590542,
+    "tests/test_encode.py::test_hole_positions_admits_allowed_shapes[html-<input disabled title = \"{v}\">]": 0.0031137969926930964,
+    "tests/test_encode.py::test_hole_positions_admits_allowed_shapes[html-<p>{v}</p >]": 0.0025925199734047055,
+    "tests/test_encode.py::test_hole_positions_refuses_holes_outside_the_allow_list[html-<p title=\"a\"class=\"{v}\">]": 0.0028378580464050174,
+    "tests/test_encode.py::test_hole_positions_refuses_holes_outside_the_allow_list[html-<p title=a{v}>]": 0.0025457260198891163,
+    "tests/test_encode.py::test_hole_positions_refuses_holes_outside_the_allow_list[html-<p title={v}>]": 0.002707471023313701,
+    "tests/test_encode.py::test_hole_positions_refuses_holes_outside_the_allow_list[html-<p>{v}</b x>]": 0.0025220810202881694,
+    "tests/test_encode.py::test_hole_positions_refuses_holes_outside_the_allow_list[html-<p>{v}</p]": 0.0028303670114837587
 }
