@@ -182,3 +182,45 @@ UNDO_LIVE_ENTRY: dict[str, str] = {
     "celerp_docs.routes:void_payment": "never: a payment or note entry; Change fund refuses a settled document",
     "celerp_inventory.routes:undo_import_batch": "never: an entry of its own no outside record carries, so Change fund never replaces it",
 }
+
+
+# Operations that void or reverse an entry and post one in the same call, each with its verdict
+# against the fund rules: how the entries it writes together are judged so that no value moves
+# between funds without a judge. Checked by tests/test_fund_attribution.py against the source.
+ONE_ACTION = "one fund_change_action, judged once by judge_fund_change over every entry it voids or posts"
+NETS_TO_ZERO = ("what it posts copies the funds of the lines it voids or reverses (rules X and V), "
+                "so what it writes nets to zero on every fund")
+EACH_ENTRY = ("a void removes a whole entry (rule X, zero on every fund) and each new entry is judged "
+              "on its own by check_fund_rules, a fresh posting by the user who makes it")
+MOVEMENT = "a fund movement or its reversal: one entry, judged by its type's template and cap"
+
+MULTI_ENTRY_OPERATIONS: dict[str, str] = {
+    "celerp.services.auto_je:book_opening_inventory": EACH_ENTRY,
+    "celerp.services.auto_je:correct_earlier_import": EACH_ENTRY,
+    "celerp.services.auto_je:create_for_doc_unvoided": NETS_TO_ZERO,
+    "celerp.services.auto_je:restore_return_charges": NETS_TO_ZERO,
+    "celerp.services.auto_je:take_back_imported_reversals": NETS_TO_ZERO,
+    "celerp.services.auto_je:void_credit_note_payment_rate": NETS_TO_ZERO,
+    "celerp.services.auto_je:void_for_doc_finalized": EACH_ENTRY,
+    "celerp.services.auto_je:void_for_doc_voided": NETS_TO_ZERO,
+    "celerp.services.auto_je:void_for_merge_reclassification": NETS_TO_ZERO,
+    "celerp.services.auto_je:void_imported_used": NETS_TO_ZERO,
+    "celerp.services.auto_je:void_landed_capitalisation": EACH_ENTRY,
+    "celerp.services.auto_je:void_supplier_return": NETS_TO_ZERO,
+    "celerp.services.lot_origin:_normalize": EACH_ENTRY,
+    "celerp.services.lot_origin:_open": EACH_ENTRY,
+    "celerp.services.peer_journals:apply_firm_journal": NETS_TO_ZERO,
+    "celerp.services.peer_journals:receive_journal": NETS_TO_ZERO,
+    "celerp.services.peer_journals:reverse": NETS_TO_ZERO,
+    "celerp.services.peer_lines:change_posted_fund": ONE_ACTION,
+    "celerp_accounting.funds:post_fund_movement": MOVEMENT,
+    "celerp_docs.routes:delete_payment": EACH_ENTRY,
+    "celerp_docs.routes:finalize_document": EACH_ENTRY,
+    "celerp_docs.routes:revert_doc_to_draft": EACH_ENTRY,
+    "celerp_docs.routes:settle_imported_credit": EACH_ENTRY,
+    "celerp_docs.routes:undo_receive_record": EACH_ENTRY,
+    "celerp_docs.routes:void_payment": NETS_TO_ZERO,
+    "celerp_fixed_assets.corrections:undo": NETS_TO_ZERO,
+    "celerp_fixed_assets.runs:reverse": NETS_TO_ZERO,
+    "celerp_inventory.routes:undo_import_batch": EACH_ENTRY,
+}

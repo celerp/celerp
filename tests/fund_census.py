@@ -152,3 +152,64 @@ def undo_census(repo: pathlib.Path = REPO, roots=APP_ROOTS, extra=()) -> dict[st
     for helper in _UNDO_HELPERS:
         out.pop(f"{_AUTO_JE}:{helper}", None)
     return out
+
+
+_VOIDS = frozenset({"_void_je_if_posted", "void_record_postings", "reverse_journal"})
+_POSTS = frozenset({"_emit_auto_posted_je", "repost_record_postings"})
+
+
+def _leaf(qualified: str) -> str:
+    return qualified.rsplit(":", 1)[1].rsplit(".", 1)[-1]
+
+
+class _Multi(ast.NodeVisitor):
+    """Each outermost function that voids or reverses an entry and also posts one, or calls
+    repost_record_postings. It voids or reverses through a voided event, a ``reverses`` key or
+    a call to a function that voids; it posts through a created event or a call to a producer."""
+
+    def __init__(self, module: str, voids: frozenset[str], posts: frozenset[str]):
+        self.module, self.voids, self.posts = module, voids, posts
+        self.found: set[str] = set()
+
+    def visit_ClassDef(self, node) -> None:
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._judge(child, f"{node.name}.{child.name}")
+
+    def visit_FunctionDef(self, node) -> None:
+        self._judge(node, node.name)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _judge(self, node, name: str) -> None:
+        undo = post = repost = False
+        for c in ast.walk(node):
+            if isinstance(c, ast.Call):
+                called, value = _name(c.func), _event_type(c)
+                voided = isinstance(value, ast.Constant) and value.value == _VOIDED
+                undo |= voided or called in self.voids
+                post |= (_journal(c) and not voided) or called in self.posts
+                repost |= called == "repost_record_postings"
+            elif isinstance(c, ast.Dict):
+                undo |= any(isinstance(k, ast.Constant) and k.value == "reverses" for k in c.keys)
+        if (undo and post) or repost:
+            self.found.add(f"{self.module}:{name}")
+
+
+_MULTI_HELPERS = frozenset({f"{_AUTO_JE}:repost_record_postings", f"{_AUTO_JE}:void_record_postings"})
+
+
+def multi_entry_census(repo: pathlib.Path = REPO, roots=APP_ROOTS) -> set[str]:
+    """Every function that both voids or reverses a journal entry and posts one in the same
+    call, directly or through a function that does, or calls repost_record_postings (the
+    void and post helpers themselves left out)."""
+    producers, _ = census(repo, roots)
+    voiders = set(undo_census(repo, roots))
+    voids = _VOIDS | {_leaf(n) for n in voiders}
+    posts = _POSTS | {_leaf(n) for n in producers - voiders}
+    found: set[str] = set()
+    for module, path in sources(repo, roots):
+        visitor = _Multi(module, frozenset(voids), frozenset(posts))
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        found |= visitor.found
+    return found - _MULTI_HELPERS

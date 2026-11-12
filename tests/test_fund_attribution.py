@@ -94,3 +94,39 @@ def test_a_new_undo_reading_a_fixed_id_is_named(tmp_path: pathlib.Path):
     assert problems["current_entry not called"] == ["celerp.services.sneaky:undo"]
     assert _undo_problems(found, {"celerp.services.sneaky:live": "current_entry"})["unlisted undo"] == [
         "celerp.services.sneaky:undo"]
+
+
+def test_multi_entry_operations_listed():
+    from celerp.services.fund_attribution import MULTI_ENTRY_OPERATIONS, ONE_ACTION, NETS_TO_ZERO, EACH_ENTRY, MOVEMENT
+
+    found = fund_census.multi_entry_census()
+    assert sorted(found - set(MULTI_ENTRY_OPERATIONS)) == [], "operations posting several entries without a verdict"
+    assert sorted(set(MULTI_ENTRY_OPERATIONS) - found) == [], "verdicts for operations that no longer post several entries"
+    assert set(MULTI_ENTRY_OPERATIONS.values()) <= {ONE_ACTION, NETS_TO_ZERO, EACH_ENTRY, MOVEMENT}
+    assert MULTI_ENTRY_OPERATIONS["celerp.services.peer_lines:change_posted_fund"] == ONE_ACTION
+
+
+def test_a_new_operation_posting_several_entries_is_named(tmp_path: pathlib.Path):
+    package = tmp_path / "celerp" / "services"
+    package.mkdir(parents=True)
+    (package / "sneaky.py").write_text(
+        "async def swap(session, je_id):\n"
+        "    await emit_event(session, entity_id=je_id, event_type='acc.journal_entry.voided')\n"
+        "    await _emit_auto_posted_je(session, je_id=je_id + ':new', entries=[])\n"
+        "async def undo_only(session, je_id):\n"
+        "    await emit_event(session, entity_id=je_id, event_type='acc.journal_entry.voided')\n"
+        "async def via_helpers(session, je_id):\n"
+        "    await undo_only(session, je_id)\n"
+        "    await post_only(session, je_id)\n"
+        "async def post_only(session, je_id):\n"
+        "    await emit_event(session, entity_id=je_id, event_type='acc.journal_entry.created', data={})\n"
+        "class Ops:\n"
+        "    async def again(self, session, doc_id):\n"
+        "        await repost_record_postings(session, doc_id=doc_id)\n"
+        "async def reversal(session, je_id):\n"
+        "    await emit_event(session, entity_id=je_id + ':r', event_type='acc.journal_entry.created',\n"
+        "                     data={'reverses': je_id})\n",
+        encoding="utf-8")
+    assert fund_census.multi_entry_census(tmp_path, roots=("celerp",)) == {
+        "celerp.services.sneaky:swap", "celerp.services.sneaky:via_helpers",
+        "celerp.services.sneaky:Ops.again", "celerp.services.sneaky:reversal"}
