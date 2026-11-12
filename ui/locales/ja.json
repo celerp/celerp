@@ -7541,5 +7541,9 @@
   "posting.fund.file_key": "The file gives {field}. Choose funds on the import screen, not in the file.",
   "fund.connection_unknown": "These books have no connection by that name. Open the connection from Settings > Connectors and set its default fund there.",
   "fund.default_stale": "Someone changed this default fund after you opened it. Try again to see the current one.",
-  "posting.fund.choice_empty": "Choose a fund for this document, for every line from outside, or for at least one line."
+  "posting.fund.choice_empty": "Choose a fund for this document, for every line from outside, or for at least one line.",
+  "posting.fund.import_funds_off": "Funds are turned off, so this import can't choose them. Turn funds on in Accounting settings, or import without fund choices.",
+  "posting.fund.choice_record_unknown": "{record} isn't in this import. Choose funds only for the records it brings.",
+  "posting.fund.import_line_unknown": "{record} has no line {line}. Choose funds only for lines the file has, by their number.",
+  "posting.fund.line_without_choice": "Line {line} has no fund of its own."
 }

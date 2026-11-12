@@ -68,7 +68,8 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
                                           resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
 from celerp.services.peer_lines import (
-    LINE_KEYS as OUTSIDE_LINE_KEYS, chosen_lines, copied_header, granted_from_stored, require_fund_choices,
+    LINE_KEYS as OUTSIDE_LINE_KEYS, ImportFundChoices, chosen_lines, copied_header, granted_from_stored,
+    require_fund_choices,
 )
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
@@ -689,6 +690,7 @@ class BatchImportResult(BaseModel):
 class DocBatchImportRequest(BaseModel):
     records: list[DocImportRecord] = Field(..., max_length=500)
     upsert: bool = False
+    fund_choices: ImportFundChoices | None = None
 
 
 class FulfillLinesRequest(BaseModel):
@@ -8790,6 +8792,7 @@ async def batch_import_docs(
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
         session, company_id, user, role, settings, body.records, origin="file_import", upsert=body.upsert,
+        fund_choices=body.fund_choices,
     )
     await session.commit()
     return BatchImportResult(**outcome.route_counts())

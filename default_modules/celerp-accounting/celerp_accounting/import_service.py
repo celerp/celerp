@@ -23,6 +23,7 @@ from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
+from celerp.services.peer_lines import ImportFundChoices, check_import_fund_choices, chosen_journal_lines
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 
@@ -83,9 +84,13 @@ async def import_journal_records(
     records: Sequence[AccImportRecord],
     *,
     origin: str,
+    fund_choices: ImportFundChoices | None = None,
 ) -> ImportOutcome:
     """Create imported journal entries once per per-company idempotency key and entity,
-    each marked with where it came from (``origin``: ``file_import`` or ``migration``)."""
+    each marked with where it came from (``origin``: ``file_import`` or ``migration``),
+    each record and line with the fund the import screen chose for it (``fund_choices``)."""
+    fund_choices = await check_import_fund_choices(session, company_id, fund_choices, {
+        r.entity_id: len(e) if isinstance(e := (r.data or {}).get("entries"), list) else 0 for r in records})
     outcome = ImportOutcome()
     keys = [r.idempotency_key for r in records]
     existing_keys = set((await session.execute(
@@ -120,6 +125,7 @@ async def import_journal_records(
             entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
             if isinstance(entries, list):
                 await check_line_contacts(session, company_id, [e for e in entries if isinstance(e, dict)])
+            data, grant = await _with_fund_choices(session, company_id, rec, fund_choices, origin)
             entry = await emit_event(
                 session,
                 origin=origin,
@@ -127,12 +133,13 @@ async def import_journal_records(
                 entity_id=rec.entity_id,
                 entity_type="journal_entry",
                 event_type=rec.event_type,
-                data=rec.data,
+                data=data,
                 actor_id=actor_id,
                 location_id=None,
                 source=rec.source,
                 idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+                fund_grant=grant,
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(rec.entity_id)
@@ -141,6 +148,20 @@ async def import_journal_records(
         except Exception as exc:
             outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
     return outcome
+
+
+async def _with_fund_choices(session, company_id, rec: AccImportRecord, fund_choices: ImportFundChoices,
+                             origin: str):
+    """The record's data with the funds chosen for it and its lines, and the grant that lets
+    it carry them; as it came and no grant when nothing was chosen for it."""
+    every, lines = fund_choices.of(rec.entity_id)
+    entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
+    if (every is None and not lines) or not isinstance(entries, list):
+        return rec.data, None
+    entries = [e for e in entries if isinstance(e, dict)]
+    keys, grant = await chosen_journal_lines(session, company_id, [{**e, "origin": origin} for e in entries],
+                                             every=every, lines=lines)
+    return {**rec.data, "entries": [{**e, **chose} for e, chose in zip(entries, keys)], **grant.header}, grant
 
 
 async def create_chart_account(

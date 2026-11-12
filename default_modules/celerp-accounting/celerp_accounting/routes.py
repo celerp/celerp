@@ -44,7 +44,7 @@ from celerp_accounting.chart_rules import (
     trimmed_text,
 )
 from celerp_accounting.funds import post_fund_movement
-from celerp_accounting.import_service import AccImportRecord
+from celerp_accounting.import_service import AccImportRecord, ImportFundChoices
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
@@ -177,6 +177,7 @@ class AccountPatch(BaseModel):
 
 class AccBatchImportRequest(BaseModel):
     records: list[AccImportRecord] = Field(..., max_length=500)
+    fund_choices: ImportFundChoices | None = None
 
 
 class BatchImportResult(BaseModel):
@@ -805,7 +806,7 @@ async def batch_import_accounting(
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
     outcome = await import_service.import_journal_records(session, company_id, user.id, body.records,
-                                                         origin="file_import")
+                                                         origin="file_import", fund_choices=body.fund_choices)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
 

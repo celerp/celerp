@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import BaseModel, Field
 
 from celerp.accounting_roles import catalog_refusal
 
@@ -197,6 +198,62 @@ def chosen_lines(lines: list, grant: FundChoiceGrant) -> list:
     as none, so a fund chosen before does not stay as an omitted, kept key (LK1)."""
     return [{**line, **grant.lines[line["line_id"]]}
             if isinstance(line, dict) and line.get("line_id") in grant.lines else line for line in lines]
+
+
+async def chosen_journal_lines(session, company_id, entries: list[dict], *, every: str | None,
+                               lines: Mapping[str, str | None], source: str = "user"):
+    """The fund keys each line of a journal takes (in order, only those with a value) from
+    the choices ``every`` (the entry's, and of each line ``lines`` does not name) and ``lines``
+    (line number from 1, as text -> choice; none is no choice), and the grant that lets the
+    entry carry them. ``entries`` carry their ``origin``."""
+    numbered = [{**line, "line_id": str(n)} for n, line in enumerate(entries, 1)]
+    grant = await require_fund_choices(
+        session, company_id, {"line_items": numbered}, lines={n: v for n, v in lines.items() if v is not None},
+        source=source, **({"document": every, "every": every} if every is not None else {}))
+    return [{key: line[key] for key in FUND_KEYS if line.get(key)} for line in chosen_lines(numbered, grant)], grant
+
+
+class ImportFundChoices(BaseModel):
+    """The funds an import screen chose for the records of one batch: ``all`` each record's
+    choice, ``records`` (record id -> choice) a record's own, ``lines`` ("<record id>:<line
+    number from 1>" -> choice) a line's own. A choice is a fund id or "unrestricted"."""
+    all: str | None = None
+    records: dict[str, str] = Field(default_factory=dict)
+    lines: dict[str, str] = Field(default_factory=dict)
+
+    def of(self, record: str) -> tuple[str | None, dict[str, str]]:
+        """``record``'s choice and its lines' own choices, by line number (as text)."""
+        prefix = f"{record}:"
+        return (self.records.get(record, self.all),
+                {key[len(prefix):]: value for key, value in self.lines.items() if key.startswith(prefix)
+                 and key[len(prefix):].isdigit()})
+
+
+async def check_import_fund_choices(session, company_id, choices: ImportFundChoices | None,
+                                    records: Mapping[str, int]) -> ImportFundChoices:
+    """The batch's choices once they can apply, else refused before any record is written:
+    while funds are off, naming a record the batch does not carry (``records``: record id ->
+    its number of lines) or a line by anything but a number the record has, or a value that is
+    not Unrestricted or an active fund of the company."""
+    from celerp.services.journal_accounts import funds_by_id, funds_enabled, hold_fund_ledger
+
+    choices = choices or ImportFundChoices()
+    if choices.all is None and not choices.records and not choices.lines:
+        return choices
+    if not funds_enabled(await hold_fund_ledger(session, company_id)):
+        raise _refused(422, "posting.fund.import_funds_off")
+    for record in [*choices.records, *(key.rpartition(":")[0] for key in choices.lines)]:
+        if record not in records:
+            raise _refused(422, "posting.fund.choice_record_unknown", record=record)
+    for key in choices.lines:
+        record, _, line = key.rpartition(":")
+        if not line.isdigit() or not 1 <= int(line) <= records[record]:
+            raise _refused(422, "posting.fund.import_line_unknown", record=record, line=line)
+    funds = await funds_by_id(session, company_id)
+    for value in [choices.all, *choices.records.values(), *choices.lines.values()]:
+        if value is not None:
+            checked(funds, value, "posting.fund.document_choice_missing")
+    return choices
 
 
 def _fund_of(cover) -> str | None:

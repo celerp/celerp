@@ -934,7 +934,7 @@ async def test_import_fund_choices_per_record(client, session, auth):
         "records": [_journal(first), _journal(second)],
         "fund_choices": {"all": gift, "lines": {f"{first}:1": "unrestricted", f"{first}:2": "unrestricted"}}})
     assert r.status_code == 200 and r.json()["created"] == 2, r.text
-    one, two = (await _entry_state(session, auth["company_id"], eid) for eid in (first, second))
+    one, two = [await _entry_state(session, auth["company_id"], eid) for eid in (first, second)]
     assert [(e.get("fund_id"), e.get("fund_choice")) for e in one["entries"]] == [(None, "unrestricted")] * 2
     assert [(e.get("fund_id"), e.get("fund_choice")) for e in two["entries"]] == [(gift, gift)] * 2
     assert two.get("fund_choice") == gift
@@ -953,7 +953,8 @@ async def test_import_fund_choices_refused_as_a_request(client, auth):
     await _fund_company(client, auth)
     for choices, key in (({"records": {"doc:elsewhere": "unrestricted"}}, "posting.fund.choice_record_unknown"),
                          ({"lines": {"doc:elsewhere:1": "unrestricted"}}, "posting.fund.choice_record_unknown"),
-                         ({"lines": {f"{eid}:first": "unrestricted"}}, "posting.fund.choice_line_unknown"),
+                         ({"lines": {f"{eid}:first": "unrestricted"}}, "posting.fund.import_line_unknown"),
+                         ({"lines": {f"{eid}:2": "unrestricted"}}, "posting.fund.import_line_unknown"),
                          ({"all": "fund:elsewhere"}, "posting.fund.unknown")):
         r = await send(choices)
         assert r.status_code == 422 and _key(r) == key, (choices, r.text)

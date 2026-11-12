@@ -413,6 +413,29 @@
     "posting.fund.choice_empty": {
       "en": "Choose a fund for this document, for every line from outside, or for at least one line.",
       "params": []
+    },
+    "posting.fund.import_funds_off": {
+      "en": "Funds are turned off, so this import can't choose them. Turn funds on in Accounting settings, or import without fund choices.",
+      "params": []
+    },
+    "posting.fund.choice_record_unknown": {
+      "en": "{record} isn't in this import. Choose funds only for the records it brings.",
+      "params": [
+        "record"
+      ]
+    },
+    "posting.fund.import_line_unknown": {
+      "en": "{record} has no line {line}. Choose funds only for lines the file has, by their number.",
+      "params": [
+        "line",
+        "record"
+      ]
+    },
+    "posting.fund.line_without_choice": {
+      "en": "Line {line} has no fund of its own.",
+      "params": [
+        "line"
+      ]
     }
   }
 }

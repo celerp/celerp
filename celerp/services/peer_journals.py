@@ -686,15 +686,11 @@ async def chosen_entries(session: AsyncSession, company_id: uuid.UUID, sent: lis
     """A journal's lines as they travel (each marked with its origin) with the fund choices
     of ``every`` (the entry's) and ``lines`` (line number -> choice; none is no choice), and
     the grant that lets the entry carry them."""
-    from celerp.services.peer_lines import FUND_KEYS, chosen_lines, require_fund_choices
+    from celerp.services.peer_lines import chosen_journal_lines
 
-    numbered = [{**line, "line_id": str(n)} for n, line in enumerate(sent, 1)]
-    grant = await require_fund_choices(
-        session, company_id, {"line_items": numbered}, lines={n: v for n, v in lines.items() if v is not None},
-        source=source, **({"document": every, "every": every} if every is not None else {}))
-    chosen = chosen_lines(numbered, grant)
-    return [{**line, **{key: chose[key] for key in FUND_KEYS if chose.get(key)}}
-            for line, chose in zip(transport_lines(chosen), chosen)], grant
+    sent = [line for line in sent if isinstance(line, dict)]
+    keys, grant = await chosen_journal_lines(session, company_id, sent, every=every, lines=lines, source=source)
+    return [{**line, **chose} for line, chose in zip(transport_lines(sent), keys)], grant
 
 
 async def _standing(session: AsyncSession, company_id: uuid.UUID, origin: str, source_key, data: dict):
