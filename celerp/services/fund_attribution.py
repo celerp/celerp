@@ -177,6 +177,7 @@ UNDO_LIVE_ENTRY: dict[str, str] = {
     "celerp.services.peer_journals:receive_journal": "current_entry",
     "celerp.services.peer_journals:reverse": "current_entry",
     "celerp.services.peer_lines:change_posted_fund": "family",
+    "celerp_accounting.recognition:reverse_recognition": "family",
     "celerp_accounting.routes:_void_one": "never: voids the entry the user opened; a replaced entry is void already and refused as not posted",
     "celerp_accounting.routes:_void_reconciliation_created_je": "never: an entry of its own no outside record carries, so Change fund never replaces it",
     "celerp_admin.routes:_check_uncaused_recognition_jes": "never: sweeps entries by their own posted state",
@@ -246,6 +247,7 @@ READ = "reads the posted lines to show or choose from them; stores nothing"
 DRAFT = "a draft line's starting fund, the user's to change; finalizing checks it against its source (rule P)"
 FUND_COPY_REASONS = frozenset({JOURNAL_LINE, OWN_CHOICE, STANDING, SETTLED, NOTE_LINES, READ, DRAFT})
 _ASSETS = DEPENDENT + "celerp_fixed_assets.fundchange:dependents"
+_SCHEDULES = DEPENDENT + "celerp_accounting.recognition:dependents"
 
 FUND_COPIES: dict[str, str] = {
     "celerp.events.engine:emit_event": OWN_CHOICE,
@@ -255,6 +257,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp.services.journal_accounts:split_lines_by_fund": JOURNAL_LINE,
     "celerp.services.peer_lines:posted_line_funds": NOTE_LINES,
     "celerp.services.peer_lines:require_fund_choices": OWN_CHOICE,
+    "celerp.services.recognition:schedule_records": _SCHEDULES,
     "ui.routes.csv_import:import_numbered": OWN_CHOICE,
     "ui.routes.docs_import:setup_routes.docs_import_confirm": OWN_CHOICE,
     "celerp_accounting.fund_reports:check_fund_reconciliation": READ,
@@ -263,6 +266,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_accounting.funds:post_fund_movement": JOURNAL_LINE,
     "celerp_accounting.funds:set_connection_default": STANDING,
     "celerp_accounting.recognition:_leg_keys": JOURNAL_LINE,
+    "celerp_accounting.recognition:dependents": _SCHEDULES,
     "celerp_accounting.routes:batch_import_accounting": OWN_CHOICE,
     "celerp_accounting.routes:close_fiscal_year": JOURNAL_LINE,
     "celerp_docs.routes:apply_doc_payment": SETTLED,
@@ -280,4 +284,5 @@ FUND_COPIES: dict[str, str] = {
     "celerp_fixed_assets.sales:_draft_invoice": DRAFT,
     "celerp_fixed_assets.sources:_bill_lines": READ,
     "celerp_fixed_assets.sources:_manual_lines": READ,
+    "ui.routes.documents:_submitted_fund_allocation": SETTLED,
 }

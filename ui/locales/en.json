@@ -7682,5 +7682,9 @@
   "recognition.err_run_not_posted": "No recognition run of {month} is posted, so there is nothing to reverse.",
   "recognition.summary_lapsed": "Automatic recognition stopped: authorization lapsed",
   "recognition.notice_lapsed.title": "Automatic recognition stopped",
-  "recognition.notice_lapsed.body": "Automatic recognition stopped: authorization lapsed. The member who turned it on no longer manages accounting or has left. Post the runs on Revenue recognition, or turn automatic posting on again."
+  "recognition.notice_lapsed.body": "Automatic recognition stopped: authorization lapsed. The member who turned it on no longer manages accounting or has left. Post the runs on Revenue recognition, or turn automatic posting on again.",
+  "event.rev_schedule.created": "Revenue schedule created",
+  "event.rev_schedule.amended": "Revenue schedule amended",
+  "event.rev_schedule.fund_changed": "Revenue schedule fund changed",
+  "posting.role.deferred_revenue": "Deferred revenue"
 }

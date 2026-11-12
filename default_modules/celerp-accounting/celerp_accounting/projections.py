@@ -53,6 +53,8 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "rev_schedule.amended":
         current["segments"] = data["segments"]
         current["amendments"] = [*(current.get("amendments") or []), data["amendment"]]
+    elif event_type == "rev_schedule.fund_changed":
+        current["fund_id"] = data["fund_id"]
     else:
         raise ValueError(f"Unsupported accounting event: {event_type}")
 

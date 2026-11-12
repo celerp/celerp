@@ -133,6 +133,7 @@ class EventType(StrEnum):
     FUND_UNARCHIVED = "fund.unarchived"
     REV_SCHEDULE_CREATED = "rev_schedule.created"
     REV_SCHEDULE_AMENDED = "rev_schedule.amended"
+    REV_SCHEDULE_FUND_CHANGED = "rev_schedule.fund_changed"
 
     # Subscriptions (recurring orders)
     SUB_CREATED = "sub.created"

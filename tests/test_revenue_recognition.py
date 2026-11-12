@@ -444,6 +444,53 @@ async def test_recognition_stops_for_void_source(client, session, auth, monkeypa
     assert await _net(session, auth, schedule["deferred_account"], prefix="je:") == 0.0
 
 
+async def test_change_fund_moves_schedule_and_posted_runs(client, session, auth, monkeypatch):
+    """Change fund on an imported invoice with a deferred line: the schedule takes the line's
+    new fund, a run standing posted is voided and posted again on it at its own date, a run
+    posted and reversed stays as it was, and Reverse afterwards reverses the copy."""
+    from decimal import Decimal
+
+    from test_change_fund import _change_doc, _standing
+    from test_fund_movements import _setup
+    from test_outside_lines import _issued_import
+
+    _freeze(monkeypatch, "2026-01-05")
+    f = await _setup(client, auth)
+    plan = await _deferred_item(client, auth)
+    doc = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={
+        "records": [_issued_import(doc, [_service(plan, 900)])], "fund_choices": {"records": {doc: f["U1"]}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    [schedule] = await _schedules(session, auth, doc)
+    assert schedule["fund_id"] == f["U1"]
+    _freeze(monkeypatch, "2026-04-05")
+    assert (await _post_month(client, auth, "2026-01")).status_code == 200
+    assert (await _post_month(client, auth, "2026-02")).status_code == 200
+    assert (await _reverse_month(client, auth, "2026-02")).status_code == 200
+
+    r = await _change_doc(client, session, auth, doc, document=f["U2"])
+    assert r.status_code == 200, r.text
+    [schedule] = await _schedules(session, auth, doc)
+    assert schedule["fund_id"] == f["U2"]
+    assert await _standing(session, auth, "je:auto:rev:") == {
+        (f["U2"], schedule["deferred_account"]): Decimal("310.00"), (f["U2"], "4100"): Decimal("-310.00")}
+    copy = next(e for e in await _run_entries(session, auth) if ":2026-01:1:fund:" in e["id"])
+    assert copy["status"] == "posted" and str(copy["ts"])[:10] == "2026-01-31"
+    assert _by_month(await _runs(client, auth)) == {
+        "2026-01": [(0, 310.0, "posted")], "2026-02": [(0, 280.0, "outstanding")], "2026-03": [(0, 310.0, "outstanding")]}
+    roll = (await client.get("/accounting/recognition/roll-forward", headers=auth["headers"],
+                             params={"date_from": "2026-01-01", "date_to": "2026-03-31"})).json()
+    assert roll["deferred"] == 900.0 and roll["recognized"] == 310.0 and roll["closing"] == roll["liability"] == 590.0
+    assert roll["by_fund"][f["U2"]]["closing"] == roll["by_fund"][f["U2"]]["liability"] == 590.0
+    assert not any(roll["by_fund"].get(f["U1"], {}).values())
+
+    assert (await _reverse_month(client, auth, "2026-01")).status_code == 200
+    assert await _standing(session, auth, "je:auto:rev:") == {}
+    assert (await _post_month(client, auth, "2026-01")).status_code == 200
+    assert await _standing(session, auth, "je:auto:rev:") == {
+        (f["U2"], schedule["deferred_account"]): Decimal("310.00"), (f["U2"], "4100"): Decimal("-310.00")}
+
+
 # ── roll-forward and page ────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("funds", [False, True])

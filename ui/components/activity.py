@@ -58,6 +58,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
     "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft", "doc.fund_changed",
     "fund.created", "fund.updated", "fund.archived", "fund.unarchived",
+    "rev_schedule.created", "rev_schedule.amended", "rev_schedule.fund_changed",
     "crm.contact.created", "crm.contact.updated", "crm.contact.merged", "crm.contact.tagged",
     "crm.contact.note_added", "crm.contact.note_updated", "crm.contact.note_removed",
     "crm.contact.person_added", "crm.contact.person_updated", "crm.contact.person_removed",

@@ -13,7 +13,9 @@ a schedule whose source document is void or whose source entry no longer stands.
 
 What has been recognized is read from the ledger, never stored: a run's entry is
 ``je:auto:{schedule}:{segment}:{yyyy-mm}:{n}``, n counting its posts, and its reversal is
-that id with ``:reversal``. A run is posted while its latest entry stands unreversed.
+that id with ``:reversal``. A run is posted while its latest entry stands unreversed. When
+Change fund moves a posted run onto a new fund (``dependents``), the run's entry is voided
+naming its copy ``{entry}:fund:{n}``, and the run stands as that copy.
 """
 from __future__ import annotations
 
@@ -32,7 +34,6 @@ from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.auto_je import _emit_auto_posted_je
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.journal_accounts import funds_enabled
@@ -43,6 +44,7 @@ from celerp.services.recognition import SCHEDULE
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+MODULE = "celerp-accounting"
 PREFIX = "je:auto:"
 REVERSAL = ":reversal"
 CONSENT = "recognition"
@@ -84,9 +86,11 @@ def segment_runs(segment: dict, currency: str, today: date) -> list[tuple[str, d
 
 
 def _parse(entry_id: str) -> tuple[tuple[str, int, str], int, bool] | None:
-    """((schedule, segment, month), n, is reversal) of a run entry id."""
-    reversal = entry_id.endswith(REVERSAL)
-    body = entry_id.removeprefix(PREFIX).removesuffix(REVERSAL)
+    """((schedule, segment, month), n, is reversal) of a run entry id; a copy Change fund
+    posted in a run entry's place reads as that entry."""
+    root = entry_id.split(":fund:", 1)[0]
+    reversal = root.endswith(REVERSAL)
+    body = root.removeprefix(PREFIX).removesuffix(REVERSAL)
     try:
         schedule, segment, month, n = body.rsplit(":", 3)
         return (schedule, int(segment), month), int(n), reversal
@@ -95,18 +99,25 @@ def _parse(entry_id: str) -> tuple[tuple[str, int, str], int, bool] | None:
 
 
 class Ledger:
-    """The run entries of the company: per run key, each post n with its entry, and which
-    posts are reversed."""
+    """The run entries of the company: per run key, each post n with the entry standing for
+    it (``root`` its own id, ``id`` the copy Change fund replaced it by, when it did), and
+    which posts are reversed."""
 
     def __init__(self, rows: list[tuple[str, dict]]):
         self.posts: dict[tuple, dict[int, dict]] = defaultdict(dict)
         self.reversals: dict[tuple, dict[int, dict]] = defaultdict(dict)
-        for entity_id, state in rows:
-            parsed = _parse(entity_id)
+        states = {entity_id: state or {} for entity_id, state in rows}
+        for entity_id, state in states.items():
+            parsed = None if ":fund:" in entity_id else _parse(entity_id)
             if parsed is None:
                 continue
+            live, seen = entity_id, {entity_id}
+            while state.get("status") == "void" and state.get("replaced_by") in states.keys() - seen:
+                live = state["replaced_by"]
+                seen.add(live)
+                state = states[live]
             key, n, reversal = parsed
-            (self.reversals if reversal else self.posts)[key][n] = {"id": entity_id, **(state or {})}
+            (self.reversals if reversal else self.posts)[key][n] = {**state, "id": live, "root": entity_id}
 
     def next_n(self, key) -> int:
         return max(self.posts.get(key) or {0: None}) + 1
@@ -133,7 +144,8 @@ class Ledger:
         return self.posts.keys()
 
 
-async def _ledger(session, company_id) -> Ledger:
+async def _run_ledger(session, company_id) -> Ledger:
+    """Every run entry and reversal of the company, the copies Change fund posted included."""
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(f"{PREFIX}rev:", autoescape=True)))).all()
@@ -152,9 +164,15 @@ async def _states(session, company_id, entity_type: str, ids=None) -> dict[str, 
 
 
 async def _schedules(session, company_id) -> dict[str, dict]:
-    """Every schedule, each with ``stopped`` set when its source document is void or its
-    source entry does not stand."""
+    """Every schedule, its ``source_je`` the entry standing for its source entry now (the copy
+    Change fund replaced it by, when it did), each with ``stopped`` set when its source
+    document is void or that entry does not stand."""
+    from celerp.services.auto_je import live_entries
+
     schedules = await _states(session, company_id, SCHEDULE)
+    live = await live_entries(session, company_id, [str(s.get("source_je")) for s in schedules.values()])
+    for schedule in schedules.values():
+        schedule["source_je"] = live[str(schedule.get("source_je"))]
     docs = await _states(session, company_id, "doc", {s.get("doc_id") for s in schedules.values()})
     entries = await _states(session, company_id, "journal_entry", {s.get("source_je") for s in schedules.values()})
     for schedule in schedules.values():
@@ -246,12 +264,14 @@ async def run_recognition(session, company_id, user_id, month: str, *, post_on: 
     the schedule's revenue account, on the schedule's fund. A run already posted is answered
     with its entry, so a repeat or a race posts nothing twice. ``today`` is the business day
     (the dispatcher's pass day), else the company's. The caller commits."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+
     month_end = _check_month(month)
     company = await locked_company(session, company_id)
     settings = company.settings or {}
     today = today or await company_today(session, company_id)
     schedules = await _schedules(session, company_id)
-    ledger = await _ledger(session, company_id)
+    ledger = await _run_ledger(session, company_id)
     runs = [r for r in plan(schedules, ledger, today) if r["month"] == month and not schedules[r["schedule_id"]]["stopped"]]
     pending = [r for r in runs if r["status"] == "outstanding"]
     if pending:
@@ -276,15 +296,54 @@ async def run_recognition(session, company_id, user_id, month: str, *, post_on: 
     return {"runs": runs}
 
 
+async def dependents(session, company_id, user_id, doc_id: str, relabel) -> None:
+    """Change fund on a document a schedule recognizes (the doc_posting_dependents slot): each
+    schedule of ``doc_id`` takes the fund its line now posts on, and each of its runs standing
+    posted is voided and posted again with the legs a run posts now (``_leg_keys``) at its own
+    date (module_journals.move_journal_funds); a run posted and reversed is left as it is, and
+    runs still outstanding plan on the new fund. ``relabel`` rewrites the document's own legs,
+    so it is not read here."""
+    from celerp.events.engine import emit_event
+    from celerp.services.company_lock import lock_projections
+    from celerp.services.module_journals import move_journal_funds
+    from celerp.services.peer_lines import leg_funds
+
+    found = sorted(sid for sid, s in (await _states(session, company_id, SCHEDULE)).items() if s.get("doc_id") == doc_id)
+    if not found:
+        return
+    doc = (await _states(session, company_id, "doc", [doc_id])).get(doc_id) or {}
+    funds = leg_funds(doc)[0]
+    rows = await lock_projections(session, company_id, found)
+    ledger = await _run_ledger(session, company_id)
+    for sid in found:
+        schedule = dict(rows[sid].state or {})
+        fund = funds.get(int(schedule["line"]))
+        if fund != schedule.get("fund_id"):
+            await emit_event(session, company_id=company_id, entity_id=sid, entity_type=SCHEDULE,
+                             event_type="rev_schedule.fund_changed", data={"fund_id": fund}, actor_id=user_id,
+                             location_id=None, source="fund_change",
+                             idempotency_key=f"{sid}:fund_changed:{rows[sid].version}", metadata_={})
+        keys = _leg_keys({**schedule, "fund_id": fund}, doc)
+        for key in sorted(k for k in ledger.keys() if k[0] == sid):
+            if (live := ledger.live(key)) is not None:
+                await move_journal_funds(
+                    session, company_id=company_id, user_id=user_id, module=MODULE, je_id=live["root"],
+                    reason="Fund changed on the document this revenue is recognized from",
+                    relabel=lambda lines, keys=keys: [{k: v for k, v in ln.items() if k not in LINE_KEYS} | keys
+                                                      for ln in lines])
+
+
 async def reverse_recognition(session, company_id, user_id, month: str, *, reverse_on: str | None = None) -> dict:
     """Reverse every run of ``month`` standing posted, so each is outstanding again: its lines
     posted again swapped (copy_posted_lines). Answers with each run's reversal; a repeat finds
     them reversed and answers the same. 409 when no run of the month was posted."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+
     month_end = _check_month(month)
     company = await locked_company(session, company_id)
     settings = company.settings or {}
     schedules = await _schedules(session, company_id)
-    ledger = await _ledger(session, company_id)
+    ledger = await _run_ledger(session, company_id)
     latest = {key: ledger.latest(key) for key in ledger.keys() if key[2] == month and key[0] in schedules}
     latest = {key: found for key, found in latest.items() if found and found[1].get("status") == "posted"}
     if not latest:
@@ -295,7 +354,7 @@ async def reverse_recognition(session, company_id, user_id, month: str, *, rever
     runs = []
     for key in sorted(latest):
         n, entry, reversal = latest[key]
-        reversal_id = f"{entry['id']}{REVERSAL}"
+        reversal_id = f"{entry['root']}{REVERSAL}"
         if key in standing:
             run_key = f"{key[0]}:{key[1]}:{month}:{n}{REVERSAL}"
             await _emit_auto_posted_je(
@@ -465,7 +524,7 @@ async def _settings(session, company_id) -> dict:
 
 async def _overview(session, company_id) -> tuple[dict, dict, list[dict]]:
     schedules = await _schedules(session, company_id)
-    runs = plan(schedules, await _ledger(session, company_id), await company_today(session, company_id))
+    runs = plan(schedules, await _run_ledger(session, company_id), await company_today(session, company_id))
     return await _settings(session, company_id), schedules, runs
 
 

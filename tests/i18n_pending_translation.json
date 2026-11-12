@@ -1047,6 +1047,22 @@
     "recognition.notice_lapsed.body": {
       "en": "Automatic recognition stopped: authorization lapsed. The member who turned it on no longer manages accounting or has left. Post the runs on Revenue recognition, or turn automatic posting on again.",
       "params": []
+    },
+    "event.rev_schedule.created": {
+      "en": "Revenue schedule created",
+      "params": []
+    },
+    "event.rev_schedule.amended": {
+      "en": "Revenue schedule amended",
+      "params": []
+    },
+    "event.rev_schedule.fund_changed": {
+      "en": "Revenue schedule fund changed",
+      "params": []
+    },
+    "posting.role.deferred_revenue": {
+      "en": "Deferred revenue",
+      "params": []
     }
   },
   "modules": {

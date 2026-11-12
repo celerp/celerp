@@ -1336,6 +1336,11 @@ class RevScheduleAmended(BaseModel):
     amendment: RevAmendment
 
 
+class RevScheduleFundChanged(BaseModel):
+    """Change fund on the schedule's source document: the fund its line now posts on."""
+    fund_id: str | None = None
+
+
 class AccReconciliationReopened(BaseModel):
     """A completed bank reconciliation put back in progress. Only the reconciliation
     changes; the books do not."""
@@ -1730,6 +1735,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "fund.unarchived": FundUnarchived,
     "rev_schedule.created": RevScheduleCreated,
     "rev_schedule.amended": RevScheduleAmended,
+    "rev_schedule.fund_changed": RevScheduleFundChanged,
 
     # System
     "sys.company.created": SysCompanyCreated,
