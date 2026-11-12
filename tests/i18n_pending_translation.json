@@ -1908,6 +1908,173 @@
     "notice.payment_dispute_not_recorded.amount": {
       "en": "it is for more than the payment.",
       "params": []
+    },
+    "subscriptions.mode_auto_invoice_collect": {
+      "en": "Bill and collect automatically",
+      "params": []
+    },
+    "subscriptions.bills_and_collects": {
+      "en": "Bills and collects automatically",
+      "params": []
+    },
+    "subscriptions.consent_collection": {
+      "en": "Automatic collection authorized on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.consent_collection_withdrawn": {
+      "en": "Automatic collection authorization withdrawn",
+      "params": []
+    },
+    "subscriptions.collection_heading": {
+      "en": "Automatic collection",
+      "params": []
+    },
+    "subscriptions.card_on_file": {
+      "en": "Card on file: {brand} ending in {last4}",
+      "params": [
+        "brand",
+        "last4"
+      ]
+    },
+    "subscriptions.no_card_on_file": {
+      "en": "No card on file",
+      "params": []
+    },
+    "subscriptions.card_needs_action": {
+      "en": "The card on file needs the payer to confirm it. Send them a new setup link.",
+      "params": []
+    },
+    "subscriptions.card_access_removed": {
+      "en": "No card on file: Stripe access was removed. Reconnect Stripe, then send the payer a new setup link.",
+      "params": []
+    },
+    "subscriptions.receipt_not_sent": {
+      "en": "The payer's receipt for this card was not emailed. It has the link to remove the card.",
+      "params": []
+    },
+    "subscriptions.btn_email_setup_link": {
+      "en": "Email setup link",
+      "params": []
+    },
+    "subscriptions.btn_copy_setup_link": {
+      "en": "Copy setup link",
+      "params": []
+    },
+    "subscriptions.btn_email_receipt": {
+      "en": "Email receipt again",
+      "params": []
+    },
+    "subscriptions.btn_remove_card": {
+      "en": "Remove card",
+      "params": []
+    },
+    "subscriptions.remove_card_confirm": {
+      "en": "Remove the payer's card on file? Nothing more is charged to it until the payer puts a card on file again.",
+      "params": []
+    },
+    "subscriptions.setup_link_copy": {
+      "en": "Send this link to the payer. They open it to put a card on file. It expires in 7 days.",
+      "params": []
+    },
+    "subscriptions.done_setup_link_emailed": {
+      "en": "Setup link emailed to the payer.",
+      "params": []
+    },
+    "subscriptions.setup_link_not_emailed": {
+      "en": "Email not sent. Copy the link or try again.",
+      "params": []
+    },
+    "subscriptions.done_receipt_sent": {
+      "en": "Receipt emailed to the payer again.",
+      "params": []
+    },
+    "subscriptions.receipt_not_resent": {
+      "en": "Receipt not sent. Try again.",
+      "params": []
+    },
+    "subscriptions.done_card_removed": {
+      "en": "Card removed. Nothing more is charged to it.",
+      "params": []
+    },
+    "collection.status_pending": {
+      "en": "Collection pending",
+      "params": []
+    },
+    "collection.status_requires_action": {
+      "en": "Waiting for the payer to confirm the charge.",
+      "params": []
+    },
+    "collection.payer_action_link": {
+      "en": "Payer's confirmation page",
+      "params": []
+    },
+    "collection.status_failed_retry": {
+      "en": "Charge failed, retry on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "collection.status_failed": {
+      "en": "Charge failed",
+      "params": []
+    },
+    "collection.status_paid": {
+      "en": "Collected automatically",
+      "params": []
+    },
+    "collection.status_canceled": {
+      "en": "Charge canceled",
+      "params": []
+    },
+    "collection.status_unverifiable": {
+      "en": "Celerp Cloud could not confirm the charge",
+      "params": []
+    },
+    "collection.status_stopped": {
+      "en": "Automatic collection stopped: {reason}",
+      "params": [
+        "reason"
+      ]
+    },
+    "collection.stopped_invoice_settled": {
+      "en": "the invoice is settled",
+      "params": []
+    },
+    "collection.stopped_mode_manual": {
+      "en": "the agreement no longer collects automatically",
+      "params": []
+    },
+    "collection.stopped_no_card_on_file": {
+      "en": "the payer has no card on file",
+      "params": []
+    },
+    "collection.stopped_authorizer_lapsed": {
+      "en": "the person who turned it on can no longer authorize it",
+      "params": []
+    },
+    "collection.stopped_collection_off": {
+      "en": "Celerp Cloud no longer offers it",
+      "params": []
+    },
+    "collection.stopped_nothing_to_charge": {
+      "en": "nothing is left to charge",
+      "params": []
+    },
+    "collection.stopped_no_books": {
+      "en": "the company's time zone or the invoice's exchange rate cannot be used",
+      "params": []
+    },
+    "collection.stopped_amount_changed": {
+      "en": "the invoice now owes less than the charge asked for",
+      "params": []
+    },
+    "collection.stopped_cloud": {
+      "en": "Celerp Cloud refused it ({reason})",
+      "params": [
+        "reason"
+      ]
     }
   },
   "modules": {

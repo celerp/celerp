@@ -27,7 +27,7 @@ from celerp.services.record_quantities import template_label
 from celerp.accounting_roles import RECOGNIZE_FIELD
 from celerp.services.business_time import business_today
 from celerp_subscriptions.billing import ENDED, amendments_of, bills, doc_kind, lines_on, send_written
-from celerp_subscriptions.periods import shown
+from celerp_subscriptions.periods import COLLECT_MODE, shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
@@ -105,9 +105,11 @@ _SEND_BADGE = {"waiting": ("subscriptions.period_send_pending", "badge--warning"
                "sending": ("subscriptions.period_send_sending", "badge--warning"),
                "unconfirmed": ("subscriptions.period_send_unconfirmed", "badge--warning")}
 _MODES = ("manual_due", "auto_invoice")
-_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
+_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically", COLLECT_MODE: "subscriptions.bills_and_collects"}
 # The agreement keeps a consent only for a mode that runs, so each one kept is shown.
-_CONSENTS = ("generation", "sending")
+_CONSENTS = ("generation", "sending", "collection")
+# The card on file section's actions: the API's own path under /collection for each.
+_COLLECTION_ACTIONS = ("setup-link", "revoke")
 
 
 # A schedule or billing control saves on change; its answer is every element of the page
@@ -459,6 +461,18 @@ async def _with_member(token: str, sub: dict) -> dict:
     try:
         return {**sub, "beneficiary_name": (await api.get_contact(token, member)).get("name")}
     except APIError:
+        return sub
+
+
+async def _with_collection(token: str, entity_id: str, sub: dict) -> dict:
+    """A sales agreement with what Celerp Cloud offers for automatic collection and its payer's
+    card on file (``collection_view``); as it is when the read fails, so nothing is offered."""
+    if doc_kind(sub) != "invoice":
+        return sub
+    try:
+        return {**sub, "collection_view": await api.get_subscription_collection(token, entity_id)}
+    except APIError as e:
+        api.raise_if_signed_out(e)
         return sub
 
 
@@ -911,11 +925,14 @@ def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     mode = shown("generation_mode", sub.get("generation_mode"))
     consents = sub.get("consents") or {}
+    offered = bool((sub.get("collection_view") or {}).get("offered"))
+    # Collect is offered while Cloud offers it, and stays shown on an agreement using it so it can be set back.
+    modes = (*_MODES, COLLECT_MODE) if offered or mode == COLLECT_MODE else _MODES
     return Div(
         H3(t("subscriptions.billing_heading")),
         Div(
             Label(_label("generation_mode"),
-                  Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in _MODES],
+                  Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in modes],
                          name="value", hx_patch=f"{base}/generation_mode", **attrs)),
             _yes_no_control(base, "auto_send", bool(sub.get("auto_send")), attrs),
             Label(_label("catchup_periods"),
@@ -927,7 +944,57 @@ def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
         ),
         *[P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
           for c in _CONSENTS if (consents.get(c) or {}).get("at")],
+        _collection_card(entity_id, sub["collection_view"]) if offered else "",
         id="sub-billing", cls="mt-lg",
+    )
+
+
+def _card_text(binding: dict | None) -> str:
+    """The payer's card on file as the agreement page reads it."""
+    state = (binding or {}).get("state")
+    if state == "active":
+        brand = str(binding.get("card_brand") or "").replace("_", " ").title() or EMPTY
+        return t("subscriptions.card_on_file", brand=brand, last4=binding.get("card_last4") or EMPTY)
+    if state == "requires_action":
+        return t("subscriptions.card_needs_action")
+    if state == "access_removed":
+        return t("subscriptions.card_access_removed")
+    return t("subscriptions.no_card_on_file")
+
+
+def _collection_button(entity_id: str, label: str, action: str, fields: dict, **attrs) -> FT:
+    return Form(*[Input(type="hidden", name=k, value=v) for k, v in fields.items()],
+                Button(label, type="submit", cls="btn btn--secondary btn--sm", **attrs),
+                hx_post=f"/subscriptions/{entity_id}/collection/{action}", hx_target="#sub-collection",
+                hx_swap="outerHTML", cls="inline-form")
+
+
+def _setup_link_text(link: str) -> FT:
+    """A setup link to send the payer, ready to copy."""
+    return Div(P(t("subscriptions.setup_link_copy"), cls="text-muted"),
+               Input(type="text", value=link, readonly=True, cls="form-input", aria_label=t("subscriptions.setup_link_copy")))
+
+
+def _collection_card(entity_id: str, view: dict, link: str | None = None) -> FT:
+    """The payer's card on file for automatic collection: what Cloud last said of it and, when its
+    receipt was not emailed, so; Email or Copy a setup link where the payer puts a card on file
+    (``link``: the one just made, to copy), Email receipt again and Remove card for one on file.
+    A removed card comes back only by the payer putting a card on file again from a new link."""
+    binding = view.get("binding") or {}
+    active = binding.get("state") == "active"
+    return Div(
+        H4(t("subscriptions.collection_heading")),
+        P(_card_text(binding)),
+        P(t("subscriptions.receipt_not_sent"), cls="text-muted") if active and binding.get("receipt_sent") is False else "",
+        Div(_collection_button(entity_id, t("subscriptions.btn_email_setup_link"), "setup-link", {"delivery": "email"}),
+            _collection_button(entity_id, t("subscriptions.btn_copy_setup_link"), "setup-link", {"delivery": "copy"}),
+            *([_collection_button(entity_id, t("subscriptions.btn_email_receipt"), "setup-link",
+                                  {"delivery": "email", "resend_receipt": "true"}),
+               _collection_button(entity_id, t("subscriptions.btn_remove_card"), "revoke", {},
+                                  hx_confirm=t("subscriptions.remove_card_confirm"))] if active else []),
+            style="display:flex;gap:0.5rem;flex-wrap:wrap"),
+        _setup_link_text(link) if link else "",
+        id="sub-collection", cls="mt-md",
     )
 
 
@@ -1725,7 +1792,7 @@ def setup_routes(app) -> None:
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        doc = _with_schedule(await _with_member(token, doc), schedule)
+        doc = _with_schedule(await _with_collection(token, entity_id, await _with_member(token, doc)), schedule)
         actions_left, actions_right = _action_groups(entity_id, doc, schedule)
 
         return await base_shell(
@@ -1788,6 +1855,43 @@ def setup_routes(app) -> None:
                          document=done["invoice_id"].removeprefix("doc:"))
                 if done.get("credit_note_id") else sentence("subscriptions.done_amended", day=done["effective"]))
         return _done(f"/subscriptions/{entity_id}", said)
+
+    @app.post("/subscriptions/{entity_id}/collection/{action}")
+    async def subscription_collection_ui(request: Request, entity_id: str, action: str):
+        """The card on file section's actions (_collection_card): Email or Copy setup link and
+        Email receipt again (setup-link), Remove card (revoke). A link not emailed is shown to copy."""
+        if action not in _COLLECTION_ACTIONS:
+            return Response(status_code=404)
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        back = f"/subscriptions/{entity_id}"
+        if action == "revoke":
+            try:
+                await api.revoke_subscription_card(token, entity_id)
+            except APIError as e:
+                return _refused(e)
+            return _done(back, t("subscriptions.done_card_removed"))
+        form = await request.form()
+        body = {"delivery": str(form.get("delivery", "")), "resend_receipt": form.get("resend_receipt") == "true"}
+        try:
+            done = await api.subscription_setup_link(token, entity_id, body)
+        except APIError as e:
+            return _refused(e)
+        if body["resend_receipt"]:
+            if done.get("receipt_sent"):
+                return _done(back, t("subscriptions.done_receipt_sent"))
+            return _done(back, t("subscriptions.receipt_not_resent"), "warning")
+        if body["delivery"] == "email" and done.get("emailed"):
+            return _done(back, t("subscriptions.done_setup_link_emailed"))
+        link = done["link"]
+        said = t("subscriptions.setup_link_not_emailed") if body["delivery"] == "email" else ""
+
+        async def draw():
+            card = _collection_card(entity_id, await api.get_subscription_collection(token, entity_id), link)
+            return html_response(card, headers=toast_header(said, "warning") if said else None)
+        return await _redrawn(draw, lambda: Div(H4(t("subscriptions.collection_heading")), _setup_link_text(link),
+                                                id="sub-collection", cls="mt-md"), said=said)
 
     @app.post("/subscriptions/{entity_id}/{action}")
     async def subscription_action_ui(request: Request, entity_id: str, action: str):
@@ -1871,7 +1975,7 @@ def setup_routes(app) -> None:
 
         async def read() -> tuple[dict, str]:
             """The agreement as stored and every view of its schedule drawn from it."""
-            sub = await _with_member(token, await api.get_subscription(token, entity_id))
+            sub = await _with_collection(token, entity_id, await _with_member(token, await api.get_subscription(token, entity_id)))
             settings = (await api.get_company(token)).get("settings") or {}
             return sub, _stored_schedule_views(entity_id, sub, await api.get_subscription_periods(token, entity_id),
                                                _defers(settings, sub))

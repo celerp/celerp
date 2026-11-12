@@ -627,3 +627,22 @@ async def test_invoice_page_says_how_its_collection_stands(owner_ui, session, mo
     await tick(session, cid, "2026-07-04")
     page = (await owner_ui.get(f"/docs/{doc_id}")).text
     assert t("collection.status_stopped", reason=t("collection.stopped_no_card_on_file")) in page
+
+
+async def test_every_reason_collection_stops_for_is_one_the_invoice_page_names():
+    """Each reason the app writes on a stopped collection is in STOP_REASONS, which the invoice
+    page reads by name (anything else reads as Cloud's refusal), and each has its words."""
+    import json
+    import re
+    from pathlib import Path
+    from celerp.services import collection
+    from celerp_subscriptions import collect
+    root = Path(collection.__file__).resolve().parents[2]
+    written = set()
+    for module in (collection, collect):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        written |= set(re.findall(r'"state": "stopped", "reason": "(\w+)"', source))
+        written |= set(re.findall(r'(?:return|reason =) "(\w+)"$', source, re.M))
+    assert written == collection.STOP_REASONS
+    words = json.loads((root / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    assert [r for r in collection.STOP_REASONS if f"collection.stopped_{r}" not in words] == []

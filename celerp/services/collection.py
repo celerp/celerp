@@ -40,6 +40,9 @@ CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "failed"
                           "unverifiable"})
 # The attempt is with Cloud and may still charge the card.
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
+# The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
+STOP_REASONS = frozenset({"invoice_settled", "mode_manual", "no_card_on_file", "authorizer_lapsed", "collection_off",
+                          "nothing_to_charge", "no_books", "amount_changed"})
 CONSENT_TEXT_VERSION = "1"
 
 

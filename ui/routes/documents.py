@@ -509,7 +509,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
+from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, sentence, t
 from ui.routes.reports import _company_today, _date_presets, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -6448,6 +6448,37 @@ def _submitted_fund_allocation(form) -> dict:
     return {"fund_allocation": {fund: amount or "0" for fund, amount in typed.items()}}
 
 
+def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
+    """How the invoice's automatic collection through Celerp Cloud stands; nothing for an
+    invoice that is not collected."""
+    from celerp.services.business_time import business_date_of
+    from celerp.services.collection import IN_FLIGHT, STOP_REASONS
+    state = (collection or {}).get("state")
+    if not state:
+        return ""
+    if state == "requires_action":
+        url = collection.get("action_url")
+        text = Span(t("collection.status_requires_action"),
+                    *((" ", A(t("collection.payer_action_link"), href=safe_url(url), target="_blank", rel="noopener"))
+                      if url else ()))
+    elif state in IN_FLIGHT:
+        text = t("collection.status_pending")
+    elif state == "failed":
+        at = collection.get("retry_eligible_at")
+        text = sentence("collection.status_failed_retry", date=business_date_of(at, tz)) if at else t("collection.status_failed")
+    elif state == "paid":
+        text = t("collection.status_paid")
+    elif state == "stopped":
+        reason = collection.get("reason") or ""
+        why = t(f"collection.stopped_{reason}") if reason in STOP_REASONS else t("collection.stopped_cloud", reason=reason or EMPTY)
+        text = t("collection.status_stopped", reason=why)
+    elif state == "canceled":
+        text = t("collection.status_canceled")
+    else:
+        text = t("collection.status_unverifiable")
+    return Div(text, cls="text-muted small", id="doc-collection")
+
+
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
                      targets: list[dict] | None = None, tz: str | None = None,
                      chart_accounts: list[dict] | None = None, fund_open: dict | None = None) -> FT:
@@ -6619,6 +6650,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
+            _collection_status(doc.get("collection"), tz),
             cls="payment-summary",
         )
 

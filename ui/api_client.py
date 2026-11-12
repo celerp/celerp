@@ -2321,6 +2321,22 @@ async def amend_subscription(token: str, entity_id: str, body: dict) -> dict:
         return _raise(await c.post(f"/subscriptions/{entity_id}/amend", json=body)).json()
 
 
+async def get_subscription_collection(token: str, entity_id: str) -> dict:
+    """Whether Celerp Cloud offers automatic collection, and the agreement payer's card on file."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/subscriptions/{entity_id}/collection")).json()
+
+
+async def subscription_setup_link(token: str, entity_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/collection/setup-link", json=body)).json()
+
+
+async def revoke_subscription_card(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/collection/revoke")).json()
+
+
 async def get_subscription_periods(token: str, entity_id: str, *, before: int | None = None) -> dict:
     """Returns one bounded page, newest period first, with an older-page cursor."""
     async with _api_client(token) as c:
