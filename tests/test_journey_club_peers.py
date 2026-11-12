@@ -192,3 +192,80 @@ async def test_club_connected_supplier_documents_by_fund(real_client, real_engin
         ledger = await _ledger(real_engine, books)
         assert _funds_held(ledger, fund) == (held if held is not None else _funds_held(posted, fund))
     assert await _ledger(real_engine, books) == posted
+
+
+async def _waiting(real_client, tok: str) -> dict:
+    r = await real_client.get("/accounting/funds/waiting", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_club_lineless_bill_standing_default_and_supplier_void(real_client, real_engine, monkeypatch):
+    """The books receiving a connected company's documents use funds, with 300.00 of gift money
+    in the restricted fund. The company's issued bill that arrives without lines is held and
+    counted as 1 outside document waiting for a fund choice; Fund for this document is refused,
+    since a document with no lines never posts, and it stays held. The accountant sets a standing
+    default for the company: its next bill arrives tagged with the restricted fund and posts. The
+    company voids the lineless bill and the count is gone. The default put the fund on each line,
+    so changing only the tagged bill's document fund is refused as moving nothing; with its lines
+    moved to Unrestricted by Change fund and then voided by the company, every fund is as before
+    it arrived."""
+    from celerp.services import peer_documents
+    from test_fund_connection_defaults import _client_doc, _set_default, _tag
+    from test_funds import _manual
+    from test_peer_accounts import _bill
+    from test_peer_fund_holds import _copy_of, _state
+    from test_peer_sync_end_to_end import _company_of
+
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    books, h = _company_of(firm_tok), auth(firm_tok)
+    fund = await _funds_client(real_client, firm_tok)
+    r = await _manual(real_client, {"headers": h}, [(BANK, 300, 0, fund), ("4100", 0, 300, fund)])
+    assert r.status_code == 200, r.text
+    before = await _ledger(real_engine, books)
+
+    sent = peer_documents.transport_document
+    monkeypatch.setattr(peer_documents, "transport_document", lambda state: {**sent(state), "line_items": []})
+    lineless = await _bill(real_client, tok, [{"name": "Electricity", "quantity": 1, "unit_price": 80.0,
+                                               "line_total": 80.0, "account_code": "6300",
+                                               "receive_as": "expense"}], "lineless-club")
+    _route_to_app(monkeypatch, [])
+    assert not (await _two_way(client_company, credential))["documents_out"].ok
+    monkeypatch.setattr(peer_documents, "transport_document", sent)
+    [item] = await _held(real_client, firm_tok, "doc_funds")
+    assert (item["fix"]["document"], item["fix"]["lines"]) == (True, [])
+    assert {k: (await _waiting(real_client, firm_tok))[k] for k in ("count", "held")} == {"count": 1, "held": 1}
+    r = await _post_held(real_client, firm_tok, item, every=fund)
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "documents.err_finalize_no_lines", r.text
+    assert len(await _held(real_client, firm_tok, "doc_funds")) == 1
+
+    assert (await _set_default(real_client, firm_tok, "connected_company", client_company, fund)).status_code == 200
+    bill = await _client_doc(real_client, tok, issued=True)
+    r = await real_client.post(f"/docs/{lineless}/void", headers=auth(tok), json={"reason": "Sent without lines"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+    copy = await _copy_of(real_engine, books, bill)
+    state = await _state(real_client, firm_tok, copy)
+    assert (state["status"], state["fund_choice"], state["fund_choice_source"]) == (
+        "awaiting_payment", fund, _tag("connected_company", client_company))
+    assert _funds_held(await _ledger(real_engine, books), fund).get("6300") == 80
+    assert await _held(real_client, firm_tok, "doc_funds") == []
+    assert (await _waiting(real_client, firm_tok))["count"] == 0
+
+    change = {"expected_version": state["version"], "reason": "Paid from general funds"}
+    r = await real_client.post(f"/docs/{copy}/change-fund", headers=h, json={
+        **change, "request_key": uuid.uuid4().hex, "document": "unrestricted"})
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.fund.change_moves_nothing", r.text
+    r = await real_client.post(f"/docs/{copy}/change-fund", headers=h, json={
+        **change, "request_key": uuid.uuid4().hex, "document": "unrestricted",
+        "lines": {li["line_id"]: "unrestricted" for li in state["line_items"]}})
+    assert r.status_code == 200, r.text
+    assert _funds_held(await _ledger(real_engine, books), fund) == _funds_held(before, fund)
+    r = await real_client.post(f"/docs/{bill}/void", headers=auth(tok), json={"reason": "Billed twice"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+    assert (await _state(real_client, firm_tok, copy))["status"] == "void"
+    after = await _ledger(real_engine, books)
+    assert {f: _funds_held(after, f) for f in after} == {f: _funds_held(before, f) for f in before}
