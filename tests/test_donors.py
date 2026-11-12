@@ -42,10 +42,12 @@ async def _donor(client, auth, name: str, email: str | None = None) -> str:
     return r.json()["id"]
 
 
-async def _invoice(client, auth, donor: str, *lines) -> str:
+async def _invoice(client, auth, donor: str, *lines, doc_type: str = "invoice") -> str:
+    """A finalized document for ``donor`` at the line prices given: naming the price list keeps
+    those prices instead of repricing the lines from the contact's list."""
     total = round(sum(li["line_total"] for li in lines), 2)
-    return await _issued(client, auth, "invoice", list(lines), contact_id=donor, issue_date="2026-03-01",
-                         subtotal=total, total=total)
+    return await _issued(client, auth, doc_type, list(lines), contact_id=donor, issue_date="2026-03-01",
+                         price_list="Retail", subtotal=total, total=total)
 
 
 async def _pay(client, auth, doc: str, amount: float, day: str = "2026-03-05"):
@@ -103,8 +105,7 @@ async def test_donor_history_excludes_dues_tickets_credits_refunds_chargebacks(c
     await _pay(client, auth, charged_back, 50)
     await _refund(client, auth, charged_back, 50, reason="chargeback")
     credited = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 40))
-    note = await _issued(client, auth, "credit_note", [_line(items["gift"], "Gift", 40)], contact_id=donor,
-                         subtotal=40, total=40)
+    note = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 40), doc_type="credit_note")
     r = await client.post(f"/docs/{note}/apply-to-invoice", headers=auth["headers"], json={
         "target_doc_id": credited, "amount": 40, "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
