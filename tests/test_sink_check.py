@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from encode_templates import REFUSED_SHAPES
+
 # Each check runs the sink check over a whole tree in a subprocess that may take its full wait.
 pytestmark = pytest.mark.timeout(300)
 
@@ -118,3 +120,16 @@ def test_sink_check_module_root_reads_app_names(tmp_path):
     })
     hits = _hits(_run(repo).stdout)
     assert hits == Counter({"PY-JSHOLE | acme_tool/ui_routes.py:5": 1}), hits
+
+
+def test_sink_check_reports_every_refused_hole_shape(tmp_path):
+    """Each template shape the encoder refuses is one PY-POSITION hit at its call; an allowed one is none."""
+    lines = ["from ui.components.encode import js, raw_html", "", "def allowed(v):",
+             "    return raw_html('<p title=\"{v}\">{v}</p>', v=v), js('f({0});', v)", ""]
+    for i, (kind, template) in enumerate(REFUSED_SHAPES):
+        call = f"raw_html({template!r}, **v)" if kind == "html" else f"js({template!r}, v)"
+        lines += [f"def f{i}(v):", f"    return {call}"]
+    repo = _git_repo(tmp_path, {"ui/page.py": "\n".join(lines) + "\n"})
+    expected = Counter(f"PY-POSITION | ui/page.py:{7 + 2 * i}" for i in range(len(REFUSED_SHAPES)))
+    assert _hits(_run(repo).stdout) == expected
+

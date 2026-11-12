@@ -15,6 +15,8 @@ import re
 
 import pytest
 
+from encode_templates import (
+    HOSTILE, NEUTRAL, REFUSED_SHAPES, generated_templates, render, repo_templates, shape)
 from ui.components.encode import (
     Admitted,
     as_js,
@@ -178,3 +180,47 @@ def test_library_markup_admits_only_listed_producers():
         library_markup(svg_cells, [["<script>", True]], 10)
     with pytest.raises(TypeError):
         library_markup(svg_cells, matrix, "10")
+
+
+@pytest.mark.parametrize("kind,template", REFUSED_SHAPES)
+def test_hole_positions_refuses_holes_outside_the_allow_list(kind, template):
+    assert hole_positions(template, kind)
+    with pytest.raises(ValueError):
+        render(kind, template, NEUTRAL)
+
+
+@pytest.mark.parametrize("kind,template", [
+    ("html", "<p>{v}</p>"),
+    ("html", '<p title="{v}" class=\'{w}\'>{v}</p>'),
+    ("html", '<a href="/x" title="{v}">{v}</a>'),
+    ("html", "<p>a</p><!-- c --><br/>{v}"),
+    ("js", "{0}"),
+    ("js", "f({0}, {1});"),
+    ("js", "var a = {0}, b = [{1}];"),
+    ("js", "o = {{k: {0}}}; c ? {0} : {1};"),
+    ("js", "function f() {{ return {0}; }}"),
+    ("js", "f('/a/b', {0}); /* c/d */"),
+])
+def test_hole_positions_admits_allowed_shapes(kind, template):
+    assert hole_positions(template, kind) == []
+
+
+def test_js_value_escapes_line_separators():
+    assert js_value("a\u2028b\u2029c") == '"a\\u2028b\\u2029c"'
+
+
+_INVARIANCE = sorted(set(repo_templates()) | {(k, t) for k in ("html", "js") for t in generated_templates(k)})
+
+
+def test_invariance_covers_the_repo_and_generated_shapes():
+    kinds = [k for k, _t in _INVARIANCE]
+    assert kinds.count("html") > 200 and kinds.count("js") > 200
+
+
+@pytest.mark.parametrize("kind,template", _INVARIANCE)
+def test_hostile_values_keep_every_template_structure(kind, template):
+    """A hole holds a value, never markup: any value renders the same elements and attributes."""
+    neutral = shape(kind, render(kind, template, NEUTRAL))
+    for value in HOSTILE:
+        assert shape(kind, render(kind, template, value)) == neutral, (template, value)
+

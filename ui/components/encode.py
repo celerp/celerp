@@ -237,8 +237,8 @@ def js_value(value) -> str:
 def js(template: str, *values) -> Js:
     """Script from a constant ``str.format`` template whose holes are whole expressions.
 
-    Each hole becomes ``js_value(value)``; a hole inside a JavaScript string, template
-    literal or comment raises ``ValueError``, since a literal there could close it.
+    Each hole becomes ``js_value(value)``; a template ``hole_positions`` refuses raises
+    ``ValueError``.
     """
     _refuse(template, "js")
     return Js(template.format(*(js_value(v) for v in values)))
@@ -305,10 +305,8 @@ def esc_attr(value: object) -> str:
 def raw_html(template: str, **holes) -> Admitted:
     """Markup from a constant ``str.format`` template with named holes.
 
-    Each hole is escaped once with ``esc_attr`` unless it is already ``Admitted``. A hole
-    that HTML escaping does not make safe (a URL, event, style, srcdoc or htmx-evaluated
-    attribute, an attribute name, an unquoted value, a comment, script or style text)
-    raises ``ValueError``.
+    Each hole is escaped once with ``esc_attr``; an ``Admitted`` value goes in unescaped only
+    in element text. A template ``hole_positions`` refuses raises ``ValueError``.
     """
     _refuse(template, "html")
     in_attr = {field for (_lit, field, _s, _c), at in zip(
