@@ -150,7 +150,10 @@ def main(argv: list[str]) -> int:
         print("tests/.test_durations is out of date: run python scripts/shard_durations.py and commit it")
         return 1
     kept = {k: v for k, v in durations().items() if k not in gone}
-    kept.update(_time(new) if new else {})
+    # One run per job: a browser job's event loop must not share a process with async unit tests.
+    for job in split_jobs():
+        ids = [t for t in unmeasured(job) if t not in kept]
+        kept.update(_time(ids) if ids else {})
     DURATIONS.write_text(json.dumps(kept, indent=4) + "\n")
     print(f"tests/.test_durations: {len(new)} timed, {len(gone)} dropped; commit it")
     return 0

@@ -101,3 +101,17 @@ def test_refresh_times_new_tests_and_drops_stale_entries(file_with):
     assert sd.main([]) == 0
     assert json.loads(file_with.read_text()) == {"t.py::kept": 1.0, "t.py::new": 2.0}
     assert sd.main(["--check"]) == 0
+
+
+def test_refresh_times_each_job_s_tests_in_a_run_of_their_own(file_with, monkeypatch):
+    """A browser job's event loop must not share a pytest process with async unit tests, so
+    each job's new tests are timed apart, and a test two jobs share is timed once."""
+    runs = []
+    monkeypatch.setattr(sd, "split_jobs", lambda: {"unit": ("", []), "browser": ("", [])})
+    monkeypatch.setattr(sd, "ids_the_job_runs", lambda job: frozenset(
+        {"t.py::kept", "t.py::both", f"t.py::{job}"}))
+    monkeypatch.setattr(sd, "_time", lambda ids: runs.append(sorted(ids)) or {i: 2.0 for i in ids})
+    assert sd.main([]) == 0
+    assert runs == [["t.py::both", "t.py::unit"], ["t.py::browser"]]
+    assert json.loads(file_with.read_text()) == {
+        "t.py::kept": 1.0, "t.py::both": 2.0, "t.py::unit": 2.0, "t.py::browser": 2.0}
