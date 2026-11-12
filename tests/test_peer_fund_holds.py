@@ -129,6 +129,32 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
     assert _from_firm(await _journals(real_engine, client_company)) == {}
 
 
+async def test_held_lines_carry_balance_per_fund(real_client, real_engine, monkeypatch):
+    """Each line of a record held for funds names the account it posts to and that account's
+    posted balance per fund (debit less credit; "unrestricted" for the unrestricted group),
+    read when Sync accounts lists it, so the user sees what each fund holds before choosing."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp.services.journal_accounts import fund_account_balances
+    from test_funds import _manual
+
+    tok, _, client_company, _, fund, item, _ = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
+    headers = {"headers": auth(tok)}
+    assert (await _manual(real_client, headers, [(BANK, 60, 0, fund), ("4100", 0, 60, fund)])).status_code == 200
+    [item] = await _held(real_client, tok)
+    bank, expense = item["fund_lines"]
+    assert bank["account"] == BANK and expense["account"] == EXPENSE
+    assert bank["balances"][fund] == 60.0
+    async with AsyncSession(real_engine) as session:
+        held = await fund_account_balances(session, uuid.UUID(str(client_company)))
+    assert bank["balances"].get("unrestricted", 0.0) == float(held.get(None, {}).get(BANK, 0))
+    assert fund not in expense["balances"]
+    # A record held for an account, not a fund, carries no fund lines.
+    assert all("fund_lines" not in i for i in (await real_client.get(
+        "/accounting/peer/holds", headers=auth(tok))).json()["items"] if (i["fix"] or {}).get("kind") != "funds")
+
+
 @pytest.mark.parametrize("shape", ["firm_journal", "client_journal"])
 async def test_held_journal_line_without_choice_refused(real_client, real_engine, monkeypatch, shape):
     """With no entry choice and one line's choice missing, or cleared to null, Post is refused

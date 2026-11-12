@@ -6,6 +6,7 @@ firm's first-pairing review of a client's accounts. Every action answers in plac
 from __future__ import annotations
 
 import json
+import re
 
 from fasthtml.common import to_xml
 from fastapi import FastAPI
@@ -259,3 +260,107 @@ async def test_firm_view_links_account_items_to_the_page():
     row = {"company_id": "c-9"}
     html = to_xml(_attention_link(row, {"kind": "refused", "href": "/accounting/sync-accounts"}, "en"))
     assert "/accounting/sync-accounts" in html
+
+
+# ---- records held for a fund on each line ----------------------------------------------
+
+FUNDS = {"items": [{"id": "fund:r", "name": "Building fund", "archived": False},
+                   {"id": "fund:old", "name": "Old appeal", "archived": True}]}
+FUND_CHART = {"items": [*CHART["items"],
+                        {"code": "1111", "name": "Bank", "account_type": "asset", "is_active": True},
+                        {"code": "4100", "name": "Donations", "account_type": "revenue", "is_active": True},
+                        {"code": "6300", "name": "Utilities", "account_type": "expense", "is_active": True}]}
+HELD_JOURNAL = {
+    "id": "h-funds", "source_company_id": "c-2", "label": "Reclass program costs", "at": "2026-10-17T10:00:00",
+    "reason": "Waiting for a fund on each line",
+    "fix": {"kind": "funds", "document": True, "lines": [1, 2], "revision": 3, "ts": "2026-03-31",
+            "memo": "Reclass program costs", "firm": "Firm Practice",
+            "entries": [{"account": "1111", "debit": 100.0, "credit": 0.0, "origin": "accountant"},
+                        {"account": "4100", "debit": 0.0, "credit": 100.0, "origin": "accountant"}]},
+    "fund_lines": [{"account": "1111", "balances": {"fund:r": 60.0, "unrestricted": 140.0}},
+                   {"account": "4100", "balances": {"fund:r": -60.0}}]}
+HELD_DOC = {
+    "id": "h-doc", "source_company_id": "c-3", "label": "B-7", "at": "2026-10-17T09:00:00",
+    "reason": "Waiting for a fund on each line",
+    "fix": {"kind": "doc_funds", "document": True, "lines": [1], "revision": 2,
+            "sent": {"doc_type": "bill", "doc_number": "B-7", "line_items": [
+                {"name": "Electricity", "quantity": 1, "unit_price": 50.0, "line_total": 50.0, "account_code": "6300"}]}},
+    "fund_lines": [{"account": "6300", "balances": {}}]}
+
+
+def _fund_app(monkeypatch, *, refuse=None):
+    paths, calls = _app(monkeypatch, holds=[HELD_JOURNAL, HELD_DOC], added=[], review=[])
+
+    async def get_chart(token):
+        return FUND_CHART
+
+    async def list_funds(token):
+        return FUNDS
+
+    async def post_peer_hold_funds(token, item_id, body):
+        calls.append(("funds", item_id, body))
+        if refuse:
+            raise api_client.APIError(409, refuse)
+        return {"id": "je-9"}
+
+    monkeypatch.setattr(api_client, "get_chart", get_chart)
+    monkeypatch.setattr(api_client, "list_funds", list_funds)
+    monkeypatch.setattr(api_client, "post_peer_hold_funds", post_peer_hold_funds)
+    return paths, calls
+
+
+def _hidden(html: str, name: str) -> str | None:
+    found = re.search(rf'<input type="hidden" name="{name}"[^>]*value="([^"]*)"', html)
+    return found.group(1) if found else None
+
+
+async def test_held_line_shows_balance_per_fund_and_no_preselected_choice(monkeypatch):
+    _fund_app(monkeypatch)
+    html = to_xml(await routes.sync_accounts_body("test-token", "en"))
+    journal = html[html.index(">Reclass program costs<"):html.index(">B-7<")]
+    assert 'hx-post="/accounting/sync-accounts/holds/h-funds/funds"' in journal
+    # Set all sits above the lines; no select starts with a choice.
+    assert journal.index("Set all outside lines to") < journal.index('name="line_1"') < journal.index('name="line_2"')
+    assert _hidden(journal, "all") == "" and _hidden(journal, "line_1") == "" and _hidden(journal, "line_2") == ""
+    assert _hidden(journal, "revision") == "3" and _hidden(journal, "request_key")
+    # Each line shows its account's balance per fund, on the account's own side.
+    assert "1111 Bank: Building fund 60.00, Unrestricted 140.00" in journal
+    assert "4100 Donations: Building fund 60.00" in journal
+    # Post is always enabled; the account fixes are not offered for a fund hold.
+    post = journal[journal.index(">Post<") - 200:journal.index(">Post<")]
+    assert "disabled" not in post.rsplit("<button", 1)[1]
+    assert "Use another account" not in journal and "Old appeal" not in journal
+    assert "Building fund" in journal and "Unrestricted" in journal
+
+    document = html[html.index(">B-7<"):]
+    assert 'hx-post="/accounting/sync-accounts/holds/h-doc/funds"' in document
+    assert "Electricity" in document and _hidden(document, "line_1") == ""
+    assert "6300 Utilities: No balance yet" in document
+    assert "Set all outside lines to" in document
+
+
+async def test_held_funds_post_sends_choices_and_names_the_record(monkeypatch):
+    paths, calls = _fund_app(monkeypatch)
+    endpoint = paths["/accounting/sync-accounts/holds/{item_id}/funds"]
+    form = {"revision": "3", "request_key": "k-1", "all": "fund:r", "line_1": "", "line_2": "unrestricted"}
+    response = await endpoint(Request(form), "h-funds")
+    assert calls == [("funds", "h-funds", {"revision": 3, "request_key": "k-1",
+                                           "choices": {"all": "fund:r", "lines": {"2": "unrestricted"}}})]
+    toast = json.loads(response.headers["HX-Trigger"])["celerpToast"]
+    assert toast["message"] == "Reclass program costs posted." and toast["type"] == "success"
+    assert 'id="sync-accounts"' in response.body.decode()
+
+
+async def test_refused_held_funds_post_keeps_the_choices(monkeypatch):
+    refusal = {"message": "Reclass program costs came from your accountant: choose the fund for this document. "
+                          "Line 1 has no fund of its own.", "message_key": "posting.fund.choice_needed"}
+    paths, calls = _fund_app(monkeypatch, refuse=refusal)
+    endpoint = paths["/accounting/sync-accounts/holds/{item_id}/funds"]
+    form = {"revision": "3", "request_key": "k-1", "all": "", "line_1": "", "line_2": "fund:r"}
+    html = to_xml(await endpoint(Request(form), "h-funds"))
+    assert "Line 1 has no fund of its own." in html
+    journal = html[html.index(">Reclass program costs<"):html.index(">B-7<")]
+    assert _hidden(journal, "line_2") == "fund:r" and _hidden(journal, "line_1") == ""
+    assert _hidden(journal, "request_key") == "k-1"  # a retry stays the same request
+    document = html[html.index(">B-7<"):]
+    assert _hidden(document, "line_1") == ""  # the other hold is drawn as stored
