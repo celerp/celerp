@@ -13,6 +13,7 @@ exist to be kept, refused or copied.
 from __future__ import annotations
 
 import ast
+import re
 import uuid
 
 import pytest
@@ -871,9 +872,11 @@ async def test_fund_choices_route_stale_version_refused(client, auth):
     assert r.status_code == 200 and r.json() == {"event_id": None, "version": saved["version"]}, r.text
 
 
-async def test_set_all_outside_lines_then_edit_one(client, auth):
+async def test_set_all_outside_lines_then_edit_one(client, auth, monkeypatch):
     """Set all outside lines writes the choice to every line from outside that has none and
-    leaves a line already chosen as it is; a later edit of one line changes only that line."""
+    leaves a line already chosen as it is; a later edit of one line changes only that line.
+    The document import review does the same before anything is created: Set all imported
+    documents and one line's own Fund, kept through a revalidate and stored on confirm."""
     fund = await _fund_company(client, auth)
     other = await _second_fund(client, auth)
     a, b, c = [await _item(client, auth, name) for name in ("Out A", "Out B", "Out C")]
@@ -885,6 +888,52 @@ async def test_set_all_outside_lines_then_edit_one(client, auth):
     assert _choices(await _doc(client, auth, doc))[1] == [(other, other), (fund, fund), (fund, fund)]
     assert (await _choose(client, auth, doc, lines={second: "unrestricted"})).status_code == 200
     assert _choices(await _doc(client, auth, doc))[1] == [(other, other), ("unrestricted", None), (fund, fund)]
+
+    # The document import review: no control chosen yet, then Set all and one line's own.
+    from test_import_upsert import _numbered_via, _Routes, _staged_form
+    from ui.routes import docs_import
+
+    async def _get(_tok, path):
+        r = await client.get(path, headers=auth["headers"])
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
+        return (await client.post(path, headers=auth["headers"], json={
+            "records": records, "upsert": upsert, "fund_choices": fund_choices})).json()
+
+    monkeypatch.setattr(docs_import, "_token", lambda request: "tok")
+    monkeypatch.setattr(docs_import.api, "get_company", lambda tok: _get(tok, "/companies/me"))
+    monkeypatch.setattr(docs_import.api, "list_funds", lambda tok: _get(tok, "/accounting/funds"))
+    monkeypatch.setattr(docs_import.api, "batch_import", _batch)
+    monkeypatch.setattr(docs_import.api, "numbered_ids", _numbered_via(client, auth["headers"]))
+    routes = _Routes()
+    docs_import.setup_routes(routes)
+    number = f"FI-{uuid.uuid4().hex[:6]}"
+    csv_text = ("doc_type,doc_number,date,status,total,line_stone_type,line_qty,line_unit_price,line_total_price\n"
+                f"invoice,{number},2026-01-20,draft,30,Filed A,1,10,10\n"
+                f"invoice,{number},2026-01-20,draft,30,Filed B,1,20,20\n")
+    every, own = "fund_all", f"fund_line:invoice:{number}:2"
+
+    def _picked(html: str, name: str) -> str:
+        m = re.search(rf'<input[^>]*name="{re.escape(name)}"[^>]*>', html)
+        assert m, (name, html)
+        return re.search(r'value="([^"]*)"', m.group(0)).group(1)
+
+    html = to_xml(await routes.post_routes["/docs/import/revalidate"](await _staged_form("tok", csv_text)))
+    assert _picked(html, every) == "" and _picked(html, f"fund_line:invoice:{number}:1") == "" and _picked(html, own) == ""
+    assert "General" in html and "Board reserve" in html, html
+    form = re.search(r"<form.*?</form>", html, re.S).group(0)
+    assert every in form and own in form
+    kept = await _staged_form("tok", csv_text, **{every: fund, own: other})
+    html = to_xml(await routes.post_routes["/docs/import/revalidate"](kept))
+    assert (_picked(html, every), _picked(html, own)) == (fund, other)
+    to_xml(await routes.post_routes["/docs/import/confirm"](await _staged_form("tok", csv_text, **{every: fund, own: other})))
+    rows = (await client.get("/docs", headers=auth["headers"], params={"q": number})).json()["items"]
+    assert len(rows) == 1, rows
+    state = await _doc(client, auth, rows[0]["id"])
+    assert (state.get("fund_choice"), state.get("fund_choice_source")) == (fund, "user")
+    assert _choices(state)[1] == [(None, None), (other, other)]
 
 
 def _issued_import(entity_id: str, lines: list[dict]) -> dict:
