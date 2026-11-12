@@ -722,6 +722,13 @@ async def emit_event(
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
+    # A new journal entry holds its company's fund ledger before it locks any other row,
+    # so the fund lock keeps its place in the lock order (company, fund ledger, rows).
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import hold_fund_ledger
+
+        await hold_fund_ledger(session, kwargs.get("company_id"))
+
     # Every journal entry change, whoever produced it, is judged against the bank
     # reconciliations: one that would change what a reconciliation counts is refused.
     if kwargs["event_type"] in _JOURNAL_CHANGES:

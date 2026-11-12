@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import func, select
 
-from celerp.accounting_roles import POSTING_ACCOUNTS_PATH, ROLES_KEY, SEEDED_TARGETS, UNGUESSED_ROLES
+from celerp.accounting_roles import POSTING_ACCOUNTS_PATH, ROLES_KEY, SEEDED_TARGETS, UNGUESSED_ROLES, AccountRole
 from celerp.models.company import Company
 from celerp.services import auto_je
 from celerp.services.account_roles import PostingRoleError, set_role
@@ -64,7 +64,9 @@ async def _pay(client, auth, doc_id: str, amount: float, **extra):
 @pytest.mark.asyncio
 async def test_a_new_company_starts_with_every_role_mapped_to_its_seeded_account(session, auth):
     settings = (await session.get(Company, auth["company_id"], populate_existing=True)).settings
-    assert settings[ROLES_KEY] == {r.value: c for r, c in SEEDED_TARGETS.items()}
+    # Restricted net assets gets its account when the company first turns funds on.
+    assert settings[ROLES_KEY] == {r.value: c for r, c in SEEDED_TARGETS.items()
+                                   if r is not AccountRole.RESTRICTED_NET_ASSETS}
 
 
 @pytest.mark.asyncio

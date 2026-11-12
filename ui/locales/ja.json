@@ -7469,5 +7469,20 @@
   "settings_menu.err_changed": "読み込んだ後にサイドメニューが変更されたため、この変更は保存されませんでした。もう一度読み込み、現在のバージョンで変更してください。",
   "settings_menu.changed_elsewhere": "保存中に別のユーザーがサイドメニューを変更したため、変更は保存されませんでした。下の一覧は現在のメニューを表示しています。もう一度変更してください。",
   "inventory.bulk_duplicate_refusals": "複製されなかった品目: {items}",
-  "inv.reorder_needs_quantity": "先に再発注数量を設定してください: {items}"
+  "inv.reorder_needs_quantity": "先に再発注数量を設定してください: {items}",
+  "posting.fund.funds_off": "Funds are turned off, so a journal line can't carry a fund. Remove the fund from the line, or turn funds on in Accounting settings.",
+  "posting.fund.unknown": "Fund {fund} doesn't exist. Choose one of the company's funds.",
+  "posting.fund.archived": "The fund {fund} is archived and takes no new postings. Unarchive it first, or choose another fund.",
+  "posting.fund.unbalanced": "The lines of {fund} don't balance: they are off by {difference} {currency}. Each fund's debits must equal its credits.",
+  "posting.fund.unrestricted": "the unrestricted funds",
+  "posting.fund.restricted_net_assets_needs_fund": "A line on account {code}, restricted net assets, must carry a restricted fund.",
+  "posting.fund.retained_earnings_restricted": "A line on account {code}, retained earnings, can't carry the restricted fund {fund}. Restricted money is recorded on restricted net assets.",
+  "posting.role.restricted_net_assets": "Restricted net assets",
+  "fund.not_enabled": "Funds are turned off. Turn them on in Accounting settings before adding a fund.",
+  "fund.not_found": "Celerp couldn't find this fund. It may belong to another company.",
+  "fund.name_required": "Give the fund a name.",
+  "fund.name_taken": "There is already a fund named {name}. Choose another name.",
+  "fund.purpose_required": "A restricted fund needs a purpose: what the money may be spent on.",
+  "fund.restriction_locked": "{fund} already has postings, so whether it is restricted and its purpose can't change. Create a new fund and move the money to it instead.",
+  "fund.balance_held": "These funds still hold balances: {funds}. Bring each to zero first."
 }

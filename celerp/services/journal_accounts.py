@@ -228,6 +228,19 @@ async def funds_by_id(session: AsyncSession, company_id, ids=None) -> dict[str, 
     return {entity_id: state or {} for entity_id, state in await session.execute(query)}
 
 
+async def hold_fund_ledger(session: AsyncSession, company_id) -> dict:
+    """Lock the company, read its settings under that lock and, when it has funds turned
+    on, hold its fund ledger shared (lock_fund_ledger) once in this transaction; return
+    the settings. A posting calls it before it locks any other row."""
+    from celerp.services.company_lock import lock_company, lock_fund_ledger, noted
+
+    await lock_company(session, company_id)
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if funds_enabled(settings) and not any(c == str(company_id) for c, _ in noted(session, "funds")):
+        await lock_fund_ledger(session, company_id, shared=True)
+    return settings
+
+
 async def check_fund_rules(session: AsyncSession, company_id, data: dict, entries: list[dict], *,
                            restored: bool = False) -> None:
     """The fund rules every journal entry meets, whoever produced it.
@@ -239,18 +252,15 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     fund balances on its own, the lines without a fund counting as one; (3) a restricted
     net assets line carries a restricted fund and a retained earnings line never does.
     With funds off, a new line carrying a fund is refused and nothing else is checked."""
-    from celerp.services.company_lock import lock_company, lock_fund_ledger
     from celerp.services.money import round_money, to_decimal
 
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
-    await lock_company(session, company_id)
-    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    settings = await hold_fund_ledger(session, company_id)
     if not funds_enabled(settings):
         if named and new:
             raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
         return
-    await lock_fund_ledger(session, company_id, shared=True)
     funds = await funds_by_id(session, company_id, named)
     for fund_id in sorted(named):
         fund = funds.get(fund_id)

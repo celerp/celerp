@@ -7469,5 +7469,20 @@
   "settings_menu.err_changed": "Il menu laterale è cambiato dopo che lo hai letto, quindi questa modifica non è stata salvata. Rileggilo e applica la modifica alla versione attuale.",
   "settings_menu.changed_elsewhere": "Qualcun altro ha modificato il menu laterale mentre salvavi, quindi la tua modifica non è stata salvata. L'elenco qui sotto mostra il menu com'è ora. Ripeti la modifica.",
   "inventory.bulk_duplicate_refusals": "Non duplicati: {items}",
-  "inv.reorder_needs_quantity": "Imposta prima una quantità di riordino per: {items}"
+  "inv.reorder_needs_quantity": "Imposta prima una quantità di riordino per: {items}",
+  "posting.fund.funds_off": "Funds are turned off, so a journal line can't carry a fund. Remove the fund from the line, or turn funds on in Accounting settings.",
+  "posting.fund.unknown": "Fund {fund} doesn't exist. Choose one of the company's funds.",
+  "posting.fund.archived": "The fund {fund} is archived and takes no new postings. Unarchive it first, or choose another fund.",
+  "posting.fund.unbalanced": "The lines of {fund} don't balance: they are off by {difference} {currency}. Each fund's debits must equal its credits.",
+  "posting.fund.unrestricted": "the unrestricted funds",
+  "posting.fund.restricted_net_assets_needs_fund": "A line on account {code}, restricted net assets, must carry a restricted fund.",
+  "posting.fund.retained_earnings_restricted": "A line on account {code}, retained earnings, can't carry the restricted fund {fund}. Restricted money is recorded on restricted net assets.",
+  "posting.role.restricted_net_assets": "Restricted net assets",
+  "fund.not_enabled": "Funds are turned off. Turn them on in Accounting settings before adding a fund.",
+  "fund.not_found": "Celerp couldn't find this fund. It may belong to another company.",
+  "fund.name_required": "Give the fund a name.",
+  "fund.name_taken": "There is already a fund named {name}. Choose another name.",
+  "fund.purpose_required": "A restricted fund needs a purpose: what the money may be spent on.",
+  "fund.restriction_locked": "{fund} already has postings, so whether it is restricted and its purpose can't change. Create a new fund and move the money to it instead.",
+  "fund.balance_held": "These funds still hold balances: {funds}. Bring each to zero first."
 }

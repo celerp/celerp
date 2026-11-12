@@ -12,5 +12,85 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "posting.fund.funds_off": {
+      "en": "Funds are turned off, so a journal line can't carry a fund. Remove the fund from the line, or turn funds on in Accounting settings.",
+      "params": []
+    },
+    "posting.fund.unknown": {
+      "en": "Fund {fund} doesn't exist. Choose one of the company's funds.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.archived": {
+      "en": "The fund {fund} is archived and takes no new postings. Unarchive it first, or choose another fund.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.unbalanced": {
+      "en": "The lines of {fund} don't balance: they are off by {difference} {currency}. Each fund's debits must equal its credits.",
+      "params": [
+        "currency",
+        "difference",
+        "fund"
+      ]
+    },
+    "posting.fund.unrestricted": {
+      "en": "the unrestricted funds",
+      "params": []
+    },
+    "posting.fund.restricted_net_assets_needs_fund": {
+      "en": "A line on account {code}, restricted net assets, must carry a restricted fund.",
+      "params": [
+        "code"
+      ]
+    },
+    "posting.fund.retained_earnings_restricted": {
+      "en": "A line on account {code}, retained earnings, can't carry the restricted fund {fund}. Restricted money is recorded on restricted net assets.",
+      "params": [
+        "code",
+        "fund"
+      ]
+    },
+    "posting.role.restricted_net_assets": {
+      "en": "Restricted net assets",
+      "params": []
+    },
+    "fund.not_enabled": {
+      "en": "Funds are turned off. Turn them on in Accounting settings before adding a fund.",
+      "params": []
+    },
+    "fund.not_found": {
+      "en": "Celerp couldn't find this fund. It may belong to another company.",
+      "params": []
+    },
+    "fund.name_required": {
+      "en": "Give the fund a name.",
+      "params": []
+    },
+    "fund.name_taken": {
+      "en": "There is already a fund named {name}. Choose another name.",
+      "params": [
+        "name"
+      ]
+    },
+    "fund.purpose_required": {
+      "en": "A restricted fund needs a purpose: what the money may be spent on.",
+      "params": []
+    },
+    "fund.restriction_locked": {
+      "en": "{fund} already has postings, so whether it is restricted and its purpose can't change. Create a new fund and move the money to it instead.",
+      "params": [
+        "fund"
+      ]
+    },
+    "fund.balance_held": {
+      "en": "These funds still hold balances: {funds}. Bring each to zero first.",
+      "params": [
+        "funds"
+      ]
+    }
+  }
 }

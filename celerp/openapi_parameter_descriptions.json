@@ -1611,5 +1611,17 @@
   "POST /subscriptions/{entity_id}/periods/{k}/unskip": {
     "path:entity_id": "Identifier of the requested Celerp record.",
     "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
+  },
+  "PATCH /accounting/funds/{fund_id}": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "POST /accounting/funds/{fund_id}/archive": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "POST /accounting/funds/{fund_id}/unarchive": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "PUT /companies/me/categories/{category_key}/income-account": {
+    "path:category_key": "Stable category key identifying the company category."
   }
 }

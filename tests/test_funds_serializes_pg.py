@@ -61,7 +61,7 @@ async def _blocked(engine, n: int) -> None:
 async def _fund_lines(engine, cid, fund: str) -> int:
     async with engine.connect() as conn:
         return (await conn.execute(text(
-            "SELECT count(*) FROM projections p, jsonb_array_elements(p.state->'entries') e "
+            "SELECT count(*) FROM projections p, json_array_elements(p.state->'entries') e "
             "WHERE p.company_id = :c AND p.entity_type = 'journal_entry' AND e->>'fund_id' = :f"),
             {"c": uuid.UUID(str(cid)), "f": fund})).scalar_one()
 
