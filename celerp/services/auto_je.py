@@ -698,20 +698,19 @@ async def _line_income_accounts(session, company_id, doc: dict, settings: dict) 
     return accounts
 
 
-def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, str], default: str, revenue, *,
-                  whole: bool) -> list[dict]:
+def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, str], default: str,
+                  revenue) -> list[dict]:
     """A sale's revenue credits: each line's share (``allocations``) on its income account
     (``incomes``, _revenue_line), and what the other lines leave on the sales revenue
     account ``default``. Every allocation without an account is named ``default``. With
-    no income account of its own on any line the revenue is one ``default`` line, posted
-    even at zero when ``whole`` (nothing else carries the sale)."""
+    no income account of its own on any line the revenue is one ``default`` line."""
     own: dict[str, _Dec] = {}
     for index, share in (allocations or {}).items():
         code = share.setdefault("account", incomes.get(index, default))
         if index in incomes and code != default:
             own[code] = own.get(code, _Dec(0)) + to_decimal(share["base"])
     rest = to_decimal(revenue) - sum(own.values(), _Dec(0))
-    lines = [_line(default, R.SALES_REVENUE, credit=to_stored_float(rest))] if rest or (whole and not own) else []
+    lines = [_line(default, R.SALES_REVENUE, credit=to_stored_float(rest))] if rest else []
     return lines + [_revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
 
 
@@ -735,7 +734,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     acc = await resolve_many(session, company_id, roles)
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
     entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing,
-               *_income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue, whole=not clearing)]
+               *_income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
     if cogs > 0:

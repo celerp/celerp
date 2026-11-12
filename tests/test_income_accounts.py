@@ -219,3 +219,98 @@ async def test_reversal_reads_posted_not_current_setting(client, session, auth):
     await _issued(client, auth, "credit_note", [_line(a, "Workshop", 40.0, source_line_id=line_ids[0])],
                   original_doc_id=doc)
     assert await _revenue(session, auth) == {"4100": 16.67, "4200": 60.0, "4300": 33.33, "4250": 0.0}
+
+
+_CHART = {"items": [
+    {"code": "4000", "name": "Revenue", "account_type": "revenue", "is_active": True, "parent_code": None},
+    {"code": "4100", "name": "Sales Revenue", "account_type": "revenue", "is_active": True, "parent_code": "4000"},
+    {"code": "4300", "name": "Other Income", "account_type": "revenue", "is_active": True, "parent_code": "4000"},
+    {"code": "4900", "name": "Old Income", "account_type": "revenue", "is_active": False, "parent_code": "4000"},
+    {"code": "1120", "name": "Accounts Receivable", "account_type": "asset", "is_active": True, "parent_code": None},
+]}
+_ACCOUNTING = {"name": "Test Corp", "settings": {"modules": ["celerp-accounting"]}}
+
+
+@pytest.fixture
+async def ui_client():
+    from httpx import ASGITransport, AsyncClient
+
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui", follow_redirects=False) as c:
+        c.cookies.update({"celerp_token": make_test_token(role="owner")})
+        yield c
+
+
+def _ui_api(*, item: dict | None = None, mapping: dict | None = None, **more):
+    """Patches for the API calls the income account cell makes."""
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, patch
+
+    calls = {"get_chart": _CHART, "get_category_income_accounts": mapping or {}, "get_company": _ACCOUNTING,
+             "get_item": item or {}}
+    stack = ExitStack()
+    for name, value in calls.items():
+        stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=value)))
+    for name, mock in more.items():
+        stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+    return stack
+
+
+async def test_income_account_cell_shows_own_inherited_or_none(ui_client):
+    url = "/settings/accounting/income-account/display"
+    with _ui_api(item={"category": "Gems"}, mapping={"Gems": "4300"}):
+        inherited = (await ui_client.get(url, params={"kind": "item", "key": "it-1"})).text
+    assert "4300 Other Income, from its category" in inherited
+    assert 'hx-get="/settings/accounting/income-account/edit?kind=item&amp;key=it-1"' in inherited
+
+    with _ui_api(item={"category": "Gems", "income_account": "4100"}, mapping={"Gems": "4300"}):
+        own = (await ui_client.get(url, params={"kind": "item", "key": "it-1"})).text
+    assert "4100 Sales Revenue" in own and "from its category" not in own
+
+    with _ui_api():
+        none = (await ui_client.get(url, params={"kind": "category", "key": "Gems"})).text
+    assert ">--<" in none
+
+    with _ui_api():
+        assert (await ui_client.get(url, params={"kind": "invoice", "key": "x"})).status_code == 404
+        assert (await ui_client.get("/settings/accounting/income-account/edit",
+                                    params={"kind": "invoice", "key": "x"})).status_code == 404
+
+
+async def test_income_account_picker_offers_only_usable_revenue_accounts(ui_client):
+    with _ui_api(mapping={"Gems": "4300"}):
+        r = await ui_client.get("/settings/accounting/income-account/edit", params={"kind": "category", "key": "Gems"})
+    body = r.text
+    assert "combobox" in body and "Escape" in body
+    assert 'hx-patch="/settings/accounting/income-account?kind=category&amp;key=Gems"' in body
+    assert "4100 Sales Revenue" in body and "4300 Other Income" in body
+    assert "4000 Revenue" not in body and "4900" not in body and "1120" not in body
+
+
+async def test_income_account_save_shows_cell_or_keeps_picker_with_reason(ui_client):
+    from unittest.mock import AsyncMock
+
+    from ui.api_client import APIError
+
+    put = AsyncMock(return_value={})
+    with _ui_api(mapping={"Gems": "4100"}, set_category_income_account=put):
+        r = await ui_client.patch("/settings/accounting/income-account", params={"kind": "category", "key": "Gems"},
+                                  data={"value": "4100"})
+    assert put.await_args.args[1:] == ("Gems", "4100")
+    assert "4100 Sales Revenue" in r.text and "combobox" not in r.text and "hx-redirect" not in r.headers
+
+    cleared = AsyncMock(return_value={})
+    with _ui_api(set_category_income_account=cleared):
+        await ui_client.patch("/settings/accounting/income-account", params={"kind": "category", "key": "Gems"},
+                              data={"value": ""})
+    assert cleared.await_args.args[1:] == ("Gems", None)
+
+    refused = AsyncMock(side_effect=APIError(422, "Account 1120 is not a revenue account."))
+    with _ui_api(item={"category": None}, patch_item=refused):
+        r = await ui_client.patch("/settings/accounting/income-account", params={"kind": "item", "key": "it-1"},
+                                  data={"value": "1120"})
+    assert refused.await_args.args[1:] == ("it-1", {"income_account": "1120"})
+    assert r.status_code == 200
+    assert "Account 1120 is not a revenue account." in r.text and "combobox" in r.text and "cell--error" in r.text
