@@ -199,8 +199,8 @@ async def test_note_application_matched_by_fund(client, session, auth):
 async def test_accounting_system_document_takes_fund_choice(client, session, auth, monkeypatch, connector_modules_running):
     """An open QuickBooks invoice in a company with funds has no posted entry of its own: the
     fund-choices route accepts it, the standing default for the accounting system fills it
-    at its first arrival tagged with that source, and a later local payment posts on the
-    chosen fund by rule S."""
+    at its first arrival tagged with that source, and once finalized here a local payment
+    posts on the chosen fund by rule S."""
     import celerp.connectors.upsert as upsert
     from celerp.models.connector_config import ConnectorConfig
     from test_helpers import own_sessions_on
@@ -239,6 +239,10 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     session.expire_all()
     assert await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc}:fin"}) is None
 
+    # An imported open invoice takes a payment once it is finalized here.
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    fin = await _entry(session, auth, f"je:auto:{doc}:fin")
+    assert _by_fund(fin["entries"], "receivable") == {f["R"]: 30.0}, fin["entries"]
     r = await _pay(client, auth, doc, 30)
     assert r.status_code == 200, r.text
     paid = await _entry(session, auth, f"je:auto:{doc}:pay:0")
