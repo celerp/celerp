@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import httpx
 import logging
-import math
 from ui.api_client import error_text
 from ui.i18n import t, get_lang, category_label
 
@@ -31,42 +30,6 @@ except ImportError:  # pragma: no cover
     RedirectResponse = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
-
-# Named format → (width_mm, height_mm)
-_FORMAT_MM: dict[str, tuple[float, float]] = {
-    "24x24mm": (24.0, 24.0),
-    "29x29mm": (29.0, 29.0),
-    "34x34mm": (34.0, 34.0),
-    "40x30mm": (40.0, 30.0),
-    "62x29mm": (62.0, 29.0),
-    "100x50mm": (100.0, 50.0),
-    "A4": (210.0, 297.0),
-    "A5": (148.0, 210.0),
-    "letter": (216.0, 279.0),
-}
-_FORMAT_MM_DEFAULT = (40.0, 30.0)
-
-
-def _format_to_mm(
-    fmt: str | None,
-    width_mm: float | None,
-    height_mm: float | None,
-) -> tuple[float, float]:
-    """Return (width_mm, height_mm) for a template format string.
-
-    Priority: named format table > custom width_mm/height_mm > default 40x30.
-    """
-    if fmt and fmt != "custom":
-        if fmt in _FORMAT_MM:
-            return _FORMAT_MM[fmt]
-        # Try parsing "WxHmm" dynamically
-        import re
-        m = re.match(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm$", fmt)
-        if m:
-            return (float(m.group(1)), float(m.group(2)))
-    if width_mm and height_mm:
-        return (float(width_mm), float(height_mm))
-    return _FORMAT_MM_DEFAULT
 
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
@@ -124,7 +87,7 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
-from .service import BARCODE_HEIGHT_DEFAULT
+from .service import _SIZES, BARCODE_HEIGHT_DEFAULT, FIELD_NUMBERS, LABEL_NUMBERS, LabelNumberError, label_number, label_size, printable_template
 from .service import display_label as _svc_display_label
 from ui.components.encode import html_response, js_value, safe_url
 
@@ -777,12 +740,12 @@ def _field_row_compact(
         Input(type="hidden", name=f"fields[{idx}][y]", value=field.get("y", ""), cls="fld-y"),
         Input(type="number", name=f"fields[{idx}][fontSize]", value=field.get("fontSize", ""),
               cls="form-input form-input--sm fld-fs",
-              min="4", max="72", placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
+              **_limits("fontSize"), placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
               style="width:60px;" if is_text else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         Input(type="number", name=f"fields[{idx}][barcode_height]", value=field.get("barcode_height", ""),
               cls="form-input form-input--sm fld-bh",
-              min="1", max="30", placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
+              **_limits("barcode_height"), placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
               style="width:60px;" if ftype == "barcode" else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         # Bold has always been stored on the field and honoured by the renderers;
@@ -798,6 +761,12 @@ def _field_row_compact(
         cls="field-row-compact",
         data_idx=str(idx),
     )
+
+
+def _limits(name: str) -> dict[str, str]:
+    """The min and max a number input of the label number ``name`` offers (LABEL_NUMBERS)."""
+    _what, lo, hi = LABEL_NUMBERS[name]
+    return {"min": f"{lo:g}", "max": f"{hi:g}"}
 
 
 def _editor_panel(
@@ -852,7 +821,7 @@ def _editor_panel(
 
     # Type map: key -> render type (barcode/qr/text)
     type_map = {k: rtype for k, _v, rtype in _COMMON_FIELDS}
-    format_sizes = {name: list(mm) for name, mm in _FORMAT_MM.items()}
+    format_sizes = {name: list(mm) for name, mm in _SIZES.items()}
 
     init_js = Script(_EDITOR_JS, data_cfg=js_value({
         "sampleData": dict(_SAMPLE_DATA), "allFields": all_fields, "typeMap": type_map,
@@ -881,7 +850,7 @@ def _editor_panel(
             Div(
                 Div(
                     Label(t("label.width_mm")),
-                    Input(name="width_mm", type="number", step="0.5", min="5",
+                    Input(name="width_mm", type="number", step="0.5", **_limits("width_mm"),
                           id="custom-w", value=str(w_mm) if w_mm else "",
                           placeholder=t("labels.width_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -889,7 +858,7 @@ def _editor_panel(
                 ),
                 Div(
                     Label(t("label.height_mm")),
-                    Input(name="height_mm", type="number", step="0.5", min="5",
+                    Input(name="height_mm", type="number", step="0.5", **_limits("height_mm"),
                           id="custom-h", value=str(h_mm) if h_mm else "",
                           placeholder=t("labels.height_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -1051,21 +1020,18 @@ def _printable_label_sheet(
 ) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print(); Back returns to
     ``back_url``, an in-app path."""
-    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Script, Span, Style, Title
+    from fasthtml.common import Div, P, Script, Span
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
     unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
-    if not template:
-        fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _FORMAT_MM_DEFAULT
-    else:
-        fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _format_to_mm(
-            template.get("format"),
-            template.get("width_mm"),
-            template.get("height_mm"),
-        )
+    try:
+        template = printable_template(template or {})
+        w_mm, h_mm = label_size(template)
+    except LabelNumberError as e:
+        return _print_page(back_url, P(t("labels.cannot_print", reason=str(e)), cls="flash flash--error"),
+                           status_code=422)
+    fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
 
     from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
                                        display_label, resolve_field_value)
@@ -1160,6 +1126,16 @@ def _printable_label_sheet(
                 field_lines.append(Div(str(display), cls="label-field", style=pos + fs_style + bold_style))
         label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {float(w_mm)}mm; height: {float(h_mm)}mm;"))
 
+    return _print_page(back_url, Div(*label_rows, cls="label-sheet"),
+                       Script("window.onload = function() { window.print(); };"),
+                       print_button=True)
+
+
+def _print_page(back_url: str, *content, print_button: bool = False, status_code: int = 200):
+    """The minimal print page: Print (when there is a sheet) and Back to ``back_url``, an
+    in-app path, above ``content``."""
+    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Style, Title
+
     page = Html(
         Head(
             Meta(charset="utf-8"),
@@ -1169,15 +1145,15 @@ def _printable_label_sheet(
         ),
         Body(
             Div(
-                Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
+                *([Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()")]
+                  if print_button else []),
                 A(t("label.back"), href=safe_url(back_url), cls="btn btn--secondary"),
                 cls="no-print",
             ),
-            Div(*label_rows, cls="label-sheet"),
-            Script("window.onload = function() { window.print(); };"),
+            *content,
         ),
     )
-    return html_response(page)
+    return html_response(page, status_code=status_code)
 
 
 def setup_ui_routes(app) -> None:
@@ -1303,7 +1279,10 @@ def setup_ui_routes(app) -> None:
     async def barcode_preview(request: Request):
         from celerp_labels.service import _make_barcode_svg
         value = request.query_params.get("value", "0000000")
-        height = int(request.query_params.get("height", "8"))
+        try:
+            height = int(label_number("barcode_height", request.query_params.get("height", BARCODE_HEIGHT_DEFAULT)))
+        except LabelNumberError as e:
+            return StarletteResponse(content=str(e), status_code=422, media_type="text/plain")
         res = _make_barcode_svg(value, module_height=height)
         if res:
             return StarletteResponse(content=res[0], media_type="image/svg+xml",
@@ -1425,8 +1404,8 @@ def setup_ui_routes(app) -> None:
         name = (form.get("name") or "").strip() or "Untitled"
         fmt = form.get("format") or "40x30mm"
 
-        width_mm = _parse_float(form.get("width_mm"))
-        height_mm = _parse_float(form.get("height_mm"))
+        width_mm = str(form.get("width_mm") or "").strip() or None
+        height_mm = str(form.get("height_mm") or "").strip() or None
         fields = _extract_fields_from_form(form)
 
         payload: dict = {"name": name, "format": fmt, "fields": fields}
@@ -1727,18 +1706,6 @@ def setup_ui_routes(app) -> None:
     log.info("celerp-labels: UI routes registered")
 
 
-def _parse_float(val) -> float | None:
-    """A number the form sent, or None for text that is not a finite number (inf and nan
-    included: the API cannot store them)."""
-    if val is None or str(val).strip() == "":
-        return None
-    try:
-        f = float(val)
-    except ValueError:
-        return None
-    return f if math.isfinite(f) else None
-
-
 def _extract_fields_from_form(form) -> list[dict]:
     """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height] from multidict into ordered list."""
     import re
@@ -1760,9 +1727,10 @@ def _extract_fields_from_form(form) -> list[dict]:
             "label": (row.get("label") or k).strip(),
             "type": row.get("type", "text"),
         }
-        for num_attr in ("x", "y", "fontSize", "barcode_height"):
-            v = _parse_float(row.get(num_attr))
-            if v is not None:
+        # Numbers go as typed: the API's label number parser canonicalises or refuses them.
+        for num_attr in FIELD_NUMBERS:
+            v = str(row.get(num_attr) or "").strip()
+            if v:
                 field[num_attr] = v
         if row.get("bold") in ("true", "1", "on"):
             field["bold"] = True

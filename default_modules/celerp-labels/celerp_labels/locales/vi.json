@@ -2,6 +2,7 @@
   "labels.bar_height": "Cao vạch",
   "labels.bar_height_hint": "Chiều cao vạch mã vạch (1-30)",
   "labels.bold_hint": "In đậm trường này",
+  "labels.cannot_print": "Không thể in mẫu nhãn này. {reason}",
   "labels.could_not_create": "Không thể tạo: {error}",
   "labels.could_not_delete": "Không thể xóa: {error}",
   "labels.could_not_save": "Không thể lưu: {error}",

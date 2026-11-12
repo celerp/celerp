@@ -2,6 +2,7 @@
   "labels.bar_height": "የአሞሌ ቁመት",
   "labels.bar_height_hint": "የባርኮድ አሞሌ ቁመት (1-30)",
   "labels.bold_hint": "ይህን መስክ አድምቅ",
+  "labels.cannot_print": "ይህ የመለያ አብነት ሊታተም አይችልም። {reason}",
   "labels.could_not_create": "መፍጠር አልተቻለም፦ {error}",
   "labels.could_not_delete": "መሰረዝ አልተቻለም፦ {error}",
   "labels.could_not_save": "ማስቀመጥ አልተቻለም፦ {error}",

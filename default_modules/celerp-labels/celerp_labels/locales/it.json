@@ -2,6 +2,7 @@
   "labels.bar_height": "Alt. barre",
   "labels.bar_height_hint": "Altezza delle barre del codice a barre (1-30)",
   "labels.bold_hint": "Metti in grassetto questo campo",
+  "labels.cannot_print": "Questo modello di etichetta non può essere stampato. {reason}",
   "labels.could_not_create": "Impossibile creare: {error}",
   "labels.could_not_delete": "Impossibile eliminare: {error}",
   "labels.could_not_save": "Impossibile salvare: {error}",

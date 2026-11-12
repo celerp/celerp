@@ -2,6 +2,7 @@
   "labels.bar_height": "バー高",
   "labels.bar_height_hint": "バーコードのバーの高さ（1-30）",
   "labels.bold_hint": "このフィールドを太字にする",
+  "labels.cannot_print": "このラベルテンプレートは印刷できません。{reason}",
   "labels.could_not_create": "作成できませんでした: {error}",
   "labels.could_not_delete": "削除できませんでした: {error}",
   "labels.could_not_save": "保存できませんでした: {error}",

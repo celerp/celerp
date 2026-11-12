@@ -2,6 +2,7 @@
   "labels.bar_height": "ความสูงแถบ",
   "labels.bar_height_hint": "ความสูงของแถบบาร์โค้ด (1-30)",
   "labels.bold_hint": "ทำให้ฟิลด์นี้เป็นตัวหนา",
+  "labels.cannot_print": "ไม่สามารถพิมพ์แม่แบบฉลากนี้ได้ {reason}",
   "labels.could_not_create": "สร้างไม่ได้: {error}",
   "labels.could_not_delete": "ลบไม่ได้: {error}",
   "labels.could_not_save": "บันทึกไม่ได้: {error}",

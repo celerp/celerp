@@ -35,9 +35,10 @@ async def test_local_client_refuses_non_finite_numbers(value):
 
 @pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "Infinity", "1e309"])
 def test_label_numbers_refuse_non_finite(raw):
-    from celerp_labels.ui_routes import _parse_float
-    assert _parse_float(raw) is None
-    assert _parse_float("2.5") == 2.5
+    from celerp_labels.service import LabelNumberError, label_number
+    with pytest.raises(LabelNumberError):
+        label_number("width_mm", raw)
+    assert label_number("width_mm", "25.5") == 25.5
 
 
 @pytest.mark.parametrize("raw", ["1e309", "inf", "nan"])

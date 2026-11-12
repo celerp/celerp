@@ -2,6 +2,7 @@
   "labels.bar_height": "Bar H",
   "labels.bar_height_hint": "Barcode bar height (1-30)",
   "labels.bold_hint": "Bold this field",
+  "labels.cannot_print": "This label template cannot be printed. {reason}",
   "labels.could_not_create": "Could not create: {error}",
   "labels.could_not_delete": "Could not delete: {error}",
   "labels.could_not_save": "Could not save: {error}",

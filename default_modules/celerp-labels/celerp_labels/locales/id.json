@@ -2,6 +2,7 @@
   "labels.bar_height": "Tinggi batang",
   "labels.bar_height_hint": "Tinggi batang barcode (1-30)",
   "labels.bold_hint": "Tebalkan kolom ini",
+  "labels.cannot_print": "Templat label ini tidak dapat dicetak. {reason}",
   "labels.could_not_create": "Tidak dapat membuat: {error}",
   "labels.could_not_delete": "Tidak dapat menghapus: {error}",
   "labels.could_not_save": "Tidak dapat menyimpan: {error}",

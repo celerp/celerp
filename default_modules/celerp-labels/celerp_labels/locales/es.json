@@ -2,6 +2,7 @@
   "labels.bar_height": "Alto barra",
   "labels.bar_height_hint": "Alto de las barras del código de barras (1-30)",
   "labels.bold_hint": "Poner este campo en negrita",
+  "labels.cannot_print": "No se puede imprimir esta plantilla de etiqueta. {reason}",
   "labels.could_not_create": "No se pudo crear: {error}",
   "labels.could_not_delete": "No se pudo eliminar: {error}",
   "labels.could_not_save": "No se pudo guardar: {error}",

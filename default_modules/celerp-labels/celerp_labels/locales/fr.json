@@ -2,6 +2,7 @@
   "labels.bar_height": "H. barre",
   "labels.bar_height_hint": "Hauteur des barres du code-barres (1-30)",
   "labels.bold_hint": "Mettre ce champ en gras",
+  "labels.cannot_print": "Ce modèle d'étiquette ne peut pas être imprimé. {reason}",
   "labels.could_not_create": "Création impossible : {error}",
   "labels.could_not_delete": "Suppression impossible : {error}",
   "labels.could_not_save": "Enregistrement impossible : {error}",

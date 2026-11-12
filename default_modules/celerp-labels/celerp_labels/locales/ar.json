@@ -2,6 +2,7 @@
   "labels.bar_height": "ارتفاع الشريط",
   "labels.bar_height_hint": "ارتفاع أشرطة الباركود (1-30)",
   "labels.bold_hint": "اجعل هذا الحقل عريضًا",
+  "labels.cannot_print": "لا يمكن طباعة قالب الملصق هذا. {reason}",
   "labels.could_not_create": "تعذر الإنشاء: {error}",
   "labels.could_not_delete": "تعذر الحذف: {error}",
   "labels.could_not_save": "تعذر الحفظ: {error}",

@@ -2,6 +2,7 @@
   "labels.bar_height": "Balkenh.",
   "labels.bar_height_hint": "Höhe der Barcode-Balken (1-30)",
   "labels.bold_hint": "Dieses Feld fett darstellen",
+  "labels.cannot_print": "Diese Etikettenvorlage kann nicht gedruckt werden. {reason}",
   "labels.could_not_create": "Konnte nicht erstellt werden: {error}",
   "labels.could_not_delete": "Konnte nicht gelöscht werden: {error}",
   "labels.could_not_save": "Konnte nicht gespeichert werden: {error}",
