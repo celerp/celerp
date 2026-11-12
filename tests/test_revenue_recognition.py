@@ -184,6 +184,53 @@ async def test_deposits_and_restricted_gifts_never_deferred(client, session, aut
     assert await _schedules(session, auth) == [] and await _net(session, auth, "4100") == -500.0
 
 
+async def _sales_agreement(client, auth) -> str:
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "subscription_invoice", "contact_id": "contact:test-001", "frequency": "monthly",
+        "start_date": "2026-01-01", "line_items": [{"description": "Support plan", "quantity": 1,
+                                                    "unit_price": 310.0, "line_total": 310.0}]})
+    assert r.status_code in (200, 201), r.text
+    eid = r.json()["id"]
+    assert (await _post(client, auth, f"/subscriptions/{eid}/activate")).status_code == 200
+    return eid
+
+
+async def _bill_due(client, auth, eid: str) -> str:
+    r = await _post(client, auth, f"/subscriptions/{eid}/generate-due", {"request_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    return r.json()["doc_id"]
+
+
+async def test_agreement_flag_defers_its_bills(client, session, auth, monkeypatch):
+    """An agreement set to recognize over the service period defers what it bills from then
+    on, over each bill's period, even for lines with no item; a bill made before stays as
+    it posted, and the flag reads off until it is set."""
+    _freeze(monkeypatch, "2026-01-05")
+    eid = await _sales_agreement(client, auth)
+    agreement = (await client.get(f"/docs/{eid}", headers=auth["headers"])).json()
+    assert agreement.get("recognize_over_service_period") in (None, False)
+    january = await _bill_due(client, auth, eid)
+    assert await _schedules(session, auth, january) == []
+    r = await client.patch(f"/subscriptions/{eid}/schedule", headers=auth["headers"],
+                           json={"recognize_over_service_period": True})
+    assert r.status_code == 200, r.text
+    assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).json()["recognize_over_service_period"] is True
+    _freeze(monkeypatch, "2026-02-03")
+    february = await _bill_due(client, auth, eid)
+    [schedule] = await _schedules(session, auth, february)
+    assert schedule["segments"] == [{"start": "2026-02-01", "end": "2026-02-28", "amount": 310.0}]
+    assert await _net(session, auth, schedule["deferred_account"]) == -310.0
+
+
+async def test_agreement_flag_refuses_a_value_not_on_or_off(client, auth, monkeypatch):
+    _freeze(monkeypatch, "2026-01-05")
+    eid = await _sales_agreement(client, auth)
+    r = await client.patch(f"/subscriptions/{eid}/schedule", headers=auth["headers"],
+                           json={"recognize_over_service_period": "sometimes"})
+    assert r.status_code == 422, r.text
+    assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).json().get("recognize_over_service_period") is None
+
+
 async def test_deferred_line_needs_service_period(client, session, auth, monkeypatch):
     """Finalize refuses a deferred line with no service period, or one ending before it starts,
     naming the line; nothing posts."""

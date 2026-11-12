@@ -67,6 +67,21 @@ async def test_timing_and_term_are_set_from_the_page(owner_ui, monkeypatch):
     assert r.status_code == 200 and (await template(owner_ui.api, {}, eid)).get("term_end") is None
 
 
+async def test_recognize_over_the_service_period_is_set_from_the_page(owner_ui, monkeypatch):
+    """A sales agreement's Billing section sets whether its bills recognize over their service
+    period, saved and undone from its Yes/No; a purchase agreement has no such control."""
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    controls = _schedule_controls((await owner_ui.get(f"/subscriptions/{eid}")).text)
+    assert t("item.recognize_over_service_period", "en") in controls["recognize_over_service_period"]
+    for value, stored in (("true", True), ("false", False)):
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/recognize_over_service_period", data={"value": value})
+        assert r.status_code == 200 and not _toast(r), r.text[:300]
+        assert (await template(owner_ui.api, {}, eid))["recognize_over_service_period"] is stored
+    purchase = await agreement(owner_ui.api, {}, start="2026-03-01", doc_type="subscription_po")
+    assert "recognize_over_service_period" not in _schedule_controls((await owner_ui.get(f"/subscriptions/{purchase}")).text)
+
+
 async def test_stop_at_period_end_is_set_and_undone_from_the_page(owner_ui, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
     eid = await agreement(owner_ui.api, {}, start="2026-01-01")
