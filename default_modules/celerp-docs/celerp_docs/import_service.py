@@ -101,7 +101,8 @@ async def import_doc_records(
     # before the document rows the import writes, so it is taken first.
     await hold_fund_ledger(session, company_id)
     fund_choices = await check_import_fund_choices(
-        session, company_id, fund_choices, {r.entity_id: len(r.data.get("line_items") or []) for r in records})
+        session, company_id, fund_choices,
+        {r.entity_id: len(li) if isinstance(li := r.data.get("line_items"), list) else 0 for r in records})
     company = await session.get(Company, company_id)
     base_currency = company.settings.get("currency", "USD") if company else "USD"
     # Fail authorization before the first row writes, so a mixed-status import cannot
