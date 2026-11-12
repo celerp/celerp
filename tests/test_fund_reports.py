@@ -467,3 +467,29 @@ async def test_period_lock_tab_reverses_a_year_close(ui_client):
         r = await ui_client.post("/settings/accounting/close-year/reverse",
                                  data={"fiscal_year_end": "2025-12-31", "reason": "Late bill"})
     assert "error-banner" in r.text and "No close of 2025-12-31" in r.text and 'value="Late bill"' in r.text
+
+
+async def test_fund_changes_dated_on_the_business_day(client, session, auth):
+    """A fund change is dated on the company's business day, not the server's UTC day: one made
+    at 20:00 UTC on 31 March in Bangkok is listed on 1 April and falls inside an April period."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.company_lock import locked_company
+    from celerp_accounting.fund_reports import FUND_CHANGE_EVENTS
+
+    f = await _setup(client, auth)
+    doc = await _outside_invoice(client, auth, f["U1"])
+    assert (await _change_doc(client, session, auth, doc, document=f["U2"])).status_code == 200
+    company = await locked_company(session, auth["company_id"])
+    company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok"}
+    await session.execute(update(LedgerEntry).where(LedgerEntry.event_type.in_(FUND_CHANGE_EVENTS),
+                                                    LedgerEntry.entity_id == doc)
+                          .values(ts=datetime(2026, 3, 31, 20, 0, tzinfo=timezone.utc)))
+    await session.commit()
+    april = await _get(client, auth, "activity", date_from="2026-04-01", date_to="2026-04-30")
+    assert [(c["record_id"], c["date"]) for c in april["fund_changes"]] == [(doc, "2026-04-01")]
+    march = await _get(client, auth, "activity", date_from="2026-03-01", date_to="2026-03-31")
+    assert march["fund_changes"] == []
