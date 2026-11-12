@@ -19,6 +19,10 @@ TIMINGS = frozenset({"advance", "arrears"})
 AUTO_MODES = frozenset({"auto_invoice"})
 GENERATION_MODES = frozenset({"manual_due"}) | AUTO_MODES
 MAX_INTERVAL_DAYS = 36500
+# What an agreement is to the business, which picks the page it is listed on: Subscriptions,
+# Retainers or Members. Set by the page that makes it; an agreement without one is a subscription.
+KINDS = frozenset({"subscription", "retainer", "membership"})
+MAX_GRACE_DAYS = 365
 CATCHUP_CAP = 12
 DUE_LIMIT = 500  # the most open periods one request walks through
 _MONTHS = {"monthly": 1, "quarterly": 3, "annually": 12}
@@ -57,6 +61,7 @@ UNSET = {
     "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
     "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
     "released_bills": {}, "resume_restarts": False, "recognize_over_service_period": False,
+    "kind": "subscription", "beneficiary_contact_id": None, "grace_days": 0,
 }
 
 
@@ -78,8 +83,8 @@ class ScheduleError(ValueError):
 @dataclass(frozen=True)
 class Term:
     """What a stored schedule term must hold: a date (ISO text), one of ``choices``, a whole
-    number from ``low`` to ``high`` (an open end is unbounded), or a flag; ``key`` says why
-    when it does not."""
+    number from ``low`` to ``high`` (an open end is unbounded), a text or a flag; ``key`` says
+    why when it does not."""
     kind: str
     key: str
     choices: frozenset = frozenset()
@@ -98,6 +103,8 @@ class Term:
         if self.kind == "whole":
             return type(value) is int and (self.low is None or value >= self.low) \
                 and (self.high is None or value <= self.high)
+        if self.kind == "text":
+            return isinstance(value, str) and bool(value.strip())
         return type(value) is bool
 
 
@@ -118,6 +125,11 @@ TERMS = {
     # Read by the books when a bill posts (celerp.services.recognition.deferred_line), not by
     # the schedule, so changing it asks no consent (billing.CONSENT_TERMS).
     "recognize_over_service_period": Term("flag", "recognition.err_flag_invalid"),
+    # Read by the pages and the member standing (routes.member_rows), not by the schedule, so
+    # changing them asks no consent either.
+    "kind": Term("choice", "subscriptions.err_kind", choices=KINDS),
+    "beneficiary_contact_id": Term("text", "subscriptions.err_beneficiary"),
+    "grace_days": Term("whole", "subscriptions.err_grace_days", low=0, high=MAX_GRACE_DAYS),
 }
 
 

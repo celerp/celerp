@@ -25,7 +25,7 @@ from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
-    AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
+    AUTO_MODES, BILLED, CLAIMED_STATES, KINDS, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
@@ -116,6 +116,9 @@ class ScheduleBody(BaseModel):
     generation_mode: str | None = None
     auto_send: bool | None = None
     recognize_over_service_period: bool | None = None
+    kind: str | None = None
+    beneficiary_contact_id: str | None = None
+    grace_days: int | None = None
 
     @field_validator("anchor_date", "generation_mode", "frequency", "billing_timing", "catchup_periods", mode="before")
     @classmethod
@@ -213,6 +216,7 @@ def _build_router() -> APIRouter:
         status: str | None = None,
         q: str | None = None,
         review: bool = False,
+        kind: str | None = None,
         limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -220,9 +224,13 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """List agreements, each with its derived next bill date (list_row); ``review`` keeps
-        those with earlier documents waiting for history review."""
+        those with earlier documents waiting for history review, ``kind`` those of one kind (an
+        agreement without one is a subscription)."""
+        if kind is not None and kind not in KINDS:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_kind"))
         items, total = await search_subscription_templates(
-            session, company_id, direction=direction, status=status, q=q, review=review, limit=limit, offset=offset
+            session, company_id, direction=direction, status=status, q=q, review=review, kind=kind,
+            limit=limit, offset=offset,
         )
         return {"items": [list_row(i) for i in items], "total": total}
 

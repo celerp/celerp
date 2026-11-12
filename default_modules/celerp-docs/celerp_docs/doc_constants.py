@@ -92,11 +92,12 @@ SCHEDULE_OWNED_FIELDS: frozenset[str] = frozenset({
 # What an earlier release kept on a template instead of a schedule. Only data that release
 # wrote holds them, and moving the template onto a schedule removes them; no writer takes them.
 SCHEDULE_REMOVED_FIELDS: frozenset[str] = frozenset({"next_run_date", "generated_doc_ids"})
-# An agreement's schedule terms: changed only through its schedule, which checks them
-# against the periods already claimed. A draft may carry them when it is created.
+# An agreement's schedule terms, and what it is (its kind, member and grace days): changed only
+# through its schedule, which checks them against the periods already claimed. A draft may
+# carry them when it is created.
 SCHEDULE_TERM_FIELDS: frozenset[str] = frozenset({
     "anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
-    "cancel_at_period_end", "catchup_periods",
+    "cancel_at_period_end", "catchup_periods", "kind", "beneficiary_contact_id", "grace_days",
 })
 
 

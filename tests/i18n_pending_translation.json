@@ -1230,6 +1230,18 @@
     "settings_inventory.category_gift": {
       "en": "Gifts",
       "params": []
+    },
+    "subscriptions.err_kind": {
+      "en": "Choose subscription, retainer or membership.",
+      "params": []
+    },
+    "subscriptions.err_beneficiary": {
+      "en": "Choose the member this membership is for, or leave it empty.",
+      "params": []
+    },
+    "subscriptions.err_grace_days": {
+      "en": "Enter the grace period as a whole number of days, from 0 to 365.",
+      "params": []
     }
   },
   "modules": {

@@ -164,3 +164,29 @@ async def test_vertical_pages_permissions(owner_ui, session, role, path):
         api = {"/retainers": "/subscriptions?kind=retainer", "/members": "/subscriptions/members",
                "/donors": "/donors"}[path]
         assert (await ui.api.get(api)).status_code == 403
+
+
+async def test_agreement_kind_member_grace_checked_and_changed_on_schedule(owner_ui, monkeypatch):
+    """Kind, member and grace days are checked by every writer, refused by Documents edit and
+    changed through the agreement's schedule; an unknown kind in the list filter is refused."""
+    from ui.i18n import t
+
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    for bad, key in (({"kind": "club"}, "err_kind"), ({"grace_days": 366}, "err_grace_days"),
+                     ({"grace_days": -1}, "err_grace_days"), ({"beneficiary_contact_id": "  "}, "err_beneficiary")):
+        r = await api.post("/docs", json={"doc_type": "subscription_invoice", "contact_id": "contact:test-001",
+                                          "frequency": "monthly", "start_date": "2026-03-01", **bad,
+                                          "line_items": [{"name": "Dues", "quantity": 1, "unit_price": 10.0,
+                                                          "line_total": 10.0}], "total": 10.0})
+        assert r.status_code == 422 and t(f"subscriptions.{key}") in r.text, (bad, r.text)
+    eid = await agreement(api, {}, start="2026-03-01", kind="membership", grace_days=7)
+    r = await api.patch(f"/docs/{eid}", json={"fields_changed": {"grace_days": {"new": 30}}})
+    assert r.status_code == 422, r.text
+    r = await api.patch(f"/subscriptions/{eid}/schedule", json={"grace_days": 30, "kind": "retainer"})
+    assert r.status_code == 200, r.text
+    state = await template(api, {}, eid)
+    assert state["grace_days"] == 30 and state["kind"] == "retainer"
+    r = await api.patch(f"/subscriptions/{eid}/schedule", json={"kind": "club"})
+    assert r.status_code == 422 and "subscription, retainer or membership" in r.text, r.text
+    assert (await api.get("/subscriptions", params={"kind": "club"})).status_code == 422
