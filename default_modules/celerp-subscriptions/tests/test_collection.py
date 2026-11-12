@@ -195,6 +195,30 @@ async def test_collect_mode_needs_its_permission_its_consent_and_a_card_on_file(
     assert "collection" not in (await template(client, hd, eid))["consents"]
 
 
+
+async def test_collection_is_for_sales_agreements_only(client, session, monkeypatch, cloud):
+    """A purchasing agreement bills what the company owes its supplier, so it cannot collect from a
+    card: Bill and collect automatically and every card on file action are refused naming it, with
+    nothing asked of Cloud, even when the supplier has a card on file as a customer."""
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    r = await client.post("/crm/contacts", headers=hd, json={"name": "Supplier", "email": "supplier@example.test",
+                                                             "contact_type": "both"})
+    assert r.status_code in (200, 201), r.text
+    supplier = r.json()["id"]
+    assert await _bind(cid, supplier)
+    eid = await agreement(client, hd, start="2026-07-01", doc_type="subscription_po", contact_id=supplier)
+    r = await schedule(client, hd, eid, generation_mode="auto_invoice_collect")
+    assert r.status_code == 409 and _says(r, "subscriptions.err_collection_sales_only"), r.text
+    for path, body in (("setup-link", {"delivery": "copy"}), ("revoke", None)):
+        r = await client.post(f"/subscriptions/{eid}/collection/{path}", headers=hd, json=body)
+        assert r.status_code == 409 and _says(r, "subscriptions.err_collection_sales_only"), (path, r.text)
+    r = await client.get(f"/subscriptions/{eid}/collection", headers=hd)
+    assert r.status_code == 409 and _says(r, "subscriptions.err_collection_sales_only"), r.text
+    assert cloud.calls == []
+
+
 # ── setup link (X1), card on file (X5), revoke (X9) ─────────────────────────
 
 async def test_setup_link_validation_and_rate_limit(client, session, monkeypatch, cloud):

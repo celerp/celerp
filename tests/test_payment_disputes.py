@@ -177,3 +177,73 @@ async def test_dispute_deliveries_validated_at_app(real_engine, real_client, mon
     assert await receive_dispute({"company_id": str(a), "entity_id": invoice, "reference": "pi_1",
                                   "dispute_id": "dp_1", "state": "bogus", "amount_minor": 1,
                                   "currency": "usd"}) is False
+
+
+async def test_a_dispute_closed_without_money_taken_posts_nothing(real_engine, real_client, monkeypatch):
+    """Lost, or closed with a warning, before any money was taken: the steps are shown and the
+    company is told, and nothing moves, since nothing was ever taken to give back or lose."""
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.dispute(a, invoice, "created", _at(3))
+    cloud.dispute(a, invoice, "closed", _at(30), outcome="lost")
+    cloud.dispute(a, invoice, "created", _at(5), dispute_id="dp_2")
+    cloud.dispute(a, invoice, "closed", _at(31), outcome="warning_closed", dispute_id="dp_2")
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _dispute_entries(real_engine, invoice) == []
+    disputes = _payment(await _doc(real_engine, invoice))["disputes"]
+    assert (disputes["dp_1"]["outcome"], disputes["dp_2"]["outcome"]) == ("lost", "warning_closed")
+    assert len(await _notices(real_engine, a)) == 4
+
+
+async def test_a_dispute_whose_account_is_not_chosen_waits_and_posts_once_it_is(
+        real_engine, real_client, monkeypatch):
+    """A company whose Disputed payments account is not chosen: the delivery is not taken and
+    nothing is recorded, the company is told to choose it, and the next delivery after it is
+    chosen records and posts the step once."""
+    from celerp.accounting_roles import ROLES_KEY
+    from celerp.services.company_lock import locked_company
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    async with maker(real_engine)() as s:
+        company = await locked_company(s, a)
+        roles = dict(company.settings[ROLES_KEY])
+        roles.pop("disputed_payments")
+        company.settings = {**company.settings, ROLES_KEY: roles}
+        await s.commit()
+
+    cloud.dispute(a, invoice, "funds_withdrawn", _at(3))
+    await cloud.deliver()
+    assert cloud.deliveries[-1]["acked"] is False
+    assert await _dispute_entries(real_engine, invoice) == []
+    assert not _payment(await _doc(real_engine, invoice)).get("disputes")
+    async with maker(real_engine)() as s:
+        unmapped = (await s.scalars(text(
+            "SELECT body FROM notifications WHERE company_id = :c AND priority = 'high'"),
+            {"c": str(a)})).all()
+    assert any("Disputed payments" in body for body in unmapped)
+
+    async with maker(real_engine)() as s:
+        company = await locked_company(s, a)
+        company.settings = {**company.settings, ROLES_KEY: {**company.settings[ROLES_KEY],
+                                                            "disputed_payments": DISPUTED}}
+        await s.commit()
+    await cloud.deliver()
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _dispute_entries(real_engine, invoice) == [
+        ("funds_withdrawn", "2026-09-04", {DISPUTED: Decimal("1070"), BANK: Decimal("-1070")})]
+
+
+async def test_a_dispute_after_stripe_was_disconnected_is_still_recorded(real_engine, real_client, monkeypatch):
+    """Stripe disconnected after the payment: the bank can still take the money back, so a
+    dispute delivered later is recorded and posted on the payment as before."""
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.release(a, invoice, _at(1))
+    cloud.dispute(a, invoice, "funds_withdrawn", _at(3))
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    payment = _payment(await _doc(real_engine, invoice))
+    assert payment.get("stripe_released_at") and payment["disputes"]["dp_1"]["state"] == "funds_withdrawn"
+    assert await _dispute_entries(real_engine, invoice) == [
+        ("funds_withdrawn", "2026-09-04", {DISPUTED: Decimal("1070"), BANK: Decimal("-1070")})]
