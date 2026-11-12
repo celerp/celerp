@@ -485,7 +485,8 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
     Senders are the restricted funds it lowers, receivers the funds it raises. No sender:
     nothing more is needed. Otherwise: the actor, re-read under the lock, may manage
     accounting; a restricted receiver also needs reallocate_restricted_funds and the sender's
-    purpose, the actor then recorded as ``authorized_by``; and each sender's holdings, and its
+    purpose, the actor then recorded as ``authorized_by``; and each sender's holdings (assets
+    less liabilities over every account it holds, not only those the action touches), and its
     balance on every asset account the action lowers for it, stay at zero or above at the
     latest date in the action and today. A line backing a standing release never moves at all
     (check_backing_cancel refuses the void)."""
@@ -527,6 +528,8 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
     held_types = {"asset", "liability"}
     for as_of in sorted({max(action.dates, default=""), (await company_today(session, company_id)).isoformat()} - {""}):
         held = await fund_account_balances(session, company_id, as_of=as_of)
+        unread = {code for fund_id in senders for code in held.get(fund_id, {})} - accounts.keys()
+        accounts.update(await lock_accounts(session, company_id, unread) or {})
         for fund_id in senders:
             balances = held.get(fund_id, {})
             given = -sum((v for (f, code), v in delta.items() if f == fund_id
