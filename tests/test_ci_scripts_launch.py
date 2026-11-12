@@ -13,6 +13,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO / ".github" / "workflows"
 SCRIPT = re.compile(r"\bpython3?\s+((?:[\w.-]+/)*[\w.-]+\.py)\b")
@@ -53,12 +55,13 @@ def test_workflows_run_python_scripts():
     assert "tests/lock_rank.py" in workflow_scripts()
 
 
+@pytest.mark.timeout(120)
 def test_every_workflow_script_loads_as_a_script(tmp_path):
     env = step_env(tmp_path)
     failures = []
     for rel in workflow_scripts():
         r = subprocess.run([sys.executable, "-c", LOADER, str(REPO / rel)], cwd=REPO, env=env,
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=60)
         if r.returncode:
             failures.append(f"{rel}: {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else r.returncode}")
     assert not failures, failures
