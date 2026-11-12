@@ -11,6 +11,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.posting_accounts import income_account_view
 from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import EMPTY
 from ui.components.cloud_gate import digest_upsell_modal
@@ -30,6 +31,7 @@ from ui.i18n import t, get_lang, category_label, category_labels
 from ui.routes.settings import (
     _token,
     _check_permission,
+    _get_role,
     _category_row,
     _locations_tab,
     _import_history_tab,
@@ -222,10 +224,12 @@ def _categories_tab(
     vert_presets: list[dict],
     cat: str = "",
     cat_display_names: dict | None = None,
+    income_account: FT | None = None,
 ) -> FT:
     """Categories settings tab - 3-section layout.
 
-    When `cat` is set and present in cat_schemas: renders the field editor.
+    When `cat` is set and present in cat_schemas: renders the field editor, with the
+    category's income account (`income_account`, absent without accounting) above it.
     Otherwise: renders the library view (Your Categories + Quick Setup + Browse Library).
     """
     from urllib.parse import quote as _q
@@ -283,6 +287,8 @@ def _categories_tab(
             ),
             H3(t("settings_inventory.category_fields_heading", cat=cat_name), cls="settings-section-title"),
             P(t("settings_inventory.category_fields_hint", cat=cat_name), cls="settings-hint"),
+            Table(Tbody(Tr(Td(t("item.income_account"), cls="detail-label"), income_account)),
+                  cls="detail-table mb-md") if income_account is not None else "",
             Table(
                 Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")),
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
@@ -492,7 +498,15 @@ def setup_routes(app):
         if tab == "locations":
             content = _locations_tab(locations, lang=lang)
         elif tab == "categories":
-            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
+            income_account = None
+            if cat in cat_schemas:
+                try:
+                    income_account = await income_account_view(
+                        token, "category", cat, (await api.get_company(token)).get("settings") or {}, _get_role(request))
+                except APIError as e:
+                    api.raise_if_signed_out(e)
+            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names,
+                                      income_account)
         elif tab == "units":
             content = _units_tab(units, from_import=from_import)
         elif tab == "reorder":

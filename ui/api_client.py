@@ -3785,6 +3785,20 @@ async def delete_category(token: str, category_key: str) -> dict:
     return result
 
 
+async def get_category_income_accounts(token: str) -> dict:
+    """GET /companies/me/category-income-accounts: {category key: revenue account code}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/companies/me/category-income-accounts")).json()
+
+
+async def set_category_income_account(token: str, category_key: str, code: str | None) -> dict:
+    """PUT /companies/me/categories/{key}/income-account: the account the category's items
+    sell on, or None to clear it."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/companies/me/categories/{quote(category_key, safe='')}/income-account",
+                                  json={"income_account": code})).json()
+
+
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
 
 async def get_period_lock(token: str) -> dict:

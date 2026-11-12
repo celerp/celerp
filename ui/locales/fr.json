@@ -622,6 +622,8 @@
   "lines.out_on_memo": "{sku} est sorti en dépôt. Utilisez Marquer comme disponible pour le reprendre d'abord.",
   "lines.item_deleted": "{sku} a été supprimé. Restaurez-le depuis la liste Supprimés ou choisissez un autre article.",
   "item.deleted": "{sku} a été supprimé : restaurez-le depuis la liste Supprimés pour l'utiliser.",
+  "item.income_account": "Compte de produits",
+  "item.income_account_from_category": "{account}, issu de sa catégorie",
   "lines.unavailable": "Non disponible : {reasons}",
   "quantity.precision": "{label}: {qty} est plus précis que ce que permet cette unité (au plus {decimals} décimales).",
   "quantity.precision_plain": "{qty} est plus précis que ce que permet cette unité (au plus {decimals} décimales).",

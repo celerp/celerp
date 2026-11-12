@@ -622,6 +622,8 @@
   "lines.out_on_memo": "{sku} ist auf Kommission draußen. Nehmen Sie es zuerst mit Als verfügbar setzen zurück.",
   "lines.item_deleted": "{sku} wurde gelöscht. Stellen Sie es aus der Liste Gelöscht wieder her oder wählen Sie einen anderen Artikel.",
   "item.deleted": "{sku} wurde gelöscht: Stellen Sie es aus der Liste Gelöscht wieder her, um es zu verwenden.",
+  "item.income_account": "Erlöskonto",
+  "item.income_account_from_category": "{account}, aus der Kategorie",
   "lines.unavailable": "Nicht verfügbar: {reasons}",
   "quantity.precision": "{label}: {qty} ist genauer, als diese Einheit erlaubt (höchstens {decimals} Nachkommastellen).",
   "quantity.precision_plain": "{qty} ist genauer, als diese Einheit erlaubt (höchstens {decimals} Nachkommastellen).",

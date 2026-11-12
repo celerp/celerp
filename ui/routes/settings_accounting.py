@@ -15,14 +15,17 @@ import ui.api_client as api
 from ui.components.activity import actor_label
 from ui.components.currency import currency_options
 from ui.components.icons import import_icon
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.services.lot_origin import OLDER_STOCK_PATH
 from ui.components.table import (EMPTY, select_all_th, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
 
-from ui.components.posting_accounts import account_picker
+from ui.components.posting_accounts import (
+    INCOME_ACCOUNT_KINDS, INCOME_ACCOUNT_URL, account_picker, income_account_editor, income_account_state,
+    income_account_view,
+)
 from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES, asset_register_target
 
@@ -33,7 +36,7 @@ CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 # The longest account code the API accepts (celerp_accounting.chart_rules.ACCOUNT_CODE_MAX),
 # mirrored the same way and asserted by the same kind of test.
 _ACCOUNT_CODE_MAX = 32
-from ui.routes.settings import _token, _check_permission
+from ui.routes.settings import _token, _check_permission, _get_role
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
 from ui.components.encode import as_js, js, safe_url
@@ -911,7 +914,64 @@ async def _validate_account(token: str, name: str, account_type: str,
     return None
 
 
+def _income_account_unusable(token: str | None, kind: str):
+    """The answer to an income account cell request that cannot be served: an unknown kind
+    (404) or a signed-out session. None when it can."""
+    if kind not in INCOME_ACCOUNT_KINDS:
+        return Response(status_code=404)
+    if not token:
+        return P(t("error.session_expired"), cls="cell-error")
+    return None
+
+
 def setup_routes(app):
+
+    @app.get(f"{INCOME_ACCOUNT_URL}/edit")
+    async def income_account_edit(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            code, _, chart = await income_account_state(token, kind, key)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        return income_account_editor(kind, key, code, chart)
+
+    @app.get(f"{INCOME_ACCOUNT_URL}/display")
+    async def income_account_display(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+            cell = await income_account_view(token, kind, key, settings, _get_role(request))
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        return cell if cell is not None else Response(status_code=404)
+
+    @app.patch(INCOME_ACCOUNT_URL)
+    async def income_account_save(request: Request, kind: str, key: str):
+        """Save the chosen income account ("" clears it) and show the cell, or keep the picker
+        open with the API's reason when it refuses the account."""
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        code = str((await request.form()).get("value", "")).strip()
+        try:
+            if kind == "item":
+                await api.patch_item(token, key, {"income_account": code})
+            else:
+                await api.set_category_income_account(token, key, code or None)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            try:
+                _, _, chart = await income_account_state(token, kind, key)
+            except APIError:
+                chart = []
+            return income_account_editor(kind, key, code, chart, error=error_message(e))
+        return await income_account_display(request, kind, key)
 
     @app.get("/settings/accounting")
     async def settings_accounting_page(request: Request):

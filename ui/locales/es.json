@@ -622,6 +622,8 @@
   "lines.out_on_memo": "{sku} está fuera en consignación. Use Marcar como disponible para recuperarlo primero.",
   "lines.item_deleted": "{sku} fue eliminado. Restáurelo desde la lista Eliminados o elija otro artículo.",
   "item.deleted": "{sku} fue eliminado: restáurelo desde la lista Eliminados para usarlo.",
+  "item.income_account": "Cuenta de ingresos",
+  "item.income_account_from_category": "{account}, de su categoría",
   "lines.unavailable": "No disponible: {reasons}",
   "quantity.precision": "{label}: {qty} es más preciso de lo que permite esta unidad (máximo {decimals} decimales).",
   "quantity.precision_plain": "{qty} es más preciso de lo que permite esta unidad (máximo {decimals} decimales).",

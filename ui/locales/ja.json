@@ -622,6 +622,8 @@
   "lines.out_on_memo": "{sku} はメモで貸出中です。まず「在庫ありに設定」で戻してください。",
   "lines.item_deleted": "{sku} は削除されています。削除済み一覧から復元するか、別の品目を選んでください。",
   "item.deleted": "{sku} は削除されています。使うには削除済み一覧から復元してください。",
+  "item.income_account": "収益勘定",
+  "item.income_account_from_category": "{account}（カテゴリから）",
   "lines.unavailable": "利用できません: {reasons}",
   "quantity.precision": "{label}: {qty} はこの単位で使える精度を超えています（小数点以下 {decimals} 桁まで）。",
   "quantity.precision_plain": "{qty} はこの単位で使える精度を超えています（小数点以下 {decimals} 桁まで）。",

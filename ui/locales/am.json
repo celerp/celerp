@@ -659,6 +659,8 @@
   "lines.out_on_memo": "{sku} በሜሞ ወጥቷል። መጀመሪያ ለመመለስ እንደ ዝግጁ አድርግን ይጠቀሙ።",
   "lines.item_deleted": "{sku} ተሰርዟል። ከተሰረዙት ዝርዝር ይመልሱት ወይም ሌላ እቃ ይምረጡ።",
   "item.deleted": "{sku} ተሰርዟል፦ ለመጠቀም ከተሰረዙት ዝርዝር ይመልሱት።",
+  "item.income_account": "የገቢ ሂሳብ",
+  "item.income_account_from_category": "{account}፣ ከምድቡ",
   "lines.unavailable": "አይገኝም: {reasons}",
   "quantity.precision": "{label}: {qty} ይህ መለኪያ ከሚፈቅደው በላይ ትክክለኛ ነው (ቢበዛ {decimals} የአስርዮሽ ቦታዎች)።",
   "quantity.precision_plain": "{qty} ይህ መለኪያ ከሚፈቅደው በላይ ትክክለኛ ነው (ቢበዛ {decimals} የአስርዮሽ ቦታዎች)።",

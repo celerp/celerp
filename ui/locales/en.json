@@ -684,6 +684,8 @@
   "lines.out_on_memo": "{sku} is out on memo. Use Set as available to take it back first.",
   "lines.item_deleted": "{sku} was deleted. Restore it from the Deleted list or pick another item.",
   "item.deleted": "{sku} was deleted: restore it from the Deleted list to use it.",
+  "item.income_account": "Income account",
+  "item.income_account_from_category": "{account}, from its category",
   "lines.unavailable": "Not available: {reasons}",
   "quantity.precision": "{label}: {qty} is more precise than this unit allows (at most {decimals} decimal places).",
   "quantity.precision_plain": "{qty} is more precise than this unit allows (at most {decimals} decimal places).",

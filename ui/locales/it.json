@@ -622,6 +622,8 @@
   "lines.out_on_memo": "{sku} è fuori in conto visione. Usa Imposta come disponibile per riprenderlo prima.",
   "lines.item_deleted": "{sku} è stato eliminato. Ripristinalo dall'elenco Eliminati o scegli un altro articolo.",
   "item.deleted": "{sku} è stato eliminato: ripristinalo dall'elenco Eliminati per usarlo.",
+  "item.income_account": "Conto ricavi",
+  "item.income_account_from_category": "{account}, dalla sua categoria",
   "lines.unavailable": "Non disponibile: {reasons}",
   "quantity.precision": "{label}: {qty} è più preciso di quanto consenta questa unità (al massimo {decimals} decimali).",
   "quantity.precision_plain": "{qty} è più preciso di quanto consenta questa unità (al massimo {decimals} decimali).",
