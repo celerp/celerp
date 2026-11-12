@@ -60,8 +60,10 @@ from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.journal_accounts import (
-    UnbalancedJournalEntry, bank_currencies, income_account_of, lock_accounts, require_income_account,
+    CONTROL, HEADER, UnbalancedJournalEntry, bank_currencies, fund_legs, funds_enabled, income_account_of, lock_accounts,
+    require_income_account,
 )
+from celerp.services.peer_lines import leg_funds
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
@@ -719,6 +721,21 @@ def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, s
     return lines + [_revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
 
 
+def _line_tax_basis(doc: dict):
+    """Where a document's tax belongs: each line's tax (bill_line_charges) by line number, or
+    the document's own fund when no line carries any."""
+    basis = {n: tax for n, (_, _, tax) in enumerate(bill_line_charges(doc), 1) if tax > 0}
+    return basis or HEADER
+
+
+def _document_fund_legs(settings: dict, doc: dict, entries: list[dict], bases: list, base_currency: str) -> list[dict]:
+    """``entries`` carried by the funds of the document lines behind them (fund_legs), where
+    the company has funds turned on; otherwise as they are."""
+    if not funds_enabled(settings):
+        return entries
+    return fund_legs(entries, bases, *leg_funds(doc), base_currency)
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     settings = await current_settings(session, company_id)
     refuse_unissuable_taxes(settings, "invoice", doc)
@@ -738,13 +755,22 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         roles.append(R.COGS)
     acc = await resolve_many(session, company_id, roles)
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
-    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing,
-               *_income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)]
+    income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)
+    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
+    lines = doc.get("line_items") or []
+    bases = [CONTROL,
+             *({n: share["base"] for n, li in enumerate(lines, 1) if isinstance(li, dict) and li.get("asset_id") == e["asset_id"]
+                for share in [allocations[str(n - 1)]]} for e in clearing),
+             *({int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
+               if allocations else HEADER for e in income)]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
+        bases.append(_line_tax_basis(doc))
     if cogs > 0:
-        entries += _cogs_lines(settings, acc[R.COGS],
-                               cogs_result.by_account, await company_currency(session, company_id))
+        cost = _cogs_lines(settings, acc[R.COGS], cogs_result.by_account, await company_currency(session, company_id))
+        entries += cost
+        bases += [None] * len(cost)
+    entries = _document_fund_legs(settings, doc, entries, bases, base_currency)
     await record_consignor_payables(session, company_id, user_id, cogs_result.payables)
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     if allocations:
@@ -1699,9 +1725,9 @@ async def create_for_po_receipt(
     )
 
 
-def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...]]:
-    """What a line nets against: its account and what it was posted for."""
-    return entry["account"], tuple(sorted(line_roles(settings, entry)))
+def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...], str | None]:
+    """What a line nets against: its account, what it was posted for and its fund."""
+    return entry["account"], tuple(sorted(line_roles(settings, entry))), entry.get("fund_id") or None
 
 
 _LOT_ROLES = (R.INVENTORY_OPENING.value, R.INVENTORY_PURCHASED.value)
@@ -2265,7 +2291,7 @@ async def create_for_receipt_undone(
     """
     settings = await current_settings(session, company_id)
     booked: dict[str, _Dec] = {}
-    for (code, roles), amount in (await _doc_receipt_booked(session, company_id, doc_id, settings)).items():
+    for (code, roles, _fund), amount in (await _doc_receipt_booked(session, company_id, doc_id, settings)).items():
         if set(roles) <= set(_LOT_ROLES):
             booked[code] = booked.get(code, _Dec(0)) + amount
     currency = await company_currency(session, company_id)
@@ -2372,7 +2398,8 @@ async def create_for_bill_conversion(
     document's purchase order receipts already booked and less what the opening balances
     carry for a document imported into them (imported_carriage). ``correction`` marks the
     posting as the correction of an earlier import's (correct_earlier_import), apart from
-    the cycle's own.
+    the cycle's own. Where funds are on, each debit and the AP are carried by the funds of
+    the bill's lines (_document_fund_legs) and net only against what was booked for the same fund.
     Returns what each line debits, in base currency, by line index: {index: (account,
     amount)}, before any netting against receipts.
     """
@@ -2383,6 +2410,12 @@ async def create_for_bill_conversion(
         return {}
     entries, sources, debits = built
     by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
+    goods = {index + 1: d for index, d in zip(sources, debits) if index is not None}
+    bases = [{index + 1: d} if index is not None
+             else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
+             else goods or HEADER
+             for index, e, d in zip(sources, entries, debits)]
+    entries = _document_fund_legs(settings, doc, entries, [*bases, CONTROL], base_currency)
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
     # A line first takes up what the receipts booked for the same purpose, on the accounts
@@ -2396,10 +2429,12 @@ async def create_for_bill_conversion(
     if booked:
         unfilled = dict(booked)
         net: dict[tuple, _Dec] = {}
+        source_lines: dict[tuple, set[int]] = {}
         for e in entries:
             key = _net_key(settings, e)
+            source_lines.setdefault(key, set()).update(e.get("source_lines") or [])
             left = to_decimal(e["debit"]) - to_decimal(e["credit"])
-            slots = sorted((k for k in unfilled if k[1] and _net_group(k[1]) == _net_group(key[1])),
+            slots = sorted((k for k in unfilled if k[1] and _net_group(k[1]) == _net_group(key[1]) and k[2] == key[2]),
                            key=lambda k: (k != key, -abs(unfilled[k]), k[0]))
             for slot in slots:
                 if left and unfilled[slot] and (unfilled[slot] > 0) == (left > 0):
@@ -2412,8 +2447,10 @@ async def create_for_bill_conversion(
         for key, amount in booked.items():
             net[key] = net.get(key, _Dec(0)) - amount
         entries = [{"account": acct, "account_roles": list(roles),
-                    "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
-                   for (acct, roles), v in net.items() if v]
+                    "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0))),
+                    **({"source_lines": sorted(source_lines[key])} if key in source_lines else {}),
+                    **({"fund_id": fund} if fund else {})}
+                   for key, v in net.items() if v for acct, roles, fund in [key]]
         if not entries:
             return by_line
 

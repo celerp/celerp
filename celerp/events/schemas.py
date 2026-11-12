@@ -1182,6 +1182,8 @@ class JELine(BaseModel):
     # A line that came from outside, and the fund this company chose for it (peer_lines).
     origin: str | None = None
     fund_choice: str | None = None
+    # The document lines (1-based) whose fund a document's entry gave this line (fund_legs).
+    source_lines: list[int] | None = None
 
 
 class AccJournalEntryFx(BaseModel):

@@ -135,6 +135,27 @@ def chosen_lines(lines: list, grant: FundChoiceGrant) -> list:
     return out
 
 
+def leg_funds(doc: Mapping) -> tuple[dict[int, str | None], str | None]:
+    """The fund of each line of ``doc`` (by line number, 1-based) its entry posts to, and the
+    fund of what no line stands behind. A line that came from outside goes where the company
+    chose, its own choice before the document's; a local line goes to its ``fund_id``. With no
+    choice, or the choice of Unrestricted, a line has no fund. The document's choice is the
+    header's fund on an outside record; a local record's header has none."""
+    def fund(choice):
+        return None if choice in (None, "", UNRESTRICTED) else choice
+
+    document = fund(doc.get("fund_choice")) if doc.get("origin") else None
+    funds = {}
+    for n, line in enumerate(doc.get("line_items") or [], 1):
+        if not isinstance(line, dict):
+            funds[n] = None
+        elif line.get("origin"):
+            funds[n] = fund(line.get("fund_choice")) if line.get("fund_choice") else document
+        else:
+            funds[n] = line.get("fund_id") or None
+    return funds, document
+
+
 def copied_header(state: Mapping) -> dict:
     """The fund keys of a record's header a copy of it carries."""
     return {key: state[key] for key in HEADER_KEYS if key in state}

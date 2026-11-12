@@ -22,6 +22,7 @@ Any module may post journal entries, and adds the accounts they post to through
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -513,6 +514,66 @@ def split_lines_by_fund(entries: list[dict], shares: list[tuple[str | None, Deci
             parts[i].append({**line, **{field: to_stored_float(amounts[i]) for field, amounts in split.items()},
                              **({"fund_id": fund} if fund else {})})
     return [line for part in parts for line in part]
+
+
+# How fund_legs gives a line its fund, besides a basis of document lines.
+CONTROL = "control"  # the receivable or payable: each fund's balancing figure
+HEADER = "header"    # the document's own fund (a line no document line stands behind)
+
+
+def fund_legs(entries: list[dict], bases: list, funds: Mapping[int, str | None], header_fund: str | None,
+              base: str) -> list[dict]:
+    """A document's entry with each line carried by the funds of the document lines behind it
+    (attribution rule LG), in the order given.
+
+    ``bases[i]`` says where ``entries[i]`` belongs: a mapping {document line n (1-based):
+    weight} splits it over those lines' funds (``funds`` gives each line's fund, None for no
+    fund) in proportion to the weights, every leg naming its ``source_lines``; ``HEADER`` gives
+    it ``header_fund``; ``CONTROL`` writes it once per fund as the figure that balances that
+    fund's other legs, with that fund's lines as its source; None leaves it without a fund (a
+    stock or cost line). So every fund balances on its own as the whole entry did."""
+    from celerp.services.money import allocate_pro_rata, to_decimal, to_stored_float
+
+    legs: list[dict | None] = []
+    control: dict | None = None
+    for line, basis in zip(entries, bases):
+        if basis == CONTROL:
+            control = line
+            legs.append(None)
+        elif basis == HEADER:
+            legs.append({**line, "source_lines": [], **({"fund_id": header_fund} if header_fund else {})})
+        elif not basis:
+            legs.append(line)
+        else:
+            groups: dict[str | None, tuple[Decimal, list[int]]] = {}
+            for n, weight in sorted(basis.items()):
+                total, lines = groups.get(funds.get(n), (Decimal(0), []))
+                groups[funds.get(n)] = (total + max(to_decimal(weight), Decimal(0)), [*lines, n])
+            shares = [(fund, weight if any(w for w, _ in groups.values()) else Decimal(1))
+                      for fund, (weight, _) in groups.items()]
+            for leg, (fund, (_, lines)) in zip(split_lines_by_fund([line], shares, base), groups.items()):
+                legs.append({**leg, "source_lines": lines})
+    if control is None:
+        return [leg for leg in legs if leg is not None]
+
+    net: dict[str | None, Decimal] = {}
+    sources: dict[str | None, set[int]] = {}
+    for leg in legs:
+        if leg is not None:
+            fund = leg.get("fund_id")
+            net[fund] = net.get(fund, Decimal(0)) + to_decimal(leg.get("debit") or 0) - to_decimal(leg.get("credit") or 0)
+            sources.setdefault(fund, set()).update(leg.get("source_lines") or [])
+    owed = {fund: -amount for fund, amount in net.items() if amount}
+    fx = {field: allocate_pro_rata(to_decimal(control[field]), [abs(a) for a in owed.values()],
+                                   control.get("fx_currency"))
+          for field in ("fx_debit", "fx_credit") if control.get(field) and owed}
+    split = [{**{k: v for k, v in control.items() if k not in ("fx_debit", "fx_credit", "fund_id")},
+              "debit": to_stored_float(max(amount, Decimal(0))), "credit": to_stored_float(max(-amount, Decimal(0))),
+              **{field: to_stored_float(abs(parts[i])) for field, parts in fx.items()},
+              "source_lines": sorted(sources[fund]), **({"fund_id": fund} if fund else {})}
+             for i, (fund, amount) in enumerate(owed.items())]
+    at = legs.index(None)
+    return [leg for leg in legs[:at] + split + legs[at + 1:] if leg is not None]
 
 
 def _movement_template(funds: dict[str, dict], fund_id) -> RestrictedFundMovement:

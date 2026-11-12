@@ -33,8 +33,8 @@ def _by_fund(entries: list[dict], roles: str) -> dict:
     return out
 
 
-def _vat(rate: float) -> list[dict]:
-    return [{"code": "VAT", "rate": rate}]
+def _vat(rate: float, amount: float) -> list[dict]:
+    return [{"code": "VAT", "rate": rate, "amount": amount}]
 
 
 async def test_receivable_split_by_gross_line_contribution(client, session, auth):
@@ -43,7 +43,8 @@ async def test_receivable_split_by_gross_line_contribution(client, session, auth
     f = await _setup(client, auth)
     gift, ticket = await _item(client, auth, "Gift"), await _item(client, auth, "Ticket")
     doc = await _issued(client, auth, "invoice", [
-        _line(gift, "Gift", 100, fund_id=f["R"]), _line(ticket, "Ticket", 50, taxes=_vat(10))])
+        _line(gift, "Gift", 100, fund_id=f["R"]), _line(ticket, "Ticket", 50, taxes=_vat(10, 5))],
+        subtotal=150, tax=5, total=155)
     entries = (await _finalize_entry(session, auth, doc))["entries"]
     assert _by_fund(entries, "receivable") == {f["R"]: 100.0, None: 55.0}
     assert _by_fund(entries, "sales_revenue") == {f["R"]: -100.0, None: -50.0}
@@ -57,7 +58,8 @@ async def test_mixed_invoice_tax_follows_taxable_line_fund(client, session, auth
     f = await _setup(client, auth)
     gift, ticket = await _item(client, auth, "Donation"), await _item(client, auth, "Gala ticket")
     doc = await _issued(client, auth, "invoice", [
-        _line(gift, "Donation", 200, fund_id=f["R"]), _line(ticket, "Gala ticket", 80, fund_id=f["U1"], taxes=_vat(10))])
+        _line(gift, "Donation", 200, fund_id=f["R"]), _line(ticket, "Gala ticket", 80, fund_id=f["U1"], taxes=_vat(10, 8))],
+        subtotal=280, tax=8, total=288)
     entries = (await _finalize_entry(session, auth, doc))["entries"]
     assert _by_fund(entries, "tax_output") == {f["U1"]: -8.0}
     assert _by_fund(entries, "receivable") == {f["R"]: 200.0, f["U1"]: 88.0}

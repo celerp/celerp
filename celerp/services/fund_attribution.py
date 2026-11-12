@@ -12,7 +12,7 @@ from __future__ import annotations
 
 # What each rule class says a producer's lines carry.
 RULE_CLASSES: dict[str, str] = {
-    "LG": "each line's fund; control and tax split by each line's share of the gross",
+    "LG": "each line's fund; tax follows each line's own tax and the control each fund's gross (fund_legs)",
     "LG/V": "as LG; a line linked to a posted line copies that line's fund",
     "S": "the open shares of the document it settles, by fund",
     "SM": "the overlap of the note's funds with the document's open shares",
