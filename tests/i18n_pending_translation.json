@@ -401,6 +401,14 @@
       "params": [
         "field"
       ]
+    },
+    "fund.connection_unknown": {
+      "en": "These books have no connection by that name. Open the connection from Settings > Connectors and set its default fund there.",
+      "params": []
+    },
+    "fund.default_stale": {
+      "en": "Someone changed this default fund after you opened it. Try again to see the current one.",
+      "params": []
     }
   }
 }

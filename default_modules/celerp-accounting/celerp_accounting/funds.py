@@ -14,7 +14,7 @@ post_fund_movement, the one caller of the movement grant.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import AccountRole, catalog_refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import role_map, set_role
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -37,8 +38,10 @@ from celerp.services.journal_accounts import (
     lock_accounts,
 )
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.services.peer_lines import records_carrying
-from celerp.services.permissions import require_permission
+from celerp.services.peer_lines import (
+    CONNECTION_DEFAULTS, checked, default_active, default_key, records_carrying,
+)
+from celerp.services.permissions import read_authority, require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -181,6 +184,113 @@ async def set_funds_setting(
         company.settings = settings
         await session.commit()
     return {"enabled": payload.enabled}
+
+
+class ConnectionDefaultIn(BaseModel):
+    origin: str
+    source_key: str
+    value: str | None
+    expected_version: int
+    request_key: str
+
+
+# The accounting apps whose documents arrive with origin accounting_system.
+_ACCOUNTING_SYSTEMS = {"quickbooks": "QuickBooks", "xero": "Xero"}
+
+
+async def _connections(session: AsyncSession, company_id) -> dict[tuple[str, str], str]:
+    """Every connection records from outside arrive through here, each with its label: a
+    connected company sending documents and a client sending journals (a live key this
+    company issued), the accountant whose journals reached these books (the client keeps no
+    key of its own for it) and QuickBooks or Xero."""
+    from celerp.models.company_peer import CompanyPeerAttention, CompanyPeerGrant
+    from celerp.models.connector_config import ConnectorConfig
+
+    found: dict[tuple[str, str], str] = {}
+    now = datetime.now(timezone.utc)
+    for grant in (await session.scalars(select(CompanyPeerGrant).where(
+            CompanyPeerGrant.company_id == company_id, CompanyPeerGrant.revoked_at.is_(None),
+            CompanyPeerGrant.expires_at > now))).all():
+        for origin, scope in (("connected_company", "documents"), ("client", "journals")):
+            if scope in (grant.scopes or []):
+                found.setdefault((origin, str(grant.source_company_id)), grant.label)
+    for firm, name in (await session.execute(select(
+            Projection.state["peer_origin"]["firm_company"].as_string(),
+            Projection.state["peer_origin"]["firm"].as_string()).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+            Projection.state["peer_origin"].as_string().is_not(None)).distinct())).all():
+        found.setdefault(("accountant", firm), name or firm)
+    for firm, fix in (await session.execute(select(CompanyPeerAttention.source_company_id, CompanyPeerAttention.fix).where(
+            CompanyPeerAttention.company_id == company_id, CompanyPeerAttention.entity_type == "journals"))).all():
+        found.setdefault(("accountant", str(firm)), (fix or {}).get("firm") or str(firm))
+    for platform in (await session.scalars(select(ConnectorConfig.connector).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector.in_(list(_ACCOUNTING_SYSTEMS))))).all():
+        found[("accounting_system", platform)] = _ACCOUNTING_SYSTEMS[platform]
+    return found
+
+
+async def _default_items(session: AsyncSession, company_id, settings: dict) -> list[dict]:
+    stored = settings.get(CONNECTION_DEFAULTS) or {}
+    funds = await funds_by_id(session, company_id)
+    items = []
+    for (origin, source_key), label in sorted((await _connections(session, company_id)).items()):
+        entry = stored.get(default_key(origin, source_key)) or {}
+        active = False
+        if entry.get("fund_choice"):
+            role, current = await read_authority(session, company_id, uuid.UUID(entry["set_by"]))
+            active = default_active(entry, current, role, funds)
+        items.append({"origin": origin, "source_key": source_key, "label": label,
+                      "fund_choice": entry.get("fund_choice"), "set_by": entry.get("set_by"),
+                      "set_at": entry.get("set_at"), "version": entry.get("version", 0), "active": active})
+    return items
+
+
+@router.get("/funds/connection-defaults")
+async def list_connection_defaults(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The standing fund of every connection records arrive through, read-only for a user
+    without the fund permission; ``active`` is false while nothing is set or its setter can
+    no longer choose funds."""
+    company = await session.get(Company, company_id)
+    return {"items": await _default_items(session, company_id, dict(company.settings or {}))}
+
+
+@router.put("/funds/connection-defaults")
+async def set_connection_default(
+    payload: ConnectionDefaultIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set, change or clear (``value`` null) the fund records from one connection take at
+    their first arrival. Refused from a stale copy (``expected_version``); a repeat of
+    ``request_key`` answers with what it wrote."""
+    await lock_fund_ledger(session, company_id, shared=False)
+    company = await locked_company(session, company_id)
+    settings = dict(company.settings or {})
+    key = default_key(payload.origin, payload.source_key)
+    stored = dict(settings.get(CONNECTION_DEFAULTS) or {})
+    entry = stored.get(key) or {}
+    if entry.get("request_key") != payload.request_key:
+        if not funds_enabled(settings):
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+        if (payload.origin, payload.source_key) not in await _connections(session, company_id):
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.connection_unknown"))
+        if payload.expected_version != entry.get("version", 0):
+            raise HTTPException(status_code=409, detail={**catalog_refusal("fund.default_stale"),
+                                                         "code": "stale_version"})
+        if payload.value is not None:
+            checked(await funds_by_id(session, company_id), payload.value, "posting.fund.document_choice_missing")
+        entry = {"fund_choice": payload.value, "set_by": str(user.id),
+                 "set_at": datetime.now(timezone.utc).isoformat(), "version": entry.get("version", 0) + 1,
+                 "request_key": payload.request_key}
+        company.settings = {**settings, CONNECTION_DEFAULTS: {**stored, key: entry}}
+        await session.commit()
+    return {k: entry.get(k) for k in ("fund_choice", "set_by", "set_at", "version")}
 
 
 @router.post("/funds")

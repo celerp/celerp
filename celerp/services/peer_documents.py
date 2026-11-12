@@ -67,14 +67,16 @@ DOC_FUNDS = "doc_funds"
 
 @dataclass(frozen=True)
 class HeldPosting:
-    """A local user posting a document held for funds (post_held_document): who posts it,
-    with which role, and the fund choices (``every`` the document's, ``lines`` by line
-    number), written under ``request_key``."""
+    """A local user posting a document held for funds (post_held_document), or the user who
+    set the connection's standing default at its first arrival: who posts it, with which
+    role, and the fund choices (``every`` the document's, ``lines`` by line number), written
+    under ``request_key`` and tagged with ``source``."""
     user_id: uuid.UUID
     role: str
     every: str | None
     lines: dict[str, str | None]
     request_key: str
+    source: str = "user"
 
 
 def held_choice_key(request_key: str) -> str:
@@ -125,8 +127,11 @@ async def receive_document(
     books that use funds an issued document no fund choice covers is refused with the
     doc_funds fix holding it as sent, and the sender sends it on each sync until a local
     user posts it from the hold (``posting``: imported as a draft, the user's choices
-    written, finalized by that user)."""
+    written, finalized by that user). At its first arrival a document takes the
+    connection's active standing default as that posting."""
+    from celerp.models.projections import Projection
     from celerp.services.journal_accounts import FundChoiceNeeded
+    from celerp.services.peer_lines import connection_default
     from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
     from celerp_docs.import_service import import_doc_records
     from celerp_docs.line_bodies import LineItem
@@ -226,6 +231,13 @@ async def receive_document(
         _reject_line_attributes(mapped_lines)
         incoming["line_items"] = mapped_lines
 
+    if posting is None and source_status != "void" and await session.get(
+            Projection, (grant.company_id, claim.target_id)) is None:
+        standing = await connection_default(session, grant.company_id, "connected_company",
+                                            str(grant.source_company_id))
+        if standing is not None:
+            posting = HeldPosting(standing.set_by, standing.role, standing.fund, {},
+                                  f"{standing.source}:{source_entity_id}:{source_revision}", standing.source)
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:
         raise HTTPException(403, "Company unavailable")
@@ -245,7 +257,6 @@ async def receive_document(
         data=incoming, source="connector",
         idempotency_key=f"peer:doc:{grant.source_company_id}:{key}",
     )
-    from celerp.models.projections import Projection
     target = await session.get(Projection, (grant.company_id, claim.target_id))
     target_status = (target.state or {}).get("status") if target is not None else None
     if target is not None and "line_items" in incoming:
@@ -414,7 +425,7 @@ async def _choose_funds(session: AsyncSession, company_id: uuid.UUID, doc_id: st
     ids = {str(n): li.get("line_id") for n, li in enumerate(state.get("line_items") or [], 1) if isinstance(li, dict)}
     every = {"document": posting.every, "every": posting.every} if posting.every is not None else {}
     await write_fund_choices(session, company_id, doc_id, state, actor_id=posting.user_id,
-                             idempotency_key=held_choice_key(posting.request_key),
+                             idempotency_key=held_choice_key(posting.request_key), source=posting.source,
                              lines={ids.get(n) or n: v for n, v in posting.lines.items() if v is not None}, **every)
 
 

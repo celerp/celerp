@@ -86,7 +86,7 @@ def granted_from_stored(lines: list, header: Mapping | None = None) -> FundChoic
     return FundChoiceGrant(lines=granted, header={key: header[key] for key in HEADER_KEYS if key in (header or {})})
 
 
-def _checked(funds: Mapping, value, key: str, /, **params):
+def checked(funds: Mapping, value, key: str, /, **params):
     """A choice as given when it is Unrestricted or an active fund of ``funds``; none is
     refused with ``key``."""
     if value == UNRESTRICTED:
@@ -102,11 +102,14 @@ def _checked(funds: Mapping, value, key: str, /, **params):
 
 
 async def require_fund_choices(session, company_id, record: Mapping, *, document: Any = _ABSENT,
-                               every: Any = _ABSENT, lines: Mapping[str, Any]) -> FundChoiceGrant:
+                               every: Any = _ABSENT, lines: Mapping[str, Any],
+                               source: str = "user") -> FundChoiceGrant:
     """The grant of a local user's choice on ``record``: ``document`` its document choice,
     ``lines`` a choice per marked line (by line id) and ``every`` the choice of each marked
     line ``lines`` does not name. Each value is ``"unrestricted"`` or an active fund of the
-    company; a line's ``fund_id`` follows its choice (none for Unrestricted)."""
+    company; a line's ``fund_id`` follows its choice (none for Unrestricted). ``source`` is
+    who chose the document choice: the user, or a connection's standing default
+    (``ConnectionDefault.source``)."""
     from celerp.services.journal_accounts import funds_by_id
 
     funds = await funds_by_id(session, company_id)
@@ -122,17 +125,71 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
     granted = {}
     for line_id, (n, line) in numbered.items():
         if line_id in lines:
-            value = _checked(funds, lines[line_id], "posting.fund.choice_missing", line=n)
+            value = checked(funds, lines[line_id], "posting.fund.choice_missing", line=n)
         elif every is not _ABSENT and line.get("origin"):
-            value = _checked(funds, every, "posting.fund.choice_missing", line=n)
+            value = checked(funds, every, "posting.fund.choice_missing", line=n)
         else:
             continue
         granted[line_id] = {"fund_choice": value, "fund_id": None if value == UNRESTRICTED else value}
     header = {"fund_choice_reason": None} if record.get("fund_choice_reason") else {}
     if document is not _ABSENT:
-        header.update(fund_choice=_checked(funds, document, "posting.fund.document_choice_missing"),
-                      fund_choice_source="user")
+        header.update(fund_choice=checked(funds, document, "posting.fund.document_choice_missing"),
+                      fund_choice_source=source)
     return FundChoiceGrant(lines=granted, header=header)
+
+
+# Company setting: the standing fund per connection, keyed "<origin>:<source key>", each
+# {fund_choice, set_by, set_at, version, request_key}; a cleared default keeps its entry so
+# its version keeps counting.
+CONNECTION_DEFAULTS = "fund_connection_defaults"
+
+
+def default_key(origin: str, source_key: str) -> str:
+    return f"{origin}:{source_key}"
+
+
+@dataclass(frozen=True)
+class ConnectionDefault:
+    """An active standing default: the fund records from one connection take at their first
+    arrival, the local user who set it (who posts what it fills) and the tag it leaves."""
+    fund: str
+    set_by: Any
+    role: str
+    source: str
+
+
+def default_active(entry: Mapping | None, settings: Mapping, role: str, funds: Mapping) -> bool:
+    """A stored default applies while it names a fund that still takes postings (or
+    Unrestricted), funds are in use and its setter still holds the fund permission."""
+    from celerp.services.journal_accounts import funds_enabled
+    from celerp.services.permissions import role_has_permission
+
+    choice = (entry or {}).get("fund_choice")
+    return bool(choice and funds_enabled(dict(settings))
+                and (choice == UNRESTRICTED or (choice in funds and not funds[choice].get("archived")))
+                and role_has_permission(dict(settings), role, "manage_accounting"))
+
+
+async def connection_default(session, company_id, origin: str, source_key: str) -> ConnectionDefault | None:
+    """The active standing default of the connection (``origin``, ``source_key``), or None:
+    records from it then wait for a local user's choice."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+    from celerp.services.journal_accounts import funds_by_id
+    from celerp.services.permissions import read_authority
+
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    entry = (settings.get(CONNECTION_DEFAULTS) or {}).get(default_key(origin, source_key))
+    if not (entry or {}).get("fund_choice"):
+        return None
+    set_by = uuid.UUID(entry["set_by"])
+    role, settings = await read_authority(session, company_id, set_by)
+    if not default_active(entry, settings, role, await funds_by_id(session, company_id)):
+        return None
+    return ConnectionDefault(entry["fund_choice"], set_by, role, f"default:{default_key(origin, source_key)}")
 
 
 def chosen_lines(lines: list, grant: FundChoiceGrant) -> list:

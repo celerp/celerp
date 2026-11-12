@@ -432,9 +432,12 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
                "status": "posted",
                "peer_source": {"journal": source_entity_id, "company": str(source)},
                **({"reverses": reverses} if reverses else {})}
+    actor = fund_grant = None
+    if reverses is None:  # a reversal posts with the funds of the lines it reverses (rule V)
+        created, actor, fund_grant = await _standing(session, company_id, CLIENT_ORIGIN, source, created)
     try:
         await _post_client_journal(session, grant, claim, created, source_entity_id=source_entity_id,
-                                   source_revision=source_revision, actor_id=None, fund_grant=None)
+                                   source_revision=source_revision, actor_id=actor, fund_grant=fund_grant)
     except FundChoiceNeeded as exc:
         # Held for a firm user's choice (post_held): the placed lines and the journal
         # as sent, which the posting claims again; the client sends it on each sync till then.
@@ -638,7 +641,8 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                     "peer_origin": {"journal": firm_je, "firm": firm, "firm_company": str(firm_company),
                                     "revision": revision}}
             try:
-                await _post(session, company_id, je_id, data, actor_id=None, grant=None)
+                data, actor, fund_grant = await _standing(session, company_id, ORIGIN, firm_company, data)
+                await _post(session, company_id, je_id, data, actor_id=actor, grant=fund_grant)
             except FundChoiceNeeded as exc:
                 # The lines wait in the hold, as placed, for a local user's choice.
                 reason, notice = WAITING_FOR_FUNDS, "notice.peer_journal_needs_funds"
@@ -677,6 +681,36 @@ async def answered(company_id: uuid.UUID, grant_id: uuid.UUID, item: dict, decli
         await session.commit()
 
 
+async def chosen_entries(session: AsyncSession, company_id: uuid.UUID, sent: list[dict], *, every: str | None,
+                         lines: dict[str, str | None], source: str = "user"):
+    """A journal's lines as they travel (each marked with its origin) with the fund choices
+    of ``every`` (the entry's) and ``lines`` (line number -> choice; none is no choice), and
+    the grant that lets the entry carry them."""
+    from celerp.services.peer_lines import FUND_KEYS, chosen_lines, require_fund_choices
+
+    numbered = [{**line, "line_id": str(n)} for n, line in enumerate(sent, 1)]
+    grant = await require_fund_choices(
+        session, company_id, {"line_items": numbered}, lines={n: v for n, v in lines.items() if v is not None},
+        source=source, **({"document": every, "every": every} if every is not None else {}))
+    chosen = chosen_lines(numbered, grant)
+    return [{**line, **{key: chose[key] for key in FUND_KEYS if chose.get(key)}}
+            for line, chose in zip(transport_lines(chosen), chosen)], grant
+
+
+async def _standing(session: AsyncSession, company_id: uuid.UUID, origin: str, source_key, data: dict):
+    """``data`` (a journal arriving from ``origin``) with the connection's active standing
+    default as the choice of the entry and every line, the user who set it and the grant;
+    as it came, None and None without one."""
+    from celerp.services.peer_lines import connection_default
+
+    standing = await connection_default(session, company_id, origin, str(source_key))
+    if standing is None:
+        return data, None, None
+    entries, grant = await chosen_entries(session, company_id, [{**e, "origin": origin} for e in data["entries"]],
+                                          every=standing.fund, lines={}, source=standing.source)
+    return {**data, "entries": entries, **grant.header}, standing.set_by, grant
+
+
 async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, revision: int,
                     every: str | None, lines: dict[str, str | None], request_key: str,
                     actor_id) -> dict:
@@ -694,7 +728,6 @@ async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, re
     from celerp.events.engine import find_event_by_idempotency
     from celerp.services import peer_documents
     from celerp.services.peer_identity import claim_peer_revision
-    from celerp.services.peer_lines import FUND_KEYS, chosen_lines, require_fund_choices
 
     chosen_doc = await find_event_by_idempotency(session, company_id, peer_documents.held_choice_key(request_key))
     if chosen_doc is not None:
@@ -715,13 +748,7 @@ async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, re
         raise HTTPException(422, "This item is not fixed here.")
     if revision != fix.get("revision"):
         raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
-    numbered = [{**line, "line_id": str(n)} for n, line in enumerate(fix.get("entries") or [], 1)]
-    grant = await require_fund_choices(
-        session, company_id, {"line_items": numbered}, lines={n: v for n, v in lines.items() if v is not None},
-        **({"document": every, "every": every} if every is not None else {}))
-    chosen = chosen_lines(numbered, grant)
-    entries = [{**sent, **{key: line[key] for key in FUND_KEYS if line.get(key)}}
-               for sent, line in zip(transport_lines(chosen), chosen)]
+    entries, grant = await chosen_entries(session, company_id, fix.get("entries") or [], every=every, lines=lines)
     data = {"memo": fix.get("memo") or "", "ts": fix["ts"], "entries": entries, "je_type": "manual",
             "status": "posted", **grant.header}
     if "journal" in fix:  # a client's journal at the firm
