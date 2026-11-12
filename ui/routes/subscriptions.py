@@ -218,8 +218,16 @@ def _count_change(label: str):
     return describe
 
 
+def _amendments_change(c: dict) -> str | None:
+    """Each amendment the change added, by the day it takes effect."""
+    old = c.get("old") or []
+    return ", ".join(sentence("subscriptions.history_amended", day=a.get("effective"))
+                     for a in c.get("new") or [] if isinstance(a, dict) and a not in old) or None
+
+
 register_fields({
     **{f: _term_change(f) for f in _FIELD_TEXT},
+    "amendments": _amendments_change,
     "beneficiary_contact_id": _member_change,
     "consents": _consents_change,
     "periods": _periods_change,

@@ -72,6 +72,12 @@ class RequestBody(BaseModel):
     period_index: int | None = None
 
 
+class AmendBody(BaseModel):
+    effective: date
+    quantities: dict[str, float] = Field(..., min_length=1)  # line id -> its quantity from ``effective``
+    request_key: str = Field(..., min_length=1, max_length=200)
+
+
 class EarlyBody(BaseModel):
     request_key: str = Field(..., min_length=1, max_length=200)
     period_index: int | None = None
@@ -395,6 +401,22 @@ def _build_router() -> APIRouter:
         """Bill the agreement's oldest due period."""
         result = await billing.claim_period(session, company_id, entity_id, actor=user,
                                             request_key=body.request_key, period_index=body.period_index)
+        await session.commit()
+        return result
+
+    @router.post("/{entity_id}/amend")
+    async def amend(
+        entity_id: str,
+        body: AmendBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        __: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Change line quantities from an effective date (billing.amend)."""
+        result = await billing.amend(session, company_id, entity_id, effective=body.effective,
+                                     quantities=body.quantities, request_key=body.request_key, actor=user)
         await session.commit()
         return result
 

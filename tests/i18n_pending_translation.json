@@ -1558,6 +1558,34 @@
       "params": [
         "name"
       ]
+    },
+    "subscriptions.err_amend_before_billed": {
+      "en": "A change can take effect from {day} at the earliest, the start of the latest billed period. Choose {day} or a later date.",
+      "params": [
+        "day"
+      ]
+    },
+    "subscriptions.err_amend_quantity": {
+      "en": "A quantity can't be below 0.",
+      "params": []
+    },
+    "subscriptions.err_amend_line": {
+      "en": "This subscription has no such line. Reload the page and try again.",
+      "params": []
+    },
+    "subscriptions.err_amend_unchanged": {
+      "en": "These are already the quantities on that date, so nothing would change.",
+      "params": []
+    },
+    "subscriptions.err_amend_draft": {
+      "en": "This subscription is still a draft. Change its lines on its page instead.",
+      "params": []
+    },
+    "subscriptions.history_amended": {
+      "en": "Quantities changed from {day}",
+      "params": [
+        "day"
+      ]
     }
   },
   "modules": {

@@ -630,6 +630,7 @@ async def test_a_schedule_door_refuses_an_agreement_without_a_schedule(client, s
     method, path = door.split(" ", 1)
     key = str(uuid.uuid4())
     body = {"request_key": key, "period_index": 0, "reason": "r", "attempt": 0,
+            "effective": "2026-04-10", "quantities": {"line:any": 1},
             "items": [{"entity_id": eid, "period_index": 0, "request_key": key}]}
     r = await client.request(method, "/subscriptions" + path.format(entity_id=eid, k=0, doc_id=eid),
                              headers=hd, json=body)

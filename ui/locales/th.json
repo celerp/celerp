@@ -7802,5 +7802,11 @@
   "subscriptions.seats": "Seats",
   "subscriptions.trial_end": "Trial end",
   "subscriptions.err_seats": "Seats must be a whole number of at least 1, not {seats}.",
-  "subscriptions.err_not_plan": "{name} is not a SaaS plan. Choose an item in the SaaS plan category."
+  "subscriptions.err_not_plan": "{name} is not a SaaS plan. Choose an item in the SaaS plan category.",
+  "subscriptions.err_amend_before_billed": "A change can take effect from {day} at the earliest, the start of the latest billed period. Choose {day} or a later date.",
+  "subscriptions.err_amend_quantity": "A quantity can't be below 0.",
+  "subscriptions.err_amend_line": "This subscription has no such line. Reload the page and try again.",
+  "subscriptions.err_amend_unchanged": "These are already the quantities on that date, so nothing would change.",
+  "subscriptions.err_amend_draft": "This subscription is still a draft. Change its lines on its page instead.",
+  "subscriptions.history_amended": "Quantities changed from {day}"
 }

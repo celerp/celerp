@@ -118,6 +118,7 @@ NON_JOURNAL_EMITTERS: dict[str, str] = {
     "celerp.services.lot_origin:_record": "lot_origin constants item.inventory_account.* and item.inventory_on_books.recorded",
     "celerp.services.lot_origin:correct_placements": "lot_origin constant sys.older_stock.corrected",
     "celerp_accounting.funds:_emit": "callers pass only fund.* literals",
+    "celerp_accounting.donors:send_statements": "constant STATEMENT_SENT (crm.contact.statement_sent) on the donor contact",
     "celerp_connectors.routes:set_item_sync": "literals shop.sync.enabled / shop.sync.disabled",
     "celerp_contacts.routes:merge_contacts_service": "f-string ending .updated",
     "celerp_contacts.services:create_crm_entity": "f-string crm.<type>.created on entity crm",

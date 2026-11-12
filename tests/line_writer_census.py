@@ -124,8 +124,8 @@ ROWS: dict[str, tuple[str, str]] = {
     **_many(_ROUTES, "_supplier_credit_for_return convert_doc convert_list", "COPY", "a document made from another"),
     **_many(_ROUTES, "import_list batch_import_lists", "ARRIVAL",
             "file_import: a List from a file; the choice is made on the document a conversion makes"),
-    **_many("default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py", "seed_demo_assets "
-            "_follow_books_currency", "LOCAL", "demo data of an empty company"),
+    **_many("default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py", "seed_demo_assets", "LOCAL",
+            "demo data of an empty company"),
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py::_draft": (
         "LOCAL", "fixed-asset sale draft from this company's assets"),
     **_many("default_modules/celerp-fixed-assets/celerp_fixed_assets/setup.py", "_emit", "NON-LINE"),
@@ -136,8 +136,15 @@ ROWS: dict[str, tuple[str, str]] = {
     **_many("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "emit", "NON-LINE"),
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement": (
         "LOCAL", "the agreement's own template lines"),
-    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::_bill": (
-        "COPY", "template lines copied into the period's invoice or purchase order (claim_period)"),
+    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::issue_document": (
+        "COPY", "template or amendment lines copied into a period's invoice or purchase order (_bill) and into an "
+        "amendment's credit note and debit document (settle_amendment)"),
+    "default_modules/celerp-subscriptions/celerp_subscriptions/demo.py::seed_demo_agreements": (
+        "LOCAL", "demo data of an empty company"),
+    "celerp/services/demo.py::follow_books_currency": ("LOCAL", "demo data of an empty company"),
+    "default_modules/celerp-accounting/celerp_accounting/donors.py::send_statements": (
+        "NON-LINE", "records the statement sent on the donor contact"),
+    "ui/routes/subscriptions.py::_subscriber_draft": ("SEND", "New subscriber form: one line from this company's plan item"),
     "ui/routes/accounting.py::journal_new_submit": ("SEND", "a user's journal form"),
     **_many(_UI, "create_doc_from_items create_list_from_items", "SEND", "this company's items"),
     **_many(_UI, "add_items_to_doc add_items_to_list", "SEND", "stored lines plus this company's items"),
@@ -162,13 +169,16 @@ HELPERS: dict[str, tuple[str, str]] = {
     f"{_ACC}/routes.py::reverse_year_close": ("COPY-JE", "reversal of a year close"),
     f"{_ACC}/recognition.py::run_recognition": ("DERIVED-JE", "schedule legs from the deferred line"),
     f"{_ACC}/recognition.py::reverse_recognition": ("COPY-JE", "reversal of a recognition run"),
+    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::_bill": (
+        "COPY", "bills a period through issue_document"),
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::claim_period": (
         "COPY", "bills a period through _bill"),
+    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::settle_amendment": (
+        "COPY", "an amendment's credit note and debit document through issue_document"),
 }
 
 PENDING = {  # function -> (class, what it will write)
     "post_dispute_adjustment": ("DERIVED-JE", "a payment dispute on the receipt's split"),
-    "amend": ("COPY", "a seat change's credit note and debit invoice copy the template lines"),
 }
 
 

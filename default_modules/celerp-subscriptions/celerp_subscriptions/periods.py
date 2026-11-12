@@ -61,7 +61,7 @@ UNSET = {
     "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
     "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
     "released_bills": {}, "resume_restarts": False, "recognize_over_service_period": False,
-    "kind": "subscription", "beneficiary_contact_id": None, "grace_days": 0,
+    "kind": "subscription", "beneficiary_contact_id": None, "grace_days": 0, "amendments": [],
 }
 
 
