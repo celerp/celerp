@@ -1113,24 +1113,30 @@ def test_measurements_sample_preview():
     assert _SAMPLE_DATA.get("measurements") == "6.51 x 6.54 x 4.01"
 
 
+def _new_field_row():
+    """The row the designer clones when a field is added. A <template>'s content is
+    its own fragment (selectors never reach into it, as in a browser), so it is
+    parsed on its own, the way the page's script reads template.content."""
+    from fasthtml.common import to_xml
+    from celerp_labels.ui_routes import _editor_panel
+    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
+    tpl = BeautifulSoup(html, "html.parser").find("template", id="field-row-template")
+    return BeautifulSoup(tpl.decode_contents(), "html.parser").select_one(".field-row-compact")
+
+
 def test_new_field_seeds_default_font_size():
     """A field added in the designer starts at the default point size, so its size
     box shows what it will print at instead of sitting blank."""
-    from fasthtml.common import to_xml
-    from celerp_labels.ui_routes import _editor_panel, FIELD_DEFAULT_PT
-    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    row = BeautifulSoup(html, "html.parser").select_one("#field-row-template .field-row-compact")
+    from celerp_labels.ui_routes import FIELD_DEFAULT_PT
+    row = _new_field_row()
     assert row.select_one(".fld-fs")["value"] == str(FIELD_DEFAULT_PT)
 
 
 def test_new_field_seeds_default_barcode_height():
     """A field added in the designer carries the default bar height in its box, so a
     barcode field shows the height it will print at rather than blank."""
-    from fasthtml.common import to_xml
-    from celerp_labels.ui_routes import _editor_panel
     from celerp_labels.service import BARCODE_HEIGHT_DEFAULT
-    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    row = BeautifulSoup(html, "html.parser").select_one("#field-row-template .field-row-compact")
+    row = _new_field_row()
     assert row.select_one(".fld-bh")["value"] == str(BARCODE_HEIGHT_DEFAULT)
 
 
