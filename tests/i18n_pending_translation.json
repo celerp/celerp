@@ -98,309 +98,309 @@
         "code",
         "fund"
       ]
+    },
+    "posting.fund.movement_outside": {
+      "en": "This entry moves money of {fund} between funds. Restricted money moves only through Transfer between funds, Release from restriction or Reallocate restricted funds.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.movement_needs_user": {
+      "en": "Money of {fund} moves between funds only when a person posts the movement, never by an automatic posting.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.movement_permission": {
+      "en": "Moving money of {fund} between funds needs the {permission} permission.",
+      "params": [
+        "fund",
+        "permission"
+      ]
+    },
+    "posting.fund.movement_template": {
+      "en": "This movement of {fund} doesn't fit its type. A transfer moves money between unrestricted funds, a release takes restricted money to an unrestricted fund, a reallocation moves it to a restricted fund with the same purpose, and an opening assigns unrestricted balances to funds. Each one only moves balance-sheet accounts between funds.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.movement_income_expense": {
+      "en": "Account {code} is an income or expense account. A movement between funds moves balance-sheet accounts only.",
+      "params": [
+        "code"
+      ]
+    },
+    "posting.fund.movement_exceeds_balance": {
+      "en": "{fund} holds {available} {currency} on account {code}, so it can't give {amount} {currency}.",
+      "params": [
+        "amount",
+        "available",
+        "code",
+        "currency",
+        "fund"
+      ]
+    },
+    "posting.fund.reallocation_needs_authorization": {
+      "en": "Reallocating money of {fund} needs a reason and a reference to the donor's written authorization.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.opening_restricted_negative": {
+      "en": "This opening would leave the net assets of {fund} below zero. Assign the assets that cover its liabilities in the same opening.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.release_backing_missing": {
+      "en": "A release from {fund} must name the purpose spending it pays for: posted expense lines, charged to no fund, that add up to the amount released.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.release_backing_charged": {
+      "en": "That spending is already charged to a fund, so it can't back a release from {fund}. Only spending charged to no fund can.",
+      "params": [
+        "fund"
+      ]
+    },
+    "posting.fund.release_backing_used": {
+      "en": "The spending on account {code} has already been released from restriction, so it can't back this release from {fund} as well.",
+      "params": [
+        "code",
+        "fund"
+      ]
+    },
+    "posting.fund.movement_void": {
+      "en": "This entry moves money of {fund} between funds, so it can't be voided. Reverse it instead.",
+      "params": [
+        "fund"
+      ]
+    },
+    "fund.movement_same_fund": {
+      "en": "Choose two different funds. Money can't move from a fund to itself.",
+      "params": []
+    },
+    "fund.movement_not_found": {
+      "en": "Celerp couldn't find this movement between funds, or it isn't posted.",
+      "params": []
+    },
+    "perm.name.reallocate_restricted_funds": {
+      "en": "Reallocate restricted funds",
+      "params": []
+    },
+    "fund.transfer_allocation_total": {
+      "en": "The amounts by fund add up to {allocated} {currency}, but the transfer moves {amount} {currency}. Change them so they add up to the amount transferred.",
+      "params": [
+        "allocated",
+        "amount",
+        "currency"
+      ]
+    },
+    "accounting.close_not_found": {
+      "en": "No close of the fiscal year ending {year_end} is posted, so there is nothing to reverse.",
+      "params": [
+        "year_end"
+      ]
+    },
+    "posting.fund.origin_fixed": {
+      "en": "This line came from {source}; its origin cannot be changed",
+      "params": [
+        "source"
+      ]
+    },
+    "posting.fund.document_origin_fixed": {
+      "en": "This document came from {source}; its origin cannot be changed",
+      "params": [
+        "source"
+      ]
+    },
+    "posting.fund.key_not_taken": {
+      "en": "A line carries a field these books do not take: {field}",
+      "params": [
+        "field"
+      ]
+    },
+    "posting.fund.choice_not_granted": {
+      "en": "Choose the fund for line {line} with its Fund control",
+      "params": [
+        "line"
+      ]
+    },
+    "posting.fund.document_choice_not_granted": {
+      "en": "Choose the fund for this document with its Fund for this document control",
+      "params": []
+    },
+    "fund.origin.file_import": {
+      "en": "a file import",
+      "params": []
+    },
+    "fund.origin.migration": {
+      "en": "a migration",
+      "params": []
+    },
+    "fund.origin.connected_company": {
+      "en": "a connected company",
+      "params": []
+    },
+    "fund.origin.accountant": {
+      "en": "your accountant",
+      "params": []
+    },
+    "fund.origin.client": {
+      "en": "your client",
+      "params": []
+    },
+    "fund.origin.shared_document": {
+      "en": "a shared document",
+      "params": []
+    },
+    "fund.origin.accounting_system": {
+      "en": "your accounting app",
+      "params": []
+    },
+    "fund.origin.unknown": {
+      "en": "another app",
+      "params": []
+    },
+    "posting.fund.choice_missing": {
+      "en": "Choose a fund or Unrestricted for line {line}",
+      "params": [
+        "line"
+      ]
+    },
+    "posting.fund.document_choice_missing": {
+      "en": "Choose a fund or Unrestricted for this document",
+      "params": []
+    },
+    "posting.fund.choice_line_unknown": {
+      "en": "This document no longer has that line. Reload it and choose again.",
+      "params": []
+    },
+    "posting.fund.choice_local_line": {
+      "en": "Line {line} didn't come from outside, so it has no fund to choose. Set its fund on the line itself.",
+      "params": [
+        "line"
+      ]
+    },
+    "posting.fund.document_posted": {
+      "en": "This document has posted; use Change fund",
+      "params": []
+    },
+    "posting.fund.inbound_key": {
+      "en": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+      "params": [
+        "field"
+      ]
+    },
+    "fund.turn_on_outside_keys": {
+      "en": "{count} records carry fund fields sent from outside: {records}. Post them (they post as today while funds are off) or delete them, then turn funds on.",
+      "params": [
+        "count",
+        "records"
+      ]
+    },
+    "fund.turn_off_choices_held": {
+      "en": "Clear or post the fund choices on {records} first",
+      "params": [
+        "records"
+      ]
+    },
+    "fund.choices_cleared_lines": {
+      "en": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
+      "params": [
+        "lines"
+      ]
+    },
+    "fund.choices_cleared_both": {
+      "en": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",
+      "params": [
+        "lines"
+      ]
+    },
+    "fund.choices_cleared_document": {
+      "en": "Amounts changed, so the fund for this document was cleared: choose again",
+      "params": []
+    },
+    "notice.peer_journal_needs_funds.title": {
+      "en": "Journal entry from your accountant waiting for funds",
+      "params": []
+    },
+    "notice.peer_journal_needs_funds.body": {
+      "en": "{memo}, dated {date}, from {firm} has not posted yet: choose a fund for each line in From your accountant, then post it. {firm} has been told it is waiting.",
+      "params": [
+        "date",
+        "firm",
+        "memo"
+      ]
+    },
+    "posting.fund.hold_changed": {
+      "en": "Your accountant changed this entry. Review it again, then post it.",
+      "params": []
+    },
+    "fund.payment_allocation_total": {
+      "en": "The amounts by fund add up to {allocated} {currency}, but the payment is {amount} {currency}. Change them so they add up to the payment.",
+      "params": [
+        "allocated",
+        "amount",
+        "currency"
+      ]
+    },
+    "posting.fund.allocation_exceeds_open": {
+      "en": "{fund} has {open} {currency} open on this document, so the payment can't settle {amount} {currency} of it.",
+      "params": [
+        "amount",
+        "currency",
+        "fund",
+        "open"
+      ]
+    },
+    "posting.fund.choice_needed": {
+      "en": "{record} came from {source}: choose the fund for this document.",
+      "params": [
+        "record",
+        "source"
+      ]
+    },
+    "posting.fund.note_exceeds_open": {
+      "en": "{fund} has {open} {currency} open on this document, so the credit note can apply at most {applicable} {currency} here.",
+      "params": [
+        "applicable",
+        "currency",
+        "fund",
+        "open"
+      ]
+    },
+    "fund.choices_cleared_by_source.total": {
+      "en": "The total was changed by {source}: choose the fund again",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.choices_cleared_by_source.lines": {
+      "en": "The lines were changed by {source}: choose the fund again",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.choices_cleared_by_source.tax": {
+      "en": "The tax was changed by {source}: choose the fund again",
+      "params": [
+        "source"
+      ]
+    },
+    "posting.fund.inbound_line_key": {
+      "en": "Line {line} came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+      "params": [
+        "field",
+        "line"
+      ]
+    },
+    "posting.fund.file_key": {
+      "en": "The file gives {field}. Choose funds on the import screen, not in the file.",
+      "params": [
+        "field"
+      ]
     }
-  },
-  "posting.fund.movement_outside": {
-    "en": "This entry moves money of {fund} between funds. Restricted money moves only through Transfer between funds, Release from restriction or Reallocate restricted funds.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.movement_needs_user": {
-    "en": "Money of {fund} moves between funds only when a person posts the movement, never by an automatic posting.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.movement_permission": {
-    "en": "Moving money of {fund} between funds needs the {permission} permission.",
-    "params": [
-      "fund",
-      "permission"
-    ]
-  },
-  "posting.fund.movement_template": {
-    "en": "This movement of {fund} doesn't fit its type. A transfer moves money between unrestricted funds, a release takes restricted money to an unrestricted fund, a reallocation moves it to a restricted fund with the same purpose, and an opening assigns unrestricted balances to funds. Each one only moves balance-sheet accounts between funds.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.movement_income_expense": {
-    "en": "Account {code} is an income or expense account. A movement between funds moves balance-sheet accounts only.",
-    "params": [
-      "code"
-    ]
-  },
-  "posting.fund.movement_exceeds_balance": {
-    "en": "{fund} holds {available} {currency} on account {code}, so it can't give {amount} {currency}.",
-    "params": [
-      "fund",
-      "available",
-      "currency",
-      "code",
-      "amount"
-    ]
-  },
-  "posting.fund.reallocation_needs_authorization": {
-    "en": "Reallocating money of {fund} needs a reason and a reference to the donor's written authorization.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.opening_restricted_negative": {
-    "en": "This opening would leave the net assets of {fund} below zero. Assign the assets that cover its liabilities in the same opening.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.release_backing_missing": {
-    "en": "A release from {fund} must name the purpose spending it pays for: posted expense lines, charged to no fund, that add up to the amount released.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.release_backing_charged": {
-    "en": "That spending is already charged to a fund, so it can't back a release from {fund}. Only spending charged to no fund can.",
-    "params": [
-      "fund"
-    ]
-  },
-  "posting.fund.release_backing_used": {
-    "en": "The spending on account {code} has already been released from restriction, so it can't back this release from {fund} as well.",
-    "params": [
-      "code",
-      "fund"
-    ]
-  },
-  "posting.fund.movement_void": {
-    "en": "This entry moves money of {fund} between funds, so it can't be voided. Reverse it instead.",
-    "params": [
-      "fund"
-    ]
-  },
-  "fund.movement_same_fund": {
-    "en": "Choose two different funds. Money can't move from a fund to itself.",
-    "params": []
-  },
-  "fund.movement_not_found": {
-    "en": "Celerp couldn't find this movement between funds, or it isn't posted.",
-    "params": []
-  },
-  "perm.name.reallocate_restricted_funds": {
-    "en": "Reallocate restricted funds",
-    "params": []
-  },
-  "fund.transfer_allocation_total": {
-    "en": "The amounts by fund add up to {allocated} {currency}, but the transfer moves {amount} {currency}. Change them so they add up to the amount transferred.",
-    "params": [
-      "allocated",
-      "currency",
-      "amount"
-    ]
-  },
-  "accounting.close_not_found": {
-    "en": "No close of the fiscal year ending {year_end} is posted, so there is nothing to reverse.",
-    "params": [
-      "year_end"
-    ]
-  },
-  "posting.fund.origin_fixed": {
-    "en": "This line came from {source}; its origin cannot be changed",
-    "params": [
-      "source"
-    ]
-  },
-  "posting.fund.document_origin_fixed": {
-    "en": "This document came from {source}; its origin cannot be changed",
-    "params": [
-      "source"
-    ]
-  },
-  "posting.fund.key_not_taken": {
-    "en": "A line carries a field these books do not take: {field}",
-    "params": [
-      "field"
-    ]
-  },
-  "posting.fund.choice_not_granted": {
-    "en": "Choose the fund for line {line} with its Fund control",
-    "params": [
-      "line"
-    ]
-  },
-  "posting.fund.document_choice_not_granted": {
-    "en": "Choose the fund for this document with its Fund for this document control",
-    "params": []
-  },
-  "fund.origin.file_import": {
-    "en": "a file import",
-    "params": []
-  },
-  "fund.origin.migration": {
-    "en": "a migration",
-    "params": []
-  },
-  "fund.origin.connected_company": {
-    "en": "a connected company",
-    "params": []
-  },
-  "fund.origin.accountant": {
-    "en": "your accountant",
-    "params": []
-  },
-  "fund.origin.client": {
-    "en": "your client",
-    "params": []
-  },
-  "fund.origin.shared_document": {
-    "en": "a shared document",
-    "params": []
-  },
-  "fund.origin.accounting_system": {
-    "en": "your accounting app",
-    "params": []
-  },
-  "fund.origin.unknown": {
-    "en": "another app",
-    "params": []
-  },
-  "posting.fund.choice_missing": {
-    "en": "Choose a fund or Unrestricted for line {line}",
-    "params": [
-      "line"
-    ]
-  },
-  "posting.fund.document_choice_missing": {
-    "en": "Choose a fund or Unrestricted for this document",
-    "params": []
-  },
-  "posting.fund.choice_line_unknown": {
-    "en": "This document no longer has that line. Reload it and choose again.",
-    "params": []
-  },
-  "posting.fund.choice_local_line": {
-    "en": "Line {line} didn't come from outside, so it has no fund to choose. Set its fund on the line itself.",
-    "params": [
-      "line"
-    ]
-  },
-  "posting.fund.document_posted": {
-    "en": "This document has posted; use Change fund",
-    "params": []
-  },
-  "posting.fund.inbound_key": {
-    "en": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
-    "params": [
-      "field"
-    ]
-  },
-  "fund.turn_on_outside_keys": {
-    "en": "{count} records carry fund fields sent from outside: {records}. Post them (they post as today while funds are off) or delete them, then turn funds on.",
-    "params": [
-      "count",
-      "records"
-    ]
-  },
-  "fund.turn_off_choices_held": {
-    "en": "Clear or post the fund choices on {records} first",
-    "params": [
-      "records"
-    ]
-  },
-  "fund.choices_cleared_lines": {
-    "en": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
-    "params": [
-      "lines"
-    ]
-  },
-  "fund.choices_cleared_both": {
-    "en": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",
-    "params": [
-      "lines"
-    ]
-  },
-  "fund.choices_cleared_document": {
-    "en": "Amounts changed, so the fund for this document was cleared: choose again",
-    "params": []
-  },
-  "notice.peer_journal_needs_funds.title": {
-    "en": "Journal entry from your accountant waiting for funds",
-    "params": []
-  },
-  "notice.peer_journal_needs_funds.body": {
-    "en": "{memo}, dated {date}, from {firm} has not posted yet: choose a fund for each line in From your accountant, then post it. {firm} has been told it is waiting.",
-    "params": [
-      "memo",
-      "date",
-      "firm"
-    ]
-  },
-  "posting.fund.hold_changed": {
-    "en": "Your accountant changed this entry. Review it again, then post it.",
-    "params": []
-  },
-  "fund.payment_allocation_total": {
-    "en": "The amounts by fund add up to {allocated} {currency}, but the payment is {amount} {currency}. Change them so they add up to the payment.",
-    "params": [
-      "allocated",
-      "currency",
-      "amount"
-    ]
-  },
-  "posting.fund.allocation_exceeds_open": {
-    "en": "{fund} has {open} {currency} open on this document, so the payment can't settle {amount} {currency} of it.",
-    "params": [
-      "fund",
-      "open",
-      "currency",
-      "amount"
-    ]
-  },
-  "posting.fund.choice_needed": {
-    "en": "{record} came from {source}: choose the fund for this document.",
-    "params": [
-      "record",
-      "source"
-    ]
-  },
-  "posting.fund.note_exceeds_open": {
-    "en": "{fund} has {open} {currency} open on this document, so the credit note can apply at most {applicable} {currency} here.",
-    "params": [
-      "fund",
-      "open",
-      "currency",
-      "applicable"
-    ]
-  },
-  "fund.choices_cleared_by_source.total": {
-    "en": "The total was changed by {source}: choose the fund again",
-    "params": [
-      "source"
-    ]
-  },
-  "fund.choices_cleared_by_source.lines": {
-    "en": "The lines were changed by {source}: choose the fund again",
-    "params": [
-      "source"
-    ]
-  },
-  "fund.choices_cleared_by_source.tax": {
-    "en": "The tax was changed by {source}: choose the fund again",
-    "params": [
-      "source"
-    ]
-  },
-  "posting.fund.inbound_line_key": {
-    "en": "Line {line} came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
-    "params": [
-      "line",
-      "field"
-    ]
-  },
-  "posting.fund.file_key": {
-    "en": "The file gives {field}. Choose funds on the import screen, not in the file.",
-    "params": [
-      "field"
-    ]
   }
 }
