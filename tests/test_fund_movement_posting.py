@@ -255,6 +255,17 @@ async def test_release_backing_stays_posted_while_the_release_stands(client, ses
     r = await client.post(f"/accounting/journal-entries/{cost}/void", headers=auth["headers"], json={"reason": "x"})
     assert r.status_code == 200, r.text
 
+    undone = await _bill(session, auth, None)
+    await emit_event(session, company_id=auth["company_id"], entity_id=f"je:manual:{uuid.uuid4()}",
+                     entity_type="journal_entry", event_type="acc.journal_entry.created",
+                     data={"memo": "Back", "ts": DATE, "status": "posted", "reverses": undone, "entries": [
+                         {"account": "6200", "debit": 0, "credit": 60}, {"account": "1111", "debit": 60, "credit": 0}]},
+                     actor_id=auth["user_id"], location_id=None, source="test",
+                     idempotency_key=uuid.uuid4().hex, metadata_={})
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=None,
+                    backing=[{"je_id": undone, "line_index": 0, "amount": "60"}])
+    assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_missing", r.text
+
 
 async def test_release_requires_purpose_spending_and_reverse_undoes(client, session, auth):
     """A release above the purpose spending it names is refused naming the shortfall rule; a
