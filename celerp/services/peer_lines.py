@@ -212,8 +212,9 @@ def posted_line_funds(lines: list, posted_doc: Mapping) -> list:
 
 async def _copied_legs(session, company_id, data: Mapping, legs: list[dict]) -> set[int]:
     """Which of ``legs`` (by position) are copies of a leg the same record posted: a
-    ``posted_from`` naming an entry of that record (or the entry ``data`` reverses) that
-    posted a line on the same account with the same fund."""
+    ``posted_from`` naming an entry of that record, of a record the entry ``settles`` or the
+    entry ``data`` reverses, that posted a line with the same fund (a settlement moves the
+    fund's share through a bank or exchange account its source never touched)."""
     from celerp.models.projections import Projection
 
     found: dict[str, Mapping | None] = {}
@@ -225,13 +226,12 @@ async def _copied_legs(session, company_id, data: Mapping, legs: list[dict]) -> 
         if source_id not in found:
             row = await session.get(Projection, {"company_id": company_id, "entity_id": source_id})
             state = (row.state or {}) if row is not None and row.entity_type == "journal_entry" else {}
-            same = (data.get("record_id") and state.get("record_id") == data.get("record_id")) \
-                or source_id == data.get("reverses")
+            records = {data.get("record_id"), *(data.get("settles") or [])} - {None}
+            same = state.get("record_id") in records or source_id == data.get("reverses")
             found[source_id] = state if same and state.get("status") in ("posted", "void") else None
         source = found[source_id]
-        if source is not None and any(
-                e.get("account") == line["account"] and (e.get("fund_id") or None) == (line.get("fund_id") or None)
-                for e in source.get("entries") or []):
+        if source is not None and any((e.get("fund_id") or None) == (line.get("fund_id") or None)
+                                      for e in source.get("entries") or []):
             copied.add(i)
     return copied
 
@@ -383,20 +383,19 @@ def _measure(values: Mapping, key: str):
 
 def keep_fund_choices(stored: Mapping, line_set: list | None, written: Mapping) -> tuple[list | None, dict]:
     """Clear the record's fund choices when this write changes its money (LK5): a kept marked
-    line's amounts (``_LINE_MONEY_KEYS``) or a header money input in ``written``. Every
+    line's amounts (``_LINE_MONEY_KEYS``) or a header money input in ``written`` (the money
+    inputs the write sets, celerp_docs.doc_money.DOC_MONEY_INPUTS, as the engine reads them). Every
     ``fund_choice`` and the ``fund_id`` of every marked line go, in the same write. Returns
     the line set to write (the stored lines cleared when the write carries none) and what
     was cleared, ``{"lines": [line numbers], "document": bool}``; ``(line_set, {})`` when
     nothing was."""
-    from celerp_docs.doc_money import DOC_MONEY_INPUTS
-
     stored_lines = [li for li in stored.get("line_items") or [] if isinstance(li, dict)]
     held = any(li.get("fund_choice") for li in stored_lines) or bool(stored.get("fund_choice"))
     if not held:
         return line_set, {}
     before = {li.get("line_id"): li for li in stored_lines if li.get("origin")}
     changed = any(_measure(written, key) != _measure(stored, key)
-                  for key in DOC_MONEY_INPUTS - {"line_items"} if key in written)
+                  for key in written if key != "line_items")
     for line in line_set or ():
         old = before.get(line.get("line_id")) if isinstance(line, dict) else None
         changed = changed or (old is not None and any(_measure(line, k) != _measure(old, k) for k in _LINE_MONEY_KEYS))

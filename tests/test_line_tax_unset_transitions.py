@@ -343,6 +343,7 @@ _CANNOT_CROSS = {
     "/docs/{entity_id}/files/{file_id}/tag": "attachments only",
     "/docs/{entity_id}/files/{file_id}/description": "attachments only",
     "/docs/{entity_id}/share": "a share link only",
+    "/docs/{entity_id}/fund-choices": "sets the fund chosen for lines or the document; taxes are not written",
 }
 
 

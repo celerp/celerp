@@ -1229,6 +1229,9 @@ class AccJournalEntryCreated(BaseModel):
     # A settlement split by fund: how (``open_share`` or ``explicit``) and each fund's share
     # ("unrestricted" for the lines carrying no fund), in the books' currency.
     fund_allocation: dict | None = None
+    # The other records an automatic posting settles besides its own (a note applied to a
+    # document): a line may follow the fund one of their entries posted with.
+    settles: list[str] | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

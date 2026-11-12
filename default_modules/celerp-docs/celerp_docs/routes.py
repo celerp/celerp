@@ -5273,7 +5273,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
         doc_id=target_doc_id, note_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
-        conversion_rate=_cn_rate, target_rate=_target_rate,
+        conversion_rate=_cn_rate, target_rate=_target_rate, currency=cn.get("currency", "USD"),
     )
     return entry
 

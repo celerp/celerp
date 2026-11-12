@@ -188,8 +188,9 @@ async def test_note_application_matched_by_fund(client, session, auth):
     assert {e.get("fund_id") for e in entries} == {f["R"]}
     assert sorted(e["posted_from"] for e in entries) == sorted([f"je:auto:{invoice}:fin", f"je:auto:{note}:fin"])
 
-    # The invoice's R share is settled: a payment now settles only the unrestricted 80.
+    # The invoice's R share is settled: a payment now settles only the unrestricted 80. The
+    # application holds the invoice's payment index 0, so the receipt is index 1.
     r = await _pay(client, auth, invoice, 80)
     assert r.status_code == 200, r.text
-    receipt = await _entry(session, auth, f"je:auto:{invoice}:pay:0")
+    receipt = await _entry(session, auth, f"je:auto:{invoice}:pay:1")
     assert _by_fund(receipt["entries"], "receivable") == {None: -80.0}

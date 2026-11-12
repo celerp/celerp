@@ -603,6 +603,38 @@ async def fund_open_shares(session: AsyncSession, company_id, record_id: str, co
                    "shares": {fund or peer_lines.UNRESTRICTED: to_stored_float(share) for fund, share in shares}}
 
 
+async def note_fund_lines(session: AsyncSession, company_id, *, doc_id: str, doc_codes: set[str], note_id: str,
+                          note_codes: set[str], doc_lines: list[dict], note_lines: list[dict], amount: Decimal,
+                          doc_rate: Decimal, note_rate: Decimal, base: str, currency: str) -> list[dict]:
+    """A note applied to a document (attribution rule SM): ``amount`` (the document's
+    currency) settles only the funds both still hold open, each at most the smaller of the
+    two open parts, split pro rata to them; more is refused naming the fund the document
+    holds less of. The document's lines (``doc_lines``, its control line and any exchange
+    difference) name the document's entry for each fund, the note's lines the note's. With
+    funds off: the lines unchanged."""
+    from celerp.services.money import round_money
+
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not funds_enabled(settings):
+        return [*doc_lines, *note_lines]
+    doc_open = await fund_open_amounts(session, company_id, doc_id, doc_codes)
+    note_open = await fund_open_amounts(session, company_id, note_id, note_codes)
+    in_doc = {fund: round_money(open_ / doc_rate, currency) for fund, (open_, _) in doc_open.items()}
+    in_note = {fund: round_money(open_ / note_rate, currency) for fund, (open_, _) in note_open.items()}
+    applicable = {fund: min(in_doc.get(fund, Decimal(0)), open_) for fund, open_ in in_note.items()}
+    if amount > sum(applicable.values(), Decimal(0)):
+        short = sorted(in_note, key=lambda f: (in_doc.get(f, Decimal(0)) >= in_note[f], f or ""))
+        fund = short[0] if short else None
+        funds = await funds_by_id(session, company_id)
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "posting.fund.note_exceeds_open", fund=_fund_name(funds, fund),
+            open=str(in_doc.get(fund, Decimal(0))), applicable=str(sum(applicable.values(), Decimal(0))),
+            currency=currency))
+    shares = _shares_within(applicable, amount, currency)
+    return [*copy_fund_split(doc_lines, shares, base, {fund: source for fund, (_, source) in doc_open.items()}),
+            *copy_fund_split(note_lines, shares, base, {fund: source for fund, (_, source) in note_open.items()})]
+
+
 def split_lines_by_fund(entries: list[dict], shares: list[tuple[str | None, Decimal]], base: str) -> list[dict]:
     """``entries`` written once per fund, each line carrying that fund's part of its amounts
     in proportion to ``shares``, so every fund's lines balance as the whole entry did."""
