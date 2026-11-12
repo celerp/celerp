@@ -107,7 +107,7 @@ def _document_gifts(doc_id: str, doc: dict, items: dict[str, dict], base: str,
 
 async def donor_history(session: AsyncSession, company_id, contact_id: str | None,
                         date_from: str | None, date_to: str | None) -> dict[str, dict]:
-    """Each donor's gifts dated in the period and their total, {contact: {"total", "gifts"}};
+    """Each donor's gifts dated in the period, newest first, and their total, {contact: {"total", "gifts"}};
     ``contact_id`` narrows it to that donor. A contact merged into another gives as the one that
     survives it."""
     settings = await current_settings(session, company_id)
@@ -143,7 +143,8 @@ async def donor_history(session: AsyncSession, company_id, contact_id: str | Non
                 found.setdefault(party, []).append(_gift(day, net, base, je_id=je_id, ref=state.get("memo") or ""))
 
     return {party: {"total": to_stored_float(round_money(sum(to_decimal(g["amount"]) for g in rows), base)),
-                    "gifts": sorted(rows, key=lambda g: (g["date"], g.get("doc_id") or g.get("je_id") or ""))}
+                    "gifts": sorted(rows, key=lambda g: (g["date"], g.get("doc_id") or g.get("je_id") or ""),
+                                    reverse=True)}
             for party, rows in found.items() if rows}
 
 
@@ -193,16 +194,19 @@ def _period(date_from: str | None, date_to: str | None) -> tuple[str | None, str
 
 
 def _statement_html(company: str, row: dict, text: str, date_from: str, date_to: str, currency: str) -> str:
-    """The statement email: the wording, then each gift with its date and amount, then the total."""
-    def cells(*values):
-        return Tr(*(Td(v) for v in values))
+    """The statement email: the wording, then each gift with its date and amount, then the total.
+    Headers are centered and the amount column right-aligned over its figures, inline because
+    mail clients drop stylesheets."""
+    def cells(day, source, amount):
+        return Tr(Td(day), Td(source), Td(f"{amount:,.2f} {currency}", style="text-align: right"))
 
     return str(to_markup(Div(
         P(_worded(text, row["name"])),
         H2(t("donors.statement_heading", start=date_from, end=date_to)),
-        Table(Thead(Tr(Th(t("th.date")), Th(t("th.source")), Th(t("label.amount")))),
-              Tbody(*(cells(g["date"], g.get("ref") or "--", f"{g['amount']:,.2f} {currency}") for g in row["gifts"]),
-                    cells("", t("th.total"), f"{row['total']:,.2f} {currency}"))),
+        Table(Thead(Tr(Th(t("th.date"), style="text-align: center"), Th(t("th.source"), style="text-align: center"),
+                       Th(t("label.amount"), style="text-align: right"))),
+              Tbody(*(cells(g["date"], g.get("ref") or "--", g["amount"]) for g in row["gifts"]),
+                    cells("", t("th.total"), row["total"]))),
         P(company),
     )))
 

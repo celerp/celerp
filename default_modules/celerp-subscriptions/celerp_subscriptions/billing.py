@@ -330,6 +330,17 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
 AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"})
 
 
+async def _refuse_unknown_member(session, company_id, before: dict, after: dict) -> None:
+    """422 (subscriptions.err_beneficiary) when a write sets the member to anything but a contact
+    of the company; a member left as it was is not read again."""
+    member = after.get("beneficiary_contact_id")
+    if member is None or member == before.get("beneficiary_contact_id"):
+        return
+    row = await session.get(Projection, (company_id, member))
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=422, detail=catalog_refusal("subscriptions.err_beneficiary"))
+
+
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
     building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
@@ -347,6 +358,7 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
+    await _refuse_unknown_member(session, entry.company_id, transition.before or {}, transition.after)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     status, was = transition.after.get("status"), (transition.before or {}).get("status")

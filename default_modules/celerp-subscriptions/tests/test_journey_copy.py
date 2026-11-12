@@ -10,7 +10,7 @@ import uuid
 import pytest
 from bs4 import BeautifulSoup
 
-from agreement_kit import agreement, freeze_day, generate_due, template
+from agreement_kit import agreement, contact, freeze_day, generate_due, template
 from ui.routes.documents import persist_then_post
 
 
@@ -262,8 +262,8 @@ async def test_a_schedule_save_redraws_every_element_that_shows_the_schedule(own
     freeze_day(monkeypatch, "2026-03-15")
     for field, value in _CHANGED.items():
         eid = await agreement(owner_ui.api, {}, start="2026-04-01")
-        # The member is a real contact, so the page names it: the agreement's own.
-        value = value or (await template(owner_ui.api, {}, eid))["contact_id"]
+        # The member must be a contact of the company, and the page names it.
+        value = value or await contact(owner_ui.api, {}, f"member-{field}@example.com")
         r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule", json={"generation_mode": "auto_invoice"})
         assert r.status_code == 200, r.text
         page = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
