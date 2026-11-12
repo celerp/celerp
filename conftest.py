@@ -389,6 +389,14 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         },
     },
     {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "rev_schedule.",
+            "handler": "celerp_accounting.projections:apply_accounting_event",
+            "_module": "celerp-accounting",
+        },
+    },
+    {
         "slot": "on_company_created",
         "contrib": {
             "handler": "celerp_accounting.routes:seed_chart_of_accounts_hook",

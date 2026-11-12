@@ -113,6 +113,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "2130", "name": "Withholding Tax Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2140", "name": "Accrued Expenses", "account_type": "liability", "parent_code": "2100"},
     {"code": "2150", "name": "Social Security Payable", "account_type": "liability", "parent_code": "2100"},
+    {"code": "2160", "name": "Deferred Revenue", "account_type": "liability", "parent_code": "2100"},
     {"code": "2200", "name": "Non-Current Liabilities", "account_type": "liability", "parent_code": "2000", "cash_flow_category": "financing"},
     {"code": "2210", "name": "Long-term Loans", "account_type": "liability", "parent_code": "2200"},
     # --- Equity ---
@@ -287,6 +288,7 @@ _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.DISPOSAL_LOSS: ("6000", "6950"),
     AccountRole.IMPAIRMENT_LOSS: ("6000", "6400"),
     AccountRole.REVALUATION_SURPLUS: ("3000", "3200"),
+    AccountRole.DEFERRED_REVENUE: ("2100", "2110"),
 }
 
 # Roles whose seeded account every seeded chart has always held, so the account found

@@ -27,6 +27,7 @@ from celerp.accounting_roles import (
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
     POSTABLE_ROLES,
+    RECOGNIZE_FIELD,
     ROLE_GROUPS,
     ROLE_LABELS,
     ROLE_TYPES,
@@ -101,6 +102,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add("inventory")
             if state.get("landed_costs"):
                 groups.add("landed_cost")
+            if state.get(RECOGNIZE_FIELD):
+                groups.add("recognition")
             continue
         if state.get("doc_type") == "consignment_in":
             groups.add("consignment")

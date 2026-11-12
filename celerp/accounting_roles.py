@@ -43,6 +43,9 @@ LOT_ACCOUNT_FIELD = "inventory_account_code"
 # The item-state field holding the revenue account the item's sales are credited to,
 # when it is not its category's or the sales revenue account (journal_accounts.income_account_of).
 INCOME_ACCOUNT_FIELD = "income_account"
+# The item-state flag that defers the item's sales: its lines credit deferred revenue and
+# recognize over their service period (celerp.services.recognition). Absent means off.
+RECOGNIZE_FIELD = "recognize_over_service_period"
 # The item-state field holding the account a consigned lot's sale is owed to the
 # consignor on, recorded when the lot is first sold. A consigned lot is not the
 # company's stock, so it has no inventory account until the company buys it.
@@ -107,6 +110,7 @@ class AccountRole(StrEnum):
     IMPAIRMENT_LOSS = "impairment_loss"
     REVALUATION_SURPLUS = "revaluation_surplus"
     RESTRICTED_NET_ASSETS = "restricted_net_assets"
+    DEFERRED_REVENUE = "deferred_revenue"
 
 
 R = AccountRole
@@ -147,6 +151,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.IMPAIRMENT_LOSS: "Impairment of assets",
     R.REVALUATION_SURPLUS: "Revaluation surplus",
     R.RESTRICTED_NET_ASSETS: "Restricted net assets",
+    R.DEFERRED_REVENUE: "Deferred revenue",
 }
 
 _ASSET = frozenset({"asset"})
@@ -190,6 +195,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.IMPAIRMENT_LOSS: _EXPENSE,
     R.REVALUATION_SURPLUS: frozenset({"equity"}),
     R.RESTRICTED_NET_ASSETS: frozenset({"equity"}),
+    R.DEFERRED_REVENUE: frozenset({"liability"}),
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -236,6 +242,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.IMPAIRMENT_LOSS: "6410",
     R.REVALUATION_SURPLUS: "3400",
     R.RESTRICTED_NET_ASSETS: "3500",
+    R.DEFERRED_REVENUE: "2160",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -275,6 +282,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "consignment": (R.CONSIGNOR_PAYABLE,),
     "online_payments": (R.ONLINE_PAYMENT_FEES,),
     "funds": (R.RESTRICTED_NET_ASSETS,),
+    "recognition": (R.DEFERRED_REVENUE,),
 }
 
 # Roles whose accounts hold stock or its cost. Stock is always unrestricted: a journal
@@ -289,7 +297,8 @@ STOCK_ROLES: tuple[AccountRole, ...] = (
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
-    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES, R.RESTRICTED_NET_ASSETS})
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES, R.RESTRICTED_NET_ASSETS,
+    R.DEFERRED_REVENUE})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split
 # (gain revenue, loss expense).

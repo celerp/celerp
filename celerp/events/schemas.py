@@ -1299,6 +1299,43 @@ class FundUnarchived(BaseModel):
     pass
 
 
+class RevSegment(BaseModel):
+    start: str
+    end: str
+    amount: float
+
+
+class RevAmendment(BaseModel):
+    kind: Literal["amend", "credit"]
+    effective: str
+    reason: str | None = None
+    by: str | None = None
+    at: str
+
+
+class RevScheduleCreated(BaseModel):
+    """A deferred sale line's schedule (celerp.services.recognition), made at finalize."""
+    doc_id: str
+    line_id: str
+    line: int
+    account: str
+    deferred_account: str
+    fund_id: str | None = None
+    currency: str
+    doc_currency: str
+    rate: float
+    basis: Literal["daily"]
+    source_je: str
+    segments: list[RevSegment]
+    amendments: list[RevAmendment] = []
+
+
+class RevScheduleAmended(BaseModel):
+    """The schedule's segments planned again, and the amendment that did it."""
+    segments: list[RevSegment]
+    amendment: RevAmendment
+
+
 class AccReconciliationReopened(BaseModel):
     """A completed bank reconciliation put back in progress. Only the reconciliation
     changes; the books do not."""
@@ -1691,6 +1728,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "fund.updated": FundUpdated,
     "fund.archived": FundArchived,
     "fund.unarchived": FundUnarchived,
+    "rev_schedule.created": RevScheduleCreated,
+    "rev_schedule.amended": RevScheduleAmended,
 
     # System
     "sys.company.created": SysCompanyCreated,

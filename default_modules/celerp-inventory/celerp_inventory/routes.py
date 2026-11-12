@@ -64,7 +64,8 @@ from .services import (
     replaced_price,
     source_header_semantics,
 )
-from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, Refused, catalog_refusal, refusal
+from celerp.accounting_roles import (
+    INCOME_ACCOUNT_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, RECOGNIZE_FIELD, Refused, catalog_refusal, refusal)
 from celerp.services.journal_accounts import require_income_account
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
@@ -414,6 +415,12 @@ def _landed_cost_kind_refused() -> dict:
     """The refusal for a landed cost kind that is not one of LANDED_COST_KINDS."""
     return refusal("inventory.err_landed_cost_kind",
                    "Choose what this landed cost is for: freight, insurance, duty or import VAT.")
+
+
+def _require_recognize_flag(value) -> None:
+    """Refuse (422) a recognize-over-the-service-period flag that is not on, off or cleared."""
+    if value is not None and not isinstance(value, bool):
+        raise HTTPException(status_code=422, detail=catalog_refusal("recognition.err_flag_invalid"))
 
 
 def status_value(value) -> str:
@@ -2399,6 +2406,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     _income_account = (payload.model_extra or {}).get(INCOME_ACCOUNT_FIELD)
     if _income_account not in (None, ""):
         await require_income_account(session, company_id, str(_income_account))
+    _require_recognize_flag((payload.model_extra or {}).get(RECOGNIZE_FIELD))
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
         raise HTTPException(status_code=422, detail=_landed_cost_kind_refused())
@@ -2670,6 +2678,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         _income_account = (payload.fields_changed[INCOME_ACCOUNT_FIELD] or {}).get("new")
         if _income_account is not None:
             await require_income_account(session, company_id, str(_income_account))
+    if RECOGNIZE_FIELD in changed_keys:
+        _require_recognize_flag((payload.fields_changed[RECOGNIZE_FIELD] or {}).get("new"))
 
     # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
     if "sku" in changed_keys:

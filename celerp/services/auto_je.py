@@ -55,7 +55,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.business_time import business_date_of
 from celerp.services.record_quantities import sent_out_by
-from celerp.services import doc_asset_lines
+from celerp.services import doc_asset_lines, recognition
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
@@ -707,11 +707,12 @@ async def _line_income_accounts(session, company_id, doc: dict, settings: dict) 
 
 
 def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, str], default: str,
-                  revenue) -> list[dict]:
+                  revenue, deferred: str | None = None) -> list[dict]:
     """A sale's revenue credits: each line's share (``allocations``) on its income account
     (``incomes``, _revenue_line), and what the other lines leave on the sales revenue
     account ``default``. Every allocation without an account is named ``default``. With
-    no income account of its own on any line the revenue is one ``default`` line."""
+    no income account of its own on any line the revenue is one ``default`` line. A line
+    whose account is ``deferred`` posts for deferred revenue (celerp.services.recognition)."""
     own: dict[str, _Dec] = {}
     for index, share in (allocations or {}).items():
         code = share.setdefault("account", incomes.get(index, default))
@@ -719,7 +720,17 @@ def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, s
             own[code] = own.get(code, _Dec(0)) + to_decimal(share["base"])
     rest = to_decimal(revenue) - sum(own.values(), _Dec(0))
     lines = [_line(default, R.SALES_REVENUE, credit=to_stored_float(rest))] if rest else []
-    return lines + [_revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
+    return lines + [_line(code, R.DEFERRED_REVENUE, credit=to_stored_float(amount)) if code == deferred
+                    else _revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
+
+
+async def _emit_schedules(session, *, company_id, user_id, cycle: str, records: list[dict]) -> None:
+    """Write each deferred line's schedule (recognition.schedule_records), once per finalize."""
+    for record in records:
+        sid = recognition.schedule_id(record["doc_id"], record["line_id"])
+        await emit_event(session, company_id=company_id, entity_id=sid, entity_type=recognition.SCHEDULE,
+                         event_type="rev_schedule.created", data=record, actor_id=user_id, location_id=None,
+                         source="doc.finalized", idempotency_key=f"{sid}:created:{cycle}", metadata_={})
 
 
 def _line_tax_basis(doc: dict):
@@ -747,6 +758,7 @@ def _document_fund_legs(settings: dict, doc: dict, entries: list[dict], bases: l
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     settings = await current_settings(session, company_id)
     refuse_unissuable_taxes(settings, "invoice", doc)
+    periods = await recognition.deferred_lines(session, company_id, doc, settings)
     incomes = await _line_income_accounts(session, company_id, doc, settings)
     total, tax, revenue = _sale_totals(doc, base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "invoice")
@@ -761,9 +773,14 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         roles.append(R.TAX_OUTPUT)
     if cogs > 0:
         roles.append(R.COGS)
+    if periods:
+        roles.append(R.DEFERRED_REVENUE)
     acc = await resolve_many(session, company_id, roles)
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
-    income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)
+    revenue_accounts = {index: incomes.get(index, acc[R.SALES_REVENUE]) for index in periods}
+    incomes = {**incomes, **{index: acc[R.DEFERRED_REVENUE] for index in periods}}
+    income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue,
+                           deferred=acc.get(R.DEFERRED_REVENUE))
     entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
     bases = [CONTROL, *_clearing_bases(doc, allocations, clearing),
              *({int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
@@ -792,6 +809,13 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         entries=entries,
         metadata_=metadata_,
     )
+    if periods:
+        await _emit_schedules(session, company_id=company_id, user_id=user_id, cycle=cycle_suffix, records=recognition.schedule_records(
+                                  doc_id, doc, periods=periods, allocations=allocations,
+                                  revenue_accounts=revenue_accounts, deferred=acc[R.DEFERRED_REVENUE],
+                                  funds=leg_funds(doc)[0] if funds_enabled(settings) else {},
+                                  books_currency=base_currency, rate=require_doc_rate(doc, base_currency),
+                                  source_je=f"je:auto:{doc_id}:{cycle_suffix}"))
     await doc_asset_lines.notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
                                  change="finalize")
 

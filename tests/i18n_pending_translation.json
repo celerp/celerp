@@ -1000,6 +1000,16 @@
     "funds.opening_date": {
       "en": "Opening date",
       "params": []
+    },
+    "recognition.err_service_period": {
+      "en": "{line} recognizes over its service period, so it needs a service start and end, with the end on or after the start.",
+      "params": [
+        "line"
+      ]
+    },
+    "recognition.err_flag_invalid": {
+      "en": "Recognize over the service period must be on or off. Send true or false.",
+      "params": []
     }
   },
   "modules": {
