@@ -6657,6 +6657,7 @@
   "modules.turn_on": "Turn on",
   "nav.my_assets": "My assets",
   "connectors.order_changed_in_woocommerce": "This order changed in WooCommerce. Select Try again to review the change.",
+  "connectors.import_as_order_changed": "This order changed in WooCommerce after you chose Import as, so Celerp did not import it. Check the order again, then select Import as {next} if it is still a different record.",
   "connectors.flow_products": "Products",
   "connectors.flow_stock": "Stock",
   "connectors.flow_orders": "Orders",

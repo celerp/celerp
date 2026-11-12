@@ -6569,6 +6569,7 @@
   "modules.turn_on": "تشغيل",
   "nav.my_assets": "أصولي",
   "connectors.order_changed_in_woocommerce": "تغيّر هذا الطلب في WooCommerce. اختر إعادة المحاولة لمراجعة التغيير.",
+  "connectors.import_as_order_changed": "تغيّر هذا الطلب في WooCommerce بعد أن اخترت الاستيراد بالرقم التالي، لذلك لم يستورده Celerp. راجع الطلب مرة أخرى، ثم اختر استيراد باسم {next} إذا كان لا يزال سجلًا مختلفًا.",
   "connectors.flow_products": "المنتجات",
   "connectors.flow_stock": "المخزون",
   "connectors.flow_orders": "الطلبات",

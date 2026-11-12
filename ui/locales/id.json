@@ -6569,6 +6569,7 @@
   "modules.turn_on": "Aktifkan",
   "nav.my_assets": "Aset saya",
   "connectors.order_changed_in_woocommerce": "Pesanan ini berubah di WooCommerce. Pilih Coba lagi untuk meninjau perubahannya.",
+  "connectors.import_as_order_changed": "Pesanan ini berubah di WooCommerce setelah Anda memilih Impor sebagai, jadi Celerp tidak mengimpornya. Periksa pesanan lagi, lalu pilih Impor sebagai {next} jika itu tetap catatan yang berbeda.",
   "connectors.flow_products": "Produk",
   "connectors.flow_stock": "Stok",
   "connectors.flow_orders": "Pesanan",

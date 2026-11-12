@@ -6569,6 +6569,7 @@
   "modules.turn_on": "Ativar",
   "nav.my_assets": "Os meus ativos",
   "connectors.order_changed_in_woocommerce": "Este pedido mudou no WooCommerce. Selecione Tentar novamente para revisar a alteração.",
+  "connectors.import_as_order_changed": "Este pedido mudou no WooCommerce depois que você escolheu Importar como, por isso o Celerp não o importou. Verifique o pedido novamente e selecione Importar como {next} se ainda for outro registro.",
   "connectors.flow_products": "Produtos",
   "connectors.flow_stock": "Estoque",
   "connectors.flow_orders": "Pedidos",

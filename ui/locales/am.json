@@ -6569,6 +6569,7 @@
   "modules.turn_on": "አብራ",
   "nav.my_assets": "የእኔ ንብረቶች",
   "connectors.order_changed_in_woocommerce": "ይህ ትዕዛዝ በWooCommerce ተቀይሯል። ለውጡን ለመገምገም እንደገና ሞክር ይምረጡ።",
+  "connectors.import_as_order_changed": "በሚቀጥለው ቁጥር ማስገባትን ከመረጡ በኋላ ይህ ትዕዛዝ በWooCommerce ውስጥ ስለተለወጠ Celerp አላስገባውም። ትዕዛዙን እንደገና ይፈትሹ፣ ከዚያ አሁንም የተለየ መዝገብ ከሆነ እንደ {next} አስገባ የሚለውን ይምረጡ።",
   "connectors.flow_products": "ምርቶች",
   "connectors.flow_stock": "ክምችት",
   "connectors.flow_orders": "ትዕዛዞች",

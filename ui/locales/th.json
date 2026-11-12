@@ -6569,6 +6569,7 @@
   "modules.turn_on": "เปิดใช้",
   "nav.my_assets": "สินทรัพย์ของฉัน",
   "connectors.order_changed_in_woocommerce": "คำสั่งซื้อนี้ถูกเปลี่ยนใน WooCommerce เลือก ลองอีกครั้ง เพื่อตรวจสอบการเปลี่ยนแปลง",
+  "connectors.import_as_order_changed": "คำสั่งซื้อนี้มีการเปลี่ยนแปลงใน WooCommerce หลังจากที่คุณเลือกนำเข้าด้วยเลขถัดไป Celerp จึงไม่ได้นำเข้า ตรวจสอบคำสั่งซื้ออีกครั้ง แล้วเลือก นำเข้าเป็น {next} หากยังเป็นระเบียนอื่นอยู่",
   "connectors.flow_products": "สินค้า",
   "connectors.flow_stock": "สต็อกสินค้า",
   "connectors.flow_orders": "คำสั่งซื้อ",
