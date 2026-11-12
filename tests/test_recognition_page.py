@@ -65,7 +65,7 @@ async def test_recognition_page_lists_runs_by_month(ui_client):
         r = await ui_client.get("/accounting/recognition")
     assert r.status_code == 200, r.text
     text = r.text
-    assert text.index("2026-02") < text.index("2026-01")
+    assert text.index("<strong>2026-02</strong>") < text.index("<strong>2026-01</strong>")
     assert "INV-0042" in text and 'href="/docs/doc-1"' in text
     assert 'hx-post="/accounting/recognition/2026-02/post"' in text
     assert 'hx-post="/accounting/recognition/2026-01/reverse"' in text
@@ -93,7 +93,7 @@ async def test_recognition_post_locked_month_offers_first_open_day(ui_client):
     assert r.status_code == 200, r.text
     refused.assert_awaited_once()
     assert refused.await_args.args[1:] == ("2026-02", None)
-    assert "locked through 2026-02-28" in r.text
+    assert "The books are locked through" in r.text
     assert "Post dated 2026-03-01" in r.text and 'value="2026-03-01"' in r.text
 
     posted = AsyncMock(return_value={"runs": []})
@@ -130,7 +130,8 @@ async def test_recognition_automatic_posting_toggle(ui_client):
     assert turned.await_args.args[1:] == (True,)
     assert "Automatic posting is on." in r.text or "Automatic posting turned on." in r.text
 
-    with _api():
+    owner = {"name": "Test Corp", "current_role": "owner", "settings": {"modules": ["celerp-accounting"]}}
+    with _api(get_bank_accounts=AsyncMock(return_value={"items": []}), get_company=AsyncMock(return_value=owner)):
         r = await ui_client.get("/settings/accounting?tab=recognition")
     assert r.status_code == 200 and "Post recognition automatically" in r.text
 

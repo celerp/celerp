@@ -1029,6 +1029,45 @@ async def reverse_fund_movement(token: str, je_id: str, body: dict) -> dict:
         return _raise(await c.post(f"/accounting/funds/movements/{quote(je_id, safe='')}/reverse", json=body)).json()
 
 
+async def get_recognition(token: str) -> dict:
+    """Every revenue recognition run by month (newest first), the document each schedule came
+    from, the summary and whether runs post automatically."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition")).json()
+
+
+async def get_recognition_roll_forward(token: str, params: dict) -> dict:
+    """The deferred revenue roll-forward between ``date_from`` and ``date_to``."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition/roll-forward", params=params)).json()
+
+
+async def get_recognition_setting(token: str) -> dict:
+    """Whether recognition posts automatically: {enabled, by, at, lapsed}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition/setting")).json()
+
+
+async def set_recognition_setting(token: str, enabled: bool) -> dict:
+    """Turn automatic posting of recognition runs on or off."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/recognition/setting", json={"enabled": enabled})).json()
+
+
+async def post_recognition_month(token: str, month: str, post_on: str | None) -> dict:
+    """Post every outstanding run of ``month``; ``post_on`` is the first open day chosen for a locked month."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/recognition/{quote(month, safe='')}/post",
+                                   json={"post_on": post_on})).json()
+
+
+async def reverse_recognition_month(token: str, month: str, reverse_on: str | None) -> dict:
+    """Reverse every posted run of ``month``; ``reverse_on`` is the first open day chosen for a locked month."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/recognition/{quote(month, safe='')}/reverse",
+                                   json={"reverse_on": reverse_on})).json()
+
+
 async def reverse_year_close(token: str, fiscal_year_end: str, reason: str) -> dict:
     """Reverse the latest close of the year ending ``fiscal_year_end``."""
     async with _api_client(token) as c:

@@ -1079,6 +1079,149 @@
     "recognition.err_schedule_not_found": {
       "en": "This revenue schedule doesn't exist.",
       "params": []
+    },
+    "page.revenue_recognition": {
+      "en": "Revenue recognition",
+      "params": []
+    },
+    "recognition.intro": {
+      "en": "Revenue an invoice defers is recognized month by month over its service period. Each ended month's runs wait here until they are posted, by hand or automatically.",
+      "params": []
+    },
+    "recognition.empty": {
+      "en": "No revenue is deferred. Set an item or agreement to recognize over its service period to start.",
+      "params": []
+    },
+    "recognition.outstanding": {
+      "en": "Outstanding runs: {n}, in {months}.",
+      "params": [
+        "months",
+        "n"
+      ]
+    },
+    "recognition.none_outstanding": {
+      "en": "Every ended month is posted.",
+      "params": []
+    },
+    "recognition.auto_on": {
+      "en": "Automatic posting is on.",
+      "params": []
+    },
+    "recognition.auto_off": {
+      "en": "Automatic posting is off.",
+      "params": []
+    },
+    "recognition.auto_hint": {
+      "en": "When it is on, each month's runs post on their own once the month ends, while that month is open. Earlier months and locked months wait for you to post them here.",
+      "params": []
+    },
+    "recognition.turn_on": {
+      "en": "Post recognition automatically",
+      "params": []
+    },
+    "recognition.turn_off": {
+      "en": "Stop posting automatically",
+      "params": []
+    },
+    "recognition.turned_on": {
+      "en": "Automatic posting turned on.",
+      "params": []
+    },
+    "recognition.turned_off": {
+      "en": "Automatic posting turned off. Runs now wait for you to post them.",
+      "params": []
+    },
+    "recognition.open_page": {
+      "en": "Open Revenue recognition",
+      "params": []
+    },
+    "recognition.reverse": {
+      "en": "Reverse",
+      "params": []
+    },
+    "recognition.post_dated": {
+      "en": "Post dated {day}",
+      "params": [
+        "day"
+      ]
+    },
+    "recognition.reverse_dated": {
+      "en": "Reverse dated {day}",
+      "params": [
+        "day"
+      ]
+    },
+    "recognition.posted_month": {
+      "en": "Runs of {month} posted.",
+      "params": [
+        "month"
+      ]
+    },
+    "recognition.reversed_month": {
+      "en": "Runs of {month} reversed. They are outstanding again.",
+      "params": [
+        "month"
+      ]
+    },
+    "recognition.status_posted": {
+      "en": "Posted",
+      "params": []
+    },
+    "recognition.status_outstanding": {
+      "en": "Outstanding",
+      "params": []
+    },
+    "recognition.roll_forward": {
+      "en": "Deferred revenue roll-forward",
+      "params": []
+    },
+    "recognition.all_funds": {
+      "en": "All funds",
+      "params": []
+    },
+    "recognition.col_opening": {
+      "en": "Opening",
+      "params": []
+    },
+    "recognition.col_deferred": {
+      "en": "Deferred",
+      "params": []
+    },
+    "recognition.col_recognized": {
+      "en": "Recognized",
+      "params": []
+    },
+    "recognition.col_adjusted": {
+      "en": "Adjusted",
+      "params": []
+    },
+    "recognition.col_closing": {
+      "en": "Closing",
+      "params": []
+    },
+    "recognition.agrees": {
+      "en": "Agrees with the deferred revenue accounts.",
+      "params": []
+    },
+    "recognition.differs": {
+      "en": "Differs from the deferred revenue accounts by {amount}.",
+      "params": [
+        "amount"
+      ]
+    },
+    "recognition.outstanding_in_period": {
+      "en": "Outstanding runs in this period: {n}.",
+      "params": [
+        "n"
+      ]
+    },
+    "recognition.void_source": {
+      "en": "Source document void",
+      "params": []
+    },
+    "recognition.void_hint": {
+      "en": "The documents these schedules came from were voided. Reverse their posted runs to take the revenue they recognized back to deferred revenue.",
+      "params": []
     }
   },
   "modules": {

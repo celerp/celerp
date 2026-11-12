@@ -28,6 +28,7 @@ from ui.components.posting_accounts import (
 )
 from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES, asset_register_target
+from ui.routes.recognition import setting_tab as recognition_setting_tab
 from ui.routes.settings_funds import funds_tab
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
@@ -58,6 +59,7 @@ def _accounting_settings_tabs(active: str) -> FT:
         ("posting-accounts", t("posting.tab")),
         ("older-stock", t("older_stock.tab")),
         ("funds", t("funds.title")),
+        ("recognition", t("page.revenue_recognition")),
     ]
     return Div(
         *[
@@ -1056,6 +1058,13 @@ def setup_routes(app):
         elif tab == "funds":
             try:
                 content = await funds_tab(token)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(error_message(e), cls="error-banner"), cls="settings-card")
+        elif tab == "recognition":
+            try:
+                content = await recognition_setting_tab(token)
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)

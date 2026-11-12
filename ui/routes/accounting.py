@@ -43,6 +43,7 @@ from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
+from ui.routes.recognition import PAGE as RECOGNITION_PAGE
 from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
@@ -133,10 +134,14 @@ def setup_routes(app):
                 # Toolbar over the table, following the document-list pattern:
                 # creative actions left, export/print right.
                 Div(
-                    A(t("btn.new_entry"),
-                      href=safe_url(_href("/accounting/journal/new",
-                                 _date_params(d_from or "", d_to or ""))),
-                      cls="btn btn--primary"),
+                    Div(
+                        A(t("btn.new_entry"),
+                          href=safe_url(_href("/accounting/journal/new",
+                                     _date_params(d_from or "", d_to or ""))),
+                          cls="btn btn--primary"),
+                        A(t("page.revenue_recognition"), href=safe_url(RECOGNITION_PAGE), cls="btn btn--secondary"),
+                        cls="flex-row gap-sm",
+                    ),
                     action_bar("/accounting/print/journal", "/accounting/export/journal/csv",
                                params),
                     cls="flex-row flex-between mt-md mb-md",

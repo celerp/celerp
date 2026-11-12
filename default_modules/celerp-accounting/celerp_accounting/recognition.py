@@ -460,9 +460,16 @@ async def list_recognition(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
-    """Every run by month (newest first), the number of schedules and the summary."""
+    """Every run by month (newest first), the number of schedules, the document and line each
+    schedule came from, and the summary."""
     settings, schedules, runs = await _overview(session, company_id)
-    return {"runs": runs, "schedules": len(schedules), "summary": summary(settings, runs),
+    docs = await _states(session, company_id, "doc", {s.get("doc_id") for s in schedules.values()})
+    documents = {}
+    for sid, schedule in schedules.items():
+        doc = docs.get(str(schedule.get("doc_id"))) or {}
+        documents[sid] = {"doc_id": schedule.get("doc_id"), "ref": doc.get("ref_id") or doc.get("doc_number"),
+                          "line": schedule.get("line")}
+    return {"runs": runs, "schedules": len(schedules), "documents": documents, "summary": summary(settings, runs),
             "enabled": bool((settings.get("consents") or {}).get(CONSENT))}
 
 
