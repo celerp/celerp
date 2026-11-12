@@ -10,3 +10,11 @@ PY-POSITION | ui/seed4.py:14
 PY-RAW | ui/seed4.py:3
 PY-RAW | ui/seed4.py:4
 PY-RAW | ui/seed4.py:6
+PY-POSITION | ui/seed4.py:18
+PY-POSITION | ui/seed4.py:19
+PY-POSITION | ui/seed4.py:21
+PY-URLHOLE | ui/seed4.py:23
+PY-JSHOLE | ui/seed4.py:24
+PY-POSITION | ui/seed4.py:25
+PY-JSHOLE | ui/seed4.py:28
+PY-POSITION | ui/seed4.py:28

@@ -1070,7 +1070,9 @@ class PyScan(ast.NodeVisitor):
         if self._prefixed(node):
             return True
         node = self._resolve(node)
-        while isinstance(node, (ast.JoinedStr, ast.BinOp, ast.FormattedValue)):
+        for _ in range(9):  # a name rebound to itself (p = p + "-") resolves to itself again
+            if not isinstance(node, (ast.JoinedStr, ast.BinOp, ast.FormattedValue)):
+                break
             if isinstance(node, ast.JoinedStr):
                 if not node.values or not isinstance(node.values[0], ast.FormattedValue):
                     return False
