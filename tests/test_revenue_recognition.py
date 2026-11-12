@@ -20,7 +20,7 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.auto_je import finalized_entry_day
 from test_credit_note_settlement_owned import _post
-from test_income_accounts import _category, _draft, _item, _line, ui_client  # noqa: F401 (fixture)
+from test_income_accounts import _category, _draft, _item, _line
 from test_set_aside_older_paths import _net
 
 pytestmark = pytest.mark.asyncio
@@ -544,14 +544,14 @@ async def test_schedule_reconciles_to_liability(client, session, auth, monkeypat
         assert roll["by_fund"][fund]["closing"] == 590.0
 
 
-async def test_recognition_empty_state(ui_client):
-    """Accounting > Revenue recognition with no schedule shows the empty state and how to start."""
-    from unittest.mock import AsyncMock
-
-    from test_income_accounts import _ui_api
-
-    empty = {"runs": [], "schedules": 0, "summary": {"outstanding": 0, "months": [], "lapsed": None, "message": None}}
-    with _ui_api(get_recognition=AsyncMock(return_value=empty)):
-        r = await ui_client.get("/accounting/recognition")
-    assert r.status_code == 200, (r.status_code, r.headers.get("location"))
-    assert "No revenue is deferred. Set an item or agreement to recognize over its service period to start." in r.text
+async def test_recognition_list_names_each_document(client, session, auth, monkeypatch):
+    """The run list names the document and line each schedule came from, so a run can be traced."""
+    _freeze(monkeypatch, "2026-01-05")
+    plan = await _deferred_item(client, auth)
+    doc = await _invoice(client, auth, [_service(plan, 900)])
+    [schedule] = await _schedules(session, auth, doc)
+    _freeze(monkeypatch, "2026-02-03")
+    body = (await client.get("/accounting/recognition", headers=auth["headers"])).json()
+    named = body["documents"][schedule["id"]]
+    state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
+    assert named == {"doc_id": doc, "ref": state.get("ref_id") or state.get("doc_number"), "line": 1}
