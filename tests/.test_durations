@@ -28835,5 +28835,6 @@
     "tests/test_woocommerce_held_number.py::test_one_writer_sets_a_persons_decision_on_an_attention_entry": 3.9068532560486346,
     "tests/test_woocommerce_held_number.py::test_undo_after_mark_reconciled_never_revives_an_earlier_import_as": 0.9329875000403263,
     "tests/test_browser/test_call_hostile_values.py::test_call_is_one_call_of_its_values_in_a_script_and_in_a_handler[chromium]": 1.9487571240169927,
-    "tests/test_browser/test_call_hostile_values.py::test_every_dynamic_attribute_keeps_its_value_and_stays_one_attribute[chromium]": 0.3137318679364398
+    "tests/test_browser/test_call_hostile_values.py::test_every_dynamic_attribute_keeps_its_value_and_stays_one_attribute[chromium]": 0.3137318679364398,
+    "default_modules/celerp-labels/tests/test_label_numbers.py::test_printing_reads_a_template_without_changing_it": 0.14828876196406782
 }
