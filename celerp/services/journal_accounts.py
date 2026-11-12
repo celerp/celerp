@@ -558,6 +558,19 @@ async def _standing_releases(session: AsyncSession, company_id) -> list[tuple[st
             and not await standing_reversals(session, company_id, str(eid))]
 
 
+async def released_by_line(session: AsyncSession, company_id) -> dict[tuple[str, int], Decimal]:
+    """What the releases still standing took from each line they name as backing, by
+    (entry, line index)."""
+    from celerp.services.money import to_decimal
+
+    taken: dict[tuple[str, int], Decimal] = {}
+    for _, state in await _standing_releases(session, company_id):
+        for item in state.get("backing") or ():
+            key = (str(item.get("je_id")), item.get("line_index"))
+            taken[key] = taken.get(key, Decimal(0)) + to_decimal(item.get("amount") or 0)
+    return taken
+
+
 async def check_backing_cancel(session: AsyncSession, company_id, je_id: str) -> None:
     """The spending a standing release names as backing stays posted while the release
     stands: refuse a void or a reversal of ``je_id`` when a standing release names it,
@@ -1052,12 +1065,7 @@ async def _release_backing(session: AsyncSession, company_id, data: dict, amount
         if line.get("fund_id"):
             raise RestrictedFundMovement("posting.fund.release_backing_charged", fund=fund)
 
-    taken: dict[tuple[str, int], Decimal] = {}
-    for _, state in await _standing_releases(session, company_id):
-        for item in state.get("backing") or ():
-            key = (str(item.get("je_id")), item.get("line_index"))
-            if key in claims:
-                taken[key] = taken.get(key, Decimal(0)) + to_decimal(item.get("amount") or 0)
+    taken = await released_by_line(session, company_id)
     for key, claim in claims.items():
         line = lines[key]
         spent = to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0)

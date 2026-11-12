@@ -35,14 +35,17 @@ from celerp.schemas.numbers import PositiveFloat
 from celerp.services.je_keys import je_idempotency_key
 from celerp.services.journal_accounts import (
     FUND_MOVEMENT_TYPES, FUNDS_ENABLED, fund_account_balances, fund_movement_grant, funds_by_id, funds_enabled,
-    lock_accounts,
+    line_change, lock_accounts, released_by_line,
 )
+from celerp.services.journal_reversals import standing_reversal_ids
+from celerp.services.ledger_rows import journal_rows
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.peer_lines import (
     CONNECTION_DEFAULTS, ChangeFundIn, change_posted_fund, checked, default_active, default_key, outside_waiting,
     records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
+from celerp_accounting.models import Account
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -537,6 +540,38 @@ async def transfer_between_funds(
     return await _posted(session, post_fund_movement(
         session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)]))
+
+
+@router.get("/funds/release-spending")
+async def list_release_spending(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The purpose spending a release from restriction can still name as backing, newest
+    first: each posted line on an expense account charged to no fund, of an entry no
+    standing reversal undid, with what the releases still standing left of it (``left``).
+    The same lines the release check accepts (journal_accounts._release_backing)."""
+    rows = await journal_rows(session, company_id)
+    nodes = {entity_id: state for entity_id, state, _ in rows}
+    reversed_ = {state["reverses"] for state in nodes.values() if state.get("reverses")}
+    expense = set(await session.scalars(select(Account.code).where(
+        Account.company_id == company_id, Account.account_type == "expense")))
+    taken = await released_by_line(session, company_id)
+    items = []
+    for entity_id, state, day in rows:
+        if entity_id in reversed_ and standing_reversal_ids(nodes, entity_id):
+            continue
+        for index, line in enumerate(state.get("entries") or ()):
+            if not isinstance(line, dict) or line.get("fund_id") or line.get("account") not in expense:
+                continue
+            left = line_change(line) - taken.get((entity_id, index), Decimal(0))
+            if left > 0:
+                items.append({"je_id": entity_id, "line_index": index, "date": day, "memo": state.get("memo"),
+                              "account": line["account"], "description": line.get("description"),
+                              "left": to_stored_float(left)})
+    items.sort(key=lambda i: (i["date"], i["je_id"], -i["line_index"]), reverse=True)
+    return {"items": items}
 
 
 @router.post("/funds/release")

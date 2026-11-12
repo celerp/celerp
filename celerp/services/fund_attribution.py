@@ -254,6 +254,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp.services.peer_lines:require_fund_choices": OWN_CHOICE,
     "ui.routes.csv_import:import_numbered": OWN_CHOICE,
     "ui.routes.docs_import:setup_routes.docs_import_confirm": OWN_CHOICE,
+    "celerp_accounting.fund_reports:check_fund_reconciliation": READ,
     "celerp_accounting.funds:_default_items": STANDING,
     "celerp_accounting.funds:_leg_lines.line": JOURNAL_LINE,
     "celerp_accounting.funds:post_fund_movement": JOURNAL_LINE,

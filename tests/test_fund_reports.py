@@ -226,8 +226,9 @@ async def test_funds_tab_empty_state_add_and_archive(ui_client):
 
     fund = {"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books", "archived": False}
     create = AsyncMock(return_value=fund)
+    no_spending = AsyncMock(return_value={"items": []})
     with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),
-                 create_fund=create):
+                 create_fund=create, list_release_spending=no_spending):
         r = await ui_client.post("/settings/accounting/funds", data={
             "name": "Library gift", "restricted": "1", "purpose": "Books", "idempotency_key": "k1"})
     body = create.await_args.args[1]
@@ -237,7 +238,7 @@ async def test_funds_tab_empty_state_add_and_archive(ui_client):
 
     refused = AsyncMock(side_effect=APIError(422, "These funds still hold balances: Library gift: 1111."))
     with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),
-                 archive_fund=refused):
+                 archive_fund=refused, list_release_spending=no_spending):
         r = await ui_client.post("/settings/accounting/funds/fund%3A1/archive")
     assert "error-banner" in r.text and "still hold balances" in r.text and "Library gift" in r.text
 
@@ -263,9 +264,9 @@ async def test_funds_tab_moves_money_between_funds(ui_client):
     move = AsyncMock(return_value={"je_id": "je:fund:1"})
 
     def api(**more):
-        return _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": funds}),
-                       get_chart=AsyncMock(return_value=chart), list_release_spending=AsyncMock(return_value=spending),
-                       move_funds=move, **more)
+        return _ui_api(**{"get_company": AsyncMock(return_value=on), "list_funds": AsyncMock(return_value={"items": funds}),
+                          "get_chart": AsyncMock(return_value=chart), "move_funds": move,
+                          "list_release_spending": AsyncMock(return_value=spending), **more})
 
     with api():
         page = (await ui_client.get("/settings/accounting", params={"tab": "funds"})).text
@@ -302,16 +303,14 @@ async def test_funds_tab_moves_money_between_funds(ui_client):
     assert 'value="Letter 2026-14"' in r.text and 'value="Donor letter"' in r.text and "<details open" in r.text
 
     with api():
-        r = await ui_client.post("/settings/accounting/funds/opening", data=[
-            ("idempotency_key", "k-o"), ("date", "2026-01-01"), ("reason", "Opening by fund"),
-            ("account", "1111"), ("fund", "fund:1"), ("amount", "40"),
-            ("account", "1111"), ("fund", "fund:2"), ("amount", "15"),
-            ("account", ""), ("fund", ""), ("amount", "")])
+        r = await ui_client.post("/settings/accounting/funds/opening", data={
+            "idempotency_key": "k-o", "date": "2026-01-01", "reason": "Opening by fund",
+            "account": ["1111", "1111", ""], "fund": ["fund:1", "fund:2", ""], "amount": ["40", "15", ""]})
     kind, body = move.await_args.args[1:]
     assert kind == "opening" and body["assignments"] == [
         {"account": "1111", "fund": "fund:1", "amount": "40"}, {"account": "1111", "fund": "fund:2", "amount": "15"}]
     assert "Opening balances by fund posted." in r.text
 
     with api():
-        line = (await ui_client.get("/settings/accounting/funds/opening-line")).text
+        line = (await ui_client.get("/settings/accounting/funds/opening-line", headers={"HX-Request": "true"})).text.strip()
     assert line.startswith("<tr") and 'name="account"' in line and 'name="fund"' in line and 'name="amount"' in line

@@ -991,6 +991,19 @@ async def unarchive_fund(token: str, fund_id: str) -> dict:
         return _raise(await c.post(f"/accounting/funds/{quote(fund_id, safe='')}/unarchive")).json()
 
 
+async def list_release_spending(token: str) -> dict:
+    """The purpose spending a release from restriction can still name: {items}, newest first."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/release-spending")).json()
+
+
+async def move_funds(token: str, kind: str, body: dict) -> dict:
+    """Post a movement between funds: ``kind`` is transfer, release, reallocate or opening;
+    ``body`` carries its request_key, date, reason and the movement's own fields."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{kind}", json=body)).json()
+
+
 async def list_connection_defaults(token: str) -> dict:
     """The standing fund of every connection records arrive through: {items}."""
     async with _api_client(token) as c:

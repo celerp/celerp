@@ -724,6 +724,88 @@
       "params": [
         "name"
       ]
+    },
+    "funds.move_title": {
+      "en": "Move money between funds",
+      "params": []
+    },
+    "funds.move_help": {
+      "en": "Each movement posts its own journal entry with the reason you give. To undo one, reverse it in Fund activity.",
+      "params": []
+    },
+    "funds.transfer_title": {
+      "en": "Transfer between funds",
+      "params": []
+    },
+    "funds.transfer_help": {
+      "en": "Move money between two unrestricted funds, or between a fund and money with no fund.",
+      "params": []
+    },
+    "funds.release_title": {
+      "en": "Release from restriction",
+      "params": []
+    },
+    "funds.release_help": {
+      "en": "Move restricted money to an unrestricted fund once it has been spent on its purpose. The release names the spending it pays for.",
+      "params": []
+    },
+    "funds.reallocate_title": {
+      "en": "Reallocate restricted funds",
+      "params": []
+    },
+    "funds.reallocate_help": {
+      "en": "Move restricted money to another restricted fund with the same purpose, when the donor has agreed in writing.",
+      "params": []
+    },
+    "funds.opening_title": {
+      "en": "Opening balances by fund",
+      "params": []
+    },
+    "funds.opening_help": {
+      "en": "Give part of an account's balance to a fund when you start using funds. Each line takes the amount from money with no fund.",
+      "params": []
+    },
+    "funds.from_fund": {
+      "en": "From fund",
+      "params": []
+    },
+    "funds.to_fund": {
+      "en": "To fund",
+      "params": []
+    },
+    "funds.default_account": {
+      "en": "Default deposit account",
+      "params": []
+    },
+    "funds.donor_authorization": {
+      "en": "Donor's authorization reference",
+      "params": []
+    },
+    "funds.release_spending_help": {
+      "en": "Tick the spending this release pays for. The release is the total of the amounts ticked.",
+      "params": []
+    },
+    "funds.release_spending_empty": {
+      "en": "No spending is waiting for a release. Post the purpose spending with no fund first, then release it here.",
+      "params": []
+    },
+    "funds.release_this": {
+      "en": "Release against this spending",
+      "params": []
+    },
+    "funds.left_to_release": {
+      "en": "Left to release",
+      "params": []
+    },
+    "funds.release_amount": {
+      "en": "Amount to release",
+      "params": []
+    },
+    "funds.movement_posted": {
+      "en": "{movement} posted.",
+      "params": [
+        "movement"
+      ]
     }
   },
   "modules": {
