@@ -2262,6 +2262,9 @@ async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: s
     takes a choice; once it has posted, Change fund corrects it."""
     if not funds_enabled(await hold_fund_ledger(session, company_id)):
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+    sent = payload.model_fields_set
+    if not ({"document", "all"} & sent or payload.lines):
+        raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.choice_empty"))
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.version != payload.expected_version:
         raise _stale_doc("documents.err_doc_changed")
@@ -2271,7 +2274,6 @@ async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: s
         Projection.state["status"].as_string() == "posted").limit(1))
     if posted is not None:
         raise HTTPException(status_code=409, detail=catalog_refusal("posting.fund.document_posted"))
-    sent = payload.model_fields_set
     entry = await write_fund_choices(session, company_id, entity_id, row.state or {}, actor_id=user.id,
                                      idempotency_key=str(uuid.uuid4()), lines=payload.lines,
                                      **({"document": payload.document} if "document" in sent else {}),
@@ -2286,11 +2288,13 @@ async def write_fund_choices(session: AsyncSession, company_id, entity_id: str, 
                              idempotency_key: str, **choices):
     """Write a local user's fund choices (require_fund_choices: ``lines`` by line id,
     ``document``, ``every``) on document ``entity_id`` as ``actor_id``; the event, or None
-    when nothing changes. The Fund control and posting a held document both write here."""
+    when every choice is already stored. The Fund control and posting a held document both write here."""
     grant = await require_fund_choices(session, company_id, state, **choices)
-    changes = {key: {"old": state.get(key), "new": value} for key, value in grant.header.items()}
-    if grant.lines:
-        changes["line_items"] = {"old": state.get("line_items"), "new": chosen_lines(state.get("line_items") or [], grant)}
+    changes = {key: {"old": state.get(key), "new": value} for key, value in grant.header.items()
+               if state.get(key) != value}
+    lines = chosen_lines(state.get("line_items") or [], grant)
+    if lines != (state.get("line_items") or []):
+        changes["line_items"] = {"old": state.get("line_items"), "new": lines}
     if not changes:
         return None
     return await emit_event(

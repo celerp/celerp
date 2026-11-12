@@ -7540,5 +7540,6 @@
   "posting.fund.inbound_line_key": "Line {line} came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
   "posting.fund.file_key": "The file gives {field}. Choose funds on the import screen, not in the file.",
   "fund.connection_unknown": "These books have no connection by that name. Open the connection from Settings > Connectors and set its default fund there.",
-  "fund.default_stale": "Someone changed this default fund after you opened it. Try again to see the current one."
+  "fund.default_stale": "Someone changed this default fund after you opened it. Try again to see the current one.",
+  "posting.fund.choice_empty": "Choose a fund for this document, for every line from outside, or for at least one line."
 }

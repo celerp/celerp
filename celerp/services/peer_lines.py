@@ -106,7 +106,7 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
                                source: str = "user") -> FundChoiceGrant:
     """The grant of a local user's choice on ``record``: ``document`` its document choice,
     ``lines`` a choice per marked line (by line id) and ``every`` the choice of each marked
-    line ``lines`` does not name. Each value is ``"unrestricted"`` or an active fund of the
+    line ``lines`` does not name and that has none yet. Each value is ``"unrestricted"`` or an active fund of the
     company; a line's ``fund_id`` follows its choice (none for Unrestricted). ``source`` is
     who chose the document choice: the user, or a connection's standing default
     (``ConnectionDefault.source``)."""
@@ -126,7 +126,7 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
     for line_id, (n, line) in numbered.items():
         if line_id in lines:
             value = checked(funds, lines[line_id], "posting.fund.choice_missing", line=n)
-        elif every is not _ABSENT and line.get("origin"):
+        elif every is not _ABSENT and line.get("origin") and not line.get("fund_choice"):
             value = checked(funds, every, "posting.fund.choice_missing", line=n)
         else:
             continue
@@ -193,14 +193,10 @@ async def connection_default(session, company_id, origin: str, source_key: str) 
 
 
 def chosen_lines(lines: list, grant: FundChoiceGrant) -> list:
-    """``lines`` with the choices ``grant`` names applied (a fund of none drops ``fund_id``)."""
-    out = []
-    for line in lines:
-        keys = grant.lines.get(line.get("line_id")) if isinstance(line, dict) else None
-        if keys:
-            line = {k: v for k, v in {**line, **keys}.items() if not (k == "fund_id" and v is None)}
-        out.append(line)
-    return out
+    """``lines`` with the choices ``grant`` names applied; Unrestricted writes ``fund_id``
+    as none, so a fund chosen before does not stay as an omitted, kept key (LK1)."""
+    return [{**line, **grant.lines[line["line_id"]]}
+            if isinstance(line, dict) and line.get("line_id") in grant.lines else line for line in lines]
 
 
 def _fund_of(cover) -> str | None:

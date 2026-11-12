@@ -409,6 +409,10 @@
     "fund.default_stale": {
       "en": "Someone changed this default fund after you opened it. Try again to see the current one.",
       "params": []
+    },
+    "posting.fund.choice_empty": {
+      "en": "Choose a fund for this document, for every line from outside, or for at least one line.",
+      "params": []
     }
   }
 }
