@@ -210,11 +210,11 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     await session.commit()
     monkeypatch.setattr("celerp.db.SessionLocal", await own_sessions_on(session))
 
-    async def arrive(qid: str) -> str:
+    async def arrive(qid: str, outcome: str = "created", number: str = "INV") -> str:
         assert await upsert.upsert_invoice_from_quickbooks(str(auth["company_id"]), {
-            "Id": qid, "DocNumber": f"INV-{qid}", "Balance": 30.0, "TotalAmt": 30.0, "CurrencyRef": {"value": "USD"},
+            "Id": qid, "DocNumber": f"{number}-{qid}", "Balance": 30.0, "TotalAmt": 30.0, "CurrencyRef": {"value": "USD"},
             "Line": [{"DetailType": "SalesItemLineDetail", "Amount": 30.0, "Description": "Service",
-                      "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 30.0}}]}) == "created"
+                      "SalesItemLineDetail": {"Qty": 1, "UnitPrice": 30.0}}]}) == outcome
         doc = f"doc:quickbooks:invoice:{qid}"
         state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
         assert state["status"] == "open", state
@@ -236,6 +236,10 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     doc = await arrive(uuid.uuid4().hex[:8])
     state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
     assert (state["fund_choice"], state["fund_choice_source"]) == (f["R"], "default:accounting_system:quickbooks"), state
+    # A later sync of an invoice already here keeps the choice it has.
+    await arrive(before.rsplit(":", 1)[1], "updated", number="REF")
+    state = (await client.get(f"/docs/{before}", headers=auth["headers"])).json()
+    assert (state["fund_choice"], state["fund_choice_source"]) == (f["U1"], "user"), state
     session.expire_all()
     assert await session.get(Projection, {"company_id": auth["company_id"], "entity_id": f"je:auto:{doc}:fin"}) is None
 
