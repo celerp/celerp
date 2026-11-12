@@ -483,12 +483,12 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
 
     Each fund's change in what it holds (rule 4's BS) is summed over the action's lines.
     Senders are the restricted funds it lowers, receivers the funds it raises. No sender:
-    nothing more is needed. Otherwise: a line backing a standing release never moves onto a
-    restricted fund; the actor, re-read under the lock, may manage accounting; a restricted
-    receiver also needs reallocate_restricted_funds and the sender's purpose, the actor then
-    recorded as ``authorized_by``; and each sender's holdings, and its balance on every asset
-    account the action lowers for it, stay at zero or above at the latest date in the action
-    and today."""
+    nothing more is needed. Otherwise: the actor, re-read under the lock, may manage
+    accounting; a restricted receiver also needs reallocate_restricted_funds and the sender's
+    purpose, the actor then recorded as ``authorized_by``; and each sender's holdings, and its
+    balance on every asset account the action lowers for it, stay at zero or above at the
+    latest date in the action and today. A line backing a standing release never moves at all
+    (check_backing_cancel refuses the void)."""
     from celerp.services.business_time import company_today
     from celerp.services.money import round_money, to_decimal
     from celerp.services.permissions import missing_permission_refusal, read_authority, role_has_permission
@@ -508,7 +508,6 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
         return
     receivers = [f for f, v in bs.items() if v > 0]
 
-    await _refuse_moved_backing(session, company_id, action, funds)
     role, authority = await read_authority(session, company_id, action.actor_id)
     sender = fund_name(funds, senders[0])
     if not role_has_permission(authority, role, "manage_accounting"):
@@ -545,35 +544,28 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
                         currency=currency)
 
 
-async def _refuse_moved_backing(session: AsyncSession, company_id, action: FundChangeAction,
-                                funds: dict[str, dict]) -> None:
-    """A line backing a standing release (one not reversed) is never moved onto a restricted
-    fund: the spending it stands for would be charged to restricted money twice. A backing
-    line of an entry the action voided counts as moved when the action posted its account
-    on a restricted fund."""
+async def _standing_releases(session: AsyncSession, company_id) -> list[tuple[str, dict]]:
+    """The releases from restriction still standing (posted, not a reversal, not reversed),
+    with their states."""
     from celerp.models.projections import Projection
     from celerp.services.journal_reversals import standing_reversals
-    from celerp.services.money import to_decimal
 
-    onto = {e["account"] for e in action.lines if _restricted(funds, e.get("fund_id"))
-            and to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)}
-    voided = set(action.voided)
-    if not onto or not voided:
-        return
-    states = dict((await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_id.in_(sorted(voided))))).all())
-    releases = await session.execute(select(Projection.entity_id, Projection.state).where(
+    rows = await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.state["je_type"].as_string() == "fund_release"))
-    for eid, state in releases:
-        state = state or {}
-        if state.get("status") != "posted" or state.get("reverses") or await standing_reversals(session, company_id, str(eid)):
-            continue
-        for item in state.get("backing") or ():
-            entries = (states.get(item.get("je_id")) or {}).get("entries") or []
-            index = item.get("line_index")
-            if isinstance(index, int) and 0 <= index < len(entries) and entries[index].get("account") in onto:
-                raise RestrictedFundMovement("posting.fund.change_backing", release=str(state.get("memo") or eid))
+    return [(str(eid), state or {}) for eid, state in rows
+            if (state or {}).get("status") == "posted" and not (state or {}).get("reverses")
+            and not await standing_reversals(session, company_id, str(eid))]
+
+
+async def check_backing_cancel(session: AsyncSession, company_id, je_id: str) -> None:
+    """The spending a standing release names as backing stays posted while the release
+    stands: refuse a void or a reversal of ``je_id`` when a standing release names it,
+    Change fund's void included (its repost regroups the lines, so the release could not
+    follow its line to the copy). Every void and reversal passes here (events.engine.emit_event)."""
+    for eid, state in await _standing_releases(session, company_id):
+        if any(isinstance(item, dict) and item.get("je_id") == je_id for item in state.get("backing") or ()):
+            raise RestrictedFundMovement("posting.fund.change_backing", release=str(state.get("memo") or eid))
 
 
 def _restricted(funds: dict[str, dict], fund_id) -> bool:
@@ -1012,7 +1004,8 @@ async def _release_backing(session: AsyncSession, company_id, data: dict, amount
     """A release of ``amount`` from ``fund`` names, in ``data["backing"]``, the purpose
     spending it pays for: posted lines on expense accounts, charged to no fund, adding up
     to the amount, each line released no further than its own amount less what the
-    releases still standing (not reversed) already took from it."""
+    releases still standing (not reversed) already took from it. Spending a standing
+    reversal undid backs nothing."""
     from celerp.models.projections import Projection
     from celerp.services.journal_reversals import standing_reversals
     from celerp.services.money import round_money, to_decimal
@@ -1037,7 +1030,8 @@ async def _release_backing(session: AsyncSession, company_id, data: dict, amount
     lines = {}
     for je_id, index in claims:
         entries = states.get(je_id, {}).get("entries") or []
-        if states.get(je_id, {}).get("status") != "posted" or not 0 <= index < len(entries):
+        if (states.get(je_id, {}).get("status") != "posted" or not 0 <= index < len(entries)
+                or await standing_reversals(session, company_id, je_id)):
             raise missing
         lines[(je_id, index)] = entries[index]
     accounts = await lock_accounts(session, company_id, {line.get("account") for line in lines.values()}) or {}
@@ -1048,13 +1042,7 @@ async def _release_backing(session: AsyncSession, company_id, data: dict, amount
             raise RestrictedFundMovement("posting.fund.release_backing_charged", fund=fund)
 
     taken: dict[tuple[str, int], Decimal] = {}
-    releases = await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.state["je_type"].as_string() == "fund_release"))
-    for eid, state in releases:
-        state = state or {}
-        if state.get("status") != "posted" or state.get("reverses") or await standing_reversals(session, company_id, str(eid)):
-            continue
+    for _, state in await _standing_releases(session, company_id):
         for item in state.get("backing") or ():
             key = (str(item.get("je_id")), item.get("line_index"))
             if key in claims:

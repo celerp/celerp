@@ -590,7 +590,7 @@
       ]
     },
     "posting.fund.change_backing": {
-      "en": "Release {release} is backed by this line: reverse the release first.",
+      "en": "Release {release} is backed by this entry: reverse the release first.",
       "params": [
         "release"
       ]

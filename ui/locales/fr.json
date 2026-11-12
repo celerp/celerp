@@ -7577,7 +7577,7 @@
   "posting.fund.change_not_posted": "This record has not posted yet. Choose its fund before it posts.",
   "posting.fund.change_settled": "A payment or note is recorded against this document. Void it, change the fund, then record it again.",
   "posting.fund.change_opening_held": "The opening balances hold {document}: reverse its opening balance and enter it again with the fund.",
-  "posting.fund.change_backing": "Release {release} is backed by this line: reverse the release first.",
+  "posting.fund.change_backing": "Release {release} is backed by this entry: reverse the release first.",
   "posting.fund.change_needs_reallocation": "Moving money of {fund} to {to} needs the Reallocate restricted funds permission and the same purpose on both funds.",
   "posting.fund.change_exceeds_balance": "{fund} holds {available} {currency}; this change would take {amount} {currency} out of it.",
   "posting.fund.change_stale": "Someone changed this record after you opened it. Try again to see it as it is now.",

@@ -417,6 +417,28 @@ async def test_change_fund_backing_line_refused(client, session, auth):
     assert r.status_code == 200, r.text
 
 
+async def test_change_fund_backing_entry_refused_on_every_hop(client, session, auth):
+    """Change fund reposts an entry with its lines regrouped, so a release could not follow its
+    backing line to the copy: a change of an entry backing a standing release is refused
+    whatever fund it names, so a first move to a board-designated fund cannot open the way to
+    a second one onto R that the release would never see."""
+    f = await _setup(client, auth)
+    await _emit(session, auth, [("1111", 500, 0, f["R"]), ("4100", 0, 500, f["R"])])
+    await _emit(session, auth, [("1111", 500, 0, None), ("4100", 0, 500, None)])
+    await session.commit()
+    cost = await _outside_journal(client, auth, [("6200", 60, 0), ("1111", 0, 60)], "unrestricted")
+    release = await client.post("/accounting/funds/release", headers=auth["headers"], json={
+        "request_key": uuid.uuid4().hex, "date": "2026-03-02", "reason": "Board minute 12", "fund": f["R"],
+        "to_fund": None, "backing": [{"je_id": cost, "line_index": 0, "amount": "60"}]})
+    assert release.status_code == 200, release.text
+    first = await _change_journal(client, session, auth, cost, all=f["U1"])
+    second = await _change_journal(client, session, auth, (await _state(session, auth, cost)).get("replaced_by") or cost,
+                                   all=f["R"])
+    assert first.status_code == 422 and _key(first) == "posting.fund.change_backing", first.text
+    assert second.status_code == 422 and _key(second) == "posting.fund.change_backing", second.text
+    assert (await _state(session, auth, cost))["status"] == "posted"
+
+
 # ── the source void stays as it is ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("funds", [True, False])

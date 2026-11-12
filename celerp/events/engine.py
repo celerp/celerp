@@ -724,7 +724,8 @@ async def emit_event(
     )
 
     # An entry's effect is cancelled at most once, by a void or by one reversal that
-    # stands: one rule for every void and every reversal, whichever path writes it.
+    # stands, and never while a standing release names it as backing: one rule for every
+    # void and every reversal, whichever path writes it.
     restoring = bool((kwargs.get("metadata_") or {}).get("restores"))
     if not restoring and (kwargs["event_type"] == "acc.journal_entry.voided" or (
             kwargs["event_type"] == "acc.journal_entry.created" and kwargs["data"].get("reverses"))):
@@ -734,6 +735,11 @@ async def emit_event(
             session, kwargs.get("company_id"), kwargs["entity_id"],
             void=kwargs["event_type"] == "acc.journal_entry.voided",
             reverses=kwargs["data"].get("reverses") if kwargs["event_type"] == "acc.journal_entry.created" else None)
+        from celerp.services.journal_accounts import check_backing_cancel
+
+        await check_backing_cancel(
+            session, kwargs.get("company_id"),
+            kwargs["entity_id"] if kwargs["event_type"] == "acc.journal_entry.voided" else kwargs["data"]["reverses"])
 
     # A movement between funds is never voided, only reversed, and a void of an entry in a
     # locked period is dated to an open day instead of mutating the period: one rule for

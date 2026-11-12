@@ -219,6 +219,43 @@ async def test_expense_then_release(client, session, auth):
     assert r.status_code == 200, r.text
 
 
+async def test_release_backing_stays_posted_while_the_release_stands(client, session, auth):
+    """The spending a standing release names as backing cannot be voided or reversed, on any
+    path (the void route, a void event, a reversal), or the release would stand on spending
+    that no longer exists; reversing the release frees it, and a later release can take the
+    same spending again."""
+    from celerp.events.engine import emit_event
+
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    await _gift(session, auth, None)
+    cost = await _bill(session, auth, None)
+    backing = [{"je_id": cost, "line_index": 0, "amount": "60"}]
+    release = await _post(client, auth, "release", fund=f["R"], to_fund=None, backing=backing)
+    assert release.status_code == 200, release.text
+
+    r = await client.post(f"/accounting/journal-entries/{cost}/void", headers=auth["headers"], json={"reason": "x"})
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_backing", r.text
+    void = emit_event(session, company_id=auth["company_id"], entity_id=cost, entity_type="journal_entry",
+                      event_type="acc.journal_entry.voided", data={"void_reason": "x"}, actor_id=auth["user_id"],
+                      location_id=None, source="test", idempotency_key=uuid.uuid4().hex, metadata_={})
+    assert (await _refused(void))["message_key"] == "posting.fund.change_backing"
+    reversal = emit_event(session, company_id=auth["company_id"], entity_id=f"je:manual:{uuid.uuid4()}",
+                          entity_type="journal_entry", event_type="acc.journal_entry.created",
+                          data={"memo": "Back", "ts": DATE, "status": "posted", "reverses": cost, "entries": [
+                              {"account": "6200", "debit": 0, "credit": 60}, {"account": "1111", "debit": 60, "credit": 0}]},
+                          actor_id=auth["user_id"], location_id=None, source="test",
+                          idempotency_key=uuid.uuid4().hex, metadata_={})
+    assert (await _refused(reversal))["message_key"] == "posting.fund.change_backing"
+    assert (await _entry(session, auth, cost))["status"] == "posted"
+
+    back = await client.post(f"/accounting/funds/movements/{release.json()['je_id']}/reverse",
+                             headers=auth["headers"], json={"date": DATE, "reason": "Wrong bill"})
+    assert back.status_code == 200, back.text
+    r = await client.post(f"/accounting/journal-entries/{cost}/void", headers=auth["headers"], json={"reason": "x"})
+    assert r.status_code == 200, r.text
+
+
 async def test_release_requires_purpose_spending_and_reverse_undoes(client, session, auth):
     """A release above the purpose spending it names is refused naming the shortfall rule; a
     release from an unrestricted fund, or to a restricted one, is refused by the template; a
