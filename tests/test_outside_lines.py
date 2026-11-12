@@ -431,3 +431,121 @@ async def test_reserved_keys_kept_without_funds_and_checked_at_turn_on(client, s
     r = await _funds_on(client, auth, False)
     assert r.status_code == 422 and _key(r) == "fund.turn_off_choices_held", r.text
     assert r.json()["detail"]["params"]["records"] == marked.split(":", 1)[1]
+
+
+# ── rule R: every leg of an outside record is covered by a choice ──────────────────────
+
+async def _gift_fund(client, auth) -> str:
+    from test_funds import _fund
+
+    return await _fund(client, auth, "Library gift")
+
+
+def _needs_choice(r, record: str, lines: list[int]) -> None:
+    assert r.status_code == 409 and _key(r) == "posting.fund.choice_needed", r.text
+    detail = r.json()["detail"]
+    assert detail["params"]["record"] == record and detail["params"]["source"]["message_key"] == "fund.origin.file_import"
+    assert r.json()["fix"] == {"kind": "funds", "document": True, "lines": lines}, r.json()
+
+
+async def test_outside_line_without_choice_refused_at_prepare(client, session, auth):
+    """At the boundary: an outside journal line with no choice, and one whose fund differs from
+    its choice, raise FundChoiceNeeded naming the line; the same entry passes in a company
+    without funds in use."""
+    from celerp.services.journal_accounts import FundChoiceNeeded, prepare_journal_entry
+
+    def entry(**second):
+        return {"memo": "Firm correction", "origin": "accountant", "entries": [
+            {"account": "1111", "debit": 10.0, "credit": 0, "origin": "accountant", "fund_choice": "unrestricted"},
+            {"account": "4100", "debit": 0, "credit": 10.0, "origin": "accountant", **second}]}
+
+    await prepare_journal_entry(session, auth["company_id"], entry())
+    await session.commit()
+    gift = await _fund_company(client, auth) and await _gift_fund(client, auth)
+    for second in ({}, {"fund_choice": gift}, {"fund_choice": "unrestricted", "fund_id": gift}):
+        with pytest.raises(FundChoiceNeeded) as raised:
+            await prepare_journal_entry(session, auth["company_id"], entry(**second))
+        await session.rollback()
+        assert raised.value.detail["message_key"] == "posting.fund.choice_needed", second
+        assert raised.value.detail["params"]["record"] == "Firm correction"
+        assert raised.value.detail["params"]["source"]["message_key"] == "fund.origin.accountant"
+        assert raised.value.fix == {"kind": "funds", "document": True, "lines": [2]}, second
+    await prepare_journal_entry(session, auth["company_id"], entry(fund_choice="unrestricted"))
+    await session.rollback()
+    whole = entry()
+    whole["fund_choice"] = "unrestricted"
+    await prepare_journal_entry(session, auth["company_id"], whole)
+    await session.rollback()
+
+
+@pytest.mark.parametrize("shape", ["lines", "bill"])
+async def test_outside_choice_check_covers_every_posting_entry_point(client, session, auth, monkeypatch, shape):
+    """An outside record with a leg no choice covers is refused at finalize with the J9c
+    refusal, nothing posts and the draft stays a draft; its twin with a choice posts with that
+    fund on every leg the choice covers. With the check made a no-op the refusal disappears,
+    so it is the check that refuses. A record imported issued with no lines (header money
+    only) is rejected by the import the same way."""
+    from celerp.services import peer_lines
+
+    gift = await _fund_company(client, auth) and await _gift_fund(client, auth)
+    item = await _item(client, auth, "Outside")
+    if shape == "lines":
+        doc = await _imported(client, auth, [_line(item, "Outside", 40), _line(item, "Outside", 60)])
+        uncovered = [1, 2]
+    else:
+        doc = await _imported(client, auth, [{**_line(None, "Supplies", 25), "receive_as": "expense"}], doc_type="bill")
+        uncovered = [1]
+    ref = doc.split(":", 1)[1]
+    before = await _entry_ids(session, auth)
+    _needs_choice(await _post(client, auth, f"/docs/{doc}/finalize"), ref, uncovered)
+    assert (await _doc(client, auth, doc))["status"] == "draft"
+    assert await _entry_ids(session, auth) == before
+
+    if shape == "lines":
+        # One line chosen: the other still needs the document's fund.
+        first = (await _doc(client, auth, doc))["line_items"][0]["line_id"]
+        assert (await _choose(client, auth, doc, lines={first: gift})).status_code == 200
+        _needs_choice(await _post(client, auth, f"/docs/{doc}/finalize"), ref, [2])
+        with monkeypatch.context() as patched:
+            patched.setattr(peer_lines, "check_outside_record", _no_check)
+            r = await _post(client, auth, f"/docs/{doc}/finalize")
+            assert r.status_code == 200, r.text
+    else:
+        assert (await _choose(client, auth, doc, document=gift)).status_code == 200
+        r = await _post(client, auth, f"/docs/{doc}/finalize")
+        assert r.status_code == 200, r.text
+        entry = await _entry_state(session, auth["company_id"], f"je:auto:{doc}:bill")
+        assert {e.get("fund_id") for e in entry["entries"]} == {gift}, entry["entries"]
+
+    eid = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "invoice" if shape == "lines" else "bill", "status": "final", "ref_id": eid.split(":")[1],
+                 "issue_date": "2026-02-01", "line_items": [], "shipping": 15, "total": 15}}]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert "choose the fund for this document" in r.text, r.text
+
+
+async def _no_check(*_args, **_kwargs) -> None:
+    return None
+
+
+async def _entry_ids(session, auth) -> set:
+    from sqlalchemy import select
+
+    session.expire_all()
+    return set((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars().all())
+
+
+async def test_outside_journal_import_needs_a_choice(client, auth):
+    """A journal import in a company with funds in use is rejected for the record with the
+    J9c refusal: its lines arrive with no choice and the file may not carry one."""
+    await _fund_company(client, auth)
+    entries = [{"account": "1111", "debit": 9.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 9.0}]
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+        "idempotency_key": uuid.uuid4().hex, "data": {"status": "posted", "ts": "2026-01-16", "memo": "Imported",
+                                                      "entries": entries}}]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert "choose the fund for this document" in r.text, r.text

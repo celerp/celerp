@@ -236,3 +236,15 @@ async def test_stock_lines_refuse_restricted_fund(client, session, auth):
         assert raised.value.detail["params"]["code"] == code
         await _emit(session, auth, [(code, 10, 0, board), ("1111", 0, 10, board)])
         await _emit(session, auth, [(code, 10, 0, None), ("1111", 0, 10, None)])
+
+    # A bill line bringing stock in with a restricted fund is refused at finalize with the
+    # reason, and the bill stays a draft; with a board-designated fund it posts.
+    from test_credit_note_settlement_owned import _post
+    from test_income_accounts import _draft, _issued, _item, _line
+
+    paper = await _item(client, auth, "Paper stock")
+    bill = await _draft(client, auth, "bill", [{**_line(paper, "Paper stock", 40), "receive_as": "stock", "fund_id": gift}])
+    r = await _post(client, auth, f"/docs/{bill}/finalize")
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.fund.stock_unrestricted", r.text
+    assert (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()["status"] == "draft"
+    await _issued(client, auth, "bill", [{**_line(paper, "Paper stock", 40), "receive_as": "stock", "fund_id": board}])

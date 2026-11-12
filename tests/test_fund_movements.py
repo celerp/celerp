@@ -193,3 +193,8 @@ async def test_value_cannot_cross_funds_outside_a_movement(client, session, auth
     r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
         "ts": "2026-03-01", "memo": "Split", "entries": _lines(split), "idempotency_token": uuid.uuid4().hex})
     assert r.status_code in (200, 201), r.text
+
+    from test_income_accounts import _issued, _line
+
+    await _issued(client, auth, "bill", [{**_line(None, "Program supplies", 30), "receive_as": "expense", "fund_id": f["R"]},
+                                         {**_line(None, "Office rent", 70), "receive_as": "expense"}])
