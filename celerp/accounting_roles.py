@@ -106,6 +106,7 @@ class AccountRole(StrEnum):
     DISPOSAL_LOSS = "disposal_loss"
     IMPAIRMENT_LOSS = "impairment_loss"
     REVALUATION_SURPLUS = "revaluation_surplus"
+    RESTRICTED_NET_ASSETS = "restricted_net_assets"
 
 
 R = AccountRole
@@ -145,6 +146,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.DISPOSAL_LOSS: "Loss on disposal of assets",
     R.IMPAIRMENT_LOSS: "Impairment of assets",
     R.REVALUATION_SURPLUS: "Revaluation surplus",
+    R.RESTRICTED_NET_ASSETS: "Restricted net assets",
 }
 
 _ASSET = frozenset({"asset"})
@@ -187,6 +189,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.DISPOSAL_LOSS: _EXPENSE,
     R.IMPAIRMENT_LOSS: _EXPENSE,
     R.REVALUATION_SURPLUS: frozenset({"equity"}),
+    R.RESTRICTED_NET_ASSETS: frozenset({"equity"}),
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -232,6 +235,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.DISPOSAL_LOSS: "6980",
     R.IMPAIRMENT_LOSS: "6410",
     R.REVALUATION_SURPLUS: "3400",
+    R.RESTRICTED_NET_ASSETS: "3500",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -270,6 +274,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
     "online_payments": (R.ONLINE_PAYMENT_FEES,),
+    "funds": (R.RESTRICTED_NET_ASSETS,),
 }
 
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
@@ -278,7 +283,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
-    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES})
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES, R.RESTRICTED_NET_ASSETS})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split
 # (gain revenue, loss expense).

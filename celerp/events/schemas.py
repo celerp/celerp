@@ -1176,6 +1176,9 @@ class JELine(BaseModel):
     # a role later points at another account. Absent on lines posted before roles
     # existed; an empty list is a line deliberately left unclassified.
     account_roles: list[str] | None = None
+    # The fund the line belongs to (a fund entity id); absent on a line of the
+    # unrestricted group, which is every line of a company that never used funds.
+    fund_id: str | None = None
 
 
 class AccJournalEntryFx(BaseModel):
@@ -1240,6 +1243,26 @@ class AccPeriodClosed(BaseModel):
 
 class AccPeriodReopened(BaseModel):
     period: str
+
+
+class FundCreated(BaseModel):
+    name: str
+    restricted: bool
+    purpose: str | None = None
+
+
+class FundUpdated(BaseModel):
+    name: str | None = None
+    restricted: bool | None = None
+    purpose: str | None = None
+
+
+class FundArchived(BaseModel):
+    pass
+
+
+class FundUnarchived(BaseModel):
+    pass
 
 
 class AccReconciliationReopened(BaseModel):
@@ -1628,6 +1651,10 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
     "acc.reconciliation.reopened": AccReconciliationReopened,
+    "fund.created": FundCreated,
+    "fund.updated": FundUpdated,
+    "fund.archived": FundArchived,
+    "fund.unarchived": FundUnarchived,
 
     # System
     "sys.company.created": SysCompanyCreated,

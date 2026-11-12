@@ -1,0 +1,266 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""Funds: the funds setting and fund maintenance.
+
+A fund is an entity (``fund:<id>``) projected from fund.created, fund.updated,
+fund.archived and fund.unarchived. Journal lines name it in ``fund_id``; lines without
+one are the unrestricted group. What a posting may do with funds is judged at the
+journal boundary (journal_accounts.check_fund_rules). Every change here that reads fund
+balances holds the fund ledger exclusively (lock_fund_ledger), so no posting commits
+between the check and the change.
+"""
+
+from __future__ import annotations
+
+import uuid
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp.accounting_roles import AccountRole, catalog_refusal
+from celerp.db import get_session
+from celerp.events.engine import emit_event
+from celerp.models.projections import Projection
+from celerp.services.account_roles import role_map, set_role
+from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import lock_fund_ledger, locked_company
+from celerp.services.company_settings import record_change
+from celerp.services.journal_accounts import FUNDS_ENABLED, funds_by_id, funds_enabled, lock_accounts
+from celerp.services.money import to_decimal
+from celerp.services.permissions import require_permission
+
+router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# The account Celerp adds for restricted net assets when funds are first turned on and
+# the role has none, under the equity header of the seeded chart.
+RESTRICTED_NET_ASSETS_ACCOUNT = ("3500", "Restricted Net Assets", "3000")
+
+
+class FundsSettingIn(BaseModel):
+    enabled: bool
+
+
+class FundIn(BaseModel):
+    request_key: str
+    name: str
+    restricted: bool = False
+    purpose: str | None = None
+
+
+class FundPatch(BaseModel):
+    name: str | None = None
+    restricted: bool | None = None
+    purpose: str | None = None
+
+
+def _view(fund_id: str, state: dict) -> dict:
+    return {"id": fund_id, "name": state["name"], "restricted": bool(state.get("restricted")),
+            "purpose": state.get("purpose"), "archived": bool(state.get("archived"))}
+
+
+async def fund_balances(session: AsyncSession, company_id) -> dict[str, dict[str, Decimal]]:
+    """Each fund's non-zero posted balance (debit less credit) by account."""
+    rows = await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))
+    sums: dict[str, dict[str, Decimal]] = {}
+    for (state,) in rows:
+        if (state or {}).get("status") != "posted":
+            continue
+        for line in state.get("entries") or ():
+            if isinstance(line, dict) and line.get("fund_id"):
+                by_account = sums.setdefault(line["fund_id"], {})
+                by_account[line["account"]] = (by_account.get(line["account"], Decimal(0))
+                                               + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
+    return {fund: held for fund, accounts in sums.items()
+            if (held := {code: amount for code, amount in accounts.items() if amount})}
+
+
+async def _refuse_held(session: AsyncSession, company_id, fund_ids=None) -> None:
+    """Refuse while any of ``fund_ids`` (every fund when None) holds a balance, naming
+    each fund and the accounts it holds them on."""
+    held = await fund_balances(session, company_id)
+    held = {f: accounts for f, accounts in held.items() if fund_ids is None or f in fund_ids}
+    if held:
+        funds = await funds_by_id(session, company_id, held)
+        named = "; ".join(f"{funds.get(f, {}).get('name', f)}: {', '.join(sorted(accounts))}"
+                          for f, accounts in sorted(held.items(), key=lambda kv: funds.get(kv[0], {}).get("name", kv[0])))
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.balance_held", funds=named))
+
+
+async def _has_postings(session: AsyncSession, company_id, fund_id: str) -> bool:
+    rows = await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))
+    return any(isinstance(line, dict) and line.get("fund_id") == fund_id
+               for (state,) in rows for line in (state or {}).get("entries") or ())
+
+
+def _name(raw: str | None) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.name_required"))
+    return name
+
+
+async def _refuse_taken(session: AsyncSession, company_id, name: str, *, other_than: str | None = None) -> None:
+    for fund_id, state in (await funds_by_id(session, company_id)).items():
+        if fund_id != other_than and str(state.get("name", "")).casefold() == name.casefold():
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.name_taken", name=name))
+
+
+def _purpose(restricted: bool, raw: str | None) -> str | None:
+    purpose = (raw or "").strip() or None
+    if restricted and purpose is None:
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.purpose_required"))
+    return purpose
+
+
+async def _emit(session: AsyncSession, company_id, fund_id: str, event_type: str, data: dict, user, key: str):
+    return await emit_event(session, company_id=company_id, entity_id=fund_id, entity_type="fund",
+                            event_type=event_type, data=data, actor_id=user.id, location_id=None,
+                            source="api", idempotency_key=key, metadata_={})
+
+
+async def _fund(session: AsyncSession, company_id, fund_id: str) -> dict:
+    state = (await funds_by_id(session, company_id, {fund_id})).get(fund_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=catalog_refusal("fund.not_found"))
+    return state
+
+
+async def _seed_restricted_net_assets(session: AsyncSession, company_id, settings: dict, user) -> None:
+    """Point the restricted net assets role at an account the first time funds go on:
+    the seeded account when the chart has it, else one Celerp adds."""
+    role = AccountRole.RESTRICTED_NET_ASSETS.value
+    if role_map(settings).get(role):
+        return
+    code, name, parent = RESTRICTED_NET_ASSETS_ACCOUNT
+    if code not in (await lock_accounts(session, company_id, {code}) or {}):
+        from celerp_accounting.import_service import add_posting_account
+        await add_posting_account(session, company_id, code=code, name=name, account_type="equity", parent_code=parent)
+    await set_role(session, company_id, role, code, user.id)
+
+
+@router.get("/funds")
+async def list_funds(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("view_financial_reports"),
+) -> dict:
+    funds = await funds_by_id(session, company_id)
+    return {"items": sorted((_view(f, s) for f, s in funds.items()), key=lambda v: v["name"].casefold())}
+
+
+@router.put("/funds/setting")
+async def set_funds_setting(
+    payload: FundsSettingIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Turn funds on or off. Off is refused while any fund holds a balance on any account."""
+    await lock_fund_ledger(session, company_id, shared=False)
+    company = await locked_company(session, company_id)
+    if funds_enabled(company.settings or {}) != payload.enabled:
+        if payload.enabled:
+            await _seed_restricted_net_assets(session, company_id, company.settings or {}, user)
+            company = await locked_company(session, company_id)
+        else:
+            await _refuse_held(session, company_id)
+        settings = {**(company.settings or {}), FUNDS_ENABLED: payload.enabled}
+        record_change(settings, FUNDS_ENABLED, user.id)
+        company.settings = settings
+        await session.commit()
+    return {"enabled": payload.enabled}
+
+
+@router.post("/funds")
+async def create_fund(
+    payload: FundIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a fund. Repeat-safe on ``request_key``: a repeat answers with the fund it made."""
+    await lock_fund_ledger(session, company_id, shared=False)
+    fund_id = f"fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{payload.request_key}')}"
+    existing = (await funds_by_id(session, company_id, {fund_id})).get(fund_id)
+    if existing is not None:
+        return _view(fund_id, existing)
+    company = await locked_company(session, company_id)
+    if not funds_enabled(company.settings or {}):
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+    name = _name(payload.name)
+    await _refuse_taken(session, company_id, name)
+    data = {"name": name, "restricted": payload.restricted, "purpose": _purpose(payload.restricted, payload.purpose)}
+    await _emit(session, company_id, fund_id, "fund.created", data, user, f"fund:{fund_id}:created")
+    await session.commit()
+    return _view(fund_id, {**data, "archived": False})
+
+
+@router.patch("/funds/{fund_id}")
+async def update_fund(
+    fund_id: str,
+    payload: FundPatch,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Rename a fund, or change what it is restricted to before anything is posted to it."""
+    await lock_fund_ledger(session, company_id, shared=False)
+    state = await _fund(session, company_id, fund_id)
+    restricted = state.get("restricted") if payload.restricted is None else payload.restricted
+    purpose = _purpose(bool(restricted), state.get("purpose") if payload.purpose is None else payload.purpose)
+    changes: dict = {}
+    if payload.name is not None and (name := _name(payload.name)) != state["name"]:
+        await _refuse_taken(session, company_id, name, other_than=fund_id)
+        changes["name"] = name
+    if (restricted, purpose) != (state.get("restricted"), state.get("purpose")):
+        if await _has_postings(session, company_id, fund_id):
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.restriction_locked", fund=state["name"]))
+        changes.update(restricted=restricted, purpose=purpose)
+    if changes:
+        await _emit(session, company_id, fund_id, "fund.updated", changes, user, f"fund:{fund_id}:{uuid.uuid4()}")
+        await session.commit()
+        state = {**state, **changes}
+    return _view(fund_id, state)
+
+
+async def _set_archived(session: AsyncSession, company_id, fund_id: str, archived: bool, user) -> dict:
+    await lock_fund_ledger(session, company_id, shared=False)
+    state = await _fund(session, company_id, fund_id)
+    if bool(state.get("archived")) != archived:
+        if archived:
+            await _refuse_held(session, company_id, {fund_id})
+        await _emit(session, company_id, fund_id, "fund.archived" if archived else "fund.unarchived", {}, user,
+                    f"fund:{fund_id}:{uuid.uuid4()}")
+        await session.commit()
+    return _view(fund_id, {**state, "archived": archived})
+
+
+@router.post("/funds/{fund_id}/archive")
+async def archive_fund(
+    fund_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Archive a fund that holds nothing; it then takes no new posting."""
+    return await _set_archived(session, company_id, fund_id, True, user)
+
+
+@router.post("/funds/{fund_id}/unarchive")
+async def unarchive_fund(
+    fund_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _set_archived(session, company_id, fund_id, False, user)

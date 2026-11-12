@@ -1776,6 +1776,9 @@ class ManualJELine(BaseModel):
     # transaction, and the books already store every posting in base currency.
     currency: str | None = None
     rate: FiniteFloat | None = None
+    # The fund the line belongs to; none puts it in the unrestricted group. The journal
+    # boundary judges it (check_fund_rules).
+    fund_id: str | None = None
 
 
 class ManualJECreate(BaseModel):
@@ -1866,6 +1869,8 @@ async def create_manual_journal_entry(
         # stores exactly what it stored before.
         if line.contact:
             stored["contact"] = line.contact
+        if line.fund_id:
+            stored["fund_id"] = line.fund_id
         entries.append(stored)
 
     if total_debit != total_credit:

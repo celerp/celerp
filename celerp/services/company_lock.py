@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import get_history
@@ -241,6 +241,29 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
     if company is not None:
         note(session, "loaded", company.id)
     return company
+
+
+async def lock_fund_ledger(session: AsyncSession, company_id, *, shared: bool) -> None:
+    """Serialize every fund cap with the postings of the company.
+
+    A cap reads fund balances and then writes (a movement, the funds setting, a fund's
+    archive), so it holds the ledger exclusively: the company lock first, then the
+    company's fund advisory lock. Every posting in a company with funds holds the same
+    advisory lock shared, after the company lock, so no posting is between its check and
+    its commit while a cap runs, and postings never wait on each other. Both are held
+    until the transaction ends. Lock order: company lock, fund ledger lock, projection
+    rows, account share locks. SQLite writes one transaction at a time already."""
+    if not shared:
+        await lock_company(session, company_id)
+    if session.get_bind().dialect.name == "postgresql":
+        verb = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+        await session.execute(text(f"SELECT {verb}(hashtextextended(:k, 0))"), {"k": f"funds:{company_id}"})
+    note(session, "funds", (str(company_id), shared))
+
+
+def holds_fund_ledger(session, company_id) -> bool:
+    """True when this transaction holds the company's fund ledger exclusively."""
+    return (str(company_id), False) in noted(session, "funds")
 
 
 def holds_company_lock(session, company_id) -> bool:

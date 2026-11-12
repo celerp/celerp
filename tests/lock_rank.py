@@ -73,6 +73,9 @@ RANKS: dict[str, int] = {
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
+    # The fund ledger (company_lock.lock_fund_ledger): after the company, before any account or
+    # projection row; exclusive for a fund cap, shared for a posting.
+    "adv:funds": 37,
     # A connection's config, then its first-sync record (a disconnect forgets it, a first sync
     # locks it, before either touches the store's identities).
     "row:connector_configs": 38, "row:connector_first_syncs": 39, "row:connector_sources": 43,

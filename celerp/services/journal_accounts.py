@@ -23,10 +23,12 @@ Any module may post journal entries, and adds the accounts they post to through
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
@@ -36,6 +38,7 @@ from celerp.accounting_roles import (
     SCHEMA_KEY,
     AccountRole,
     Refused,
+    catalog_refusal,
     is_role,
     refusal,
     unknown_role,
@@ -204,6 +207,87 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
                         f"Account {code} has never been the {label} account.",
                         code=code, role=label),
                 )
+    await check_fund_rules(session, company_id, data, entries, restored=restored)
+
+
+FUNDS_ENABLED = "funds_enabled"  # company setting: whether journal lines carry funds
+
+
+def funds_enabled(settings: dict) -> bool:
+    return bool(settings.get(FUNDS_ENABLED))
+
+
+async def funds_by_id(session: AsyncSession, company_id, ids=None) -> dict[str, dict]:
+    """The company's funds (their projected state), or those among ``ids``."""
+    from celerp.models.projections import Projection
+
+    query = select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "fund")
+    if ids is not None:
+        query = query.where(Projection.entity_id.in_(sorted(ids)))
+    return {entity_id: state or {} for entity_id, state in await session.execute(query)}
+
+
+async def check_fund_rules(session: AsyncSession, company_id, data: dict, entries: list[dict], *,
+                           restored: bool = False) -> None:
+    """The fund rules every journal entry meets, whoever produced it.
+
+    A company that has funds turned on holds its fund ledger shared (lock_fund_ledger)
+    and reads the setting under the company lock, so a fund cap or turning funds off
+    never interleaves with a posting. Then: (1) each fund named exists, and an archived
+    one takes no new posting, though a reversal or a restored entry still lands; (2) each
+    fund balances on its own, the lines without a fund counting as one; (3) a restricted
+    net assets line carries a restricted fund and a retained earnings line never does.
+    With funds off, a new line carrying a fund is refused and nothing else is checked."""
+    from celerp.services.company_lock import lock_company, lock_fund_ledger
+    from celerp.services.money import round_money, to_decimal
+
+    named = {e["fund_id"] for e in entries if e.get("fund_id")}
+    new = not (restored or data.get("reverses"))
+    await lock_company(session, company_id)
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not funds_enabled(settings):
+        if named and new:
+            raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
+        return
+    await lock_fund_ledger(session, company_id, shared=True)
+    funds = await funds_by_id(session, company_id, named)
+    for fund_id in sorted(named):
+        fund = funds.get(fund_id)
+        if fund is None:
+            raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.unknown", fund=fund_id))
+        if fund.get("archived") and new:
+            raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.archived", fund=fund["name"]))
+
+    currency = str(settings.get("currency") or "USD")
+    net: dict[str | None, Decimal] = {}
+    for e in entries:
+        fund_id = e.get("fund_id") or None
+        net[fund_id] = net.get(fund_id, Decimal(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+    for fund_id, difference in sorted(net.items(), key=lambda kv: (kv[0] is None, kv[0] or "")):
+        if round_money(difference, currency):
+            raise UnbalancedJournalEntry(
+                "posting.fund.unbalanced", fund=funds[fund_id]["name"] if fund_id else unrestricted_label(),
+                difference=str(round_money(abs(difference), currency)), currency=currency)
+
+    restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
+    retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
+    for e in entries:
+        fund = funds.get(e.get("fund_id") or "")
+        restricted = bool(fund and fund.get("restricted"))
+        if e["account"] in restricted_na and not restricted:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "posting.fund.restricted_net_assets_needs_fund", code=e["account"]))
+        if e["account"] in retained and restricted:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "posting.fund.retained_earnings_restricted", code=e["account"], fund=fund["name"]))
+
+
+def unrestricted_label() -> str:
+    """How the lines carrying no fund are named, in the reader's language."""
+    from ui.i18n import t
+
+    return t("posting.fund.unrestricted")
 
 
 async def require_destinations(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:

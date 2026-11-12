@@ -26,6 +26,7 @@ PLUGIN_MANIFEST = {
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event"},
+            {"prefix": "fund.", "handler": "celerp_accounting.projections:apply_accounting_event"},
         ],
         "search_provider": {
             "handler": "celerp_accounting.search:global_search",

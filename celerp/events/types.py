@@ -125,6 +125,10 @@ class EventType(StrEnum):
     ACC_PERIOD_CLOSED = "acc.period.closed"
     ACC_PERIOD_REOPENED = "acc.period.reopened"
     ACC_RECONCILIATION_REOPENED = "acc.reconciliation.reopened"
+    FUND_CREATED = "fund.created"
+    FUND_UPDATED = "fund.updated"
+    FUND_ARCHIVED = "fund.archived"
+    FUND_UNARCHIVED = "fund.unarchived"
 
     # Subscriptions (recurring orders)
     SUB_CREATED = "sub.created"
