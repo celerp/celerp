@@ -1008,3 +1008,128 @@ async def test_import_fund_choices_refused_as_a_request(client, auth):
         r = await send(choices)
         assert r.status_code == 422 and _key(r) == key, (choices, r.text)
     assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code == 404
+
+
+async def test_import_batch_refuses_fund_lines_and_movement_shapes(client, session, auth):
+    """A journal import is refused for each record whose file line carries fund_id,
+    fund_choice or origin (funds are chosen on the import screen), and for each record that
+    would move restricted money: a fund_release record and a line on restricted net assets.
+    The record beside them posts on the fund chosen for the import."""
+    await _fund_company(client, auth)
+    gift = await _gift_fund(client, auth)
+    accounts = (await client.get("/accounting/posting-accounts", headers=auth["headers"])).json()
+    rna = next(a for a in accounts["roles"] if a["role"] == "restricted_net_assets")["code"]
+
+    def _record(entries: list[dict], **data) -> dict:
+        return {"entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+                "idempotency_key": uuid.uuid4().hex,
+                "data": {"status": "posted", "ts": "2026-01-22", "memo": "Filed", "entries": entries, **data}}
+
+    def _lines(credit: str = "4100", **extra) -> list[dict]:
+        return [{"account": "1111", "debit": 25.0, "credit": 0},
+                {"account": credit, "debit": 0, "credit": 25.0, **extra}]
+
+    keyed = [_record(_lines(**{key: value})) for key, value in
+             (("fund_id", gift), ("fund_choice", "unrestricted"), ("origin", "accountant"))]
+    release, restricted, plain = _record(_lines(), je_type="fund_release"), _record(_lines(rna)), _record(_lines())
+    records = [*keyed, release, restricted, plain]
+    r = await client.post("/accounting/import/batch", headers=auth["headers"],
+                          json={"records": records, "fund_choices": {"all": gift}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    errors = r.json()["errors"]
+    for record, key in zip(keyed, ("fund_id", "fund_choice", "origin")):
+        assert any(e.startswith(record["entity_id"]) and
+                   f"The file gives {key}. Choose funds on the import screen, not in the file." in e
+                   for e in errors), (key, errors)
+    for record in (release, restricted):
+        assert any(e.startswith(record["entity_id"]) and "moves money of" in e and
+                   "Transfer between funds, Release from restriction or Reallocate restricted funds" in e
+                   for e in errors), (record["data"], errors)
+    posted = await _entry_state(session, auth["company_id"], plain["entity_id"])
+    assert [e.get("fund_id") for e in posted["entries"]] == [gift, gift]
+    for record in records[:-1]:
+        assert await session.get(Projection, {"company_id": auth["company_id"], "entity_id": record["entity_id"]}) is None
+
+
+async def test_import_named_authorizer_moves_nothing(client, session, auth):
+    """A manager, who may import but not reallocate restricted funds, imports a
+    fund_reallocation record that names the company's admin as its authorizer: it is refused
+    as a movement outside the movement forms, and nothing posts."""
+    from test_fund_waiting import _operator
+    from test_funds import _fund
+
+    await _fund_company(client, auth)
+    gift, other = await _gift_fund(client, auth), await _fund(client, auth, "Library gift two")
+    accounts = (await client.get("/accounting/posting-accounts", headers=auth["headers"])).json()
+    rna = next(a for a in accounts["roles"] if a["role"] == "restricted_net_assets")["code"]
+    eid = f"je:{uuid.uuid4()}"
+    before = await _entry_ids(session, auth)
+    r = await client.post("/accounting/import/batch", headers=await _operator(session, auth, "manager"), json={
+        "records": [{"entity_id": eid, "event_type": "acc.journal_entry.created", "source": "csv",
+                     "idempotency_key": uuid.uuid4().hex,
+                     "data": {"status": "posted", "ts": "2026-01-23", "memo": "Reallocate", "je_type": "fund_reallocation",
+                              "authorized_by": str(auth["user_id"]), "reason": "Donor asked",
+                              "donor_authorization": "Letter of 2026-01-20",
+                              "entries": [{"account": rna, "debit": 10.0, "credit": 0},
+                                          {"account": "1111", "debit": 0, "credit": 10.0},
+                                          {"account": "1111", "debit": 10.0, "credit": 0},
+                                          {"account": rna, "debit": 0, "credit": 10.0}]}}],
+        "fund_choices": {"lines": {f"{eid}:1": gift, f"{eid}:2": gift, f"{eid}:3": other, f"{eid}:4": other}}})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert "Restricted money moves only through Transfer between funds" in r.json()["errors"][0], r.text
+    assert await _entry_ids(session, auth) == before
+
+
+async def test_migration_sink_journal_refuses_movement_shapes(client, session, auth):
+    """The migration sink's journal writer judges movement shapes as any import does: in
+    books that hold restricted net assets, a movement-typed record and a line on restricted
+    net assets are each rejected in the outcome, the plain record beside them posts."""
+    from celerp_accounting.import_service import AccImportRecord, import_journal_records
+
+    await _fund_company(client, auth)
+    accounts = (await client.get("/accounting/posting-accounts", headers=auth["headers"])).json()
+    rna = next(a for a in accounts["roles"] if a["role"] == "restricted_net_assets")["code"]
+    r = await client.put("/accounting/funds/setting", headers=auth["headers"], json={"enabled": False})
+    assert r.status_code == 200, r.text
+
+    def _record(credit: str = "4100", **data) -> AccImportRecord:
+        return AccImportRecord(entity_id=f"je:{uuid.uuid4()}", event_type="acc.journal_entry.created",
+                               source="migration", idempotency_key=uuid.uuid4().hex,
+                               data={"status": "posted", "ts": "2026-01-24", "memo": "Migrated", **data,
+                                     "entries": [{"account": "1111", "debit": 7.0, "credit": 0},
+                                                 {"account": credit, "debit": 0, "credit": 7.0}]})
+
+    shaped = [_record(je_type=t) for t in ("fund_transfer", "fund_release", "fund_reallocation", "fund_opening")]
+    shaped.append(_record(rna))
+    plain = _record()
+    outcome = await import_journal_records(session, auth["company_id"], auth["user_id"], [*shaped, plain],
+                                           origin="migration")
+    await session.commit()
+    status = {rec.entity_id: (rec.status, str(rec.message)) for rec in outcome.records}
+    for record in shaped:
+        assert status[record.entity_id][0] == "failed" and "moves money of" in status[record.entity_id][1], status
+    assert status[plain.entity_id][0] == "created", status
+    ids = await _entry_ids(session, auth)
+    assert plain.entity_id in ids and not ids & {rec.entity_id for rec in shaped}
+
+
+async def test_every_line_writer_has_a_row():
+    """Every line writer in the source (line_writer_census) has one row with a class whose
+    cells cover each fund key; a row with no writer, a helper that is gone, a pending writer
+    that now exists, an ARRIVAL writer whose emit passes no origin, and a connector_upsert
+    call without the origin keyword each fail naming it."""
+    from line_writer_census import ARRIVAL_CLASSES, CELLS, HELPERS, PENDING, ROWS, census, table
+
+    writers, defined, bare_upserts = census()
+    found = {w.key for w in writers}
+    assert not found - ROWS.keys(), f"line writers with no row: {sorted(found - ROWS.keys())}"
+    assert not ROWS.keys() - found, f"rows with no writer: {sorted(ROWS.keys() - found)}"
+    assert not HELPERS.keys() - defined, f"helpers no longer defined: {sorted(HELPERS.keys() - defined)}"
+    built = sorted(key for key in defined if key.rpartition("::")[2] in PENDING)
+    assert not built, f"pending writers now built, give each a row: {built}"
+    classes = {cls for cls, _ in [*ROWS.values(), *HELPERS.values(), *PENDING.values()]}
+    assert all(len(CELLS.get(cls, ())) == 3 for cls in classes), sorted(classes - CELLS.keys())
+    silent = sorted(f"{w.key}:{w.line}" for w in writers if ROWS[w.key][0] in ARRIVAL_CLASSES and not w.origin)
+    assert not silent, f"ARRIVAL writers whose emit passes no origin: {silent}"
+    assert not bare_upserts, f"connector_upsert calls without origin=: {bare_upserts}"
+    assert len(table(writers)) == 2 + len(writers) + len(HELPERS) + len(PENDING)

@@ -40,17 +40,17 @@ async def _waiting(client, headers) -> dict:
     return r.json()
 
 
-async def _operator(session, auth) -> dict:
+async def _operator(session, auth, role: str = "operator") -> dict:
     from celerp.models.accounting import UserCompany
     from celerp.models.company import User
     from test_helpers import make_authed_token
 
     uid = uuid.uuid4()
-    session.add(User(id=uid, email=f"op-{uid.hex[:8]}@test.co", name="Operator", auth_hash="x", is_active=True))
+    session.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@test.co", name=role.title(), auth_hash="x", is_active=True))
     await session.flush()
-    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=auth["company_id"], role="operator", is_active=True))
+    session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=auth["company_id"], role=role, is_active=True))
     await session.commit()
-    return {"Authorization": f"Bearer {await make_authed_token(session, str(uid), str(auth['company_id']), 'operator')}"}
+    return {"Authorization": f"Bearer {await make_authed_token(session, str(uid), str(auth['company_id']), role)}"}
 
 
 async def test_waiting_for_fund_choice_count_shown(client, session, auth):

@@ -129,6 +129,23 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
     assert _from_firm(await _journals(real_engine, client_company)) == {}
 
 
+async def test_no_funds_company_firm_journal_unchanged(real_client, real_engine, monkeypatch):
+    """The firm-journal leg of test_outside_lines::test_no_funds_company_outside_lines_unchanged:
+    in books that never used funds the accountant's journal posts on the first sync exactly as
+    sent, nothing is held, and its lines only add where they came from."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    lines = [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)]
+    await _journal(real_client, firm_tok, "Reclass program costs", lines)
+    _route_to_app(monkeypatch, [])
+    await _two_way(client_company, credential)
+    assert await _held(real_client, tok) == []
+    [entry] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert entry["status"] == "posted" and entry["memo"] == "Reclass program costs"
+    assert [(e["account"], e["debit"], e["credit"]) for e in entry["entries"]] == lines
+    assert [e.get("origin") for e in entry["entries"]] == ["accountant", "accountant"]
+    assert not any("fund_id" in e or "fund_choice" in e for e in entry["entries"]), entry["entries"]
+
+
 async def test_held_lines_carry_balance_per_fund(real_client, real_engine, monkeypatch):
     """Each line of a record held for funds names the account it posts to and that account's
     posted balance per fund ("unrestricted" for the unrestricted group, on the account's normal
