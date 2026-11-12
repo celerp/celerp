@@ -46,10 +46,10 @@ async def _journal(real_client, tok: str, memo: str, lines: list[tuple[str, floa
     return r.json()["je_id"]
 
 
-async def _held(real_client, tok: str) -> list[dict]:
+async def _held(real_client, tok: str, kind: str = "funds") -> list[dict]:
     r = await real_client.get("/accounting/peer/holds", headers=auth(tok))
     assert r.status_code == 200, r.text
-    return [i for i in r.json()["items"] if (i["fix"] or {}).get("kind") == "funds"]
+    return [i for i in r.json()["items"] if (i["fix"] or {}).get("kind") == kind]
 
 
 async def _post_held(real_client, tok: str, item: dict, *, every=None, lines: dict | None = None, key: str | None = None):
@@ -308,3 +308,71 @@ async def test_client_reversal_of_firm_journal_keeps_its_fund(real_client, real_
     assert mirrored["status"] == "posted"
     assert [(e["account"], e["debit"], e["credit"], e.get("fund_id"), e.get("posted_from"))
             for e in mirrored["entries"]] == [(BANK, 0.0, 70.0, fund, firm_je), (EXPENSE, 70.0, 0.0, fund, firm_je)]
+
+
+async def _copy_of(engine, company_id: str, source_doc: str) -> str | None:
+    from celerp.models.company_peer import CompanyPeerIdentity
+
+    async with maker(engine)() as s:
+        return await s.scalar(select(CompanyPeerIdentity.target_entity_id).where(
+            CompanyPeerIdentity.company_id == uuid.UUID(company_id),
+            CompanyPeerIdentity.entity_type == "doc", CompanyPeerIdentity.source_entity_id == source_doc))
+
+
+def _entries_of(journals: dict, record_id: str) -> list[tuple[str, dict]]:
+    return [(eid, s) for eid, s in journals.items() if s.get("record_id") == record_id and s.get("status") == "posted"]
+
+
+async def test_peer_document_held_for_fund_choices(real_client, real_engine, monkeypatch):
+    """The firm's copy uses funds: a client's issued bill is refused there with the doc_funds
+    fix, held once and posting nothing while the client sends it again on each sync; a firm
+    user posts it from the hold with a fund, as that user, every leg on the chosen fund. An
+    issued invoice held the same way and then voided by the client leaves no hold and posts
+    nothing. Issued credit notes from a connected company are refused before they post, so
+    the invoice stands for the second document type."""
+    from test_peer_accounts import _bill
+
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    fund = await _funds_client(real_client, firm_tok)
+    bill = await _bill(real_client, tok, [{"name": "Electricity", "quantity": 1, "unit_price": 50.0,
+                                           "line_total": 50.0, "account_code": "6300",
+                                           "receive_as": "expense"}], "fund-bill")
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, credential)
+    assert not results["documents_out"].ok
+    [item] = await _held(real_client, firm_tok, "doc_funds")
+    fix = item["fix"]
+    assert fix["lines"] == [1] and fix["document"] is True and fix["revision"] >= 1
+    assert await _copy_of(real_engine, firm_company, bill) is None  # nothing posts
+
+    results = await _two_way(client_company, credential)  # sent again, still held once
+    assert not results["documents_out"].ok
+    assert len(await _held(real_client, firm_tok, "doc_funds")) == 1
+    assert await _copy_of(real_engine, firm_company, bill) is None
+
+    r = await _post_held(real_client, firm_tok, item, every=fund)
+    assert r.status_code == 200, r.text
+    doc_id = await _copy_of(real_engine, firm_company, bill)
+    assert doc_id and r.json()["id"] == doc_id
+    [(je_id, entry)] = _entries_of(await _journals(real_engine, firm_company), doc_id)
+    assert {e.get("fund_id") for e in entry["entries"]} == {fund}
+    assert await _actor(real_engine, firm_company, je_id) == await _user_of(firm_tok)
+    assert await _held(real_client, firm_tok, "doc_funds") == []
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+
+    invoice = await real_client.post("/docs", headers=auth(tok), json={
+        "doc_type": "invoice", "date": DAY, "idempotency_key": uuid.uuid4().hex,
+        "line_items": [{"name": "Consulting", "quantity": 1, "unit_price": 80.0, "line_total": 80.0}]})
+    assert invoice.status_code in (200, 201), invoice.text
+    invoice = invoice.json()["id"]
+    assert (await real_client.post(f"/docs/{invoice}/finalize", headers=auth(tok))).status_code == 200
+    await _two_way(client_company, credential)
+    assert len(await _held(real_client, firm_tok, "doc_funds")) == 1
+    r = await real_client.post(f"/docs/{invoice}/void", headers=auth(tok), json={"reason": "Wrong client"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert results["documents_out"].ok, results["documents_out"].errors
+    assert await _held(real_client, firm_tok, "doc_funds") == []
+    assert await _copy_of(real_engine, firm_company, invoice) is None
