@@ -121,7 +121,7 @@ def setup_routes(app):
             carried = ({"preset": preset} if preset and preset != "custom"
                        else {"from": d_from, "to": d_to})
             content = Div(
-                report_nav("journal", d_from or "", d_to or ""),
+                report_nav("journal", d_from or "", d_to or "", company),
                 _date_filter_bar("/accounting", d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),

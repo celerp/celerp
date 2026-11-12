@@ -1004,6 +1004,38 @@ async def move_funds(token: str, kind: str, body: dict) -> dict:
         return _raise(await c.post(f"/accounting/funds/{kind}", json=body)).json()
 
 
+async def get_fund_balance_sheet(token: str, params: dict) -> dict:
+    """Each asset and liability account by fund on ``as_of``, with each fund's net assets."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/balance-sheet", params=params)).json()
+
+
+async def get_fund_activity(token: str, params: dict) -> dict:
+    """Each fund's opening, received, spent, released, transferred and closing between
+    ``date_from`` and ``date_to``, with the period's movements and fund changes."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/activity", params=params)).json()
+
+
+async def get_fund_reconciliation(token: str, params: dict) -> dict:
+    """The funds against the company ledger on ``as_of``, with what does not agree."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/reconciliation", params=params)).json()
+
+
+async def reverse_fund_movement(token: str, je_id: str, body: dict) -> dict:
+    """Reverse a movement between funds: {date, reason}; a repeat answers the same reversal."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/movements/{quote(je_id, safe='')}/reverse", json=body)).json()
+
+
+async def reverse_year_close(token: str, fiscal_year_end: str, reason: str) -> dict:
+    """Reverse the latest close of the year ending ``fiscal_year_end``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/close-year/{quote(fiscal_year_end, safe='')}/reverse",
+                                   json={"reason": reason})).json()
+
+
 async def list_connection_defaults(token: str) -> dict:
     """The standing fund of every connection records arrive through: {items}."""
     async with _api_client(token) as c:

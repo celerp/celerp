@@ -36,6 +36,7 @@ from ui.components.report_kit import (
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from celerp.services.business_time import business_today
+from celerp.services.journal_accounts import funds_enabled
 from celerp.services.money import to_decimal
 from ui.routes.reports import (
     OPERATIONAL_REPORTS, _date_filter_bar, _get_company, _parse_dates,
@@ -55,6 +56,14 @@ _FINANCIAL_CARDS: list[tuple[str, str]] = [
     ("extended-journal", "rpt.extended_journal_desc"),
     ("statement", "rpt.statement_desc"),
     ("opening-tie-out", "rpt.opening_tie_out_desc"),
+]
+
+# The fund reports, listed after the others and only for books that use funds: without
+# funds every figure would sit under Unrestricted and restate the reports above.
+_FUND_CARDS: list[tuple[str, str]] = [
+    ("fund-balance-sheet", "rpt.fund_balance_sheet_desc"),
+    ("fund-activity", "rpt.fund_activity_desc"),
+    ("fund-reconciliation", "rpt.fund_reconciliation_desc"),
 ]
 
 # Report key -> (page path, print path, csv path, title key). One table so a report's
@@ -81,7 +90,22 @@ REPORTS: dict[str, tuple[str, str, str, str]] = {
                   "/reports/export/statement/csv", "acct.soa_title"),
     "opening-tie-out": ("/reports/opening-tie-out", "/reports/print/opening-tie-out",
                         "/reports/export/opening-tie-out/csv", "rpt.opening_tie_out"),
+    "fund-balance-sheet": ("/reports/funds/balance-sheet", "/reports/print/funds/balance-sheet",
+                           "/reports/export/funds/balance-sheet/csv", "rpt.fund_balance_sheet"),
+    "fund-activity": ("/reports/funds/activity", "/reports/print/funds/activity",
+                      "/reports/export/funds/activity/csv", "rpt.fund_activity"),
+    "fund-reconciliation": ("/reports/funds/reconciliation", "/reports/print/funds/reconciliation",
+                            "/reports/export/funds/reconciliation/csv", "rpt.fund_reconciliation"),
 }
+
+# The reports that state a position on one date and read `as_of`; every other covers a range.
+AS_OF_REPORTS = frozenset({"balance-sheet", "fund-balance-sheet", "fund-reconciliation"})
+
+
+def financial_cards(company: dict) -> list[tuple[str, str]]:
+    """The financial reports these books offer, in index order: the fund reports only when
+    the books use funds."""
+    return _FINANCIAL_CARDS + (_FUND_CARDS if funds_enabled(company.get("settings") or {}) else [])
 
 # Old /accounting?tab=<name> -> the report key it became. Bookmarks and emailed
 # links predate the move, so they are redirected rather than broken. Mapping to the
@@ -125,17 +149,17 @@ def _bars(key: str, params) -> FT:
 def page_params(key: str, d_from: str, d_to: str) -> list[tuple[str, str]]:
     """A period in the terms the target page reads it.
 
-    The balance sheet is a position on a date and reads `as_of`; every other
-    report covers a range and reads `from` and `to`. One helper for both, so the
+    A position on a date (AS_OF_REPORTS) reads `as_of`; every other report
+    covers a range and reads `from` and `to`. One helper for both, so the
     navigation strip and the ledger's back link cannot come to disagree about how
     a period travels between reports.
     """
-    if key == "balance-sheet":
+    if key in AS_OF_REPORTS:
         return [("as_of", d_to)] if d_to else []
     return [(k, v) for k, v in (("from", d_from), ("to", d_to)) if v]
 
 
-def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
+def report_nav(current_key: str, d_from: str, d_to: str, company: dict) -> FT:
     """Links from any financial report to every other, carrying the period.
 
     An accountant reads across these reports rather than down one of them: the
@@ -157,7 +181,7 @@ def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
 
     return Div(
         Span(t("acct.reports_nav"), cls="cell--muted"),
-        *[_entry(key) for key, _desc in _FINANCIAL_CARDS],
+        *[_entry(key) for key, _desc in financial_cards(company)],
         id="report-nav", cls="flex-row flex-wrap gap-sm mb-md",
     )
 
@@ -921,8 +945,14 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
+        try:
+            company = await api.get_company(token)
+        except APIError as e:
+            # The fund reports are offered by the books' setting; unread, the index still lists the rest.
+            api.raise_if_signed_out(e)
+            company = {}
         cards = [(REPORTS[k][0], t(REPORTS[k][3], lang), t(desc, lang))
-                 for k, desc in _FINANCIAL_CARDS]
+                 for k, desc in financial_cards(company)]
         # Operational reports come from the reports module. It is optional, so the
         # index lists only the ones whose routes are actually registered instead of
         # advertising links that would 404.
@@ -950,7 +980,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_pnl(token, params)
             content = Div(
-                report_nav("pnl", d_from or "", d_to or ""),
+                report_nav("pnl", d_from or "", d_to or "", company),
                 _date_filter_bar(_report_path("pnl"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 Div(_bars("pnl", params), cls="flex-row mt-md mb-md"),
@@ -981,7 +1011,7 @@ def setup_routes(app):
                 action=safe_url(_report_path("balance-sheet")), method="get", cls="date-custom-form",
             )
             content = Div(
-                report_nav("balance-sheet", "", as_of),
+                report_nav("balance-sheet", "", as_of, company),
                 Div(as_of_form, cls="date-filter-bar"),
                 Div(_bars("balance-sheet", {"as_of": as_of}), cls="flex-row mt-md mb-md"),
                 _balance_sheet_view(data, currency, as_of=as_of),
@@ -1005,7 +1035,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_trial_balance(token, params)
             content = Div(
-                report_nav("trial-balance", d_from or "", d_to or ""),
+                report_nav("trial-balance", d_from or "", d_to or "", company),
                 _date_filter_bar(_report_path("trial-balance"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 _trial_balance_summary(data, currency),
@@ -1030,7 +1060,7 @@ def setup_routes(app):
             data = await api.get_opening_tie_out(token)
             as_of = data.get("as_of") or ""
             content = Div(
-                report_nav("opening-tie-out", "", as_of),
+                report_nav("opening-tie-out", "", as_of, company),
                 Div(_bars("opening-tie-out", {}), cls="flex-row mt-md mb-md") if as_of else "",
                 _tie_out_view(data, company.get("currency")),
             )
@@ -1054,7 +1084,7 @@ def setup_routes(app):
             data = await api.get_general_ledger(token, params)
             totals = data.get("totals") or {}
             content = Div(
-                report_nav("general-ledger", d_from or "", d_to or ""),
+                report_nav("general-ledger", d_from or "", d_to or "", company),
                 _date_filter_bar(_report_path("general-ledger"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 totals_chips(float(totals.get("debit", 0) or 0),
@@ -1087,7 +1117,7 @@ def setup_routes(app):
             params = date_params(d_from, d_to)
             data = await api.get_cash_flow(token, params)
             content = Div(
-                report_nav("cash-flow", d_from or "", d_to or ""),
+                report_nav("cash-flow", d_from or "", d_to or "", company),
                 _date_filter_bar(_report_path("cash-flow"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 Div(_bars("cash-flow", params), cls="flex-row mt-md mb-md"),
@@ -1118,7 +1148,7 @@ def setup_routes(app):
             carried = ({"preset": preset} if preset and preset != "custom"
                        else {"from": d_from, "to": d_to})
             content = Div(
-                report_nav("extended-journal", d_from or "", d_to or ""),
+                report_nav("extended-journal", d_from or "", d_to or "", company),
                 _date_filter_bar(path, d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),
@@ -1157,7 +1187,7 @@ def setup_routes(app):
         back_path, _p, _c, back_key = REPORTS[origin]
         back_qs = page_params(origin, d_from or "", d_to or "")
         content = Div(
-            report_nav("", d_from or "", d_to or ""),
+            report_nav("", d_from or "", d_to or "", company),
             Div(
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
@@ -1344,7 +1374,7 @@ def setup_routes(app):
                                merged=s["merged"]) for s in sections],
             )
         content = Div(
-            report_nav("statement", d_from or "", d_to or ""),
+            report_nav("statement", d_from or "", d_to or "", company),
             _date_filter_bar(_report_path("statement"), d_from, d_to, preset,
                              settings_link="/settings/general?tab=company",
                              extra_params="".join(f"&account={subject_token(k, i)}"

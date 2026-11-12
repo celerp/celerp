@@ -38,6 +38,11 @@ _MOVEMENTS = {"transfer": ("funds.transfer_title", "funds.transfer_help"),
               "opening": ("funds.opening_title", "funds.opening_help")}
 
 
+def movement_title(kind: str) -> str:
+    """A movement's name: transfer, release, reallocate or opening."""
+    return t(_MOVEMENTS[kind][0])
+
+
 def _fund_url(fund_id: str, action: str = "") -> str:
     return f"{FUNDS_URL}/{quote(fund_id, safe='')}{action}"
 
@@ -364,7 +369,7 @@ def setup_routes(app):
                 await api.move_funds(token, kind, {"request_key": required_operation_key(form), **body})
             except APIError as e:
                 return await _answer(token, refused=e, kept=(kind, typed))
-            return await _answer(token, t("funds.movement_posted", movement=t(_MOVEMENTS[kind][0])))
+            return await _answer(token, t("funds.movement_posted", movement=movement_title(kind)))
         app.post(f"{FUNDS_URL}/{kind}")(post_movement)
 
     for kind in _MOVEMENTS:

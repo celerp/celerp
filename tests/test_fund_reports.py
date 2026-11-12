@@ -398,7 +398,7 @@ async def test_fund_report_pages(ui_client):
     assert "Every account's funds add up to the company ledger." in page
     with _report_api(get_fund_reconciliation=__import__("unittest.mock").mock.AsyncMock(return_value=_UNRECONCILED)):
         page = (await ui_client.get("/reports/funds/reconciliation", params={"as_of": "2026-03-31"})).text
-    for word in ("90.00", "-5.00", "je:manual:4", "doc:INV-9", "Library gift"):
+    for word in ("90.00", "-$5.00", "je:manual:4", "doc:INV-9", "Library gift"):
         assert word in page, word
     assert "Every account's funds add up to the company ledger." not in page
 
@@ -408,7 +408,7 @@ async def test_fund_report_pages(ui_client):
             assert printed.status_code == 200 and "window.print" in printed.text, key
             exported = await ui_client.get(f"/reports/export/funds/{key}/csv")
             assert exported.status_code == 200 and "text/csv" in exported.headers["content-type"], key
-            assert "Library gift" in exported.text, key
+            assert ("Balanced,yes" if key == "reconciliation" else "Library gift") in exported.text, key
 
 
 async def test_fund_activity_reverses_a_movement(ui_client):
@@ -440,12 +440,19 @@ async def test_period_lock_tab_reverses_a_year_close(ui_client):
     undo the latest close of that year; a refusal heads the tab and keeps what was typed."""
     from unittest.mock import AsyncMock
 
-    from test_income_accounts import _ui_api
     from ui.api_client import APIError
 
     lock = AsyncMock(return_value={"lock_date": None})
+    owner = {"name": "Test Corp", "current_role": "owner", "settings": {"modules": ["celerp-accounting"]}}
+
+    def _ui_api(**more):
+        from test_income_accounts import _ui_api as patched
+
+        return patched(get_company=AsyncMock(return_value=owner), **more)
     with _ui_api(get_period_lock=lock):
-        page = (await ui_client.get("/settings/accounting", params={"tab": "period-lock"})).text
+        r = await ui_client.get("/settings/accounting", params={"tab": "period-lock"})
+    page = r.text
+    assert r.status_code == 200, (r.status_code, r.headers.get("location"))
     assert "Reverse close" in page and 'hx-post="/settings/accounting/close-year/reverse"' in page
 
     reverse = AsyncMock(return_value={"je_id": "je:close:1:reverse"})

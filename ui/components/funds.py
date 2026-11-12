@@ -13,8 +13,11 @@ from urllib.parse import urlencode
 
 from fasthtml.common import *
 
+import ui.api_client as api
+from celerp.services.journal_accounts import funds_enabled
 from celerp.services.peer_lines import UNRESTRICTED, origin_key, outside_fund_needs
 from celerp.services.permissions import role_has_permission
+from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.encode import js
 from ui.components.table import EMPTY, searchable_select
@@ -262,3 +265,23 @@ def connection_defaults_card(view: DefaultsView, items: list[dict]) -> FT | str:
         return ""
     return Div(H3(t("fund.defaults_title")), P(t("fund.defaults_hint"), cls="settings-hint"),
                *(connection_default(view, item) for item in items), cls="settings-card flex-col gap-sm")
+
+
+async def fund_waiting_banner(token: str, settings: dict, role: str) -> FT | str:
+    """The outside records waiting for a fund choice, for those who choose funds: Choose funds
+    opens the documents to choose for, Sync accounts the held items. Shown on the dashboard
+    and the fund reports; absent at 0, with funds off, and when the count cannot be read."""
+    if not funds_enabled(settings) or not role_has_permission(settings, role, "manage_accounting"):
+        return ""
+    try:
+        waiting = await api.get_fund_waiting(token)
+    except APIError:
+        return ""
+    count = waiting.get("count") or 0
+    if not count:
+        return ""
+    sync = [" ", A(t("sync_accounts.title"), href="/accounting/sync-accounts")] if waiting.get("held") else []
+    return Div(Span("ℹ️", cls="info-banner-icon"),
+               Span(t("fund.waiting.count_one") if count == 1 else t("fund.waiting.count", count=count), " ",
+                    A(t("fund.waiting.link"), href="/docs?fund_choice=needed"), *sync),
+               cls="info-banner", id="fund-waiting-banner")

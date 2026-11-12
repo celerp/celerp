@@ -137,9 +137,12 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
     )
 
 
-def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None) -> FT:
-    """The period lock tab, the element every lock and close response replaces; ``banner``
-    (a refusal or success) heads it, so the tab keeps its one id."""
+def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None,
+                     reverse: dict | None = None) -> FT:
+    """The period lock tab, the element every lock, close and reverse response replaces;
+    ``banner`` (a refusal or success) heads it, so the tab keeps its one id. ``reverse`` keeps
+    what a refused Reverse close typed."""
+    reverse = reverse or {}
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
@@ -204,12 +207,33 @@ def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None =
             hx_target="#period-lock-content",
             hx_swap="outerHTML",
         ),
+        H3(t("settings_accounting.reverse_close_title"), cls="section-title mt-lg"),
+        P(t("settings_accounting.reverse_close_help"), cls="text-muted mb-md"),
+        Form(
+            Div(
+                Label(t("label.fiscal_year_end_date")),
+                Input(type="date", name="fiscal_year_end", value=reverse.get("fiscal_year_end", ""),
+                      required=True, cls="form-input max-w-md"),
+                cls="form-field",
+            ),
+            Div(
+                Label(t("label.reason")),
+                Input(type="text", name="reason", value=reverse.get("reason", ""), required=True,
+                      cls="form-input max-w-md"),
+                cls="form-field",
+            ),
+            Div(Button(t("btn.reverse_close"), type="submit", cls="btn btn--outline"), cls="form-actions mt-md"),
+            hx_post="/settings/accounting/close-year/reverse",
+            hx_target="#period-lock-content",
+            hx_swap="outerHTML",
+        ),
         id="period-lock-content",
         cls="settings-card",
     )
 
 
-async def _period_lock_refused(token: str, message: str, close_value: str = "") -> FT:
+async def _period_lock_refused(token: str, message: str, close_value: str = "",
+                               reverse: dict | None = None) -> FT:
     """A refused lock or close: the banner above the period lock tab, so both forms stay
     and the close form keeps the date entered. The lock is read as the tab's own render
     reads it; a failed read leaves the lock form empty rather than losing the forms."""
@@ -217,7 +241,7 @@ async def _period_lock_refused(token: str, message: str, close_value: str = "") 
         lock_data = await api.get_period_lock(token)
     except Exception:
         lock_data = {}
-    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"))
+    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"), reverse)
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -1308,6 +1332,29 @@ def setup_routes(app):
         net = result.get("net_income", 0)
         msg = t("settings_accounting.fiscal_year_closed", date=fiscal_year_end, net=f"{net:,.2f}")
         return _period_lock_tab({"lock_date": result.get("lock_date")}, banner=P(msg, cls="success-banner mb-md"))
+
+    @app.post("/settings/accounting/close-year/reverse")
+    async def post_reverse_close(request: Request):
+        """Reverse the latest close of a year, headed by what it did; a refusal keeps what was typed."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        typed = {k: str(form.get(k) or "").strip() for k in ("fiscal_year_end", "reason")}
+        if not typed["fiscal_year_end"]:
+            return await _period_lock_refused(token, t("acct.fiscal_year_end_date_is_required"), reverse=typed)
+        try:
+            await api.reverse_year_close(token, typed["fiscal_year_end"], typed["reason"])
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return await _period_lock_refused(token, error_message(e), reverse=typed)
+        try:
+            lock_data = await api.get_period_lock(token)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            lock_data = {}
+        return _period_lock_tab(lock_data, banner=P(t("settings_accounting.close_reversed", date=typed["fiscal_year_end"]),
+                                                    cls="success-banner mb-md"))
 
     @app.post("/settings/accounting/rules")
     async def create_rule(request: Request):

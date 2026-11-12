@@ -806,6 +806,180 @@
       "params": [
         "movement"
       ]
+    },
+    "rpt.fund_balance_sheet": {
+      "en": "Fund balance sheet",
+      "params": []
+    },
+    "rpt.fund_balance_sheet_desc": {
+      "en": "Each asset and liability account by fund, with each fund's net assets and how much is restricted",
+      "params": []
+    },
+    "rpt.fund_activity": {
+      "en": "Fund activity",
+      "params": []
+    },
+    "rpt.fund_activity_desc": {
+      "en": "What each fund received, spent, released and transferred over a period, with the movements between funds",
+      "params": []
+    },
+    "rpt.fund_reconciliation": {
+      "en": "Fund reconciliation",
+      "params": []
+    },
+    "rpt.fund_reconciliation_desc": {
+      "en": "Checks that the funds add up to the company ledger and lists anything that needs a look",
+      "params": []
+    },
+    "fund_reports.net_assets": {
+      "en": "Net assets",
+      "params": []
+    },
+    "fund_reports.restricted_net_assets": {
+      "en": "Restricted net assets",
+      "params": []
+    },
+    "fund_reports.available_net_assets": {
+      "en": "Available net assets",
+      "params": []
+    },
+    "fund_reports.opening": {
+      "en": "Opening",
+      "params": []
+    },
+    "fund_reports.received": {
+      "en": "Received",
+      "params": []
+    },
+    "fund_reports.spent": {
+      "en": "Spent",
+      "params": []
+    },
+    "fund_reports.released": {
+      "en": "Released",
+      "params": []
+    },
+    "fund_reports.transferred": {
+      "en": "Transferred",
+      "params": []
+    },
+    "fund_reports.closing": {
+      "en": "Closing",
+      "params": []
+    },
+    "fund_reports.movements": {
+      "en": "Movements between funds",
+      "params": []
+    },
+    "fund_reports.movement": {
+      "en": "Movement",
+      "params": []
+    },
+    "fund_reports.amount": {
+      "en": "Amount",
+      "params": []
+    },
+    "fund_reports.no_movements": {
+      "en": "No movements between funds in this period.",
+      "params": []
+    },
+    "fund_reports.fund_changes": {
+      "en": "Fund changes",
+      "params": []
+    },
+    "fund_reports.record": {
+      "en": "Record",
+      "params": []
+    },
+    "fund_reports.posted_as": {
+      "en": "Posted again as",
+      "params": []
+    },
+    "fund_reports.reverse": {
+      "en": "Reverse",
+      "params": []
+    },
+    "fund_reports.reversed_by": {
+      "en": "Reversed by {entry}",
+      "params": [
+        "entry"
+      ]
+    },
+    "fund_reports.reverses": {
+      "en": "Reverses {entry}",
+      "params": [
+        "entry"
+      ]
+    },
+    "fund_reports.reversed": {
+      "en": "Movement reversed.",
+      "params": []
+    },
+    "fund_reports.balanced": {
+      "en": "Every account's funds add up to the company ledger.",
+      "params": []
+    },
+    "fund_reports.differences": {
+      "en": "Accounts where the funds and the company ledger differ",
+      "params": []
+    },
+    "fund_reports.company_total": {
+      "en": "Company ledger",
+      "params": []
+    },
+    "fund_reports.funds_total": {
+      "en": "Funds",
+      "params": []
+    },
+    "fund_reports.overdrawn": {
+      "en": "Restricted funds overdrawn",
+      "params": []
+    },
+    "fund_reports.negative": {
+      "en": "Funds with negative net assets",
+      "params": []
+    },
+    "fund_reports.mirrors": {
+      "en": "Entries that mirror each other across funds",
+      "params": []
+    },
+    "fund_reports.entries": {
+      "en": "Entries",
+      "params": []
+    },
+    "fund_reports.attribution": {
+      "en": "Entries on another fund than their document's lines",
+      "params": []
+    },
+    "fund_reports.entry": {
+      "en": "Entry",
+      "params": []
+    },
+    "fund_reports.posted_on": {
+      "en": "Posted on",
+      "params": []
+    },
+    "fund_reports.line_fund": {
+      "en": "Line's fund",
+      "params": []
+    },
+    "settings_accounting.reverse_close_title": {
+      "en": "Reverse a year close",
+      "params": []
+    },
+    "settings_accounting.reverse_close_help": {
+      "en": "Undo the latest close of a year, for example to post a late bill. Unlock the period first, then close the year again when you are done.",
+      "params": []
+    },
+    "btn.reverse_close": {
+      "en": "Reverse close",
+      "params": []
+    },
+    "settings_accounting.close_reversed": {
+      "en": "The close of {date} is reversed.",
+      "params": [
+        "date"
+      ]
     }
   },
   "modules": {
