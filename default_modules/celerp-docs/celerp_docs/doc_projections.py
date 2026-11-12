@@ -478,6 +478,15 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
         if target is not None:
             target["stripe_released_at"] = data["released_at"]
+    elif event_type == "doc.payment.disputed":
+        target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
+        if target is not None:
+            disputes = target.setdefault("disputes", {})
+            dispute = disputes.setdefault(data["dispute_id"], {"steps": []})
+            dispute.update(state=data["state"], outcome=data.get("outcome"), amount_minor=data["amount_minor"],
+                           currency=data["currency"], steps=[*dispute["steps"], data["state"]])
+            if data["state"] == "funds_withdrawn":
+                dispute["withdrawn_minor"] = data["amount_minor"]
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]

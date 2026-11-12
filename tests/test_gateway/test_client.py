@@ -1165,7 +1165,7 @@ def test_hello_declares_exactly_the_delivery_types_dispatch_routes(client):
     payload = client._build_hello_payload(tos_version="v1", app_version="1.0.0")
     assert payload["delivery_types"] == sorted(client._DELIVERIES)
     assert set(payload["delivery_types"]) == {"invoice.payment", "invoice.payment_release", "invoice.refund", "invoice.fees",
-                                              "collection.attempt", "collection.binding"}
+                                              "invoice.dispute", "collection.attempt", "collection.binding"}
 
 
 @pytest.mark.asyncio

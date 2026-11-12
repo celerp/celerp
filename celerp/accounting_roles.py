@@ -111,6 +111,8 @@ class AccountRole(StrEnum):
     REVALUATION_SURPLUS = "revaluation_surplus"
     RESTRICTED_NET_ASSETS = "restricted_net_assets"
     DEFERRED_REVENUE = "deferred_revenue"
+    DISPUTED_PAYMENTS = "disputed_payments"
+    PAYMENT_DISPUTE_LOSSES = "payment_dispute_losses"
 
 
 R = AccountRole
@@ -152,6 +154,8 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.REVALUATION_SURPLUS: "Revaluation surplus",
     R.RESTRICTED_NET_ASSETS: "Restricted net assets",
     R.DEFERRED_REVENUE: "Deferred revenue",
+    R.DISPUTED_PAYMENTS: "Disputed payments",
+    R.PAYMENT_DISPUTE_LOSSES: "Payment dispute losses",
 }
 
 _ASSET = frozenset({"asset"})
@@ -196,6 +200,8 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.REVALUATION_SURPLUS: frozenset({"equity"}),
     R.RESTRICTED_NET_ASSETS: frozenset({"equity"}),
     R.DEFERRED_REVENUE: frozenset({"liability"}),
+    R.DISPUTED_PAYMENTS: _ASSET,
+    R.PAYMENT_DISPUTE_LOSSES: _EXPENSE,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -243,6 +249,8 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.REVALUATION_SURPLUS: "3400",
     R.RESTRICTED_NET_ASSETS: "3500",
     R.DEFERRED_REVENUE: "2160",
+    R.DISPUTED_PAYMENTS: "1170",
+    R.PAYMENT_DISPUTE_LOSSES: "6945",
 }
 
 # Landed-cost clearing role per landed-cost kind, and back.
@@ -280,7 +288,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
                      R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS),
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
-    "online_payments": (R.ONLINE_PAYMENT_FEES,),
+    "online_payments": (R.ONLINE_PAYMENT_FEES, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES),
     "funds": (R.RESTRICTED_NET_ASSETS,),
     "recognition": (R.DEFERRED_REVENUE,),
 }
@@ -298,7 +306,7 @@ UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
     R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES, R.RESTRICTED_NET_ASSETS,
-    R.DEFERRED_REVENUE})
+    R.DEFERRED_REVENUE, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split
 # (gain revenue, loss expense).

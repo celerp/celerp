@@ -1115,21 +1115,18 @@ async def test_migration_sink_journal_refuses_movement_shapes(client, session, a
 
 async def test_every_line_writer_has_a_row():
     """Every line writer in the source (line_writer_census) has one row with a class whose
-    cells cover each fund key; a row with no writer, a helper that is gone, a pending writer
-    that now exists, an ARRIVAL writer whose emit passes no origin, and a connector_upsert
+    cells cover each fund key; a row with no writer, a helper that is gone, an ARRIVAL writer whose emit passes no origin, and a connector_upsert
     call without the origin keyword each fail naming it."""
-    from line_writer_census import ARRIVAL_CLASSES, CELLS, HELPERS, PENDING, ROWS, census, table
+    from line_writer_census import ARRIVAL_CLASSES, CELLS, HELPERS, ROWS, census, table
 
     writers, defined, bare_upserts = census()
     found = {w.key for w in writers}
     assert not found - ROWS.keys(), f"line writers with no row: {sorted(found - ROWS.keys())}"
     assert not ROWS.keys() - found, f"rows with no writer: {sorted(ROWS.keys() - found)}"
     assert not HELPERS.keys() - defined, f"helpers no longer defined: {sorted(HELPERS.keys() - defined)}"
-    built = sorted(key for key in defined if key.rpartition("::")[2] in PENDING)
-    assert not built, f"pending writers now built, give each a row: {built}"
-    classes = {cls for cls, _ in [*ROWS.values(), *HELPERS.values(), *PENDING.values()]}
+    classes = {cls for cls, _ in [*ROWS.values(), *HELPERS.values()]}
     assert all(len(CELLS.get(cls, ())) == 3 for cls in classes), sorted(classes - CELLS.keys())
     silent = sorted(f"{w.key}:{w.line}" for w in writers if ROWS[w.key][0] in ARRIVAL_CLASSES and not w.origin)
     assert not silent, f"ARRIVAL writers whose emit passes no origin: {silent}"
     assert not bare_upserts, f"connector_upsert calls without origin=: {bare_upserts}"
-    assert len(table(writers)) == 2 + len(writers) + len(HELPERS) + len(PENDING)
+    assert len(table(writers)) == 2 + len(writers) + len(HELPERS)

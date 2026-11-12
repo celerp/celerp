@@ -99,6 +99,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1160", "name": "Asset Sale Clearing", "account_type": "asset", "parent_code": "1100"},
+    {"code": "1170", "name": "Disputed Payments", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000", "cash_flow_category": "investing"},
     {"code": "1210", "name": "Property, Plant and Equipment", "account_type": "asset", "parent_code": "1200"},
     {"code": "1220", "name": "Accumulated Depreciation", "account_type": "asset", "parent_code": "1200"},
@@ -146,6 +147,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6940", "name": "Online Payment Fees", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6945", "name": "Payment Dispute Losses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
     {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
@@ -289,6 +291,8 @@ _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.IMPAIRMENT_LOSS: ("6000", "6400"),
     AccountRole.REVALUATION_SURPLUS: ("3000", "3200"),
     AccountRole.DEFERRED_REVENUE: ("2100", "2110"),
+    AccountRole.DISPUTED_PAYMENTS: ("1100", "1120"),
+    AccountRole.PAYMENT_DISPUTE_LOSSES: ("6000", "6950"),
 }
 
 # Roles whose seeded account every seeded chart has always held, so the account found

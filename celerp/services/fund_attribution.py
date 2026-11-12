@@ -62,6 +62,7 @@ FUND_ATTRIBUTION: dict[str, str] = {
     "celerp.services.auto_je:create_for_merge_reclassification": "U-stock",
     "celerp.services.auto_je:create_for_mfg_movement": "U-stock",
     "celerp.services.auto_je:create_for_online_fees": "P",
+    "celerp.services.auto_je:post_dispute_adjustment": "P",
     "celerp.services.auto_je:create_for_po_receipt": "L/U-stock",
     "celerp.services.auto_je:create_for_receipt_undone": "V",
     "celerp.services.auto_je:create_for_return_received": "U-stock",

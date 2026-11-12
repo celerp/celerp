@@ -34,6 +34,7 @@ from ui.security import not_permitted_redirect
 from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, saved as funds_saved, set_all as fund_set_all, shows_funds
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
+from celerp.services.payments import dispute_status_key
 from celerp.services.document_lines import line_item_id
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -6578,7 +6579,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             Td(format_value(p_date, "date")),
             Td(format_value(p_method, "badge")),
             link_col,
-            Td(p_ref or EMPTY),
+            Td(p_ref or EMPTY, *[Div(t("documents.dispute_status", status=t(dispute_status_key(d))),
+                                     cls="text-muted small") for d in (p.get("disputes") or {}).values()]),
             Td(fmt_money(p_amount, currency),
                Div(t("documents.refunded_amount", amount=fmt_money(float(p["refunded"]), currency)), cls="text-muted small")
                if p.get("refunded") else "", cls="cell--number"),

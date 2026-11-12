@@ -1591,6 +1591,83 @@ async def create_for_online_fees(
     return expense
 
 
+# What each posting step of a card dispute moves: the account debited and the account
+# credited, a role or None for the payment's deposit account. "lost" is a closed dispute
+# Stripe decided against the company after it took the money.
+DISPUTE_STEPS: dict[str, tuple[AccountRole | None, AccountRole | None]] = {
+    "funds_withdrawn": (R.DISPUTED_PAYMENTS, None),
+    "funds_reinstated": (None, R.DISPUTED_PAYMENTS),
+    "lost": (R.PAYMENT_DISPUTE_LOSSES, R.DISPUTED_PAYMENTS),
+}
+
+
+async def post_dispute_adjustment(
+    session, *, company_id, user_id, doc_id: str, payment: dict, dispute_id: str, step: str,
+    amount_minor: int, currency: str, occurred_at: datetime | None,
+) -> bool:
+    """Post one step of a card dispute on *payment* (DISPUTE_STEPS): the money Stripe took
+    from the deposit account moves to Disputed payments, back when the company wins, and
+    on to Payment dispute losses when it loses. Dated the company's business day at
+    *occurred_at* (now when Stripe gave no time), moved to the correction day when that
+    day is closed. The payment and the invoice are never changed: the customer paid, and
+    the dispute is money held or lost after it. Each step posts once; False when it was
+    already posted. With funds in use the lines split by fund as the receipt banked."""
+    from datetime import timezone
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.company import Company
+    from celerp.services.account_roles import resolve
+    from celerp.services.business_time import business_date_at
+    from celerp.services.payments import stripe_amount
+    from celerp_docs.routes import books_currency_still
+
+    debit_role, credit_role = DISPUTE_STEPS[step]
+    suffix = f"{dispute_id}:{step}"
+    create_key = je_idempotency_key("dispute", suffix, "c")
+    if await find_event_by_idempotency(session, company_id, create_key) is not None:
+        return False
+    bank = payment["bank_account"]
+    base = payment["books"]["base_currency"].upper()
+    await books_currency_still(session, company_id, base)
+    disputed_currency = currency.upper()
+    paid_currency = str(payment.get("currency") or "").upper()
+    if disputed_currency == base:
+        rate = _Dec(1)
+    elif disputed_currency == paid_currency:
+        rate = checked_exchange_rate(payment["conversion_rate"])
+    else:
+        raise ValueError("A dispute's currency cannot be converted from the payment's recorded books")
+    disputed = stripe_amount(amount_minor, currency)
+    amount = to_base(disputed, rate, base)
+    bank_currency = (await bank_currencies(session, company_id)).get(bank)
+    bank_fx = ((disputed_currency, to_stored_float(round_money(disputed, disputed_currency)), float(rate))
+               if bank_currency == disputed_currency != base else None)
+
+    async def side(role: AccountRole | None, *, debit: bool) -> dict:
+        figures = {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
+        if role is None:
+            return {"account": bank, **figures, **bank_fx_fields(bank_fx, outflow=not debit)}
+        return _line(await resolve(session, company_id, role), role, **figures)
+
+    entries = [await side(debit_role, debit=True), await side(credit_role, debit=False)]
+    company = await session.get(Company, company_id)
+    original_day = business_date_at(occurred_at or datetime.now(timezone.utc),
+                                    ((company.settings if company else None) or {}).get("timezone"))
+    day = await correction_day(session, company_id, original_day) or original_day
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id,
+        je_id=f"je:auto:{doc_id}:dispute:{suffix}", record_id=doc_id,
+        idem_create=create_key, idem_posted=je_idempotency_key("dispute", suffix, "p"),
+        memo=f"Card payment dispute {dispute_id} on {doc_id}: {step.replace('_', ' ')}",
+        ts=day, currency=base,
+        entries=await _split_as_posted(session, company_id, entries, f"je:auto:{doc_id}:pay:{payment['index']}",
+                                       {bank}, base),
+        metadata_={"trigger": "doc.payment_dispute", "doc_id": doc_id, "reference": payment.get("reference"),
+                   "dispute_id": dispute_id, "step": step, "amount_minor": amount_minor,
+                   "currency": currency.lower()},
+    )
+    return True
+
+
 def _reversal_template(entry: dict) -> dict:
     """A line on the same account, with the same role snapshot, as ``entry``."""
     out = {"account": entry["account"], "debit": 0.0, "credit": 0.0}

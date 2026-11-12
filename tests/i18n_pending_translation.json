@@ -1817,6 +1817,97 @@
     "collection.access_removed_body": {
       "en": "Cards on file can no longer be charged. Invoices still bill and wait to be paid. Reconnect Stripe, then send each payer a new setup link.",
       "params": []
+    },
+    "posting.role.disputed_payments": {
+      "en": "Disputed payments",
+      "params": []
+    },
+    "posting.role.payment_dispute_losses": {
+      "en": "Payment dispute losses",
+      "params": []
+    },
+    "event.doc.payment.disputed": {
+      "en": "Payment disputed",
+      "params": []
+    },
+    "notice.payment_dispute.title": {
+      "en": "Card payment dispute on {document}",
+      "params": [
+        "document"
+      ]
+    },
+    "notice.payment_dispute.body": {
+      "en": "A customer disputed the {amount} card payment on {document} with their bank. {status}",
+      "params": [
+        "amount",
+        "document",
+        "status"
+      ]
+    },
+    "documents.dispute_status": {
+      "en": "Dispute: {status}",
+      "params": [
+        "status"
+      ]
+    },
+    "documents.dispute_created": {
+      "en": "The customer disputed this payment with their bank.",
+      "params": []
+    },
+    "documents.dispute_funds_withdrawn": {
+      "en": "Stripe took the disputed amount from your balance. It is held in Disputed payments until the dispute is decided.",
+      "params": []
+    },
+    "documents.dispute_funds_reinstated": {
+      "en": "Stripe returned the disputed amount to your balance.",
+      "params": []
+    },
+    "documents.dispute_won": {
+      "en": "The dispute was decided in your favour.",
+      "params": []
+    },
+    "documents.dispute_lost": {
+      "en": "The dispute was decided for the customer. The amount moved to Payment dispute losses.",
+      "params": []
+    },
+    "documents.dispute_closed": {
+      "en": "The dispute was closed without taking any money.",
+      "params": []
+    },
+    "notice.payment_dispute_not_recorded.title": {
+      "en": "Card payment dispute not recorded on {document}",
+      "params": [
+        "document"
+      ]
+    },
+    "notice.payment_dispute_not_recorded.body": {
+      "en": "Celerp Cloud reported dispute {dispute} of {amount} on {document}, but it could not be recorded: {reason} Record any money taken in a journal entry.",
+      "params": [
+        "amount",
+        "dispute",
+        "document",
+        "reason"
+      ]
+    },
+    "notice.payment_dispute_not_recorded.document": {
+      "en": "the invoice is no longer here.",
+      "params": []
+    },
+    "notice.payment_dispute_not_recorded.unmatched": {
+      "en": "the payment is still among the unmatched payments.",
+      "params": []
+    },
+    "notice.payment_dispute_not_recorded.payment": {
+      "en": "the payment is no longer on the invoice.",
+      "params": []
+    },
+    "notice.payment_dispute_not_recorded.currency": {
+      "en": "it is in another currency than the payment.",
+      "params": []
+    },
+    "notice.payment_dispute_not_recorded.amount": {
+      "en": "it is for more than the payment.",
+      "params": []
     }
   },
   "modules": {

@@ -619,6 +619,7 @@ class GatewayClient:
         "invoice.payment_release": "_handle_invoice_payment_release",
         "invoice.refund": "_handle_invoice_refund",
         "invoice.fees": "_handle_invoice_fees",
+        "invoice.dispute": "_handle_invoice_dispute",
         "collection.attempt": "_handle_collection_attempt",
         "collection.binding": "_handle_collection_binding",
     }
@@ -869,6 +870,12 @@ class GatewayClient:
         """Record actual payment fee adjustments using the invoice's existing books."""
         from celerp.services.payments import receive_fees
         await self._receive_delivery("invoice.fees", receive_fees, payload)
+
+    async def _handle_invoice_dispute(self, payload: dict) -> None:
+        """Record a delivered step of a card dispute on the payment it disputes and
+        acknowledge it once recorded."""
+        from celerp.services.payments import receive_dispute
+        await self._receive_delivery("invoice.dispute", receive_dispute, payload)
 
     async def _handle_invoice_refund(self, payload: dict) -> None:
         """Record a delivered change to a refund of an invoice payment and acknowledge

@@ -13,8 +13,7 @@ A line writer creates or replaces document lines (``line_items``) or journal lin
 
 Every writer has one row in ROWS (path::function -> class, reason), and every class has one cell
 per fund key in CELLS (rules LK1 to LK7 of the funds design). HELPERS are the functions the funds
-design adds that write through a row rather than emitting themselves; PENDING are the writers it
-adds that are not built yet, so a new writer of that name must get its row."""
+design adds that write through a row rather than emitting themselves."""
 
 from __future__ import annotations
 
@@ -144,6 +143,8 @@ ROWS: dict[str, tuple[str, str]] = {
     "celerp/services/demo.py::follow_books_currency": ("LOCAL", "demo data of an empty company"),
     "default_modules/celerp-accounting/celerp_accounting/donors.py::send_statements": (
         "NON-LINE", "records the statement sent on the donor contact"),
+    f"{_CORE}/collection.py::record_binding": ("NON-LINE", "records the payer's card on file on the contact"),
+    f"{_CORE}/collection.py::set_attempt": ("NO-LINE-CHANGE", "records the invoice's automatic collection state"),
     "ui/routes/subscriptions.py::_subscriber_draft": ("SEND", "New subscriber form: one line from this company's plan item"),
     "ui/routes/accounting.py::journal_new_submit": ("SEND", "a user's journal form"),
     **_many(_UI, "create_doc_from_items create_list_from_items", "SEND", "this company's items"),
@@ -175,12 +176,9 @@ HELPERS: dict[str, tuple[str, str]] = {
         "COPY", "bills a period through _bill"),
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::settle_amendment": (
         "COPY", "an amendment's credit note and debit document through issue_document"),
+    f"{_CORE}/auto_je.py::post_dispute_adjustment": (
+        "DERIVED-JE", "a card dispute's step on the receipt's fund split, through _emit_auto_posted_je"),
 }
-
-PENDING = {  # function -> (class, what it will write)
-    "post_dispute_adjustment": ("DERIVED-JE", "a payment dispute on the receipt's split"),
-}
-
 
 @dataclasses.dataclass(frozen=True)
 class Writer:
@@ -268,13 +266,12 @@ def census() -> tuple[list[Writer], set[str], list[str]]:
 
 
 def table(writers: list[Writer]) -> list[str]:
-    """The closed line-key table: one row per writer, helper and pending writer, each with its
+    """The closed line-key table: one row per writer and helper, each with its
     class and the cell its class gives each fund key."""
     rows = ["| # | Kind | Writer | event_type or calls | Class | origin | fund_choice | fund_id |",
             "|---|---|---|---|---|---|---|---|"]
     entries = [(w.kind, f"{w.key} (line {w.line})", w.event, *ROWS[w.key]) for w in writers]
     entries += [("HELPER", key, "-", *row) for key, row in HELPERS.items()]
-    entries += [("PENDING", name, "-", *row) for name, row in PENDING.items()]
     for n, (kind, where, event, cls, why) in enumerate(entries, 1):
         rows.append(f"| L{n} | {kind} | `{where}` | `{event}` | {cls}{': ' + why if why else ''} | "
                     + " | ".join(CELLS[cls]) + " |")

@@ -356,6 +356,59 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
     return True
 
 
+def _dispute_posting(step: str, outcome: str | None, before: dict) -> str | None:
+    """The DISPUTE_STEPS posting a dispute's *step* makes after the steps *before*: the
+    money taken once, given back only when it was taken, and lost only when it was taken
+    and not given back; None when the step moves no money."""
+    taken = "funds_withdrawn" in before.get("steps", ())
+    if step == "funds_withdrawn":
+        return None if taken else step
+    if step == "funds_reinstated":
+        return step if taken and "funds_reinstated" not in before.get("steps", ()) else None
+    if step == "closed" and outcome == "lost" and taken and "funds_reinstated" not in before.get("steps", ()):
+        return "lost"
+    return None
+
+
+async def record_stripe_dispute(session, company_id, row: Projection, payment: dict, *, dispute_id: str,
+                                state: str, outcome: str | None, amount_minor: int, currency: str,
+                                occurred_at: datetime.datetime | None) -> bool:
+    """Record one step of a card dispute on the online *payment* of the locked document
+    *row*, and post the money it moves (``auto_je.post_dispute_adjustment``): the amount
+    taken is the amount given back or lost, so Disputed payments always clears. The
+    payment and the invoice stay as they are. The company is told of each step, once.
+    Only ``payments.receive_dispute`` calls it, after checking the dispute belongs to
+    *payment*; the caller commits. False when the step was already recorded."""
+    from celerp.events.engine import emit_event
+    from celerp.notifications import service as notif_service
+    from celerp.services import auto_je
+
+    before = (payment.get("disputes") or {}).get(dispute_id) or {}
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=row.entity_id, entity_type="doc",
+        event_type="doc.payment.disputed",
+        data={"payment_index": payment["index"], "reference": payment["reference"], "dispute_id": dispute_id,
+              "state": state, "outcome": outcome, "amount_minor": amount_minor, "currency": currency.lower(),
+              "occurred_at": occurred_at.isoformat() if occurred_at else None},
+        actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
+        idempotency_key=f"stripe-dispute:{dispute_id}:{state}")
+    if getattr(entry, "was_deduped", False):
+        return False
+    posting = _dispute_posting(state, outcome, before)
+    moved = amount_minor if posting == "funds_withdrawn" else before.get("withdrawn_minor")
+    if posting is not None:
+        await auto_je.post_dispute_adjustment(
+            session, company_id=company_id, user_id=await _company_owner_id(session, company_id),
+            doc_id=row.entity_id, payment=payment, dispute_id=dispute_id, step=posting,
+            amount_minor=moved, currency=currency, occurred_at=occurred_at)
+    await notif_service.create_keyed(
+        session, company_id, "accounting", "notice.payment_dispute",
+        {"document": _doc_ref(row.state) or row.entity_id, "amount": pay.dispute_amount(amount_minor, currency),
+         "status": {"key": pay.dispute_status_key({"state": state, "outcome": outcome})}},
+        action_url=f"/docs/{row.entity_id}", priority="high")
+    return True
+
+
 # ── Public: pay, and the customer's return ───────────────────────────────────
 
 _NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the business that sent it."

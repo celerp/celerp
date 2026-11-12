@@ -836,6 +836,20 @@ class DocPaymentStripeReleased(BaseModel):
     released_at: str
 
 
+class DocPaymentDisputed(BaseModel):
+    """A step of a customer's card dispute on an online payment, as Stripe reported it
+    (celerp.services.payments.DISPUTE_STATES). The payment itself is never changed."""
+    model_config = ConfigDict(extra="forbid")
+    payment_index: int
+    reference: str
+    dispute_id: str
+    state: str
+    outcome: str | None = None
+    amount_minor: int
+    currency: str
+    occurred_at: str | None = None
+
+
 class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
@@ -1705,6 +1719,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.refund_reversed": DocPaymentRefundReversed,
     "doc.payment.stripe_released": DocPaymentStripeReleased,
+    "doc.payment.disputed": DocPaymentDisputed,
     "payment_batch.recorded": PaymentBatchRecorded,
     "line_action.recorded": LineActionRecorded,
     "doc.payment.voided": DocPaymentVoided,
