@@ -296,6 +296,7 @@ _CANNOT_CROSS = {
     "/lists/{entity_id}/reprice": "reprices a draft list, which stays a draft",
     "/docs/{entity_id}/scan": "adds lines to the document; a scanned line is taxed as it is added",
     "/docs/{entity_id}/void": "voids; nothing is charged",
+    "/docs/{entity_id}/change-fund": "moves a posted document's entries to other funds; its lines and their taxes stay as posted",
     "/lists/{entity_id}/void": "voids; nothing is charged",
     "/docs/{entity_id}/unvoid": "restores what an older version issued, as it charged before the void",
     "/docs/{entity_id}/revert-to-draft": "returns to the draft where the tax is chosen",

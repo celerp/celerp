@@ -274,7 +274,7 @@
       "params": []
     },
     "posting.fund.choice_line_unknown": {
-      "en": "This document no longer has that line. Reload it and choose again.",
+      "en": "This document no longer has that line, so its fund choice was not saved.",
       "params": []
     },
     "posting.fund.choice_local_line": {

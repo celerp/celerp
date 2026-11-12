@@ -7522,7 +7522,7 @@
   "posting.fund.choice_missing": "Choose a fund or Unrestricted for line {line}",
   "posting.fund.choice_needed": "{record} came from {source}: choose the fund for this document.",
   "posting.fund.document_choice_missing": "Choose a fund or Unrestricted for this document",
-  "posting.fund.choice_line_unknown": "This document no longer has that line. Reload it and choose again.",
+  "posting.fund.choice_line_unknown": "This document no longer has that line, so its fund choice was not saved.",
   "posting.fund.choice_local_line": "Line {line} didn't come from outside, so it has no fund to choose. Set its fund on the line itself.",
   "posting.fund.document_posted": "This document has posted; use Change fund",
   "posting.fund.inbound_key": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",

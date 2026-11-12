@@ -268,6 +268,7 @@ _ASCII_DUMPS = {
     ("celerp/services/module_journals.py", "_intent_hash"): _DIGEST,
     ("celerp/services/nav_overrides.py", "revision"): _DIGEST,
     ("celerp/services/peer_documents.py", "receive_document"): "measures the size of a request",
+    ("celerp/services/peer_lines.py", "_merged_legs"): _DIGEST,
     ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
     ("celerp/services/staged_downloads.py", "stage"): _FILE,
     ("celerp/services/update.py", "write_state"): _FILE,
