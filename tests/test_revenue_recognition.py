@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.auto_je import finalized_entry_day
 from test_credit_note_settlement_owned import _post
 from test_income_accounts import _category, _draft, _item, _line, ui_client  # noqa: F401 (fixture)
 from test_set_aside_older_paths import _net
@@ -416,6 +417,30 @@ async def test_cancellation_credit_note_reduces_unrecognized_first(client, sessi
     assert await _net(session, auth, deferred, prefix="je:") == 0.0
     assert await _net(session, auth, "4100", prefix="je:") == -400.0
     assert all(run["amount"] == 0 for run in await _runs(client, auth) if run["month"] == "2026-03")
+
+
+
+async def test_unlinked_credit_note_takes_its_share_of_a_scheduled_line(client, session, auth, monkeypatch):
+    """A note linked to no line spreads over the invoice's lines by what each sold: the
+    scheduled line's share comes off Deferred revenue, and the January run left outstanding
+    keeps its own amount."""
+    _freeze(monkeypatch, "2026-01-05")
+    plan = await _deferred_item(client, auth)
+    plain = await _item(client, auth, "Setup")
+    doc = await _invoice(client, auth, [_service(plan, 900), _line(plain, "Setup", 100)])
+    [schedule] = await _schedules(session, auth, doc)
+    _freeze(monkeypatch, "2026-02-10")
+    note = await _draft(client, auth, "credit_note", [_line(None, "Goodwill", 100)], original_doc_id=doc)
+    assert (await _post(client, auth, f"/docs/{note}/finalize")).status_code == 200
+    assert await _net(session, auth, schedule["deferred_account"], prefix="je:") == -810.0
+    assert await _net(session, auth, "4100", prefix="je:") == -90.0
+    [s] = await _schedules(session, auth, doc)
+    assert s["segments"] == [{"start": "2026-01-01", "end": "2026-01-31", "amount": 310.0},
+                             {"start": "2026-02-01", "end": "2026-03-31", "amount": 500.0}]
+    issued = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": note})).state
+    assert {k: s["amendments"][-1][k] for k in ("kind", "note_id", "amount", "effective")} == {
+        "kind": "credit", "note_id": note, "amount": 90.0, "effective": str(finalized_entry_day(issued))[:10]}
+    assert _by_month(await _runs(client, auth))["2026-01"] == [(0, 310.0, "outstanding")]
 
 
 async def test_recognition_stops_for_void_source(client, session, auth, monkeypatch):

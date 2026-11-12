@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Callable, Mapping
 from decimal import Decimal as _Dec
@@ -53,7 +53,7 @@ from celerp.services.account_roles import (
     split_party_key,
     surviving_key,
 )
-from celerp.services.business_time import business_date_of
+from celerp.services.business_time import business_date_of, company_today
 from celerp.services.record_quantities import sent_out_by
 from celerp.services import doc_asset_lines, recognition
 from celerp.services.company_lock import lock_company
@@ -856,9 +856,10 @@ def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> 
             *zip([c for c, _ in debited], (-share for share in allocate_pro_rata(back, [a for _, a in debited], currency)))]
 
 
-async def _posted_line_accounts(session, company_id, doc_id: str) -> dict[str, str]:
-    """line_id -> the account a document's live finalize entry credited that line on, read
-    from the entry's line allocations as posted (never from the item's account today)."""
+async def _posted_line_shares(session, company_id, doc_id: str) -> dict[str, dict]:
+    """line_id -> that line's share as a document's live finalize entry posted it (its
+    ``account`` and ``base``), read from the entry's line allocations (never from the item's
+    account today)."""
     from celerp.models.ledger import LedgerEntry
 
     live = [f"je:auto:{doc_id}:{suffix}" for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
@@ -869,7 +870,7 @@ async def _posted_line_accounts(session, company_id, doc_id: str) -> dict[str, s
     created = (await session.execute(_select(LedgerEntry.metadata_).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(live)),
         LedgerEntry.event_type == "acc.journal_entry.created"))).scalars().all()
-    return {share["line_id"]: share["account"] for metadata_ in created
+    return {share["line_id"]: share for metadata_ in created
             for share in ((metadata_ or {}).get("line_allocations") or {}).values()
             if share.get("line_id") and share.get("account")}
 
@@ -884,18 +885,26 @@ async def _note_with_posted_funds(session, company_id, doc: dict) -> dict:
     return {**doc, "line_items": posted_line_funds(doc.get("line_items"), (row.state or {}) if row is not None else {})}
 
 
-async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
-                             releasing: bool = False) -> tuple[list[dict], dict | None] | None:
+async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *, day: date | None = None,
+                             releasing: bool = False) -> tuple[list[dict], dict | None, dict] | None:
     """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
     account its invoice recognized it on), or with *releasing* the same lines the other
     way round, with its line allocations (_asset_split). Revenue goes back
     on the accounts the invoice sold on, in the proportions it credited them (an imported
     invoice can split its sale over several), except a line linked to an invoice line
     (source_line_id): its share goes back on the revenue account that invoice line was
-    credited on (_posted_line_accounts), and its allocation names it. A line crediting an asset's
+    credited on (_posted_line_shares), and its allocation names it. A line crediting an asset's
     sale goes on sale clearing (_asset_split). Where funds are on, each line is carried by
     the funds of the note lines behind it, a linked line in the fund its invoice line posted
-    with (_note_with_posted_funds). None when it carries no amount."""
+    with (_note_with_posted_funds). None when it carries no amount.
+
+    An invoice line recognized over its service period (a revenue schedule), while the
+    invoice's live entry posted it, takes its linked lines and its pro rata share of the
+    unlinked ones like an account of its own: the note dated ``day`` takes that share off
+    deferred revenue as far as the schedule still plans it (recognition.credited_segments)
+    and off the line's revenue account for the rest, and the third value holds each such
+    schedule's new segments and credit for the caller to record. A release runs only once
+    the invoice is void, when no schedule takes part."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return None
@@ -913,31 +922,53 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         amount = abs(amount)
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
-    posted = await _posted_line_accounts(session, company_id, original) if sold_on else {}
+    posted = await _posted_line_shares(session, company_id, original) if original else {}
+    schedules = {sid: s for sid, s in (await recognition.doc_schedules(session, company_id, original, lock=True)).items()
+                 if s.get("line_id") in posted} if posted and not releasing else {}
+    by_line = {s["line_id"]: sid for sid, s in schedules.items()}
+    weights = [(sid, to_decimal(posted[s["line_id"]]["base"])) for sid, s in sorted(schedules.items())]
     sold_codes = {code for code, _ in sold_on}
     linked: dict[str, _Dec] = {}
     on_code: dict[int, str] = {}
     for index, share in (allocations or {}).items():
         line = doc["line_items"][int(index)]
-        code = posted.get(line.get("source_line_id")) if isinstance(line, dict) and not line.get("asset_id") else None
-        if code in sold_codes:
-            share["account"] = code
+        source = line.get("source_line_id") if isinstance(line, dict) and not line.get("asset_id") else None
+        code = by_line.get(source) or (posted.get(source) or {}).get("account")
+        if code in sold_codes or code in schedules:
+            share["account"] = schedules[code]["account"] if code in schedules else code
             linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
             on_code[int(index) + 1] = code
     # The document lines behind each revenue line: a linked line on its own account, every
     # other line (not an asset's) on each account in the proportion that account takes of them.
     spread = {int(i) + 1: to_decimal(share["base"]) for i, share in (allocations or {}).items()
               if int(i) + 1 not in on_code and not doc["line_items"][int(i)].get("asset_id")}
-    if sold_on:
+    credits: dict[str, tuple[list[dict], dict]] = {}
+    if sold_on or weights:
         rest = to_decimal(revenue) - sum(linked.values(), _Dec(0))
         shares: dict[str, _Dec] = dict(linked)
-        for code, share in (_revenue_shares(rest, sold_on, base_currency) if rest else []):
+        for code, share in (_revenue_shares(rest, [*sold_on, *weights], base_currency) if rest else []):
             shares[code] = shares.get(code, _Dec(0)) + share
         shares = {code: share for code, share in shares.items() if share}
-        entries = [_revenue_line(settings, code, **side(to_stored_float(share), True)) for code, share in shares.items()]
-        bases = [{**{n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code},
-                  **({n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {})}
-                 or HEADER for code, share in shares.items()]
+        entries, bases = [], []
+        ledger = await recognition.run_ledger(session, company_id) if schedules else None
+        for code, share in shares.items():
+            behind = ({**{n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code},
+                       **({n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {})}
+                      or HEADER)
+            if code not in schedules:
+                entries.append(_revenue_line(settings, code, **side(to_stored_float(share), True)))
+                bases.append(behind)
+                continue
+            schedule = schedules[code]
+            deferred, segments = recognition.credited_segments(code, schedule, ledger, share, day)
+            credits[code] = (segments, to_stored_float(deferred))
+            for line, part in ((_line(schedule["deferred_account"], R.DEFERRED_REVENUE, **side(to_stored_float(deferred), True)),
+                                deferred),
+                               (_revenue_line(settings, schedule["account"], **side(to_stored_float(share - deferred), True)),
+                                share - deferred)):
+                if part:
+                    entries.append(line)
+                    bases.append({n: b * part / share for n, b in behind.items()} if behind is not HEADER else HEADER)
     elif revenue or not clearing:
         entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
         bases = [spread or HEADER]
@@ -952,7 +983,8 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
                    else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(total, False)))
     entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
                                   [*bases, CONTROL], base_currency)
-    return entries, allocations
+    return entries, allocations, credits
+
 
 
 async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
@@ -966,9 +998,11 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     the credit note was issued unless ``ts`` says otherwise, with ``memo`` replacing the
     standard one."""
     refuse_unissuable_taxes(await current_settings(session, company_id), "credit_note", doc)
-    built = await _credit_note_lines(session, company_id, doc, base_currency)
+    day = ts or finalized_entry_day(doc)
+    on = date.fromisoformat(str(day)[:10]) if day else await company_today(session, company_id)
+    built = await _credit_note_lines(session, company_id, doc, base_currency, day=on)
     if built:
-        entries, allocations = built
+        entries, allocations, credits = built
         cycle_suffix, je_type_key = _finalize_cycle(doc, "credit_note")
         metadata_ = {"trigger": "doc.finalized", "doc_id": doc_id}
         if allocations:
@@ -981,10 +1015,14 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
             idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
             idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
             memo=memo or f"Auto JE for credit note {doc_id} finalized",
-            ts=ts or finalized_entry_day(doc),
+            ts=day,
             entries=entries,
             metadata_=metadata_,
         )
+        for sid, (segments, amount) in sorted(credits.items()):
+            entry = recognition.amendment("credit", on.isoformat(), None, user_id, note_id=doc_id, amount=amount)
+            await recognition.record_amendment(session, company_id, user_id, sid, segments, entry,
+                                               key=f"{sid}:credit:{doc_id}:{cycle_suffix}", source="doc.finalized")
     await doc_asset_lines.notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
                                  change="credit")
 

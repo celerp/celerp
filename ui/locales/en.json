@@ -7686,5 +7686,8 @@
   "event.rev_schedule.created": "Revenue schedule created",
   "event.rev_schedule.amended": "Revenue schedule amended",
   "event.rev_schedule.fund_changed": "Revenue schedule fund changed",
-  "posting.role.deferred_revenue": "Deferred revenue"
+  "posting.role.deferred_revenue": "Deferred revenue",
+  "recognition.err_amend_posted": "A posted run covers a day from {effective} on. Reverse those runs first, then amend the schedule.",
+  "recognition.err_amend_invalid": "The service end can't be before the amendment takes effect, and the new amount can't be less than the {held} the schedule plans before that day.",
+  "recognition.err_schedule_not_found": "This revenue schedule doesn't exist."
 }

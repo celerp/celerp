@@ -1063,6 +1063,22 @@
     "posting.role.deferred_revenue": {
       "en": "Deferred revenue",
       "params": []
+    },
+    "recognition.err_amend_posted": {
+      "en": "A posted run covers a day from {effective} on. Reverse those runs first, then amend the schedule.",
+      "params": [
+        "effective"
+      ]
+    },
+    "recognition.err_amend_invalid": {
+      "en": "The service end can't be before the amendment takes effect, and the new amount can't be less than the {held} the schedule plans before that day.",
+      "params": [
+        "held"
+      ]
+    },
+    "recognition.err_schedule_not_found": {
+      "en": "This revenue schedule doesn't exist.",
+      "params": []
     }
   },
   "modules": {

@@ -1306,11 +1306,15 @@ class RevSegment(BaseModel):
 
 
 class RevAmendment(BaseModel):
+    """An amendment (``amend``) or a credit note (``credit``: the note ``note_id`` and the
+    ``amount`` it took off deferred revenue)."""
     kind: Literal["amend", "credit"]
     effective: str
     reason: str | None = None
     by: str | None = None
     at: str
+    note_id: str | None = None
+    amount: float | None = None
 
 
 class RevScheduleCreated(BaseModel):

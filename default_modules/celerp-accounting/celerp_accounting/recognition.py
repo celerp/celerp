@@ -4,22 +4,16 @@
 to its revenue account, posted by hand or by the dispatcher once authorized, and the
 deferred revenue roll-forward.
 
-A schedule (``rev_schedule``, made at finalize by celerp.services.recognition) holds
-segments of {start, end, amount}. Each segment recognizes over its days: through the end of
-month m it has recognized ``cum(m) = round(amount * days through m / days)``, and the run of
-month m is ``cum(m) - cum(m - 1)``, so the last run is exactly what is left and a missed run
-stays in its own month. Only months that have ended are planned, and nothing is planned for
-a schedule whose source document is void or whose source entry no longer stands.
-
-What has been recognized is read from the ledger, never stored: a run's entry is
-``je:auto:{schedule}:{segment}:{yyyy-mm}:{n}``, n counting its posts, and its reversal is
-that id with ``:reversal``. A run is posted while its latest entry stands unreversed. When
-Change fund moves a posted run onto a new fund (``dependents``), the run's entry is voided
-naming its copy ``{entry}:fund:{n}``, and the run stands as that copy.
+A schedule (``rev_schedule``, made at finalize by celerp.services.recognition, which also
+holds the run arithmetic and reads the run entries) holds segments of {start, end, amount}.
+Only months that have ended are planned, a segment's last run is exactly what its other runs
+leave (so a run posted before an amendment closed its segment never leaves a cent behind),
+and nothing is planned for a schedule whose source document is void or whose source entry
+no longer stands. When Change fund moves a posted run onto a new fund (``dependents``), the
+run stands as the copy it is replaced by.
 """
 from __future__ import annotations
 
-import calendar
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -37,16 +31,18 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.journal_accounts import funds_enabled
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import to_decimal, to_stored_float
 from celerp.services.peer_lines import LINE_KEYS, UNRESTRICTED, copy_posted_lines
 from celerp.services.permissions import read_authority, require_permission, role_has_permission
-from celerp.services.recognition import SCHEDULE
+from celerp.schemas.numbers import FiniteFloat
+from celerp.services.recognition import (
+    PREFIX, REVERSAL, SCHEDULE, Ledger, amended_segments, amendment, month_end, parse_run, posted_amount,
+    record_amendment, run_ledger, segment_runs,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 MODULE = "celerp-accounting"
-PREFIX = "je:auto:"
-REVERSAL = ":reversal"
 CONSENT = "recognition"
 LAPSED = "recognition_lapsed"
 CATEGORY = "recognition"
@@ -56,101 +52,6 @@ NOTICE_LAPSED = ("Automatic recognition stopped", "recognition.notice_lapsed")
 
 
 # ── planning ─────────────────────────────────────────────────────────────────────────────
-
-def _month_end(year: int, month: int) -> date:
-    return date(year, month, calendar.monthrange(year, month)[1])
-
-
-def _months(start: date, end: date):
-    """(yyyy-mm, month end) of every month from ``start``'s through ``end``'s."""
-    year, month = start.year, start.month
-    while (year, month) <= (end.year, end.month):
-        yield f"{year:04d}-{month:02d}", _month_end(year, month)
-        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-
-
-def segment_runs(segment: dict, currency: str, today: date) -> list[tuple[str, date, Decimal]]:
-    """(month, month end, amount) of each ended month of ``segment`` whose run moves money."""
-    start, end = date.fromisoformat(segment["start"]), date.fromisoformat(segment["end"])
-    amount, days = to_decimal(segment["amount"]), (end - start).days + 1
-    runs, before = [], Decimal(0)
-    for month, month_end in _months(start, end):
-        if month_end >= today:
-            break
-        through = (min(end, month_end) - start).days + 1
-        cum = round_money(amount * through / days, currency)
-        if cum != before:
-            runs.append((month, month_end, cum - before))
-        before = cum
-    return runs
-
-
-def _parse(entry_id: str) -> tuple[tuple[str, int, str], int, bool] | None:
-    """((schedule, segment, month), n, is reversal) of a run entry id; a copy Change fund
-    posted in a run entry's place reads as that entry."""
-    root = entry_id.split(":fund:", 1)[0]
-    reversal = root.endswith(REVERSAL)
-    body = root.removeprefix(PREFIX).removesuffix(REVERSAL)
-    try:
-        schedule, segment, month, n = body.rsplit(":", 3)
-        return (schedule, int(segment), month), int(n), reversal
-    except ValueError:
-        return None
-
-
-class Ledger:
-    """The run entries of the company: per run key, each post n with the entry standing for
-    it (``root`` its own id, ``id`` the copy Change fund replaced it by, when it did), and
-    which posts are reversed."""
-
-    def __init__(self, rows: list[tuple[str, dict]]):
-        self.posts: dict[tuple, dict[int, dict]] = defaultdict(dict)
-        self.reversals: dict[tuple, dict[int, dict]] = defaultdict(dict)
-        states = {entity_id: state or {} for entity_id, state in rows}
-        for entity_id, state in states.items():
-            parsed = None if ":fund:" in entity_id else _parse(entity_id)
-            if parsed is None:
-                continue
-            live, seen = entity_id, {entity_id}
-            while state.get("status") == "void" and state.get("replaced_by") in states.keys() - seen:
-                live = state["replaced_by"]
-                seen.add(live)
-                state = states[live]
-            key, n, reversal = parsed
-            (self.reversals if reversal else self.posts)[key][n] = {**state, "id": live, "root": entity_id}
-
-    def next_n(self, key) -> int:
-        return max(self.posts.get(key) or {0: None}) + 1
-
-    def latest(self, key) -> tuple[int, dict, dict | None] | None:
-        """The latest post of ``key`` and its reversal, when it was posted at all."""
-        posts = self.posts.get(key) or {}
-        if not posts:
-            return None
-        n = max(posts)
-        return n, posts[n], (self.reversals.get(key) or {}).get(n)
-
-    def live(self, key) -> dict | None:
-        """The entry the run stands as: its latest post, when that stands unreversed."""
-        latest = self.latest(key)
-        if latest is None:
-            return None
-        _, entry, reversal = latest
-        if entry.get("status") != "posted" or (reversal and reversal.get("status") == "posted"):
-            return None
-        return entry
-
-    def keys(self):
-        return self.posts.keys()
-
-
-async def _run_ledger(session, company_id) -> Ledger:
-    """Every run entry and reversal of the company, the copies Change fund posted included."""
-    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.entity_id.startswith(f"{PREFIX}rev:", autoescape=True)))).all()
-    return Ledger(rows)
-
 
 async def _states(session, company_id, entity_type: str, ids=None) -> dict[str, dict]:
     query = select(Projection.entity_id, Projection.state).where(
@@ -181,13 +82,6 @@ async def _schedules(session, company_id) -> dict[str, dict]:
     return schedules
 
 
-def _posted_amount(entry: dict, account: str) -> float:
-    """What a run entry moved off the deferred account (its debits there less its credits)."""
-    total = sum((to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
-                 for e in entry.get("entries") or () if e.get("account") == account), Decimal(0))
-    return to_stored_float(total)
-
-
 def _run(schedule_id: str, segment: int, month: str, amount, status: str, je_id: str | None) -> dict:
     return {"schedule_id": schedule_id, "segment": segment, "month": month, "amount": to_stored_float(amount),
             "status": status, "je_id": je_id}
@@ -202,15 +96,21 @@ def plan(schedules: dict[str, dict], ledger: Ledger, today: date) -> list[dict]:
         if schedule["stopped"]:
             continue
         for index, segment in enumerate(schedule.get("segments") or ()):
+            own = []
             for month, _, amount in segment_runs(segment, schedule["currency"], today):
                 key = (sid, index, month)
                 seen.add(key)
                 live = ledger.live(key)
-                runs.append(_run(sid, index, month, _posted_amount(live, schedule["deferred_account"]) if live else amount,
-                                 "posted" if live else "outstanding", live["id"] if live else None))
+                own.append(_run(sid, index, month, posted_amount(live, schedule["deferred_account"]) if live else amount,
+                                "posted" if live else "outstanding", live["id"] if live else None))
+            end = date.fromisoformat(segment["end"])
+            if own and own[-1]["status"] == "outstanding" and month_end(end.year, end.month) < today:
+                own[-1]["amount"] = to_stored_float(to_decimal(segment["amount"])
+                                                    - sum((to_decimal(r["amount"]) for r in own[:-1]), Decimal(0)))
+            runs += own
     for key in ledger.keys():
         if key not in seen and key[0] in schedules and (live := ledger.live(key)):
-            runs.append(_run(*key, _posted_amount(live, schedules[key[0]]["deferred_account"]), "posted", live["id"]))
+            runs.append(_run(*key, posted_amount(live, schedules[key[0]]["deferred_account"]), "posted", live["id"]))
     return sorted(runs, key=lambda r: (r["month"], r["schedule_id"], r["segment"]), reverse=True)
 
 
@@ -221,7 +121,7 @@ def _check_month(month: str) -> date:
         year, number = (int(p) for p in month.split("-"))
         if len(month) != 7:
             raise ValueError(month)
-        return _month_end(year, number)
+        return month_end(year, number)
     except ValueError:
         raise HTTPException(status_code=422, detail=catalog_refusal("recognition.err_month", month=month)) from None
 
@@ -271,7 +171,7 @@ async def run_recognition(session, company_id, user_id, month: str, *, post_on: 
     settings = company.settings or {}
     today = today or await company_today(session, company_id)
     schedules = await _schedules(session, company_id)
-    ledger = await _run_ledger(session, company_id)
+    ledger = await run_ledger(session, company_id)
     runs = [r for r in plan(schedules, ledger, today) if r["month"] == month and not schedules[r["schedule_id"]]["stopped"]]
     pending = [r for r in runs if r["status"] == "outstanding"]
     if pending:
@@ -314,7 +214,7 @@ async def dependents(session, company_id, user_id, doc_id: str, relabel) -> None
     doc = (await _states(session, company_id, "doc", [doc_id])).get(doc_id) or {}
     funds = leg_funds(doc)[0]
     rows = await lock_projections(session, company_id, found)
-    ledger = await _run_ledger(session, company_id)
+    ledger = await run_ledger(session, company_id)
     for sid in found:
         schedule = dict(rows[sid].state or {})
         fund = funds.get(int(schedule["line"]))
@@ -343,7 +243,7 @@ async def reverse_recognition(session, company_id, user_id, month: str, *, rever
     company = await locked_company(session, company_id)
     settings = company.settings or {}
     schedules = await _schedules(session, company_id)
-    ledger = await _run_ledger(session, company_id)
+    ledger = await run_ledger(session, company_id)
     latest = {key: ledger.latest(key) for key in ledger.keys() if key[2] == month and key[0] in schedules}
     latest = {key: found for key, found in latest.items() if found and found[1].get("status") == "posted"}
     if not latest:
@@ -364,8 +264,27 @@ async def reverse_recognition(session, company_id, user_id, month: str, *, rever
                 entries=copy_posted_lines(entry["id"], entry.get("entries") or [], reverse=True),
                 metadata_={"source": "recognition", "schedule_id": key[0], "segment": key[1], "month": month,
                            "reverses": entry["id"], **({"reverse_on_choice": day} if chosen else {})})
-        runs.append(_run(*key, _posted_amount(entry, schedules[key[0]]["deferred_account"]), "outstanding", reversal_id))
+        runs.append(_run(*key, posted_amount(entry, schedules[key[0]]["deferred_account"]), "outstanding", reversal_id))
     return {"runs": runs}
+
+
+async def amend_schedule(session, company_id, user_id, schedule_id: str, payload: AmendIn) -> dict:
+    """Amend a schedule from ``payload.effective`` (amended_segments); an amendment that
+    leaves the segments as they are records nothing, so a repeat is harmless. The caller commits."""
+    from celerp.services.company_lock import lock_projections
+
+    row = (await lock_projections(session, company_id, [schedule_id])).get(schedule_id)
+    if row is None or row.entity_type != SCHEDULE:
+        raise HTTPException(status_code=404, detail=catalog_refusal("recognition.err_schedule_not_found"))
+    schedule = dict(row.state or {})
+    segments = amended_segments(schedule_id, schedule, await run_ledger(session, company_id),
+                                effective=payload.effective, service_end=payload.service_end, amount=payload.amount)
+    if segments == schedule.get("segments"):
+        return {"schedule_id": schedule_id, "segments": segments, "amendment": None}
+    entry = amendment("amend", payload.effective.isoformat(), payload.reason, user_id)
+    await record_amendment(session, company_id, user_id, schedule_id, segments, entry,
+                           key=f"{schedule_id}:amend:{len(schedule.get('amendments') or ())}", source="recognition.amend")
+    return {"schedule_id": schedule_id, "segments": segments, "amendment": entry}
 
 
 # ── authorization and the dispatcher ─────────────────────────────────────────────────────
@@ -478,9 +397,9 @@ def roll_forward(schedules: dict[str, dict], journals: dict[str, dict], runs: li
                     bucket[flow] += held if flow == "deferred" else -held
     recognized: dict[str, Decimal] = defaultdict(Decimal)
     for entry_id, entry in journals.items():
-        parsed = _parse(entry_id)
+        parsed = parse_run(entry_id)
         if parsed and entry.get("status") == "posted" and _day(entry) <= date_to and parsed[0][0] in schedules:
-            recognized[parsed[0][0]] += to_decimal(_posted_amount(entry, schedules[parsed[0][0]]["deferred_account"]))
+            recognized[parsed[0][0]] += to_decimal(posted_amount(entry, schedules[parsed[0][0]]["deferred_account"]))
     for sid, schedule in schedules.items():
         source = journals.get(str(schedule.get("source_je"))) or {}
         held = Decimal(0)
@@ -516,6 +435,13 @@ class SettingIn(BaseModel):
     enabled: bool
 
 
+class AmendIn(BaseModel):
+    effective: date
+    service_end: date
+    amount: FiniteFloat | None = None
+    reason: str | None = None
+
+
 async def _settings(session, company_id) -> dict:
     from celerp.models.company import Company
 
@@ -524,7 +450,7 @@ async def _settings(session, company_id) -> dict:
 
 async def _overview(session, company_id) -> tuple[dict, dict, list[dict]]:
     schedules = await _schedules(session, company_id)
-    runs = plan(schedules, await _run_ledger(session, company_id), await company_today(session, company_id))
+    runs = plan(schedules, await run_ledger(session, company_id), await company_today(session, company_id))
     return await _settings(session, company_id), schedules, runs
 
 
@@ -616,5 +542,20 @@ async def reverse_month(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     answer = await reverse_recognition(session, company_id, user.id, month, reverse_on=(payload or ReverseIn()).reverse_on)
+    await session.commit()
+    return answer
+
+
+@router.post("/recognition/schedules/{schedule_id}/amend")
+async def post_amendment(
+    schedule_id: str,
+    payload: AmendIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Close the schedule the day before ``effective`` and plan the rest to ``service_end``."""
+    answer = await amend_schedule(session, company_id, user.id, schedule_id, payload)
     await session.commit()
     return answer

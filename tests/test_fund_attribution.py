@@ -52,7 +52,7 @@ def test_a_new_producer_or_variable_emitter_is_named(tmp_path: pathlib.Path):
 # the record's entry ids by prefix (which takes in every copy).
 _FAMILY_READERS = frozenset({"_doc_recognition_jes", "restore_ids", "void_record_postings", "repost_record_postings",
                              "imported_document", "_doc_void_events", "_doc_receipt_booked", "_doc_receipt_jes",
-                             "_sum_lines", "_run_ledger", "startswith"})
+                             "_sum_lines", "run_ledger", "startswith"})
 
 
 def _undo_problems(found: dict[str, set[str]], table: dict[str, str]) -> dict[str, list[str]]:
