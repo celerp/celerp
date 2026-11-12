@@ -924,6 +924,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/payments.py", "record_unmatched_payment"): _PAYMENT_STEP,
     ("celerp/services/peer_documents.py", "receive_document"): _PEER,
     ("celerp/services/peer_documents.py", "_choose_funds"): _PEER,
+    ("celerp/services/peer_lines.py", "outside_waiting"):
+        "imports Documents only while it runs in this process (is_running), and counts no "
+        "documents otherwise, since only Documents opens them for a fund choice",
     ("celerp/services/peer_documents.py", "_replay_receipts"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_receipt"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_fulfilment"): _PEER,

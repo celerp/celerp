@@ -44,6 +44,7 @@ from ui.routes.csv_import import (
 from ui.i18n import t, get_lang
 from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES
 from ui.components.encode import safe_url
+from ui.components.funds import fund_options
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -285,8 +286,7 @@ async def _fund_choice(token: str, docs: list[dict], company: dict, submitted) -
         funds = (await api.list_funds(token)).get("items") or []
     except APIError:
         return ""
-    options = [("", EMPTY), ("unrestricted", t("label.unrestricted")),
-               *((f["id"], f["name"]) for f in funds if not f["archived"])]
+    options = [("", EMPTY), *fund_options(funds)]
     known = {value for value, _ in options}
 
     def _select(field: str, label: str) -> FT:

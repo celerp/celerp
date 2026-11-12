@@ -7554,5 +7554,9 @@
   "label.unrestricted": "Unrestricted",
   "fund.waiting.count": "{count} outside documents waiting for a fund choice",
   "fund.waiting.count_one": "1 outside document waiting for a fund choice",
-  "fund.waiting.link": "Choose funds"
+  "fund.waiting.link": "Choose funds",
+  "fund.from_source": "From {source}",
+  "fund.uses": "uses {fund}",
+  "fund.document_label": "Fund for this document",
+  "fund.set_all_outside": "Set all outside lines to"
 }

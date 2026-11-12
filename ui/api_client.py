@@ -951,6 +951,12 @@ async def get_fund_waiting(token: str) -> dict:
         return _raise(await c.get("/accounting/funds/waiting")).json()
 
 
+async def choose_doc_funds(token: str, entity_id: str, body: dict) -> dict:
+    """Save fund choices on a document from outside: {expected_version, document, all, lines}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/fund-choices", json=body)).json()
+
+
 async def list_funds(token: str) -> dict:
     """The company's funds, archived ones included, by name."""
     async with _api_client(token) as c:

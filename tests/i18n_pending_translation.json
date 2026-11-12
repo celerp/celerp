@@ -474,6 +474,26 @@
     "fund.waiting.link": {
       "en": "Choose funds",
       "params": []
+    },
+    "fund.from_source": {
+      "en": "From {source}",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.uses": {
+      "en": "uses {fund}",
+      "params": [
+        "fund"
+      ]
+    },
+    "fund.document_label": {
+      "en": "Fund for this document",
+      "params": []
+    },
+    "fund.set_all_outside": {
+      "en": "Set all outside lines to",
+      "params": []
     }
   }
 }

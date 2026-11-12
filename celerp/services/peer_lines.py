@@ -416,10 +416,15 @@ def copied_header(state: Mapping) -> dict:
     return {key: state[key] for key in HEADER_KEYS if key in state}
 
 
-def source_label(origin) -> dict:
-    """Where a record came from, as a refusal param; an origin this version does not know
+def origin_key(origin) -> str:
+    """The catalog key naming where a record came from; an origin this version does not know
     reads as the neutral "another app"."""
-    return catalog_refusal(f"fund.origin.{origin if origin in ORIGINS else 'unknown'}")
+    return f"fund.origin.{origin if origin in ORIGINS else 'unknown'}"
+
+
+def source_label(origin) -> dict:
+    """Where a record came from (origin_key), as a refusal param."""
+    return catalog_refusal(origin_key(origin))
 
 
 def _refused(status: int, key: str, /, **params) -> HTTPException:
@@ -617,8 +622,8 @@ async def outside_waiting(session, company_id) -> dict:
     from celerp.models.projections import Projection
     from celerp.services.auto_je import IMPORT_TREATMENT
     from celerp.services.journal_accounts import funds_enabled
+    from celerp.modules.boundary import is_running
     from celerp.services.peer_documents import DOC_FUNDS
-    from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
 
     company = await session.get(Company, company_id)
     if company is None or not funds_enabled(dict(company.settings or {})):
@@ -626,6 +631,10 @@ async def outside_waiting(session, company_id) -> dict:
     fixes = (await session.scalars(select(CompanyPeerAttention.fix).where(
         CompanyPeerAttention.company_id == company_id))).all()
     held = sum(1 for fix in fixes if (fix or {}).get("kind") in ("funds", DOC_FUNDS))
+    if not is_running("celerp-docs"):  # documents wait only where Documents can open them
+        return {"count": held, "held": held, "documents": []}
+    from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
+
     rows = await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string().in_((*TOTAL_POSTED_DOC_TYPES, "purchase_order")),

@@ -31,6 +31,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
+from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, saved as funds_saved, set_all as fund_set_all, shows_funds
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.document_lines import line_item_id
@@ -2913,10 +2914,11 @@ celerpUpdateBulkAlloc();
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
             line_suggestions = await _po_line_suggestions(token, doc)
+        doc_funds = await _doc_funds(token, doc, _co_settings)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3412,6 +3414,55 @@ celerpUpdateBulkAlloc();
             except Exception:
                 pass
         return _li_field_display_cell(entity_id, li_index, field, display_value)
+
+    async def _fund_view(request: Request, entity_id: str) -> FundView | FT:
+        """The fund controls' view of a document, or the reason there is none as a cell error."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+            doc = await api.get_doc(token, entity_id)
+            funds = await _doc_funds(token, doc, settings)
+        except APIError as e:
+            return P(error_message(e), cls="cell-error")
+        if funds is None:
+            return P(t("fund.not_enabled"), cls="cell-error")
+        return FundView.of(doc, funds, settings, _get_role(request))
+
+    @app.get("/docs/{entity_id}/funds/{target}")
+    async def doc_fund_display(request: Request, entity_id: str, target: str):
+        view = await _fund_view(request, entity_id)
+        return funds_saved(view, target)[0] if isinstance(view, FundView) else view
+
+    @app.get("/docs/{entity_id}/funds/{target}/edit")
+    async def doc_fund_edit(request: Request, entity_id: str, target: str):
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        return fund_editor(view, target) if view.editable else funds_saved(view, target)[0]
+
+    @app.post("/docs/{entity_id}/funds")
+    async def doc_fund_save(request: Request, entity_id: str):
+        """Save a fund choice: the document's, one line's, or Set all outside lines. A refusal
+        keeps the selection beside its reason; a save answers with every fund control again."""
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        form = await request.form()
+        target, value = str(form.get("target") or ""), str(form.get("value") or "")
+        choice = {FUND_DOCUMENT: {"document": value or None}, FUND_ALL: {"all": value or None}}.get(
+            target, {"lines": {target: value or None}})
+        try:
+            result = await api.choose_doc_funds(token := _token(request), entity_id,
+                                                {"expected_version": _form_version(form), **choice})
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if target == FUND_ALL:
+                return fund_set_all(view, value=value, error=error_message(e))
+            return fund_editor(view, target, value=value, error=error_message(e))
+        return html_response(funds_saved(FundView(doc, view.funds, view.editable), target), headers={
+            "HX-Trigger": _json.dumps({"celerpListVersion": {"version": result.get("version")}})})
 
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of a document's or a list's text fields (terms_text, customer_note) via
@@ -7511,6 +7562,21 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
                id="doc-header-discount-row", cls="total-row")
 
 
+async def _doc_funds(token: str, doc: dict, settings: dict) -> list | None:
+    """The company's funds, for the fund controls of a document from outside; None with funds
+    off, on a local document, or when they can't be read (the controls are left out then)."""
+    from celerp.services.journal_accounts import funds_enabled
+
+    if not funds_enabled(settings) or not shows_funds(doc):
+        return None
+    try:
+        return (await api.list_funds(token)).get("items") or []
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return None
+
+
 def _fund_notice(cleared: dict | None) -> str:
     """What a save that changed amounts says about the fund choices it cleared."""
     if not cleared:
@@ -7575,7 +7641,7 @@ def subscription_meta_cells(doc: dict) -> tuple:
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
-                draw_targets: list | None = None) -> FT:
+                draw_targets: list | None = None, funds: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -7631,6 +7697,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
     # controls (the API enforces it; the UI must not offer controls that would 403).
     can_edit_lines = is_draft and _can_edit
+    # The fund controls of a record from outside; funds are given only with funds in use.
+    _fv = FundView.of(doc, funds, _s, role) if funds is not None else None
 
     def _on_lines(url: str, confirm: str | None = None, form: bool = False) -> dict:
         """The posting attributes of an action (a button, or a form with form=True) whose server
@@ -8634,6 +8702,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ])
             if account_cell:
                 cells.append(account_cell)
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, li), cls="col-fund"))
             cells.extend([
                 Td(Input(type="number", value=input_money(line_tot, currency), step="0.01",
                          cls="cell-input line-total",
@@ -8752,6 +8822,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, {}), cls="col-fund"))
             cells.extend([
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
@@ -8801,6 +8873,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers.extend([Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account"), cls="col-account"))
+        if _fv:
+            _line_headers.append(Th(t("th.fund"), cls="col-fund"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
         if pol["show_onhand"]:
             _line_headers.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
@@ -8918,6 +8992,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # below, or the right edge (consistent with button spacing elsewhere).
                 style="display:flex;justify-content:flex-end;margin:0.75rem 0;padding:0 0.75rem;",
             ) if pol["audit"] and status == _LF else None),
+            (fund_set_all(_fv) if _fv else None),
             Div(
                 Table(
                     *([_line_colgroup] if _line_colgroup else []),
@@ -11074,6 +11149,8 @@ async function celerpCsvImport(input, entityId) {{
                 acct_code = li.get("account_code") or ""
                 acct_display = _acct_map.get(acct_code) or acct_code or ""
                 cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, li), cls="col-fund"))
             cells.append(Td(format_value(line_total, "money", currency), cls="cell--number col-total"))
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
@@ -11109,6 +11186,8 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))
+        if _fv:
+            _thead_base.append(Th(t("th.fund"), cls="col-fund"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         if pol["show_onhand"]:
             _thead_base.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
@@ -11126,6 +11205,7 @@ async function celerpCsvImport(input, entityId) {{
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map, item_meta_map=item_meta_map, draw_panel=_fin_draw_panel) if _fin_show_bulk else None,
+            (fund_set_all(_fv) if _fv else None),
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [
@@ -11472,6 +11552,7 @@ async function celerpCsvImport(input, entityId) {{
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
+            (fund_document_meta(_fv) if _fv and doc.get("origin") else ""),
             (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
                    href=safe_url(doc_href(doc["original_doc_id"]))),

@@ -80,14 +80,14 @@ async def test_document_fund_cell_starts_unset_for_outside_lines(ui_client):
     # The line's own choice reads as its fund; nothing is left waiting, so Set all goes.
     chosen = await _page(ui_client, _bill(line_choice="fund:r"))
     assert "Building fund" in _element(chosen, "fund-cell-L1")
-    assert _element(chosen, "fund-set-all") is None
+    assert not _element(chosen, "fund-set-all")
 
     # The document's choice covers the line, which reads -- and, muted, the fund it uses.
     covered = await _page(ui_client, _bill(choice="fund:r"))
     cell = _element(covered, "fund-cell-L1")
     assert "--" in cell and "uses Building fund" in cell, cell
     assert "Building fund" in _element(covered, "doc-fund")
-    assert _element(covered, "fund-set-all") is None
+    assert not _element(covered, "fund-set-all")
 
     # A local line shows the fund it carries.
     assert _element(await _page(ui_client, _bill(local_fund="fund:r")), "fund-cell-L2") == "Building fund"
@@ -108,3 +108,52 @@ async def test_posted_document_fund_cells_read_only(ui_client):
     assert "Building fund" in _element(html, "fund-cell-L1")
     assert not re.search(r'id="fund-cell-L1"[^>]*hx-get', html)
     assert not re.search(r'id="doc-fund"[^>]*hx-get', html)
+
+
+async def _post(ui_client, doc_after: dict, choose: AsyncMock, data: dict, *, doc: dict | None = None):
+    company = {"id": "c1", "name": "Test Corp", "currency": "USD", "settings": {"funds_enabled": True}}
+    with patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc or _bill(), doc_after])), \
+         patch("ui.api_client.list_funds", new=AsyncMock(return_value=_FUNDS)), \
+         patch("ui.api_client.choose_doc_funds", new=choose), \
+         patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
+        return await ui_client.post("/docs/doc:b1/funds", data=data)
+
+
+async def test_fund_save_redraws_every_control_and_keeps_a_refused_choice(ui_client):
+    from ui.api_client import APIError
+
+    choose = AsyncMock(return_value={"version": 8})
+    r = await _post(ui_client, _bill(choice="fund:r"), choose,
+                    {"target": "document", "value": "fund:r", "expected_version": "7"})
+    assert r.status_code == 200, r.text
+    assert choose.await_args.args[1:] == ("doc:b1", {"expected_version": 7, "document": "fund:r"})
+    assert '"version": 8' in r.headers["HX-Trigger"]
+    # The saved control first, then the line cell and Set all redrawn out of band.
+    assert r.text.index('id="doc-fund"') < r.text.index('id="fund-cell-L1"')
+    assert "uses Building fund" in r.text and 'id="fund-set-all"' in r.text
+    assert r.text.count('hx-swap-oob="true"') == 3  # line 1, line 2, Set all
+    assert "Set all outside lines to" not in r.text
+
+    # One line's choice and Set all go to the route as lines and all.
+    choose = AsyncMock(return_value={"version": 8})
+    await _post(ui_client, _bill(line_choice="unrestricted"), choose,
+                {"target": "L1", "value": "unrestricted", "expected_version": "7"})
+    assert choose.await_args.args[2] == {"expected_version": 7, "lines": {"L1": "unrestricted"}}
+    choose = AsyncMock(return_value={"version": 8})
+    await _post(ui_client, _bill(line_choice="fund:r"), choose, {"target": "all", "value": "fund:r", "expected_version": "7"})
+    assert choose.await_args.args[2] == {"expected_version": 7, "all": "fund:r"}
+
+    # A stale save keeps the selection beside the reason, with Try again.
+    stale = AsyncMock(side_effect=APIError(409, "This document changed. Reload it."))
+    r = await _post(ui_client, _bill(), stale, {"target": "L1", "value": "fund:r", "expected_version": "6"})
+    assert "Try again" in r.text and 'value="fund:r"' in r.text and 'id="fund-cell-L1"' in r.text
+
+
+async def test_fund_cell_read_only_without_edit_permission(ui_client):
+    company = {"id": "c1", "name": "Test Corp", "currency": "USD", "settings": {"funds_enabled": True}}
+    ui_client.cookies.update({"celerp_token": make_test_token(role="viewer")})
+    with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_bill())), \
+         patch("ui.api_client.list_funds", new=AsyncMock(return_value=_FUNDS)), \
+         patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
+        r = await ui_client.get("/docs/doc:b1/funds/L1/edit")
+    assert 'id="fund-cell-L1"' in r.text and "<form" not in r.text and "hx-get" not in r.text
