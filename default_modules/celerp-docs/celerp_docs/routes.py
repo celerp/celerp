@@ -54,6 +54,7 @@ from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company, locked_state
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
 from celerp.services.journal_accounts import (
+    FundChoiceNeeded,
     funds_enabled, hold_fund_ledger, require_destinations, require_line_destinations, require_settlement_account,
 )
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
@@ -2884,6 +2885,16 @@ async def _shared_lots(session, company_id, entity_id: str, state: dict) -> list
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
 
+@contextmanager
+def _named_as(ref):
+    """A refusal of the entry a finalize posts names the document by ``ref``, the number the
+    reader sees: the number the finalize claimed rolls back with the refusal."""
+    try:
+        yield
+    except FundChoiceNeeded as refused:
+        raise FundChoiceNeeded(str(ref or ""), refused.detail["params"]["source"], refused.fix["lines"]) from None
+
+
 async def finalize_document(
     entity_id: str,
     company_id: str,
@@ -3000,7 +3011,8 @@ async def finalize_document(
         # span_lots: the interactive finalize recognizes a line exceeding its bound
         # lot at the sibling lots that will actually be drawn; import/repair paths
         # stay on exact bound-lot pricing.
-        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
+        with _named_as(_initial_doc_state.get("ref_id")):
+            await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, span_lots=True)
         # A credit note an earlier release issued while this invoice was in draft is
         # settled now that the invoice stands again.
         from celerp_docs.legacy_credit_notes import settle_legacy_credit_notes  # noqa: PLC0415
@@ -3030,7 +3042,8 @@ async def finalize_document(
         _revert_count = int(_initial_doc_state.get("revert_count", 0))
         await auto_je.restore_return_charges(session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
                                              revert_count=_revert_count)
-        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
+        with _named_as(_initial_doc_state.get("ref_id")):
+            await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
         await _capitalise_landed_received(session, company_id, _user_id, entity_id, _initial_doc_state,
                                           f"fin:{_revert_count}")
     elif doc_type == "credit_note":

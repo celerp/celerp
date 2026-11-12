@@ -55,6 +55,7 @@ from celerp.services.account_roles import (
     scope_codes,
     target_problems,
 )
+from celerp.services import peer_lines
 
 CHART_MODULE = "celerp-accounting"
 
@@ -97,11 +98,24 @@ class UntrustedChartError(ValueError):
 
 class UnbalancedJournalEntry(Refused):
     """An automatic journal entry whose lines do not balance in the company currency."""
+    status_code = 422
+    fix: dict | None = None
 
 
 class RestrictedFundMovement(UnbalancedJournalEntry):
     """A journal entry that moves money between funds other than through
     post_fund_movement, by an actor it was not granted to, or against its movement rules."""
+
+
+class FundChoiceNeeded(UnbalancedJournalEntry):
+    """An entry for a record that came from outside with a line no fund choice covers
+    (peer_lines.check_outside_record). ``fix`` tells the reader what to choose: the
+    document's fund and the numbers of the lines that have none of their own."""
+    status_code = 409
+
+    def __init__(self, record: str, source: dict, lines: list[int]):
+        super().__init__("posting.fund.choice_needed", record=record, source=source)
+        self.fix = {"kind": "funds", "document": True, "lines": lines}
 
 
 _chart: ChartAccess | None = None
@@ -756,6 +770,11 @@ async def check_fund_void(session: AsyncSession, company_id, entity_id: str) -> 
             "posting.fund.movement_void", fund=_moving_fund(entries, funds)))
 
 
+def stock_codes(settings: dict) -> set[str]:
+    """The accounts of stock and its cost (STOCK_ROLES), which never carry a restricted fund."""
+    return set().union(*(scope_codes(settings, role) for role in STOCK_ROLES))
+
+
 def _check_fund_lines(settings: dict, entries: list[dict], named: set[str], funds: dict[str, dict],
                       restricted_na: set[str], retained: set[str], *, new: bool) -> None:
     """Rules 1, 2, 3 and 7 of check_fund_rules, for a company with funds turned on."""
@@ -779,7 +798,7 @@ def _check_fund_lines(settings: dict, entries: list[dict], named: set[str], fund
                 "posting.fund.unbalanced", fund=funds[fund_id]["name"] if fund_id else unrestricted_label(),
                 difference=str(round_money(abs(difference), currency)), currency=currency)
 
-    stock = set().union(*(scope_codes(settings, role) for role in STOCK_ROLES))
+    stock = stock_codes(settings)
     for e in entries:
         fund = funds.get(e.get("fund_id") or "")
         restricted = bool(fund and fund.get("restricted"))
@@ -809,7 +828,9 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     posts only as _authorize_movement allows and meets its type's template and cap
     (_check_movement). With funds off, a new line carrying a fund
     is refused, unless the entry came from outside (its ``origin``), whose lines are kept as
-    sent (peer_lines), and only the movement shapes are judged."""
+    sent (peer_lines), and only the movement shapes are judged. With funds on, a new entry for
+    a record or journal that came from outside is judged first by rule R
+    (peer_lines.check_outside_record): every line it posts is covered by a fund choice."""
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
     settings = await hold_fund_ledger(session, company_id)
@@ -821,6 +842,8 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
     retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
     if funds_enabled(settings):
+        if new:
+            await peer_lines.check_outside_record(session, company_id, data, entries, settings)
         _check_fund_lines(settings, entries, named, funds, restricted_na, retained, new=new)
 
     if _movement_shape(data, entries, accounts or {}, settings, funds, restricted_na, retained):

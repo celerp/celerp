@@ -495,7 +495,7 @@ async def test_outside_choice_check_covers_every_posting_entry_point(client, ses
     else:
         doc = await _imported(client, auth, [{**_line(None, "Supplies", 25), "receive_as": "expense"}], doc_type="bill")
         uncovered = [1]
-    ref = doc.split(":", 1)[1]
+    ref = (await _doc(client, auth, doc))["ref_id"]
     before = await _entry_ids(session, auth)
     _needs_choice(await _post(client, auth, f"/docs/{doc}/finalize"), ref, uncovered)
     assert (await _doc(client, auth, doc))["status"] == "draft"
@@ -521,7 +521,8 @@ async def test_outside_choice_check_covers_every_posting_entry_point(client, ses
     r = await client.post("/docs/import/batch", headers=auth["headers"], json={"records": [{
         "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
         "data": {"doc_type": "invoice" if shape == "lines" else "bill", "status": "final", "ref_id": eid.split(":")[1],
-                 "issue_date": "2026-02-01", "line_items": [], "shipping": 15, "total": 15}}]})
+                 "issue_date": "2026-02-01", "line_items": [], "shipping": 15, "total": 15,
+                 "import_treatment": "record_now"}}]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
     assert "choose the fund for this document" in r.text, r.text
 

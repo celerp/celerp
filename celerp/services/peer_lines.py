@@ -135,25 +135,77 @@ def chosen_lines(lines: list, grant: FundChoiceGrant) -> list:
     return out
 
 
-def leg_funds(doc: Mapping) -> tuple[dict[int, str | None], str | None]:
-    """The fund of each line of ``doc`` (by line number, 1-based) its entry posts to, and the
-    fund of what no line stands behind. A line that came from outside goes where the company
-    chose, its own choice before the document's; a local line goes to its ``fund_id``. With no
-    choice, or the choice of Unrestricted, a line has no fund. The document's choice is the
-    header's fund on an outside record; a local record's header has none."""
-    def fund(choice):
-        return None if choice in (None, "", UNRESTRICTED) else choice
+def _fund_of(cover) -> str | None:
+    """The fund a choice (or a local line's ``fund_id``) gives; none for Unrestricted or no choice."""
+    return None if cover in (_ABSENT, None, "", UNRESTRICTED) else cover
 
-    document = fund(doc.get("fund_choice")) if doc.get("origin") else None
-    funds = {}
+
+def _covers(doc: Mapping) -> tuple[dict[int, Any], Any]:
+    """What covers each line of ``doc`` (by line number, 1-based) and what no line stands
+    behind: a line that came from outside its own choice, else the document's, else nothing
+    (``_ABSENT``); a local line its ``fund_id``. The document's choice covers the header of a
+    record that came from outside; a local header needs none."""
+    document = doc.get("fund_choice") or (_ABSENT if doc.get("origin") else None)
+    covers = {}
     for n, line in enumerate(doc.get("line_items") or [], 1):
         if not isinstance(line, dict):
-            funds[n] = None
+            covers[n] = None
         elif line.get("origin"):
-            funds[n] = fund(line.get("fund_choice")) if line.get("fund_choice") else document
+            covers[n] = line.get("fund_choice") or doc.get("fund_choice") or _ABSENT
         else:
-            funds[n] = line.get("fund_id") or None
-    return funds, document
+            covers[n] = line.get("fund_id")
+    return covers, document
+
+
+def leg_funds(doc: Mapping) -> tuple[dict[int, str | None], str | None]:
+    """The fund of each line of ``doc`` (by line number) its entry posts to, and the fund of
+    what no line stands behind (_covers); a line nothing covers has none, and rule R
+    (check_outside_record) refuses its entry."""
+    covers, document = _covers(doc)
+    return {n: _fund_of(cover) for n, cover in covers.items()}, _fund_of(document)
+
+
+async def check_outside_record(session, company_id, data: Mapping, entries: list[dict], settings: Mapping) -> None:
+    """Rule R: a new entry for a record that came from outside posts only lines a fund choice
+    covers. A record's entry (``data["record_id"]``) names on each line the document lines
+    behind it (``source_lines``, fund_legs); a line with none stands for the header. A journal
+    that arrived from outside (``data["origin"]``) is its own record, each line covered by its
+    own choice or the entry's. A line is covered when every line behind it has a choice and
+    the line carries the fund that choice gives; stock and stock cost lines carry no fund and
+    need none. Anything else raises FundChoiceNeeded naming the lines to choose for."""
+    from celerp.models.projections import Projection
+    from celerp.services.journal_accounts import FundChoiceNeeded, stock_codes
+
+    if data.get("origin"):
+        document = data.get("fund_choice") or _ABSENT
+        covers = {n: line.get("fund_choice") or document for n, line in enumerate(entries, 1)}
+        legs = [(line, [n]) for n, line in enumerate(entries, 1)]
+        record, origin = str(data.get("memo") or ""), data["origin"]
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": data.get("record_id")}) \
+            if data.get("record_id") else None
+        state = (row.state or {}) if row is not None else {}
+        lines = [li for li in state.get("line_items") or [] if isinstance(li, dict)]
+        origin = state.get("origin") or next((li["origin"] for li in lines if li.get("origin")), None)
+        if not origin:
+            return
+        covers, document = _covers(state)
+        legs = [(line, line.get("source_lines") or []) for line in entries]
+        record = str(state.get("ref_id") or data["record_id"].split(":", 1)[-1])
+    stock = stock_codes(dict(settings))
+    uncovered: set[int] = set()
+    refused = False
+    for line, numbers in legs:
+        if line["account"] in stock:
+            continue
+        fund = line.get("fund_id") or None
+        if not numbers:
+            refused |= document is _ABSENT or _fund_of(document) != fund
+        bad = {n for n in numbers if covers.get(n, _ABSENT) is _ABSENT or _fund_of(covers[n]) != fund}
+        uncovered |= bad
+        refused |= bool(bad)
+    if refused:
+        raise FundChoiceNeeded(record, source_label(origin), sorted(uncovered))
 
 
 def copied_header(state: Mapping) -> dict:

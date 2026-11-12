@@ -21,7 +21,7 @@ from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reaso
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.journal_accounts import require_line_destinations
+from celerp.services.journal_accounts import hold_fund_ledger, require_line_destinations
 from celerp.services.locations import require_ship_from
 from celerp_docs.doc_money import money_from_lines, refuse_unset_line_tax
 from celerp_docs.doc_projections import UNISSUED_STATUSES
@@ -92,6 +92,9 @@ async def import_doc_records(
             )
         )).scalars().all())
 
+    # An issued document posts its entry, which holds the fund ledger; the ledger ranks
+    # before the document rows the import writes, so it is taken first.
+    await hold_fund_ledger(session, company_id)
     company = await session.get(Company, company_id)
     base_currency = company.settings.get("currency", "USD") if company else "USD"
     # Fail authorization before the first row writes, so a mixed-status import cannot
