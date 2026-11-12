@@ -258,7 +258,7 @@ def _checked_numbers(values: dict) -> dict:
                 values.pop(name, None)
         label_size({"format": values.get("format")})
     except LabelNumberError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from None
+        raise HTTPException(status_code=422, detail=e.text) from None
     return values
 
 
@@ -266,11 +266,12 @@ def _pdf(items: list[dict], template: dict, unit_map: dict[str, dict]) -> bytes:
     """The PDF label sheet, refused with a plain reason when the template holds a size that
     is not a number inside its range."""
     from celerp_labels.service import LabelNumberError, render_label_pdf
+    from ui.i18n import t as translate
 
     try:
         return render_label_pdf(items, template, unit_map)
     except LabelNumberError as e:
-        raise HTTPException(status_code=422, detail=f"This label template cannot be printed. {e}") from None
+        raise HTTPException(status_code=422, detail=translate("labels.cannot_print", reason=e.text)) from None
 
 
 def _label_source(source: str, role: str, settings: dict) -> dict:

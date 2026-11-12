@@ -32,6 +32,7 @@ from celerp.services.units import (
     is_weight_unit,
 )
 from ui.components.encode import Admitted, library_markup, svg_bars, svg_cells
+from ui.i18n import t
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
@@ -93,14 +94,15 @@ def display_label(label: str) -> str:
 
 # ── Label numbers: one parser for every size and position a template stores ──
 
-# Each number a template stores, as the person reads it, and the range a label can use.
+# Each number a template stores: the key of its name as the person reads it, and the range
+# a label can use.
 LABEL_NUMBERS: dict[str, tuple[str, float, float]] = {
-    "width_mm": ("Width (mm)", 5.0, 1000.0),
-    "height_mm": ("Height (mm)", 5.0, 1000.0),
-    "x": ("Left position (mm)", 0.0, 1000.0),
-    "y": ("Top position (mm)", 0.0, 1000.0),
-    "fontSize": ("Font size (pt)", 4.0, 72.0),
-    "barcode_height": ("Bar height (mm)", 1.0, 30.0),
+    "width_mm": ("label.width_mm", 5.0, 1000.0),
+    "height_mm": ("label.height_mm", 5.0, 1000.0),
+    "x": ("labels.num_x", 0.0, 1000.0),
+    "y": ("labels.num_y", 0.0, 1000.0),
+    "fontSize": ("labels.num_font_size", 4.0, 72.0),
+    "barcode_height": ("labels.num_bar_height", 1.0, 30.0),
 }
 FIELD_NUMBERS = ("x", "y", "fontSize", "barcode_height")
 _NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
@@ -108,13 +110,18 @@ _FORMAT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)x([0-9]+(?:\.[0-9]+)?)mm")
 
 
 class LabelNumberError(ValueError):
-    """A template number that is not a number inside its range; the message says which one."""
+    """A template number that is not a number inside its range; ``text`` (a translated
+    Text) says which one."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
 
 
 def label_number(name: str, value: Any) -> int | float:
     """``value`` (a number, or its decimal text) as the label number ``name``, inside its range;
     a whole number comes back as an int, so a saved 22 reads back as 22, not 22.0."""
-    what, lo, hi = LABEL_NUMBERS[name]
+    what_key, lo, hi = LABEL_NUMBERS[name]
     number = None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
@@ -124,7 +131,7 @@ def label_number(name: str, value: Any) -> int | float:
     elif isinstance(value, str) and _NUMBER_RE.fullmatch(value.strip()):
         number = float(value.strip())
     if number is None or not math.isfinite(number) or not lo <= number <= hi:
-        raise LabelNumberError(f"{what} must be a number from {lo:g} to {hi:g}.")
+        raise LabelNumberError(t("labels.err_number", what=t(what_key), lo=f"{lo:g}", hi=f"{hi:g}"))
     return int(number) if number.is_integer() else number
 
 
@@ -159,7 +166,7 @@ def label_fields(fields: Any) -> Any:
                 try:
                     field[name] = label_number(name, field[name])
                 except LabelNumberError as e:
-                    raise LabelNumberError(f"Field {i} ({field.get('key', '')}): {e}") from None
+                    raise LabelNumberError(t("labels.err_field", n=i, field=field.get("key", ""), reason=e.text)) from None
         out.append(field)
     return out
 

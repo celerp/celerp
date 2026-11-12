@@ -13,6 +13,7 @@ import os
 import random
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 from celerp_labels.models import LabelTemplate
 from celerp_labels.service import FIELD_NUMBERS, LABEL_NUMBERS
-from ui.i18n import t
+from ui.i18n import refusal_text
 
 SEED = int(os.environ.get("LABEL_NUMBERS_SEED", "20261112"))
 DRAWS = 24
@@ -29,6 +30,23 @@ _REFERENCE_CHARS = set("0123456789.+-eE")
 _WORDS = ["", " ", "abc", "nan", "NaN", "inf", "-inf", "Infinity", "1_0", "١٢", "๑๒",
           "1e400", "-1e400", "1e", ".", "--5", "5..0", "0x10", "1,5", "12mm", " 5 ", "1e-400",
           "+.5", "5.", "1E1", " 10 ", "1 0", "\t30\n", "５", "²"]
+
+
+# How each refusal names its number, written out apart from the catalogs under test.
+_READS_AS = {"width_mm": ("Width (mm)", 5, 1000), "height_mm": ("Height (mm)", 5, 1000),
+             "x": ("Left position (mm)", 0, 1000), "y": ("Top position (mm)", 0, 1000),
+             "fontSize": ("Font size (pt)", 4, 72), "barcode_height": ("Bar height (mm)", 1, 30)}
+
+
+@pytest.fixture(autouse=True)
+def _module_catalogs():
+    """The test app wires this module's routes without loading it, so its translation
+    catalogs are registered here, as the module loader does (other tests clear them), and a
+    refusal reads as the person sees it."""
+    from celerp.modules.loader import _register_locales, read_manifest
+
+    pkg = Path(__file__).resolve().parent.parent
+    _register_locales(pkg.name, pkg, read_manifest(pkg))
 
 
 def _reference_value(name: str, value):
@@ -122,7 +140,12 @@ async def test_api_accepts_a_label_number_exactly_when_the_reference_does(client
                     assert r.status_code == ok, case
                 elif expected is None:
                     assert r.status_code == 422, case
-                    assert isinstance(r.json()["detail"], (str, list)), case
+                    if name in FIELD_NUMBERS or isinstance(value, str):  # else the body's types refuse it
+                        what, lo, hi = _READS_AS[name]
+                        reason = f"{what} must be a number from {lo} to {hi}."
+                        if name in FIELD_NUMBERS:
+                            reason = f"Field 1 (name): {reason}"
+                        assert refusal_text(r.json()["detail"]) == reason, case
                 else:
                     assert r.status_code == ok, (case, r.text)
                     assert _stored(r.json(), name) == expected, case
@@ -196,7 +219,7 @@ async def test_a_stored_bad_number_is_refused_plainly_on_every_print_path(client
 
     r = await client.post(f"/api/labels/print/item-1?template_id={tid}", headers=headers)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"].startswith("This label template cannot be printed.")
+    assert refusal_text(r.json()["detail"]).startswith("This label template cannot be printed. ")
     r = await client.post("/api/labels/bulk-print", json={"template_id": tid, "entity_ids": ["item-1"]},
                           headers=headers)
     assert r.status_code == 422, r.text
@@ -210,7 +233,7 @@ async def test_a_stored_bad_number_is_refused_plainly_on_every_print_path(client
         with patch("celerp_labels.ui_routes.httpx.AsyncClient", _api):
             page = await ui.get(f"/labels/print/item-1?template_id={tid}")
     assert page.status_code == 422, page.text[:300]
-    assert t("labels.cannot_print", reason="").strip() in page.text
+    assert "This label template cannot be printed. " in page.text
     assert "window.print" not in page.text
 
 
@@ -222,4 +245,4 @@ async def test_barcode_preview_refuses_a_bad_height_plainly(client: AsyncClient,
     async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
         r = await ui.get("/api/labels/preview/barcode", params={"value": "12345", "height": height})
     assert r.status_code == 422, r.text
-    assert "Bar height (mm) must be a number from 1 to 30." == r.text
+    assert r.text == "Bar height (mm) must be a number from 1 to 30."

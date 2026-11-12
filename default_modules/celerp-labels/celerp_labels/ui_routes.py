@@ -765,7 +765,7 @@ def _field_row_compact(
 
 def _limits(name: str) -> dict[str, str]:
     """The min and max a number input of the label number ``name`` offers (LABEL_NUMBERS)."""
-    _what, lo, hi = LABEL_NUMBERS[name]
+    _, lo, hi = LABEL_NUMBERS[name]
     return {"min": f"{lo:g}", "max": f"{hi:g}"}
 
 
@@ -1029,7 +1029,7 @@ def _printable_label_sheet(
         template = printable_template(template or {})
         w_mm, h_mm = label_size(template)
     except LabelNumberError as e:
-        return _print_page(back_url, P(t("labels.cannot_print", reason=str(e)), cls="flash flash--error"),
+        return _print_page(back_url, P(t("labels.cannot_print", reason=e.text), cls="flash flash--error"),
                            status_code=422)
     fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
 
@@ -1282,7 +1282,7 @@ def setup_ui_routes(app) -> None:
         try:
             height = int(label_number("barcode_height", request.query_params.get("height", BARCODE_HEIGHT_DEFAULT)))
         except LabelNumberError as e:
-            return StarletteResponse(content=str(e), status_code=422, media_type="text/plain")
+            return StarletteResponse(content=e.text, status_code=422, media_type="text/plain")
         res = _make_barcode_svg(value, module_height=height)
         if res:
             return StarletteResponse(content=res[0], media_type="image/svg+xml",
