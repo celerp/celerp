@@ -37,6 +37,7 @@ from celerp.services.journal_accounts import (
     lock_accounts,
 )
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.peer_lines import records_carrying
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -156,15 +157,25 @@ async def set_funds_setting(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Turn funds on or off. Off is refused while any fund holds a balance on any account."""
+    """Turn funds on or off. On is refused while an unposted record carries fund fields
+    sent from outside; off while any fund holds a balance on any account, or an unposted
+    record holds a fund choice or a line's fund."""
     await lock_fund_ledger(session, company_id, shared=False)
     company = await locked_company(session, company_id)
     if funds_enabled(company.settings or {}) != payload.enabled:
         if payload.enabled:
+            # Every fund key an unposted record carries at turn-on came from outside: funds
+            # off keeps them as sent, and turning off waits for local choices to clear.
+            if carried := await records_carrying(session, company_id, ("fund_choice", "fund_id")):
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "fund.turn_on_outside_keys", count=len(carried), records=", ".join(carried)))
             await _seed_restricted_net_assets(session, company_id, company.settings or {}, user)
             company = await locked_company(session, company_id)
         else:
             await _refuse_held(session, company_id)
+            if chosen := await records_carrying(session, company_id, ("fund_choice", "fund_id")):
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "fund.turn_off_choices_held", records=", ".join(chosen)))
         settings = {**(company.settings or {}), FUNDS_ENABLED: payload.enabled}
         record_change(settings, FUNDS_ENABLED, user.id)
         company.settings = settings

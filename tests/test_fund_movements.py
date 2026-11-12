@@ -169,7 +169,7 @@ async def test_grant_not_usable_from_child_task(client, session, auth):
 
 async def test_value_cannot_cross_funds_outside_a_movement(client, session, auth):
     """Money spent from a restricted fund and earned by another in one entry is refused from the
-    manual journal and from an import alike; an entry split between a restricted fund and the
+    manual journal; an import cannot carry a fund at all while funds are on; an entry split between a restricted fund and the
     unrestricted group that moves nothing between them posts."""
     from celerp_accounting import import_service
 
@@ -187,7 +187,7 @@ async def test_value_cannot_cross_funds_outside_a_movement(client, session, auth
     outcome = await import_service.import_journal_records(session, auth["company_id"], auth["user_id"], [record],
                                                             origin="file_import")
     assert [o.status for o in outcome.records] in (["rejected"], ["failed"]), outcome.records
-    assert "moves only through Transfer between funds" in str(outcome.records[0].message)
+    assert "came in with fund_id" in str(outcome.records[0].message)
 
     split = [("6200", 30, 0, f["R"]), ("1111", 0, 30, f["R"]), ("6200", 70, 0, None), ("1111", 0, 70, None)]
     r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={

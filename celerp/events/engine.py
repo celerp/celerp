@@ -30,7 +30,10 @@ from celerp.services.document_lines import (
     linked_items,
     normalize_line_ids,
 )
-from celerp.services.peer_lines import HEADER_KEYS, FundChoiceGrant, judge_header_keys, judge_line_keys, mark_journal
+from celerp.services.peer_lines import (
+    HEADER_KEYS, FundChoiceGrant, inbound_keys, judge_header_keys, judge_line_keys, keep_fund_choices, mark_journal,
+    refuse_inbound,
+)
 from celerp.services.business_time import business_date_of
 
 
@@ -650,6 +653,17 @@ async def unattended(work):
         _UNATTENDED.reset(token)
 
 
+async def _judge_inbound(session, company_id, found: list[str]) -> None:
+    """An arrival bringing fund keys (peer_lines.inbound_keys): kept as sent while funds are
+    off, refused naming the key while they are on. Read under the company lock, so it never
+    interleaves with turning funds on, which checks what unposted records carry."""
+    if found:
+        from celerp.services.journal_accounts import funds_enabled, hold_fund_ledger
+
+        if funds_enabled(await hold_fund_ledger(session, company_id)):
+            refuse_inbound(found)
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
@@ -657,6 +671,7 @@ async def emit_event(
 ) -> LedgerEntry:
     # ``origin``: only an arrival writer passes it (peer_lines.ORIGINS), marking the record and
     # the lines it brings; ``fund_grant``: the fund keys this write may set (peer_lines).
+    fund_choices_cleared: dict = {}
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
@@ -757,6 +772,9 @@ async def emit_event(
         from celerp.services.journal_accounts import prepare_journal_entry
 
         if origin is not None:
+            entries = kwargs["data"].get("entries") or []
+            await _judge_inbound(session, kwargs.get("company_id"), inbound_keys(
+                None, entries, {}, {key: kwargs["data"][key] for key in HEADER_KEYS if key in kwargs["data"]}))
             mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
@@ -791,8 +809,14 @@ async def emit_event(
         header = {key: data[key] for key in HEADER_KEYS if key in data}
         header.update({key: change["new"] for key, change in changed.items()
                        if key in HEADER_KEYS and isinstance(change, dict) and "new" in change})
+        # The header money inputs the write sets: a change clears the fund choices (peer_lines).
+        from celerp_docs.doc_money import DOC_MONEY_INPUTS
+
+        money = {key: data[key] for key in DOC_MONEY_INPUTS if key in data}
+        money.update({key: change["new"] for key, change in changed.items()
+                      if key in DOC_MONEY_INPUTS and isinstance(change, dict) and "new" in change})
         stored = {}
-        if line_set is not None or "contact_id" in sets or "currency" in sets or header or origin is not None:
+        if line_set is not None or "contact_id" in sets or "currency" in sets or header or money or origin is not None:
             # The stored record, read only when it is of the same type (the Projection PK
             # is (company_id, entity_id) with no type discriminator).
             proj = await session.get(
@@ -804,6 +828,10 @@ async def emit_event(
                 # Every line carries a stable line id: new lines get one, lines already on
                 # the record keep theirs, and a malformed or repeated id is refused.
                 normalize_line_ids(line_set, stored.get("line_items"))
+            if origin is not None:
+                await _judge_inbound(session, kwargs.get("company_id"),
+                                     inbound_keys(stored.get("line_items"), line_set, stored, header))
+            if line_set is not None:
                 # Where a line came from and the fund chosen for it are kept, written only by
                 # an arrival or a copy, and changed only as a grant names them.
                 judge_line_keys(stored.get("line_items"), line_set, origin=origin, grant=fund_grant)
@@ -812,6 +840,17 @@ async def emit_event(
                     data["fields_changed"].update({key: {"old": None, "new": value} for key, value in marker.items()})
                 else:
                     data.update(marker)
+            # A change to the money of a marked line or of the record clears its fund choices.
+            cleared_lines, fund_choices_cleared = keep_fund_choices(stored, line_set, money)
+            if fund_choices_cleared:
+                cleared = {"fund_choice": None, "fund_choice_source": None} if fund_choices_cleared["document"] else {}
+                if line_set is None:
+                    cleared["line_items"] = cleared_lines
+                if isinstance(data.get("fields_changed"), dict):
+                    data["fields_changed"].update({key: {"old": stored.get(key), "new": value}
+                                                   for key, value in cleared.items()})
+                else:
+                    data.update(cleared)
             # A line drawn from a memo is added only by the draw, leaves only by Back to
             # memo, and keeps what it is and the invoice's customer and currency meanwhile.
             await assert_drawn_lines_authorized(
@@ -979,4 +1018,6 @@ async def emit_event(
         # Deterministic: do not fail event emission due to notification issues.
         pass
 
+    # The fund choices this write cleared, for the writer to tell the user (peer_lines).
+    entry.fund_choices_cleared = fund_choices_cleared
     return entry

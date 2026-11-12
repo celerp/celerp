@@ -3611,6 +3611,8 @@ celerpUpdateBulkAlloc();
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=e.status)
         saved = {"ok": True, "version": result.get("version"), "line_ids": _sent_line_ids(patch_data["line_items"])}
+        if notice := _fund_notice(result.get("fund_choices_cleared")):
+            saved["fund_notice"] = notice
         # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
         # never its own copy.
         try:
@@ -7502,6 +7504,16 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
                id="doc-header-discount-row", cls="total-row")
 
 
+def _fund_notice(cleared: dict | None) -> str:
+    """What a save that changed amounts says about the fund choices it cleared."""
+    if not cleared:
+        return ""
+    lines = ", ".join(str(n) for n in cleared.get("lines") or [])
+    if lines:
+        return t("fund.choices_cleared_both" if cleared.get("document") else "fund.choices_cleared_lines", lines=lines)
+    return t("fund.choices_cleared_document") if cleared.get("document") else ""
+
+
 def _sent_line_ids(lines: list) -> list[str]:
     """The line ids a line save hands back to its page, one per line it sent.
 
@@ -10328,8 +10340,10 @@ async function _celerpRefreshHeldBadges() {{
         window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
+        let savedNotice = '';
         try {{
             const data = await resp.json();
+            if (data && data.fund_notice) savedNotice = data.fund_notice;
             if (data && data.version != null) _celerpEntityVersion = data.version;
             if (data && Array.isArray(data.line_ids) && data.line_ids.length === savedRows.length)
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
@@ -10343,6 +10357,13 @@ async function _celerpRefreshHeldBadges() {{
         _CELERP_ORIGINAL_COUNT = lines.length;
         // After a line save, status-column drafts put each reserved row's stored badge back.
         if ({1}) _celerpRefreshHeldBadges().catch(function() {{}});
+        // Changed amounts cleared fund choices on lines from outside: the notice stays beside
+        // the cells until the next save, so it cannot be missed.
+        if (savedNotice) {{
+            statusEl.textContent = savedNotice;
+            statusEl.style.color = 'var(--c-amber-dark)';
+            return true;
+        }}
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);

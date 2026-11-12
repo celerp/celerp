@@ -7515,5 +7515,16 @@
   "fund.origin.client": "your client",
   "fund.origin.shared_document": "a shared document",
   "fund.origin.accounting_system": "your accounting app",
-  "fund.origin.unknown": "another app"
+  "fund.origin.unknown": "another app",
+  "posting.fund.choice_missing": "Choose a fund or Unrestricted for line {line}",
+  "posting.fund.document_choice_missing": "Choose a fund or Unrestricted for this document",
+  "posting.fund.choice_line_unknown": "This document no longer has that line. Reload it and choose again.",
+  "posting.fund.choice_local_line": "Line {line} didn't come from outside, so it has no fund to choose. Set its fund on the line itself.",
+  "posting.fund.document_posted": "This document has posted; use Change fund",
+  "posting.fund.inbound_key": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+  "fund.turn_on_outside_keys": "{count} records carry fund fields sent from outside: {records}. Post them (they post as today while funds are off) or delete them, then turn funds on.",
+  "fund.turn_off_choices_held": "Clear or post the fund choices on {records} first",
+  "fund.choices_cleared_lines": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
+  "fund.choices_cleared_both": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",
+  "fund.choices_cleared_document": "Amounts changed, so the fund for this document was cleared: choose again"
 }

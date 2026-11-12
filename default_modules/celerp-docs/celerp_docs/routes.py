@@ -53,7 +53,9 @@ from celerp.services.account_roles import current_settings, is_consigned, lineag
 from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company, locked_state
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
-from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
+from celerp.services.journal_accounts import (
+    funds_enabled, hold_fund_ledger, require_destinations, require_line_destinations, require_settlement_account,
+)
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.ledger_sources import record_entry_ids
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -64,7 +66,9 @@ from celerp.services.business_time import business_date_at, business_date_of, co
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
                                           resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
-from celerp.services.peer_lines import LINE_KEYS as OUTSIDE_LINE_KEYS, copied_header, granted_from_stored
+from celerp.services.peer_lines import (
+    LINE_KEYS as OUTSIDE_LINE_KEYS, chosen_lines, copied_header, granted_from_stored, require_fund_choices,
+)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -2234,6 +2238,54 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     return result
 
 
+class FundChoicesIn(BaseModel):
+    """The Fund control's write: ``document`` the document's fund, ``all`` the fund of every
+    line from outside that ``lines`` (line id -> choice) does not name. A choice is a fund
+    id or "unrestricted"; a key left out changes nothing."""
+    expected_version: int
+    document: str | None = None
+    all: str | None = None
+    lines: dict[str, str | None] = Field(default_factory=dict)
+
+
+@router.post("/{entity_id}/fund-choices")
+async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: str = Depends(get_current_company_id),
+                           _: None = require_permission("edit_documents"), user=Depends(get_current_user),
+                           session: AsyncSession = Depends(get_session)) -> dict:
+    """Choose the fund of the lines that came from outside, or of the whole document. The
+    choice is this company's own attribution, never a change to a sender's document, so a
+    connected company's draft takes it too. Only a record with no posted entry of its own
+    takes a choice; once it has posted, Change fund corrects it."""
+    if not funds_enabled(await hold_fund_ledger(session, company_id)):
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    if row.version != payload.expected_version:
+        raise _stale_doc("documents.err_doc_changed")
+    posted = await session.scalar(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.state["record_id"].as_string() == entity_id,
+        Projection.state["status"].as_string() == "posted").limit(1))
+    if posted is not None:
+        raise HTTPException(status_code=409, detail=catalog_refusal("posting.fund.document_posted"))
+    sent = payload.model_fields_set
+    grant = await require_fund_choices(session, company_id, row.state, lines=payload.lines,
+                                       **({"document": payload.document} if "document" in sent else {}),
+                                       **({"every": payload.all} if "all" in sent else {}))
+    state = row.state or {}
+    changes = {key: {"old": state.get(key), "new": value} for key, value in grant.header.items()}
+    if grant.lines:
+        changes["line_items"] = {"old": state.get("line_items"), "new": chosen_lines(state.get("line_items") or [], grant)}
+    if not changes:
+        return {"event_id": None, "version": row.version}
+    key = str(uuid.uuid4())
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": changes, "idempotency_key": key}, actor_id=user.id, location_id=None,
+        source="api", idempotency_key=key, metadata_={}, fund_grant=grant)
+    await session.commit()
+    return {"event_id": entry.id, "version": entry.id}
+
+
 async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: str, state: dict) -> None:
     """A consignment's consignor is who its goods are owed to from their first sale (the
     lot records it then) and who its bill is owed to, so once any goods sold or the
@@ -2480,8 +2532,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "doc.updated", entity_id, digest)
     # entry.id is the document's new version, so the client's next versioned write pins
-    # exactly the state this patch produced, as patch_list does.
-    return {"event_id": entry.id, "version": entry.id}
+    # exactly the state this patch produced, as patch_list does. A change to the money of
+    # lines that came from outside cleared their fund choices: the page says which.
+    cleared = {"fund_choices_cleared": entry.fund_choices_cleared} if entry.fund_choices_cleared else {}
+    return {"event_id": entry.id, "version": entry.id, **cleared}
 
 
 async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:

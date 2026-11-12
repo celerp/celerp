@@ -263,5 +263,64 @@
   "fund.origin.unknown": {
     "en": "another app",
     "params": []
+  },
+  "posting.fund.choice_missing": {
+    "en": "Choose a fund or Unrestricted for line {line}",
+    "params": [
+      "line"
+    ]
+  },
+  "posting.fund.document_choice_missing": {
+    "en": "Choose a fund or Unrestricted for this document",
+    "params": []
+  },
+  "posting.fund.choice_line_unknown": {
+    "en": "This document no longer has that line. Reload it and choose again.",
+    "params": []
+  },
+  "posting.fund.choice_local_line": {
+    "en": "Line {line} didn't come from outside, so it has no fund to choose. Set its fund on the line itself.",
+    "params": [
+      "line"
+    ]
+  },
+  "posting.fund.document_posted": {
+    "en": "This document has posted; use Change fund",
+    "params": []
+  },
+  "posting.fund.inbound_key": {
+    "en": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+    "params": [
+      "field"
+    ]
+  },
+  "fund.turn_on_outside_keys": {
+    "en": "{count} records carry fund fields sent from outside: {records}. Post them (they post as today while funds are off) or delete them, then turn funds on.",
+    "params": [
+      "count",
+      "records"
+    ]
+  },
+  "fund.turn_off_choices_held": {
+    "en": "Clear or post the fund choices on {records} first",
+    "params": [
+      "records"
+    ]
+  },
+  "fund.choices_cleared_lines": {
+    "en": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
+    "params": [
+      "lines"
+    ]
+  },
+  "fund.choices_cleared_both": {
+    "en": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",
+    "params": [
+      "lines"
+    ]
+  },
+  "fund.choices_cleared_document": {
+    "en": "Amounts changed, so the fund for this document was cleared: choose again",
+    "params": []
   }
 }

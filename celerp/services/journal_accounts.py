@@ -404,16 +404,17 @@ async def _fund_day_changes(session: AsyncSession, company_id) -> dict[str, dict
     """Each day's posted change, debit less credit, per (fund, account), None for the
     unrestricted group. It reads the journal as the ledger does (ledger_rows.journal_rows),
     so an entry voided out of a locked period still counts on its own day and its reversal
-    on reversed_on."""
+    on reversed_on. A line counts in a fund only when it names a fund of this company."""
     from celerp.services.ledger_rows import journal_rows
     from celerp.services.money import to_decimal
 
+    funds = await funds_by_id(session, company_id)
     days: dict[str, dict[tuple[str | None, str], Decimal]] = {}
     for _, state, day in await journal_rows(session, company_id):
         changes = days.setdefault(day, {})
         for line in state.get("entries") or ():
             if isinstance(line, dict) and line.get("account"):
-                key = (line.get("fund_id") or None, line["account"])
+                key = (line.get("fund_id") if line.get("fund_id") in funds else None, line["account"])
                 changes[key] = (changes.get(key, Decimal(0))
                                 + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
     return days
@@ -746,11 +747,12 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     fund; (4, 5, 6) a movement-shaped entry (_movement_shape), restored copies included,
     posts only as _authorize_movement allows and meets its type's template and cap
     (_check_movement). With funds off, a new line carrying a fund
-    is refused, and only the movement shapes are judged."""
+    is refused, unless the entry came from outside (its ``origin``), whose lines are kept as
+    sent (peer_lines), and only the movement shapes are judged."""
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
     settings = await hold_fund_ledger(session, company_id)
-    if not funds_enabled(settings) and named and new:
+    if not funds_enabled(settings) and named and new and not data.get("origin"):
         raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
     if not funds_enabled(settings) and not role_map(settings).get(AccountRole.RESTRICTED_NET_ASSETS):
         return
