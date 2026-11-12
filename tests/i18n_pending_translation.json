@@ -99,5 +99,24 @@
         "fund"
       ]
     }
+  },
+  "posting.fund.movement_outside": {
+    "en": "This entry moves money of {fund} between funds. Restricted money moves only through Transfer between funds, Release from restriction or Reallocate restricted funds.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.movement_needs_user": {
+    "en": "Money of {fund} moves between funds only when a person posts the movement, never by an automatic posting.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.movement_permission": {
+    "en": "Moving money of {fund} between funds needs the {permission} permission.",
+    "params": [
+      "fund",
+      "permission"
+    ]
   }
 }

@@ -7485,5 +7485,8 @@
   "fund.purpose_required": "A restricted fund needs a purpose: what the money may be spent on.",
   "fund.restriction_locked": "{fund} already has postings, so whether it is restricted and its purpose can't change. Create a new fund and move the money to it instead.",
   "fund.balance_held": "These funds still hold balances: {funds}. Bring each to zero first.",
-  "posting.fund.stock_unrestricted": "A line on account {code}, which holds stock or its cost, can't carry the restricted fund {fund}. Stock and its cost are held unrestricted."
+  "posting.fund.stock_unrestricted": "A line on account {code}, which holds stock or its cost, can't carry the restricted fund {fund}. Stock and its cost are held unrestricted.",
+  "posting.fund.movement_outside": "This entry moves money of {fund} between funds. Restricted money moves only through Transfer between funds, Release from restriction or Reallocate restricted funds.",
+  "posting.fund.movement_needs_user": "Money of {fund} moves between funds only when a person posts the movement, never by an automatic posting.",
+  "posting.fund.movement_permission": "Moving money of {fund} between funds needs the {permission} permission."
 }

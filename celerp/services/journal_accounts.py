@@ -22,6 +22,8 @@ Any module may post journal entries, and adds the accounts they post to through
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -96,6 +98,11 @@ class UnbalancedJournalEntry(Refused):
     """An automatic journal entry whose lines do not balance in the company currency."""
 
 
+class RestrictedFundMovement(UnbalancedJournalEntry):
+    """A journal entry that moves money between funds other than through
+    post_fund_movement, by an actor it was not granted to, or against its movement rules."""
+
+
 _chart: ChartAccess | None = None
 
 
@@ -160,7 +167,8 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
     await chart.add_account(session, company_id, code=code, name=name, account_type=account_type)
 
 
-async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False) -> None:
+async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
+                                actor_id=None, entity_id=None) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
     A line that names roles was chosen for them: its account must be the role's
@@ -172,7 +180,9 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     still being migrated), such a line is left without a snapshot, so readers classify
     it by the scopes the company's roles are given later. A *restored* copy of an entry
     (an unvoid) keeps each line's snapshot as the original recorded it, so a line that
-    recorded none stays without one, never classified by today's roles.
+    recorded none stays without one, never classified by today's roles. Then the fund
+    rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
+    the event is emitted by, for the entry ``entity_id``.
     """
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
     if not entries:
@@ -208,7 +218,8 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
                         f"Account {code} has never been the {label} account.",
                         code=code, role=label),
                 )
-    await check_fund_rules(session, company_id, data, entries, restored=restored)
+    await check_fund_rules(session, company_id, data, entries, accounts,
+                           restored=restored, actor_id=actor_id, entity_id=entity_id)
 
 
 FUNDS_ENABLED = "funds_enabled"  # company setting: whether journal lines carry funds
@@ -242,28 +253,141 @@ async def hold_fund_ledger(session: AsyncSession, company_id) -> dict:
     return settings
 
 
-async def check_fund_rules(session: AsyncSession, company_id, data: dict, entries: list[dict], *,
-                           restored: bool = False) -> None:
-    """The fund rules every journal entry meets, whoever produced it.
+FUND_MOVEMENT_TYPES = frozenset({"fund_transfer", "fund_release", "fund_reallocation", "fund_opening"})
+YEAR_CLOSE = "year_close"
+# Account types whose lines are what a fund holds or owes (rule 4's BS measure); income
+# and expense lines are neither.
+_BALANCE_SHEET_TYPES = frozenset({"asset", "liability", "equity"})
 
-    A company that has funds turned on holds its fund ledger shared (lock_fund_ledger)
-    and reads the setting under the company lock, so a fund cap or turning funds off
-    never interleaves with a posting. Then: (1) each fund named exists, and an archived
-    one takes no new posting, though a reversal or a restored entry still lands; (2) each
-    fund balances on its own, the lines without a fund counting as one; (3) a restricted
-    net assets line carries a restricted fund and a retained earnings line never does;
-    (7) a line on a stock or stock cost account (STOCK_ROLES) never carries a restricted fund.
-    With funds off, a new line carrying a fund is refused and nothing else is checked."""
+
+@dataclass
+class _MovementGrant:
+    """One movement's permission to post: the company, the entity post_fund_movement minted
+    and the user acting. One mutable object, so every task copying the context shares it
+    and the first entry that matches spends it for all of them."""
+    company_id: str
+    entity_id: str
+    actor_id: str | None
+    used: bool = False
+    authority: tuple[str, dict] | None = None  # the actor's role and settings (hold_movement_actor)
+
+
+_movement_grant: ContextVar[_MovementGrant | None] = ContextVar("fund_movement_grant", default=None)
+
+
+def _actor_key(actor_id) -> str | None:
+    return str(actor_id) if actor_id is not None else None
+
+
+@asynccontextmanager
+async def fund_movement_grant(company_id, entity_id, actor_id):
+    """Let exactly one movement-shaped entry post: the entry ``entity_id`` of ``company_id``
+    emitted by ``actor_id``. Only post_fund_movement enters it; nothing an entry carries can."""
+    grant = _MovementGrant(str(company_id), str(entity_id), _actor_key(actor_id))
+    token = _movement_grant.set(grant)
+    try:
+        yield
+    finally:
+        grant.used = True
+        _movement_grant.reset(token)
+
+
+def _open_grant(company_id, entity_id, actor_id) -> _MovementGrant | None:
+    grant = _movement_grant.get()
+    if grant is None or grant.used or (grant.company_id, grant.entity_id, grant.actor_id) != (
+            str(company_id), str(entity_id), _actor_key(actor_id)):
+        return None
+    return grant
+
+
+async def hold_movement_actor(session: AsyncSession, company_id, entity_id, actor_id) -> None:
+    """When a movement grant is open for this entry, read the acting user's role under the
+    company lock now, before the posting locks any other row, so the membership row keeps
+    its place in the lock order. emit_event calls it right after hold_fund_ledger."""
+    from celerp.services.permissions import read_authority
+
+    grant = _open_grant(company_id, entity_id, actor_id)
+    if grant is not None and actor_id is not None:
+        grant.authority = await read_authority(session, company_id, actor_id)
+
+
+def fund_measures(entries: list[dict], accounts: dict[str, dict], net_assets: set[str]) -> tuple[dict, dict]:
+    """Per fund (None for the unrestricted group): NA, the credits minus debits on the
+    net-assets accounts, and BS, the debits minus credits on every other balance-sheet
+    account, that is, the fund's net change in what it holds."""
+    from celerp.services.money import to_decimal
+
+    na: dict[str | None, Decimal] = {}
+    bs: dict[str | None, Decimal] = {}
+    for e in entries:
+        fund_id = e.get("fund_id") or None
+        amount = to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+        if e["account"] in net_assets:
+            na[fund_id] = na.get(fund_id, Decimal(0)) - amount
+        elif (accounts.get(e["account"]) or {}).get("account_type") in _BALANCE_SHEET_TYPES:
+            bs[fund_id] = bs.get(fund_id, Decimal(0)) + amount
+    return na, bs
+
+
+def _movement_shape(data: dict, entries: list[dict], accounts: dict[str, dict], settings: dict,
+                    funds: dict[str, dict], restricted_na: set[str], retained: set[str]) -> str | None:
+    """Which movement shape the entry has, judged on its content alone, or None:
+    (a) a restricted net assets line; (b) a fund movement or year close type; (c) the net
+    assets of two or more funds change; (d) value leaves a restricted fund and arrives in
+    another. (a) and (b) are judged whenever the company has the restricted net assets
+    account, even with funds turned off."""
+    from celerp.services.money import round_money
+
+    currency = str(settings.get("currency") or "USD")
+    if role_map(settings).get(AccountRole.RESTRICTED_NET_ASSETS):
+        if any(e["account"] in restricted_na for e in entries):
+            return "a"
+        if data.get("je_type") in FUND_MOVEMENT_TYPES or data.get("je_type") == YEAR_CLOSE:
+            return "b"
+    na, bs = fund_measures(entries, accounts, restricted_na | retained)
+    if sum(1 for v in na.values() if round_money(v, currency)) >= 2:
+        return "c"
+    senders = [f for f, v in bs.items() if round_money(v, currency) < 0 and (funds.get(f or "") or {}).get("restricted")]
+    if senders and any(round_money(v, currency) > 0 for f, v in bs.items() if f not in senders):
+        return "d"
+    return None
+
+
+def _moving_fund(entries: list[dict], funds: dict[str, dict]) -> str:
+    """The fund a movement refusal names: a restricted fund on the entry, else any fund,
+    else the unrestricted group."""
+    named = [funds[e["fund_id"]] for e in entries if e.get("fund_id") in funds]
+    chosen = next((f for f in named if f.get("restricted")), named[0] if named else None)
+    return chosen["name"] if chosen else unrestricted_label()
+
+
+async def _authorize_movement(session: AsyncSession, company_id, data: dict, entries: list[dict],
+                              funds: dict[str, dict], *, actor_id, entity_id) -> None:
+    """A movement-shaped entry posts only inside the grant for this entity and actor, from a
+    user whose role, read under the company lock (hold_movement_actor), may manage accounting. The actor
+    is recorded on the entry as ``authorized_by``."""
+    from celerp.services.permissions import missing_permission_refusal, role_has_permission
+
+    fund = _moving_fund(entries, funds)
+    grant = _open_grant(company_id, entity_id, actor_id)
+    if grant is None:
+        raise RestrictedFundMovement("posting.fund.movement_outside", fund=fund)
+    grant.used = True
+    if actor_id is None or grant.authority is None:
+        raise RestrictedFundMovement("posting.fund.movement_needs_user", fund=fund)
+    role, authority = grant.authority
+    if not role_has_permission(authority, role, "manage_accounting"):
+        raise RestrictedFundMovement(
+            "posting.fund.movement_permission", fund=fund,
+            permission=missing_permission_refusal("manage_accounting")["params"]["label"])
+    data["authorized_by"] = str(actor_id)
+
+
+def _check_fund_lines(settings: dict, entries: list[dict], named: set[str], funds: dict[str, dict],
+                      restricted_na: set[str], retained: set[str], *, new: bool) -> None:
+    """Rules 1, 2, 3 and 7 of check_fund_rules, for a company with funds turned on."""
     from celerp.services.money import round_money, to_decimal
 
-    named = {e["fund_id"] for e in entries if e.get("fund_id")}
-    new = not (restored or data.get("reverses"))
-    settings = await hold_fund_ledger(session, company_id)
-    if not funds_enabled(settings):
-        if named and new:
-            raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
-        return
-    funds = await funds_by_id(session, company_id, named)
     for fund_id in sorted(named):
         fund = funds.get(fund_id)
         if fund is None:
@@ -282,8 +406,6 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
                 "posting.fund.unbalanced", fund=funds[fund_id]["name"] if fund_id else unrestricted_label(),
                 difference=str(round_money(abs(difference), currency)), currency=currency)
 
-    restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
-    retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
     stock = set().union(*(scope_codes(settings, role) for role in STOCK_ROLES))
     for e in entries:
         fund = funds.get(e.get("fund_id") or "")
@@ -297,6 +419,38 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
         if e["account"] in stock and restricted:
             raise HTTPException(status_code=422, detail=catalog_refusal(
                 "posting.fund.stock_unrestricted", code=e["account"], fund=fund["name"]))
+
+
+async def check_fund_rules(session: AsyncSession, company_id, data: dict, entries: list[dict],
+                           accounts: dict[str, dict] | None, *, restored: bool = False,
+                           actor_id=None, entity_id=None) -> None:
+    """The fund rules every journal entry meets, whoever produced it.
+
+    A company that has funds turned on holds its fund ledger shared (lock_fund_ledger)
+    and reads the setting under the company lock, so a fund cap or turning funds off
+    never interleaves with a posting. Then: (1) each fund named exists, and an archived
+    one takes no new posting, though a reversal or a restored entry still lands; (2) each
+    fund balances on its own, the lines without a fund counting as one; (3) a restricted
+    net assets line carries a restricted fund and a retained earnings line never does;
+    (7) a line on a stock or stock cost account (STOCK_ROLES) never carries a restricted
+    fund; (4, 6) a movement-shaped entry (_movement_shape), restored copies included,
+    posts only as _authorize_movement allows. With funds off, a new line carrying a fund
+    is refused, and only the movement shapes are judged."""
+    named = {e["fund_id"] for e in entries if e.get("fund_id")}
+    new = not (restored or data.get("reverses"))
+    settings = await hold_fund_ledger(session, company_id)
+    if not funds_enabled(settings) and named and new:
+        raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
+    if not funds_enabled(settings) and not role_map(settings).get(AccountRole.RESTRICTED_NET_ASSETS):
+        return
+    funds = await funds_by_id(session, company_id, named) if named else {}
+    restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
+    retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
+    if funds_enabled(settings):
+        _check_fund_lines(settings, entries, named, funds, restricted_na, retained, new=new)
+
+    if _movement_shape(data, entries, accounts or {}, settings, funds, restricted_na, retained):
+        await _authorize_movement(session, company_id, data, entries, funds, actor_id=actor_id, entity_id=entity_id)
 
 
 def unrestricted_label() -> str:

@@ -725,9 +725,10 @@ async def emit_event(
     # A new journal entry holds its company's fund ledger before it locks any other row,
     # so the fund lock keeps its place in the lock order (company, fund ledger, rows).
     if kwargs["event_type"] == "acc.journal_entry.created":
-        from celerp.services.journal_accounts import hold_fund_ledger
+        from celerp.services.journal_accounts import hold_fund_ledger, hold_movement_actor
 
         await hold_fund_ledger(session, kwargs.get("company_id"))
+        await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
     # Every journal entry change, whoever produced it, is judged against the bank
     # reconciliations: one that would change what a reconciliation counts is refused.
@@ -743,7 +744,8 @@ async def emit_event(
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
-        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring)
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
+                                    actor_id=kwargs.get("actor_id"), entity_id=kwargs["entity_id"])
 
     # Enforce the line rules on every document and List write. Extract the post-change
     # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
