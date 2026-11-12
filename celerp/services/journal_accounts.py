@@ -368,7 +368,8 @@ async def _authorize_movement(session: AsyncSession, company_id, data: dict, ent
     """A movement-shaped entry posts only inside the grant for this entity and actor, from a
     user whose role, read under the company lock (hold_movement_actor), may manage accounting.
     A reallocation, and a reversal that takes money out of a restricted fund, also needs
-    reallocate_restricted_funds. The actor is recorded on the entry as ``authorized_by``."""
+    reallocate_restricted_funds; reversing a year close does not, as each fund's results
+    return to that same fund. The actor is recorded on the entry as ``authorized_by``."""
     from celerp.services.permissions import missing_permission_refusal, role_has_permission
 
     fund = _moving_fund(entries, funds)
@@ -380,7 +381,7 @@ async def _authorize_movement(session: AsyncSession, company_id, data: dict, ent
         raise RestrictedFundMovement("posting.fund.movement_needs_user", fund=fund)
     role, authority = grant.authority
     needed = ["manage_accounting"]
-    if data.get("je_type") == "fund_reallocation" or (data.get("reverses") and any(
+    if data.get("je_type") == "fund_reallocation" or (data.get("reverses") and data.get("je_type") != YEAR_CLOSE and any(
             v < 0 and _restricted(funds, f) for f, v in na.items())):
         needed.append("reallocate_restricted_funds")
     for permission in needed:
@@ -402,16 +403,15 @@ def _fund_name(funds: dict[str, dict], fund_id) -> str:
 async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str | None = None,
                                 ) -> dict[str | None, dict[str, Decimal]]:
     """Each fund's (None: the unrestricted group's) non-zero posted balance, debit less
-    credit, by account, counting the entries dated on or before ``as_of`` when given."""
-    from celerp.models.projections import Projection
+    credit, by account, counting the entries dated on or before ``as_of`` when given. It
+    reads the journal as the ledger does (ledger_rows.journal_rows), so an entry voided out
+    of a locked period still counts on its own day and its reversal on reversed_on."""
+    from celerp.services.ledger_rows import journal_rows
     from celerp.services.money import to_decimal
 
-    rows = await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))
     sums: dict[str | None, dict[str, Decimal]] = {}
-    for (state,) in rows:
-        state = state or {}
-        if state.get("status") != "posted" or (as_of and str(state.get("ts") or "")[:10] > as_of):
+    for _, state, day in await journal_rows(session, company_id):
+        if as_of and day > as_of:
             continue
         for line in state.get("entries") or ():
             if isinstance(line, dict) and line.get("account"):

@@ -26,8 +26,8 @@ RULE_CLASSES: dict[str, str] = {
     "M": "the fund the user chose on each line",
     "M/B": "the user's chosen fund, or a pooled balance split by fund",
     "B": "a pooled balance moved between accounts, split by fund",
-    "YC": "each fund closed on its own",
-    "FM": "the giving and receiving funds the movement names, each against its own net assets",
+    "FM": ("the giving and receiving funds the movement names, each against its own net assets; "
+           "a year close closes each fund's results to that fund's own net assets"),
 }
 
 FUND_ATTRIBUTION: dict[str, str] = {
@@ -87,7 +87,6 @@ FUND_ATTRIBUTION: dict[str, str] = {
     "celerp_accounting.migration_sink:_journal_record": "O",
     "celerp_accounting.routes:_void_one": "X",
     "celerp_accounting.routes:_void_reconciliation_created_je": "X",
-    "celerp_accounting.routes:close_fiscal_year": "YC",
     "celerp_accounting.routes:create_bank_account": "M",
     "celerp_accounting.routes:create_je_from_line": "M/B",
     "celerp_accounting.routes:create_manual_journal_entry": "M",

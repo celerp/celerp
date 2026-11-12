@@ -339,37 +339,47 @@ async def _leg_lines(session: AsyncSession, company_id, settings: dict, legs) ->
     return lines
 
 
-async def post_fund_movement(session: AsyncSession, company_id, *, request_key: str, ts: date, reason: str, actor,
-                             kind: str | None = None, legs=(), reverses: str | None = None,
+async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, reason: str, actor,
+                             request_key: str | None = None, je_id: str | None = None, kind: str | None = None,
+                             legs=(), entries: list[dict] | None = None, reverses: str | None = None,
                              details: dict | None = None) -> dict:
     """Post one movement between funds: ``kind`` built from ``legs`` (giver, receiver,
-    account, amount), or the reversal of the movement ``reverses``. It holds the fund
-    ledger exclusively and opens the movement grant for this entry and ``actor`` only;
-    the journal boundary judges the rest (journal_accounts.check_fund_rules). Repeat-safe
-    on ``request_key``: a repeat answers with the entry it posted."""
+    account, amount) or from the prebuilt ``entries``, or the reversal of the movement
+    ``reverses`` (of type ``kind`` when given, else any fund movement type). It holds the
+    fund ledger exclusively and opens the movement grant for this entry and ``actor``
+    only; the journal boundary judges the rest (journal_accounts.check_fund_rules). The
+    entry is ``je_id``, else minted from ``request_key``; a repeat answers with the entry
+    it posted. The caller commits, so the movement can share its transaction."""
     await lock_fund_ledger(session, company_id, shared=False)
-    je_id = f"je:fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{request_key}')}"
+    je_id = je_id or f"je:fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{request_key}')}"
     if await session.get(Projection, (company_id, je_id)) is not None:
         return {"je_id": je_id}
     company = await locked_company(session, company_id)
-    if reverses is None:
-        entries = await _leg_lines(session, company_id, company.settings or {}, legs)
-    else:
+    if reverses is not None:
         original = await session.get(Projection, (company_id, reverses))
         state = original.state if original is not None and original.entity_type == "journal_entry" else {}
-        if state.get("je_type") not in FUND_MOVEMENT_TYPES or state.get("status") != "posted":
+        original_kind = state.get("je_type") or kind  # a close posted before closes carried a type
+        if original_kind not in ({kind} if kind else FUND_MOVEMENT_TYPES) or state.get("status") != "posted":
             raise HTTPException(status_code=404, detail=catalog_refusal("fund.movement_not_found"))
-        kind = state["je_type"]
+        kind = original_kind
         entries = [{"account": e["account"], "debit": e.get("credit") or 0, "credit": e.get("debit") or 0,
                     **({"fund_id": e["fund_id"]} if e.get("fund_id") else {})} for e in state.get("entries") or ()]
+    elif entries is None:
+        entries = await _leg_lines(session, company_id, company.settings or {}, legs)
     data = {"memo": reason, "ts": ts.isoformat(), "entries": entries, "je_type": kind, "status": "posted",
             "reason": reason, **({"reverses": reverses} if reverses else {}), **(details or {})}
     async with fund_movement_grant(company_id, je_id, actor):
         await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                          event_type="acc.journal_entry.created", data=data, actor_id=actor, location_id=None,
                          source="api", idempotency_key=je_idempotency_key(je_id, kind, "c"), metadata_={})
-    await session.commit()
     return {"je_id": je_id}
+
+
+async def _posted(session: AsyncSession, movement) -> dict:
+    """Commit a fund route's movement and answer with it."""
+    posted = await movement
+    await session.commit()
+    return posted
 
 
 async def _account(session: AsyncSession, company_id, chosen: str | None) -> str | None:
@@ -391,9 +401,9 @@ async def transfer_between_funds(
     """Move money of an account between two unrestricted funds."""
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
-    return await post_fund_movement(
+    return await _posted(session, post_fund_movement(
         session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
-        kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)])
+        kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)]))
 
 
 @router.post("/funds/release")
@@ -408,10 +418,10 @@ async def release_from_restriction(
     _distinct(payload.fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
     amount = sum((to_decimal(b.amount) for b in payload.backing), Decimal(0))
-    return await post_fund_movement(
+    return await _posted(session, post_fund_movement(
         session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_release", legs=[(payload.fund, payload.to_fund, account, amount)],
-        details={"backing": [b.model_dump() for b in payload.backing]})
+        details={"backing": [b.model_dump() for b in payload.backing]}))
 
 
 @router.post("/funds/reallocate")
@@ -425,10 +435,10 @@ async def reallocate_restricted_funds(
     """Move restricted money to another restricted fund of the same purpose, with the donor's authorization."""
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
-    return await post_fund_movement(
+    return await _posted(session, post_fund_movement(
         session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_reallocation", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)],
-        details={"donor_authorization": payload.donor_authorization})
+        details={"donor_authorization": payload.donor_authorization}))
 
 
 @router.post("/funds/opening")
@@ -442,9 +452,9 @@ async def opening_balances_by_fund(
     """Assign balances the unrestricted group holds to funds, as the books' opening by fund."""
     for assignment in payload.assignments:
         _distinct(None, assignment.fund)
-    return await post_fund_movement(
+    return await _posted(session, post_fund_movement(
         session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
-        kind="fund_opening", legs=[(None, a.fund, a.account, a.amount) for a in payload.assignments])
+        kind="fund_opening", legs=[(None, a.fund, a.account, a.amount) for a in payload.assignments]))
 
 
 @router.post("/funds/movements/{je_id}/reverse")
@@ -458,6 +468,6 @@ async def reverse_fund_movement(
 ) -> dict:
     """Undo a movement between funds by its reversal. Repeat-safe: reversing it again
     answers with the same reversal."""
-    return await post_fund_movement(
+    return await _posted(session, post_fund_movement(
         session, company_id, request_key=f"reverse:{je_id}", ts=payload.date, reason=payload.reason, actor=user.id,
-        reverses=je_id)
+        reverses=je_id))

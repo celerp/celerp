@@ -337,6 +337,21 @@ async def test_transfer_bank_to_bank_keeps_fund_split(client, session, auth):
     assert await _held(session, auth, None, to) == 50 and await _held(session, auth, f["R"], to) == 150
 
 
+async def test_fund_balances_follow_a_void_out_of_a_locked_period(client, session, auth):
+    """An entry voided after its period locked stays on its own day and its reversal posts
+    on the reversal date, so a fund holds the gift between the two and nothing after."""
+    f = await _setup(client, auth)
+    je = await _gift(session, auth, f["U1"], 20)
+    r = await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": "2026-03-31"})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/accounting/journal-entries/{je}/void", headers=auth["headers"],
+                          json={"reason": "Posted twice", "reversal_date": "2026-05-02"})
+    assert r.status_code == 200, r.text
+    held = lambda as_of: fund_account_balances(session, auth["company_id"], as_of=as_of)
+    assert (await held("2026-04-30")).get(f["U1"]) == {"1111": 20, "4100": -20}
+    assert f["U1"] not in await held("2026-05-02") and f["U1"] not in await held(None)
+
+
 async def _close(client, auth, year_end="2026-12-31"):
     return await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": year_end})
 
@@ -373,7 +388,9 @@ async def test_year_close_by_fund_no_double_count(client, session, auth):
 async def test_year_close_reverse_restores_and_reclose(client, session, auth):
     """Reverse close, once the period is open again, restores every fund's income and expense
     balances; reversing again returns the same reversal; closing again posts a new entry under
-    the next cycle. While the year is locked the reversal is refused."""
+    the next cycle. While the year is locked the reversal is refused. A manager, who may manage
+    accounting but not reallocate restricted funds, may reverse it: each fund's results return
+    to that same fund."""
     f = await _setup(client, auth)
     await _gift(session, auth, f["R"])
     await _gift(session, auth, None, 50)
@@ -386,6 +403,7 @@ async def test_year_close_reverse_restores_and_reclose(client, session, auth):
     assert await _results(session, auth, "4100") == {}
 
     await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": None})
+    await _set_role(session, auth, "manager")
     r = await reverse()
     assert r.status_code == 200, r.text
     assert await _results(session, auth, "4100") == {f["R"]: -100, None: -50}

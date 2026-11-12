@@ -197,5 +197,11 @@
       "currency",
       "amount"
     ]
+  },
+  "accounting.close_not_found": {
+    "en": "No close of the fiscal year ending {year_end} is posted, so there is nothing to reverse.",
+    "params": [
+      "year_end"
+    ]
   }
 }

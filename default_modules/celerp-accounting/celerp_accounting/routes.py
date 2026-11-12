@@ -43,6 +43,7 @@ from celerp_accounting.chart_rules import (
     remove_account,
     trimmed_text,
 )
+from celerp_accounting.funds import post_fund_movement
 from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
@@ -62,7 +63,9 @@ from celerp.services.peer_import import SourceRevision, peer_batch
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
-from celerp.services.journal_accounts import pooled_split, require_destinations, split_lines_by_fund
+from celerp.services.journal_accounts import (
+    YEAR_CLOSE, fund_account_balances, funds_by_id, pooled_split, require_destinations, split_lines_by_fund,
+)
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
@@ -5396,103 +5399,98 @@ async def close_fiscal_year(
             f"start, the last year end on or before that date is {suggested}. To close that year, "
             f"enter {suggested}, or change Fiscal year start in Company Details.",
             value=year_end, year_end=suggested))
-    # Build account balances through the year-end date
-    posted = await journal_rows(session, company_id)
-    balances = _build_balances(posted, None, year_end)
+    settings = company.settings or {}
+    currency = books_currency(settings)
+    results = {code for code, kind in (await session.execute(
+        select(Account.code, Account.account_type).where(Account.company_id == company_id))).all()
+        if kind in ("revenue", "expense", "cogs")}
+    held = await fund_account_balances(session, company_id, as_of=year_end)
+    funds = await funds_by_id(session, company_id, {f for f in held if f})
 
-    # Get chart of accounts to determine account types
-    acct_rows = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id)
-        )
-    ).scalars().all()
-    acct_map = {a.code: a for a in acct_rows}
-
-    # Collect revenue (4xxx) and expense/COGS (5xxx, 6xxx) balances
+    # Each fund (None: the unrestricted group) closes on its own lines: whatever balance an
+    # income or expense account carries is reversed so it starts the new year at zero, and
+    # the fund's net income (balance = debit - credit, so negating it nets income less
+    # costs) goes to its own net assets: restricted net assets for a restricted fund,
+    # retained earnings otherwise. A profit is credited, a loss debited.
     closing_entries: list[dict] = []
+    net_assets: list[tuple[dict, AccountRole]] = []  # each fund's net income line, then its role
     net_income = Decimal("0")
-
-    for code, balance in balances.items():
-        acct = acct_map.get(code)
-        if not acct or acct.account_type not in ("revenue", "expense", "cogs"):
-            continue
-        if balance == 0:
-            continue
-        # Reverse whatever balance the account carries so it starts the new year at
-        # zero: debit a credit surplus (revenue), credit a debit surplus (costs).
-        closing_entries.append({"account": code, "debit": float(max(-balance, 0)), "credit": float(max(balance, 0))})
-        # balance = debit - credit, so credit-normal revenue arrives negative and
-        # debit-normal costs positive; negating both nets income minus costs.
-        net_income -= balance
+    for fund_id, by_account in held.items():
+        tag = {"fund_id": fund_id} if fund_id else {}
+        fund_net = Decimal("0")
+        for code in sorted(results & by_account.keys()):
+            balance = round_money(by_account[code], currency)
+            if not balance:
+                continue
+            closing_entries.append({"account": code, "debit": to_stored_float(max(-balance, Decimal(0))),
+                                    "credit": to_stored_float(max(balance, Decimal(0))), **tag})
+            fund_net -= balance
+        if fund_net:
+            restricted = (funds.get(fund_id or "") or {}).get("restricted")
+            closing_entries.append({"account": None, "debit": to_stored_float(max(-fund_net, Decimal(0))),
+                                    "credit": to_stored_float(max(fund_net, Decimal(0))), **tag})
+            net_assets.append((closing_entries[-1], AccountRole.RESTRICTED_NET_ASSETS if restricted
+                               else AccountRole.RETAINED_EARNINGS))
+        net_income += fund_net
 
     if not closing_entries:
         raise HTTPException(status_code=422, detail=t("acct.err_close_nothing"))
+    roles = await resolve_many(session, company_id, {role for _, role in net_assets})
+    for line, role in net_assets:
+        line["account"] = roles[role]
 
-    # Net income goes to the retained earnings account: a profit is credited, a
-    # loss debited.
-    net_float = float(net_income)
-    closing_entries.append({
-        "account": await resolve(session, company_id, AccountRole.RETAINED_EARNINGS),
-        "debit": abs(net_float) if net_float < 0 else 0.0,
-        "credit": net_float if net_float >= 0 else 0.0,
-    })
-
-    # Emit the closing JE. Cycle-aware: re-closing the same year after an
-    # unlock-edit cycle must post a NEW residual entry, not silently dedupe
-    # into the first close's keys and report success while posting nothing.
-    from celerp.events.engine import emit_event
-    from celerp.models.ledger import LedgerEntry
-    from celerp.services.je_keys import je_idempotency_key
-
-    _cycle = sum(
-        1 for k in (await session.execute(
-            select(LedgerEntry.idempotency_key).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.idempotency_key.startswith(f"je:{year_end}:fiscal.close", autoescape=True),
-            )
-        )).scalars().all()
-        if k.endswith(":c")
-    )
-    _cycle_tag = f":{_cycle}" if _cycle else ""
-    je_id = f"je:close:{year_end}{_cycle_tag}"
-    idem_create = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "c")
-    idem_posted = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "p")
-
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": f"Fiscal year close {year_end}", "entries": closing_entries, "ts": year_end},
-        actor_id=user.id,
-        location_id=None,
-        source="fiscal_close",
-        idempotency_key=idem_create,
-        metadata_={"trigger": "fiscal.close", "year_end": year_end},
-    )
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": year_end},
-        actor_id=user.id,
-        location_id=None,
-        source="fiscal_close",
-        idempotency_key=idem_posted,
-        metadata_={"trigger": "fiscal.close", "year_end": year_end},
-    )
-
+    # Cycle-aware: re-closing the same year after an unlock-edit cycle posts a NEW residual
+    # entry under the next cycle, never the first close's id answering with nothing posted.
+    cycle = len(await _year_closes(session, company_id, year_end))
+    je_id = f"je:close:{year_end}{f':{cycle}' if cycle else ''}"
+    await post_fund_movement(
+        session, company_id, je_id=je_id, kind=YEAR_CLOSE, entries=closing_entries,
+        ts=date.fromisoformat(year_end), reason=f"Fiscal year close {year_end}", actor=user.id,
+        details={"year_end": year_end})
     write_period_lock(company, year_end, user.id)
-
     await session.commit()
 
     return {
         "je_id": je_id,
         "year_end": year_end,
-        "net_income": net_float,
+        "net_income": to_stored_float(net_income),
         "entries_count": len(closing_entries),
         "lock_date": year_end,
     }
+
+
+async def _year_closes(session: AsyncSession, company_id: uuid.UUID, year_end: str) -> list[str]:
+    """The closes posted for ``year_end`` (je:close:<year end>, then :1, :2 for each re-close),
+    in cycle order."""
+    ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        (Projection.entity_id == f"je:close:{year_end}")
+        | Projection.entity_id.startswith(f"je:close:{year_end}:", autoescape=True)))).scalars().all()
+    return sorted(ids, key=lambda je: int(je.rsplit(":", 1)[1]) if je.count(":") > 2 else 0)
+
+
+class ReverseClosePayload(BaseModel):
+    reason: str = Field(min_length=1)
+
+
+@router.post("/close-year/{year_end}/reverse")
+async def reverse_year_close(
+    year_end: str,
+    payload: ReverseClosePayload,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user: object = Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo the latest close of ``year_end`` by its reversal on the year end, so every fund's
+    income and expense balances return. The year must be open again (unlocked) first.
+    Repeat-safe: reversing again answers with the same reversal."""
+    await locked_company(session, company_id)
+    closes = await _year_closes(session, company_id, year_end)
+    if not closes:
+        raise HTTPException(status_code=404, detail=catalog_refusal("accounting.close_not_found", year_end=year_end))
+    posted = await post_fund_movement(
+        session, company_id, request_key=f"reverse:{closes[-1]}", kind=YEAR_CLOSE, reverses=closes[-1],
+        ts=date.fromisoformat(year_end), reason=payload.reason, actor=user.id)
+    await session.commit()
+    return posted

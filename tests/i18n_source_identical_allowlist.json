@@ -1,6 +1,7 @@
 {
   "am": [
     "account.email_placeholder",
+    "accounting.close_not_found",
     "btn.u00d7",
     "chip.ar",
     "cloud.plan_ai_name",
@@ -80,6 +81,7 @@
   ],
   "ar": [
     "account.email_placeholder",
+    "accounting.close_not_found",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",
@@ -146,6 +148,7 @@
     "th.sku"
   ],
   "de": [
+    "accounting.close_not_found",
     "acct.source_system",
     "acct.tab_journal",
     "attr.form",
@@ -291,6 +294,7 @@
   ],
   "es": [
     "account.plan",
+    "accounting.close_not_found",
     "acct.source_manual",
     "activity.total_change",
     "attr.color",
@@ -408,6 +412,7 @@
     "th.total"
   ],
   "fr": [
+    "accounting.close_not_found",
     "acct.tab_journal",
     "activity.document",
     "activity.m_pcs",
@@ -571,6 +576,7 @@
     "th.version"
   ],
   "id": [
+    "accounting.close_not_found",
     "acct.source_manual",
     "acct.source_transfer",
     "activity.m_pcs",
@@ -717,6 +723,7 @@
     "th.total"
   ],
   "it": [
+    "accounting.close_not_found",
     "attr.volume_l",
     "btn.u00d7",
     "category.tablet",
@@ -834,6 +841,7 @@
   ],
   "ja": [
     "account.email_placeholder",
+    "accounting.close_not_found",
     "attr.cpu",
     "attr.os",
     "btn.u00d7",
@@ -908,6 +916,7 @@
     "th.sku"
   ],
   "pt": [
+    "accounting.close_not_found",
     "acct.source_manual",
     "activity.total_change",
     "attr.material",
@@ -1033,6 +1042,7 @@
   ],
   "th": [
     "account.email_placeholder",
+    "accounting.close_not_found",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",
@@ -1108,6 +1118,7 @@
     "th.sku"
   ],
   "vi": [
+    "accounting.close_not_found",
     "btn.u00d7",
     "cloud.plan_ai_name",
     "cloud.plan_cloud_name",
