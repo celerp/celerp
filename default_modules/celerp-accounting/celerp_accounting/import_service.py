@@ -23,7 +23,9 @@ from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
-from celerp.services.peer_lines import ImportFundChoices, check_import_fund_choices, chosen_journal_lines
+from celerp.services.peer_lines import (
+    ImportFundChoices, check_import_fund_choices, chosen_journal_lines, journal_inbound_keys, refuse_inbound,
+)
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
 
@@ -153,11 +155,13 @@ async def import_journal_records(
 async def _with_fund_choices(session, company_id, rec: AccImportRecord, fund_choices: ImportFundChoices,
                              origin: str):
     """The record's data with the funds chosen for it and its lines, and the grant that lets
-    it carry them; as it came and no grant when nothing was chosen for it."""
+    it carry them; as it came and no grant when nothing was chosen for it. A fund key the
+    file itself gives is refused before the choices apply, so a choice never covers it."""
     every, lines = fund_choices.of(rec.entity_id)
     entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
     if (every is None and not lines) or not isinstance(entries, list):
         return rec.data, None
+    refuse_inbound(journal_inbound_keys(rec.data, None), origin)
     entries = [e for e in entries if isinstance(e, dict)]
     keys, grant = await chosen_journal_lines(session, company_id, [{**e, "origin": origin} for e in entries],
                                              every=every, lines=lines)
