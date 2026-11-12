@@ -369,7 +369,7 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
     """One manual journal entry of the client's, posted once in the firm's copy as the
     client posted it, its contacts the firm's own; a later revision that voids it voids
     the firm's. In books that use funds it is refused with the funds fix, kept as a hold
-    until a firm user chooses a fund for each line (post_held_journal). A reversal of a journal of the firm's is listed in the firm view with Post
+    until a firm user chooses a fund for each line (post_held). A reversal of a journal of the firm's is listed in the firm view with Post
     again, and reversing that reversal (Undo) removes it from the list. Also takes the
     client's answer to a journal of the firm's (``{"answer": ...}``)."""
     from celerp.services.journal_accounts import FundChoiceNeeded
@@ -436,7 +436,7 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         await _post_client_journal(session, grant, claim, created, source_entity_id=source_entity_id,
                                    source_revision=source_revision, actor_id=None, fund_grant=None)
     except FundChoiceNeeded as exc:
-        # Held for a firm user's choice (post_held_journal): the placed lines and the journal
+        # Held for a firm user's choice (post_held): the placed lines and the journal
         # as sent, which the posting claims again; the client sends it on each sync till then.
         exc.fix = {**exc.fix, "revision": source_revision, "ts": journal.ts, "memo": journal.memo or "",
                    "client": grant.label, "entries": [{**e, "origin": CLIENT_ORIGIN} for e in entries],
@@ -576,7 +576,7 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
     """Post one journal of the firm's in the client's books once, with a notice naming its
     date, accounts, amounts and the firm; void it when the firm voids it; or decline it
     with the reason, told once. In books that use funds it is held until a local user
-    chooses a fund for each line (post_held_journal). The firm hears of a decline, and of
+    chooses a fund for each line (post_held). The firm hears of a decline, and of
     a posting that follows one, through the answer the caller sends (answered)."""
     from celerp.db import get_session_ctx
     from celerp.services.journal_accounts import FundChoiceNeeded
@@ -677,12 +677,13 @@ async def answered(company_id: uuid.UUID, grant_id: uuid.UUID, item: dict, decli
         await session.commit()
 
 
-async def post_held_journal(session: AsyncSession, company_id: uuid.UUID, item_id, *, revision: int,
-                            every: str | None, lines: dict[str, str | None], request_key: str,
-                            actor_id) -> dict:
-    """Post a journal held for funds with a local user's choices: on the client a journal of
+async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, revision: int,
+                    every: str | None, lines: dict[str, str | None], request_key: str,
+                    actor_id) -> dict:
+    """Post a record held for funds with a local user's choices: on the client a journal of
     the firm's, on the firm a client's journal (its hold keeps the journal as sent, claimed
-    again here under the live grant). ``every`` is the entry's choice, and so of each line
+    again here under the live grant), and a connected company's document
+    (peer_documents.post_held_document). ``every`` is the entry's choice, and so of each line
     ``lines`` (line number -> choice) does not choose for; a line choice of none is no
     choice. The posting boundary judges it as ``actor_id`` posting it (a line nothing covers,
     money moved between funds) and the hold stays while it refuses. A repeat of
@@ -690,9 +691,14 @@ async def post_held_journal(session: AsyncSession, company_id: uuid.UUID, item_i
     commits."""
     from sqlalchemy import or_
 
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.services import peer_documents
     from celerp.services.peer_identity import claim_peer_revision
     from celerp.services.peer_lines import FUND_KEYS, chosen_lines, require_fund_choices
 
+    chosen_doc = await find_event_by_idempotency(session, company_id, peer_documents.held_choice_key(request_key))
+    if chosen_doc is not None:
+        return {"id": chosen_doc.entity_id}
     posted = await session.scalar(select(Projection.entity_id).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         or_(Projection.state["peer_origin"]["request_key"].as_string() == request_key,
@@ -701,6 +707,10 @@ async def post_held_journal(session: AsyncSession, company_id: uuid.UUID, item_i
         return {"id": posted}
     item = await peer_accounts.held_item(session, company_id, item_id)
     fix = item.fix
+    if fix.get("kind") == peer_documents.DOC_FUNDS:
+        return await peer_documents.post_held_document(
+            session, company_id, item, revision=revision, every=every, lines=lines,
+            request_key=request_key, actor_id=actor_id)
     if fix.get("kind") != "funds":
         raise HTTPException(422, "This item is not fixed here.")
     if revision != fix.get("revision"):

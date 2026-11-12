@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -12,10 +14,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.importers.results import message_text
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.services import peer_accounts
+from celerp.services import peer_access, peer_accounts, peer_attention
 from celerp.services.company_lock import locked_company
 from celerp.services.peer_payments import BY_HAND
 from celerp.services.peer_identity import (
@@ -45,6 +48,25 @@ _FULFILLING_TYPES = frozenset({"invoice"})
 _ISSUED_STATUSES = frozenset({
     "final", "sent", "partial", "paid", "awaiting_payment", "received", "partially_received",
 })
+
+
+DOC_FUNDS = "doc_funds"
+
+
+@dataclass(frozen=True)
+class HeldPosting:
+    """A local user posting a document held for funds (post_held_document): who posts it,
+    with which role, and the fund choices (``every`` the document's, ``lines`` by line
+    number), written under ``request_key``."""
+    user_id: uuid.UUID
+    role: str
+    every: str | None
+    lines: dict[str, str | None]
+    request_key: str
+
+
+def held_choice_key(request_key: str) -> str:
+    return f"peer:doc-funds:{request_key}"
 
 
 ISSUED_IN_COPY = ("The accountant's copy of this document is already issued, so this change was not "
@@ -84,10 +106,15 @@ async def _map_identity(session, grant, entity_type: str, source_id: str) -> str
 
 async def receive_document(
     session: AsyncSession, *, grant, source_entity_id: str,
-    source_revision: int, data: dict,
+    source_revision: int, data: dict, posting: HeldPosting | None = None,
 ) -> str:
     """Create, issue, settle and move the stock of one document the way the source did,
-    through the canonical services, without bypassing their status and money checks."""
+    through the canonical services, without bypassing their status and money checks. In
+    books that use funds an issued document no fund choice covers is refused with the
+    doc_funds fix holding it as sent, and the sender sends it on each sync until a local
+    user posts it from the hold (``posting``: imported as a draft, the user's choices
+    written, finalized by that user)."""
+    from celerp.services.journal_accounts import FundChoiceNeeded
     from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
     from celerp_docs.import_service import import_doc_records
     from celerp_docs.line_bodies import LineItem
@@ -109,6 +136,7 @@ async def receive_document(
     except (ValueError, TypeError):
         raise HTTPException(422, "Unsupported document type") from None
     data = dict(data)
+    sent = dict(data)
     accounts = peer_accounts.parse(data.pop("accounts", None))
     # A revision this company already holds (a company copy holds every revision it was
     # made from) is acknowledged as it stands, even one that could not be sent today.
@@ -189,12 +217,12 @@ async def receive_document(
     company = await session.get(Company, grant.company_id)
     if company is None or not company.is_active or company.is_migration_staged:
         raise HTTPException(403, "Company unavailable")
-    member = (await session.execute(select(User.id, UserCompany.role).join(
-        UserCompany, UserCompany.user_id == User.id).where(
-        UserCompany.company_id == grant.company_id,
-        UserCompany.role == "owner", UserCompany.is_active.is_(True),
-        User.is_active.is_(True),
-    ).order_by(User.id).limit(1))).first()
+    member = SimpleNamespace(id=posting.user_id, role=posting.role) if posting else (await session.execute(
+        select(User.id, UserCompany.role).join(UserCompany, UserCompany.user_id == User.id).where(
+            UserCompany.company_id == grant.company_id,
+            UserCompany.role == "owner", UserCompany.is_active.is_(True),
+            User.is_active.is_(True),
+        ).order_by(User.id).limit(1))).first()
     if member is None:
         raise HTTPException(403, "Company owner unavailable")
     if source_status != "void":
@@ -213,6 +241,8 @@ async def receive_document(
     if source_status == "void":
         from celerp.services.money import round_money
         from celerp_docs.routes import DocVoidBody, void_document
+        if target is None and claim.mapping is None:
+            return "skipped"  # voided before it was ever copied here (held for funds): nothing to void
         if target is None or target.entity_type != "doc" or claim.mapping is None:
             raise HTTPException(409, "Source document must be synchronized before void")
         state = target.state or {}
@@ -243,24 +273,37 @@ async def receive_document(
             assert_finalized_edit(target.state or {}, _doc_import_fields_changed(target.state or {}, incoming))
         except HTTPException as exc:
             raise HTTPException(409, ISSUED_IN_COPY) from exc
-    if source_status != "draft" and target_status == "draft":
-        # Update its draft fields before the canonical finalization posts the books.
+    finalizing = source_status != "draft" and (target_status == "draft" or posting is not None)
+    if finalizing:
+        # Update its draft fields (and a held posting's choices) before the canonical
+        # finalization posts the books.
         incoming["status"] = "draft"
         incoming.pop("import_treatment", None)
         record.data = incoming
-    outcome = await import_doc_records(
-        session, grant.company_id, SimpleNamespace(id=member.id), member.role,
-        dict(company.settings or {}), [record], origin="connected_company", upsert=True, post_ledger=True)
-    if len(outcome.records) != 1 or outcome.records[0].status not in (
-        "created", "updated", "skipped",
-    ):
-        # The import's own reason, such as a locked period, tells the owner what to change.
-        message = outcome.records[0].message if len(outcome.records) == 1 else None
-        raise HTTPException(409, message_text(message).removeprefix(f"{claim.target_id}: ")
-                            if message else "Receiving document needs review")
-    if source_status != "draft" and target_status == "draft":
-        await finalize_document(claim.target_id, str(grant.company_id),
-                                SimpleNamespace(id=member.id), session, commit=False)
+    try:
+        outcome = await import_doc_records(
+            session, grant.company_id, SimpleNamespace(id=member.id), member.role,
+            dict(company.settings or {}), [record], origin="connected_company", upsert=True, post_ledger=True)
+        if len(outcome.records) != 1 or outcome.records[0].status not in (
+            "created", "updated", "skipped",
+        ):
+            # The import's own reason, such as a locked period, tells the owner what to change.
+            message = outcome.records[0].message if len(outcome.records) == 1 else None
+            refused = HTTPException(409, message_text(message).removeprefix(f"{claim.target_id}: ")
+                                    if message else "Receiving document needs review")
+            refused.fix = outcome.records[0].fix if len(outcome.records) == 1 else None
+            raise refused
+        if posting is not None:
+            await _choose_funds(session, grant.company_id, claim.target_id, posting)
+        if finalizing:
+            await finalize_document(claim.target_id, str(grant.company_id),
+                                    SimpleNamespace(id=member.id), session, commit=False)
+    except (HTTPException, FundChoiceNeeded) as exc:
+        fix = getattr(exc, "fix", None)
+        if (fix or {}).get("kind") == "funds":
+            # Held for a local user's choice: the lines to choose for and the document as sent.
+            exc.fix = {**fix, "kind": DOC_FUNDS, "revision": source_revision, "sent": sent}
+        raise
     if source_status == "sent" and target_status != "sent":
         from celerp_docs.routes import DocSendBody, mark_doc_sent
         sent_key = f"peer:doc-sent:{grant.source_company_id}:{key}:{source_revision}"
@@ -345,6 +388,39 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
     for name, rate in added:
         await _notify(session, company.id, "notice.peer_tax_added", tax=name, rate=f"{rate:g}",
                       record=record, company=sender, action_url=page)
+
+
+async def _choose_funds(session: AsyncSession, company_id: uuid.UUID, doc_id: str, posting: HeldPosting) -> None:
+    from celerp.models.projections import Projection
+    from celerp_docs.routes import write_fund_choices
+
+    state = (await session.get(Projection, (company_id, doc_id), populate_existing=True)).state or {}
+    ids = {str(n): li.get("line_id") for n, li in enumerate(state.get("line_items") or [], 1) if isinstance(li, dict)}
+    every = {"document": posting.every, "every": posting.every} if posting.every is not None else {}
+    await write_fund_choices(session, company_id, doc_id, state, actor_id=posting.user_id,
+                             idempotency_key=held_choice_key(posting.request_key),
+                             lines={ids.get(n) or n: v for n, v in posting.lines.items() if v is not None}, **every)
+
+
+async def post_held_document(session: AsyncSession, company_id: uuid.UUID, item, *, revision: int,
+                             every: str | None, lines: dict[str, str | None], request_key: str,
+                             actor_id) -> dict:
+    """Post a connected company's document held for funds (``item``, its doc_funds fix
+    holding the document as sent) with a local user's choices, claimed again under the live
+    grant and finalized by that user, so the posting boundary judges it as theirs; nothing
+    posts while it refuses and the hold stays. The caller holds the company lock and commits."""
+    if revision != item.fix.get("revision"):
+        raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
+    role = await session.scalar(select(UserCompany.role).where(
+        UserCompany.company_id == company_id, UserCompany.user_id == actor_id, UserCompany.is_active.is_(True)))
+    peer = await peer_access.live_grant(session, company_id, item.source_company_id, "documents")
+    await receive_document(session, grant=peer, source_entity_id=item.source_entity_id, source_revision=revision,
+                           data=item.fix["sent"], posting=HeldPosting(actor_id, role, every, lines, request_key))
+    doc_id = await peer_identity(session, target_company=company_id, source_company=item.source_company_id,
+                                 entity_type="doc", source_entity_id=item.source_entity_id)
+    await peer_attention.clear(session, company_id=company_id, source_company_id=item.source_company_id,
+                               entity_type=item.entity_type, source_entity_id=item.source_entity_id)
+    return {"id": doc_id}
 
 
 def _keep_own_line_fields(lines: list[dict], target: dict, parcels: set[str]) -> None:

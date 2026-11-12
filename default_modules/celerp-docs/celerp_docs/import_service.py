@@ -148,7 +148,8 @@ async def import_doc_records(
                     )
                     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}",
+                        fix=getattr(exc, "fix", None))
             continue
         existing_keys.add(rec.idempotency_key)
         existing_entities.add(rec.entity_id)

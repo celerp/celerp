@@ -2272,22 +2272,31 @@ async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: s
     if posted is not None:
         raise HTTPException(status_code=409, detail=catalog_refusal("posting.fund.document_posted"))
     sent = payload.model_fields_set
-    grant = await require_fund_choices(session, company_id, row.state, lines=payload.lines,
-                                       **({"document": payload.document} if "document" in sent else {}),
-                                       **({"every": payload.all} if "all" in sent else {}))
-    state = row.state or {}
+    entry = await write_fund_choices(session, company_id, entity_id, row.state or {}, actor_id=user.id,
+                                     idempotency_key=str(uuid.uuid4()), lines=payload.lines,
+                                     **({"document": payload.document} if "document" in sent else {}),
+                                     **({"every": payload.all} if "all" in sent else {}))
+    if entry is None:
+        return {"event_id": None, "version": row.version}
+    await session.commit()
+    return {"event_id": entry.id, "version": entry.id}
+
+
+async def write_fund_choices(session: AsyncSession, company_id, entity_id: str, state: dict, *, actor_id,
+                             idempotency_key: str, **choices):
+    """Write a local user's fund choices (require_fund_choices: ``lines`` by line id,
+    ``document``, ``every``) on document ``entity_id`` as ``actor_id``; the event, or None
+    when nothing changes. The Fund control and posting a held document both write here."""
+    grant = await require_fund_choices(session, company_id, state, **choices)
     changes = {key: {"old": state.get(key), "new": value} for key, value in grant.header.items()}
     if grant.lines:
         changes["line_items"] = {"old": state.get("line_items"), "new": chosen_lines(state.get("line_items") or [], grant)}
     if not changes:
-        return {"event_id": None, "version": row.version}
-    key = str(uuid.uuid4())
-    entry = await emit_event(
+        return None
+    return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": changes, "idempotency_key": key}, actor_id=user.id, location_id=None,
-        source="api", idempotency_key=key, metadata_={}, fund_grant=grant)
-    await session.commit()
-    return {"event_id": entry.id, "version": entry.id}
+        data={"fields_changed": changes, "idempotency_key": idempotency_key}, actor_id=actor_id,
+        location_id=None, source="api", idempotency_key=idempotency_key, metadata_={}, fund_grant=grant)
 
 
 async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: str, state: dict) -> None:

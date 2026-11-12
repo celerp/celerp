@@ -5330,10 +5330,11 @@ async def post_peer_hold_funds(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Post a journal from the accountant held for funds, with the fund chosen for each
-    line; the posting is judged as this user's, and nothing posts while it is refused."""
+    """Post a record held for funds (a journal from the accountant or the client, or a
+    connected company's document) with the fund chosen for it and each line; the posting is
+    judged as this user's, and nothing posts while it is refused."""
     await locked_authority(session, company_id, user.id, ("manage_accounting",))
-    posted = await peer_journals.post_held_journal(
+    posted = await peer_journals.post_held(
         session, company_id, item_id, revision=body.revision, every=body.choices.all,
         lines=body.choices.lines, request_key=body.request_key, actor_id=user.id)
     await session.commit()
