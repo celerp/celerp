@@ -229,7 +229,7 @@ async def test_draft_list_pager_saves_first(ui_app):
             c.cookies.update(_cookies())
             r = await c.get("/lists/list:big")
     assert r.status_code == 200, r.text
-    assert "window[\"celerpPageNav\"](this.getAttribute('href'))" in unescape(_pager_html(r.text))
+    assert 'celerpPageLink(this,event,"celerpPageNav")' in unescape(_pager_html(r.text))
     assert script_cfg(r.text, _CAN_EDIT_LINES)["canEditLines"] is True
 
 

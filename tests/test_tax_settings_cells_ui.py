@@ -115,7 +115,8 @@ async def test_tax_cell_escape_restores_the_display_cell(ui_client, prefix, gnam
         assert f'hx-get="/settings/{prefix}/0/name/edit"' in r.text
         for field in ["name", "rate", "tax_type", "is_default", "is_compound", "description"]:
             r = await ui_client.get(f"/settings/{prefix}/0/{field}/edit")
-            assert "Escape" in r.text, field
+            # Escape on the editor puts this display cell back (celerpCellKey in celerp-page.js).
+            assert "celerpCellKey(this,event," in r.text, field
             assert f"/settings/{prefix}/0/{field}/display" in r.text, field
 
 
@@ -169,9 +170,10 @@ async def test_a_typed_tax_cell_saves_on_enter_and_leaves_untouched_without_a_wr
     with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: _taxes())):
         r = await ui_client.get(f"/settings/{prefix}/0/{field}/edit")
     text = html.unescape(r.text)
-    assert "event.key==='Enter'" in text, field
+    assert f'celerpCellKey(this,event,{{"url": "/settings/{prefix}/0/{field}/display", "enter": "trigger"}})' in text, field
     # Blur saves only a changed value; an untouched editor restores the shown cell.
     assert "this.value!==this._v" in text, field
+    assert '"when": "unchanged"' in text, field
 
 
 @pytest.mark.parametrize("prefix", ["taxes", "purchasing-taxes"])

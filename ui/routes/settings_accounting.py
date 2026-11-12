@@ -36,7 +36,7 @@ _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
-from ui.components.encode import as_js, js, safe_url
+from ui.components.encode import as_js, call, EVENT, safe_url, THIS
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -321,12 +321,7 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     code = a.get("code", "")
     current = a.get("cash_flow_category") or ""
     restore_url = f"/settings/accounting/chart/{code}/cash-flow/display"
-    esc_js = (
-        js(
-            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}",
-            str(restore_url))
-    )
+    esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
     return Td(
         Select(
             Option(t("acct.cash_flow_derived"), value="", selected=not current),
@@ -359,12 +354,7 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
     """The picker in place of the account. A change saves and swaps in the updated
     row; Escape puts the display cell back without saving."""
     restore_url = f"/settings/accounting/posting-accounts/{key}/display"
-    esc_js = (
-        js(
-            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}",
-            str(restore_url))
-    )
+    esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
     return Td(
         Div(
             account_picker("value", candidates, value=code or "", aria_label=label,
@@ -724,7 +714,7 @@ def _older_stock_filters_of(request: Request) -> dict:
     return filters
 
 
-async def _older_stock_action(request: Request, call) -> FT:
+async def _older_stock_action(request: Request, fetch_view) -> FT:
     """Run an older-stock action and answer with the card again: the outcome on success,
     the API's reason on a refusal, read within the filters the page was showing."""
     token = _token(request)
@@ -732,7 +722,7 @@ async def _older_stock_action(request: Request, call) -> FT:
         return P(t("error.session_expired"), cls="cell-error")
     filters = _older_stock_filters_of(request)
     try:
-        view = await call(token)
+        view = await fetch_view(token)
         message, kind = view.pop("message", ""), view.pop("kind", "success")
         if any(filters.values()):
             view = await api.get_older_stock(token, filters)
@@ -1458,13 +1448,13 @@ def setup_routes(app):
         """Move the ticked lots to the chosen inventory account, once per page render."""
         form = await request.form()
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.move_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
                                               str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/move-all")
     async def older_stock_move_all(request: Request):
@@ -1472,31 +1462,31 @@ def setup_routes(app):
         form = await request.form()
         filters = _older_stock_filters_of(request)
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.move_all_older_stock(token, {k: filters[k] for k in ("account", "q") if k in filters},
                                                   str(form.get("selection", "")).strip(),
                                                   str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/moves/{move_id}/undo")
     async def older_stock_undo(request: Request, move_id: str):
-        async def call(token):
+        async def fetch_view(token):
             return {**await api.undo_older_stock_move(token, move_id), "message": t("older_stock.undo_done")}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/retry")
     async def older_stock_retry(request: Request):
-        async def call(token):
+        async def fetch_view(token):
             view = await api.retry_older_stock(token)
             if view.pop("result")["placed"]:
                 return {**view, "message": t("older_stock.placed_msg")}
             return {**view, "message": t("older_stock.still_failed"), "kind": "error"}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/corrections")
     async def older_stock_correct(request: Request):
@@ -1504,13 +1494,13 @@ def setup_routes(app):
         toolbar) treated their difference; ``kind`` rides in the URL."""
         form = await request.form()
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
                                                  request.query_params.get("kind", "").strip())
             view.pop("result", None)
             return {**view, "message": t("older_stock.corrected_msg")}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.get("/settings/accounting/chart/{code}/cash-flow/edit")
     async def cash_flow_field_edit(request: Request, code: str):

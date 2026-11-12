@@ -49,7 +49,7 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
 from ui.security import not_permitted_redirect, owner_refusal
-from ui.components.encode import html_response, js, raw_html, safe_url
+from ui.components.encode import call, html_response, js_value, raw_html, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -477,13 +477,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
     if load_error_toasts:
         payload = [{"key": f"{n}|{e}", "msg": _load_error_message(lbl, e, lang)}
                    for n, lbl, e in load_error_toasts]
-        load_error_js = Script(js(
-            "(function(){{if(!window.celerpToast)return;"
+        load_error_js = Script(
+            "(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);if(!window.celerpToast)return;"
             "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||new Set();"
-            "var errs={0};"
-            "errs.forEach(function(x){{if(window.__moduleLoadErrorsShown.has(x.key))return;"
-            "window.__moduleLoadErrorsShown.add(x.key);celerpToast(x.msg,'error',true);}});"
-            "}})();", payload))
+            "var errs=CFG.errs;"
+            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown.has(x.key))return;"
+            "window.__moduleLoadErrorsShown.add(x.key);celerpToast(x.msg,'error',true);});"
+            "})();", data_cfg=js_value({'errs': payload}))
     else:
         load_error_js = ""
 
@@ -660,11 +660,7 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
     if url:
         # First render only: open Checkout in the external browser, and wire Esc to
         # cancel. Attached to document once so it isn't re-added on every re-poll.
-        parts.append(Script(
-            js(
-                '(function(){{var u={0};if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);'
-                "}}else{{celerpOpen(u,'_blank');}}}})();",
-                url)))
+        parts.append(Script(call("celerpOpenExternal", url)))
         parts.append(Script("""
         (function () {
           if (window.__celerpBuyEsc) return;

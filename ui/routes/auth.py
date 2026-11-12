@@ -35,7 +35,7 @@ from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.currencies import is_email
-from ui.components.encode import html_response, js, safe_url
+from ui.components.encode import html_response, js_value, safe_url
 
 
 logger = logging.getLogger(__name__)
@@ -720,73 +720,72 @@ async def _setup_page(request: Request, values: dict, *, code_required: bool,
 # Keeps the typed values (never the passwords) while the user looks at an
 # additional option and comes back, and makes Create a single submit. Runs before
 # the dropdowns initialise, so a restored choice is the one they show.
-_SETUP_FORM_JS = js("""
-(function () {{
+_SETUP_FORM_JS = """
+(function () {var CFG=JSON.parse(document.currentScript.dataset.cfg);
   var form = document.getElementById('setup-form');
   var KEY = 'celerp-setup-form';
-  var KEPT = {0};
-  function field(name) {{ return form.querySelector('[name="' + name + '"]'); }}
-  function save() {{
-    var data = {{}};
-    KEPT.forEach(function (name) {{ var el = field(name); if (el && el.value) data[name] = el.value; }});
-    try {{ sessionStorage.setItem(KEY, JSON.stringify(data)); }} catch (e) {{}}
-  }}
-  var saved = {{}};
-  try {{ saved = JSON.parse(sessionStorage.getItem(KEY) || '{{}}') || {{}}; }} catch (e) {{}}
-  KEPT.forEach(function (name) {{
+  var KEPT = CFG.kept;
+  function field(name) { return form.querySelector('[name="' + name + '"]'); }
+  function save() {
+    var data = {};
+    KEPT.forEach(function (name) { var el = field(name); if (el && el.value) data[name] = el.value; });
+    try { sessionStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {}
+  }
+  var saved = {};
+  try { saved = JSON.parse(sessionStorage.getItem(KEY) || '{}') || {}; } catch (e) {}
+  KEPT.forEach(function (name) {
     var el = field(name);
     if (!el || el.value || !saved[name]) return;
     var wrap = el.closest('.combobox-wrap');
-    if (!wrap) {{ el.value = saved[name]; return; }}
+    if (!wrap) { el.value = saved[name]; return; }
     var opt = wrap.querySelector('.combobox-option[data-value="' + CSS.escape(saved[name]) + '"]');
     if (!opt) return;
     el.value = saved[name];
     wrap.querySelector('.combobox-input').value = opt.textContent;
-  }});
+  });
   save();
   form.addEventListener('input', save);
   form.addEventListener('change', save);
-  window.addEventListener('pagehide', function () {{ if (!form.dataset.sent) save(); }});
+  window.addEventListener('pagehide', function () { if (!form.dataset.sent) save(); });
   var button = form.querySelector('button[type="submit"]');
   // A password mismatch is caught here so the typed passwords stay; the server
   // checks again and says the same thing under the same field.
   var confirm = field('confirm_password');
   var confirmError = document.getElementById('confirm_password-error');
-  function markConfirm(message) {{
+  function markConfirm(message) {
     confirmError.textContent = message;
     confirmError.hidden = !message;
-    if (message) {{
+    if (message) {
       confirm.setAttribute('aria-invalid', 'true');
       confirm.setAttribute('aria-describedby', confirmError.id);
-    }} else {{
+    } else {
       confirm.removeAttribute('aria-invalid');
       confirm.removeAttribute('aria-describedby');
-    }}
-  }}
-  [field('password'), confirm].forEach(function (el) {{
-    el.addEventListener('input', function () {{ markConfirm(''); }});
-  }});
-  form.addEventListener('submit', function (e) {{
-    if (field('password').value !== confirm.value) {{
+    }
+  }
+  [field('password'), confirm].forEach(function (el) {
+    el.addEventListener('input', function () { markConfirm(''); });
+  });
+  form.addEventListener('submit', function (e) {
+    if (field('password').value !== confirm.value) {
       e.preventDefault();
       markConfirm(form.dataset.mismatch);
       confirm.focus();
       return;
-    }}
+    }
     form.dataset.sent = '1';
-    try {{ sessionStorage.removeItem(KEY); }} catch (e) {{}}
+    try { sessionStorage.removeItem(KEY); } catch (e) {}
     button.disabled = true;
-  }});
+  });
   // Coming back with the browser's Back button shows the page from cache.
-  window.addEventListener('pageshow', function () {{ button.disabled = false; delete form.dataset.sent; }});
+  window.addEventListener('pageshow', function () { button.disabled = false; delete form.dataset.sent; });
   var focus = form.dataset.focus && field(form.dataset.focus);
-  if (focus) {{
+  if (focus) {
     var wrap = focus.closest('.combobox-wrap');
     (wrap ? wrap.querySelector('.combobox-input') : focus).focus();
-  }}
-}})();
-""",
-    list(_SETUP_KEPT_FIELDS))
+  }
+})();
+"""
 
 
 def _setup_form(
@@ -850,7 +849,7 @@ def _setup_form(
             data_focus=next(iter(errors), ""),
             data_mismatch=t("settings.passwords_do_not_match"),
         ),
-        Script(_SETUP_FORM_JS),
+        Script(_SETUP_FORM_JS, data_cfg=js_value({'kept': list(_SETUP_KEPT_FIELDS)})),
         company_choice_script(),
         Div(
             H2(t("setup.options_heading"), cls="setup-options-heading"),

@@ -75,4 +75,4 @@ def test_ai_resume_reloads_ai():
     from fasthtml.common import to_xml
     script = "".join(to_xml(p) for p in _resume_parts("ai"))
     assert '"celerp_resume::ai"' in script
-    assert "celerpGo('/ai')" in script
+    assert 'celerpResume("celerp_resume::ai","go","/ai")' in script

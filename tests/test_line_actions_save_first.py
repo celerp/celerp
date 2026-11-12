@@ -50,8 +50,8 @@ def _posts(doc: dict, role: str = "owner") -> list[tuple[str, object]]:
     for node in _nodes([_doc_detail(doc, role=role, **_FEATURES_ON)]):
         url = node.attrs.get("hx-post") or node.attrs.get("hx_post")
         js = node.attrs.get("onclick") or node.attrs.get("onsubmit") or ""
-        if not url and "_celerpPostOnLines(" in js:
-            url = json.JSONDecoder().raw_decode(js.split("_celerpPostOnLines(", 1)[1])[0]
+        if not url and "_celerpPostOnLines(event," in js:
+            url = json.JSONDecoder().raw_decode(js.split("_celerpPostOnLines(event,", 1)[1])[0]
         if url:
             out.append((url, node))
     return out

@@ -253,7 +253,8 @@ def test_try_again_opens_the_page_with_get_never_sending_a_form_again(method, pa
 
 
 def _shell_config(html: str) -> dict:
-    return json.loads(re.search(r"window\.__shellI18n = (\{.*?\});</script>", html, re.S).group(1))
+    from test_helpers import script_cfg
+    return script_cfg(html, "window.__shellI18n = JSON.parse")
 
 
 @pytest.fixture

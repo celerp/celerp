@@ -29,7 +29,7 @@ from ui.components.table import (
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.reports import _get_company
-from ui.components.encode import as_js, js
+from ui.components.encode import as_js, call, EVENT
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -259,7 +259,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById({0}).replaceChildren()", f"recon-expand-{line_id}"),
+                       onclick=call("celerpClear", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -308,7 +308,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById({0}).replaceChildren()", f"recon-expand-{line_id}"),
+                       onclick=call("celerpClear", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -526,7 +526,7 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
-        Script(js('celerpToast({0}, {1});', notice, notice_kind)) if notice else None,
+        Script(call('celerpToast', notice, notice_kind)) if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
         **{"data-session-id": session_id,
@@ -685,9 +685,7 @@ def _mapper_fragment(
                   cls="btn btn--secondary ml-sm"),
                 cls="mt-md",
             ),
-            onkeydown=js(
-                "if(event.key==='Escape'){{celerpGo({0})}}",
-                f"/accounting/reconcile/{session_id}"),
+            onkeydown=call("celerpGoOnEscape", EVENT, f"/accounting/reconcile/{session_id}"),
             hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",

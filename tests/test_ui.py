@@ -300,24 +300,19 @@ class TestAuthRouting:
         assert b"inactivity" in r.content.lower()
 
     def test_idle_logout_js_wired_through_renderer(self):
-        """The idle timer is a js() template filled per render: the module constant
-        keeps the hole, and the renderer substitutes the effective timeout in
-        milliseconds while preserving the logout mechanics. (The deployment-aware minutes matrix
-        lives in test_idle_policy.py.)"""
-        from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_js
-        import re
-        # The module-level template is uninterpolated: the hole survives and
-        # no concrete timeout is baked in at import time.
-        assert "var IDLE_MS = {0};" in _IDLE_LOGOUT_JS
-        assert not re.search(r"var IDLE_MS = \d", _IDLE_LOGOUT_JS)
-        # The renderer fills the placeholder with an integer and keeps the mechanics.
-        js = _idle_logout_js()
-        assert "{0}" not in js
-        assert re.search(r"var IDLE_MS = \d+;", js)
-        assert "/logout?reason=idle" in js
-        assert "addEventListener" in js
+        """The idle timer script is a constant that reads its timeout from its data-cfg value,
+        which the renderer fills per render in milliseconds; the logout mechanics stay in the
+        constant. (The deployment-aware minutes matrix lives in test_idle_policy.py.)"""
+        from fasthtml.common import to_xml
+
+        from test_helpers import script_cfg
+        from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_script
+        assert isinstance(script_cfg(to_xml(_idle_logout_script()), "IDLE_MS"), int)
+        assert "dataset.cfg" in _IDLE_LOGOUT_JS
+        assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
+        assert "addEventListener" in _IDLE_LOGOUT_JS
         # The timer carries the current page so login can return there
-        assert "next=" in js
+        assert "next=" in _IDLE_LOGOUT_JS
 
     def test_idle_timer_counts_scroll_in_capture_phase(self):
         """Scrolling an inner panel must reset the idle timer. Scroll events do not
@@ -3216,8 +3211,7 @@ class TestDocumentPolish:
             # stays until dismissed, not an inline hint beside Send. It keeps the
             # message and the link to Web Access to connect again.
             assert "Web Access refused this computer" in content
-            assert "celerpToast(" in content
-            assert "'error',true," in content
+            assert '"error",true,{"href": "/settings/cloud"' in content
             assert "/settings/cloud" in content
             assert "Open Web Access" in content
             # The message is carried by the toast call, not rendered inline as
@@ -6016,8 +6010,8 @@ class TestItemActionRouteCompleteness:
         rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
                 {"entity_id": "item:a", "sku": "A", "status": "available"}]
         html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
-        assert "htmx.ajax('DELETE',\"/api/items/item:d\"" in html
-        assert "/api/items/item:a\"" not in html
+        assert 'celerpConfirmDelete(' in html and '"/api/items/item:d"' in html
+        assert '"/api/items/item:a"' not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -6039,8 +6033,11 @@ class TestItemActionRouteCompleteness:
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True)))
-        assert "htmx.ajax('DELETE',\"/api/items/gc:ROW-001\"" in html, \
-            "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
+        assert 'celerpConfirmDelete(' in html and '"/api/items/gc:ROW-001"' in html, \
+            "row-menu delete must confirm, then DELETE /api/items/{id} (same as bulk pattern)"
+        page_js = (Path(__file__).resolve().parent.parent / "ui/static/celerp-page.js").read_text()
+        confirm_delete = page_js[page_js.index("function celerpConfirmDelete"):]
+        assert "htmx.ajax('DELETE', url" in confirm_delete[:300]
         assert 'hx-delete="/api/items/gc:ROW-001"' not in html, \
             "row-menu delete must not use hx-delete attribute (breaks in Electron via htmx:confirm)"
         assert "/api/inventory/" not in html, \
@@ -6054,7 +6051,7 @@ class TestItemActionRouteCompleteness:
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
         html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
-        assert "htmx.ajax('DELETE',\"/api/items/item:demo-abc123\"" in html, \
+        assert '"/api/items/item:demo-abc123"' in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
         assert "/api/inventorys/" not in html, \
             "row-menu must never generate /api/inventorys/ (misspelled pluralized route)"
@@ -12779,7 +12776,7 @@ class TestInventoryItemDetailFixes:
         """Label-template route source must dereference tpl entries, not the translation function t."""
         src = (Path(__file__).parent.parent / "ui" / "routes" / "inventory.py").read_text()
         assert 'tpl.get("name", "Template")' in src
-        assert "str(entity_id), str(tpl['id'])" in src
+        assert 'str(entity_id), str(tpl["id"])' in src
         assert 't.get("name", "Template")' not in src
 
     @pytest.mark.asyncio
@@ -15344,8 +15341,9 @@ class TestDocumentsOverhaul:
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3&next=doc-send")
         content = r.content.decode()
-        assert "celerp_open_send" in content
-        assert "location.reload" in content
+        assert '"reloadWith","celerp_open_send")' in content and "celerpResume(" in content
+        page_js = (Path(__file__).resolve().parent.parent / "ui/static/celerp-page.js").read_text()
+        assert "reloadWith: function (key) { sessionStorage.setItem(key, '1'); location.reload(); }" in page_js
 
         doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
@@ -19846,8 +19844,8 @@ class TestChartOfAccountsAddEdit:
             r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit")
         assert r.status_code == 200
         body = r.content.decode()
-        assert "Escape" in body
-        assert "/settings/accounting/chart/1000/cash-flow/display" in body
+        # celerpCellKey (celerp-page.js) restores the display cell from this URL on Escape.
+        assert 'celerpCellKey(this,event,{"url": "/settings/accounting/chart/1000/cash-flow/display"' in body
 
     @pytest.mark.asyncio
     async def test_cash_flow_field_patch_saves_without_a_redirect_and_shows_the_new_value(self, ui_client):
@@ -20412,8 +20410,7 @@ class TestSharedCellUrlsAndDates:
         html = to_xml(editable_cell("eq1", "serviced_at", "2026-07-01", cell_type="date",
                                     restore_url=restore))
         assert 'type="date"' in html
-        assert "Escape" in html
-        assert restore in html
+        assert f'celerpCellKey(this,event,{{"url": "{restore}"' in html
 
     def test_display_cell_date_shows_the_day_only(self):
         from fasthtml.common import to_xml

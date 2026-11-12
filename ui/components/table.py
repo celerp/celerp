@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import as_js, html_response, js, js_value, safe_url
+from ui.components.encode import call, EVENT, html_response, js_value, safe_url, THIS
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -1093,17 +1093,9 @@ def editable_cell(
     # Enter: trigger blur to save.
     # ESC: the restore request targets the cell, so the global htmx handler snapshots
     # the table's scroll position before it and restores it when it settles.
-    escape_js = (
-        js(
-            "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}else if(event.key==='Enter'){{"
-            "event.preventDefault();htmx.trigger(this,'blur');}}",
-            str(restore_url))
-    )
-    blur_restore_js = js(
-        "if(!this._escaping){{htmx.ajax('GET',{0},{{target:this.closest('td'),swap:'outerHTML'}}"
-        ')}}',
-        str(restore_url))
+    cell = {"url": str(restore_url)}
+    escape_js = call("celerpCellKey", THIS, EVENT, {**cell, "enter": "trigger"})
+    blur_restore_js = call("celerpCellBlur", THIS, cell)
     # Typed editors save on blur only a value changed from the one they opened with; leaving
     # an untouched editor restores the cell, so opening one and moving on never writes.
     # The opening value is read from the box on its first focus, not from the HTML value:
@@ -1111,18 +1103,10 @@ def editable_cell(
     blur_save = dict(
         onfocus="if(this._v===undefined)this._v=this.value",
         hx_trigger="blur[this.value!==this._v] delay:200ms",
-        onblur=(js(
-            "if(!this._escaping&&this.value===this._v){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}})}}",
-            str(restore_url))),
+        onblur=call("celerpCellBlur", THIS, {**cell, "when": "unchanged"}),
     )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
-    combobox_escape_js = (
-        js(
-            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}",
-            str(restore_url))
-    )
+    combobox_escape_js = call("celerpCellKey", THIS, EVENT, cell)
 
     if cell_type in ("select", "status") and options is not None:
         options = _options_with_mixed(options, display_val)
@@ -1188,12 +1172,7 @@ def editable_cell(
         )
     elif cell_type == "textarea":
         # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
-        textarea_escape_js = (
-            js(
-                "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
-                "swap:'outerHTML'}});event.preventDefault();}}",
-                str(restore_url))
-        )
+        textarea_escape_js = call("celerpCellKey", THIS, EVENT, cell)
         input_el = Textarea(
             display_val, name="value", **swap, **_aria, **blur_save,
             cls="cell-input cell-textarea-input", rows="5",
@@ -1461,7 +1440,7 @@ def row_menu(safe_id: str, *items: FT) -> FT:
     ``A`` or ``Button`` carrying ``row-menu-item``; ``safe_id`` is unique on the page."""
     return Td(
         Div(
-            Button("⋮", cls="row-menu-btn", onclick=js('toggleRowMenu({0})', str(safe_id))),
+            Button("⋮", cls="row-menu-btn", onclick=call('toggleRowMenu', str(safe_id))),
             Div(*items, cls="row-menu-dropdown", id=f"menu-{safe_id}"),
             cls="row-menu",
         ),
@@ -1498,10 +1477,8 @@ def data_row(
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=js(
-                          "celerpConfirm({0}).then(function(yes){{if(yes)htmx.ajax('DELETE',{1},{{"
-                          "target:{2},swap:'outerHTML'}});}})",
-                          _confirm_delete_row, str(_delete_url), f"#row-{safe_id}"))]
+                      onclick=call("celerpConfirmDelete", _confirm_delete_row, str(_delete_url),
+                                   f"#row-{safe_id}"))]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
@@ -2527,91 +2504,87 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
         for f in schema
     ]
 
-    _mgr_js = js("""
-(function(){{
-  var VIS_KEY={0},ORDER_KEY={3},WIDTH_KEY={4};
-  var ALL={1};
-  var DEFAULTS={2};
+    _mgr_js = """
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var VIS_KEY=CFG.visKey,ORDER_KEY=CFG.orderKey,WIDTH_KEY=CFG.widthKey;
+  var ALL=CFG.all;
+  var DEFAULTS=CFG.defaults;
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
-  function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
-  function saveVis(p){{localStorage.setItem(VIS_KEY,JSON.stringify(p))}}
-  function loadOrder(){{try{{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}}catch(e){{return null}}}}
-  function saveOrder(o){{localStorage.setItem(ORDER_KEY,JSON.stringify(o))}}
-  function applyVis(prefs){{
+  function loadVis(){try{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}catch(e){return null}}
+  function saveVis(p){localStorage.setItem(VIS_KEY,JSON.stringify(p))}
+  function loadOrder(){try{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}catch(e){return null}}
+  function saveOrder(o){localStorage.setItem(ORDER_KEY,JSON.stringify(o))}
+  function applyVis(prefs){
     var t=document.getElementById('data-table');if(!t)return;
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
     var rows=Array.from(t.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th){{
+    ths.forEach(function(th){
       var k=th.dataset.key,show=prefs[k]!==false;
       th.style.display=show?'':'none';
-      rows.forEach(function(tr){{var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';}});
-    }});
-  }}
-  function applyOrderToTable(order){{
+      rows.forEach(function(tr){var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';});
+    });
+  }
+  function applyOrderToTable(order){
     if(!order||!order.length)return;
     var t=document.getElementById('data-table');if(!t)return;
     var htr=t.querySelector('thead tr');if(!htr)return;
     var actTh=htr.querySelector('.col-actions');
-    order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
+    order.forEach(function(k){var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
-    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
+    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){
       var cbTd=tr.querySelector('.col-checkbox'),mTd=tr.querySelector('.col-match'),aTd=tr.querySelector('.col-actions');
-      var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
+      var data=allThs.map(function(h){return tr.querySelector('[data-col="'+h.dataset.key+'"]');}).filter(Boolean);
       var out=[];if(cbTd)out.push(cbTd);if(mTd)out.push(mTd);out=out.concat(data);if(aTd)out.push(aTd);
-      out.forEach(function(td){{tr.appendChild(td);}});
-    }});
-  }}
-  function applyOrderToPicker(order){{
+      out.forEach(function(td){tr.appendChild(td);});
+    });
+  }
+  function applyOrderToPicker(order){
     if(!order||!order.length)return;
     var labels=menu.querySelectorAll('label[data-col]');if(!labels.length)return;
     var parent=labels[0].parentNode;
-    order.forEach(function(key){{var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);}});
-  }}
-  function pickerOrder(){{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
-  }}
-  function syncCB(){{var p=loadVis()||{{}};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){{c.checked=p[c.value]!==false;}});}}
-  btn.addEventListener('click',function(e){{e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();}});
-  document.addEventListener('click',function(e){{if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';}});
-  menu.addEventListener('change',function(e){{
+    order.forEach(function(key){var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);});
+  }
+  function pickerOrder(){
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){return l.dataset.col;});
+  }
+  function syncCB(){var p=loadVis()||{};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=p[c.value]!==false;});}
+  btn.addEventListener('click',function(e){e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();});
+  document.addEventListener('click',function(e){if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';});
+  menu.addEventListener('change',function(e){
     if(e.target.type!=='checkbox')return;
-    var k=e.target.value,p=Object.assign({{}},loadVis());
-    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
+    var k=e.target.value,p=Object.assign({},loadVis());
+    if(!Object.keys(p).length)ALL.forEach(function(c){p[c.key]=DEFAULTS.indexOf(c.key)!==-1;});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
     applyOrderToTable(pickerOrder());
-  }});
+  });
   var ds=null;
-  menu.querySelectorAll('label[draggable]').forEach(function(l){{
-    l.addEventListener('dragstart',function(e){{ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';}});
-    l.addEventListener('dragend',function(){{l.style.opacity='';ds=null;}});
-    l.addEventListener('dragover',function(e){{e.preventDefault();e.dataTransfer.dropEffect='move';}});
-    l.addEventListener('drop',function(e){{
+  menu.querySelectorAll('label[draggable]').forEach(function(l){
+    l.addEventListener('dragstart',function(e){ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';});
+    l.addEventListener('dragend',function(){l.style.opacity='';ds=null;});
+    l.addEventListener('dragover',function(e){e.preventDefault();e.dataTransfer.dropEffect='move';});
+    l.addEventListener('drop',function(e){
       e.preventDefault();if(!ds||ds===l)return;
       var par=l.parentNode,sn=ds.nextSibling;par.insertBefore(ds,l);if(sn)par.insertBefore(l,sn);else par.appendChild(l);
       ds.style.opacity='';
       var no=pickerOrder();saveOrder(no);applyOrderToTable(no);
-    }});
-  }});
+    });
+  });
   // Sync picker when table header is dragged (data_table fires this event)
-  document.addEventListener('celerp:col-reorder',function(e){{
+  document.addEventListener('celerp:col-reorder',function(e){
     if(!e.detail||!e.detail.order)return;
     applyOrderToPicker(e.detail.order);
     saveOrder(e.detail.order);
-  }});
+  });
   var sv=loadVis();if(sv)applyVis(sv);
   var so=loadOrder();
-  if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
+  if(so){applyOrderToPicker(so);applyOrderToTable(so);}
   menu.style.display='none';
-}})();
-""",
-        f"celerp_cols_{entity_type}", col_data, default_keys,
-        f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}")
-    reset_onclick = (
-        js(
-            "localStorage.removeItem({0});localStorage.removeItem({1});localStorage.removeItem({2});location.reload();",
-            f"celerp_cols_{entity_type}", f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}")
-    )
+})();
+"""
+    reset_onclick = call("celerpResetColumns", [
+        f"celerp_cols_{entity_type}", f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}"])
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
@@ -2628,7 +2601,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
             id="col-mgr-menu",
             style="display:none",
         ),
-        Script(_mgr_js),
+        Script(_mgr_js, data_cfg=js_value({'visKey': f"celerp_cols_{entity_type}", 'all': col_data, 'defaults': default_keys, 'orderKey': f"celerp_col_order_{entity_type}", 'widthKey': f"celerp_col_widths_{entity_type}"})),
         cls="column-manager",
     )
 
@@ -2680,7 +2653,7 @@ def server_pager(offset: int, limit: int, total: int, href, *,
 
     def _nav_attrs(url: str) -> dict:
         if nav_js:
-            return {"onclick": js("event.preventDefault();window[{0}](this.getAttribute('href'))", nav_js)}
+            return {"onclick": call("celerpPageLink", THIS, EVENT, nav_js)}
         if hx_target:
             return {"hx_get": url, "hx_target": hx_target, "hx_select": hx_target, "hx_swap": "outerHTML"}
         return {}
@@ -2706,16 +2679,10 @@ def server_pager(offset: int, limit: int, total: int, href, *,
                   total=f"{total:,}")
     else:
         label = t("table.page_range_none", total=f"{total:,}")
-    if nav_js:
-        onchange = js("window[{0}](this.value)", nav_js)
-    elif hx_target:
-        onchange = js("htmx.ajax('GET',this.value,{{target:{0},select:{0},swap:'outerHTML'}})", hx_target)
-    else:
-        onchange = js("celerpGo(this.value)")
     sizes = sorted(set(page_sizes) | {limit})
     size_select = Select(
         *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],
-        onchange=as_js(onchange), cls="filter-select per-page-select",
+        onchange=call("celerpPageSize", THIS, nav_js or "", hx_target or ""), cls="filter-select per-page-select",
     )
     return Nav(*controls,
                Span(label, cls="page-count"),
@@ -2836,10 +2803,10 @@ def bank_account_options(bank_accounts: list[dict] | None, default_code: str | N
 
 
 def add_new_option(label: str = "", redirect_url: str = "#") -> tuple:
-    """Return (Option element, onchange script built with js()) for 'add new' in dynamic selects."""
+    """Return (Option element, onchange handler) for 'add new' in dynamic selects."""
     label = label or t("label._add_new")
     option = Option(label, value="__new__")
-    return option, js("if(this.value==='__new__')celerpGo({0})", redirect_url)
+    return option, call("celerpAddNew", THIS, "__new__", redirect_url)
 
 
 def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: str = "") -> FT:

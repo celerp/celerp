@@ -25,7 +25,7 @@ from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
-from ui.components.encode import js, raw_html, safe_url
+from ui.components.encode import js_value, raw_html, safe_url
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
@@ -1237,10 +1237,12 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
             )
         )
 
-    chart_init = js("""
-    function initDashboardCharts() {{
-      var REV_DATA = {0}, AR_LABELS = {4}, CAT_LABELS = {6}, CUR_SYM = {3};
-      if (typeof Chart === 'undefined') {{ setTimeout(initDashboardCharts, 100); return; }}
+    chart_init = """
+    (function () {
+    var CFG = JSON.parse(document.currentScript.dataset.cfg);
+    function initDashboardCharts() {
+      var REV_DATA = CFG.revData, AR_LABELS = CFG.arLabels, CAT_LABELS = CFG.catLabels, CUR_SYM = CFG.curSym;
+      if (typeof Chart === 'undefined') { setTimeout(initDashboardCharts, 100); return; }
       var style = getComputedStyle(document.documentElement);
       var colors = [
         style.getPropertyValue('--c-chart-1').trim() || '#4f8ef7',
@@ -1254,69 +1256,72 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       var gridColor = style.getPropertyValue('--c-border').trim() || '#333';
 
       var revCtx = document.getElementById('chart-revenue-trend');
-      if (revCtx && REV_DATA.length > 0) {{
+      if (revCtx && REV_DATA.length > 0) {
         var rg = revCtx.getContext('2d').createLinearGradient(0, 0, 0, 230);
         rg.addColorStop(0, 'rgba(79,142,247,0.30)');
         rg.addColorStop(1, 'rgba(79,142,247,0.00)');
-        new Chart(revCtx, {{
+        new Chart(revCtx, {
           type: 'line',
-          data: {{ labels: {1}, datasets: [{{
-            label: {2}, data: {0}, borderColor: colors[0], backgroundColor: rg,
+          data: { labels: CFG.revLabels, datasets: [{
+            label: CFG.revLabel, data: CFG.revData, borderColor: colors[0], backgroundColor: rg,
             fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
-            pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
-          options: {{
+            pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }] },
+          options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: {{
-              legend: {{ display: false }},
-              tooltip: {{ callbacks: {{ label: function(c) {{ return CUR_SYM + c.parsed.y.toLocaleString(); }} }} }}
-            }},
-            scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return CUR_SYM + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
-              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
-            }}
-          }}
-        }});
-      }}
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: function(c) { return CUR_SYM + c.parsed.y.toLocaleString(); } } }
+            },
+            scales: {
+              y: { beginAtZero: true, ticks: { color: textColor, callback: function(v) { return CUR_SYM + v.toLocaleString(); } }, grid: { color: gridColor } },
+              x: { ticks: { color: textColor }, grid: { display: false } }
+            }
+          }
+        });
+      }
 
       var arCtx = document.getElementById('chart-ar-aging');
-      if (arCtx && AR_LABELS.length > 0) {{
-        new Chart(arCtx, {{
+      if (arCtx && AR_LABELS.length > 0) {
+        new Chart(arCtx, {
           type: 'bar',
-          data: {{ labels: {4}, datasets: [{{ data: {5}, backgroundColor: colors }}] }},
-          options: {{
+          data: { labels: CFG.arLabels, datasets: [{ data: CFG.arData, backgroundColor: colors }] },
+          options: {
             responsive: true,
-            scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return CUR_SYM + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
-              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
-            }},
-            plugins: {{ legend: {{ display: false }} }}
-          }}
-        }});
-      }}
+            scales: {
+              y: { beginAtZero: true, ticks: { color: textColor, callback: function(v) { return CUR_SYM + v.toLocaleString(); } }, grid: { color: gridColor } },
+              x: { ticks: { color: textColor }, grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+          }
+        });
+      }
 
       var catCtx = document.getElementById('chart-inventory-cat');
-      if (catCtx && CAT_LABELS.length > 0) {{
-        new Chart(catCtx, {{
+      if (catCtx && CAT_LABELS.length > 0) {
+        new Chart(catCtx, {
           type: 'bar',
-          data: {{ labels: {6}, datasets: [{{ label: {7}, data: {8}, backgroundColor: colors[0] }}] }},
-          options: {{
+          data: { labels: CFG.catLabels, datasets: [{ label: CFG.catLabel, data: CFG.catData, backgroundColor: colors[0] }] },
+          options: {
             indexAxis: 'y', responsive: true,
-            scales: {{ x: {{ beginAtZero: true, ticks: {{ color: textColor, precision: 0 }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
-            plugins: {{ legend: {{ display: false }} }}
-          }}
-        }});
-      }}
-    }}
+            scales: { x: { beginAtZero: true, ticks: { color: textColor, precision: 0 }, grid: { color: gridColor } }, y: { ticks: { color: textColor }, grid: { display: false } } },
+            plugins: { legend: { display: false } }
+          }
+        });
+      }
+    }
     initDashboardCharts();
-    """,
-        rev_data, rev_labels, t('acct.section_revenue'), str(cur_sym), ar_labels, ar_data, cat_labels, t('th.items'), cat_data)
+    })();
+    """
+    chart_cfg = js_value({"revData": rev_data, "revLabels": rev_labels, "revLabel": t("acct.section_revenue"),
+                          "curSym": str(cur_sym), "arLabels": ar_labels, "arData": ar_data,
+                          "catLabels": cat_labels, "catLabel": t("th.items"), "catData": cat_data})
 
     return Div(
         H2(t("page.charts"), cls="section-title"),
         revenue_card,
         Div(*chart_cards, cls="charts-grid"),
         Script(src=_CHARTJS_CDN),
-        Script(chart_init),
+        Script(chart_init, data_cfg=chart_cfg),
         cls="charts-section",
     )
 

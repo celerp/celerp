@@ -115,33 +115,37 @@ def test_config_read_failure_does_not_crash(clean_env):
     assert effective_idle_logout_minutes() == 0
 
 
+def _idle_ms() -> int:
+    """The timeout the shell's idle-logout script is rendered with."""
+    from fasthtml.common import to_xml
+
+    from test_helpers import script_cfg
+    from ui.components.shell import _idle_logout_script
+    return script_cfg(to_xml(_idle_logout_script()), "IDLE_MS")
+
+
 def test_shell_idle_js_renders_effective_minutes_and_mechanics(clean_env):
-    """The shell renderer injects the effective minutes on each render and keeps the
-    existing idle-logout URL and activity mechanics."""
-    from ui.components.shell import _idle_logout_js
+    """The shell renderer gives the script the effective timeout on each render, and the script
+    keeps the idle-logout URL and activity mechanics."""
+    from ui.components.shell import _IDLE_LOGOUT_JS
     _patch_config(clean_env, {"cloud": {"public_url": "https://acme.celerp.com"}})
-    js = _idle_logout_js()
-    assert "var IDLE_MS = 900000;" in js
-    assert "/logout?reason=idle" in js
-    assert "addEventListener" in js
-    assert "next=" in js
+    assert _idle_ms() == 900000
+    assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
+    assert "addEventListener" in _IDLE_LOGOUT_JS
+    assert "next=" in _IDLE_LOGOUT_JS
 
 
 def test_shell_idle_js_off_for_local_desktop(clean_env):
     """A local desktop install renders the no-op (0 minutes) idle timer."""
-    from ui.components.shell import _idle_logout_js
     _patch_config(clean_env, {})
-    js = _idle_logout_js()
-    assert "var IDLE_MS = 0;" in js
+    assert _idle_ms() == 0
 
 
 def test_shell_idle_js_does_not_crash_on_config_failure(clean_env):
     """Shell rendering survives a config read failure."""
-    from ui.components.shell import _idle_logout_js
 
     def _boom():
         raise OSError("config unreadable")
 
     clean_env.setattr("celerp.config.read_config", _boom)
-    js = _idle_logout_js()
-    assert "var IDLE_MS = 0;" in js
+    assert _idle_ms() == 0

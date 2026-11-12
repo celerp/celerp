@@ -216,7 +216,7 @@ def test_every_preview_then_confirm_form_shares_the_one_hold():
     """Every form that confirms a preview (Invoice selected, the memo's Rate cell) carries the
     shared hold's markers, and every page loads the one hold script once."""
     from fasthtml.common import Div, to_xml
-    from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
+    from ui.components.preview_confirm import preview_confirm_script
     from ui.components.shell import _shell_document
 
     panel = re.search(r'<form[^>]*id="draw-panel"[^>]*>', _html(_memo())).group(0)
@@ -224,7 +224,7 @@ def test_every_preview_then_confirm_form_shares_the_one_hold():
     preview = re.search(r'<div[^>]*id="draw-preview"[^>]*>', _html(_memo())).group(0)
     assert 'data-preview="true"' in preview and 'hx-sync="this:replace"' in preview
     page = to_xml(_shell_document(Div(), nav=Div()))
-    assert page.count("form[data-confirms-preview]") == 1 and PREVIEW_CONFIRM_JS.strip()[:40] in page
+    assert page.count("form[data-confirms-preview]") == 1 and to_xml(preview_confirm_script()) in page
 
 
 def test_a_drawn_invoice_line_badge_names_the_memo_its_goods_are_out_on():

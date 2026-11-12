@@ -65,7 +65,7 @@ from celerp.importers import tabular
 from celerp.modules.registry import uses_module
 
 from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, MODULE, RESPONSIBLE
-from ui.components.encode import js, safe_url
+from ui.components.encode import safe_url
 
 log = logging.getLogger(__name__)
 
@@ -134,11 +134,10 @@ def _undo_refused(asset: dict, kind: str) -> tuple:
 def _fill_button(fill: dict) -> FT:
     """The value a refusal names as the one that works (``fill``: its form ``field``, ``value``
     and ``action`` label), one click away: it fills the field and reviews again."""
-    script = (js(
-        'const f = this.closest(\'form\'); f.elements[{0}].value = {1}; f.querySelector(\'[hx-post$="/review"]\').click();',
-        fill['field'], fill['value']))
     return Button(t(fill["action"], value=fill["value"]), type="button", cls="btn btn--sm btn--secondary",
-                  onclick=script)
+                  data_field=fill["field"], data_value=fill["value"],
+                  onclick="const f = this.closest('form'); f.elements[this.dataset.field].value = this.dataset.value;"
+                          " f.querySelector('[hx-post$=\"/review\"]').click();")
 
 
 def _linked(text: str, links: list[dict]) -> list:
@@ -1718,7 +1717,7 @@ def _class_accounts_banner(classes: list[dict]) -> FT | str:
 def _expandable(key: str, cells: list[FT], detail: FT) -> list[FT]:
     """A row with a labelled Details button that opens the row below it, which holds the
     row's detail and its form, so every control stays in view on a narrow screen."""
-    detail_id = _slug("fa-detail", key)
+    detail_id = "fa-detail-" + _slug(key)
     toggle = Button(t("fixed_assets.details"), type="button", cls="btn btn--sm btn--secondary",
                     aria_expanded="false", aria_controls=detail_id,
                     onclick="const r=document.getElementById(this.getAttribute('aria-controls'));"
@@ -1740,15 +1739,17 @@ def _state_cell(item: dict) -> FT:
 
 def _mark_form(action: str, item: dict, *hidden: FT) -> FT:
     """Note an item or accept it with its reason and accounting effect, or open it again, on the page."""
+    base = "fa-mark" + _slug(action, item["key"])
+
     def field(label: str, name: str, control: FT) -> FT:
-        return Div(Label(label, cls="form-label", fr=_slug(action, item["key"], name)), control, cls="form-group")
+        return Div(Label(label, cls="form-label", fr=f"{base}-{name}"), control, cls="form-group")
 
     state = Select(*[Option(t(f"fixed_assets.recon_state.{s}"), value=s, selected=s == item["state"])
                      for s in ("open", "noted", "accepted")], name="state", cls="form-input",
-                   id=_slug(action, item["key"], "state"))
+                   id=f"{base}-state")
     return Form(*hidden, Input(type="hidden", name="key", value=item["key"]),
                 field(t("fixed_assets.status"), "state", state),
-                *[field(label, name, _input(name, item.get(name), id=_slug(action, item["key"], name)))
+                *[field(label, name, _input(name, item.get(name), id=f"{base}-{name}"))
                   for label, name in ((t("fixed_assets.reason"), "reason"), (t("fixed_assets.recon_effect"), "effect"))],
                 Div(Button(t("fixed_assets.save"), type="submit", cls="btn btn--primary btn--sm"), cls="form-actions"),
                 hx_post=action, hx_swap="none", cls=_STACK)

@@ -6,15 +6,15 @@ The form carries FORM_ATTRS; inside it, the element that asks for the preview an
 answer carries PREVIEW_ATTRS (a newer preview request replaces one still on the way, so an older
 answer never lands last). A preview answer holds the server's binding (binding_input), the
 confirm sends it back (confirmed_binding), and the server refuses a binding that differs from
-what it would write now. The page script (PREVIEW_CONFIRM_JS) keeps the form's submit button
+what it would write now. The page script (preview_confirm_script) keeps the form's submit button
 disabled from any change until the preview for the values now entered answers with a binding.
 """
 from __future__ import annotations
 
-from fasthtml.common import Input
+from fasthtml.common import Input, Script
 
+from ui.components.encode import js_value
 from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
-from ui.components.encode import js
 
 BINDING = "binding"
 FORM_ATTRS = {"data-confirms-preview": "true"}
@@ -35,40 +35,45 @@ def confirmed_binding(form, wait: str) -> str:
     return binding
 
 
-PREVIEW_CONFIRM_JS = js("""
-(function(){{
-  var BINDING_FIELD={0}, KEY_FIELD={1};
-  function formOf(el){{ return el && el.closest ? el.closest('form[data-confirms-preview]') : null; }}
+_PREVIEW_CONFIRM_JS = """
+(function(){
+  var CFG=JSON.parse(document.currentScript.dataset.cfg);
+  var BINDING_FIELD=CFG.binding, KEY_FIELD=CFG.key;
+  function formOf(el){ return el && el.closest ? el.closest('form[data-confirms-preview]') : null; }
   // The values a preview is worked out for: the form without the binding and the operation key.
-  function ask(form){{
+  function ask(form){
     var f=new FormData(form); f.delete(BINDING_FIELD); f.delete(KEY_FIELD);
     return new URLSearchParams(f).toString();
-  }}
-  function allow(form,on){{ form.querySelectorAll('button[type=submit]').forEach(function(b){{ b.disabled=!on; }}); }}
-  function hold(form){{
+  }
+  function allow(form,on){ form.querySelectorAll('button[type=submit]').forEach(function(b){ b.disabled=!on; }); }
+  function hold(form){
     if(ask(form)===form._celerpShown) return;
     form._celerpShown=null;
     allow(form,false);
-    form.querySelectorAll('[data-preview] input[name=' + BINDING_FIELD + ']').forEach(function(el){{ el.remove(); }});
-  }}
-  function preview(e){{
+    form.querySelectorAll('[data-preview] input[name=' + BINDING_FIELD + ']').forEach(function(el){ el.remove(); });
+  }
+  function preview(e){
     var el=e.detail.elt, form=formOf(el);
     return form && el.matches('[data-preview]') ? form : null;
-  }}
-  ['input','change'].forEach(function(type){{
-    document.addEventListener(type,function(e){{ var form=formOf(e.target); if(form) hold(form); }});
-  }});
-  document.addEventListener('htmx:beforeRequest',function(e){{
+  }
+  ['input','change'].forEach(function(type){
+    document.addEventListener(type,function(e){ var form=formOf(e.target); if(form) hold(form); });
+  });
+  document.addEventListener('htmx:beforeRequest',function(e){
     var form=preview(e); if(!form) return;
     e.detail.elt._celerpAsk=ask(form);
     hold(form);
-  }});
-  document.addEventListener('htmx:afterSwap',function(e){{
+  });
+  document.addEventListener('htmx:afterSwap',function(e){
     var form=preview(e); if(!form) return;
     var el=e.detail.elt, current=el._celerpAsk===ask(form)&&!!el.querySelector('input[name=' + BINDING_FIELD + ']');
     form._celerpShown=current?el._celerpAsk:null;
     allow(form,current);
-  }});
-}})();
-""",
-    BINDING, OPERATION_KEY_FIELD)
+  });
+})();
+"""
+
+
+def preview_confirm_script() -> Script:
+    """The page script that keeps a confirming form's submit tied to its preview."""
+    return Script(_PREVIEW_CONFIRM_JS, data_cfg=js_value({"binding": BINDING, "key": OPERATION_KEY_FIELD}))

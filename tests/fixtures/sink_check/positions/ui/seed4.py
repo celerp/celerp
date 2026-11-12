@@ -1,12 +1,17 @@
-from ui.components.markup import raw_html
-from ui.components.encode import js, js_value
-from fasthtml.common import Div, Script, Button
-def a1(u): return raw_html('<a href="{u}">open</a>', u=u)                 # URL attribute hole
-def a2(n): return raw_html('<button onclick="go(\'{n}\')">x</button>', n=n) # handler hole
-def a3(n): return raw_html('<script>var N="{n}";</script>', n=n)          # script text hole
-def a4(n): return raw_html('<div hx-on::after-request="f(\'{n}\')"></div>', n=n)
-def a5(s): return raw_html('<iframe srcdoc="{s}"></iframe>', s=s)
-def a6(c): return raw_html('<div style="{c}"></div>', c=c)
-def b1(v): return Script(js("go('{}');", v))                               # js hole inside a quoted literal
-def b2(v): return Button("x", onclick=js("go('{}')", v))
-def b3(v): return Script(js("var s = `{}`;", v))
+from ui.components.encode import call, js_value, raw_html
+from fasthtml.common import Animate, Button, Div, Img, Input, Script
+def s1(v): return raw_html("<{t}" + ">x", t=v)                         # holed template built by +
+def s2(c, v): return raw_html("<b>{x}</b>" if c else "<{x}>", x=v)     # holed template in a condition
+def s3(v): return Script(js("var r = /" + "{0}/;", v))                 # script template built by +
+def s4(v): return raw_html(f"<p>{v}</p>")                              # built markup
+def s5(name, v): return Script(call(name, v))                          # computed function name
+def s6(v): return Button("x", onclick=call("f(1);g", v))               # name that is not an identifier
+def s7(v): return Script(f"go({js_value(v)});")                        # value written into script text
+def s8(c, v): return Script("a();" if c else v)                        # one branch is a value
+def p1(v): return Animate(values=v)                                    # SVG animation attribute
+def p2(v): return Div(foo=v)                                           # name off the allow list
+def p3(v): return Div(id=v)                                            # id with no prefix
+def p4(v): return Img(name=v)                                          # name the document exposes
+def ok(c, v):
+    return (Div(id=f"row-{v}"), Input(name=v), Div(data_x=v), Div(title=v), Script(call("f", v)),
+            Button("x", onclick=call("celerp.go", v)), Script("a();" if c else "b();"))
