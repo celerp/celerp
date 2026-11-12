@@ -15,7 +15,7 @@ import pytest
 
 from celerp.events.engine import emit_event
 from test_change_fund import REASON, _change_doc, _outside_invoice
-from test_fund_movement_posting import _bill, _post, _set_role
+from test_fund_movement_posting import _bill, _close, _post, _set_role
 from test_fund_movements import _emit, _setup
 from test_income_accounts import _finalize_entry, _issued, _item, _line
 
@@ -25,7 +25,7 @@ UNRESTRICTED = "unrestricted"
 
 
 async def _get(client, auth, path, **params):
-    r = await client.get(f"/accounting/funds/{path}", headers=auth["headers"], params=params)
+    r = await client.get(f"/accounting/funds/{path}".rstrip("/"), headers=auth["headers"], params=params)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -85,7 +85,7 @@ async def test_fund_activity_by_fund_lists_movements_and_reversal(client, sessio
     r = await _post(client, auth, "transfer", from_fund=None, to_fund=f["U1"], amount=10)
     assert r.status_code == 200, r.text
     transfer = r.json()["je_id"]
-    activity = await _get(client, auth, "activity", **{"from": "2026-03-01", "to": "2026-03-31"})
+    activity = await _get(client, auth, "activity", date_from="2026-03-01", date_to="2026-03-31")
     columns = ("opening", "received", "spent", "released", "transferred", "closing")
     assert {c: _row(activity, f["R"])[c] for c in columns} == dict(zip(columns, (100.0, 5.0, 30.0, -20.0, 0.0, 55.0)))
     assert {c: _row(activity, None)[c] for c in columns} == dict(zip(columns, (50.0, 0.0, 20.0, 20.0, -10.0, 40.0)))
@@ -96,11 +96,23 @@ async def test_fund_activity_by_fund_lists_movements_and_reversal(client, sessio
                           json={"date": "2026-03-20", "reason": "Entered twice"})
     assert r.status_code == 200, r.text
     reversal = r.json()["je_id"]
-    activity = await _get(client, auth, "activity", **{"from": "2026-03-01", "to": "2026-03-31"})
+    activity = await _get(client, auth, "activity", date_from="2026-03-01", date_to="2026-03-31")
     moved = {m["entity_id"]: m for m in activity["movements"]}
     assert moved[transfer]["reversed_by"] == reversal and moved[reversal]["reverses"] == transfer
     assert _row(activity, f["U1"])["closing"] == 0.0 and _row(activity, None)["transferred"] == 0.0
     assert moved[transfer]["amounts"] == {f["U1"]: 10.0, UNRESTRICTED: -10.0}
+
+
+async def test_fund_activity_leaves_year_close_out(client, session, auth):
+    """A year close moves each fund's income and costs into its net assets: the year's
+    received and spent still show what came in and went out, and closing is unchanged."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"], 100, "2026-02-01")
+    await _bill(session, auth, f["R"], 30, ts="2026-03-01")
+    r = await _close(client, auth)
+    assert r.status_code == 200, r.text
+    row = _row(await _get(client, auth, "activity", date_from="2026-01-01", date_to="2026-12-31"), f["R"])
+    assert (row["received"], row["spent"], row["closing"]) == (100.0, 30.0, 70.0)
 
 
 async def test_fund_activity_lists_fund_changes(client, session, auth):

@@ -577,13 +577,25 @@ def fund_name(funds: dict[str, dict], fund_id) -> str:
     return funds[fund_id]["name"] if fund_id in funds else (fund_id or unrestricted_label())
 
 
-async def _fund_day_changes(session: AsyncSession, company_id) -> dict[str, dict[tuple[str | None, str], Decimal]]:
-    """Each day's posted change, debit less credit, per (fund, account), None for the
-    unrestricted group. It reads the journal as the ledger does (ledger_rows.journal_rows),
-    so an entry voided out of a locked period still counts on its own day and its reversal
-    on reversed_on. A line counts in a fund only when it names a fund of this company."""
-    from celerp.services.ledger_rows import journal_rows
+def line_fund(funds: dict[str, dict], line: Mapping) -> str | None:
+    """The fund a journal line counts in: the fund it names when that is a fund of this
+    company (``funds`` from funds_by_id), else None, the unrestricted group."""
+    return line.get("fund_id") if line.get("fund_id") in funds else None
+
+
+def line_change(line: Mapping) -> Decimal:
+    """A journal line's debit less its credit."""
     from celerp.services.money import to_decimal
+
+    return to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0)
+
+
+async def fund_day_changes(session: AsyncSession, company_id) -> dict[str, dict[tuple[str | None, str], Decimal]]:
+    """Each day's posted change, debit less credit, per (fund, account), None for the
+    unrestricted group (line_fund). It reads the journal as the ledger does
+    (ledger_rows.journal_rows), so an entry voided out of a locked period still counts on its
+    own day and its reversal on reversed_on."""
+    from celerp.services.ledger_rows import journal_rows
 
     funds = await funds_by_id(session, company_id)
     days: dict[str, dict[tuple[str | None, str], Decimal]] = {}
@@ -591,9 +603,8 @@ async def _fund_day_changes(session: AsyncSession, company_id) -> dict[str, dict
         changes = days.setdefault(day, {})
         for line in state.get("entries") or ():
             if isinstance(line, dict) and line.get("account"):
-                key = (line.get("fund_id") if line.get("fund_id") in funds else None, line["account"])
-                changes[key] = (changes.get(key, Decimal(0))
-                                + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
+                key = (line_fund(funds, line), line["account"])
+                changes[key] = changes.get(key, Decimal(0)) + line_change(line)
     return days
 
 
@@ -602,7 +613,7 @@ async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str
     """Each fund's (None: the unrestricted group's) non-zero posted balance, debit less
     credit, by account, counting the entries dated on or before ``as_of`` when given."""
     sums: dict[tuple[str | None, str], Decimal] = {}
-    for day, changes in (await _fund_day_changes(session, company_id)).items():
+    for day, changes in (await fund_day_changes(session, company_id)).items():
         if not (as_of and day > as_of):
             for key, amount in changes.items():
                 sums[key] = sums.get(key, Decimal(0)) + amount
@@ -618,7 +629,7 @@ async def fund_balance_range(session: AsyncSession, company_id, *, as_of: str,
     """Per (fund, account): the least and the greatest balance, debit less credit, it carries
     from ``as_of`` on (its balance that day, then after each later day), so what a fund gives
     on a date is what it still holds once every later entry has posted."""
-    days = await _fund_day_changes(session, company_id)
+    days = await fund_day_changes(session, company_id)
     running: dict[tuple[str | None, str], Decimal] = {}
     for day in sorted(d for d in days if d <= as_of):
         for key, amount in days[day].items():
