@@ -19,6 +19,7 @@ PLUGIN_MANIFEST = {
             {"group": "Subscriptions", "key": "members", "href": "/members", "label": "Members", "label_key": "nav.members", "order": 28, "permission": "view_subscriptions", "verticals": ["nonprofit"]},
             {"group": "Subscriptions", "key": "subscribers", "href": "/subscribers", "label": "Subscribers", "label_key": "nav.subscribers", "order": 29, "permission": "view_subscriptions", "verticals": ["saas"]},
             {"group": "Subscriptions", "key": "plans", "href": "/plans", "label": "Plans", "label_key": "nav.plans", "order": 30, "permission": "view_subscriptions", "verticals": ["saas"]},
+            {"group": "Subscriptions", "key": "revenue", "href": "/revenue", "label": "Revenue", "label_key": "nav.revenue", "order": 31, "permission": "view_financial_reports", "verticals": ["saas"]},
         ],
         "on_modules_ready": [{"handler": "celerp_subscriptions.migration:migrate_schedules_hook"}],
         "demo_records": {"handler": "celerp_subscriptions.demo:seed_demo_agreements_hook"},

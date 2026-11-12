@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 
 import pytest
 from bs4 import BeautifulSoup
+from starlette.datastructures import QueryParams
 
 import ui.routes.subscriptions as subs_ui
 
@@ -69,6 +70,8 @@ RENDERERS = {
     # One quantity box per line of the agreement, the lines its own page shows.
     "_quantities_section": lambda n: subs_ui._quantities_section("doc:SUB-0", {"line_items": [
         {"line_id": f"line:{i}", "description": f"Seat {i}", "quantity": 1} for i in range(n)]}, date(2026, 1, 1)),
+    # The Revenue range is three fixed boxes whatever the data.
+    "_revenue_filter": lambda n: subs_ui._revenue_filter(QueryParams()),
     "_subscriber_form": lambda n: subs_ui._subscriber_form(
         [{"id": f"item:{i}", "name": f"Plan {i}"} for i in range(n)], {"direction": "sales", "kind": "subscription"}),
 }

@@ -162,7 +162,8 @@ async def test_subscribers_and_plans_in_the_saas_sidebar_only(vertical, shown):
     from ui.components.shell import module_nav
 
     keys = {item.get("key") for item in module_nav({"vertical": vertical} if vertical else {})}
-    assert ({"subscribers", "plans"} <= keys) is shown and (shown or not ({"subscribers", "plans"} & keys))
+    saas = {"subscribers", "plans", "revenue"}
+    assert (saas <= keys) is shown and (shown or not (saas & keys))
 
 
 # ── Amendments: a seat change from an effective date ────────────────────────

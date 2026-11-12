@@ -1224,6 +1224,90 @@ def _catch_up_items(form) -> list[dict]:
     return items
 
 
+REVENUE_PAGE = "/revenue"
+_MONTH_COLUMNS = (("subscriptions.th_mrr", "mrr"), ("subscriptions.th_arr", "arr"),
+                  ("subscriptions.th_new", "new_mrr"), ("subscriptions.th_expansion", "expansion_mrr"),
+                  ("subscriptions.th_contraction", "contraction_mrr"), ("subscriptions.th_churned", "churned_mrr"))
+_DEFINITIONS = ("def_mrr", "def_arr", "def_active", "def_movement", "def_logo_churn", "def_revenue_churn", "def_currency")
+
+
+def _percent(share: float | None) -> str:
+    """A share as a percent with at most one decimal: 0.5 is 50%, None is the empty mark."""
+    if share is None:
+        return EMPTY
+    return f"{share * 100:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _revenue_filter(params: QueryParams) -> FT:
+    """The range and currency, sent in the URL."""
+    return Form(
+        Label(t("subscriptions.metrics_from"), Input(type="date", name="from", value=params.get("from", ""),
+                                                      cls="date-input")),
+        Label(t("subscriptions.metrics_to"), Input(type="date", name="to", value=params.get("to", ""),
+                                                    cls="date-input")),
+        Label(t("label.currency"), Input(type="text", name="currency", value=params.get("currency", ""),
+                                         maxlength="3", placeholder=t("subscriptions.metrics_currency_all"))),
+        Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
+        action=REVENUE_PAGE, method="get", cls="date-custom-form",
+    )
+
+
+def _months_table(data: dict) -> FT:
+    """One row per month end, newest first."""
+    cur = data["currency"]
+    head = Tr(Th(t("subscriptions.th_month")), *[Th(t(k), cls="cell--number") for k, _ in _MONTH_COLUMNS[:2]],
+              Th(t("subscriptions.th_active"), cls="cell--number"),
+              *[Th(t(k), cls="cell--number") for k, _ in _MONTH_COLUMNS[2:]],
+              Th(t("subscriptions.th_logo_churn"), cls="cell--number"),
+              Th(t("subscriptions.th_revenue_churn"), cls="cell--number"))
+
+    def _row(m: dict) -> FT:
+        money = [Td(fmt_money(m[f], cur), cls="cell--number") for _, f in _MONTH_COLUMNS]
+        return Tr(Td(m["month"]), *money[:2], Td(str(m["active"]), cls="cell--number"), *money[2:],
+                  Td(_percent(m["logo_churn"]), cls="cell--number"),
+                  Td(_percent(m["revenue_churn"]), cls="cell--number"), cls="data-row")
+
+    return _data_table(Thead(head), Tbody(*[_row(m) for m in reversed(data["months"])]))
+
+
+def _cohorts_table(data: dict) -> FT:
+    """Each start month, newest first, with the share still active and their MRR at each month end."""
+    cohorts, cur = data["cohorts"], data["currency"]
+    width = max(len(c["active"]) for c in cohorts)
+    head = Tr(Th(t("subscriptions.th_cohort")), Th(t("subscriptions.th_cohort_size"), cls="cell--number"),
+              *[Th(t("subscriptions.th_month_n", n=i + 1), cls="cell--number") for i in range(width)])
+
+    def _row(c: dict) -> FT:
+        cells = [Td(Div(_percent(n / c["size"])), Div(fmt_money(mrr, cur), cls="text-muted"), cls="cell--number")
+                 for n, mrr in zip(c["active"], c["mrr"])]
+        cells += [Td("", cls="cell--number")] * (width - len(cells))
+        return Tr(Td(c["month"]), Td(str(c["size"]), cls="cell--number"), *cells, cls="data-row")
+
+    return _data_table(Thead(head), Tbody(*[_row(c) for c in reversed(cohorts)]))
+
+
+def _not_converted(data: dict) -> list[FT]:
+    return [P(t("subscriptions.metrics_not_converted", month=m["month"], count=len(m["not_converted"])),
+              cls="flash flash--warning") for m in data["months"] if m["not_converted"]]
+
+
+def _definitions() -> FT:
+    return Div(H3(t("subscriptions.definitions_heading")),
+               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS])
+
+
+def _revenue_body(data: dict) -> list[FT]:
+    """The tables, or the empty state when no subscription counted in any month of the range."""
+    if not any(m["active"] or m["not_converted"] for m in data["months"]):
+        return [empty_state_cta(t("subscriptions.revenue_empty"), t("page.new_subscriber"),
+                                "/subscribers#new-subscriber")]
+    body = [*_not_converted(data), _months_table(data)]
+    if data["cohorts"]:
+        body += [H3(t("subscriptions.cohorts_heading")), P(t("subscriptions.cohorts_hint"), cls="text-muted"),
+                 _cohorts_table(data)]
+    return body
+
+
 def setup_routes(app) -> None:
 
     # --- Generate all due, catch-up and summary (before the detail route, which takes any id) ---
@@ -1490,6 +1574,25 @@ def setup_routes(app) -> None:
         content = Div(page_header(title, new_plan), P(t("subscriptions.plans_hint"), cls="text-muted"), body,
                       cls="page-content")
         return await base_shell(content, title=title, request=request, nav_active="plans")
+
+    @app.get(REVENUE_PAGE)
+    async def revenue_page(request: Request):
+        """MRR, ARR, churn and cohorts of the sales subscriptions by month, with the definitions."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_financial_reports", page_view=True)):
+            return r
+        title = t("nav.revenue")
+        params = {k: v for k in ("from", "to", "currency") if (v := request.query_params.get(k))}
+        try:
+            body = _revenue_body(await api.subscriptions_metrics(token, params))
+        except APIError as exc:
+            api.raise_if_signed_out(exc)
+            body = [Div(error_message(exc), cls="flash flash--warning")]
+        content = Div(page_header(title), P(t("subscriptions.revenue_hint"), cls="text-muted"),
+                      _revenue_filter(request.query_params), *body, _definitions(), cls="page-content")
+        return await base_shell(content, title=title, request=request, nav_active="revenue")
 
     @app.get("/members")
     async def members_list(request: Request):

@@ -1630,6 +1630,143 @@
         "day",
         "document"
       ]
+    },
+    "nav.revenue": {
+      "en": "Revenue",
+      "params": []
+    },
+    "subscriptions.revenue_hint": {
+      "en": "Recurring revenue, churn and cohorts of your sales subscriptions, measured at the end of each month. Change the range or pick a currency to see a different view.",
+      "params": []
+    },
+    "subscriptions.revenue_empty": {
+      "en": "No recurring revenue yet. Add a subscriber or plan to see MRR.",
+      "params": []
+    },
+    "subscriptions.metrics_from": {
+      "en": "From",
+      "params": []
+    },
+    "subscriptions.metrics_to": {
+      "en": "To",
+      "params": []
+    },
+    "subscriptions.metrics_currency_all": {
+      "en": "All, in the books currency",
+      "params": []
+    },
+    "subscriptions.th_month": {
+      "en": "Month",
+      "params": []
+    },
+    "subscriptions.th_mrr": {
+      "en": "MRR",
+      "params": []
+    },
+    "subscriptions.th_arr": {
+      "en": "ARR",
+      "params": []
+    },
+    "subscriptions.th_active": {
+      "en": "Active",
+      "params": []
+    },
+    "subscriptions.th_new": {
+      "en": "New",
+      "params": []
+    },
+    "subscriptions.th_expansion": {
+      "en": "Expansion",
+      "params": []
+    },
+    "subscriptions.th_contraction": {
+      "en": "Contraction",
+      "params": []
+    },
+    "subscriptions.th_churned": {
+      "en": "Churned",
+      "params": []
+    },
+    "subscriptions.th_logo_churn": {
+      "en": "Logo churn",
+      "params": []
+    },
+    "subscriptions.th_revenue_churn": {
+      "en": "Revenue churn",
+      "params": []
+    },
+    "subscriptions.cohorts_heading": {
+      "en": "Cohorts",
+      "params": []
+    },
+    "subscriptions.cohorts_hint": {
+      "en": "Subscriptions grouped by the month they started, with the share still active and their MRR at each month end since.",
+      "params": []
+    },
+    "subscriptions.th_cohort": {
+      "en": "Started",
+      "params": []
+    },
+    "subscriptions.th_cohort_size": {
+      "en": "Subscribers",
+      "params": []
+    },
+    "subscriptions.th_month_n": {
+      "en": "Month {n}",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.metrics_not_converted": {
+      "en": "Not counted in {month} because they have no exchange rate: {count}. Add the rate on each subscription in another currency to include it.",
+      "params": [
+        "count",
+        "month"
+      ]
+    },
+    "subscriptions.definitions_heading": {
+      "en": "How these figures are measured",
+      "params": []
+    },
+    "subscriptions.def_mrr": {
+      "en": "Monthly recurring revenue (MRR): for each active subscription, the subtotal of its lines on the last day of the month, less its discount, scaled to one month. Quarterly is divided by 3 and yearly by 12. A period counted in days is converted at 365 / 12 days a month. Tax, shipping and one-off invoices are not included.",
+      "params": []
+    },
+    "subscriptions.def_arr": {
+      "en": "Annual recurring revenue (ARR): 12 times MRR.",
+      "params": []
+    },
+    "subscriptions.def_active": {
+      "en": "Active: subscriptions that are active on the last day of the month, have started by then and have not reached their term end. Paused and cancelled subscriptions are not active.",
+      "params": []
+    },
+    "subscriptions.def_movement": {
+      "en": "New, expansion, contraction and churned: how MRR changed since the previous month end, from subscriptions that started, grew, shrank or stopped.",
+      "params": []
+    },
+    "subscriptions.def_logo_churn": {
+      "en": "Logo churn: subscriptions that stopped, as a share of those active at the previous month end.",
+      "params": []
+    },
+    "subscriptions.def_revenue_churn": {
+      "en": "Revenue churn: churned and contraction MRR together, as a share of MRR at the previous month end.",
+      "params": []
+    },
+    "subscriptions.def_currency": {
+      "en": "Subscriptions in another currency are converted at their own exchange rate. Pick a currency to see only the subscriptions in it, without conversion.",
+      "params": []
+    },
+    "subscriptions.err_metrics_order": {
+      "en": "The From date is after the To date. Choose a From date on or before the To date.",
+      "params": []
+    },
+    "subscriptions.err_metrics_range": {
+      "en": "The range is longer than 10 years. Choose a To date within 10 years of the From date.",
+      "params": []
+    },
+    "subscriptions.err_metrics_currency": {
+      "en": "That currency code isn't recognized. Use a three-letter code such as USD.",
+      "params": []
     }
   },
   "modules": {

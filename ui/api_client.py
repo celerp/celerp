@@ -2379,6 +2379,12 @@ async def subscriptions_summary(token: str, everything: bool = False) -> dict:
         return _raise(await c.get("/subscriptions/summary", params={"all": "true"} if everything else {})).json()
 
 
+async def subscriptions_metrics(token: str, params: dict) -> dict:
+    """Returns {currency, months, cohorts}: MRR, ARR, churn and cohorts by month."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/metrics", params=params)).json()
+
+
 async def subscriptions_members(token: str) -> dict:
     """Returns {items: [...]}: every member with their standing today."""
     async with _api_client(token) as c:

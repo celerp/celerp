@@ -24,7 +24,7 @@ from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_subscriptions import billing, members, migration, summary
+from celerp_subscriptions import billing, members, metrics, migration, summary
 from celerp_subscriptions.periods import (
     AUTO_MODES, BILLED, CLAIMED_STATES, KINDS, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
@@ -277,6 +277,24 @@ def _build_router() -> APIRouter:
     ) -> dict:
         """Every active agreement with a period due today: what Generate due would bill."""
         return await billing.due_preview(session, company_id, await company_today(session, company_id))
+
+    @router.get("/metrics")
+    async def revenue_metrics(
+        start: date | None = Query(None, alias="from"),
+        end: date | None = Query(None, alias="to"),
+        currency: str | None = None,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_financial_reports"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """MRR, ARR, churn and cohorts of the sales agreements by month (metrics.revenue_metrics);
+        the range defaults to the 12 months to today."""
+        first, last = metrics.default_range(await company_today(session, company_id))
+        start, end = start or first, end or last
+        if (refused := metrics.range_refusal(start, end, currency)):
+            key, parameter = refused
+            raise billing.amend_refusal(422, key, parameter=parameter)
+        return await metrics.revenue_metrics(session, company_id, start, end, currency)
 
     @router.post("/generate-due")
     async def generate_all_due(

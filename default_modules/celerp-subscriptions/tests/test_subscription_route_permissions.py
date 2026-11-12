@@ -27,6 +27,8 @@ EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("GET", ""): VIEW,
     ("GET", "/members"): VIEW,
     ("GET", "/due"): VIEW,
+    # Revenue figures are a financial report, not the agreements themselves.
+    ("GET", "/metrics"): "view_financial_reports",
     ("GET", "/catch-up"): VIEW,
     ("GET", "/summary"): VIEW,
     ("POST", "/summary/ack"): VIEW,
