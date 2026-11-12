@@ -23,6 +23,7 @@ BILL = "finalize_documents"
 
 EXPECTED: dict[tuple[str, str], str] = {
     ("GET", ""): VIEW,
+    ("GET", "/members"): VIEW,
     ("GET", "/due"): VIEW,
     ("GET", "/catch-up"): VIEW,
     ("GET", "/summary"): VIEW,

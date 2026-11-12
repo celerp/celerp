@@ -23,7 +23,7 @@ from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_subscriptions import billing, migration, summary
+from celerp_subscriptions import billing, members, migration, summary
 from celerp_subscriptions.periods import (
     AUTO_MODES, BILLED, CLAIMED_STATES, KINDS, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
@@ -233,6 +233,15 @@ def _build_router() -> APIRouter:
             limit=limit, offset=offset,
         )
         return {"items": [list_row(i) for i in items], "total": total}
+
+    @router.get("/members")
+    async def list_members(
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Every member and their standing today (members.member_rows)."""
+        return {"items": await members.member_rows(session, company_id, await company_today(session, company_id))}
 
     @router.get("/due")
     async def list_due(
