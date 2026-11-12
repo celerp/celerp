@@ -797,3 +797,91 @@ async def test_reversal_copies_origin_and_choice(client, session, auth):
                          original_doc_id=other)
     entries = (await _finalize_entry(session, auth, note))["entries"]
     assert {e.get("fund_id") for e in entries} == {gift}, entries
+
+
+async def _second_fund(client, auth, name: str = "Board reserve") -> str:
+    from test_funds import _fund
+
+    return await _fund(client, auth, name, restricted=False, purpose=None)
+
+
+def _refused_as(r, status: int, key: str) -> dict:
+    assert r.status_code == status and _key(r) == key, r.text
+    return r.json()["detail"]
+
+
+async def test_document_fund_choices_route_validates(client, session, auth):
+    """Each refusal of the fund-choices route names its reason and writes nothing: a user
+    who cannot edit documents, a line not on the document or not from outside, a value that
+    is no active fund of this company, a request choosing nothing, and a document that has
+    posted, which Change fund corrects instead."""
+    from test_helpers import invite_user
+
+    fund = await _fund_company(client, auth)
+    doc, _, _ = await _two_line_import(client, auth)
+    first, second = (await _doc(client, auth, doc))["line_items"]
+    assert (await _patch(client, auth, doc, line_items=[
+        _as_sent(first), _as_sent(second), _line(None, "Local", 5)])).status_code == 200
+    stored = await _doc(client, auth, doc)
+    local = stored["line_items"][2]["line_id"]
+    archived = await _second_fund(client, auth, "Closed appeal")
+    r = await client.post(f"/accounting/funds/{archived}/archive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+    viewer = await invite_user(client, session, auth["headers"], f"viewer-{uuid.uuid4().hex[:6]}@example.com", "viewer")
+    r = await client.post(f"/docs/{doc}/fund-choices", headers={"Authorization": f"Bearer {viewer}"},
+                          json={"expected_version": stored["version"], "document": fund})
+    assert r.status_code == 403, r.text
+    for body, key, params in (
+            ({"lines": {"no-such-line": fund}}, "posting.fund.choice_line_unknown", {}),
+            ({"lines": {local: fund}}, "posting.fund.choice_local_line", {"line": 3}),
+            ({"lines": {first["line_id"]: "not-a-fund"}}, "posting.fund.unknown", {"fund": "not-a-fund"}),
+            ({"all": archived}, "posting.fund.archived", {"fund": "Closed appeal"}),
+            ({"lines": {first["line_id"]: None}}, "posting.fund.choice_missing", {"line": 1}),
+            ({}, "posting.fund.choice_empty", {}),
+            ({"lines": {}}, "posting.fund.choice_empty", {}),
+            ({"document": "not-a-fund"}, "posting.fund.unknown", {"fund": "not-a-fund"}),
+            ({"document": None}, "posting.fund.document_choice_missing", {})):
+        detail = _refused_as(await _choose(client, auth, doc, **body), 422, key)
+        assert detail.get("params", {}) == params, (body, detail)
+        assert await _doc(client, auth, doc) == stored, body
+
+    assert (await _choose(client, auth, doc, document=fund)).status_code == 200
+    assert (await client.post(f"/docs/{doc}/finalize", headers=auth["headers"])).status_code == 200
+    posted = await _doc(client, auth, doc)
+    _refused_as(await _choose(client, auth, doc, document="unrestricted"), 409, "posting.fund.document_posted")
+    assert await _doc(client, auth, doc) == posted
+
+
+async def test_fund_choices_route_stale_version_refused(client, auth):
+    """Two tabs on one document: the second save of a fund choice made from the older copy
+    is refused as stale, so the page keeps its selection and offers Try again, and nothing
+    is written; the same choice sent again changes nothing."""
+    fund = await _fund_company(client, auth)
+    doc, _, _ = await _two_line_import(client, auth)
+    version = (await _doc(client, auth, doc))["version"]
+    url = f"/docs/{doc}/fund-choices"
+    r = await client.post(url, headers=auth["headers"], json={"expected_version": version, "document": fund})
+    assert r.status_code == 200, r.text
+    saved = await _doc(client, auth, doc)
+    r = await client.post(url, headers=auth["headers"], json={"expected_version": version, "document": "unrestricted"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "stale_version", r.text
+    assert await _doc(client, auth, doc) == saved
+    r = await client.post(url, headers=auth["headers"], json={"expected_version": saved["version"], "document": fund})
+    assert r.status_code == 200 and r.json() == {"event_id": None, "version": saved["version"]}, r.text
+
+
+async def test_set_all_outside_lines_then_edit_one(client, auth):
+    """Set all outside lines writes the choice to every line from outside that has none and
+    leaves a line already chosen as it is; a later edit of one line changes only that line."""
+    fund = await _fund_company(client, auth)
+    other = await _second_fund(client, auth)
+    a, b, c = [await _item(client, auth, name) for name in ("Out A", "Out B", "Out C")]
+    doc = await _imported(client, auth, [_line(a, "Out A", 10), _line(b, "Out B", 20), _line(c, "Out C", 30)])
+    first, second, third = (li["line_id"] for li in (await _doc(client, auth, doc))["line_items"])
+
+    assert (await _choose(client, auth, doc, lines={first: other})).status_code == 200
+    assert (await _choose(client, auth, doc, all=fund)).status_code == 200
+    assert _choices(await _doc(client, auth, doc))[1] == [(other, other), (fund, fund), (fund, fund)]
+    assert (await _choose(client, auth, doc, lines={second: "unrestricted"})).status_code == 200
+    assert _choices(await _doc(client, auth, doc))[1] == [(other, other), ("unrestricted", None), (fund, fund)]
