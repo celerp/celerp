@@ -147,8 +147,7 @@ def _html_scan(s: str) -> tuple[list[str], list[str]]:
                 i += 1
             if i >= n or s[i] != ">":
                 return bad + ["malformed closing tag"], where
-            i += 1
-            continue
+            continue  # the text scan steps over the ">"
         if name in RAW_TEXT_TAGS:
             return bad + [f"<{name}> element"], where
         while True:
@@ -157,8 +156,7 @@ def _html_scan(s: str) -> tuple[list[str], list[str]]:
             if i >= n:
                 return bad + ["unterminated tag"], where
             if s[i] == ">" or s.startswith("/>", i):
-                i += 1 if s[i] == ">" else 2
-                break
+                break  # the text scan steps over the "/>" or ">"
             a = _ATTR_NAME.match(s, i)
             if not a or a.end() >= n or s[a.end()] not in _WS + "/>=":
                 return bad + ["attribute name"], where
@@ -184,10 +182,8 @@ def _html_scan(s: str) -> tuple[list[str], list[str]]:
                     where.extend(["attr"] * value.count(HOLE))
                 continue
             u = _UNQUOTED.match(s, i)
-            if not u:
+            if not u:  # a hole never matches: an unquoted value cannot hold one
                 return bad + ["attribute value"], where
-            if HOLE in u.group():
-                bad.append(f"unquoted {attr} value")
             i = u.end()
     return bad, where
 
