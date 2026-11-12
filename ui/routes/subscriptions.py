@@ -1296,9 +1296,10 @@ def _definitions() -> FT:
                *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS])
 
 
-def _revenue_body(data: dict) -> list[FT]:
-    """The tables, or the empty state when no subscription counted in any month of the range."""
-    if not any(m["active"] or m["not_converted"] for m in data["months"]):
+def _revenue_body(data: dict, *, filtered: bool) -> list[FT]:
+    """The tables, or the empty state when no subscription counted in any month of the range.
+    Filtered to one currency, an empty range shows its zeros: other currencies may have revenue."""
+    if not filtered and not any(m["active"] or m["not_converted"] for m in data["months"]):
         return [empty_state_cta(t("subscriptions.revenue_empty"), t("page.new_subscriber"),
                                 "/subscribers#new-subscriber")]
     body = [*_not_converted(data), _months_table(data)]
@@ -1586,7 +1587,7 @@ def setup_routes(app) -> None:
         title = t("nav.revenue")
         params = {k: v for k in ("from", "to", "currency") if (v := request.query_params.get(k))}
         try:
-            body = _revenue_body(await api.subscriptions_metrics(token, params))
+            body = _revenue_body(await api.subscriptions_metrics(token, params), filtered="currency" in params)
         except APIError as exc:
             api.raise_if_signed_out(exc)
             body = [Div(error_message(exc), cls="flash flash--warning")]

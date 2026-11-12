@@ -114,6 +114,9 @@ async def test_revenue_metrics_empty_state(owner_ui, monkeypatch):
     assert page.status_code == 200, page.text[:300]
     assert "No recurring revenue yet. Add a subscriber or plan to see MRR." in page.text
     assert "New subscriber" in page.text and "Monthly recurring revenue" in page.text
+    # Filtered to one currency, nothing in it is not "no revenue": the months show their zeros.
+    page = await owner_ui.get("/revenue", params={"from": "2026-01-01", "to": "2026-03-15", "currency": "EUR"})
+    assert page.status_code == 200 and "No recurring revenue yet" not in page.text and "2026-03" in page.text
 
 
 async def test_metrics_requires_view_financial_reports(owner_ui, session):
