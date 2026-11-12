@@ -91,6 +91,13 @@
       "params": [
         "funds"
       ]
+    },
+    "posting.fund.stock_unrestricted": {
+      "en": "A line on account {code}, which holds stock or its cost, can't carry the restricted fund {fund}. Stock and its cost are held unrestricted.",
+      "params": [
+        "code",
+        "fund"
+      ]
     }
   }
 }

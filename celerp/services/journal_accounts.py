@@ -36,6 +36,7 @@ from celerp.accounting_roles import (
     ROLE_LABELS,
     ROLE_TYPES,
     SCHEMA_KEY,
+    STOCK_ROLES,
     AccountRole,
     Refused,
     catalog_refusal,
@@ -250,7 +251,8 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     never interleaves with a posting. Then: (1) each fund named exists, and an archived
     one takes no new posting, though a reversal or a restored entry still lands; (2) each
     fund balances on its own, the lines without a fund counting as one; (3) a restricted
-    net assets line carries a restricted fund and a retained earnings line never does.
+    net assets line carries a restricted fund and a retained earnings line never does;
+    (7) a line on a stock or stock cost account (STOCK_ROLES) never carries a restricted fund.
     With funds off, a new line carrying a fund is refused and nothing else is checked."""
     from celerp.services.money import round_money, to_decimal
 
@@ -282,6 +284,7 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
 
     restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
     retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
+    stock = set().union(*(scope_codes(settings, role) for role in STOCK_ROLES))
     for e in entries:
         fund = funds.get(e.get("fund_id") or "")
         restricted = bool(fund and fund.get("restricted"))
@@ -291,6 +294,9 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
         if e["account"] in retained and restricted:
             raise HTTPException(status_code=422, detail=catalog_refusal(
                 "posting.fund.retained_earnings_restricted", code=e["account"], fund=fund["name"]))
+        if e["account"] in stock and restricted:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "posting.fund.stock_unrestricted", code=e["account"], fund=fund["name"]))
 
 
 def unrestricted_label() -> str:

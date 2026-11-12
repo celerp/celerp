@@ -7484,5 +7484,6 @@
   "fund.name_taken": "There is already a fund named {name}. Choose another name.",
   "fund.purpose_required": "A restricted fund needs a purpose: what the money may be spent on.",
   "fund.restriction_locked": "{fund} already has postings, so whether it is restricted and its purpose can't change. Create a new fund and move the money to it instead.",
-  "fund.balance_held": "These funds still hold balances: {funds}. Bring each to zero first."
+  "fund.balance_held": "These funds still hold balances: {funds}. Bring each to zero first.",
+  "posting.fund.stock_unrestricted": "A line on account {code}, which holds stock or its cost, can't carry the restricted fund {fund}. Stock and its cost are held unrestricted."
 }

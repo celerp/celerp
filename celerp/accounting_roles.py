@@ -277,6 +277,12 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "funds": (R.RESTRICTED_NET_ASSETS,),
 }
 
+# Roles whose accounts hold stock or its cost. Stock is always unrestricted: a journal
+# line on one of them never carries a restricted fund (journal_accounts.check_fund_rules).
+STOCK_ROLES: tuple[AccountRole, ...] = (
+    R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, R.COGS, R.WORK_IN_PROGRESS,
+    R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT, R.CONSIGNOR_PAYABLE)
+
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
 # never has mapped by default code: its chart predates the role, so an account that
 # happens to carry the default number proves nothing about what it holds.

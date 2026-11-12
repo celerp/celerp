@@ -188,3 +188,39 @@ async def test_no_funds_company_posts_as_before(session, auth):
         await _emit(session, auth, [("1111", 5, 0, "fund:any"), ("4100", 0, 5, "fund:any")])
     assert raised.value.detail["message_key"] == "posting.fund.funds_off"
     await _emit(session, auth, [("1111", 5, 0, None), ("4100", 0, 5, None)])
+
+
+_STOCK_ROLES = ("inventory", "inventory_purchased", "inventory_opening", "cogs", "work_in_progress",
+                "landed_freight", "landed_insurance", "landed_duty", "landed_import_vat", "consignor_payable")
+
+
+async def _role_account(client, auth, role: str, spare: str) -> str:
+    """The account ``role`` posts to, mapping it to a new asset account ``spare`` when unmapped."""
+    accounts = (await client.get("/accounting/posting-accounts", headers=auth["headers"])).json()
+    code = next(a for a in accounts["roles"] if a["role"] == role).get("code")
+    if code:
+        return code
+    kind = "liability" if role == "consignor_payable" else "asset"
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": spare, "name": f"Stock {role}", "account_type": kind})
+    assert r.status_code in (200, 201), r.text
+    r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"], json={"code": spare})
+    assert r.status_code == 200, r.text
+    return spare
+
+
+async def test_stock_lines_refuse_restricted_fund(client, session, auth):
+    """Rule 7: a line on an inventory, cost of goods sold, work in progress, landed-cost clearing
+    or consignor payable account carrying a restricted fund is refused naming the account. The
+    same line in an unrestricted fund, or in no fund, posts."""
+    assert (await _funds_on(client, auth)).status_code == 200
+    gift = await _fund(client, auth, "Library gift")
+    board = await _fund(client, auth, "Board reserve", restricted=False, purpose=None)
+    for n, role in enumerate(_STOCK_ROLES):
+        code = await _role_account(client, auth, role, f"19{n:02d}")
+        with pytest.raises(HTTPException) as raised:
+            await _emit(session, auth, [(code, 10, 0, gift), ("1111", 0, 10, gift)])
+        assert raised.value.detail["message_key"] == "posting.fund.stock_unrestricted", (role, raised.value.detail)
+        assert raised.value.detail["params"]["code"] == code
+        await _emit(session, auth, [(code, 10, 0, board), ("1111", 0, 10, board)])
+        await _emit(session, auth, [(code, 10, 0, None), ("1111", 0, 10, None)])
