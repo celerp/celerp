@@ -28,6 +28,7 @@ from ui.components.posting_accounts import (
 )
 from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES, asset_register_target
+from ui.routes.settings_funds import funds_tab
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
@@ -56,6 +57,7 @@ def _accounting_settings_tabs(active: str) -> FT:
         ("period-lock", t("page.period_lock")),
         ("posting-accounts", t("posting.tab")),
         ("older-stock", t("older_stock.tab")),
+        ("funds", t("funds.title")),
     ]
     return Div(
         *[
@@ -1027,6 +1029,13 @@ def setup_routes(app):
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
                 content = Div(P(str(e.detail), cls="error-banner"), cls="settings-card")
+        elif tab == "funds":
+            try:
+                content = await funds_tab(token)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(error_message(e), cls="error-banner"), cls="settings-card")
         else:
             content = _bank_accounts_tab(banks)
             tab = "bank-accounts"

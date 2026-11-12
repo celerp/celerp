@@ -17,7 +17,7 @@ from celerp.events.engine import emit_event
 from test_change_fund import REASON, _change_doc, _outside_invoice
 from test_fund_movement_posting import _bill, _close, _post, _set_role
 from test_fund_movements import _emit, _setup
-from test_income_accounts import _finalize_entry, _issued, _item, _line
+from test_income_accounts import _finalize_entry, _issued, _item, _line, ui_client  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -203,3 +203,40 @@ async def test_fund_report_routes_permissions(client, session, auth):
     for path in ("balance-sheet", "activity", "reconciliation"):
         r = await client.get(f"/accounting/funds/{path}", headers=auth["headers"])
         assert r.status_code == 403, (path, r.text)
+
+
+async def test_funds_tab_empty_state_add_and_archive(ui_client):
+    """The Funds tab in Accounting settings: off offers Turn funds on; on with no fund shows the
+    empty state and Add fund; a fund row clicks to edit and archives; a refusal heads the tab."""
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+    from ui.api_client import APIError
+
+    off = {"name": "Test Corp", "current_role": "owner", "settings": {"modules": ["celerp-accounting"]}}
+    on = {"name": "Test Corp", "current_role": "owner", "settings": {"modules": ["celerp-accounting"], "funds_enabled": True}}
+    with _ui_api(get_company=AsyncMock(return_value=off), list_funds=AsyncMock(return_value={"items": []})):
+        r = await ui_client.get("/settings/accounting", params={"tab": "funds"})
+    page = r.text
+    assert r.status_code == 200, (r.status_code, r.headers.get("location"))
+    assert "Turn funds on" in page and "No funds yet" not in page
+    with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": []})):
+        page = (await ui_client.get("/settings/accounting", params={"tab": "funds"})).text
+    assert "No funds yet. Everything posts as unrestricted until you add one." in page and "Add fund" in page
+
+    fund = {"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books", "archived": False}
+    create = AsyncMock(return_value=fund)
+    with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),
+                 create_fund=create):
+        r = await ui_client.post("/settings/accounting/funds", data={
+            "name": "Library gift", "restricted": "1", "purpose": "Books", "idempotency_key": "k1"})
+    body = create.await_args.args[1]
+    assert body["restricted"] is True and body["purpose"] == "Books" and body["request_key"]
+    assert "Library gift added." in r.text and 'hx-get="/settings/accounting/funds/fund%3A1/edit"' in r.text
+    assert "editable-cell" in r.text and "/settings/accounting/funds/fund%3A1/archive" in r.text
+
+    refused = AsyncMock(side_effect=APIError(422, "These funds still hold balances: Library gift: 1111."))
+    with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),
+                 archive_fund=refused):
+        r = await ui_client.post("/settings/accounting/funds/fund%3A1/archive")
+    assert "error-banner" in r.text and "still hold balances" in r.text and "Library gift" in r.text

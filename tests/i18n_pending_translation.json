@@ -638,6 +638,92 @@
     "event.fa.movement.updated": {
       "en": "Fixed asset value movement updated",
       "params": []
+    },
+    "funds.title": {
+      "en": "Funds",
+      "params": []
+    },
+    "funds.help": {
+      "en": "Track money by fund. A restricted fund holds gifts a donor limited to a purpose; an unrestricted fund holds money set aside for a use of your own. Lines with no fund post as unrestricted.",
+      "params": []
+    },
+    "funds.off_help": {
+      "en": "Funds are off. Turn them on to give lines on invoices, bills, bank lines and journal entries a fund.",
+      "params": []
+    },
+    "funds.on_help": {
+      "en": "Funds are on. You can turn them off again once every fund is back to zero.",
+      "params": []
+    },
+    "funds.turn_on": {
+      "en": "Turn funds on",
+      "params": []
+    },
+    "funds.turn_off": {
+      "en": "Turn funds off",
+      "params": []
+    },
+    "funds.turned_on": {
+      "en": "Funds are on. Add your first fund below.",
+      "params": []
+    },
+    "funds.turned_off": {
+      "en": "Funds are off.",
+      "params": []
+    },
+    "funds.empty": {
+      "en": "No funds yet. Everything posts as unrestricted until you add one.",
+      "params": []
+    },
+    "funds.add": {
+      "en": "Add fund",
+      "params": []
+    },
+    "funds.restriction": {
+      "en": "Restriction",
+      "params": []
+    },
+    "funds.restricted": {
+      "en": "Restricted",
+      "params": []
+    },
+    "funds.restricted_check": {
+      "en": "Restricted: a donor limited what this money may be spent on",
+      "params": []
+    },
+    "funds.purpose": {
+      "en": "Purpose",
+      "params": []
+    },
+    "funds.purpose_hint": {
+      "en": "What the money may be spent on",
+      "params": []
+    },
+    "funds.archive": {
+      "en": "Archive",
+      "params": []
+    },
+    "funds.unarchive": {
+      "en": "Unarchive",
+      "params": []
+    },
+    "funds.added": {
+      "en": "{name} added.",
+      "params": [
+        "name"
+      ]
+    },
+    "funds.archived": {
+      "en": "{name} archived. It takes no new postings until you unarchive it.",
+      "params": [
+        "name"
+      ]
+    },
+    "funds.unarchived": {
+      "en": "{name} unarchived.",
+      "params": [
+        "name"
+      ]
     }
   },
   "modules": {

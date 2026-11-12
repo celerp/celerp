@@ -963,6 +963,34 @@ async def list_funds(token: str) -> dict:
         return _raise(await c.get("/accounting/funds")).json()
 
 
+async def set_funds_setting(token: str, enabled: bool) -> dict:
+    """Turn funds on or off: {enabled}."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/funds/setting", json={"enabled": enabled})).json()
+
+
+async def create_fund(token: str, body: dict) -> dict:
+    """Add a fund: {request_key, name, restricted, purpose}; answers the fund."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/funds", json=body)).json()
+
+
+async def update_fund(token: str, fund_id: str, body: dict) -> dict:
+    """Rename a fund or change its purpose: {name, purpose}; answers the fund."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/accounting/funds/{quote(fund_id, safe='')}", json=body)).json()
+
+
+async def archive_fund(token: str, fund_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{quote(fund_id, safe='')}/archive")).json()
+
+
+async def unarchive_fund(token: str, fund_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{quote(fund_id, safe='')}/unarchive")).json()
+
+
 async def list_connection_defaults(token: str) -> dict:
     """The standing fund of every connection records arrive through: {items}."""
     async with _api_client(token) as c:
