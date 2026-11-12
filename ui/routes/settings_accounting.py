@@ -132,9 +132,11 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
     )
 
 
-def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None) -> FT:
+def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None,
+                     lock_value: str | None = None) -> FT:
     """The period lock tab, the element every lock and close response replaces; ``banner``
-    (a refusal or success) heads it, so the tab keeps its one id."""
+    (a refusal or success) heads it, so the tab keeps its one id. ``lock_value`` is a refused
+    lock date the lock form keeps in place of the stored one."""
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
@@ -148,7 +150,7 @@ def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None =
         Form(
             Div(
                 Label(t("label.lock_through_date")),
-                Input(type="date", name="lock_date", value=lock_date,
+                Input(type="date", name="lock_date", value=lock_date if lock_value is None else lock_value,
                       cls="form-input max-w-md"),
                 cls="form-field",
             ),
@@ -204,15 +206,16 @@ def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None =
     )
 
 
-async def _period_lock_refused(token: str, message: str, close_value: str = "") -> FT:
+async def _period_lock_refused(token: str, message: str, close_value: str = "",
+                               lock_value: str | None = None) -> FT:
     """A refused lock or close: the banner above the period lock tab, so both forms stay
-    and the close form keeps the date entered. The lock is read as the tab's own render
-    reads it; a failed read leaves the lock form empty rather than losing the forms."""
+    and the refused form keeps the date entered. The lock is read as the tab's own render
+    reads it; a failed read leaves the stored lock out rather than losing the forms."""
     try:
         lock_data = await api.get_period_lock(token)
     except Exception:
         lock_data = {}
-    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"))
+    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"), lock_value)
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -1220,7 +1223,7 @@ def setup_routes(app):
         try:
             result = await api.set_period_lock(token, lock_date)
         except APIError as e:
-            return await _period_lock_refused(token, str(e.detail))
+            return await _period_lock_refused(token, str(e.detail), lock_value=lock_date)
         return _period_lock_tab(result)
 
     @app.post("/settings/accounting/close-year")

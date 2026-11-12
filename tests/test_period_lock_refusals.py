@@ -3,9 +3,9 @@
 """A refused period lock or fiscal year close keeps the period lock tab.
 
 The refusal shows as a banner above the re-rendered tab, so both forms stay on screen
-and the close form still carries the date that was entered: the user corrects it in
-place instead of finding the card gone. A failed read of the current lock does not
-take the forms with it.
+and the refused form still carries the date that was entered: the user corrects it in
+place instead of finding the card gone or the entry swapped for the stored lock. A
+failed read of the current lock does not take the forms with it.
 """
 from __future__ import annotations
 
@@ -33,11 +33,15 @@ async def ui_client():
         yield c
 
 
-def _close_input_value(html: str) -> str | None:
-    tag = re.search(r'<input[^>]*name="fiscal_year_end"[^>]*>', html)
+def _input_value(html: str, name: str) -> str:
+    tag = re.search(rf'<input[^>]*name="{name}"[^>]*>', html)
     assert tag, html
     value = re.search(r'value="([^"]*)"', tag.group())
     return value.group(1) if value else ""
+
+
+def _close_input_value(html: str) -> str:
+    return _input_value(html, "fiscal_year_end")
 
 
 def _assert_tab_kept(html: str, banner: str, close_value: str) -> None:
@@ -67,6 +71,7 @@ async def test_close_year_refusal_keeps_the_form_with_the_entered_date(ui_client
         r = await _post(ui_client, "/settings/accounting/period-lock", {"lock_date": "2026-01-31"},
                         AsyncMock(return_value=_LOCK), set_period_lock=refused)
         _assert_tab_kept(r.text, _REFUSED, "")
+        assert _input_value(r.text, "lock_date") == "2026-01-31"
     elif case == "blank close date":
         r = await _post(ui_client, "/settings/accounting/close-year", {"fiscal_year_end": " "},
                         AsyncMock(return_value=_LOCK), close_fiscal_year=AsyncMock())
@@ -75,9 +80,34 @@ async def test_close_year_refusal_keeps_the_form_with_the_entered_date(ui_client
         r = await _post(ui_client, "/settings/accounting/close-year", {"fiscal_year_end": "2026-12-31"},
                         AsyncMock(return_value=_LOCK), close_fiscal_year=refused)
         _assert_tab_kept(r.text, _REFUSED, "2026-12-31")
+        # The lock read fills the lock form as the tab's own render does.
+        assert _input_value(r.text, "lock_date") == "2025-12-31"
     assert r.status_code == 200
-    # The lock read fills the lock form as the tab's own render does.
-    assert 'name="lock_date" value="2025-12-31"' in r.text
+
+
+@pytest.mark.parametrize("lock_read", ["read", "failed read"])
+async def test_a_refused_lock_save_keeps_the_entered_date_and_the_stored_lock(ui_client, lock_read):
+    """The lock form keeps the refused entry; the stored lock still shows as the lock in force,
+    with its unlock button, because the refusal changed nothing."""
+    from ui.i18n import t
+
+    read = AsyncMock(return_value=_LOCK) if lock_read == "read" else AsyncMock(side_effect=APIError(503, "down"))
+    r = await _post(ui_client, "/settings/accounting/period-lock", {"lock_date": " 2026-01-31 "}, read,
+                    set_period_lock=AsyncMock(side_effect=APIError(422, _REFUSED)))
+    assert r.status_code == 200
+    _assert_tab_kept(r.text, _REFUSED, "")
+    assert _input_value(r.text, "lock_date") == "2026-01-31"
+    stored = t("settings_accounting.currently_locked_through", lock_date="2025-12-31", updated="2026-01-02")
+    assert (stored in r.text) == (lock_read == "read")
+    assert ('name="unlock"' in r.text) == (lock_read == "read")
+
+
+async def test_a_refused_unlock_shows_the_lock_still_in_force(ui_client):
+    r = await _post(ui_client, "/settings/accounting/period-lock", {"lock_date": "2025-12-31", "unlock": "1"},
+                    AsyncMock(return_value=_LOCK), set_period_lock=AsyncMock(side_effect=APIError(422, _REFUSED)))
+    assert r.status_code == 200
+    _assert_tab_kept(r.text, _REFUSED, "")
+    assert _input_value(r.text, "lock_date") == "2025-12-31"
 
 
 @pytest.mark.parametrize("case", ["blank close date", "close refusal"])
