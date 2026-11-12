@@ -214,3 +214,116 @@ async def test_change_fund_moves_dependents(fa):
     await fa.operate("/runs", {"month": "2026-02"}, key="run-feb")
     feb = next(je for je in await fa.module_journals() if je["entity_id"] == f"{prefix}run:2026-02:1")
     assert {fund for _, fund in _by_fund(feb)} == {funds["U"]}
+
+
+async def _run_line(fa: FA, asset: str, month: str) -> dict:
+    """The live run line an asset's movement for ``month`` points at."""
+    from celerp.services.auto_je import current_entry
+
+    prefix = "je:mod:celerp-fixed-assets:"
+    mv = next(m for m in await fa.entities("fa_movement")
+              if m["asset_id"] == asset and m["operation"] == "run" and m.get("posting_date", "")[:7] == month)
+    c = mv["contributions"][0]
+    run_id = await current_entry(fa.session, fa.auth["company_id"], c["journal_id"])
+    run = next(je for je in await fa.module_journals() if je["entity_id"] == run_id)
+    assert run.get("status") == "posted" and run_id != f"{prefix}run:{month}:1"
+    return {**run["entries"][c["line_index"]], "_run": run}
+
+
+async def test_change_fund_splits_run_line_shared_with_another_asset(fa):
+    """Two assets on R share the run's R lines: Change fund on the bill of one moves only its
+    share onto U as new lines, and each asset's movement still points at its own share."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    await _bought(fa, "1210", 6000, funds["R"], "Outreach van")
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    van = (await fa.register((await fa.line("Outreach van"))["source"], key="reg-van"))["assets"][0]["id"]
+    await fa.operate("/runs", {"month": "2026-01"}, key="run-jan")
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 200, r.text
+    assert (await fa.state(car))["fund_id"] == funds["U"]
+    assert (await fa.state(van))["fund_id"] == funds["R"]
+    car_line, van_line = await _run_line(fa, car, "2026-01"), await _run_line(fa, van, "2026-01")
+    assert (car_line["account"], car_line.get("fund_id"), D(str(car_line["credit"]))) == ("1220", funds["U"], D("200"))
+    assert (van_line["account"], van_line.get("fund_id"), D(str(van_line["credit"]))) == ("1220", funds["R"], D("100"))
+    assert _by_fund(car_line["_run"]) == {("6400", funds["R"]): (D("100"), D(0)), ("6400", funds["U"]): (D("200"), D(0)),
+                                          ("1220", funds["R"]): (D(0), D("100")), ("1220", funds["U"]): (D(0), D("200"))}
+
+
+async def test_change_fund_refused_when_asset_lines_would_split(fa):
+    """An asset bought on the bill's line and improved from a manual line, both on R: moving
+    only the bill to U would leave the asset on two funds, so the change is refused."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    await _bought(fa, "1210", 1080, funds["R"], "Roof rack", ts="2026-03-01")
+    await fa.operate(f"/assets/{car}/add", {"kind": "improvement", "source": (await fa.line("Roof rack"))["source"]},
+                     key="rack")
+    before = await _fa_standing(fa)
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "fixed_assets.err_change_fund_splits_asset"
+    assert detail["params"] == {"number": (await fa.state(car))["number"], "funds": "Board reserve, Outreach gift"}
+    assert (await fa.state(car))["fund_id"] == funds["R"] and await _fa_standing(fa) == before
+
+
+async def test_change_fund_refused_after_class_account_move(fa):
+    """A class account move posts one line per fund for all the class's assets: an asset it
+    carried refuses Change fund on its bill and names the move."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    r = await fa.client.post("/accounting/accounts", headers=fa.h, json={
+        "code": "1216", "name": "Vehicles at cost", "account_type": "asset", "parent_code": "1200"})
+    assert r.status_code == 200, r.text
+    cls = (await fa.classes())["Vehicles"]
+    done = await fa.operate(f"/classes/{cls['id']}/fix-account",
+                            {"field": "asset_account", "account": "1216", "mode": "move"}, key="mv")
+    moved_on = str((await fa.state(done["journals"][0])).get("ts"))[:10]
+    before = await _fa_standing(fa)
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "fixed_assets.err_change_fund_class_move"
+    assert detail["params"] == {"number": (await fa.state(car))["number"], "cls": "Vehicles", "date": moved_on}
+    assert (await fa.state(car))["fund_id"] == funds["R"] and await _fa_standing(fa) == before
+
+
+async def test_change_fund_refused_when_improvement_line_would_split(fa):
+    """An asset registered from a manual line on R and improved from the bill's line on R:
+    moving the bill to U would leave the asset on two funds, so the change is refused."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    await _bought(fa, "1210", 12000, funds["R"], "Outreach car")
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    bill = await _bill_asset_on(fa, funds["R"], "Roof rack", 1080)
+    await fa.operate(f"/assets/{car}/add", {"kind": "improvement", "source": (await fa.line("Roof rack"))["source"]},
+                     key="rack")
+    before = await _fa_standing(fa)
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "fixed_assets.err_change_fund_splits_asset"
+    assert (await fa.state(car))["fund_id"] == funds["R"] and await _fa_standing(fa) == before
+
+
+async def test_change_fund_moves_expensed_line_journal(fa):
+    """A bill line registered as an expense moved off the asset account on its fund: Change
+    fund on the bill moves that journal onto the new fund with the line."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Car mats", 300)
+    await fa.operate("/register", {"source": (await fa.line("Car mats"))["source"], "mode": "expense",
+                                   "expense_account": "6400"}, key="reg-mats")
+    assert await _fa_standing(fa) == {(funds["R"], "1210"): D("-300"), (funds["R"], "6400"): D("300")}
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 200, r.text
+    assert await _fa_standing(fa) == {(funds["U"], "1210"): D("-300"), (funds["U"], "6400"): D("300")}
