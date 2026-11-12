@@ -54,20 +54,25 @@ class _Cloud:
         return [p for path, p in self.calls if path == f"/billing/connect/collection/{route}"]
 
 
-@pytest.fixture
-def cloud(monkeypatch, session):
+def stand_in(monkeypatch, session) -> _Cloud:
+    """Celerp Cloud replaced for one test: payments on, collection protocol 1, the app's own
+    delivery sessions joining the test's transaction, each request answered by a _Cloud."""
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.gateway import state
     from celerp.services import collection
 
-    saved = state.get_feature_flags()
-    state.set_feature_flags({**saved, "payments_enabled": True, "collection_protocol": 1})
+    monkeypatch.setattr(state, "_feature_flags",
+                        {**state.get_feature_flags(), "payments_enabled": True, "collection_protocol": 1})
     monkeypatch.setattr("celerp.services.payments._own_session", lambda: AsyncSession(
         bind=session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"))
     fake = _Cloud()
     monkeypatch.setattr(collection, "_ask", fake)
-    yield fake
-    state.set_feature_flags(saved)
+    return fake
+
+
+@pytest.fixture
+def cloud(monkeypatch, session):
+    return stand_in(monkeypatch, session)
 
 
 def _flag(value) -> None:
@@ -535,3 +540,90 @@ async def test_collection_ui_hidden_without_capability(owner_ui, session, monkey
     _flag(1)
     page = (await owner_ui.get(f"/subscriptions/{eid}")).text
     assert 'value="auto_invoice_collect"' in page and "/collection/setup-link" in page
+
+
+def _toast(r) -> dict:
+    import json
+    return json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast") or {}
+
+
+async def test_agreement_page_shows_the_card_on_file_and_its_actions(owner_ui, session, monkeypatch, cloud):
+    """The agreement page names the payer's card on file. Copy setup link shows the link to copy;
+    Email setup link says it went, or shows the link to copy when the email did not; Cloud out of
+    reach is refused saying so; Remove card revokes the card at Cloud and the page reads No card on file."""
+    from ui.i18n import t
+    freeze_day(monkeypatch, "2026-06-15")
+    api = owner_ui.api
+    cid = await company_id(api, {})
+    payer = await _payer(api, {})
+    eid = await agreement(api, {}, start="2026-07-01", contact_id=payer)
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert t("subscriptions.no_card_on_file") in page and "/collection/revoke" not in page
+
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "copy"})
+    assert r.status_code == 200 and LINK in r.text, r.text
+    assert cloud.sent("setup-link")[-1]["delivery"] == "copy"
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "email"})
+    assert _toast(r) == {"message": t("subscriptions.done_setup_link_emailed"), "type": "success"}, r.headers
+    cloud.answers["setup-link"] = (200, {"link": LINK, "emailed": False})
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "email"})
+    assert LINK in r.text and _toast(r) == {"message": t("subscriptions.setup_link_not_emailed"), "type": "warning"}
+    cloud.answers["setup-link"] = None
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "email"})
+    assert t("subscriptions.err_cloud_unreachable") in _toast(r).get("message", ""), r.headers
+
+    assert await _bind(cid, payer, receipt_sent=False)
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert t("subscriptions.card_on_file", brand="Visa", last4="4242") in page
+    assert t("subscriptions.receipt_not_sent") in page and "/collection/revoke" in page
+    cloud.answers["setup-link"] = (200, {"receipt_sent": True})
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "email", "resend_receipt": "true"})
+    assert _toast(r) == {"message": t("subscriptions.done_receipt_sent"), "type": "success"}, r.headers
+    assert cloud.sent("setup-link")[-1]["resend_receipt"] is True
+
+    r = await owner_ui.post(f"/subscriptions/{eid}/collection/revoke")
+    assert _toast(r) == {"message": t("subscriptions.done_card_removed"), "type": "success"}, r.headers
+    assert cloud.sent("revoke")[-1]["payer_contact_id"] == payer
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert t("subscriptions.no_card_on_file") in page and "/collection/revoke" not in page
+
+
+async def test_agreement_on_collect_keeps_its_mode_shown_when_cloud_withdraws_collection(owner_ui, session, monkeypatch, cloud):
+    """An agreement already on Bill and collect automatically still shows that mode (and its badge)
+    after Cloud stops offering collection, so it can be set back to manual; the card section is gone."""
+    from ui.i18n import t
+    freeze_day(monkeypatch, "2026-06-15")
+    cid, eid, _ = await _collecting(owner_ui.api, {})
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert t("subscriptions.bills_and_collects") in page and t("subscriptions.consent_collection", date="").strip() in page
+    _flag(None)
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert 'value="auto_invoice_collect" selected' in page and t("subscriptions.bills_and_collects") in page
+    assert "/collection/setup-link" not in page
+
+
+async def test_invoice_page_says_how_its_collection_stands(owner_ui, session, monkeypatch, cloud):
+    """The billed invoice's page reads its collection: pending while with Cloud, the payer's action
+    link when Cloud needs it, Charge failed with the retry date, and why collection stopped."""
+    from ui.i18n import sentence, t
+    freeze_day(monkeypatch, "2026-07-01")
+    cid, eid, payer = await _collecting(owner_ui.api, {})
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    doc_id = doc["entity_id"]
+    page = (await owner_ui.get(f"/docs/{doc_id}")).text
+    assert t("collection.status_pending") in page
+    assert await _attempt_outcome(cid, doc_id, 1, "requires_action", definitive=False,
+                                  action_url="https://pay.test/act/1")
+    page = (await owner_ui.get(f"/docs/{doc_id}")).text
+    assert t("collection.status_requires_action") in page and 'href="https://pay.test/act/1"' in page
+    eligible = datetime(2026, 7, 4, 12, tzinfo=timezone.utc)
+    assert await _attempt_outcome(cid, doc_id, 1, "failed", failure_code="card_declined",
+                                  retry_eligible_at=eligible.isoformat())
+    page = (await owner_ui.get(f"/docs/{doc_id}")).text
+    assert sentence("collection.status_failed_retry", date="2026-07-04") in page
+    assert await _bind(cid, payer, "revoked", card_brand=None, card_last4=None)
+    _at(monkeypatch, eligible)
+    await tick(session, cid, "2026-07-04")
+    page = (await owner_ui.get(f"/docs/{doc_id}")).text
+    assert t("collection.status_stopped", reason=t("collection.stopped_no_card_on_file")) in page

@@ -263,6 +263,25 @@ async def _donor_wording(ui, session, monkeypatch, arm):
     assert (await ui.api.get("/donors/statements/wording")).json() == {"text": "With thanks, {name}.", "version": 1}
 
 
+async def _collection(ui, session, monkeypatch, arm):
+    from test_collection import LINK, _bind, _payer, stand_in
+
+    cloud = stand_in(monkeypatch, session)
+    freeze_day(monkeypatch, "2026-06-15")
+    payer = await _payer(ui.api, {})
+    eid = await agreement(ui.api, {}, start="2026-07-01", contact_id=payer)
+    assert await _bind(await company_id(ui.api, {}), payer)
+    failing = arm()
+    r = await ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "copy"})
+    _not_refused(r)
+    assert LINK in r.text and [p["delivery"] for p in cloud.sent("setup-link")] == ["copy"]
+    r = await ui.post(f"/subscriptions/{eid}/collection/revoke")
+    _not_refused(r)
+    if failing is not None:
+        failing.clear()
+    assert (await ui.api.get(f"/subscriptions/{eid}/collection")).json()["binding"]["state"] == "revoked"
+
+
 SCENARIOS = {
     "POST /subscriptions/generate-due": _generate_all_due,
     "POST /subscriptions/catch-up/{action}": _catch_up,
@@ -276,6 +295,7 @@ SCENARIOS = {
     "POST /subscriptions/import/confirm": _import,
     "POST /donors/statements/send": _donor_statements,
     "PUT /donors/statements/wording": _donor_wording,
+    "POST /subscriptions/{entity_id}/collection/{action}": _collection,
 }
 
 
