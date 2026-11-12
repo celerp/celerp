@@ -63,8 +63,10 @@ ALLOWED_ANSWERS = ANSWERS | {"page", "wizard", "signed_out", "not_found"}
 
 
 def ui_files() -> list[Path]:
-    """The subscriptions pages' UI modules: ui/routes/subscriptions*.py and the module's own."""
-    return [*sorted((ROOT / "ui" / "routes").glob("subscriptions*.py")), PACKAGE / "ui_routes.py"]
+    """The subscriptions pages' UI modules: ui/routes/subscriptions*.py and the module's own, and
+    the Donors page beside Members, which answers through the same helpers."""
+    return [*sorted((ROOT / "ui" / "routes").glob("subscriptions*.py")), PACKAGE / "ui_routes.py",
+            ROOT / "ui" / "routes" / "donors.py"]
 
 
 def _rel(path: Path) -> str:

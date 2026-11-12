@@ -159,6 +159,7 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     resend = await client.post("/donors/statements/send", headers=auth["headers"],
                                json={**body, "confirm": True, "resend": [donors["email"]]})
     assert resend.status_code == 200 and len(sent) == 2
+    assert [row["contact_id"] for row in resend.json()["results"]] == [donors["email"]]
     r = await client.put("/donors/statements/wording", headers=auth["headers"], json={"text": "Thank you, {name}."})
     assert r.status_code == 200, r.text
     corrected = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})

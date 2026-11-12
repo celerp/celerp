@@ -229,6 +229,26 @@ async def _import(ui, session, monkeypatch, arm):
     assert [i.get("name") for i in listed] == ["Census Gym"]
 
 
+async def _donor_statements(ui, session, monkeypatch, arm):
+    from test_donors import PERIOD, _mailbox, _statement_donors
+
+    donors = await _statement_donors(ui.api, {"headers": {}})
+    sent = _mailbox(monkeypatch)
+    arm()
+    r = await ui.post("/donors/statements/send", data={**PERIOD, "confirm": "on"})
+    _not_refused(r)
+    assert _toast(r)["type"] == "success" and [m["to"] for m in sent] == ["cy@test.test"]
+    rows = {row["contact_id"]: row for row in (await ui.api.get("/donors/statements/preview", params=PERIOD)).json()["donors"]}
+    assert rows[donors["email"]]["statement_sent"] is True and rows[donors["none"]]["statement_sent"] is False
+
+
+async def _donor_wording(ui, session, monkeypatch, arm):
+    arm()
+    r = await ui.put("/donors/statements/wording", data={"text": "With thanks, {name}."})
+    _not_refused(r)
+    assert (await ui.api.get("/donors/statements/wording")).json() == {"text": "With thanks, {name}.", "version": 1}
+
+
 SCENARIOS = {
     "POST /subscriptions/generate-due": _generate_all_due,
     "POST /subscriptions/catch-up/{action}": _catch_up,
@@ -239,6 +259,8 @@ SCENARIOS = {
     "POST /subscriptions/{entity_id}/history/{doc_id}/{action}": _history,
     "PATCH /subscriptions/{entity_id}/schedule/{field}": _schedule,
     "POST /subscriptions/import/confirm": _import,
+    "POST /donors/statements/send": _donor_statements,
+    "PUT /donors/statements/wording": _donor_wording,
 }
 
 
