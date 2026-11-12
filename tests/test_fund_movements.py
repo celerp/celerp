@@ -119,7 +119,7 @@ async def test_movement_refused_for_system_actor(client, session, auth):
     assert detail["message_key"] == "posting.fund.movement_needs_user"
 
 
-async def test_grant_matches_one_entity_and_actor_once(client, session, auth):
+async def test_grant_consumed_once_and_scoped_to_entity(client, session, auth):
     """A grant passes only the entity and actor it was entered for, and only once."""
     f = await _setup(client, auth)
     lines = _shapes(f)["c"][0]
