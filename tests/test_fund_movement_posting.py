@@ -297,6 +297,53 @@ async def test_release_requires_purpose_spending_and_reverse_undoes(client, sess
     assert await fund_account_balances(session, auth["company_id"]) == before
 
 
+async def test_release_spending_lists_what_a_release_can_still_name(client, session, auth):
+    """The purpose spending a release can name, newest first, each line with what the
+    standing releases left of it: a line charged to a fund, an entry a standing reversal
+    undid and a line released in full are left out, a part release leaves the rest, and
+    reversing the release puts its line back whole. Viewers cannot read it."""
+    from celerp.events.engine import emit_event
+
+    from test_fund_movements import _lines
+
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    await _gift(session, auth, None, 200)
+    older = await _bill(session, auth, None, 60, ts="2026-02-01")
+    newer = await _bill(session, auth, None, 30, ts="2026-03-01")
+    await _bill(session, auth, f["R"], 10)
+    undone = await _bill(session, auth, None, 20)
+    await emit_event(session, company_id=auth["company_id"], entity_id=f"je:manual:{uuid.uuid4()}",
+                     entity_type="journal_entry", event_type="acc.journal_entry.created",
+                     data={"memo": "Undo", "ts": "2026-03-01", "je_type": "manual", "status": "posted",
+                           "reverses": undone, "entries": _lines([("1111", 20, 0, None), ("6200", 0, 20, None)])},
+                     actor_id=auth["user_id"], location_id=None, source="test",
+                     idempotency_key=f"test:undo:{uuid.uuid4().hex}")
+    full = await _bill(session, auth, None, 5, ts="2026-01-01")
+    await session.commit()
+
+    async def listed():
+        r = await client.get("/accounting/funds/release-spending", headers=auth["headers"])
+        assert r.status_code == 200, r.text
+        return [(i["je_id"], i["line_index"], i["left"]) for i in r.json()["items"]]
+
+    assert await listed() == [(newer, 0, 30), (older, 0, 60), (full, 0, 5)]
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=None,
+                    backing=[{"je_id": older, "line_index": 0, "amount": "25"},
+                             {"je_id": full, "line_index": 0, "amount": "5"}])
+    assert r.status_code == 200, r.text
+    assert await listed() == [(newer, 0, 30), (older, 0, 35)]
+    item = (await client.get("/accounting/funds/release-spending", headers=auth["headers"])).json()["items"][1]
+    assert item["date"] == "2026-02-01" and item["account"] == "6200" and item["memo"] == "Funds"
+    back = await client.post(f"/accounting/funds/movements/{r.json()['je_id']}/reverse", headers=auth["headers"],
+                             json={"date": DATE, "reason": "Wrong bill"})
+    assert back.status_code == 200, back.text
+    assert await listed() == [(newer, 0, 30), (older, 0, 60), (full, 0, 5)]
+    await _set_role(session, auth, "viewer")
+    await session.commit()
+    assert (await client.get("/accounting/funds/release-spending", headers=auth["headers"])).status_code == 403
+
+
 @pytest.mark.parametrize("writer", ["manual", "auto", "transfer", "recon_create", "recon_split", "recon_writeoff",
                                     "year_close", "close_in_grant", "reversal"])
 async def test_restricted_money_leaves_only_by_release_or_authorized_reallocation(client, session, auth, writer):

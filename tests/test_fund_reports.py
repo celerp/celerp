@@ -240,3 +240,78 @@ async def test_funds_tab_empty_state_add_and_archive(ui_client):
                  archive_fund=refused):
         r = await ui_client.post("/settings/accounting/funds/fund%3A1/archive")
     assert "error-banner" in r.text and "still hold balances" in r.text and "Library gift" in r.text
+
+
+async def test_funds_tab_moves_money_between_funds(ui_client):
+    """With funds on, the Funds tab offers the four movements: Transfer between funds,
+    Release from restriction with the purpose spending it can name, Reallocate restricted
+    funds with the donor's authorization, and Opening balances by fund with a line per
+    account. Each posts with its own key and heads the tab with what it posted; a refusal
+    heads the tab with the reason and keeps the form open with what was typed."""
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+    from ui.api_client import APIError
+
+    on = {"name": "Test Corp", "current_role": "owner", "settings": {"modules": ["celerp-accounting"], "funds_enabled": True}}
+    funds = [{"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books", "archived": False},
+             {"id": "fund:2", "name": "Building reserve", "restricted": False, "purpose": None, "archived": False}]
+    chart = {"items": [{"code": "1111", "name": "Bank", "account_type": "asset", "is_active": True},
+                       {"code": "6200", "name": "Rent", "account_type": "expense", "is_active": True}]}
+    spending = {"items": [{"je_id": "je:manual:1", "line_index": 0, "date": "2026-02-01", "memo": "Book order",
+                           "account": "6200", "description": None, "left": 60.0}]}
+    move = AsyncMock(return_value={"je_id": "je:fund:1"})
+
+    def api(**more):
+        return _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": funds}),
+                       get_chart=AsyncMock(return_value=chart), list_release_spending=AsyncMock(return_value=spending),
+                       move_funds=move, **more)
+
+    with api():
+        page = (await ui_client.get("/settings/accounting", params={"tab": "funds"})).text
+    for title in ("Transfer between funds", "Release from restriction", "Reallocate restricted funds",
+                  "Opening balances by fund"):
+        assert title in page, title
+    assert "Book order" in page and "60.00" in page and 'value="je:manual:1|0"' in page
+    assert "1111 Bank" in page and "6200 Rent" not in page.split("Opening balances by fund")[1]
+
+    form = {"idempotency_key": "k-t", "date": "2026-03-02", "reason": "Board minute 12", "from_fund": "fund:2",
+            "to_fund": "unrestricted", "account": "", "amount": "50"}
+    with api():
+        r = await ui_client.post("/settings/accounting/funds/transfer", data=form)
+    kind, body = move.await_args.args[1:]
+    assert kind == "transfer" and body == {"request_key": "k-t", "date": "2026-03-02", "reason": "Board minute 12",
+                                           "from_fund": "fund:2", "to_fund": None, "account": None, "amount": "50"}
+    assert "Transfer between funds posted." in r.text and "success-banner" in r.text
+
+    with api():
+        r = await ui_client.post("/settings/accounting/funds/release", data={
+            "idempotency_key": "k-r", "date": "2026-03-02", "reason": "Books bought", "fund": "fund:1",
+            "to_fund": "unrestricted", "account": "1111", "backing": "je:manual:1|0", "release:je:manual:1|0": "25"})
+    kind, body = move.await_args.args[1:]
+    assert kind == "release" and body["fund"] == "fund:1" and body["to_fund"] is None and body["account"] == "1111"
+    assert body["backing"] == [{"je_id": "je:manual:1", "line_index": 0, "amount": "25"}]
+
+    refused = AsyncMock(side_effect=APIError(422, "Reallocating needs the reallocate_restricted_funds permission."))
+    with api(move_funds=refused):
+        r = await ui_client.post("/settings/accounting/funds/reallocate", data={
+            "idempotency_key": "k-a", "date": "2026-03-02", "reason": "Donor letter", "from_fund": "fund:1",
+            "to_fund": "fund:1", "account": "", "amount": "10", "donor_authorization": "Letter 2026-14"})
+    assert refused.await_args.args[2]["donor_authorization"] == "Letter 2026-14"
+    assert "error-banner" in r.text and "reallocate_restricted_funds" in r.text
+    assert 'value="Letter 2026-14"' in r.text and 'value="Donor letter"' in r.text and "<details open" in r.text
+
+    with api():
+        r = await ui_client.post("/settings/accounting/funds/opening", data=[
+            ("idempotency_key", "k-o"), ("date", "2026-01-01"), ("reason", "Opening by fund"),
+            ("account", "1111"), ("fund", "fund:1"), ("amount", "40"),
+            ("account", "1111"), ("fund", "fund:2"), ("amount", "15"),
+            ("account", ""), ("fund", ""), ("amount", "")])
+    kind, body = move.await_args.args[1:]
+    assert kind == "opening" and body["assignments"] == [
+        {"account": "1111", "fund": "fund:1", "amount": "40"}, {"account": "1111", "fund": "fund:2", "amount": "15"}]
+    assert "Opening balances by fund posted." in r.text
+
+    with api():
+        line = (await ui_client.get("/settings/accounting/funds/opening-line")).text
+    assert line.startswith("<tr") and 'name="account"' in line and 'name="fund"' in line and 'name="amount"' in line
