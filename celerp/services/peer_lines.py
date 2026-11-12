@@ -165,6 +165,77 @@ def leg_funds(doc: Mapping) -> tuple[dict[int, str | None], str | None]:
     return {n: _fund_of(cover) for n, cover in covers.items()}, _fund_of(document)
 
 
+_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+
+
+def _posted_keys(line: Mapping) -> dict:
+    """The fund keys a copy of a posted line carries (rule V): its origin, fund and choice. A
+    line that came from outside and posted with no choice (before funds were in use) takes
+    the fund it posted with, or Unrestricted, since the posted entry is the authority."""
+    keys = {key: line[key] for key in LINE_KEYS if line.get(key)}
+    if line.get("origin") and not line.get("fund_choice"):
+        keys["fund_choice"] = line.get("fund_id") or UNRESTRICTED
+    return keys
+
+
+def copy_posted_lines(entry_id: str, entries: list, *, reverse: bool) -> list[dict]:
+    """The lines of posted entry ``entry_id`` written again (``reverse`` swaps debit and
+    credit), each keeping its fund keys (_posted_keys) and naming the entry it copies in
+    ``posted_from``, so rule R lets it through without a new choice (check_outside_record)."""
+    out = []
+    for line in entries or []:
+        if isinstance(line, dict):
+            copied = {(_SWAPPED.get(k, k) if reverse else k): v for k, v in line.items()}
+            out.append({**copied, **_posted_keys(line), "posted_from": entry_id})
+    return out
+
+
+def posted_line_funds(lines: list, posted_doc: Mapping) -> list:
+    """``lines`` with each line linked to a line of ``posted_doc`` (``source_line_id``) carrying
+    that line's origin and the fund it posted with (its own choice, else the document's: leg_funds)
+    in place of its own keys: a credit or debit note line reverses the fund the line it
+    credits posted with, never one sent with it."""
+    covers, _ = _covers(posted_doc)
+    posted = {li.get("line_id"): (n, li) for n, li in enumerate(posted_doc.get("line_items") or [], 1)
+              if isinstance(li, dict) and li.get("line_id")}
+    out = []
+    for line in lines or []:
+        n, source = posted.get(line.get("source_line_id"), (None, None)) if isinstance(line, dict) else (None, None)
+        if source is not None:
+            fund = _fund_of(covers[n])
+            keys = {**({"origin": source["origin"], "fund_choice": fund or UNRESTRICTED} if source.get("origin") else {}),
+                    **({"fund_id": fund} if fund else {})}
+            line = {**{k: v for k, v in line.items() if k not in LINE_KEYS}, **keys}
+        out.append(line)
+    return out
+
+
+async def _copied_legs(session, company_id, data: Mapping, legs: list[dict]) -> set[int]:
+    """Which of ``legs`` (by position) are copies of a leg the same record posted: a
+    ``posted_from`` naming an entry of that record (or the entry ``data`` reverses) that
+    posted a line on the same account with the same fund."""
+    from celerp.models.projections import Projection
+
+    found: dict[str, Mapping | None] = {}
+    copied = set()
+    for i, line in enumerate(legs):
+        source_id = line.get("posted_from")
+        if not source_id:
+            continue
+        if source_id not in found:
+            row = await session.get(Projection, {"company_id": company_id, "entity_id": source_id})
+            state = (row.state or {}) if row is not None and row.entity_type == "journal_entry" else {}
+            same = (data.get("record_id") and state.get("record_id") == data.get("record_id")) \
+                or source_id == data.get("reverses")
+            found[source_id] = state if same and state.get("status") in ("posted", "void") else None
+        source = found[source_id]
+        if source is not None and any(
+                e.get("account") == line["account"] and (e.get("fund_id") or None) == (line.get("fund_id") or None)
+                for e in source.get("entries") or []):
+            copied.add(i)
+    return copied
+
+
 async def check_outside_record(session, company_id, data: Mapping, entries: list[dict], settings: Mapping) -> None:
     """Rule R: a new entry for a record that came from outside posts only lines a fund choice
     covers. A record's entry (``data["record_id"]``) names on each line the document lines
@@ -172,7 +243,8 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
     that arrived from outside (``data["origin"]``) is its own record, each line covered by its
     own choice or the entry's. A line is covered when every line behind it has a choice and
     the line carries the fund that choice gives; stock and stock cost lines carry no fund and
-    need none. Anything else raises FundChoiceNeeded naming the lines to choose for."""
+    need none, and a copy of a line the record posted (_copied_legs) keeps the fund it posted
+    with. Anything else raises FundChoiceNeeded naming the lines to choose for."""
     from celerp.models.projections import Projection
     from celerp.services.journal_accounts import FundChoiceNeeded, stock_codes
 
@@ -193,10 +265,11 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
         legs = [(line, line.get("source_lines") or []) for line in entries]
         record = str(state.get("ref_id") or data["record_id"].split(":", 1)[-1])
     stock = stock_codes(dict(settings))
+    copied = await _copied_legs(session, company_id, data, entries)
     uncovered: set[int] = set()
     refused = False
-    for line, numbers in legs:
-        if line["account"] in stock:
+    for i, (line, numbers) in enumerate(legs):
+        if line["account"] in stock or i in copied:
             continue
         fund = line.get("fund_id") or None
         if not numbers:

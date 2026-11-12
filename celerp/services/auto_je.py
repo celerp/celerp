@@ -63,7 +63,7 @@ from celerp.services.journal_accounts import (
     CONTROL, HEADER, UnbalancedJournalEntry, bank_currencies, fund_legs, funds_enabled, income_account_of, lock_accounts,
     require_income_account,
 )
-from celerp.services.peer_lines import leg_funds
+from celerp.services.peer_lines import copy_posted_lines, leg_funds, posted_line_funds
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
@@ -728,6 +728,13 @@ def _line_tax_basis(doc: dict):
     return basis or HEADER
 
 
+def _clearing_bases(doc: dict, allocations: dict | None, clearing: list[dict]) -> list[dict]:
+    """The document line behind each asset clearing line (_asset_split), by its asset."""
+    lines = doc.get("line_items") or []
+    return [{n: allocations[str(n - 1)]["base"] for n, li in enumerate(lines, 1)
+             if isinstance(li, dict) and li.get("asset_id") == e["asset_id"]} for e in clearing]
+
+
 def _document_fund_legs(settings: dict, doc: dict, entries: list[dict], bases: list, base_currency: str) -> list[dict]:
     """``entries`` carried by the funds of the document lines behind them (fund_legs), where
     the company has funds turned on; otherwise as they are."""
@@ -757,10 +764,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
     income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)
     entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
-    lines = doc.get("line_items") or []
-    bases = [CONTROL,
-             *({n: share["base"] for n, li in enumerate(lines, 1) if isinstance(li, dict) and li.get("asset_id") == e["asset_id"]
-                for share in [allocations[str(n - 1)]]} for e in clearing),
+    bases = [CONTROL, *_clearing_bases(doc, allocations, clearing),
              *({int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
                if allocations else HEADER for e in income)]
     if tax:
@@ -845,6 +849,16 @@ async def _posted_line_accounts(session, company_id, doc_id: str) -> dict[str, s
             if share.get("line_id") and share.get("account")}
 
 
+async def _note_with_posted_funds(session, company_id, doc: dict) -> dict:
+    """A credit or debit note whose lines linked to its original document's lines carry the
+    funds those lines posted with (peer_lines.posted_line_funds, rule V)."""
+    original = str(doc.get("original_doc_id") or "")
+    if not original or not any(isinstance(li, dict) and li.get("source_line_id") for li in doc.get("line_items") or []):
+        return doc
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": original})
+    return {**doc, "line_items": posted_line_funds(doc.get("line_items"), (row.state or {}) if row is not None else {})}
+
+
 async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
                              releasing: bool = False) -> tuple[list[dict], dict | None] | None:
     """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
@@ -854,7 +868,9 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     invoice can split its sale over several), except a line linked to an invoice line
     (source_line_id): its share goes back on the revenue account that invoice line was
     credited on (_posted_line_accounts), and its allocation names it. A line crediting an asset's
-    sale goes on sale clearing (_asset_split). None when it carries no amount."""
+    sale goes on sale clearing (_asset_split). Where funds are on, each line is carried by
+    the funds of the note lines behind it, a linked line in the fund its invoice line posted
+    with (_note_with_posted_funds). None when it carries no amount."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return None
@@ -875,28 +891,42 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     posted = await _posted_line_accounts(session, company_id, original) if sold_on else {}
     sold_codes = {code for code, _ in sold_on}
     linked: dict[str, _Dec] = {}
+    on_code: dict[int, str] = {}
     for index, share in (allocations or {}).items():
         line = doc["line_items"][int(index)]
         code = posted.get(line.get("source_line_id")) if isinstance(line, dict) and not line.get("asset_id") else None
         if code in sold_codes:
             share["account"] = code
             linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
+            on_code[int(index) + 1] = code
+    # The document lines behind each revenue line: a linked line on its own account, every
+    # other line (not an asset's) on each account in the proportion that account takes of them.
+    spread = {int(i) + 1: to_decimal(share["base"]) for i, share in (allocations or {}).items()
+              if int(i) + 1 not in on_code and not doc["line_items"][int(i)].get("asset_id")}
     if sold_on:
         rest = to_decimal(revenue) - sum(linked.values(), _Dec(0))
         shares: dict[str, _Dec] = dict(linked)
         for code, share in (_revenue_shares(rest, sold_on, base_currency) if rest else []):
             shares[code] = shares.get(code, _Dec(0)) + share
-        entries = [_revenue_line(settings, code, **side(to_stored_float(share), True))
-                   for code, share in shares.items() if share]
+        shares = {code: share for code, share in shares.items() if share}
+        entries = [_revenue_line(settings, code, **side(to_stored_float(share), True)) for code, share in shares.items()]
+        bases = [{**{n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code},
+                  **({n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {})}
+                 or HEADER for code, share in shares.items()]
     elif revenue or not clearing:
         entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
+        bases = [spread or HEADER]
     else:
-        entries = []
+        entries, bases = [], []
     entries += clearing
+    bases += _clearing_bases(doc, allocations, clearing)
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, **side(tax, True)))
+        bases.append(_line_tax_basis(doc))
     entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(total, False)) if ar
                    else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(total, False)))
+    entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
+                                  [*bases, CONTROL], base_currency)
     return entries, allocations
 
 
@@ -938,8 +968,9 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
                                           base_currency: str = "USD") -> None:
     """Post a supplier credit note issued in Celerp: what a bill with the same lines books,
     the other way round (Dr accounts payable, Cr each line's expense account and the input
-    tax), with the payable on the account its bill recognized it on. A note a return raised
-    posts nothing here: the return's own entries already took it off the payable."""
+    tax), with the payable on the account its bill recognized it on, each line in the fund of
+    the bill line it credits (_note_with_posted_funds). A note a return raised posts nothing
+    here: the return's own entries already took it off the payable."""
     settings = await current_settings(session, company_id)
     refuse_unissuable_taxes(settings, "debit_note", doc)
     built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
@@ -953,6 +984,8 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
         if ap and line_has_role(settings, e, R.PAYABLE):
             swapped = _origin_line(settings, ap, R.PAYABLE, debit=swapped["debit"])
         entries.append(swapped)
+    entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
+                                  _bill_bases(doc, built), base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "debit_note")
     await _emit_auto_posted_je(
         session,
@@ -2381,6 +2414,17 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
     return entries, sources, debits
 
 
+def _bill_bases(doc: dict, built) -> list:
+    """The document lines behind each line _bill_entries books: a debit its own line, tax the
+    lines that incurred it, shipping every goods line, and the payable each fund's balance."""
+    entries, sources, debits = built
+    goods = {index + 1: d for index, d in zip(sources, debits) if index is not None}
+    return [*({index + 1: d} if index is not None
+              else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
+              else goods or HEADER
+              for index, e, d in zip(sources, entries, debits)), CONTROL]
+
+
 async def create_for_bill_conversion(
     session,
     *,
@@ -2410,12 +2454,7 @@ async def create_for_bill_conversion(
         return {}
     entries, sources, debits = built
     by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
-    goods = {index + 1: d for index, d in zip(sources, debits) if index is not None}
-    bases = [{index + 1: d} if index is not None
-             else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
-             else goods or HEADER
-             for index, e, d in zip(sources, entries, debits)]
-    entries = _document_fund_legs(settings, doc, entries, [*bases, CONTROL], base_currency)
+    entries = _document_fund_legs(settings, doc, entries, _bill_bases(doc, built), base_currency)
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
     # A line first takes up what the receipts booked for the same purpose, on the accounts
@@ -4639,7 +4678,8 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
     """Restore exactly what the immediately preceding void removed.
 
     Finds the recognition JEs the most recent void batch reversed and re-posts
-    each as a new JE copying its memo and entries verbatim - never recomputing:
+    each as a new JE copying its memo and entries verbatim, funds included
+    (peer_lines.copy_posted_lines) - never recomputing:
     costs may have moved since the doc was voided, and an unvoid must put back the
     numbers the void took out, not today's. The copy keeps the entry's own date
     unless that date is locked, when it posts on the open date the shared rule
@@ -4729,7 +4769,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
             idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
             memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
             ts=await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
-            entries=entries,
+            entries=copy_posted_lines(voided_je_id, entries, reverse=False),
             metadata_=metadata_,
         )
     await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)

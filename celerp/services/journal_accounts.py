@@ -828,9 +828,10 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     posts only as _authorize_movement allows and meets its type's template and cap
     (_check_movement). With funds off, a new line carrying a fund
     is refused, unless the entry came from outside (its ``origin``), whose lines are kept as
-    sent (peer_lines), and only the movement shapes are judged. With funds on, a new entry for
-    a record or journal that came from outside is judged first by rule R
-    (peer_lines.check_outside_record): every line it posts is covered by a fund choice."""
+    sent (peer_lines), and only the movement shapes are judged. With funds on, an entry for a
+    record or journal that came from outside, a reversal included, is judged first by rule R
+    (peer_lines.check_outside_record): every line it posts is covered by a fund choice or
+    copies a line the record posted."""
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
     settings = await hold_fund_ledger(session, company_id)
@@ -842,7 +843,7 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
     retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
     if funds_enabled(settings):
-        if new:
+        if not restored:
             await peer_lines.check_outside_record(session, company_id, data, entries, settings)
         _check_fund_lines(settings, entries, named, funds, restricted_na, retained, new=new)
 

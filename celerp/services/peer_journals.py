@@ -34,6 +34,7 @@ from celerp.services import journal_reversals, peer_access, peer_accounts, peer_
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.je_keys import je_void_data
+from celerp.services.peer_lines import copied_header, copy_posted_lines
 from celerp.services.posting_readiness import account_names
 from ui.i18n import available_langs, date_text, t
 
@@ -45,7 +46,6 @@ _CATEGORY = "integrations"
 _PAGE = 100
 # The delivery marks of the firm's journals the client fetched.
 INBOUND = "journals_in"
-_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
 
 
 # ---- shared ----------------------------------------------------------------------------
@@ -383,8 +383,7 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         # A reversal takes the lines it reverses back off the accounts they posted to here,
         # whatever the client's accounts and roles are now.
         reversed_state = origin or await _firm_journal(session, company_id, reverses) or {}
-        entries = [{_SWAPPED.get(k, k): v for k, v in line.items()}
-                   for line in reversed_state.get("entries") or []]
+        entries = copy_posted_lines(reverses, reversed_state.get("entries"), reverse=True)
         if sorted(_amount(e) for e in entries) != sorted(
                 _amount(line.model_dump()) for line in journal.entries):
             raise HTTPException(409, "The reversal does not match the journal it reverses.")
@@ -751,9 +750,8 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
                      event_type="acc.journal_entry.created", data={
                          "memo": f"Reversal of {memo}" if memo else "Reversal", "ts": day,
-                         "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()}
-                                     for line in state.get("entries") or []],
-                         "je_type": "manual", "status": "posted", "reverses": je_id},
+                         "entries": copy_posted_lines(je_id, state.get("entries"), reverse=True),
+                         **copied_header(state), "je_type": "manual", "status": "posted", "reverses": je_id},
                      actor_id=actor_id, location_id=None, source="manual",
                      idempotency_key=f"{rid}:c", metadata_={})
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",

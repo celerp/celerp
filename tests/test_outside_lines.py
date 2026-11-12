@@ -93,7 +93,8 @@ def _auto_posting_calls():
 
 
 def _posted_from_writers() -> set[tuple[str, str]]:
-    """(module, innermost function) of every ``posted_from`` string or keyword in app code."""
+    """(module, innermost function) of every write of ``posted_from`` in app code: a dict key,
+    a keyword or an item assignment (a read such as ``line.get("posted_from")`` is none)."""
     from fund_census import sources
 
     found = set()
@@ -103,8 +104,12 @@ def _posted_from_writers() -> set[tuple[str, str]]:
         def walk(node, fn):
             for child in ast.iter_child_nodes(node):
                 here = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
-                if (isinstance(child, ast.Constant) and child.value == "posted_from") or (
-                        isinstance(child, ast.keyword) and child.arg == "posted_from"):
+                written = (isinstance(child, ast.Dict) and any(
+                    isinstance(k, ast.Constant) and k.value == "posted_from" for k in child.keys)) or (
+                    isinstance(child, ast.keyword) and child.arg == "posted_from") or (
+                    isinstance(child, ast.Subscript) and isinstance(child.ctx, ast.Store)
+                    and isinstance(child.slice, ast.Constant) and child.slice.value == "posted_from")
+                if written:
                     found.add((module, here))
                 walk(child, here)
 
@@ -550,3 +555,52 @@ async def test_outside_journal_import_needs_a_choice(client, auth):
                                                       "entries": entries}}]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
     assert "choose the fund for this document" in r.text, r.text
+
+
+async def test_reversal_copies_origin_and_choice(client, session, auth):
+    """Reversals and restores copy each posted line's origin, fund and choice and name the
+    entry they copy: an accountant's journal posted before funds were in use reverses with
+    the choice Unrestricted and needs no new choice; an outside invoice voided and restored
+    puts back the fund it posted with; a credit note line linked to its line credits that fund."""
+    from celerp.events.engine import emit_event
+    from celerp.services import peer_journals
+    from test_income_accounts import _line_ids
+
+    cid, user = auth["company_id"], auth["user_id"]
+    firm_je = f"je:{uuid.uuid4()}"
+    await emit_event(session, origin="accountant", company_id=cid, entity_id=firm_je, entity_type="journal_entry",
+                     event_type="acc.journal_entry.created", data={
+                         "memo": "Firm accrual", "ts": "2026-01-10", "je_type": "manual", "status": "posted",
+                         "peer_origin": {"journal": "j1", "firm": "Firm", "firm_company": str(uuid.uuid4())},
+                         "entries": [{"account": "1111", "debit": 12.0, "credit": 0},
+                                     {"account": "4100", "debit": 0, "credit": 12.0}]},
+                     actor_id=None, location_id=None, source="connector", idempotency_key=uuid.uuid4().hex, metadata_={})
+    await session.commit()
+    gift = await _fund_company(client, auth) and await _gift_fund(client, auth)
+    reversal = await peer_journals.reverse(session, cid, user, firm_je)
+    state = await _entry_state(session, cid, reversal["je_id"])
+    assert [(e["account"], e["debit"], e["credit"], e.get("origin"), e.get("fund_choice"), e.get("fund_id"),
+             e.get("posted_from")) for e in state["entries"]] == [
+        ("1111", 0, 12.0, "accountant", "unrestricted", None, firm_je),
+        ("4100", 12.0, 0, "accountant", "unrestricted", None, firm_je)], state["entries"]
+    assert state.get("origin") == "accountant"
+
+    item = await _item(client, auth, "Outside")
+    doc = await _imported(client, auth, [_line(item, "Outside", 40)])
+    assert (await _choose(client, auth, doc, document=gift)).status_code == 200
+    assert (await _post(client, auth, f"/docs/{doc}/finalize")).status_code == 200
+    assert (await _post(client, auth, f"/docs/{doc}/void")).status_code == 200
+    r = await _post(client, auth, f"/docs/{doc}/unvoid")
+    assert r.status_code == 200, r.text
+    restored = await _entry_state(session, cid, f"je:auto:{doc}:fin:unvoid:1")
+    assert {e.get("fund_id") for e in restored["entries"]} == {gift}, restored["entries"]
+    assert {e.get("posted_from") for e in restored["entries"]} == {f"je:auto:{doc}:fin"}
+
+    other = await _imported(client, auth, [_line(item, "Outside", 30)])
+    assert (await _choose(client, auth, other, document=gift)).status_code == 200
+    assert (await _post(client, auth, f"/docs/{other}/finalize")).status_code == 200
+    line_id = (await _line_ids(client, auth, other))[0]
+    note = await _issued(client, auth, "credit_note", [_line(item, "Outside", 30, source_line_id=line_id)],
+                         original_doc_id=other)
+    entries = (await _finalize_entry(session, auth, note))["entries"]
+    assert {e.get("fund_id") for e in entries} == {gift}, entries

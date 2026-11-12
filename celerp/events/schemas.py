@@ -1184,6 +1184,8 @@ class JELine(BaseModel):
     fund_choice: str | None = None
     # The document lines (1-based) whose fund a document's entry gave this line (fund_legs).
     source_lines: list[int] | None = None
+    # The posted entry this line copies, with its fund (peer_lines.copy_posted_lines).
+    posted_from: str | None = None
 
 
 class AccJournalEntryFx(BaseModel):

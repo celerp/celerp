@@ -77,3 +77,33 @@ async def test_expense_bill_fund_from_lines_unfunded_unrestricted(client, sessio
     assert _by_fund(entries, "payable") == {f["R"]: -30.0, None: -70.0}
     assert _by_fund(entries, "general_expense") == {f["R"]: 30.0, None: 70.0}
 
+
+
+async def test_credit_note_refund_chargeback_keep_line_fund(client, session, auth):
+    """A credit note line linked to an invoice line reverses that line's fund, its receivable
+    with it; an unlinked line keeps its own fund. A supplier credit note linked to a bill line
+    takes the bill line's fund off the payable."""
+    from test_income_accounts import _line_ids
+
+    f = await _setup(client, auth)
+    gift, ticket = await _item(client, auth, "Gift"), await _item(client, auth, "Ticket")
+    invoice = await _issued(client, auth, "invoice", [
+        _line(gift, "Gift", 100, fund_id=f["R"]), _line(ticket, "Ticket", 50)], subtotal=150, total=150)
+    line_ids = await _line_ids(client, auth, invoice)
+    note = await _issued(client, auth, "credit_note", [
+        _line(gift, "Gift", 40, source_line_id=line_ids[0]), _line(None, "Goodwill", 20, fund_id=f["U1"])],
+        original_doc_id=invoice)
+    entries = (await _finalize_entry(session, auth, note))["entries"]
+    assert _by_fund(entries, "receivable") == {f["R"]: -40.0, f["U1"]: -20.0}
+    assert sum(v for v in _by_fund(entries, "sales_revenue").values()) == 60.0
+    assert _by_fund(entries, "sales_revenue")[f["R"]] == 40.0
+
+    bill = await _issued(client, auth, "bill", [
+        {**_line(None, "Program supplies", 30), "receive_as": "expense", "fund_id": f["R"]},
+        {**_line(None, "Office rent", 70), "receive_as": "expense"}], contact_id="supplier:1")
+    bill_lines = await _line_ids(client, auth, bill)
+    debit_note = await _issued(client, auth, "debit_note", [
+        {**_line(None, "Program supplies", 10), "receive_as": "expense", "source_line_id": bill_lines[0]}],
+        original_doc_id=bill, contact_id="supplier:1")
+    entries = (await _finalize_entry(session, auth, debit_note))["entries"]
+    assert _by_fund(entries, "payable") == {f["R"]: 10.0}
