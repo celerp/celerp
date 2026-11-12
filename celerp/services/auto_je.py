@@ -821,8 +821,8 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     way round, with its line allocations (_asset_split). Revenue goes back
     on the accounts the invoice sold on, in the proportions it credited them (an imported
     invoice can split its sale over several), except a line linked to an invoice line
-    (source_line_id): its share goes back on the account that invoice line was credited
-    on (_posted_line_accounts), and its allocation names it. A line crediting an asset's
+    (source_line_id): its share goes back on the revenue account that invoice line was
+    credited on (_posted_line_accounts), and its allocation names it. A line crediting an asset's
     sale goes on sale clearing (_asset_split). None when it carries no amount."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
@@ -842,11 +842,12 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
     posted = await _posted_line_accounts(session, company_id, original) if sold_on else {}
+    sold_codes = {code for code, _ in sold_on}
     linked: dict[str, _Dec] = {}
     for index, share in (allocations or {}).items():
         line = doc["line_items"][int(index)]
         code = posted.get(line.get("source_line_id")) if isinstance(line, dict) and not line.get("asset_id") else None
-        if code:
+        if code in sold_codes:
             share["account"] = code
             linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
     if sold_on:
