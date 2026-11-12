@@ -212,6 +212,38 @@ async def test_change_fund_refusals_isolated(client, session, auth):
         assert r.status_code == 422 and _key(r) == "fund.not_enabled", r.text
 
 
+@pytest.mark.parametrize("kind", ["document", "journal"])
+async def test_change_fund_that_moves_nothing_refused(client, session, auth, kind):
+    """A Change fund whose repost would put every entry back on the funds it had is refused,
+    naming why, with nothing written: an invoice whose lines each carry their own fund (as Set
+    all and a connection's standing default leave them) changed only in its document fund, and
+    a journal changed to the fund it is on. Changing the lines moves it."""
+    f = await _setup(client, auth)
+    if kind == "document":
+        items = [await _item(client, auth, f"Outside {n}") for n in range(2)]
+        record = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+        r = await client.post("/docs/import/batch", headers=auth["headers"], json={
+            "records": [_issued_import(record, [_line(i, f"Outside {n}", 50) for n, i in enumerate(items)])],
+            "fund_choices": {"all": f["R"]}})
+        assert r.status_code == 200 and r.json()["created"] == 1, r.text
+        entry = f"je:auto:{record}:fin"
+        change = lambda **kw: _change_doc(client, session, auth, record, **kw)  # noqa: E731
+        lines = {li["line_id"]: "unrestricted" for li in (await _doc(client, auth, record))["line_items"]}
+        moves = {"lines": lines}
+    else:
+        record = entry = await _outside_journal(client, auth, [("1111", 50.0, 0.0), ("4100", 0.0, 50.0)], f["R"])
+        change = lambda **kw: _change_journal(client, session, auth, record, **kw)  # noqa: E731
+        moves = {"all": "unrestricted"}
+    before = await _state(session, auth, record)
+    r = await change(**({"document": "unrestricted"} if kind == "document" else {"all": f["R"]}))
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_moves_nothing", r.text
+    assert (await _state(session, auth, entry))["status"] == "posted"
+    assert await _state(session, auth, record) == before
+    r = await change(**moves)
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, entry))["status"] == "void"
+
+
 async def test_change_fund_concurrent_and_repeat_safe(client, session, auth):
     """A second change from the same copy is refused stale; a repeat of the first request key,
     carrying the now old version, answers with the first result and writes nothing more."""
