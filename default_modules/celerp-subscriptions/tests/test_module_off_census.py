@@ -109,6 +109,9 @@ DOORS = {
         "fired when the company turns the module on, never while it is off",
     ("doc_detail_badges", "celerp_subscriptions.ui_routes:doc_period_badge"):
         "shown only for the modules the company uses (ui visible_slot_contributions); it reads, never writes",
+    ("demo_records", "celerp_subscriptions.demo:seed_demo_agreements_hook"):
+        "fired only for the modules the company uses (celerp.modules.slots._company_hooks), when its demo "
+        "data is seeded; it writes sample agreements and bills nothing",
     ("search_provider", "celerp_subscriptions.search:global_search"):
         "called only for the modules the company uses (celerp.routers.search); it reads, never writes",
 }

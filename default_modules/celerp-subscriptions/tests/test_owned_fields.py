@@ -30,6 +30,7 @@ CALLER_KEYS = {
 SERVER_BUILT = {
     "celerp/events/engine.py::connector_upsert": "the primitive; each connector's caller is its own row here",
     "celerp/services/attachments.py::attach_file": "writes only the files list it builds",
+    "celerp/services/demo.py::follow_books_currency": "writes the books' currency onto the demo documents it seeded",
     "default_modules/celerp-admin/celerp_admin/routes.py::_check_inverted_doc_dates":
         "rewrites the issue and due dates of a document already stored",
     "default_modules/celerp-contacts/celerp_contacts/routes.py::merge_contacts_service":
@@ -55,10 +56,11 @@ SERVER_BUILT = {
         "writes only the fund choices require_fund_choices grants",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
-    "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::_follow_books_currency": "writes the currency",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py::_draft": "builds the sale draft from the asset",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/store.py::_emit": "the asset store's own events",
     "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py::emit": "the manufacturing movements it builds",
+    "default_modules/celerp-subscriptions/celerp_subscriptions/demo.py::seed_demo_agreements":
+        "seeds the demo agreements it builds",
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement": "the schedule, the owner",
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::_bill": "the schedule's own bill, the owner",
 }
