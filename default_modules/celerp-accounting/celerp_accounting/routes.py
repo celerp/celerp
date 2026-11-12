@@ -5226,6 +5226,21 @@ class PeerHoldFix(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class PeerFundChoices(BaseModel):
+    """``all`` the fund of the entry and of every line ``lines`` (line number -> choice) does
+    not choose for; a choice is a fund id or "unrestricted", and none is no choice."""
+    model_config = ConfigDict(extra="forbid")
+    all: str | None = Field(default=None, max_length=128)
+    lines: dict[str, str | None] = Field(default_factory=dict, max_length=1000)
+
+
+class PeerHeldFunds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int
+    choices: PeerFundChoices
+    request_key: str = Field(min_length=1, max_length=128)
+
+
 class PeerReviewAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     account: str = Field(min_length=1, max_length=64)
@@ -5304,6 +5319,25 @@ async def fix_peer_hold(
     item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
     await session.commit()
     return {"ok": True}
+
+
+@router.post("/peer/holds/{item_id}/funds")
+async def post_peer_hold_funds(
+    item_id: str,
+    body: PeerHeldFunds,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Post a journal from the accountant held for funds, with the fund chosen for each
+    line; the posting is judged as this user's, and nothing posts while it is refused."""
+    await locked_authority(session, company_id, user.id, ("manage_accounting",))
+    posted = await peer_journals.post_held_journal(
+        session, company_id, item_id, revision=body.revision, every=body.choices.all,
+        lines=body.choices.lines, request_key=body.request_key, actor_id=user.id)
+    await session.commit()
+    return posted
 
 
 @router.get("/peer/review")

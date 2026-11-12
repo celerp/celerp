@@ -31,8 +31,8 @@ from celerp.services.document_lines import (
     normalize_line_ids,
 )
 from celerp.services.peer_lines import (
-    HEADER_KEYS, FundChoiceGrant, inbound_keys, judge_header_keys, judge_line_keys, keep_fund_choices, mark_journal,
-    refuse_inbound,
+    HEADER_KEYS, FundChoiceGrant, inbound_keys, journal_inbound_keys, judge_header_keys, judge_line_keys,
+    keep_fund_choices, mark_journal, refuse_inbound,
 )
 from celerp.services.business_time import business_date_of
 
@@ -768,14 +768,13 @@ async def emit_event(
 
     # Every journal line, whoever produced it, passes the one account boundary. An arrival
     # journal carries its origin on the entry and every line before the boundary reads them;
-    # a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys.
+    # a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
+    # and a local user's choice (``fund_grant``, by line number) sets the ones it names.
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
         if origin is not None:
-            entries = [e for e in kwargs["data"].get("entries") or [] if not (isinstance(e, dict) and e.get("posted_from"))]
-            await _judge_inbound(session, kwargs.get("company_id"), inbound_keys(
-                None, entries, {}, {key: kwargs["data"][key] for key in HEADER_KEYS if key in kwargs["data"]}))
+            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant))
             mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,

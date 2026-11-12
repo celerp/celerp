@@ -86,7 +86,8 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
     notices = [n for n in await _notices(real_engine, client_company) if "Reclass program costs" in n[1]]
     assert len(notices) == 1 and notices[0][2] == "/settings/connectors/celerp#from-accountant", notices
     declined = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "declined"]
-    assert [(i["label"], i["reason"]) for i in declined] == [("Reclass program costs", WAITING)]
+    assert [i["label"] for i in declined] == ["Reclass program costs"]
+    assert declined[0]["reason"].endswith(f"did not post it: {WAITING}"), declined
 
     await _two_way(client_company, credential)  # held again, told once
     assert len(await _held(real_client, tok)) == 1

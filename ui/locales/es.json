@@ -7530,5 +7530,8 @@
   "fund.turn_off_choices_held": "Clear or post the fund choices on {records} first",
   "fund.choices_cleared_lines": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
   "fund.choices_cleared_both": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",
-  "fund.choices_cleared_document": "Amounts changed, so the fund for this document was cleared: choose again"
+  "fund.choices_cleared_document": "Amounts changed, so the fund for this document was cleared: choose again",
+  "notice.peer_journal_needs_funds.title": "Journal entry from your accountant waiting for funds",
+  "notice.peer_journal_needs_funds.body": "{memo}, dated {date}, from {firm} has not posted yet: choose a fund for each line in From your accountant, then post it. {firm} has been told it is waiting.",
+  "posting.fund.hold_changed": "Your accountant changed this entry. Review it again, then post it."
 }

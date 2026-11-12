@@ -322,5 +322,54 @@
   "fund.choices_cleared_document": {
     "en": "Amounts changed, so the fund for this document was cleared: choose again",
     "params": []
+  },
+  "notice.peer_journal_needs_funds.title": {
+    "en": "Journal entry from your accountant waiting for funds",
+    "params": []
+  },
+  "notice.peer_journal_needs_funds.body": {
+    "en": "{memo}, dated {date}, from {firm} has not posted yet: choose a fund for each line in From your accountant, then post it. {firm} has been told it is waiting.",
+    "params": [
+      "memo",
+      "date",
+      "firm"
+    ]
+  },
+  "posting.fund.hold_changed": {
+    "en": "Your accountant changed this entry. Review it again, then post it.",
+    "params": []
+  },
+  "fund.payment_allocation_total": {
+    "en": "The amounts by fund add up to {allocated} {currency}, but the payment is {amount} {currency}. Change them so they add up to the payment.",
+    "params": [
+      "allocated",
+      "currency",
+      "amount"
+    ]
+  },
+  "posting.fund.allocation_exceeds_open": {
+    "en": "{fund} has {open} {currency} open on this document, so the payment can't settle {amount} {currency} of it.",
+    "params": [
+      "fund",
+      "open",
+      "currency",
+      "amount"
+    ]
+  },
+  "posting.fund.choice_needed": {
+    "en": "{record} came from {source}: choose the fund for this document.",
+    "params": [
+      "record",
+      "source"
+    ]
+  },
+  "posting.fund.note_exceeds_open": {
+    "en": "{fund} has {open} {currency} open on this document, so the credit note can apply at most {applicable} {currency} here.",
+    "params": [
+      "fund",
+      "open",
+      "currency",
+      "applicable"
+    ]
   }
 }

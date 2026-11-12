@@ -38,7 +38,8 @@ from fastapi import HTTPException
 
 from celerp.accounting_roles import catalog_refusal
 
-LINE_KEYS = ("origin", "fund_choice", "fund_id")
+FUND_KEYS = ("fund_choice", "fund_id")  # what a local choice sets on a line
+LINE_KEYS = ("origin", *FUND_KEYS)
 HEADER_KEYS = ("origin", "fund_choice", "fund_choice_source")
 UNRESTRICTED = "unrestricted"  # the choice of no fund
 # What a marked line's money is worked out from: a change to any of them clears the choices.
@@ -330,7 +331,7 @@ def judge_line_keys(stored_lines, line_set: list, *, origin: str | None, grant: 
             if before.get("origin"):
                 raise _refused(409, "posting.fund.origin_fixed", source=source_label(before["origin"]))
             raise _refused(422, "posting.fund.key_not_taken", field="origin")
-        for key in ("fund_choice", "fund_id"):
+        for key in FUND_KEYS:
             if line.get(key) == before.get(key) or allowed.get(key, _ABSENT) == line.get(key):
                 continue
             if key == "fund_id" and not _marked_or_linked(line):
@@ -368,6 +369,21 @@ def inbound_keys(stored_lines, line_set, stored: Mapping, header: Mapping) -> li
         if isinstance(line, dict):
             before = kept.get(line.get("line_id"), {})
             found += [key for key in LINE_KEYS if line.get(key) is not None and line.get(key) != before.get(key)]
+    return list(dict.fromkeys(found))
+
+
+def journal_inbound_keys(data: Mapping, grant: FundChoiceGrant | None) -> list[str]:
+    """The fund keys an arrival journal brings (inbound_keys) other than the values ``grant``
+    names: a line by its number in the entry (from 1, as text), the header as itself. A line
+    copying one these books posted (``posted_from``) keeps its own keys."""
+    header, lines = (grant.header, grant.lines) if grant is not None else ({}, {})
+    found = [key for key in HEADER_KEYS
+             if data.get(key) is not None and header.get(key, _ABSENT) != data.get(key)]
+    for n, line in enumerate(data.get("entries") or [], 1):
+        if isinstance(line, dict) and not line.get("posted_from"):
+            allowed = lines.get(str(n), {})
+            found += [key for key in LINE_KEYS
+                      if line.get(key) is not None and allowed.get(key, _ABSENT) != line.get(key)]
     return list(dict.fromkeys(found))
 
 
