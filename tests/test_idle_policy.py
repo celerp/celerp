@@ -121,7 +121,7 @@ def test_shell_idle_js_renders_effective_minutes_and_mechanics(clean_env):
     from ui.components.shell import _idle_logout_js
     _patch_config(clean_env, {"cloud": {"public_url": "https://acme.celerp.com"}})
     js = _idle_logout_js()
-    assert "15 * 60000" in js
+    assert "var IDLE_MS = 900000;" in js
     assert "/logout?reason=idle" in js
     assert "addEventListener" in js
     assert "next=" in js
@@ -132,7 +132,7 @@ def test_shell_idle_js_off_for_local_desktop(clean_env):
     from ui.components.shell import _idle_logout_js
     _patch_config(clean_env, {})
     js = _idle_logout_js()
-    assert "0 * 60000" in js
+    assert "var IDLE_MS = 0;" in js
 
 
 def test_shell_idle_js_does_not_crash_on_config_failure(clean_env):
@@ -144,4 +144,4 @@ def test_shell_idle_js_does_not_crash_on_config_failure(clean_env):
 
     clean_env.setattr("celerp.config.read_config", _boom)
     js = _idle_logout_js()
-    assert "0 * 60000" in js
+    assert "var IDLE_MS = 0;" in js

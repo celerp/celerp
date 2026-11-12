@@ -160,7 +160,7 @@ def _backup_table(items: list[dict]):
                 Div(
                     Button(
                         t("btn.export"),
-                        onclick=js("celerpGo('/backup/export/' + {0})", item['id']),
+                        onclick=js("celerpGo({0})", f"/backup/export/{item['id']}"),
                         cls="btn btn--xs btn--secondary",
                     ),
                     Button(

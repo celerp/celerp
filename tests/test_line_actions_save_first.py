@@ -96,10 +96,10 @@ _DOCS = _ROOT / "ui" / "routes" / "documents.py"
 
 
 def _function(source: str, head: str) -> str:
-    """The text of the function opening with *head*: a page script function up to its closing brace,
-    a module-level def up to the next line at module level."""
+    """The text of the function opening with *head*: a page script function up to its closing brace
+    at the start of a line, a module-level def up to the next line at module level."""
     start = source.index(head)
-    end = re.compile(r"\n\}\}\n" if "function" in head else r"\n\S").search(source, start + len(head))
+    end = re.compile(r"\n\}\n" if "function" in head else r"\n\S").search(source, start + len(head))
     return source[start:end.end()]
 
 

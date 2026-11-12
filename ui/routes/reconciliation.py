@@ -259,7 +259,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById('recon-expand-' + {0}).replaceChildren()", line_id),
+                       onclick=js("document.getElementById({0}).replaceChildren()", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -308,7 +308,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById('recon-expand-' + {0}).replaceChildren()", line_id),
+                       onclick=js("document.getElementById({0}).replaceChildren()", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -686,8 +686,8 @@ def _mapper_fragment(
                 cls="mt-md",
             ),
             onkeydown=js(
-                "if(event.key==='Escape'){{celerpGo('/accounting/reconcile/' + {0})}}",
-                session_id),
+                "if(event.key==='Escape'){{celerpGo({0})}}",
+                f"/accounting/reconcile/{session_id}"),
             hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",

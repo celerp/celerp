@@ -906,10 +906,10 @@ def setup_routes(app):
         # without persisting. Mirrors the inventory inline-edit escape pattern.
         escape_js = (
             js(
-                "if(event.key==='Escape'){{htmx.ajax('GET','/manufacturing/runs/' + {0} + '/cell/' + {1} + '?current=' + {2},"
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},"
                 "{{target:this.closest('.editable-cell'),swap:'innerHTML'}});event.preventDefault();"
                 'event.stopPropagation();}}',
-                run_id, field, current)
+                f"/manufacturing/runs/{run_id}/cell/{field}?current={current}")
         )
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
                   "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}

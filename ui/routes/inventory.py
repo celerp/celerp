@@ -1967,9 +1967,9 @@ def setup_routes(app):
             Button(
                 t("inventory.make_available"),
                 onclick=js(
-                    "event.preventDefault();htmx.ajax('POST','/api/items/' + {0} + '/make-available',"
+                    "event.preventDefault();htmx.ajax('POST',{0},"
                     "{{target:'#item-header-error',swap:'outerHTML'}});",
-                    entity_id),
+                    f"/api/items/{entity_id}/make-available"),
                 cls="btn btn--primary",
             )
             if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
@@ -6038,6 +6038,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
   var CAT_PREF = {0};
+  var SELECTED_KEYS = {5};
   var ALL_COLS = {1};
   // Keys that are now merged into their primary column - strip from saved prefs
   var MERGED_SECONDARIES = {2};
@@ -6181,7 +6182,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var prefs = Object.assign({{}}, loadVis());
     // Init prefs from current state if empty
     if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {5}.indexOf(c.key) !== -1; }});
+      ALL_COLS.forEach(function(c) {{ prefs[c.key] = SELECTED_KEYS.indexOf(c.key) !== -1; }});
     }}
     prefs[key] = e.target.checked;
     saveVis(prefs);

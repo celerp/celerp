@@ -24,91 +24,192 @@ from starlette.responses import HTMLResponse
 from celerp.services.app_paths import is_app_local_path
 
 # ---------------------------------------------------------------- template positions
+# A template is a constant ``str.format`` string. Its check is an allow list: a hole is accepted
+# only where the scan below proves the position, and any construct the scan does not know
+# refuses the whole template. Each template must also end where it started (outside any tag,
+# string or comment), so joining two checked templates never moves a hole into a new position.
 HOLE = "\u0000HOLE\u0000"
 EVENT_ATTR_RE = re.compile(r"^(on[a-z]+|hx_on\w*|hx-on\S*)$")
 URL_ATTRS = {"href", "src", "action", "formaction", "srcset", "poster", "data", "xlink:href", "xlink_href"}
 HTMX_JS_ATTRS = {"hx-vals", "hx-headers", "hx-trigger", "hx_vals", "hx_headers", "hx_trigger"}
-REFUSED_ATTR = URL_ATTRS | HTMX_JS_ATTRS | {"srcdoc", "style"}
-TAG_RE = re.compile(r"<(/?)([A-Za-z][\w:-]*)")
-ATTR_RE = re.compile(r"""\s*([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?""")
+# Attributes whose value HTML escaping does not make safe: URLs (including the legacy and SVG
+# animation ones), handlers, every htmx attribute (they fetch, swap or evaluate), styles,
+# embedded documents and meta refresh.
+REFUSED_ATTR = URL_ATTRS | HTMX_JS_ATTRS | {
+    "srcdoc", "style", "background", "ping", "cite", "codebase", "longdesc", "manifest", "lowsrc",
+    "dynsrc", "archive", "classid", "usemap", "profile", "icon", "content", "http-equiv",
+    "values", "to", "from", "by", "attributename"}
+REFUSED_ATTR_RE = re.compile(r"^(on|hx-|hx_|data-hx-|xlink:|xml:)")
+# Elements whose content the browser does not tokenize as markup (or tokenizes differently
+# inside SVG and MathML): the scan cannot follow them, so a raw_html template may not open one.
+RAW_TEXT_TAGS = {"script", "style", "xmp", "iframe", "noembed", "noframes", "noscript", "plaintext",
+                 "textarea", "title"}
+_WS = " \t\n\f\r"
+_TAG_NAME = re.compile(r"[A-Za-z][A-Za-z0-9:-]*")
+_ATTR_NAME = re.compile(r"[A-Za-z_:][-A-Za-z0-9_:.]*")
+_UNQUOTED = re.compile(r"[^\s\"'=<>`\u0000]+")
+_FIELD = {"js": re.compile(r"\d*"), "html": re.compile(r"[A-Za-z_]\w*")}
 TOKEN_RE = re.compile(
     r"""(?P<ws>\s+)|(?P<lc>//[^\n]*)|(?P<bc>/\*.*?\*/)|"""
     r"""(?P<str>'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)|"""
     r"""(?P<id>[A-Za-z_$\u0000][\w$\u0000A-Z]*)|(?P<num>\d[\w.]*)|"""
     r"""(?P<op>===|!==|==|!=|=>|\+=|-=|\|\|=|&&=|\?\?=|[=(){}\[\];,.:+\-*/%<>!?&|^~])|(?P<other>.)""",
     re.S)
+JS_BEFORE_HOLE = {"(", ",", "=", ":", "[", "?", "return", None}  # None: the template's start
+JS_AFTER_HOLE = {")", ",", ";", "]", "}", ":", None}  # None: the template's end
 
 
-def _holes(template: str) -> str:
-    """The template with every str.format field replaced by HOLE ({{ and }} stay literal)."""
+def _holes(template: str, kind: str) -> str:
+    """The template with every str.format field replaced by HOLE ({{ and }} stay literal).
+
+    A field is only a bare name (html) or index (js): an attribute, index, conversion or
+    format spec would reshape the encoded value after encoding, so it raises ValueError.
+    """
+    if "\u0000" in template:
+        raise ValueError
     out = []
-    for lit, field, _spec, _conv in string.Formatter().parse(template):
+    for lit, field, spec, conv in string.Formatter().parse(template):
         out.append(lit)
         if field is not None:
+            if spec or conv or not _FIELD[kind].fullmatch(field):
+                raise ValueError
             out.append(HOLE)
     return "".join(out)
 
 
-def hole_positions(template: str, kind: str) -> list[str]:
-    """Refused hole positions in a raw_html ("html") or js ("js") template; [] = every hole is allowed.
-
-    html: a hole may sit in element text or a quoted value of an ordinary attribute.
-    js: a hole may sit only where a whole JavaScript expression goes (js_value output).
-    A template ``str.format`` cannot parse (a lone brace) is refused as malformed.
-    """
-    try:
-        s = _holes(template)
-    except ValueError:
-        return ["malformed template"]
+def _js_refusals(s: str) -> list[str]:
     bad: list[str] = []
-    if kind == "js":
-        for m in TOKEN_RE.finditer(s):
-            if HOLE in m.group() and m.lastgroup in ("str", "lc", "bc"):
-                bad.append("JS string, template or comment")
-        return bad
-    i = 0
-    while i < len(s):
-        if s.startswith("<!--", i):
-            j = s.find("-->", i)
-            j = len(s) if j < 0 else j + 3
-            if HOLE in s[i:j]:
-                bad.append("comment")
-            i = j
+    if "<!--" in s or "-->" in s:
+        bad.append("HTML comment marker")
+    toks: list[str] = []
+    for m in TOKEN_RE.finditer(s):
+        kind, text = m.lastgroup, m.group()
+        if kind == "ws":
             continue
-        m = TAG_RE.match(s, i)
-        if not m:
+        if kind in ("lc", "bc"):
+            if HOLE in text:
+                bad.append("hole in a comment")
+            if kind == "lc" and m.end() == len(s):
+                bad.append("line comment at the template's end")
+            continue
+        if kind == "str":
+            if HOLE in text:
+                bad.append("hole in a string")
+            if text[0] == "`":
+                bad.append("template literal")
+            continue
+        if text == "/":
+            bad.append("'/' outside a string or comment")
+        elif kind == "other":
+            bad.append(f"unknown token {text!r}")
+        elif HOLE in text and text != HOLE:
+            bad.append("hole joined to another token")
+        toks.append(text)
+    for i, text in enumerate(toks):
+        if text == HOLE:
+            before = toks[i - 1] if i else None
+            after = toks[i + 1] if i + 1 < len(toks) else None
+            if before not in JS_BEFORE_HOLE or after not in JS_AFTER_HOLE:
+                bad.append(f"hole not a whole expression ({before or 'start'} {{}} {after or 'end'})")
+    return bad
+
+
+def _html_scan(s: str) -> tuple[list[str], list[str]]:
+    """(refusals, the position of each hole in order: "text" or "attr")."""
+    bad: list[str] = []
+    where: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        if s.startswith(HOLE, i):
+            where.append("text")
+            i += len(HOLE)
+            continue
+        if s[i] != "<":
             i += 1
             continue
-        name = m.group(2).lower()
-        if HOLE in m.group(2):
-            bad.append("tag name")
+        if s.startswith("<!--", i):
+            j = s.find("-->", i + 4)
+            body = s[i + 4:j]
+            if j < 0 or body.startswith((">", "->")) or "--!>" in body:
+                return bad + ["unterminated or malformed comment"], where
+            if HOLE in body:
+                bad.append("hole in a comment")
+            i = j + 3
+            continue
+        closing = s.startswith("</", i)
+        m = _TAG_NAME.match(s, i + 1 + closing)
+        if not m or m.end() >= n or s[m.end()] not in _WS + "/>":
+            return bad + ["'<' that does not open a constant tag"], where
+        name = m.group().lower()
         i = m.end()
-        while i < len(s) and s[i] != ">":
-            a = ATTR_RE.match(s, i)
-            if not a or a.end() == i:
-                if HOLE in s[i:i + len(HOLE)]:
-                    bad.append("attribute name")
-                    i += len(HOLE)
-                else:
-                    i += 1
-                continue
-            attr = a.group(1).lower()
-            quoted = a.group(2) if a.group(2) is not None else a.group(3)
-            if HOLE in a.group(1):
-                bad.append("attribute name")
-            elif a.group(4) and HOLE in a.group(4):
-                bad.append(f"unquoted {attr} value")
-            elif quoted and HOLE in quoted and (attr in REFUSED_ATTR or EVENT_ATTR_RE.match(attr)):
-                bad.append(f"{attr} attribute")
+        if closing:
+            while i < n and s[i] in _WS:
+                i += 1
+            if i >= n or s[i] != ">":
+                return bad + ["malformed closing tag"], where
+            i += 1
+            continue
+        if name in RAW_TEXT_TAGS:
+            return bad + [f"<{name}> element"], where
+        while True:
+            while i < n and s[i] in _WS:
+                i += 1
+            if i >= n:
+                return bad + ["unterminated tag"], where
+            if s[i] == ">" or s.startswith("/>", i):
+                i += 1 if s[i] == ">" else 2
+                break
+            a = _ATTR_NAME.match(s, i)
+            if not a or a.end() >= n or s[a.end()] not in _WS + "/>=":
+                return bad + ["attribute name"], where
+            attr = a.group().lower()
             i = a.end()
-        i += 1
-        if name in ("script", "style") and not m.group(1):
-            j = s.lower().find(f"</{name}", i)
-            j = len(s) if j < 0 else j
-            if HOLE in s[i:j]:
-                bad.append(f"<{name}> text")
-            i = j
-    return bad
+            while i < n and s[i] in _WS:
+                i += 1
+            if i >= n or s[i] != "=":
+                continue
+            i += 1
+            while i < n and s[i] in _WS:
+                i += 1
+            if i < n and s[i] in "\"'":
+                j = s.find(s[i], i + 1)
+                if j < 0:
+                    return bad + ["unterminated attribute value"], where
+                value, i = s[i + 1:j], j + 1
+                if i < n and s[i] not in _WS + "/>":
+                    return bad + ["attribute boundary"], where
+                if HOLE in value:
+                    if attr in REFUSED_ATTR or REFUSED_ATTR_RE.match(attr):
+                        bad.append(f"{attr} attribute")
+                    where.extend(["attr"] * value.count(HOLE))
+                continue
+            u = _UNQUOTED.match(s, i)
+            if not u:
+                return bad + ["attribute value"], where
+            if HOLE in u.group():
+                bad.append(f"unquoted {attr} value")
+            i = u.end()
+    return bad, where
+
+
+def hole_positions(template: str, kind: str) -> list[str]:
+    """Why a raw_html ("html") or js ("js") template is refused; [] = every hole is allowed.
+
+    html: a hole may sit only in element text or in a quoted value of an attribute outside
+    ``REFUSED_ATTR``; every "<" must open a constant tag, a closing tag or a comment, and the
+    template may not open a raw-text element or end inside a tag, value or comment.
+    js: a hole may sit only where a whole expression goes, between the tokens of
+    ``JS_BEFORE_HOLE`` and ``JS_AFTER_HOLE``; the template may hold no "/" or backtick outside
+    a string or comment (no regular expression or template literal can wrap a hole), no
+    unterminated string and no line comment at its end.
+    A template ``str.format`` cannot parse, or a field that is not a bare name or index, is
+    refused as malformed.
+    """
+    try:
+        s = _holes(template, kind)
+    except ValueError:
+        return ["malformed template"]
+    return _js_refusals(s) if kind == "js" else _html_scan(s)[0]
 
 
 def _refuse(template: str, kind: str) -> None:
@@ -129,7 +230,8 @@ class Js(str):
 
 def js_value(value) -> str:
     """*value* as one JavaScript literal that is safe inside a <script> element or a handler."""
-    return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
+    return (json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
 
 def js(template: str, *values) -> Js:
@@ -209,8 +311,11 @@ def raw_html(template: str, **holes) -> Admitted:
     raises ``ValueError``.
     """
     _refuse(template, "html")
-    return Admitted(template.format(**{k: v if isinstance(v, Admitted) else esc_attr(v)
-                                       for k, v in holes.items()}))
+    in_attr = {field for (_lit, field, _s, _c), at in zip(
+        (p for p in string.Formatter().parse(template) if p[1] is not None),
+        _html_scan(_holes(template, "html"))[1]) if at == "attr"}
+    return Admitted(template.format(**{
+        k: v if isinstance(v, Admitted) and k not in in_attr else esc_attr(v) for k, v in holes.items()}))
 
 
 def to_markup(node) -> Admitted:

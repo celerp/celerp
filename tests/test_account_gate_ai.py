@@ -74,5 +74,5 @@ async def test_ai_gate_error_path_keeps_kind_count(ui):
 def test_ai_resume_reloads_ai():
     from fasthtml.common import to_xml
     script = "".join(to_xml(p) for p in _resume_parts("ai"))
-    assert "celerp_resume::" in script and '"ai"' in script
+    assert '"celerp_resume::ai"' in script
     assert "celerpGo('/ai')" in script

@@ -36,10 +36,11 @@ _CSS_VER = _css_version()
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. The
 # effective minutes are decided per render by effective_idle_logout_minutes() so the timer is on only
 # when the installation is exposed as a server (no token-TTL surgery); an active user's interactions
-# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the js() template below.
+# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the js() template below
+# with the timeout in milliseconds.
 _IDLE_LOGOUT_JS = ("""
 (function(){{
-  var IDLE_MS = {0} * 60000;
+  var IDLE_MS = {0};
   if (IDLE_MS <= 0) return;
   var t;
   function out(){{ celerpGo('/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search)); }}
@@ -64,7 +65,7 @@ def _idle_logout_js() -> str:
     headless change is picked up on the next navigation without a process restart.
     """
     from celerp.config import effective_idle_logout_minutes
-    return js(_IDLE_LOGOUT_JS, effective_idle_logout_minutes())
+    return js(_IDLE_LOGOUT_JS, effective_idle_logout_minutes() * 60000)
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 # Escape exits a plain form field, on every page including the sign-in and setup pages,

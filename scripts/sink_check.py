@@ -30,11 +30,14 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
                bytes(), bytearray()); a mapping child read from a mapping parameter; a
                non-constant srcdoc; a returned string that builds markup (a "<tag" literal
                with a hole), which FastHTML would send as an HTML response
-  PY-POSITION  a raw_html template hole in a URL attribute (href, src, action, formaction,
-               srcset, poster, data, xlink:href), an on* or hx-on* attribute, srcdoc, style,
-               an htmx-evaluated attribute (hx-vals, hx-headers, hx-trigger), an attribute
-               name, an unquoted value, a comment, or <script>/<style> text; a js template
-               hole inside a JS string, template literal or comment token
+  PY-POSITION  a raw_html or js template that encode.hole_positions() refuses (one hit per
+               call, listing every reason). html admits a hole only in element text or in a
+               quoted value of an attribute that is not refused (URL, on*, hx-*, style,
+               srcdoc and the other script-bearing attributes); every "<" must open a constant
+               tag, a closing tag or a comment, and raw-text elements, unterminated quotes or
+               tags refuse the template. js admits a hole only as a whole expression between
+               allowed neighbour tokens, and refuses any "/" or backtick outside a string or
+               comment
   PY-COMPUTED  getattr/setattr/vars/__dict__/import_module with a computed name on a
                module from fasthtml, fastcore, starlette or fastapi
   PY-HTMLRESP  Response/StreamingResponse/FileResponse whose media type is html or not a
@@ -611,8 +614,9 @@ class PyScan(ast.NodeVisitor):
             if not self._is_const(tmpl):
                 hit("PY-RAW", self.path, node.lineno, self.snip(node))
             elif _key(tmpl) is not None:
-                for pos in hole_positions(_key(tmpl), "html" if name == "raw_html" else "js"):
-                    hit("PY-POSITION", self.path, node.lineno, f"{pos}: {self.snip(node)}")
+                bad = hole_positions(_key(tmpl), "html" if name == "raw_html" else "js")
+                if bad:
+                    hit("PY-POSITION", self.path, node.lineno, f"{'; '.join(bad)}: {self.snip(node)}")
         tag = self._tag_of(node, name)
         if tag is not None:
             self._check_tag(node, tag)

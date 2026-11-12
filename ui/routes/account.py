@@ -448,12 +448,12 @@ def _resume_guard_script(next_action: str, body: str) -> Script:
     listeners on the sibling resume element, so an event fired inline (or on a
     0ms timeout) is dropped. *body* is script built by ``js``."""
     return Script(
-        js("(function(){{var k='celerp_resume::'+{0};"
+        js("(function(){{var k={0};"
            "var last=parseInt(sessionStorage.getItem(k)||'0',10);"
            "if(Date.now()-last<30000){{return;}}"
            "sessionStorage.setItem(k,String(Date.now()));"
            "document.body.addEventListener('htmx:afterSettle',function h(){{"
-           "document.body.removeEventListener('htmx:afterSettle',h);", next_action)
+           "document.body.removeEventListener('htmx:afterSettle',h);", f"celerp_resume::{next_action}")
         + as_js(body) + js("}});}})();"))
 
 

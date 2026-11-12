@@ -47,7 +47,7 @@ from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
-from ui.components.encode import html_response, js, safe_url
+from ui.components.encode import html_response, js_value, safe_url
 
 
 def _moved_to(path: str):
@@ -517,33 +517,34 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
     rows = [_je_line_row(str(i), line, acct_opts, contact_opts) for i, line in enumerate(lines)]
 
     any_fx = any(l.get("currency") for l in lines)
-    form_js = js("""
-var celerpJeIdx = {0};
-var celerpJeBase = {1};
+    form_js = """
+var _celerpJeCfg = JSON.parse(document.currentScript.dataset.cfg);
+var celerpJeIdx = _celerpJeCfg.idx;
+var celerpJeBase = _celerpJeCfg.base;
 // The server's ISO 4217 decimal places, so the preview rounds each amount at the
 // same place the posting will and the two can never disagree.
-var celerpJeDp = {2};
-var celerpJeDefaultDp = {3};
-function celerpJeDpOf(cur) {{
+var celerpJeDp = _celerpJeCfg.dp;
+var celerpJeDefaultDp = _celerpJeCfg.defaultDp;
+function celerpJeDpOf(cur) {
     var d = celerpJeDp[(cur || '').toUpperCase()];
     return d === undefined ? celerpJeDefaultDp : d;
-}}
-function celerpJeRound(v, cur) {{
+}
+function celerpJeRound(v, cur) {
     var p = Math.pow(10, celerpJeDpOf(cur));
     // toPrecision first: 1.005 * 100 is 100.49999999999999 in binary floating
     // point, and rounding that gives a different cent than the server's HALF_UP.
     return Math.round(Number((v * p).toPrecision(12))) / p;
-}}
-function celerpJeFmt(v, cur) {{
-    return v.toLocaleString(undefined, {{minimumFractionDigits: celerpJeDpOf(cur),
-                                        maximumFractionDigits: celerpJeDpOf(cur)}});
-}}
-function celerpJeAddLine() {{
+}
+function celerpJeFmt(v, cur) {
+    return v.toLocaleString(undefined, {minimumFractionDigits: celerpJeDpOf(cur),
+                                        maximumFractionDigits: celerpJeDpOf(cur)});
+}
+function celerpJeAddLine() {
     var tpl = document.getElementById('je-line-tpl').content.cloneNode(true);
-    tpl.querySelectorAll('[name]').forEach(function(el) {{
+    tpl.querySelectorAll('[name]').forEach(function(el) {
         el.name = el.name.replace('__IDX__', celerpJeIdx);
         if (el.dataset && el.dataset.name) el.dataset.name = el.name;
-    }});
+    });
     celerpJeIdx++;
     var tbody = document.getElementById('je-lines');
     tbody.appendChild(tpl);
@@ -559,34 +560,34 @@ function celerpJeAddLine() {{
     var lead = celerpJeLeadFx();
     if (lead) celerpJeSpreadFx(lead.currency, lead.rate);
     celerpJeTotals();
-}}
-function celerpJeRemoveLine(btn) {{
+}
+function celerpJeRemoveLine(btn) {
     btn.closest('tr').remove();
     celerpJeTotals();
-}}
-function celerpJeRows() {{
+}
+function celerpJeRows() {
     return Array.prototype.slice.call(document.querySelectorAll('#je-lines tr'));
-}}
-function celerpJeLineFx(row) {{
+}
+function celerpJeLineFx(row) {
     // The currency picker writes through a hidden input, same as every combobox here.
     var curEl = row.querySelector('[name^="currency_"]');
     var rateEl = row.querySelector('[name^="rate_"]');
-    return {{
+    return {
         el: curEl, rateEl: rateEl,
         currency: curEl ? (curEl.value || '').toUpperCase() : '',
         rate: parseFloat(rateEl ? rateEl.value : '') || 0,
-    }};
-}}
-function celerpJeLeadFx() {{
+    };
+}
+function celerpJeLeadFx() {
     var rows = celerpJeRows();
-    for (var i = 0; i < rows.length; i++) {{
+    for (var i = 0; i < rows.length; i++) {
         var fx = celerpJeLineFx(rows[i]);
         if (fx.currency && fx.rate > 0) return fx;
-    }}
+    }
     return null;
-}}
-function celerpJeSpreadFx(currency, rate) {{
-    celerpJeRows().forEach(function(row) {{
+}
+function celerpJeSpreadFx(currency, rate) {
+    celerpJeRows().forEach(function(row) {
         var fx = celerpJeLineFx(row);
         if (!fx.el || fx.currency) return;  // a line that names its own currency is left alone
         fx.el.value = currency;
@@ -594,84 +595,84 @@ function celerpJeSpreadFx(currency, rate) {{
         var opt = fx.el.closest('.combobox-wrap').querySelector('.combobox-option[data-value="' + currency + '"]');
         if (text) text.value = opt ? opt.textContent : currency;
         if (fx.rateEl && !fx.rateEl.value) fx.rateEl.value = rate;
-    }});
-}}
-function celerpJeFxFill(el) {{
+    });
+}
+function celerpJeFxFill(el) {
     var fx = celerpJeLineFx(el.closest('tr'));
     if (fx.currency && fx.rate > 0) celerpJeSpreadFx(fx.currency, fx.rate);
     celerpJeTotals();
-}}
-function celerpJeFxToggle(details) {{
+}
+function celerpJeFxToggle(details) {
     // Closing the reveal clears the foreign columns rather than hiding values
     // that would still post from cells the user can no longer see.
-    if (!details.open) {{
-        celerpJeRows().forEach(function(row) {{
+    if (!details.open) {
+        celerpJeRows().forEach(function(row) {
             var fx = celerpJeLineFx(row);
-            if (fx.el) {{
+            if (fx.el) {
                 fx.el.value = '';
                 var text = fx.el.closest('.combobox-wrap').querySelector('.combobox-input');
                 if (text) text.value = '';
-            }}
+            }
             if (fx.rateEl) fx.rateEl.value = '';
-        }});
-    }}
-    document.querySelectorAll('.je-fx-col').forEach(function(cell) {{ cell.hidden = !details.open; }});
+        });
+    }
+    document.querySelectorAll('.je-fx-col').forEach(function(cell) { cell.hidden = !details.open; });
     celerpJeTotals();
-}}
-function celerpJeTotals() {{
+}
+function celerpJeTotals() {
     var baseDp = celerpJeDpOf(celerpJeBase);
     var basePow = Math.pow(10, baseDp);
     // Totals accumulate in whole base units of account so that summing many lines
     // cannot drift the way repeated float addition does.
     var totalDebit = 0, totalCredit = 0;
-    celerpJeRows().forEach(function(row) {{
+    celerpJeRows().forEach(function(row) {
         var dCell = row.querySelector('.je-base-debit');
         var cCell = row.querySelector('.je-base-credit');
         if (!dCell || !cCell) return;
         var fx = celerpJeLineFx(row);
         var cur = fx.currency || celerpJeBase;
         var rate = (fx.currency && fx.currency !== celerpJeBase) ? fx.rate : 1;
-        var dv = celerpJeRound(parseFloat((row.querySelector('[name^="debit_"]') || {{}}).value) || 0, cur);
-        var cv = celerpJeRound(parseFloat((row.querySelector('[name^="credit_"]') || {{}}).value) || 0, cur);
+        var dv = celerpJeRound(parseFloat((row.querySelector('[name^="debit_"]') || {}).value) || 0, cur);
+        var cv = celerpJeRound(parseFloat((row.querySelector('[name^="credit_"]') || {}).value) || 0, cur);
         // Each line converts and rounds on its own, exactly as the server does,
         // so the preview cannot disagree with what gets posted.
         var bd = rate > 0 ? celerpJeRound(dv * rate, celerpJeBase) : 0;
         var bc = rate > 0 ? celerpJeRound(cv * rate, celerpJeBase) : 0;
         totalDebit += Math.round(bd * basePow);
         totalCredit += Math.round(bc * basePow);
-        dCell.textContent = bd ? celerpJeFmt(bd, celerpJeBase) : {4};
-        cCell.textContent = bc ? celerpJeFmt(bc, celerpJeBase) : {4};
-    }});
+        dCell.textContent = bd ? celerpJeFmt(bd, celerpJeBase) : _celerpJeCfg.empty;
+        cCell.textContent = bc ? celerpJeFmt(bc, celerpJeBase) : _celerpJeCfg.empty;
+    });
 
     var baseTag = celerpJeBase ? ' (' + celerpJeBase + ')' : '';
     var d = totalDebit / basePow, c = totalCredit / basePow;
     document.getElementById('je-total-debit').textContent =
-        {5} + baseTag + ': ' + celerpJeFmt(d, celerpJeBase);
+        _celerpJeCfg.totalDebit + baseTag + ': ' + celerpJeFmt(d, celerpJeBase);
     document.getElementById('je-total-credit').textContent =
-        {6} + baseTag + ': ' + celerpJeFmt(c, celerpJeBase);
+        _celerpJeCfg.totalCredit + baseTag + ': ' + celerpJeFmt(c, celerpJeBase);
 
     // Balance is judged on the converted figures, because those are what the
     // books hold. The server applies the same rule to the same numbers.
     var chip = document.getElementById('je-balance-chip');
     var balanced = totalDebit === totalCredit && totalDebit > 0;
-    chip.textContent = balanced ? {7} : {8};
+    chip.textContent = balanced ? _celerpJeCfg.balanced : _celerpJeCfg.outOfBalance;
     chip.className = balanced ? 'val-chip' : 'val-chip val-chip--alert';
 
     // Name the gap while it can still be fixed, so a rate that does not convert
     // to an even amount is the user's own line to write, not a silent posting.
     var note = document.getElementById('je-imbalance-note');
     var gap = Math.abs(totalDebit - totalCredit);
-    if (gap && (totalDebit > 0 || totalCredit > 0)) {{
-        var short = totalDebit > totalCredit ? {9} : {10};
-        note.textContent = {11}
-            .replace('{{currency}}', celerpJeBase)
-            .replace('{{side}}', short)
-            .replace('{{amount}}', celerpJeFmt(gap / basePow, celerpJeBase));
-    }} else {{
+    if (gap && (totalDebit > 0 || totalCredit > 0)) {
+        var short = totalDebit > totalCredit ? _celerpJeCfg.credit : _celerpJeCfg.debit;
+        note.textContent = _celerpJeCfg.imbalanceNote
+            .replace('{currency}', celerpJeBase)
+            .replace('{side}', short)
+            .replace('{amount}', celerpJeFmt(gap / basePow, celerpJeBase));
+    } else {
         note.textContent = '';
-    }}
-}}
-function celerpJeInit() {{
+    }
+}
+function celerpJeInit() {
     // One delegated listener rather than a handler per control, so anything
     // typed anywhere in the lines recomputes the book columns. Clearing a
     // line's currency back to blank is the case that needs it: the combobox
@@ -679,10 +680,9 @@ function celerpJeInit() {{
     // left on screen is worse than no conversion at all.
     document.getElementById('je-lines').addEventListener('input', celerpJeTotals);
     celerpJeFxToggle(document.getElementById('je-fx-reveal'));
-}}
-if (document.readyState === 'loading') {{ document.addEventListener('DOMContentLoaded', celerpJeInit); }} else {{ celerpJeInit(); }}
-""",
-        len(lines), base_currency, CURRENCY_DP, DEFAULT_DP, EMPTY, t('acct.total_debit'), t('acct.total_credit'), t('acct.balanced'), t('acct.out_of_balance'), t('th.credit'), t('th.debit'), t('acct.imbalance_note'))
+}
+if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', celerpJeInit); } else { celerpJeInit(); }
+"""
 
     return Div(
         Div(error, cls="error-banner") if error else None,
@@ -763,6 +763,10 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
             ),
             method="post", action="/accounting/journal/new",
         ),
-        Script(form_js),
+        Script(form_js, data_cfg=js_value({
+            "idx": len(lines), "base": base_currency, "dp": CURRENCY_DP, "defaultDp": DEFAULT_DP,
+            "empty": EMPTY, "totalDebit": t("acct.total_debit"), "totalCredit": t("acct.total_credit"),
+            "balanced": t("acct.balanced"), "outOfBalance": t("acct.out_of_balance"),
+            "credit": t("th.credit"), "debit": t("th.debit"), "imbalanceNote": t("acct.imbalance_note")})),
     )
 

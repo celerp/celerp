@@ -164,11 +164,13 @@ async def test_bill_free_text_entries_stay_selectable(ui_client):
 
 
 async def test_the_editor_sends_the_line_hint_and_prefers_the_exact_option(ui_client):
+    from html import unescape
     from ui.routes.documents import _doc_detail
     from fasthtml.common import to_xml
 
     doc = {"entity_id": "doc:mine", "id": "doc:mine", "doc_type": "invoice", "status": "draft", "line_items": []}
     html = to_xml(_doc_detail(doc))
-    assert "_CELERP_DOC_ID = \"doc:mine\"" in html
+    assert "window._CELERP_DOC_ID = _CELERP_CFG.docId" in html
+    assert '"docId": "doc:mine"' in unescape(html)
     assert "_celerpHolderParam(" in html
     assert "i.exact" in html

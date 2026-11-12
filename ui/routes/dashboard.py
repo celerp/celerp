@@ -1239,6 +1239,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
 
     chart_init = js("""
     function initDashboardCharts() {{
+      var REV_DATA = {0}, AR_LABELS = {4}, CAT_LABELS = {6}, CUR_SYM = {3};
       if (typeof Chart === 'undefined') {{ setTimeout(initDashboardCharts, 100); return; }}
       var style = getComputedStyle(document.documentElement);
       var colors = [
@@ -1253,7 +1254,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       var gridColor = style.getPropertyValue('--c-border').trim() || '#333';
 
       var revCtx = document.getElementById('chart-revenue-trend');
-      if (revCtx && {0}.length > 0) {{
+      if (revCtx && REV_DATA.length > 0) {{
         var rg = revCtx.getContext('2d').createLinearGradient(0, 0, 0, 230);
         rg.addColorStop(0, 'rgba(79,142,247,0.30)');
         rg.addColorStop(1, 'rgba(79,142,247,0.00)');
@@ -1267,10 +1268,10 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
             responsive: true, maintainAspectRatio: false,
             plugins: {{
               legend: {{ display: false }},
-              tooltip: {{ callbacks: {{ label: function(c) {{ return {3} + c.parsed.y.toLocaleString(); }} }} }}
+              tooltip: {{ callbacks: {{ label: function(c) {{ return CUR_SYM + c.parsed.y.toLocaleString(); }} }} }}
             }},
             scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return {3} + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return CUR_SYM + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
               x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
             }}
           }}
@@ -1278,14 +1279,14 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       }}
 
       var arCtx = document.getElementById('chart-ar-aging');
-      if (arCtx && {4}.length > 0) {{
+      if (arCtx && AR_LABELS.length > 0) {{
         new Chart(arCtx, {{
           type: 'bar',
           data: {{ labels: {4}, datasets: [{{ data: {5}, backgroundColor: colors }}] }},
           options: {{
             responsive: true,
             scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return {3} + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return CUR_SYM + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
               x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
             }},
             plugins: {{ legend: {{ display: false }} }}
@@ -1294,7 +1295,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       }}
 
       var catCtx = document.getElementById('chart-inventory-cat');
-      if (catCtx && {6}.length > 0) {{
+      if (catCtx && CAT_LABELS.length > 0) {{
         new Chart(catCtx, {{
           type: 'bar',
           data: {{ labels: {6}, datasets: [{{ label: {7}, data: {8}, backgroundColor: colors[0] }}] }},

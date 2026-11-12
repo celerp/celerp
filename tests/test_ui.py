@@ -301,19 +301,19 @@ class TestAuthRouting:
 
     def test_idle_logout_js_wired_through_renderer(self):
         """The idle timer is a js() template filled per render: the module constant
-        keeps the hole, and the renderer substitutes the effective minutes
-        while preserving the logout mechanics. (The deployment-aware minutes matrix
+        keeps the hole, and the renderer substitutes the effective timeout in
+        milliseconds while preserving the logout mechanics. (The deployment-aware minutes matrix
         lives in test_idle_policy.py.)"""
         from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_js
         import re
         # The module-level template is uninterpolated: the hole survives and
-        # no concrete "<n> * 60000" is baked in at import time.
-        assert "{0} * 60000" in _IDLE_LOGOUT_JS
-        assert not re.search(r"\d+ \* 60000", _IDLE_LOGOUT_JS)
+        # no concrete timeout is baked in at import time.
+        assert "var IDLE_MS = {0};" in _IDLE_LOGOUT_JS
+        assert not re.search(r"var IDLE_MS = \d", _IDLE_LOGOUT_JS)
         # The renderer fills the placeholder with an integer and keeps the mechanics.
         js = _idle_logout_js()
         assert "{0}" not in js
-        assert re.search(r"\d+ \* 60000", js)
+        assert re.search(r"var IDLE_MS = \d+;", js)
         assert "/logout?reason=idle" in js
         assert "addEventListener" in js
         # The timer carries the current page so login can return there

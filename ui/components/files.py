@@ -298,7 +298,7 @@ def files_section(
     # on the same page don't collide.
     resize_js = js("""
 (function(){{
-  var table=document.getElementById('files-table-' + {0});
+  var table=document.getElementById({0});
   if(!table) return;
   var ths=table.querySelectorAll('thead th');
   ths.forEach(function(th,i){{
@@ -548,10 +548,11 @@ def files_section(
     # swaps we call it directly after setting outerHTML).
     drop_js = js("""
 (function(){{
+  var SID={0};
   if(!window._celerpDZ) window._celerpDZ=new Map();
   function initDropZone(){{
-    var zone=document.getElementById('file-drop-zone-' + {0});
-    var inp=document.getElementById('file-drop-input-' + {0});
+    var zone=document.getElementById('file-drop-zone-' + SID);
+    var inp=document.getElementById('file-drop-input-' + SID);
     if(!zone||!inp||zone._dzInited) return;
     zone._dzInited=true;
     function upload(file){{
@@ -566,7 +567,7 @@ def files_section(
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
     }});
     inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
-    var cam=document.getElementById('file-camera-input-' + {0});
+    var cam=document.getElementById('file-camera-input-' + SID);
     var camBtn=zone.querySelector('.file-camera-btn');
     if(cam&&camBtn){{
       camBtn.addEventListener('click',function(e){{e.preventDefault(); cam.click();}});
@@ -582,7 +583,7 @@ def files_section(
   window._celerpDZ.set({1},initDropZone);
   initDropZone();
   document.addEventListener('htmx:afterSettle',function(e){{
-    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-' + {0}) initDropZone();
+    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-' + SID) initDropZone();
   }});
 }})();
 """,
@@ -614,8 +615,8 @@ def files_section(
         Script(resize_js),
         Script(COLUMN_FILTER_JS),
         Script(js(
-            "window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-' + {0}));",
-            sid)),
+            "window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById({0}));",
+            f"files-section-{sid}")),
     ]
     if pagination:
         children.append(pagination)

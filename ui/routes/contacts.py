@@ -771,6 +771,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         Script(js("""
 (function(){{
   var CFG = {0};
+  var CONTACT_TYPE = {1};
   function updateContactBulkToolbar(){{
     var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
     var toolbar = document.getElementById('contact-bulk-toolbar');
@@ -788,7 +789,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
       var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
-      celerpGo('/contacts/' + {1} + 's/export/csv?' + qs);
+      celerpGo('/contacts/' + CONTACT_TYPE + 's/export/csv?' + qs);
       return;
     }}
     if (action === 'delete'){{
@@ -893,6 +894,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
 
     delete_btn = "" if (is_deleted or not show_delete) else Script(js("""
 (function(){{
+  var FAILED = {3};
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
   btn.addEventListener('click', function(){{
@@ -906,9 +908,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         sessionStorage.removeItem('celerp_contact_selection');
         celerpGo({2});
       }} else {{
-        celerpToast(d.detail || {3}, 'error');
+        celerpToast(d.detail || FAILED, 'error');
       }}
-    }}).catch(function(err){{ celerpToast({3}, 'error'); }});
+    }}).catch(function(err){{ celerpToast(FAILED, 'error'); }});
     }});
   }});
 }})();
@@ -1866,9 +1868,9 @@ def setup_routes(app):
         val = str(contact.get(field, "") or "")
         _esc_js = (
             js(
-                "if(event.key==='Escape'){{htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},"
                 "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}",
-                contact_id, field)
+                f"/contacts/{contact_id}/field/{field}/display")
         )
 
         if field == "contact_type":
@@ -1938,20 +1940,20 @@ def setup_routes(app):
                 cls="cell-input", autofocus=True,
                 onkeydown=(
                     js(
-                        "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
+                        "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},"
                         "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}"
                         "else if(event.key==='Enter'){{event.preventDefault();this.blur()}}",
-                        contact_id, field)
+                        f"/contacts/{contact_id}/field/{field}/display")
                 ),
             )
             blur_guard_js = Script(
                 js(
-                    "requestAnimationFrame(()=>{{var el=document.getElementById('edit-' + {0});"
+                    "requestAnimationFrame(()=>{{var el=document.getElementById({0});"
                     'if(!el)return;el._ready=false;setTimeout(()=>{{el._ready=true;el.focus()}}'
                     ",350);el.addEventListener('blur',function(e){{if(!el._ready||el._escaping)return;"
-                    "htmx.ajax('PATCH','/contacts/' + {1} + '/field/' + {0},{{target:el.closest('td'),"
+                    "htmx.ajax('PATCH',{1},{{target:el.closest('td'),"
                     "swap:'outerHTML',values:{{value:el.value}}}})}},{{once:true}})}})",
-                    field, contact_id)
+                    f"edit-{field}", f"/contacts/{contact_id}/field/{field}")
             )
             return Td(input_el, blur_guard_js, cls="cell cell--editing")
         return Td(input_el, cls="cell cell--editing")
