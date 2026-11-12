@@ -308,7 +308,7 @@ async def test_change_fund_balance_rule_counts_every_account_the_fund_holds(clie
     assert r.status_code == 422 and _key(r) == "posting.fund.change_exceeds_balance", r.text
     assert r.json()["detail"]["params"]["available"] == "30.00"
     assert (await _state(session, auth, gift))["status"] == "posted"
-    await _emit(session, auth, [("1112", 40, 0, f["R"]), ("4100", 0, 40, f["R"])])
+    await _emit(session, auth, [("1111", 70, 0, f["R"]), ("4100", 0, 70, f["R"])])
     await session.commit()
     r = await _change_journal(client, session, auth, gift, all="unrestricted")
     assert r.status_code == 200, r.text
