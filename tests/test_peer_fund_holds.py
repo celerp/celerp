@@ -280,3 +280,31 @@ async def test_firm_journal_from_release_before_funds_posts(real_client, real_en
     assert results["journals"].attention == []
     [state] = _from_firm(await _journals(real_engine, client_company)).values()
     assert all(e.get("account_roles") != ["sent_by_firm"] for e in state["entries"]), state["entries"]
+
+
+async def test_client_reversal_of_firm_journal_keeps_its_fund(real_client, real_engine, monkeypatch):
+    """The firm's copy uses funds and its own journal posted with a fund; the client reverses
+    that journal and the reversal posts at the firm with each line's fund taken from the entry
+    it reverses, with no hold and no choice asked."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    fund = await _funds_client(real_client, firm_tok)
+    r = await real_client.post("/accounting/journal-entries", headers=auth(firm_tok), json={
+        "ts": DAY, "memo": "Grant interest", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": BANK, "debit": 70.0, "credit": 0.0, "fund_id": fund},
+                    {"account": EXPENSE, "debit": 0.0, "credit": 70.0, "fund_id": fund}]})
+    assert r.status_code == 200, r.text
+    firm_je = r.json()["je_id"]
+    _route_to_app(monkeypatch, [])
+    await _two_way(client_company, credential)
+    [(client_je, _)] = _from_firm(await _journals(real_engine, client_company)).items()
+
+    r = await real_client.post(f"/accounting/journal-entries/{client_je}/reverse", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert all(r.ok for r in results.values()), {k: r.errors for k, r in results.items()}
+    assert await _held(real_client, firm_tok) == []
+    [mirrored] = [s for s in (await _journals(real_engine, firm_company)).values() if s.get("reverses") == firm_je]
+    assert mirrored["status"] == "posted"
+    assert [(e["account"], e["debit"], e["credit"], e.get("fund_id"), e.get("posted_from"))
+            for e in mirrored["entries"]] == [(BANK, 0.0, 70.0, fund, firm_je), (EXPENSE, 70.0, 0.0, fund, firm_je)]
