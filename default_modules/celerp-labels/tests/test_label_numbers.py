@@ -126,6 +126,9 @@ async def test_api_accepts_a_label_number_exactly_when_the_reference_does(client
                 else:
                     assert r.status_code == ok, (case, r.text)
                     assert _stored(r.json(), name) == expected, case
+                    if name in FIELD_NUMBERS and float(expected).is_integer():
+                        # a whole number reads back as typed: 22, never 22.0
+                        assert type(_stored(r.json(), name)) is int, case
 
 
 @pytest.mark.asyncio

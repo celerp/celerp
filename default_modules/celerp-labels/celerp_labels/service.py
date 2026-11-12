@@ -111,8 +111,9 @@ class LabelNumberError(ValueError):
     """A template number that is not a number inside its range; the message says which one."""
 
 
-def label_number(name: str, value: Any) -> float:
-    """``value`` (a number, or its decimal text) as the label number ``name``, inside its range."""
+def label_number(name: str, value: Any) -> int | float:
+    """``value`` (a number, or its decimal text) as the label number ``name``, inside its range;
+    a whole number comes back as an int, so a saved 22 reads back as 22, not 22.0."""
     what, lo, hi = LABEL_NUMBERS[name]
     number = None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -124,7 +125,7 @@ def label_number(name: str, value: Any) -> float:
         number = float(value.strip())
     if number is None or not math.isfinite(number) or not lo <= number <= hi:
         raise LabelNumberError(f"{what} must be a number from {lo:g} to {hi:g}.")
-    return number
+    return int(number) if number.is_integer() else number
 
 
 def label_size(template: dict[str, Any]) -> tuple[float, float]:
