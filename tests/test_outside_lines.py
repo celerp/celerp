@@ -885,3 +885,76 @@ async def test_set_all_outside_lines_then_edit_one(client, auth):
     assert _choices(await _doc(client, auth, doc))[1] == [(other, other), (fund, fund), (fund, fund)]
     assert (await _choose(client, auth, doc, lines={second: "unrestricted"})).status_code == 200
     assert _choices(await _doc(client, auth, doc))[1] == [(other, other), ("unrestricted", None), (fund, fund)]
+
+
+def _issued_import(entity_id: str, lines: list[dict]) -> dict:
+    """An open invoice in an import file, booked now."""
+    total = round(sum(li["line_total"] for li in lines), 2)
+    return {"entity_id": entity_id, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+            "data": {"doc_type": "invoice", "status": "awaiting_payment", "ref_id": entity_id.split(":")[1],
+                     "issue_date": "2026-01-20", "line_items": lines, "total": total, "subtotal": total,
+                     "amount_outstanding": total, "import_treatment": "record_now"}}
+
+
+def _income_funds(entry: dict) -> list[tuple]:
+    return sorted((e["account"], e.get("fund_id"), e.get("fund_choice")) for e in entry["entries"] if e.get("credit"))
+
+
+async def test_import_fund_choices_per_record(client, session, auth):
+    """The document import and the journal import take the fund of each record and line from
+    ``fund_choices``: the record's choice covers its lines, a line's own choice wins for that
+    line, and a record no choice covers is rejected naming its lines while the rest posts."""
+    await _fund_company(client, auth)
+    gift = await _gift_fund(client, auth)
+    a, b = await _item(client, auth, "Filed A"), await _item(client, auth, "Filed B")
+    chosen, left = f"doc:IMP-{uuid.uuid4().hex[:8]}", f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={
+        "records": [_issued_import(chosen, [_line(a, "Filed A", 40), _line(b, "Filed B", 60)]),
+                    _issued_import(left, [_line(a, "Filed A", 15)])],
+        "fund_choices": {"records": {chosen: gift}, "lines": {f"{chosen}:2": "unrestricted"}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert "choose the fund for this document" in r.text and "Line 1 has no fund of its own" in r.text, r.text
+    state = await _doc(client, auth, chosen)
+    assert (state.get("fund_choice"), state.get("fund_choice_source")) == (gift, "user")
+    assert _choices(state)[1] == [(None, None), ("unrestricted", None)]
+    entry = await _finalize_entry(session, auth, chosen)
+    assert {(e.get("fund_id"), e["credit"]) for e in entry["entries"] if e.get("credit")} == {(gift, 40), (None, 60)}
+    assert (await client.get(f"/docs/{left}", headers=auth["headers"])).status_code == 404
+
+    # The journal import: ``all`` covers every record and line, a line's own choice wins.
+    first, second = f"je:{uuid.uuid4()}", f"je:{uuid.uuid4()}"
+    entries = [{"account": "1111", "debit": 30.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 30.0}]
+
+    def _journal(eid: str) -> dict:
+        return {"entity_id": eid, "event_type": "acc.journal_entry.created", "source": "csv",
+                "idempotency_key": uuid.uuid4().hex,
+                "data": {"status": "posted", "ts": "2026-01-21", "memo": "Filed", "entries": entries}}
+
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={
+        "records": [_journal(first), _journal(second)],
+        "fund_choices": {"all": gift, "lines": {f"{first}:1": "unrestricted", f"{first}:2": "unrestricted"}}})
+    assert r.status_code == 200 and r.json()["created"] == 2, r.text
+    one, two = (await _entry_state(session, auth["company_id"], eid) for eid in (first, second))
+    assert [(e.get("fund_id"), e.get("fund_choice")) for e in one["entries"]] == [(None, "unrestricted")] * 2
+    assert [(e.get("fund_id"), e.get("fund_choice")) for e in two["entries"]] == [(gift, gift)] * 2
+    assert two.get("fund_choice") == gift
+
+
+async def test_import_fund_choices_refused_as_a_request(client, auth):
+    """``fund_choices`` that cannot apply refuse the whole request and write nothing: a
+    record or line the batch does not carry, a line that is not a number, a fund that is not
+    this company's, and any choice while funds are off."""
+    item = await _item(client, auth, "Filed")
+    eid = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    record = _issued_import(eid, [_line(item, "Filed", 10)])
+    send = lambda choices: client.post("/docs/import/batch", headers=auth["headers"],  # noqa: E731
+                                       json={"records": [record], "fund_choices": choices})
+    assert _key(await send({"all": "unrestricted"})) == "posting.fund.import_funds_off"
+    await _fund_company(client, auth)
+    for choices, key in (({"records": {"doc:elsewhere": "unrestricted"}}, "posting.fund.choice_record_unknown"),
+                         ({"lines": {"doc:elsewhere:1": "unrestricted"}}, "posting.fund.choice_record_unknown"),
+                         ({"lines": {f"{eid}:first": "unrestricted"}}, "posting.fund.choice_line_unknown"),
+                         ({"all": "fund:elsewhere"}, "posting.fund.unknown")):
+        r = await send(choices)
+        assert r.status_code == 422 and _key(r) == key, (choices, r.text)
+    assert (await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code == 404
