@@ -115,3 +115,128 @@ async def test_e2e1_renewal_receipts_mixed_invoice_and_refund(client, session, a
     r = await client.get(f"/donors/{donor}/history", headers=h, params={"from": "2026-03-01", "to": "2026-03-31"})
     assert r.status_code == 200, r.text
     assert float(r.json()["total"]) == 300.0
+
+
+async def _paid_bill(client, auth, name: str, amount: float, fund: str | None) -> str:
+    """A purpose bill finalized and paid from the bank; returns its posting's id."""
+    line = {**_line(None, name, amount), "receive_as": "expense", **({"fund_id": fund} if fund else {})}
+    bill = await _issued(client, auth, "bill", [line], issue_date=DATE, subtotal=amount, total=amount)
+    await _pay(client, auth, bill, amount)
+    return f"je:auto:{bill}:bill"
+
+
+async def _expense_line(session, auth, je_id: str) -> int:
+    from celerp.models.projections import Projection
+    session.expire_all()
+    entries = (await session.get(Projection, (auth["company_id"], je_id))).state["entries"]
+    return next(i for i, e in enumerate(entries) if (e.get("debit") or 0) > 0)
+
+
+async def _fund_post(client, auth, path: str, **body):
+    return await client.post(f"/accounting/funds/{path}", headers=auth["headers"], json={
+        "request_key": uuid.uuid4().hex, "date": DATE, "reason": "Board minute 12", **body})
+
+
+def _key(r) -> str:
+    return r.json()["detail"]["message_key"]
+
+
+async def test_e2e1_spending_release_transfer_year_close_and_donor_statement(client, session, auth, monkeypatch):
+    """Stage 2: library books charged to the restricted fund leave nothing to release; books
+    paid from unrestricted money back one release and a second release on the same bill is
+    refused; a manual entry moving only net assets between funds is refused; moving the bank's
+    money to a second bank keeps each fund's share; the year closes, reverses and closes again
+    with each fund's results on its own net assets; the fund reconciliation is clean; the donor
+    statement previews and sends; and every fund on the fund balance sheet matches the ledger."""
+    from test_donors import _mailbox
+
+    h = auth["headers"]
+    _freeze(monkeypatch, DATE)
+    f = await _club(client, auth)
+    donor = await _member(client, auth, "Bea Donor", "bea@club.test")
+    quiet = await _member(client, auth, "Cy Donor", "cy@club.test")
+    for who, amount in ((donor, 300.0), (quiet, 20.0)):
+        gift = await _issued(client, auth, "invoice", [_line(f["gift"], "Library gift", amount, fund_id=f["R"])],
+                             contact_id=who, issue_date=DATE, price_list="Retail", subtotal=amount, total=amount)
+        await _pay(client, auth, gift, amount)
+    assert await _held(session, auth, f["R"]) == 720
+
+    charged = await _paid_bill(client, auth, "Library books", 120.0, f["R"])
+    r = await _fund_post(client, auth, "release", fund=f["R"], to_fund=None, backing=[
+        {"je_id": charged, "line_index": await _expense_line(session, auth, charged), "amount": "120"}])
+    assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_charged", r.text
+    assert await _held(session, auth, f["R"]) == 600
+
+    spent = await _paid_bill(client, auth, "Library shelving", 200.0, None)
+    items = (await client.get("/accounting/funds/release-spending", headers=h)).json()["items"]
+    assert [(i["je_id"], i["left"]) for i in items] == [(spent, 200)]
+    backing = [{"je_id": spent, "line_index": items[0]["line_index"], "amount": "200"}]
+    r = await _fund_post(client, auth, "release", fund=f["R"], to_fund=None, backing=backing)
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, f["R"]) == 400 and await _held(session, auth, None) == 600
+    r = await _fund_post(client, auth, "release", fund=f["R"], to_fund=None, backing=backing)
+    assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_used", r.text
+
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": DATE, "memo": "Move net assets", "idempotency_token": uuid.uuid4().hex, "entries": [
+            {"account": f["rna"], "debit": 100.0, "credit": 0.0, "fund_id": f["R"]},
+            {"account": BANK, "debit": 0.0, "credit": 100.0, "fund_id": f["R"]},
+            {"account": BANK, "debit": 100.0, "credit": 0.0},
+            {"account": "3200", "debit": 0.0, "credit": 100.0}]})
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_outside", r.text
+    assert await _held(session, auth, f["R"]) == 400
+
+    async def bank(name, number, code=None):
+        r = await client.post("/accounting/bank-accounts", headers=h, json={
+            "bank_name": name, "account_number": number, "bank_type": "checking", "currency": "USD",
+            "opening_balance": 0, **({"account_code": code} if code else {})})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    main, savings = await bank("Harbor Bank", "0001", BANK), await bank("Coast Savings", "0002")
+    r = await client.post("/accounting/transfers", headers=h, json={
+        "from_bank_id": main["id"], "to_bank_id": savings["id"], "amount": 500.0, "date": DATE})
+    assert r.status_code == 200, r.text
+    to = savings["chart_account_code"]
+    assert await _held(session, auth, f["R"], to) == 200 and await _held(session, auth, None, to) == 300
+    assert await _held(session, auth, f["R"]) == 200 and await _held(session, auth, None) == 300
+
+    def results():
+        return fund_account_balances(session, auth["company_id"], as_of="2026-12-31")
+
+    _freeze(monkeypatch, "2027-01-10")
+    closed = await client.post("/accounting/close-year", headers=h, json={"fiscal_year_end": "2026-12-31"})
+    assert closed.status_code == 200, closed.text
+    after_close = await results()
+    assert after_close[f["R"]].get(f["rna"]) == -400 and not any(
+        v for k, v in after_close[f["R"]].items() if k.startswith(("4", "6")))
+    assert (await client.post("/accounting/period-lock", headers=h, json={"lock_date": None})).status_code == 200
+    r = await client.post("/accounting/close-year/2026-12-31/reverse", headers=h, json={"reason": "Late bills"})
+    assert r.status_code == 200, r.text
+    reopened = (await results())[f["R"]]
+    assert (reopened.get(f["rna"]), reopened.get("4100")) == (-200, -320)
+    reclosed = await client.post("/accounting/close-year", headers=h, json={"fiscal_year_end": "2026-12-31"})
+    assert reclosed.status_code == 200 and reclosed.json()["je_id"] != closed.json()["je_id"], reclosed.text
+    assert await results() == after_close
+
+    recon = (await client.get("/accounting/funds/reconciliation", headers=h)).json()
+    assert recon["balanced"] is True and recon["differences"] == [] and recon["overdrawn"] == []
+
+    period = {"from": "2026-03-01", "to": "2026-03-31"}
+    sent = _mailbox(monkeypatch)
+    preview = (await client.get("/donors/statements/preview", headers=h, params=period)).json()["donors"]
+    assert {row["contact_id"]: float(row["total"]) for row in preview} == {donor: 300.0, quiet: 20.0}
+    r = await client.post("/donors/statements/send", headers=h, json={**period, "confirm": True})
+    assert r.status_code == 200, r.text
+    assert {row["state"] for row in r.json()["results"]} == {"sent"}
+    assert sorted(m["to"] for m in sent) == ["bea@club.test", "cy@club.test"]
+    history = (await client.get(f"/donors/{donor}/history", headers=h, params=period)).json()
+    assert float(history["total"]) == 300.0
+
+    sheet = (await client.get("/accounting/funds/balance-sheet", headers=h)).json()
+    ledger = await fund_account_balances(session, auth["company_id"])
+    for row in sheet["accounts"]:
+        assert {fund: Decimal(str(v)) for fund, v in row["amounts"].items()} == {
+            fund or "unrestricted": held[row["code"]] for fund, held in ledger.items() if held.get(row["code"])}
+    net = {fund["id"]: fund["net_assets"] for fund in sheet["funds"]}
+    assert (net[f["R"]], net["unrestricted"], net[f["U1"]]) == (400.0, 600.0, 0.0)
