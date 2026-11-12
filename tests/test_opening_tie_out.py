@@ -115,8 +115,8 @@ async def test_tie_out_goods_exclude_received_share(client, session, auth):
     assert goods["by_account"][0]["account"] == IN_TRANSIT
     # The held parts keep their source line; the share received is held against retained earnings.
     parts = await _bill_carriage_parts(session, auth["company_id"], "doc:x", data)
-    assert [(e["account"], s) for e, s in parts] == [(IN_TRANSIT, 0), (RE, None), (AP, None)]
-    assert [e.get("debit") or e.get("credit") for e, _ in parts] == [PRICE * 6, PRICE * 4, PRICE * 10]
+    assert [(e["account"], s) for e, s, _ in parts] == [(IN_TRANSIT, 0), (RE, None), (AP, None)]
+    assert [e.get("debit") or e.get("credit") for e, _, _ in parts] == [PRICE * 6, PRICE * 4, PRICE * 10]
 
 
 async def test_tie_out_receivables_net_credit_notes(client, session, auth):

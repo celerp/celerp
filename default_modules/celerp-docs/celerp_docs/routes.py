@@ -6059,7 +6059,8 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
         # bill it becomes books only what its receipts have not.
         # Goods added to stock are booked on their lot's inventory account; anything else
         # on the account of the role it was received as.
-        # The entry records the items it books, so the extended journal names them per receipt.
+        # The entry records the items it books, so the extended journal names them per receipt,
+        # and each debit names the order lines behind it, so it carries their funds.
         debits: dict = {}
         booked: list[dict] = []
         order_lines = row.state.get("line_items") or []
@@ -6067,8 +6068,10 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             receipt_role = auto_je.po_receipt_role(row.state, it.receive_as)
             target = (line_lot_account.get(line_no, receipt_role)
                       if receipt_role == AccountRole.INVENTORY_PURCHASED else receipt_role)
-            debits[target] = debits.get(target, 0.0) + received_cost
             idx = received_line_index(order_lines, it.model_dump())
+            by_line = debits.setdefault(target, {})
+            n = idx + 1 if idx is not None else None
+            by_line[n] = by_line.get(n, 0.0) + received_cost
             booked.append({"item": line_label(order_lines[idx]) if idx is not None else (it.sku or it.name or ""),
                            "quantity": float(it.quantity_received), "cost": received_cost})
         await auto_je.create_for_po_receipt(

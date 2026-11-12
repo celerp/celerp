@@ -243,7 +243,8 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
     that arrived from outside (``data["origin"]``) is its own record, each line covered by its
     own choice or the entry's. A line is covered when every line behind it has a choice and
     the line carries the fund that choice gives; stock and stock cost lines carry no fund and
-    need none, and a copy of a line the record posted (_copied_legs) keeps the fund it posted
+    need none, nor does the document line behind them on the entry's other lines (the payable
+    for goods added to stock), and a copy of a line the record posted (_copied_legs) keeps the fund it posted
     with. Anything else raises FundChoiceNeeded naming the lines to choose for."""
     from celerp.models.projections import Projection
     from celerp.services.journal_accounts import FundChoiceNeeded, stock_codes
@@ -265,6 +266,7 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
         legs = [(line, line.get("source_lines") or []) for line in entries]
         record = str(state.get("ref_id") or data["record_id"].split(":", 1)[-1])
     stock = stock_codes(dict(settings))
+    stock_lines = {n for line, numbers in legs if line["account"] in stock for n in numbers}
     copied = await _copied_legs(session, company_id, data, entries)
     uncovered: set[int] = set()
     refused = False
@@ -274,7 +276,8 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
         fund = line.get("fund_id") or None
         if not numbers:
             refused |= document is _ABSENT or _fund_of(document) != fund
-        bad = {n for n in numbers if covers.get(n, _ABSENT) is _ABSENT or _fund_of(covers[n]) != fund}
+        bad = {n for n in numbers if n not in stock_lines
+               and (covers.get(n, _ABSENT) is _ABSENT or _fund_of(covers[n]) != fund)}
         uncovered |= bad
         refused |= bool(bad)
     if refused:

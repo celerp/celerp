@@ -483,7 +483,7 @@ async def test_outside_line_without_choice_refused_at_prepare(client, session, a
     await session.rollback()
 
 
-@pytest.mark.parametrize("shape", ["lines", "bill"])
+@pytest.mark.parametrize("shape", ["lines", "bill", "po_receipt", "opening_held"])
 async def test_outside_choice_check_covers_every_posting_entry_point(client, session, auth, monkeypatch, shape):
     """An outside record with a leg no choice covers is refused at finalize with the J9c
     refusal, nothing posts and the draft stays a draft; its twin with a choice posts with that
@@ -493,6 +493,10 @@ async def test_outside_choice_check_covers_every_posting_entry_point(client, ses
     from celerp.services import peer_lines
 
     gift = await _fund_company(client, auth) and await _gift_fund(client, auth)
+    if shape == "po_receipt":
+        return await _po_receipt_needs_choice(client, session, auth, gift)
+    if shape == "opening_held":
+        return await _opening_held_needs_choice(client, session, auth, gift)
     item = await _item(client, auth, "Outside")
     if shape == "lines":
         doc = await _imported(client, auth, [_line(item, "Outside", 40), _line(item, "Outside", 60)])
@@ -530,6 +534,71 @@ async def test_outside_choice_check_covers_every_posting_entry_point(client, ses
                  "import_treatment": "record_now"}}]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
     assert "choose the fund for this document" in r.text, r.text
+
+
+async def _po_receipt_needs_choice(client, session, auth, gift: str) -> None:
+    """An imported purchase order received with an expense line and a stock line: the receipt
+    is refused naming the expense line only, since stock needs no fund. With a fund chosen on
+    the expense line it and its share of the payable post to that fund, the stock and its
+    share to none, and the bill the order becomes finalizes with no document choice. A
+    restricted fund chosen on the stock line is refused by rule 7 at the receipt, as it is
+    at a bill."""
+    from test_receive_selected_lines import _post as _receive
+
+    sku = f"OUT-{uuid.uuid4().hex[:6]}"
+    doc = await _imported(client, auth, [{**_line(None, "Supplies", 25), "receive_as": "expense"},
+                                         {"sku": sku, "name": "Shelf stock", "quantity": 2, "unit_price": 30,
+                                          "line_total": 60}], doc_type="purchase_order")
+    ref = (await _doc(client, auth, doc))["ref_id"]
+    received = ({"po_line_index": 0, "name": "Supplies", "quantity_received": 1, "receive_as": "expense"},
+                {"po_line_index": 1, "sku": sku, "name": "Shelf stock", "quantity_received": 2, "receive_as": "stock"})
+    before = await _entry_ids(session, auth)
+    _needs_choice(await _receive(client, auth, doc, *received), ref, [1])
+    assert await _entry_ids(session, auth) == before
+
+    first, second = [li["line_id"] for li in (await _doc(client, auth, doc))["line_items"]]
+    assert (await _choose(client, auth, doc, lines={first: gift, second: gift})).status_code == 200
+    r = await _receive(client, auth, doc, *received)
+    assert r.status_code == 422 and _key(r) == "posting.fund.stock_unrestricted", r.text
+    assert await _entry_ids(session, auth) == before
+    assert (await _choose(client, auth, doc, lines={first: gift, second: "unrestricted"})).status_code == 200
+    r = await _receive(client, auth, doc, *received)
+    assert r.status_code == 200, r.text
+    [receipt] = [e for e in await _entry_ids(session, auth) - before if e.startswith(f"je:auto:{doc}:rcv")]
+    legs = (await _entry_state(session, auth["company_id"], receipt))["entries"]
+    debits = {leg["account"]: leg.get("fund_id") for leg in legs if leg.get("debit")}
+    credits = {(leg["account"], leg.get("fund_id")) for leg in legs if leg.get("credit")}
+    assert len(debits) == 2 and set(debits.values()) == {gift, None}, legs
+    assert len({account for account, _ in credits}) == 1 and {fund for _, fund in credits} == {gift, None}, legs
+
+    r = await _post(client, auth, f"/docs/{doc}/finalize")
+    assert r.status_code == 200, r.text
+
+
+async def _opening_held_needs_choice(client, session, auth, gift: str) -> None:
+    """A bill imported as held in the opening balances: voiding it takes out what they hold,
+    so the void is refused naming its line until a fund is chosen for it; with one, every
+    line of the reversal posts to that fund, with no document choice."""
+    r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": "2026-01-01", "memo": "Opening balances", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "2110", "credit": 25}, {"account": "3200", "debit": 25}]})
+    assert r.status_code == 200, r.text
+    doc = await _imported(client, auth, [{**_line(None, "Supplies", 25), "receive_as": "expense"}], doc_type="bill",
+                          status="awaiting_payment", contact_id="supplier:1", issue_date="2026-01-01",
+                          amount_outstanding=25, amount_paid=0, import_treatment="opening_balances")
+    ref = (await _doc(client, auth, doc))["ref_id"]
+    before = await _entry_ids(session, auth)
+    _needs_choice(await _post(client, auth, f"/docs/{doc}/void", {}), ref, [1])
+    assert (await _doc(client, auth, doc))["status"] == "awaiting_payment"
+    assert await _entry_ids(session, auth) == before
+
+    first = (await _doc(client, auth, doc))["line_items"][0]["line_id"]
+    assert (await _choose(client, auth, doc, lines={first: gift})).status_code == 200
+    r = await _post(client, auth, f"/docs/{doc}/void", {})
+    assert r.status_code == 200, r.text
+    [reversal] = await _entry_ids(session, auth) - before
+    legs = (await _entry_state(session, auth["company_id"], reversal))["entries"]
+    assert {leg.get("fund_id") for leg in legs} == {gift}, legs
 
 
 async def _no_check(*_args, **_kwargs) -> None:

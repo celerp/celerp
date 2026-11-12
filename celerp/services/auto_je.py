@@ -1723,17 +1723,21 @@ def po_receipt_role(doc: dict, receive_as: str = "stock") -> AccountRole:
 
 
 async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_key: str | None,
-                           debits: dict[AccountRole | str, float], receive_date: str | None,
+                           debits: dict[AccountRole | str, dict[int | None, float]], receive_date: str | None,
                            items: list[dict]) -> None:
     """Dr each receipt debit / Cr AP for the sum of the rounded debits.
 
     A role key posts to the role's account; an account key is the inventory account
-    of the lot the goods were added to. AP continues on the account the order's
-    earlier receipts recognized it on. `items` (item, quantity, cost in the books'
+    of the lot the goods were added to. Each debit is given by the order line (1-based,
+    None when no line names the goods) its cost came from. AP continues on the account
+    the order's earlier receipts recognized it on. Where funds are on, each debit is
+    carried by its lines' funds and the AP by each fund's balance (_document_fund_legs), as
+    the bill the order becomes carries them, so the two net fund by fund; a stock line with
+    no fund of its own carries none, and rule 7 refuses a restricted one. `items` (item, quantity, cost in the books'
     currency) is what this receipt booked; the entry carries it, so the receipt's items
     are read from the receipt and not from the whole order."""
     currency = await company_currency(session, company_id)
-    rounded = {key: round_money(amount, currency) for key, amount in debits.items()}
+    rounded = {key: round_money(sum(by_line.values()), currency) for key, by_line in debits.items()}
     total = sum(rounded.values(), _Dec(0))
     if total <= 0:
         return
@@ -1746,6 +1750,12 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
                for k, amt in rounded.items() if amt]
     entries.append(_origin_line(settings, ap, R.PAYABLE, credit=to_stored_float(total)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, credit=to_stored_float(total)))
+    if funds_enabled(settings):
+        order = await session.get(Projection, {"company_id": company_id, "entity_id": po_id})
+        bases = [{n: cost for n, cost in by_line.items() if n is not None}
+                 for key, by_line in debits.items() if rounded[key]]
+        entries = _document_fund_legs(settings, order.state if order is not None else {}, entries,
+                                      [*bases, CONTROL], currency)
     suffix = f":{receipt_key}" if receipt_key else ""
     await _emit_auto_posted_je(
         session,
@@ -1807,13 +1817,13 @@ async def create_for_imported_document(
 
 
 async def create_for_po_receipt(
-    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, float],
+    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, dict[int | None, float]],
     items: list[dict],
 ) -> None:
     """Receipt entry for one batch of goods received on a purchase order.
 
     debits are what the received goods cost per role, or per lot inventory account
-    for goods added to stock, in the books' currency: the same amounts the receipt
+    for goods added to stock, by order line, in the books' currency: the same amounts the receipt
     adds to the lots' cost. Dated today in the company's timezone (entry_day)."""
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
@@ -2667,14 +2677,23 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
-    would book (_bill_carriage_parts, without the source lines)."""
-    return [e for e, _ in await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)]
+    would book (_bill_carriage_parts), carried by the funds the document's lines have now
+    as that bill's would be (_document_fund_legs), so the two net fund by fund."""
+    parts = await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)
+    entries = [e for e, _, _ in parts]
+    settings = await current_settings(session, company_id)
+    if not entries or not funds_enabled(settings):
+        return entries
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": imported.doc_id})
+    return _document_fund_legs(settings, row.state if row is not None else imported.snapshot, entries,
+                               [basis for _, _, basis in parts], await company_currency(session, company_id))
 
 
-async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None]]:
+async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None, object]]:
     """Each line of what the opening balances hold for an imported document, with the
     index of the document line it comes from (None for tax, shipping, retained earnings
-    and payables). For a bill, its whole entry, except that goods it had already received
+    and payables) and the document lines behind it as its bill's entry has them
+    (_bill_bases; the retained earnings none). For a bill, its whole entry, except that goods it had already received
     are in opening stock, held by their lots: what is owed for them is held against
     retained earnings, never in transit. For a purchase order, each line's share received
     when it was imported. A purchase order's receipts book only the goods, so its tax and
@@ -2684,6 +2703,7 @@ async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict)
     if built is None:
         return []
     entries, sources, debits = built
+    bases = _bill_bases(snapshot, built)
     from celerp.services.document_lines import received_line_index
 
     lines = snapshot.get("line_items") or []
@@ -2698,31 +2718,31 @@ async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict)
         return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
 
     if snapshot.get("doc_type") == "bill":
-        held: list[tuple[dict, int | None]] = []
+        held: list[tuple[dict, int | None, object]] = []
         in_stock = _Dec(0)
-        for e, s, d in zip(entries, sources, debits):
+        for e, s, d, basis in zip(entries, sources, debits, bases):
             stock = s is not None and bill_line_kind(lines[s]) == "stock"
             amount = round_money(d * received_fraction(s), base_currency) if stock else _Dec(0)
             if amount:
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
             if to_decimal(e["debit"]):
-                held.append((e, s))
+                held.append((e, s, basis))
         if in_stock:
             held.append((_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
-                               debit=to_stored_float(in_stock)), None))
-        return [*held, (entries[-1], None)]
+                               debit=to_stored_float(in_stock)), None, None))
+        return [*held, (entries[-1], None, CONTROL)]
     carried = []
-    for e, s, d in zip(entries, sources, debits):
+    for e, s, d, basis in zip(entries, sources, debits, bases):
         if s is None:
             continue
         amount = round_money(d * received_fraction(s), base_currency)
         if amount:
-            carried.append(({**e, "debit": to_stored_float(amount)}, s))
+            carried.append(({**e, "debit": to_stored_float(amount)}, s, basis))
     if not carried:
         return []
-    total = sum((to_decimal(e["debit"]) for e, _ in carried), _Dec(0))
-    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None)]
+    total = sum((to_decimal(e["debit"]) for e, _, _ in carried), _Dec(0))
+    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None, CONTROL)]
 
 
 @dataclass(frozen=True)
@@ -2775,7 +2795,7 @@ async def opening_held_documents(session, company_id) -> list[OpeningHeld]:
                 amount, base_amount = -amount, -base_amount
         if kind == "bill":
             lines = snapshot.get("line_items") or []
-            for e, s in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
+            for e, s, _ in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
                 if s is not None and bill_line_kind(lines[s]) == "stock":
                     goods[e["account"]] = goods.get(e["account"], _Dec(0)) + to_decimal(e["debit"])
         out.append(OpeningHeld(

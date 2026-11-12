@@ -282,7 +282,7 @@ async def _legacy(client, session, auth, lot, doc_type="purchase_order", qty=10,
                      metadata_={auto_je.IMPORTED_SNAPSHOT: True})
     if doc_type == "purchase_order":
         await auto_je._post_po_receipt(session, company_id=cid, user_id=uid, po_id=doc, receipt_key=None,
-                                       debits={R.INVENTORY_PURCHASED: PRICE * qty}, receive_date="2026-01-01",
+                                       debits={R.INVENTORY_PURCHASED: {1: PRICE * qty}}, receive_date="2026-01-01",
                                        items=[])
     else:
         await auto_je._emit_auto_posted_je(
