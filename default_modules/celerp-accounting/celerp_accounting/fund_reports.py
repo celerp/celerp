@@ -22,6 +22,7 @@ from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.business_time import company_timezone
 from celerp.services.journal_accounts import (
     FUND_MOVEMENT_TYPES, YEAR_CLOSE, fund_account_balances, fund_day_changes, funds_by_id, line_change, line_fund,
     unrestricted_label,
@@ -108,14 +109,15 @@ def _movement_view(entity_id: str, state: dict, day: str, funds: dict, accounts:
 
 async def fund_changes(session: AsyncSession, company_id, *, date_from: str | None = None,
                        date_to: str | None = None) -> list[dict]:
-    """Every Change fund, newest first: the record, its reason, who made it, the entries it
-    voided and the copies it posted in their place."""
+    """Every Change fund, newest first, dated on the company's business day: the record, its
+    reason, who made it, the entries it voided and the copies it posted in their place."""
     events = (await session.scalars(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type.in_(FUND_CHANGE_EVENTS),
     ).order_by(LedgerEntry.id.desc()))).all()
+    zone = await company_timezone(session, company_id)
     out = []
     for event in events:
-        day = event.ts.date().isoformat()
+        day = event.ts.astimezone(zone).date().isoformat()
         if (date_from and day < date_from) or (date_to and day > date_to):
             continue
         copies = ((event.data or {}).get("result") or {}).get("copies") or {}
