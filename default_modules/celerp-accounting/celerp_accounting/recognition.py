@@ -159,11 +159,12 @@ def _leg_keys(schedule: dict, doc: dict) -> dict:
 
 
 async def run_recognition(session, company_id, user_id, month: str, *, post_on: str | None = None,
-                    today: date | None = None, unattended: bool = False) -> dict:
-    """Post every outstanding run of ``month`` (an ended month): Dr the deferred account, Cr
-    the schedule's revenue account, on the schedule's fund. A run already posted is answered
-    with its entry, so a repeat or a race posts nothing twice. ``today`` is the business day
-    (the dispatcher's pass day), else the company's. The caller commits."""
+                    today: date | None = None, unattended: bool = False, limit: int | None = None) -> dict:
+    """Post every outstanding run of ``month`` (an ended month), or the first ``limit`` of them
+    by schedule and segment: Dr the deferred account, Cr the schedule's revenue account, on the
+    schedule's fund. A run already posted is answered with its entry, so a repeat or a race
+    posts nothing twice. ``today`` is the business day (the dispatcher's pass day), else the
+    company's. Answers every run of the month and how many this call posted. The caller commits."""
     from celerp.services.auto_je import _emit_auto_posted_je
 
     month_end = _check_month(month)
@@ -173,7 +174,8 @@ async def run_recognition(session, company_id, user_id, month: str, *, post_on: 
     schedules = await _schedules(session, company_id)
     ledger = await run_ledger(session, company_id)
     runs = [r for r in plan(schedules, ledger, today) if r["month"] == month and not schedules[r["schedule_id"]]["stopped"]]
-    pending = [r for r in runs if r["status"] == "outstanding"]
+    pending = sorted((r for r in runs if r["status"] == "outstanding"),
+                     key=lambda r: (r["schedule_id"], r["segment"]))[:limit]
     if pending:
         day, chosen = _dated(settings, month_end, post_on)
         docs = await _states(session, company_id, "doc", {schedules[r["schedule_id"]]["doc_id"] for r in pending})
@@ -193,7 +195,7 @@ async def run_recognition(session, company_id, user_id, month: str, *, post_on: 
                        "month": month, "unattended": unattended,
                        **({"post_on_choice": day} if chosen else {})})
         run.update(status="posted", je_id=f"{PREFIX}{run_key}")
-    return {"runs": runs}
+    return {"runs": runs, "posted": len(pending)}
 
 
 async def dependents(session, company_id, user_id, doc_id: str, relabel) -> None:
@@ -300,7 +302,8 @@ async def _may_post(session, company_id, user_id) -> bool:
 async def run_due(*, session, company_id, today: date, budget: int):
     """The dispatcher's recognition pass for one company (the ``periodic_operation`` slot):
     while automatic posting is authorized and the authorizer still manages accounting and is
-    active, post the runs of the latest ended month, if that month is open. Older outstanding
+    active, post the runs of the latest ended month, if that month is open, at most ``budget``
+    a pass (the next pass posts the rest). Older outstanding
     runs wait for a manual post. When the authorization lapses it posts nothing, records the
     lapse once and tells the company."""
     from celerp.notifications import service
@@ -326,9 +329,9 @@ async def run_due(*, session, company_id, today: date, budget: int):
     lock = settings.get("lock_date")
     if lock and date.fromisoformat(lock) >= last:
         return OperationReport()
-    posted = await run_recognition(session, company_id, uuid.UUID(str(consent["by"])), f"{last:%Y-%m}", today=today,
-                            unattended=True)
-    return OperationReport(done=min(budget, sum(1 for r in posted["runs"] if r["status"] == "posted")))
+    answer = await run_recognition(session, company_id, uuid.UUID(str(consent["by"])), f"{last:%Y-%m}", today=today,
+                                   unattended=True, limit=budget)
+    return OperationReport(done=answer["posted"])
 
 
 async def set_authorization(session, company_id, user_id, enabled: bool) -> dict:
