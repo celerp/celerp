@@ -264,6 +264,137 @@ async def test_held_journal_fund_moving_assignment_refused(real_client, real_eng
     assert {e.get("fund_id") for e in state["entries"]} == {fund}
 
 
+async def _fund_total(engine, company_id: str, fund: str):
+    from celerp.services.journal_accounts import fund_account_balances
+
+    async with maker(engine)() as s:
+        return sum((await fund_account_balances(s, uuid.UUID(company_id))).get(fund, {}).values())
+
+
+async def test_held_journal_posted_by_client_user_with_funds(real_client, real_engine, monkeypatch):
+    """A manager of the client chooses the restricted fund for both lines of the firm's
+    journal and posts it: the entry posts under the firm journal's local id with the manager
+    as its actor, a repeat with the same request key returns it, and the fund's balances are
+    unchanged in total."""
+    from celerp.services.peer_journals import local_id
+    from test_fund_connection_defaults import _member
+
+    tok, firm_tok, client_company, _, fund, item, firm_je = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
+    manager, manager_id = await _member(real_client, tok, "manager")
+    key = uuid.uuid4().hex
+    r = await _post_held(real_client, manager, item, lines={1: fund, 2: fund}, key=key)
+    assert r.status_code == 200, r.text
+    je_id = local_id(uuid.UUID(_company_of(firm_tok)), firm_je)
+    assert r.json()["id"] == je_id
+    [(posted_id, state)] = _from_firm(await _journals(real_engine, client_company)).items()
+    assert posted_id == je_id and state["status"] == "posted"
+    assert [(e["account"], e.get("fund_id"), e.get("fund_choice")) for e in state["entries"]] == [
+        (BANK, fund, fund), (EXPENSE, fund, fund)]
+    assert await _actor(real_engine, client_company, je_id) == uuid.UUID(manager_id)
+    assert (await _post_held(real_client, manager, item, lines={1: fund, 2: fund}, key=key)).json()["id"] == je_id
+    assert len(_from_firm(await _journals(real_engine, client_company))) == 1
+    assert await _fund_total(real_engine, client_company, fund) == 0
+    assert await _held(real_client, tok) == []
+
+
+async def test_held_journal_unbalanced_fund_assignment_refused(real_client, real_engine, monkeypatch):
+    """Dr Bank 40 / Cr Program expense 40 with Bank Unrestricted and Program expense the
+    restricted fund passes the choice checks and every line is covered, so the posting
+    boundary refuses it as unbalanced, naming the restricted fund and the 40, before any
+    movement shape is judged; the hold stays. Both lines in the restricted fund post."""
+    tok, _, client_company, _, fund, item, _ = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 40.0, 0.0), (EXPENSE, 0.0, 40.0)])
+    r = await _post_held(real_client, tok, item, lines={1: "unrestricted", 2: fund})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "posting.fund.unbalanced", detail
+    assert (detail["params"]["fund"], detail["params"]["difference"]) == ("Building fund", "40.00"), detail
+    assert _from_firm(await _journals(real_engine, client_company)) == {}
+    assert len(await _held(real_client, tok)) == 1
+
+    r = await _post_held(real_client, tok, item, lines={1: fund, 2: fund})
+    assert r.status_code == 200, r.text
+    [state] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert {e.get("fund_id") for e in state["entries"]} == {fund}
+
+
+async def test_held_journal_post_refusals_isolated(real_client, real_engine, monkeypatch):
+    """Post from the hold refuses in check order, each case passing every earlier check and
+    the hold staying: a user without manage_accounting; no request key; a revision other than
+    the hold's; a fund of no company, and a line the entry does not have; an archived fund.
+    The same post with an active fund then posts."""
+    from test_fund_connection_defaults import _member
+    from test_funds import _fund
+
+    tok, _, client_company, _, fund, item, _ = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 25.0, 0.0), (EXPENSE, 0.0, 25.0)])
+    viewer, _ = await _member(real_client, tok, "viewer")
+    archived = await _fund(real_client, {"headers": auth(tok)}, "Closed appeal")
+    r = await real_client.post(f"/accounting/funds/{archived}/archive", headers=auth(tok))
+    assert r.status_code == 200, r.text
+    url = f"/accounting/peer/holds/{item['id']}/funds"
+    body = {"revision": item["fix"]["revision"], "choices": {"all": fund, "lines": {}}}
+
+    async def refused(status: int, key: str | None, tok_=tok, **changes):
+        r = await real_client.post(url, headers=auth(tok_), json={**body, "request_key": uuid.uuid4().hex, **changes})
+        assert r.status_code == status, r.text
+        if key:
+            assert r.json()["detail"]["message_key"] == key, r.text
+        assert _from_firm(await _journals(real_engine, client_company)) == {}
+        assert len(await _held(real_client, tok)) == 1
+
+    await refused(403, None, tok_=viewer)
+    r = await real_client.post(url, headers=auth(tok), json=body)
+    assert r.status_code == 422 and "request_key" in r.text, r.text
+    await refused(409, "posting.fund.hold_changed", revision=item["fix"]["revision"] + 1)
+    await refused(422, "posting.fund.unknown", choices={"all": "fund:nowhere", "lines": {}})
+    await refused(422, "posting.fund.choice_line_unknown", choices={"all": fund, "lines": {"3": fund}})
+    await refused(422, "posting.fund.archived", choices={"all": archived, "lines": {}})
+
+    r = await real_client.post(url, headers=auth(tok), json={**body, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    [state] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert {e.get("fund_id") for e in state["entries"]} == {fund}
+
+
+async def test_hold_funds_stale_revision_refused(real_client, real_engine, monkeypatch):
+    """The accountant revises a held journal (40 becomes 60) and the next sync replaces the
+    hold's lines: a post with the revision read before is refused as changed, nothing posts
+    and the hold keeps the new lines; the post at the new revision posts the 60."""
+    from celerp.services import peer_journals
+
+    tok, _, client_company, credential, fund, item, _ = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 40.0, 0.0), (EXPENSE, 0.0, 40.0)])
+    feed = peer_journals.journal_feed
+
+    async def revised(*args, **kwargs):
+        body = await feed(*args, **kwargs)
+        for journal in body["items"]:
+            journal["revision"] += 1
+            journal["entries"] = [{**e, **{k: 60.0 for k in ("debit", "credit") if e.get(k)}}
+                                  for e in journal["entries"]]
+        return body
+
+    monkeypatch.setattr(peer_journals, "journal_feed", revised)
+    await _two_way(client_company, credential)
+    [again] = await _held(real_client, tok)
+    assert again["fix"]["revision"] == item["fix"]["revision"] + 1
+    new_lines = [(e["account"], e["debit"], e["credit"]) for e in again["fix"]["entries"]]
+    assert new_lines == [(BANK, 60.0, 0.0), (EXPENSE, 0.0, 60.0)]
+
+    r = await _post_held(real_client, tok, item, every=fund)
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "posting.fund.hold_changed", r.text
+    assert _from_firm(await _journals(real_engine, client_company)) == {}
+    [kept] = await _held(real_client, tok)
+    assert [(e["account"], e["debit"], e["credit"]) for e in kept["fix"]["entries"]] == new_lines
+
+    r = await _post_held(real_client, tok, again, every=fund)
+    assert r.status_code == 200, r.text
+    [state] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert [(e["account"], e["debit"], e["credit"]) for e in state["entries"]] == new_lines
+
+
 def _feed_with(monkeypatch, key: str, value) -> None:
     """The firm's journal feed with ``key`` added to the first line of every journal."""
     from celerp.services import peer_journals
