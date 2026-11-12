@@ -47,6 +47,7 @@ from celerp_fixed_assets.operations import (
     refuse,
     label_lines,
     reverse_move,
+    same_fund,
 )
 from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
@@ -90,10 +91,13 @@ _RESULT_ROLES = {_GAIN, _LOSS}
 _CARRIED_ROLES = {_SURPLUS, "retained_earnings"}
 
 
-async def _cleared(session, company_id, settings: dict, doc_id: str, asset_id: str, number: str
+async def _cleared(session, company_id, settings: dict, doc_id: str, asset_id: str, asset: dict
                    ) -> tuple[str | None, Decimal]:
     """The clearing account a posted document's entries moved for ``asset_id``, and debit
-    less credit on it, read from the lines posted for the clearing role."""
+    less credit on it, read from the lines posted for the clearing role. A clearing line on
+    another fund than the asset is refused (rule P): the disposal clears on the asset's fund,
+    so the proceeds would land on one fund while the asset left another."""
+    number = asset["number"]
     rows = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(f"je:auto:{doc_id}:", autoescape=True)))).scalars().all()
@@ -103,6 +107,7 @@ async def _cleared(session, company_id, settings: dict, doc_id: str, asset_id: s
             continue
         for e in state.get("entries") or []:
             if e.get("asset_id") == asset_id and line_has_role(settings, e, _CLEARING):
+                await same_fund(session, company_id, e, asset)
                 net[e["account"]] = net.get(e["account"], Decimal(0)) + _dec(e.get("debit")) - _dec(e.get("credit"))
     used = [(a, v) for a, v in net.items() if v]
     if len(used) > 1:
@@ -246,10 +251,11 @@ async def _draft(session, company_id, user_id, data: dict, before=None) -> str:
 
 async def _draft_invoice(session, company_id, user_id, asset_id: str, asset: dict, *, day: str, line: dict,
                          header: dict, sale: dict) -> str:
-    """A new draft invoice for the asset, which waits on it."""
+    """A new draft invoice for the asset, which waits on it, its line on the asset's fund."""
     data = {"doc_type": "invoice", "issue_date": day, "currency": header.pop("currency", None)
             or (await runs._books(session, company_id)).currency, **header,
-            "line_items": [{**line, "line_id": uuid.uuid4().hex, "quantity": 1, "asset_id": asset_id}]}
+            "line_items": [{**line, "line_id": uuid.uuid4().hex, "quantity": 1, "asset_id": asset_id,
+                            **({"fund_id": asset["fund_id"]} if asset.get("fund_id") else {})}]}
 
     async def wait(doc_id):
         await _set(session, company_id, user_id, asset_id, asset["status"],
@@ -589,7 +595,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     number = asset["number"]
     if sale.get("state") != "sold":
         raise refuse("fixed_assets.err_credit_already_returned", number=number)
-    clearing, amount = await _cleared(session, company_id, books.settings, doc_id, asset_id, number)
+    clearing, amount = await _cleared(session, company_id, books.settings, doc_id, asset_id, asset)
     held = await _held(session, company_id, books.settings, sale)
     gain = _total(held)
     remaining = _dec(sale["proceeds"]) - _credited(sale)
@@ -738,7 +744,7 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
                 continue
             if sale.get("state") == "pending" and here:
                 if change != "write":
-                    clearing, cleared = await _cleared(session, company_id, settings, doc_id, asset_id, number)
+                    clearing, cleared = await _cleared(session, company_id, settings, doc_id, asset_id, asset)
                     await _dispose(session, company_id, user_id, asset_id, asset, sale,
                                    day=doc.get("issue_date") or sale["date"], op_key=op_key, proceeds=-cleared,
                                    clearing=clearing)
@@ -759,3 +765,4 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
                          invoice=doc_number(await _state(session, company_id, original), original))
         if change != "write":
             await _credit_posted(session, company_id, user_id, asset_id, asset, sale, doc_id, doc, li, op_key)
+

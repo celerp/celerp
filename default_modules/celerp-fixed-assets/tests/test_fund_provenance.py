@@ -425,3 +425,27 @@ async def test_journal_reads_follow_change_fund(fa):
         await store._state(fa.session, fa.auth["company_id"], disposal["journal_id"])
     live = await store._journal(fa.session, fa.auth["company_id"], disposal["journal_id"])
     assert live["status"] == "void" and {e.get("fund_id") for e in live["entries"]} == {funds["U"]}
+
+
+async def test_asset_sale_proceeds_keep_the_asset_fund(fa):
+    """Selling the car bought on R: the draft invoice's line takes R, so the invoice's clearing
+    leg and the disposal's meet on R and clearing nets to zero on every fund (rule P). A line
+    moved to another fund before finalizing is refused naming both funds, since the proceeds
+    would land on one fund and the car leave another."""
+    from celerp.services.journal_accounts import fund_account_balances
+    from test_sales import _asset_line, _doc, _patch, _patch_lines, _sell
+
+    s = await _start(fa)
+    invoice = await _sell(fa, s["car"], on="2026-02-10")
+    line = await _asset_line(fa, invoice)
+    assert line.get("fund_id") == s["R"], line
+    others = [li for li in (await fa.state(invoice))["line_items"] if li.get("line_id") != line["line_id"]]
+    assert (await _patch(fa, invoice, [*others, {**line, "fund_id": s["U"]}])).status_code == 200
+    r = await _doc(fa, invoice, "finalize")
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "fixed_assets.err_line_other_fund", r.text
+    await _patch_lines(fa, invoice, [*others, line])
+
+    await fa.ok(await _doc(fa, invoice, "finalize"))
+    held = await fund_account_balances(fa.session, fa.auth["company_id"])
+    clearing = {fund: by["1160"] for fund, by in held.items() if by.get("1160")}
+    assert not clearing, clearing
