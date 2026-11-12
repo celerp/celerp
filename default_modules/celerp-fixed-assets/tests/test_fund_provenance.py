@@ -327,3 +327,39 @@ async def test_change_fund_moves_expensed_line_journal(fa):
     r = await _change_bill(fa, bill, funds["U"])
     assert r.status_code == 200, r.text
     assert await _fa_standing(fa) == {(funds["U"], "1210"): D("-300"), (funds["U"], "6400"): D("300")}
+
+
+async def test_change_fund_moves_assets_placed_from_a_moved_site(fa):
+    """A site under construction bought on the bill's line on R, placed in service as a car
+    that is then depreciated: Change fund on the bill to U moves the site, the car it built
+    and the car's depreciation, since all of the car's cost came from that line."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    classes = await fa.classes()
+    site_class = classes["Assets under construction"]
+    from test_income_accounts import _line
+    from test_outside_lines import _issued_import
+
+    bill = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    record = _issued_import(bill, [_line(None, "Workshop build", 12000, account_code=site_class["asset_account"])])
+    record["data"].update(doc_type="bill", contact_id="supplier:1")
+    r = await fa.client.post("/docs/import/batch", headers=fa.h, json={
+        "records": [record], "fund_choices": {"records": {bill: funds["R"]}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    line = await fa.line("Workshop build")
+    site = (await fa.register(line["source"], key="site", class_name="Assets under construction"))["assets"][0]["id"]
+    placed = await fa.operate(f"/assets/{site}/place-in-service", {"date": line["date"], "allocations": [
+        {"class_id": classes["Vehicles"]["id"], "name": "Workshop van", "amount": "12000"}]}, key="place")
+    van = placed["assets"][0]["id"]
+    assert (await fa.state(van))["fund_id"] == funds["R"]
+    await fa.operate("/runs", {"month": "2026-01"}, key="run-jan")
+    before = await _fa_standing(fa)
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 200, r.text
+    assert (await fa.state(site))["fund_id"] == funds["U"] and (await fa.state(van))["fund_id"] == funds["U"]
+    moved: dict[tuple[str | None, str], D] = {}
+    for (fund, account), amount in before.items():
+        key = (funds["U"] if fund == funds["R"] else fund, account)
+        moved[key] = moved.get(key, D(0)) + amount
+    assert await _fa_standing(fa) == {k: v for k, v in moved.items() if v}

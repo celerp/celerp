@@ -3,7 +3,8 @@
 """Change fund on a document an asset was bought on (the doc_posting_dependents slot).
 
 An asset keeps the fund of the lines carrying its value (rule P): the lines its claims name,
-its registration, an improvement or a link. When Change fund posts a document's entries again
+its registration, an improvement or a link, and for an asset placed in service from a site,
+the site's lines. When Change fund posts a document's entries again
 on new funds, a journal this module posted from one of its lines (a registration's reclass, an
 expense or maintenance) follows the line's new fund, and each asset one of its lines carries
 takes that fund, read from the document's live entry. Every posted journal of this module
@@ -92,6 +93,12 @@ async def dependents(session, company_id, user_id, doc_id: str, relabel) -> None
         if f["claim"] and f["claim"].get("allocation") not in _EXPENSED:
             for aid in f["claim"].get("asset_ids") or []:
                 fed.setdefault(aid, set()).add(s)
+    # An asset placed in service from a site carries the site's cost, so the site's lines.
+    placed = {aid: a["placed_from"] for aid, a in await _entities(session, company_id, "fa_asset")
+              if a.get("placed_from")}
+    while grown := {aid for aid, site in placed.items() if fed.get(site, set()) - fed.get(aid, set())}:
+        for aid in grown:
+            fed.setdefault(aid, set()).update(fed[placed[aid]])
     bought = sorted(aid for aid, lines in fed.items() if lines & on_doc)
     rows = await lock_projections(session, company_id, bought) if bought else {}
     journals = await sources._posted_journals(session, company_id, prefix=_PREFIX)
