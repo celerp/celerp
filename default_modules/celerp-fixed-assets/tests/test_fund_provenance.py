@@ -363,3 +363,34 @@ async def test_change_fund_moves_assets_placed_from_a_moved_site(fa):
         key = (funds["U"] if fund == funds["R"] else fund, account)
         moved[key] = moved.get(key, D(0)) + amount
     assert await _fa_standing(fa) == {k: v for k, v in moved.items() if v}
+
+
+async def test_change_fund_then_undo_leaves_every_fund_zero_for_a_bought_asset(fa):
+    """The asset case of test_change_fund_then_undo_leaves_every_fund_zero: a bill whose line
+    bought a car depreciated once, changed from R to U, then voided at the source. The bill's own
+    entries leave every fund at zero; the car's entries stay posted on U, as a source void leaves
+    an asset's entries; unvoid restores the bill on U, not on R."""
+    from test_change_fund import _standing
+    from test_credit_note_settlement_owned import _post
+
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    await fa.operate("/runs", {"month": "2026-01"}, key="run-jan")
+    assert (await _change_bill(fa, bill, funds["U"])).status_code == 200
+    prefix = f"je:auto:{bill}:"
+    own = await _standing(fa.session, fa.auth, prefix)
+    assert own and {fund for fund, _ in own} == {funds["U"]}, own
+    assets = await _fa_standing(fa)
+    assert assets and {fund for fund, _ in assets} == {funds["U"]}, assets
+
+    r = await _post(fa.client, fa.auth, f"/docs/{bill}/void", {"reason": "Raised in error"})
+    assert r.status_code == 200, r.text
+    assert await _standing(fa.session, fa.auth, prefix) == {}
+    fa.session.expire_all()
+    assert await _fa_standing(fa) == assets and (await fa.state(car))["fund_id"] == funds["U"]
+    assert (await _post(fa.client, fa.auth, f"/docs/{bill}/unvoid")).status_code == 200
+    assert await _standing(fa.session, fa.auth, prefix) == own
+    fa.session.expire_all()
+    assert await _fa_standing(fa) == assets
