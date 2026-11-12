@@ -314,3 +314,149 @@ async def test_funds_tab_moves_money_between_funds(ui_client):
     with api():
         line = (await ui_client.get("/settings/accounting/funds/opening-line", headers={"HX-Request": "true"})).text.strip()
     assert line.startswith("<tr") and 'name="account"' in line and 'name="fund"' in line and 'name="amount"' in line
+
+
+_FUNDS = [{"id": "fund:1", "name": "Library gift", "restricted": True},
+          {"id": UNRESTRICTED, "name": "Unrestricted", "restricted": False}]
+_SHEET = {"as_of": "2026-03-31", "funds": [{**_FUNDS[0], "net_assets": 60.0}, {**_FUNDS[1], "net_assets": 40.0}],
+          "accounts": [{"code": "1111", "name": "Bank", "account_type": "asset",
+                        "amounts": {"fund:1": 60.0, UNRESTRICTED: 40.0}, "total": 100.0}],
+          "restricted_net_assets": 60.0, "available_net_assets": 40.0}
+_ACTIVITY = {"date_from": "2026-01-01", "date_to": "2026-03-31",
+             "funds": [{**_FUNDS[0], "opening": 0.0, "received": 100.0, "spent": -15.0, "released": -25.0,
+                        "transferred": 0.0, "closing": 60.0},
+                       {**_FUNDS[1], "opening": 0.0, "received": 0.0, "spent": 0.0, "released": 25.0,
+                        "transferred": 15.0, "closing": 40.0}],
+             "movements": [
+                 {"entity_id": "je:fund:3", "je_type": "fund_transfer", "date": "2026-03-03", "memo": None,
+                  "reason": "Wrong fund", "reverses": "je:fund:2", "reversed_by": None, "amounts": {}},
+                 {"entity_id": "je:fund:2", "je_type": "fund_transfer", "date": "2026-03-02", "memo": None,
+                  "reason": "Board minute 12", "reverses": None, "reversed_by": "je:fund:3", "amounts": {}},
+                 {"entity_id": "je:fund:1", "je_type": "fund_release", "date": "2026-03-01", "memo": None,
+                  "reason": "Books bought", "reverses": None, "reversed_by": None,
+                  "amounts": {"fund:1": -25.0, UNRESTRICTED: 25.0}}],
+             "fund_changes": [{"record_id": "doc:BILL-7", "date": "2026-02-10", "reason": "Grant paid it",
+                               "actor_id": None, "voided": ["je:a"], "posted": ["je:a:fund:1"]}]}
+_RECONCILED = {"as_of": "2026-03-31", "balanced": True, "differences": [], "overdrawn": [], "negative_net_assets": [],
+               "mirrors": [], "fund_changes": [], "attribution": []}
+_UNRECONCILED = {**_RECONCILED, "balanced": False,
+                 "differences": [{"date": "2026-02-01", "account": "1111", "company_total": 100.0, "funds_total": 90.0}],
+                 "overdrawn": [{"fund_id": "fund:1", "fund": "Library gift", "account": "1111", "balance": -5.0}],
+                 "negative_net_assets": [{"fund_id": "fund:1", "fund": "Library gift", "net_assets": -5.0}],
+                 "mirrors": [{"entries": ["je:manual:4", "je:manual:5"]}],
+                 "attribution": [{"entity_id": "je:doc:9", "record_id": "doc:INV-9", "doc_type": "invoice", "line": 1,
+                                  "posted_fund": None, "line_fund": "fund:1"}]}
+
+
+def _report_api(settings: dict | None = None, **more):
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+
+    company = {"name": "Test Corp", "currency": "USD", "current_role": "owner",
+               "settings": {"modules": ["celerp-accounting"], **({"funds_enabled": True} if settings is None else settings)}}
+    calls = {"get_company": AsyncMock(return_value=company), "list_funds": AsyncMock(return_value={"items": _FUNDS[:1]}),
+             "get_fund_balance_sheet": AsyncMock(return_value=_SHEET),
+             "get_fund_activity": AsyncMock(return_value=_ACTIVITY),
+             "get_fund_reconciliation": AsyncMock(return_value=_RECONCILED),
+             "get_fund_waiting": AsyncMock(return_value={"count": 3, "held": 2, "documents": ["doc:a"]})}
+    return _ui_api(**{**calls, **more})
+
+
+async def test_fund_report_pages(ui_client):
+    """With funds on, the reports index and the report links name the fund balance sheet,
+    fund activity and the fund reconciliation; each page shows its figures by fund with Print
+    and CSV, and the outside records waiting for a fund choice head it. Funds off lists none."""
+    with _report_api(settings={}):
+        page = (await ui_client.get("/reports")).text
+    assert "Fund balance sheet" not in page and "/reports/funds/" not in page
+    with _report_api():
+        page = (await ui_client.get("/reports")).text
+    for path in ("/reports/funds/balance-sheet", "/reports/funds/activity", "/reports/funds/reconciliation"):
+        assert f'href="{path}"' in page, path
+
+    with _report_api():
+        page = (await ui_client.get("/reports/funds/balance-sheet", params={"as_of": "2026-03-31"})).text
+    assert "Library gift" in page and "1111 Bank" in page and "60.00" in page and "100.00" in page
+    assert "Restricted net assets" in page and "Available net assets" in page
+    assert "3 outside documents waiting for a fund choice" in page and 'href="/docs?fund_choice=needed"' in page
+    assert "/reports/print/funds/balance-sheet?as_of=2026-03-31" in page
+    assert "/reports/export/funds/balance-sheet/csv?as_of=2026-03-31" in page
+
+    with _report_api():
+        page = (await ui_client.get("/reports/funds/activity", params={"from": "2026-01-01", "to": "2026-03-31"})).text
+    for word in ("Opening", "Received", "Spent", "Released", "Transferred", "Closing", "Books bought", "Grant paid it",
+                 "doc:BILL-7", "Release from restriction"):
+        assert word in page, word
+    # Only the standing movement offers Reverse; the reversed one and its reversal name each other.
+    assert page.count('hx-post="/reports/funds/movements/') == 1
+    assert 'hx-post="/reports/funds/movements/je%3Afund%3A1/reverse"' in page
+    assert "Reversed by je:fund:3" in page and "Reverses je:fund:2" in page
+
+    with _report_api():
+        page = (await ui_client.get("/reports/funds/reconciliation", params={"as_of": "2026-03-31"})).text
+    assert "Every account's funds add up to the company ledger." in page
+    with _report_api(get_fund_reconciliation=__import__("unittest.mock").mock.AsyncMock(return_value=_UNRECONCILED)):
+        page = (await ui_client.get("/reports/funds/reconciliation", params={"as_of": "2026-03-31"})).text
+    for word in ("90.00", "-5.00", "je:manual:4", "doc:INV-9", "Library gift"):
+        assert word in page, word
+    assert "Every account's funds add up to the company ledger." not in page
+
+    with _report_api():
+        for key in ("balance-sheet", "activity", "reconciliation"):
+            printed = await ui_client.get(f"/reports/print/funds/{key}")
+            assert printed.status_code == 200 and "window.print" in printed.text, key
+            exported = await ui_client.get(f"/reports/export/funds/{key}/csv")
+            assert exported.status_code == 200 and "text/csv" in exported.headers["content-type"], key
+            assert "Library gift" in exported.text, key
+
+
+async def test_fund_activity_reverses_a_movement(ui_client):
+    """Reverse on a standing movement posts its reversal with the date and reason given and
+    redraws the page headed by what it did; a refusal heads it with the reason and keeps what
+    was typed."""
+    from unittest.mock import AsyncMock
+
+    from ui.api_client import APIError
+
+    reverse = AsyncMock(return_value={"je_id": "je:fund:4"})
+    with _report_api(reverse_fund_movement=reverse):
+        r = await ui_client.post("/reports/funds/movements/je%3Afund%3A1/reverse",
+                                 data={"date": "2026-03-05", "reason": "Released too early",
+                                       "from": "2026-01-01", "to": "2026-03-31"})
+    assert reverse.await_args.args[1:] == ("je:fund:1", {"date": "2026-03-05", "reason": "Released too early"})
+    assert "success-banner" in r.text and "Movement reversed." in r.text and "Books bought" in r.text
+
+    refused = AsyncMock(side_effect=APIError(422, "Reversing this takes money out of a restricted fund."))
+    with _report_api(reverse_fund_movement=refused):
+        r = await ui_client.post("/reports/funds/movements/je%3Afund%3A1/reverse",
+                                 data={"date": "2026-03-05", "reason": "Released too early"})
+    assert "error-banner" in r.text and "restricted fund" in r.text
+    assert 'value="Released too early"' in r.text and "<details open" in r.text
+
+
+async def test_period_lock_tab_reverses_a_year_close(ui_client):
+    """The period lock tab offers Reverse close beside Close year: the year end and a reason
+    undo the latest close of that year; a refusal heads the tab and keeps what was typed."""
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+    from ui.api_client import APIError
+
+    lock = AsyncMock(return_value={"lock_date": None})
+    with _ui_api(get_period_lock=lock):
+        page = (await ui_client.get("/settings/accounting", params={"tab": "period-lock"})).text
+    assert "Reverse close" in page and 'hx-post="/settings/accounting/close-year/reverse"' in page
+
+    reverse = AsyncMock(return_value={"je_id": "je:close:1:reverse"})
+    with _ui_api(get_period_lock=lock, reverse_year_close=reverse):
+        r = await ui_client.post("/settings/accounting/close-year/reverse",
+                                 data={"fiscal_year_end": "2025-12-31", "reason": "Late bill"})
+    assert reverse.await_args.args[1:] == ("2025-12-31", "Late bill")
+    assert "success-banner" in r.text and "The close of 2025-12-31 is reversed." in r.text
+
+    refused = AsyncMock(side_effect=APIError(404, "No close of 2025-12-31 to reverse."))
+    with _ui_api(get_period_lock=lock, reverse_year_close=refused):
+        r = await ui_client.post("/settings/accounting/close-year/reverse",
+                                 data={"fiscal_year_end": "2025-12-31", "reason": "Late bill"})
+    assert "error-banner" in r.text and "No close of 2025-12-31" in r.text and 'value="Late bill"' in r.text
