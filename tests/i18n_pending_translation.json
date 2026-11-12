@@ -389,5 +389,18 @@
     "params": [
       "source"
     ]
+  },
+  "posting.fund.inbound_line_key": {
+    "en": "Line {line} came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+    "params": [
+      "line",
+      "field"
+    ]
+  },
+  "posting.fund.file_key": {
+    "en": "The file gives {field}. Choose funds on the import screen, not in the file.",
+    "params": [
+      "field"
+    ]
   }
 }

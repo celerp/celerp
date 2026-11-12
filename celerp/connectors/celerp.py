@@ -483,8 +483,8 @@ class CelerpConnector(ConnectorBase):
                             or not data.get("location_type") or not data.get("counts")):
                         reason = "Stock count location or entries need review"
                 elif kind == "documents":
-                    from celerp.services.peer_documents import _FIELDS as doc_fields
-                    data = {key: state[key] for key in doc_fields if key in state}
+                    from celerp.services.peer_documents import transport_document
+                    data = transport_document(state)
                     if state.get("accounting_sync_excluded"):
                         result.skipped += 1
                         continue

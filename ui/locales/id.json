@@ -7536,5 +7536,7 @@
   "posting.fund.hold_changed": "Your accountant changed this entry. Review it again, then post it.",
   "fund.choices_cleared_by_source.total": "The total was changed by {source}: choose the fund again",
   "fund.choices_cleared_by_source.lines": "The lines were changed by {source}: choose the fund again",
-  "fund.choices_cleared_by_source.tax": "The tax was changed by {source}: choose the fund again"
+  "fund.choices_cleared_by_source.tax": "The tax was changed by {source}: choose the fund again",
+  "posting.fund.inbound_line_key": "Line {line} came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
+  "posting.fund.file_key": "The file gives {field}. Choose funds on the import screen, not in the file."
 }

@@ -52,6 +52,8 @@ _HEADER_CHANGES = {"doc_taxes": "tax", "tax_rate": "tax"}
 # Where an outside record came from, each with its label (fund.origin.<origin>).
 ORIGINS = frozenset({"file_import", "migration", "connected_company", "accountant", "client",
                      "shared_document", "accounting_system"})
+# Arrivals read from a file, whose funds are chosen on the import screen.
+_FILE_ORIGINS = frozenset({"file_import", "migration"})
 
 
 _ABSENT = object()
@@ -373,39 +375,45 @@ def judge_header_keys(stored: Mapping, written: dict, *, origin: str | None, gra
     return {}
 
 
-def inbound_keys(stored_lines, line_set, stored: Mapping, header: Mapping) -> list[str]:
-    """The fund keys an arrival brings with it: on a line, a value other than the stored
-    line's (matched by line id), and on the header a value other than the stored one. A
-    value of none is no value."""
+def inbound_keys(stored_lines, line_set, stored: Mapping, header: Mapping) -> list[tuple[str, int | None]]:
+    """The fund keys an arrival brings with it, each with the line it is on (from 1; none
+    for the header): on a line, a value other than the stored line's (matched by line id),
+    and on the header a value other than the stored one. A value of none is no value."""
     kept = {li["line_id"]: li for li in stored_lines or [] if isinstance(li, dict) and li.get("line_id")}
-    found = [key for key in HEADER_KEYS if header.get(key) is not None and header.get(key) != stored.get(key)]
-    for line in line_set or ():
+    found = [(key, None) for key in HEADER_KEYS
+             if header.get(key) is not None and header.get(key) != stored.get(key)]
+    for n, line in enumerate(line_set or (), 1):
         if isinstance(line, dict):
             before = kept.get(line.get("line_id"), {})
-            found += [key for key in LINE_KEYS if line.get(key) is not None and line.get(key) != before.get(key)]
-    return list(dict.fromkeys(found))
+            found += [(key, n) for key in LINE_KEYS if line.get(key) is not None and line.get(key) != before.get(key)]
+    return found
 
 
-def journal_inbound_keys(data: Mapping, grant: FundChoiceGrant | None) -> list[str]:
+def journal_inbound_keys(data: Mapping, grant: FundChoiceGrant | None) -> list[tuple[str, int | None]]:
     """The fund keys an arrival journal brings (inbound_keys) other than the values ``grant``
     names: a line by its number in the entry (from 1, as text), the header as itself. A line
     copying one these books posted (``posted_from``) keeps its own keys."""
     header, lines = (grant.header, grant.lines) if grant is not None else ({}, {})
-    found = [key for key in HEADER_KEYS
+    found = [(key, None) for key in HEADER_KEYS
              if data.get(key) is not None and header.get(key, _ABSENT) != data.get(key)]
     for n, line in enumerate(data.get("entries") or [], 1):
         if isinstance(line, dict) and not line.get("posted_from"):
             allowed = lines.get(str(n), {})
-            found += [key for key in LINE_KEYS
+            found += [(key, n) for key in LINE_KEYS
                       if line.get(key) is not None and allowed.get(key, _ABSENT) != line.get(key)]
-    return list(dict.fromkeys(found))
+    return found
 
 
-def refuse_inbound(found: list[str]) -> None:
+def refuse_inbound(found: list[tuple[str, int | None]], origin: str) -> None:
     """Where funds are on, the fund keys are this company's own: an arrival bringing one is
-    refused naming it."""
+    refused naming it and its line; a file is told the fund is chosen on the import screen."""
     if found:
-        raise _refused(422, "posting.fund.inbound_key", field=found[0])
+        key, line = found[0]
+        if origin in _FILE_ORIGINS:
+            raise _refused(422, "posting.fund.file_key", field=key)
+        if line is not None:
+            raise _refused(422, "posting.fund.inbound_line_key", field=key, line=line)
+        raise _refused(422, "posting.fund.inbound_key", field=key)
 
 
 def _measure(values: Mapping, key: str):

@@ -653,15 +653,15 @@ async def unattended(work):
         _UNATTENDED.reset(token)
 
 
-async def _judge_inbound(session, company_id, found: list[str]) -> None:
+async def _judge_inbound(session, company_id, found: list[tuple[str, int | None]], origin: str) -> None:
     """An arrival bringing fund keys (peer_lines.inbound_keys): kept as sent while funds are
-    off, refused naming the key while they are on. Read under the company lock, so it never
+    off, refused while they are on (peer_lines.refuse_inbound). Read under the company lock, so it never
     interleaves with turning funds on, which checks what unposted records carry."""
     if found:
         from celerp.services.journal_accounts import funds_enabled, hold_fund_ledger
 
         if funds_enabled(await hold_fund_ledger(session, company_id)):
-            refuse_inbound(found)
+            refuse_inbound(found, origin)
 
 
 async def emit_event(
@@ -774,7 +774,7 @@ async def emit_event(
         from celerp.services.journal_accounts import prepare_journal_entry
 
         if origin is not None:
-            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant))
+            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
             mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
@@ -830,7 +830,7 @@ async def emit_event(
                 normalize_line_ids(line_set, stored.get("line_items"))
             if origin is not None:
                 await _judge_inbound(session, kwargs.get("company_id"),
-                                     inbound_keys(stored.get("line_items"), line_set, stored, header))
+                                     inbound_keys(stored.get("line_items"), line_set, stored, header), origin)
             if line_set is not None:
                 # Where a line came from and the fund chosen for it are kept, written only by
                 # an arrival or a copy, and changed only as a grant names them.

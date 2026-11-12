@@ -383,6 +383,26 @@ async def test_local_edit_of_marked_line_clears_choices_with_notice(client, auth
         "Amounts changed, so the fund choices on lines 1, 2 and the fund for this document were cleared: choose again")
 
 
+async def test_document_import_refuses_line_fund_id(client, auth):
+    """In books that use funds, a batch import refuses each record whose file line carries
+    fund_id, fund_choice or origin, for that record only, pointing to the import screen; the
+    record beside them is created."""
+    await _fund_company(client, auth)
+    item = await _item(client, auth, "Filed")
+    keys = (("fund_id", "fund:elsewhere"), ("fund_choice", "unrestricted"), ("origin", "accountant"), (None, None))
+    eids = [f"doc:IMP-{uuid.uuid4().hex[:8]}" for _ in keys]
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "invoice", "status": "draft", "ref_id": eid.split(":")[1], "total": 15,
+                 "line_items": [_line(item, "Filed", 10), _line(item, "Filed", 5, **({key: value} if key else {}))]}}
+        for eid, (key, value) in zip(eids, keys)]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    errors = r.json()["errors"]
+    for eid, (key, _) in zip(eids[:3], keys):
+        assert f"{eid}: The file gives {key}. Choose funds on the import screen, not in the file." in errors, errors
+    assert [(await client.get(f"/docs/{eid}", headers=auth["headers"])).status_code for eid in eids] == [404] * 3 + [200]
+
+
 async def test_reserved_keys_kept_without_funds_and_checked_at_turn_on(client, session, auth):
     from test_funds import _funds_on
 
@@ -415,20 +435,20 @@ async def test_reserved_keys_kept_without_funds_and_checked_at_turn_on(client, s
     r = await _funds_on(client, auth)
     assert r.status_code == 200, r.text
 
-    # With funds in use, inbound data carrying any of the keys is refused naming it.
+    # With funds in use, a file carrying any of the keys is refused naming it.
     for key, value in (("origin", "accountant"), ("fund_choice", "unrestricted"), ("fund_id", "fund:elsewhere")):
         eid = f"doc:IMP-{uuid.uuid4().hex[:8]}"
         r = await client.post("/docs/import", headers=auth["headers"], json={
             "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
             "data": {"doc_type": "invoice", "status": "draft", "ref_id": eid.split(":")[1],
                      "line_items": [_line(item, "Reserved", 5, **{key: value})], "total": 5}})
-        assert r.status_code == 422 and _key(r) == "posting.fund.inbound_key", r.text
+        assert r.status_code == 422 and _key(r) == "posting.fund.file_key", r.text
         assert r.json()["detail"]["params"]["field"] == key
     r = await client.post("/accounting/import/batch", headers=auth["headers"], json={"records": [{
         "entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
         "idempotency_key": uuid.uuid4().hex, "data": {"status": "posted", "ts": "2026-01-16", "entries": entries}}]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
-    assert "came in with fund_id" in r.text, r.text
+    assert "The file gives fund_id. Choose funds on the import screen" in r.text, r.text
 
     # Turning funds off is refused while an unposted record holds a local choice, naming it.
     r = await _choose(client, auth, marked, lines={(await _doc(client, auth, marked))["line_items"][0]["line_id"]: "unrestricted"})

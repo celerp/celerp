@@ -20,6 +20,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import peer_access, peer_accounts, peer_attention
 from celerp.services.company_lock import locked_company
+from celerp.services.peer_lines import LINE_KEYS
 from celerp.services.peer_payments import BY_HAND
 from celerp.services.peer_identity import (
     claim_peer_revision, commit_peer_revision, holds_peer_revision, peer_identity,
@@ -48,6 +49,17 @@ _FULFILLING_TYPES = frozenset({"invoice"})
 _ISSUED_STATUSES = frozenset({
     "final", "sent", "partial", "paid", "awaiting_payment", "received", "partially_received",
 })
+
+
+
+def transport_document(state: dict) -> dict:
+    """A document as it travels to the connected company: the keys _FIELDS names, its lines
+    without where they came from or the fund chosen for them, which are each company's own."""
+    data = {key: state[key] for key in _FIELDS if key in state}
+    if isinstance(data.get("line_items"), list):
+        data["line_items"] = [{k: v for k, v in line.items() if k not in LINE_KEYS} if isinstance(line, dict) else line
+                              for line in data["line_items"]]
+    return data
 
 
 DOC_FUNDS = "doc_funds"
