@@ -915,11 +915,6 @@
   "reason": "No test requests this route; its source reaches api PATCH."
  },
  {
-  "route": "ui PUT /settings/labels/{tmpl_id}",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
- },
- {
   "route": "ui DELETE /settings/locations/{location_id}",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api DELETE."
