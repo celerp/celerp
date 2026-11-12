@@ -326,6 +326,91 @@ async def test_a_failed_sync_then_a_changed_order_asks_again_on_the_automatic_re
     assert await store.created() == (0, None)
 
 
+async def test_undo_after_mark_reconciled_never_revives_an_earlier_import_as(store):
+    """Import as (its sync fails), then Mark reconciled, then Undo: each decision replaces the
+    one before, so after the Undo the order waits on a person again and no sync imports it
+    under the next number until they choose Import as again."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    [entry] = await store.sync()
+    sig = entry["signature"]
+    async with ui_signed_in(store.tok) as ui:
+        r = await import_as(ui, sig, None)
+        assert r.status_code != 200, r.text
+        r = await ui.api.post("/connectors/woocommerce/orders/61/reconciled", json={"signature": sig})
+        assert r.status_code == 200, r.text
+        assert [e.get("import_next") for e in await store.attention()] == [None]
+        await store.sync(purpose="schedule")
+        assert await store.created() == (0, None)
+        r = await ui.api.delete("/connectors/woocommerce/orders/61/reconciled")
+        assert r.status_code == 200, r.text
+        [waiting] = await store.attention()
+        assert "import_next" not in waiting and not waiting.get("reconciled"), waiting
+        await store.sync(purpose="schedule")
+    assert await store.created() == (0, None)
+
+
+async def test_a_mark_after_a_failed_import_as_holds_when_the_order_changes(store):
+    """Import as (its sync fails), then Mark reconciled, then the order changes: the earlier
+    Import as went with the mark, so the changed order is not imported under the next number."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    [entry] = await store.sync()
+    async with ui_signed_in(store.tok) as ui:
+        r = await import_as(ui, entry["signature"], None)
+        assert r.status_code != 200, r.text
+        r = await ui.api.post("/connectors/woocommerce/orders/61/reconciled", json={"signature": entry["signature"]})
+        assert r.status_code == 200, r.text
+    await store.sync(_CHANGED, purpose="schedule")
+    assert await store.created() == (0, None)
+
+
+async def test_a_choice_dropped_at_a_change_stays_dropped_when_the_order_changes_back(store):
+    """Import as (its sync fails), the order changes (the choice goes), then changes back to the
+    reviewed state: the order still waits for the person to choose again."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    [entry] = await store.sync()
+    async with ui_signed_in(store.tok) as ui:
+        r = await import_as(ui, entry["signature"], None)
+    assert r.status_code != 200, r.text
+    [again] = await store.sync(_CHANGED, purpose="schedule")
+    assert "import_next" not in again
+    await store.sync(_ORDER, purpose="schedule")
+    assert await store.created() == (0, None)
+
+
+async def test_one_writer_sets_a_persons_decision_on_an_attention_entry():
+    """Mark reconciled, Undo and Import as are written by one function, which replaces every
+    earlier decision; no other code in the app sets the decision keys on an existing entry."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    writers = set()
+    for path in [*root.glob("celerp/**/*.py"), *root.glob("default_modules/*/*/**/*.py")]:
+        if "tests" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                targets = node.targets if isinstance(node, ast.Assign) else []
+                pops = [node.func.value] if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                                             and node.func.attr in ("pop", "setdefault", "update")) else []
+                keys = [t.slice.value for t in targets if isinstance(t, ast.Subscript)
+                        and isinstance(t.slice, ast.Constant)]
+                keys += [a.value for p in pops for a in node.args[:1] if isinstance(a, ast.Constant)]
+                keys += [k.value for p in pops for a in node.args[:1] if isinstance(a, ast.Dict)
+                         for k in a.keys if isinstance(k, ast.Constant)]
+                keys += [kw.arg for p in pops for kw in node.keywords]
+                if {"reconciled", "import_next"} & set(keys):
+                    writers.add((path.relative_to(root).as_posix(), fn.name))
+    assert writers == {
+        ("default_modules/celerp-connectors/celerp_connectors/routes.py", "_set_held_order_decision"),
+        # A fresh entry for a vanished order, mirroring the mark stored on its document.
+        ("default_modules/celerp-docs/celerp_docs/doc_service.py", "hold_missing_woocommerce_order"),
+    }, writers
+
+
 async def test_two_import_as_requests_at_once_book_the_order_once(store):
     """Two Import as requests for the same review at the same time make one choice and one
     import: the order is booked once, under one number, and the other request is refused

@@ -773,6 +773,16 @@ class ReconciledRequest(BaseModel):
     signature: str
 
 
+def _set_held_order_decision(entry: dict, *, reconciled: bool = False, import_next: str | None = None) -> None:
+    """The one writer of a person's decision on an attention entry (Mark reconciled, Undo,
+    Import as). Each decision replaces every earlier one, so the sync acts only on the last
+    thing the person chose: an Undo or a mark never leaves an older Import as waiting."""
+    entry["reconciled"] = reconciled
+    entry.pop("import_next", None)
+    if import_next is not None:
+        entry["import_next"] = import_next
+
+
 async def _set_order_reconciled(
     session: AsyncSession, company_id, order_id: str, signature: str | None, actor_id,
 ) -> dict:
@@ -798,7 +808,7 @@ async def _set_order_reconciled(
             )
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(status_code=409, detail=_order_changed())
-        entry["reconciled"] = signature is not None
+        _set_held_order_decision(entry, reconciled=signature is not None)
 
     entry = await update_attention_entry(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
@@ -867,8 +877,7 @@ async def import_order_under_next_number(
             raise HTTPException(status_code=409, detail=t("error.order_number_not_held"))
         if entry.get("signature") != payload.signature:
             raise HTTPException(status_code=409, detail=_order_changed())
-        entry["import_next"] = payload.signature
-        entry["reconciled"] = False
+        _set_held_order_decision(entry, import_next=payload.signature)
 
     if await update_attention_entry(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
