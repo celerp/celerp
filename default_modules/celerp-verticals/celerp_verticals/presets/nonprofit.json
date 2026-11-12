@@ -1,0 +1,23 @@
+{
+  "name": "nonprofit",
+  "display_name": "Nonprofit",
+  "label_key": "enum.vertical_preset.nonprofit",
+  "license": "MIT",
+  "categories": [
+    "membership",
+    "donation",
+    "event_ticket"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-docs",
+    "celerp-contacts",
+    "celerp-subscriptions",
+    "celerp-accounting",
+    "celerp-fixed-assets",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-verticals"
+  ],
+  "company_settings": {}
+}

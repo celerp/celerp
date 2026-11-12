@@ -190,6 +190,24 @@ async def _first_schedule(session, company_id, state: dict) -> dict:
         raise billing.schedule_refusal(422, exc) from exc
 
 
+async def activate_agreement(session, company_id, entity_id: str, user) -> dict:
+    """Promote the draft agreement to active on its first schedule (activate_subscription),
+    uncommitted; returns its state after. Refused (409) when it is not a draft or is a
+    template still waiting to move onto a schedule, and with the bill path's own refusal when
+    its first bill would be refused (billing.bill_refusal), so it stays a draft."""
+    company = await locked_company(session, company_id)
+    proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
+    billing.refuse_not_moved(proj.state, entity_id)
+    if proj.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
+    held = dict(proj.state)
+    changes = {"status": "active", **await _first_schedule(session, company_id, held)}
+    if (refused := await billing.bill_refusal(session, company, entity_id, held, changes, user)) is not None:
+        raise refused
+    await billing.write_agreement(session, company_id, entity_id, changes, user.id)
+    return {**held, **changes}
+
+
 async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
     """A template not yet on a schedule takes only its frequency and interval, and moves onto
     a schedule with them at once; 409 naming it and why while it still cannot."""
@@ -771,16 +789,8 @@ def _build_router() -> APIRouter:
         template still waiting to move onto one; whoever presses it needs the permissions of any
         mode it brings into force (billing.write_agreement). A draft whose first bill the bill path
         refuses stays a draft (billing.bill_refusal)."""
-        company = await locked_company(session, company_id)
-        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
-        billing.refuse_not_moved(proj.state, entity_id)
-        if proj.state.get("status") != "draft":
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
-        changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
-        merged = {**proj.state, **changes}
-        if (refused := await billing.bill_refusal(session, company, entity_id, proj.state, changes, user)) is not None:
-            raise refused
-        await _write(session, company_id, entity_id, changes, user)
+        merged = await activate_agreement(session, company_id, entity_id, user)
+        await session.commit()
         return {"ok": True, "next_bill_date": next_bill_date(merged),
                 **await summary.modes_answer(session, company_id, entity_id)}
 

@@ -19,6 +19,7 @@ PLUGIN_MANIFEST = {
             {"group": "Subscriptions", "key": "members", "href": "/members", "label": "Members", "label_key": "nav.members", "order": 28, "permission": "view_subscriptions", "verticals": ["nonprofit"]},
         ],
         "on_modules_ready": [{"handler": "celerp_subscriptions.migration:migrate_schedules_hook"}],
+        "demo_records": {"handler": "celerp_subscriptions.demo:seed_demo_agreements_hook"},
         "on_company_restored": [{"handler": "celerp_subscriptions.migration:reconcile_restored_company_schedules"}],
         "on_company_module_enabled": [{"handler": "celerp_subscriptions.migration:reconcile_company_schedules"}],
         "periodic_operation": {"handler": "celerp_subscriptions.billing:run_due", "module": "celerp-subscriptions"},

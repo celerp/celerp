@@ -21,6 +21,26 @@ pytestmark = pytest.mark.asyncio
 _NONPROFIT_CATEGORIES = {"membership", "donation", "event_ticket"}
 
 
+@pytest.fixture(autouse=True)
+def _subscription_slots():
+    """The test app wires module routes without loading them, so the Subscriptions module's
+    slot contributions (its demo_records handler among them) are registered here, as the
+    module loader does, and removed after."""
+    from pathlib import Path
+
+    import celerp_subscriptions
+    from celerp.modules import slots
+    from celerp.modules.loader import _runtime_keys, read_manifest
+
+    pkg = Path(celerp_subscriptions.__file__).resolve().parent.parent
+    slots.unregister_module(pkg.name)
+    for slot, contribution in read_manifest(pkg)["slots"].items():
+        for item in contribution if isinstance(contribution, list) else [contribution]:
+            slots.register(slot, {**item, **_runtime_keys(pkg.name, True)})
+    yield
+    slots.unregister_module(pkg.name)
+
+
 async def _admin(client) -> dict:
     r = await client.post("/auth/register", json={
         "company_name": f"Club-{uuid.uuid4().hex[:6]}", "email": f"np-{uuid.uuid4().hex[:8]}@test.test",
@@ -60,7 +80,7 @@ async def test_nonprofit_preset_categories_and_demo(client):
     for item in items:
         by_category.setdefault(item.get("category"), []).append(item)
     assert _NONPROFIT_CATEGORIES <= set(by_category), sorted(by_category, key=str)
-    assert any((i.get("attributes") or {}).get("membership_term") == "Lifetime" for i in by_category["membership"])
+    assert any(i.get("membership_term") == "Lifetime" for i in by_category["membership"])
     settings = await _settings(client, h)
     assert any("member" in (term.get("description") or term["name"]).lower() for term in settings["payment_terms"])
     assert any("donation" in tc["text"].lower() or "gift" in tc["text"].lower() for tc in settings["terms_conditions"])

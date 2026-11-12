@@ -38,7 +38,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     already has them. Runs inside the caller's transaction."""
     from celerp.events.engine import emit_event
     from celerp.services.company_lock import locked_company
-    from celerp.services.demo import DEMO_SOURCE, has_own_books
+    from celerp.services.demo import DEMO_SOURCE, follow_books_currency, has_own_books
     from celerp_docs.doc_money import document_money
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import claim_number
@@ -48,7 +48,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     company = await locked_company(session, company_id)
     currency = books_currency(company.settings or {})
     if await find_event_by_idempotency(session, company_id, "fa:demo:van") is not None:
-        await _follow_books_currency(session, company_id, currency)
+        await follow_books_currency(session, company_id, [f"fa:demo:{key}" for key, *_ in _BILLS], currency)
         return
     today = business_today(company.settings.get("timezone"))
     for key, supplier, name, quantity, price, months, day, account in _BILLS:
@@ -69,30 +69,6 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
         await session.flush()
         await finalize_document(doc_id, company_id, SimpleNamespace(id=user_id), session, commit=False)
         await session.flush()
-
-
-async def _follow_books_currency(session, company_id, currency: str) -> None:
-    """Keep the sample bills in the books' currency. Their amounts are sample figures,
-    like the sample stock's, so a currency set before the company keeps books of its own
-    re-labels them; their journals already hold the same figures at a rate of one."""
-    from celerp.events.engine import emit_event
-    from celerp.models.projections import Projection
-    from celerp.services.demo import DEMO_SOURCE
-
-    for key, *_ in _BILLS:
-        created = await find_event_by_idempotency(session, company_id, f"fa:demo:{key}")
-        if created is None:
-            continue
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": created.entity_id})
-        held = str(((row.state if row else None) or {}).get("currency") or currency).upper()
-        if held == currency:
-            continue
-        await emit_event(session, company_id=company_id, entity_id=created.entity_id, entity_type="doc",
-                         event_type="doc.updated",
-                         data={"fields_changed": {"currency": {"old": held, "new": currency}}},
-                         actor_id=None, location_id=None, source=DEMO_SOURCE,
-                         idempotency_key=f"fa:demo:{key}:currency:{currency}:{uuid.uuid4().hex[:8]}")
-    await session.flush()
 
 
 async def seed_demo_assets_hook(*, session, company_id, user_id) -> None:

@@ -33,6 +33,7 @@ from celerp.services.vertical_presets import (
     list_presets as _list_presets,
     load_category,
     load_preset,
+    mark_gift_category,
     merge_missing_preset_categories,
     seed_category_units,
 )
@@ -122,6 +123,7 @@ def _build_router() -> APIRouter:
             **(settings.get("category_display_names") or {}), cat["name"]: cat["display_name"],
         }
         seed_category_units(settings, cat)
+        mark_gift_category(settings, cat)
         await check_units_change(session, company_id, settings_units(company.settings), settings_units(settings))
         company.settings = settings
         await session.commit()
