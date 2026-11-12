@@ -20,6 +20,7 @@ from celerp.services.permissions import role_has_permission
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.encode import js
+from ui.components.icons import icon
 from ui.components.table import EMPTY, searchable_select
 from ui.i18n import t
 
@@ -281,7 +282,7 @@ async def fund_waiting_banner(token: str, settings: dict, role: str) -> FT | str
     if not count:
         return ""
     sync = [" ", A(t("sync_accounts.title"), href="/accounting/sync-accounts")] if waiting.get("held") else []
-    return Div(Span("ℹ️", cls="info-banner-icon"),
+    return Div(Span(icon("info"), cls="info-banner-icon"),
                Span(t("fund.waiting.count_one") if count == 1 else t("fund.waiting.count", count=count), " ",
                     A(t("fund.waiting.link"), href="/docs?fund_choice=needed"), *sync),
                cls="info-banner", id="fund-waiting-banner")

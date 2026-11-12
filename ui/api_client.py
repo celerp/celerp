@@ -3952,6 +3952,14 @@ async def set_category_income_account(token: str, category_key: str, code: str |
                                   json={"income_account": code})).json()
 
 
+async def set_category_gift(token: str, category_key: str, gift: bool) -> dict:
+    """PUT /companies/me/categories/{key}/gift: whether the category's items are gifts (their
+    sales never defer revenue)."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/companies/me/categories/{quote(category_key, safe='')}/gift",
+                                  json={"gift": gift})).json()
+
+
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
 
 async def get_period_lock(token: str) -> dict:

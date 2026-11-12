@@ -36,8 +36,9 @@ from celerp.services import import_stage
 from celerp.services.ledger_display import run_reference
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
-from celerp.accounting_roles import INCOME_ACCOUNT_FIELD
+from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD
 from ui.components.posting_accounts import income_account_view
+from ui.routes.recognition import flag_view
 from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
@@ -1969,6 +1970,11 @@ def setup_routes(app):
         if income_account is not None:
             detail_fields = [*detail_fields, {"key": INCOME_ACCOUNT_FIELD, "label_key": "item.income_account"}]
             detail_renderers[INCOME_ACCOUNT_FIELD] = lambda *_: income_account
+        recognize = flag_view("item", entity_id, bool(item.get(RECOGNIZE_FIELD)), company.get("settings") or {},
+                              _get_role(request))
+        if recognize is not None:
+            detail_fields = [*detail_fields, {"key": RECOGNIZE_FIELD, "label_key": "item.recognize_over_service_period"}]
+            detail_renderers[RECOGNIZE_FIELD] = lambda *_: recognize
 
         _item_role = _get_role(request)
         _item_settings = company.get("settings") or {}
@@ -5537,7 +5543,7 @@ _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "default_sell_qty", "barcode",
     "batch_no", "hs_code", "location_name", "short_description", "reorder_point",
     "reorder_qty", "purchase_sku", "purchase_name",
-    "purchase_unit", "purchase_conversion_factor", INCOME_ACCOUNT_FIELD,
+    "purchase_unit", "purchase_conversion_factor", INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD,
 })
 
 

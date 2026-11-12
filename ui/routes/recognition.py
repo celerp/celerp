@@ -8,23 +8,30 @@ first, with Post while a run is outstanding and Reverse while one stands posted.
 books lock is refused with the lock date and offered its first open day as an explicit choice.
 Last comes the deferred revenue roll-forward for the chosen period, with the schedules whose
 source document was voided and their posted runs, for the accountant to reverse.
+
+Also here: the click-to-edit Yes/No cells for what decides which lines defer, an item's
+"Recognize over the service period" (item page) and a category's "Gifts" (Settings > Inventory).
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.accounting_roles import RECOGNIZE_FIELD
 from celerp.services.peer_lines import UNRESTRICTED
+from celerp.services.permissions import role_has_permission
+from celerp.services.recognition import GIFT_CATEGORIES
 from ui.api_client import APIError, error_message
 from ui.components.encode import safe_url
-from ui.components.shell import no_access_banner, page_header, page_title
-from ui.components.table import doc_href, empty_state_cta, fmt_money
+from ui.components.shell import module_active, no_access_banner, page_header, page_title
+from ui.components.table import display_cell, doc_href, editable_cell, empty_state_cta, fmt_money
 from ui.config import get_token as _token
+from ui.routes.settings import _get_role
 from ui.i18n import get_lang, t
 from ui.routes.reports import _date_filter_bar, _get_company, _page_or_fragment, _parse_dates
 
@@ -33,6 +40,10 @@ SETTING_URL = f"{PAGE}/setting"
 _BODY_ID = "recognition-body"
 _SETTING_ID = "recognition-setting"
 _NUM = "cell--number"
+FLAG_URL = f"{PAGE}/flag"
+# kind -> (its label, the permission its save needs: the item PATCH, the category gift PUT)
+FLAGS = {"item": ("item.recognize_over_service_period", "edit_inventory"),
+         "category": ("settings_inventory.category_gift", "manage_accounting")}
 
 
 # ── automatic posting ────────────────────────────────────────────────────────────────────
@@ -61,6 +72,40 @@ async def setting_tab(token: str) -> FT:
     return Div(H3(t("page.revenue_recognition"), cls="section-title"),
                setting_card(bool(setting.get("enabled")), bool(setting.get("lapsed"))),
                A(t("recognition.open_page"), href=safe_url(PAGE), cls="drilldown-link"))
+
+
+# ── which lines defer: the item flag and gift categories ─────────────────────────────────
+
+def _flag_url(action: str, kind: str, key: str) -> str:
+    return f"{FLAG_URL}{'/' + action if action else ''}?{urlencode({'kind': kind, 'key': key})}"
+
+
+def flag_view(kind: str, key: str, on: bool, settings: dict, role: str) -> FT | None:
+    """The Yes/No cell of an item's flag or a category's gift mark, click to edit with the
+    permission its save needs. None when the company keeps no accounts (nothing defers)."""
+    if not module_active(settings, "celerp-accounting"):
+        return None
+    return display_cell(entity_id=key, field=f"recognition-{kind}", value=str(on).lower(), cell_type="bool",
+                        editable=role_has_permission(settings, role, FLAGS[kind][1]),
+                        edit_url=_flag_url("edit", kind, key))
+
+
+def _flag_editor(kind: str, key: str, on: bool, error: str = "") -> FT:
+    cell = editable_cell(entity_id=key, field=f"recognition-{kind}", value=str(on).lower(), cell_type="bool",
+                         aria_label=t(FLAGS[kind][0]), patch_url=_flag_url("", kind, key),
+                         restore_url=_flag_url("display", kind, key))
+    if error:
+        cell.attrs["class"] = f'{cell.attrs.get("class", "")} cell--error'.strip()
+        cell = cell(P(error, cls="cell-error"))
+    return cell
+
+
+async def _flag_state(token: str, kind: str, key: str) -> tuple[bool, dict]:
+    """(whether the item's flag or the category's gift mark is on, the company settings)."""
+    settings = (await api.get_company(token)).get("settings") or {}
+    if kind == "category":
+        return key in (settings.get(GIFT_CATEGORIES) or ()), settings
+    return bool((await api.get_item(token, key)).get(RECOGNIZE_FIELD)), settings
 
 
 # ── runs ─────────────────────────────────────────────────────────────────────────────────
@@ -198,6 +243,56 @@ def _locked_choice(e: APIError, month: str, action: str) -> dict | None:
 
 
 def setup_routes(app):
+
+    def _flag_unusable(token: str | None, kind: str):
+        if kind not in FLAGS:
+            return Response(status_code=404)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        return None
+
+    @app.get(f"{FLAG_URL}/edit")
+    async def flag_edit(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _flag_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            on, _ = await _flag_state(token, kind, key)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        return _flag_editor(kind, key, on)
+
+    @app.get(f"{FLAG_URL}/display")
+    async def flag_display(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _flag_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            on, settings = await _flag_state(token, kind, key)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        cell = flag_view(kind, key, on, settings, _get_role(request))
+        return cell if cell is not None else Response(status_code=404)
+
+    @app.patch(FLAG_URL)
+    async def flag_save(request: Request, kind: str, key: str):
+        """Turn the flag or gift mark on or off and show the cell, or keep the Yes/No open with
+        the API's reason when it refuses."""
+        token = _token(request)
+        if (unusable := _flag_unusable(token, kind)) is not None:
+            return unusable
+        on = str((await request.form()).get("value", "")).strip().lower() == "true"
+        try:
+            if kind == "item":
+                await api.patch_item(token, key, {RECOGNIZE_FIELD: on})
+            else:
+                await api.set_category_gift(token, key, on)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return _flag_editor(kind, key, on, error=error_message(e))
+        return await flag_display(request, kind, key)
 
     @app.get(PAGE)
     async def recognition_page(request: Request):

@@ -1222,6 +1222,14 @@
     "recognition.void_hint": {
       "en": "The documents these schedules came from were voided. Reverse their posted runs to take the revenue they recognized back to deferred revenue.",
       "params": []
+    },
+    "item.recognize_over_service_period": {
+      "en": "Recognize over the service period",
+      "params": []
+    },
+    "settings_inventory.category_gift": {
+      "en": "Gifts",
+      "params": []
     }
   },
   "modules": {

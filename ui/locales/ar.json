@@ -7721,5 +7721,7 @@
   "recognition.differs": "Differs from the deferred revenue accounts by {amount}.",
   "recognition.outstanding_in_period": "Outstanding runs in this period: {n}.",
   "recognition.void_source": "Source document void",
-  "recognition.void_hint": "The documents these schedules came from were voided. Reverse their posted runs to take the revenue they recognized back to deferred revenue."
+  "recognition.void_hint": "The documents these schedules came from were voided. Reverse their posted runs to take the revenue they recognized back to deferred revenue.",
+  "item.recognize_over_service_period": "Recognize over the service period",
+  "settings_inventory.category_gift": "Gifts"
 }
