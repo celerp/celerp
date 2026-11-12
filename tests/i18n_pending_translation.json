@@ -996,6 +996,10 @@
     "documents.allocate_by_fund_hint": {
       "en": "Leave these empty to keep that split. If you fill them in, they must add up to the payment.",
       "params": []
+    },
+    "funds.opening_date": {
+      "en": "Opening date",
+      "params": []
     }
   },
   "modules": {

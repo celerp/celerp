@@ -7672,5 +7672,6 @@
   "documents.by_fund": "By fund",
   "documents.fund_split_rule": "A payment settles each fund in proportion to what it has open.",
   "documents.allocate_by_fund": "Allocate by fund",
-  "documents.allocate_by_fund_hint": "Leave these empty to keep that split. If you fill them in, they must add up to the payment."
+  "documents.allocate_by_fund_hint": "Leave these empty to keep that split. If you fill them in, they must add up to the payment.",
+  "funds.opening_date": "Opening date"
 }

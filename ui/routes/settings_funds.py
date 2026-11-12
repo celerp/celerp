@@ -23,7 +23,7 @@ from ui.api_client import APIError, error_message
 from ui.components.funds import fund_options
 from ui.components.operation_key import operation_key_input, required_operation_key
 from ui.components.table import EMPTY, fmt_money, searchable_select
-from ui.i18n import t
+from ui.i18n import date_text, t
 from ui.routes.settings import _token
 
 FUNDS_URL = "/settings/accounting/funds"
@@ -72,15 +72,18 @@ def _setting_form(enabled: bool) -> FT:
 
 
 def fund_row(fund: dict) -> FT:
-    """One fund: its name and purpose click to edit, whether it is restricted, and its
-    archive or unarchive action."""
+    """One fund: its name, purpose and opening date click to edit, whether it is restricted,
+    and its archive or unarchive action."""
     archived = fund.get("archived")
+    opened = fund.get("opening_date")
     return Tr(
         Td(Span(fund["name"], cls="editable-cell", title=t("documents.click_to_edit"),
                 **_row_get(fund["id"], _fund_url(fund["id"], "/edit")))),
         Td(t("funds.restricted") if fund.get("restricted") else t("label.unrestricted")),
         Td(Span(fund.get("purpose") or EMPTY, cls="editable-cell", title=t("documents.click_to_edit"),
                 **_row_get(fund["id"], _fund_url(fund["id"], "/edit")))),
+        Td(Span(date_text(date.fromisoformat(opened)) if opened else EMPTY, cls="editable-cell",
+                title=t("documents.click_to_edit"), **_row_get(fund["id"], _fund_url(fund["id"], "/edit")))),
         Td(t("chip.archived") if archived else t("th.active")),
         Td(Button(t("funds.unarchive" if archived else "funds.archive"), type="button", cls="btn btn--sm btn--outline",
                   **_swap(_fund_url(fund["id"], "/unarchive" if archived else "/archive")))),
@@ -89,14 +92,15 @@ def fund_row(fund: dict) -> FT:
 
 
 def fund_row_editor(fund: dict, error: str = "") -> FT:
-    """A fund's row as an inline edit: name and purpose fields, Save, and Cancel (or Esc)
-    back to the row as stored."""
+    """A fund's row as an inline edit: name, purpose and opening date fields, Save, and Cancel
+    (or Esc) back to the row as stored."""
     cancel = _row_get(fund["id"], _fund_url(fund["id"], "/row"))
     return Tr(
         Td(Input(type="text", name="name", value=fund["name"], cls="form-input", autofocus=True),
            *([P(error, cls="error-banner mt-sm")] if error else [])),
         Td(t("funds.restricted") if fund.get("restricted") else t("label.unrestricted")),
         Td(Input(type="text", name="purpose", value=fund.get("purpose") or "", cls="form-input")),
+        Td(Input(type="date", name="opening_date", value=fund.get("opening_date") or "", cls="form-input")),
         Td(t("chip.archived") if fund.get("archived") else t("th.active")),
         Td(Button(t("btn.save"), type="button", cls="btn btn--sm btn--primary",
                   hx_include="closest tr", hx_patch=_fund_url(fund["id"]), hx_target=f"#{_row_id(fund['id'])}",
@@ -116,6 +120,9 @@ def _add_form(values: dict) -> FT:
                   " ", t("funds.restricted_check")), cls="form-field"),
         Div(Label(t("funds.purpose")), Input(type="text", name="purpose", value=values.get("purpose", ""),
                                              placeholder=t("funds.purpose_hint"), cls="form-input"),
+            cls="form-field"),
+        Div(Label(t("funds.opening_date")), Input(type="date", name="opening_date",
+                                                  value=values.get("opening_date", ""), cls="form-input"),
             cls="form-field"),
         Div(Button(t("funds.add"), type="submit", cls="btn btn--primary"), cls="form-actions mt-md"),
         **_swap(FUNDS_URL),
@@ -238,7 +245,8 @@ def funds_card(books: FundsBooks, banner: FT | str = "", kept: tuple[str, dict] 
     body: list = []
     if books.enabled:
         body.append(Table(
-            Thead(Tr(Th(t("th.name")), Th(t("funds.restriction")), Th(t("funds.purpose")), Th(t("th.status")), Th(""))),
+            Thead(Tr(Th(t("th.name")), Th(t("funds.restriction")), Th(t("funds.purpose")), Th(t("funds.opening_date")),
+                     Th(t("th.status")), Th(""))),
             Tbody(*[fund_row(f) for f in books.funds]), cls="data-table mt-md") if books.funds
             else P(t("funds.empty"), cls="empty-state mt-md"))
         body += [H4(t("funds.add"), cls="section-title mt-lg"), _add_form(values if form == "add" else {})]
@@ -344,9 +352,11 @@ def setup_routes(app):
         token = _token(request)
         form = await request.form()
         values = {"name": str(form.get("name") or "").strip(), "restricted": form.get("restricted") == "1",
-                  "purpose": str(form.get("purpose") or "").strip()}
+                  "purpose": str(form.get("purpose") or "").strip(),
+                  "opening_date": str(form.get("opening_date") or "").strip()}
         try:
             fund = await api.create_fund(token, {**values, "purpose": values["purpose"] or None,
+                                                 "opening_date": values["opening_date"] or None,
                                                  "request_key": required_operation_key(form)})
         except APIError as e:
             return await _answer(token, refused=e, kept=("add", values))
@@ -411,12 +421,13 @@ def setup_routes(app):
 
     @app.patch(FUNDS_URL + "/{fund_id}")
     async def rename_fund(request: Request, fund_id: str):
-        """Save the name and purpose and show the row as stored, or keep the edit with the reason."""
+        """Save the name, purpose and opening date and show the row as stored, or keep the edit
+        with the reason."""
         token = _token(request)
         form = await request.form()
-        name, purpose = str(form.get("name") or ""), str(form.get("purpose") or "")
+        typed = {k: str(form.get(k) or "") for k in ("name", "purpose", "opening_date")}
         try:
-            return fund_row(await api.update_fund(token, fund_id, {"name": name, "purpose": purpose}))
+            return fund_row(await api.update_fund(token, fund_id, typed))
         except APIError as e:
             api.raise_if_signed_out(e)
             try:
@@ -425,4 +436,4 @@ def setup_routes(app):
                 fund = None
             if fund is None:
                 return await _answer(token, refused=e)
-            return fund_row_editor({**fund, "name": name, "purpose": purpose}, error_message(e))
+            return fund_row_editor({**fund, **typed}, error_message(e))

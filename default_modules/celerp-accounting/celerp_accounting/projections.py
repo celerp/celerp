@@ -42,7 +42,7 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "fund.created":
         current.update({"entity_type": "fund", **data, "archived": False})
     elif event_type == "fund.updated":
-        current.update({k: v for k, v in data.items() if v is not None})
+        current.update(data)  # the event holds only what changed; a None clears that field
     elif event_type == "fund.archived":
         current["archived"] = True
     elif event_type == "fund.unarchived":

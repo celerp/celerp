@@ -1281,12 +1281,14 @@ class FundCreated(BaseModel):
     name: str
     restricted: bool
     purpose: str | None = None
+    opening_date: str | None = None
 
 
 class FundUpdated(BaseModel):
     name: str | None = None
     restricted: bool | None = None
     purpose: str | None = None
+    opening_date: str | None = None
 
 
 class FundArchived(BaseModel):

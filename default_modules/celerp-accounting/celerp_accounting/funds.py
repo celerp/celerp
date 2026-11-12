@@ -63,17 +63,21 @@ class FundIn(BaseModel):
     name: str
     restricted: bool = False
     purpose: str | None = None
+    opening_date: str | None = None
 
 
 class FundPatch(BaseModel):
+    """A field left out keeps its value; an empty purpose or opening date clears it."""
     name: str | None = None
     restricted: bool | None = None
     purpose: str | None = None
+    opening_date: str | None = None
 
 
 def _view(fund_id: str, state: dict) -> dict:
     return {"id": fund_id, "name": state["name"], "restricted": bool(state.get("restricted")),
-            "purpose": state.get("purpose"), "archived": bool(state.get("archived"))}
+            "purpose": state.get("purpose"), "opening_date": state.get("opening_date"),
+            "archived": bool(state.get("archived"))}
 
 
 async def fund_balances(session: AsyncSession, company_id) -> dict[str, dict[str, Decimal]]:
@@ -118,6 +122,19 @@ def _purpose(restricted: bool, raw: str | None) -> str | None:
     if restricted and purpose is None:
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.purpose_required"))
     return purpose
+
+
+def _opening_date(raw: str | None) -> str | None:
+    """The day the fund opened as YYYY-MM-DD, or None when left empty."""
+    from celerp_accounting.routes import _require_iso_date  # routes imports this module
+
+    day = (raw or "").strip() or None
+    try:
+        _require_iso_date(day, "")
+    except HTTPException:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_date_invalid", field=catalog_refusal("funds.opening_date"))) from None
+    return day
 
 
 async def _emit(session: AsyncSession, company_id, fund_id: str, event_type: str, data: dict, user, key: str):
@@ -327,7 +344,8 @@ async def create_fund(
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
     name = _name(payload.name)
     await _refuse_taken(session, company_id, name)
-    data = {"name": name, "restricted": payload.restricted, "purpose": _purpose(payload.restricted, payload.purpose)}
+    data = {"name": name, "restricted": payload.restricted, "purpose": _purpose(payload.restricted, payload.purpose),
+            "opening_date": _opening_date(payload.opening_date)}
     await _emit(session, company_id, fund_id, "fund.created", data, user, f"fund:{fund_id}:created")
     await session.commit()
     return _view(fund_id, {**data, "archived": False})
@@ -342,7 +360,8 @@ async def update_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Rename a fund, or change what it is restricted to before anything is posted to it."""
+    """Rename a fund, change its opening date, or change what it is restricted to before
+    anything is posted to it."""
     await lock_fund_ledger(session, company_id, shared=False)
     state = await _fund(session, company_id, fund_id)
     restricted = state.get("restricted") if payload.restricted is None else payload.restricted
@@ -355,6 +374,8 @@ async def update_fund(
         if await _has_postings(session, company_id, fund_id):
             raise HTTPException(status_code=422, detail=catalog_refusal("fund.restriction_locked", fund=state["name"]))
         changes.update(restricted=restricted, purpose=purpose)
+    if payload.opening_date is not None and (day := _opening_date(payload.opening_date)) != state.get("opening_date"):
+        changes["opening_date"] = day
     if changes:
         await _emit(session, company_id, fund_id, "fund.updated", changes, user, f"fund:{fund_id}:{uuid.uuid4()}")
         await session.commit()
