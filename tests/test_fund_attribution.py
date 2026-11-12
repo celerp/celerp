@@ -130,3 +130,58 @@ def test_a_new_operation_posting_several_entries_is_named(tmp_path: pathlib.Path
     assert fund_census.multi_entry_census(tmp_path, roots=("celerp",)) == {
         "celerp.services.sneaky:swap", "celerp.services.sneaky:via_helpers",
         "celerp.services.sneaky:Ops.again", "celerp.services.sneaky:reversal"}
+
+
+def _dependents_handlers() -> set[str]:
+    """Every handler a bundled module registers on the doc_posting_dependents slot."""
+    import re
+
+    from shipped_sources import MODULE_ROOT, REPO
+
+    return {h for init in sorted((REPO / MODULE_ROOT).glob("*/__init__.py"))
+            for h in re.findall(r'"doc_posting_dependents":\s*\{"handler":\s*"([^"]+)"', init.read_text("utf-8"))}
+
+
+def _copy_problems(found: set[str], verdicts: dict[str, str], handlers: set[str]) -> dict[str, list[str]]:
+    from celerp.services.fund_attribution import DEPENDENT, FUND_COPY_REASONS
+
+    return {
+        "unlisted fund copy": sorted(found - set(verdicts)),
+        "listed but writes no fund": sorted(set(verdicts) - found),
+        "unknown verdict": sorted(k for k, v in verdicts.items()
+                                  if v not in FUND_COPY_REASONS and not v.startswith(DEPENDENT)),
+        "dependent without a handler": sorted(k for k, v in verdicts.items()
+                                              if v.startswith(DEPENDENT) and v[len(DEPENDENT):] not in handlers),
+    }
+
+
+def test_every_fund_copy_has_a_dependent_handler():
+    from celerp.services.fund_attribution import DEPENDENT, FUND_COPIES
+
+    handlers = _dependents_handlers()
+    problems = _copy_problems(fund_census.fund_copy_census(), FUND_COPIES, handlers)
+    assert problems == {k: [] for k in problems}
+    # An asset copies the fund of the line it was bought on: its handler moves it.
+    assert FUND_COPIES["celerp_fixed_assets.operations:register.apply"] == (
+        DEPENDENT + "celerp_fixed_assets.fundchange:dependents")
+
+
+def test_a_new_fund_copy_without_a_handler_is_named(tmp_path: pathlib.Path):
+    from celerp.services.fund_attribution import DEPENDENT
+
+    package = tmp_path / "celerp" / "services"
+    package.mkdir(parents=True)
+    (package / "sneaky.py").write_text(
+        "async def keep(session, line):\n"
+        "    await emit_event(session, entity_id='x', event_type='x.created', data={'fund_id': line['fund_id']})\n"
+        "class Rows:\n"
+        "    def build(self, line):\n"
+        "        return Row(fund_choice=line['fund'])\n"
+        "def plain(line):\n"
+        "    return {'amount': line['amount']}\n",
+        encoding="utf-8")
+    found = fund_census.fund_copy_census(tmp_path, roots=("celerp",))
+    assert found == {"celerp.services.sneaky:keep", "celerp.services.sneaky:Rows.build"}
+    problems = _copy_problems(found, {"celerp.services.sneaky:keep": DEPENDENT + "sneaky:move"}, set())
+    assert problems["unlisted fund copy"] == ["celerp.services.sneaky:Rows.build"]
+    assert problems["dependent without a handler"] == ["celerp.services.sneaky:keep"]

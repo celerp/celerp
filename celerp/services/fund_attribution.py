@@ -227,3 +227,50 @@ MULTI_ENTRY_OPERATIONS: dict[str, str] = {
     "celerp_fixed_assets.runs:reverse": NETS_TO_ZERO,
     "celerp_inventory.routes:undo_import_batch": EACH_ENTRY,
 }
+
+
+# Every function that writes a fund under a fund key, with its verdict: a record that copies a
+# fund from a document's posted lines names the doc_posting_dependents handler that moves it when
+# Change fund posts those lines on new funds; anything else says why Change fund leaves it alone.
+# Checked by tests/test_fund_attribution.py against the source and the slot's handlers.
+DEPENDENT = "moved by the doc_posting_dependents handler "
+JOURNAL_LINE = "a journal line or a journal's own data: Change fund voids the entry and posts it again"
+OWN_CHOICE = "the record's own fund choice: Change fund rewrites it through require_fund_choices"
+STANDING = "a standing default: a setting, not a copy; each record stores its own choice"
+SETTLED = "a payment's split by fund: Change fund refuses a document a payment or note settles"
+NOTE_LINES = "a linked note's lines, copied when the note is made: the note keeps its own funds"
+READ = "reads the posted lines to show or choose from them; stores nothing"
+FUND_COPY_REASONS = frozenset({JOURNAL_LINE, OWN_CHOICE, STANDING, SETTLED, NOTE_LINES, READ})
+_ASSETS = DEPENDENT + "celerp_fixed_assets.fundchange:dependents"
+
+FUND_COPIES: dict[str, str] = {
+    "celerp.events.engine:emit_event": OWN_CHOICE,
+    "celerp.services.auto_je:create_for_bill_conversion": JOURNAL_LINE,
+    "celerp.services.auto_je:create_for_doc_payment": SETTLED,
+    "celerp.services.journal_accounts:fund_legs": JOURNAL_LINE,
+    "celerp.services.journal_accounts:split_lines_by_fund": JOURNAL_LINE,
+    "celerp.services.peer_lines:posted_line_funds": NOTE_LINES,
+    "celerp.services.peer_lines:require_fund_choices": OWN_CHOICE,
+    "ui.routes.csv_import:import_numbered": OWN_CHOICE,
+    "ui.routes.docs_import:setup_routes.docs_import_confirm": OWN_CHOICE,
+    "celerp_accounting.funds:_default_items": STANDING,
+    "celerp_accounting.funds:_leg_lines.line": JOURNAL_LINE,
+    "celerp_accounting.funds:post_fund_movement": JOURNAL_LINE,
+    "celerp_accounting.funds:set_connection_default": STANDING,
+    "celerp_accounting.routes:batch_import_accounting": OWN_CHOICE,
+    "celerp_accounting.routes:close_fiscal_year": JOURNAL_LINE,
+    "celerp_docs.routes:apply_doc_payment": SETTLED,
+    "celerp_docs.routes:batch_import_docs": OWN_CHOICE,
+    "celerp_fixed_assets.additions:add.apply": _ASSETS,
+    "celerp_fixed_assets.additions:place_in_service.apply": _ASSETS,
+    "celerp_fixed_assets.fixaccount:_split": JOURNAL_LINE,
+    "celerp_fixed_assets.fixaccount:fix_account.plan": JOURNAL_LINE,
+    "celerp_fixed_assets.fundchange:_on": JOURNAL_LINE,
+    "celerp_fixed_assets.fundchange:dependents": _ASSETS,
+    "celerp_fixed_assets.operations:_post": JOURNAL_LINE,
+    "celerp_fixed_assets.operations:_reclass": JOURNAL_LINE,
+    "celerp_fixed_assets.operations:register.apply": _ASSETS,
+    "celerp_fixed_assets.runs:_lines": JOURNAL_LINE,
+    "celerp_fixed_assets.sources:_bill_lines": READ,
+    "celerp_fixed_assets.sources:_manual_lines": READ,
+}

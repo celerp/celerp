@@ -213,3 +213,41 @@ def multi_entry_census(repo: pathlib.Path = REPO, roots=APP_ROOTS) -> set[str]:
         visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
         found |= visitor.found
     return found - _MULTI_HELPERS
+
+
+# The keys a fund is stored under on a line, a record or a journal's data.
+FUND_KEYS = frozenset({"fund_id", "fund_choice", "fund_choices", "fund_allocation"})
+
+
+class _Copies(ast.NodeVisitor):
+    def __init__(self, module: str):
+        self.module, self.stack = module, []
+        self.found: set[str] = set()
+
+    def _scope(self, node) -> None:
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _scope
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        if any(isinstance(k, ast.Constant) and k.value in FUND_KEYS for k in node.keys):
+            self.found.add(f"{self.module}:{'.'.join(self.stack) or '<module>'}")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if any(kw.arg in FUND_KEYS for kw in node.keywords):
+            self.found.add(f"{self.module}:{'.'.join(self.stack) or '<module>'}")
+        self.generic_visit(node)
+
+
+def fund_copy_census(repo: pathlib.Path = REPO, roots=APP_ROOTS) -> set[str]:
+    """Every function that writes a fund under a fund key: a dict literal holding one, or a call
+    passing one as a keyword. Each needs a verdict in fund_attribution.FUND_COPIES."""
+    found: set[str] = set()
+    for module, path in sources(repo, roots):
+        visitor = _Copies(module)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        found |= visitor.found
+    return found
