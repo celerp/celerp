@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 import pytest
 from httpx import AsyncClient
 
+from test_helpers import script_cfg
+
 # Repo root: default_modules/celerp-labels/tests/ → up 4 levels (resolved path)
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
 
@@ -430,9 +432,8 @@ class TestColumnManagerUi:
         ]
         rows = [{"id": "item:1", "name": "Ruby"}]
         html = to_xml(data_table(schema, rows, entity_type="inventory"))
-        assert "'celerp_col_widths_' + \"inventory\"" in html, (
-            "WIDTH_KEY for inventory not found in data_table JS output"
-        )
+        cfg = script_cfg(html, "var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType")
+        assert cfg["entityType"] == "inventory"
 
 
 @pytest.mark.asyncio

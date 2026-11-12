@@ -321,7 +321,7 @@ def files_section(
   }});
 }})();
 """,
-        sid)
+        f"files-table-{sid}")
 
     # ── Table rows ────────────────────────────────────────────────────────────
     file_rows = []
