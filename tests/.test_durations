@@ -28803,5 +28803,15 @@
     "tests/test_shard_durations.py::test_tooling_unlike_ci_lists_a_missing_or_unmet_requirement_and_skips_one_not_for_here": 0.0035594229120761156,
     "tests/test_connectors_proxy.py::test_held_number_line_opens_the_record_holding_it[doc:WOO-1001-/docs/doc:WOO-1001]": 0.12551372789312154,
     "tests/test_connectors_proxy.py::test_held_number_line_opens_the_record_holding_it[list:WOO-1001-/lists/list:WOO-1001]": 0.0027356320060789585,
-    "tests/test_connectors_proxy.py::test_held_number_line_stored_with_a_holder_kind_still_renders": 0.0024438740219920874
+    "tests/test_connectors_proxy.py::test_held_number_line_stored_with_a_holder_kind_still_renders": 0.0024438740219920874,
+    "tests/test_income_accounts.py::test_account_delete_refused_while_items_reference_it": 0.8708100341027603,
+    "tests/test_income_accounts.py::test_credit_note_linked_line_reverses_posted_account": 0.31176929804496467,
+    "tests/test_income_accounts.py::test_credit_note_unlinked_keeps_pro_rata": 0.2844715639948845,
+    "tests/test_income_accounts.py::test_finalize_refuses_missing_or_non_revenue_income_account": 0.2996141950134188,
+    "tests/test_income_accounts.py::test_income_account_cell_shows_own_inherited_or_none": 0.019157061993610114,
+    "tests/test_income_accounts.py::test_income_account_picker_offers_only_usable_revenue_accounts": 0.0077168739517219365,
+    "tests/test_income_accounts.py::test_income_account_save_shows_cell_or_keeps_picker_with_reason": 0.013225474976934493,
+    "tests/test_income_accounts.py::test_income_account_validated_on_item_and_category_save": 0.28060213796561584,
+    "tests/test_income_accounts.py::test_mixed_income_accounts_split_exact": 0.21918597002513707,
+    "tests/test_income_accounts.py::test_reversal_reads_posted_not_current_setting": 0.3136511360062286
 }
