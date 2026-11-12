@@ -325,3 +325,63 @@ async def test_e2e1_change_fund_moves_recognition_runs_under_the_fund_rule(clien
     assert r.status_code == 422 and _key(r) == "error.period_locked", r.text
     assert r.json()["detail"]["params"]["date"] == "2026-06-30"
     assert (await _schedules(session, auth, a))[0]["fund_id"] == room
+
+
+async def test_e2e1_imports_take_their_funds_on_the_import(client, session, auth, monkeypatch):
+    """Stage 5: what the club brings in from files. A journal import chosen Unrestricted for one
+    record with two of its lines on the restricted fund posts each line on its choice, and the
+    record left unchosen is rejected naming it while the rest posts. A document import with Set
+    all on the restricted fund and its ticket line changed to Unrestricted posts the gift on the
+    fund and the ticket on unrestricted money. An invoice in the file with header money only is
+    refused until the import's Set all is chosen, then posts every leg on that fund."""
+    from celerp.models.projections import Projection
+    from test_income_accounts import _finalize_entry
+    from test_outside_lines import _entry_state, _issued_import
+
+    h = auth["headers"]
+    _freeze(monkeypatch, DATE)
+    f = await _club(client, auth)
+    R = f["R"]
+
+    def _journal(eid: str, entries: list[dict]) -> dict:
+        return {"entity_id": eid, "event_type": "acc.journal_entry.created", "source": "csv",
+                "idempotency_key": uuid.uuid4().hex,
+                "data": {"status": "posted", "ts": DATE, "memo": "Gift box takings", "entries": entries}}
+
+    chosen, left = f"je:{uuid.uuid4()}", f"je:{uuid.uuid4()}"
+    entries = [{"account": BANK, "debit": 30.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 30.0},
+               {"account": BANK, "debit": 20.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 20.0}]
+    r = await client.post("/accounting/import/batch", headers=h, json={
+        "records": [_journal(chosen, entries), _journal(left, entries[:2])],
+        "fund_choices": {"records": {chosen: "unrestricted"}, "lines": {f"{chosen}:3": R, f"{chosen}:4": R}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert any(e.startswith(f"{left}: ") and "choose the fund for this document" in e for e in r.json()["errors"]), r.text
+    state = await _entry_state(session, auth["company_id"], chosen)
+    assert [(e.get("fund_id"), e.get("fund_choice")) for e in state["entries"]] == [
+        (None, "unrestricted"), (None, "unrestricted"), (R, R), (R, R)]
+    assert await session.get(Projection, {"company_id": auth["company_id"], "entity_id": left}) is None
+    assert await _held(session, auth, R) == 420
+
+    doc = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=h, json={
+        "records": [_issued_import(doc, [_line(f["gift"], "Library gift", 40), _line(f["ticket"], "Gala ticket", 60)])],
+        "fund_choices": {"all": R, "lines": {f"{doc}:2": "unrestricted"}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    entry = await _finalize_entry(session, auth, doc)
+    assert sorted((e.get("fund_id") or "", e["credit"]) for e in entry["entries"] if e.get("credit")) == sorted(
+        [(R, 40), ("", 60)])
+
+    def _header_only(eid: str) -> dict:
+        return {"entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+                "data": {"doc_type": "invoice", "status": "final", "ref_id": eid.split(":")[1], "issue_date": DATE,
+                         "line_items": [], "shipping": 15, "total": 15, "import_treatment": "record_now"}}
+
+    lineless = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=h, json={"records": [_header_only(lineless)]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert any(e.startswith(f"{lineless}: ") and "choose the fund for this document" in e for e in r.json()["errors"])
+    assert (await client.get(f"/docs/{lineless}", headers=h)).status_code == 404
+    r = await client.post("/docs/import/batch", headers=h, json={
+        "records": [_header_only(lineless)], "fund_choices": {"all": R}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert {e.get("fund_id") for e in (await _finalize_entry(session, auth, lineless))["entries"]} == {R}
