@@ -407,6 +407,34 @@ async def test_recognition_autopost_stops_when_authorizer_loses_permission(clien
     assert len(await _run_entries(session, auth)) == 2
 
 
+async def test_recognition_autopost_keeps_to_the_pass_budget(client, session, auth, monkeypatch):
+    """One dispatcher pass posts at most its budget of runs and reports only what it posted;
+    the next pass posts the rest, and a pass with nothing left reports nothing."""
+    from celerp_docs import periodic
+
+    monkeypatch.setattr(periodic, "BUDGET", 1)
+    _freeze(monkeypatch, "2026-01-05")
+    plan = await _deferred_item(client, auth)
+    await _invoice(client, auth, [_service(plan, 900)])
+    await _invoice(client, auth, [_service(plan, 600)])
+    assert (await _authorize(client, auth["headers"])).status_code == 200
+    reports = []
+    real = periodic._run_operation
+
+    async def spy(*args, **kwargs):
+        report = await real(*args, **kwargs)
+        if args[2]["handler"].endswith("recognition:run_due"):
+            reports.append(report.done)
+        return report
+
+    monkeypatch.setattr(periodic, "_run_operation", spy)
+    for _ in range(3):
+        await _tick(session, auth, "2026-02-02")
+        assert len(await _run_entries(session, auth)) == min(len(reports), 2)
+    assert reports == [1, 1, 0]
+    assert [s for _, _, s in _by_month(await _runs(client, auth))["2026-01"]] == ["posted", "posted"]
+
+
 # ── amendments, credits and the source ───────────────────────────────────────────────────
 
 async def test_mid_term_amendment_replans_remainder(client, session, auth, monkeypatch):
