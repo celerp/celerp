@@ -1252,6 +1252,8 @@ class AccJournalEntryVoided(BaseModel):
     # event boundary (posting_dates.void_reversal) from the date the user picked, or
     # today when the entry's own period is locked. The entry stays in its own period.
     reversed_on: str | None = None
+    # The entry posted again in its place with new funds (Change fund only; auto_je.current_entry).
+    replaced_by: str | None = None
 
 
 class AccPeriodClosed(BaseModel):

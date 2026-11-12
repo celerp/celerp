@@ -412,6 +412,163 @@ async def _authorize_movement(session: AsyncSession, company_id, data: dict, ent
     data["authorized_by"] = str(actor_id)
 
 
+class FundChangeAction:
+    """One Change fund action as it runs: every journal event emit_event writes in its session
+    while it is open (``events``, entity id and event type), with each event's lines as they
+    count toward the action (a void's reversed), and who acts. ``authorized_by`` is set once
+    judge_fund_change needed the reallocation authority."""
+
+    def __init__(self, company_id, actor_id):
+        self.company_id = str(company_id)
+        self.actor_id = actor_id
+        self.events: list[tuple[str, str]] = []
+        self.lines: list[dict] = []
+        self.dates: list[str] = []
+        self.voided: list[str] = []
+        self.authorized_by: str | None = None
+
+    def record(self, entity_id: str, event_type: str, state: Mapping) -> None:
+        """Count one journal event: a created entry's lines, a voided entry's reversed."""
+        self.events.append((entity_id, event_type))
+        void = event_type == "acc.journal_entry.voided"
+        if void:
+            self.voided.append(entity_id)
+        for line in state.get("entries") or ():
+            if isinstance(line, dict) and line.get("account"):
+                self.lines.append({**line, "debit": line.get("credit") or 0, "credit": line.get("debit") or 0}
+                                  if void else line)
+        if state.get("ts"):
+            self.dates.append(str(state["ts"])[:10])
+
+
+def open_fund_change(session) -> FundChangeAction | None:
+    """The fund change open in this session, if any."""
+    return session.info.get(FundChangeAction.__name__)
+
+
+@asynccontextmanager
+async def fund_change_action(session, company_id, actor_id):
+    """Run a Change fund action as one unit (db.one_unit: no step inside can commit part of
+    it) that counts every journal event written in this session while open
+    (FundChangeAction.record, called by emit_event) and, on leaving without an error, judges
+    them once (judge_fund_change). The company's fund ledger is held exclusively from the
+    start (lock_fund_ledger), as for every fund cap, so no posting lands between the action's
+    entries and its judgement. The caller commits after."""
+    from celerp.db import one_unit
+    from celerp.services.company_lock import holds_fund_ledger, lock_fund_ledger
+
+    if open_fund_change(session) is not None:
+        raise RuntimeError("A fund change is already open in this session")
+    if not holds_fund_ledger(session, company_id):
+        await lock_fund_ledger(session, company_id, shared=False)
+    action = FundChangeAction(company_id, actor_id)
+    session.info[FundChangeAction.__name__] = action
+    try:
+        with one_unit(session):
+            yield action
+            await judge_fund_change(session, action)
+    finally:
+        session.info.pop(FundChangeAction.__name__, None)
+
+
+async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> None:
+    """The fund rule over everything a Change fund action voided or posted, judged once.
+
+    Each fund's change in what it holds (rule 4's BS) is summed over the action's lines.
+    Senders are the restricted funds it lowers, receivers the funds it raises. No sender:
+    nothing more is needed. Otherwise: a line backing a standing release never moves onto a
+    restricted fund; the actor, re-read under the lock, may manage accounting; a restricted
+    receiver also needs reallocate_restricted_funds and the sender's purpose, the actor then
+    recorded as ``authorized_by``; and each sender's holdings, and its balance on every asset
+    account the action lowers for it, stay at zero or above at the latest date in the action
+    and today."""
+    from celerp.services.business_time import company_today
+    from celerp.services.money import round_money, to_decimal
+    from celerp.services.permissions import missing_permission_refusal, read_authority, role_has_permission
+
+    company_id = action.company_id
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    currency = str(settings.get("currency") or "USD")
+    lines = action.lines
+    funds = await funds_by_id(session, company_id, {e["fund_id"] for e in lines if e.get("fund_id")})
+    accounts = await lock_accounts(session, company_id, {e["account"] for e in lines}) or {}
+    net_assets = set().union(*(scope_codes(settings, role) for role in (
+        AccountRole.RESTRICTED_NET_ASSETS, AccountRole.RETAINED_EARNINGS)))
+    _, bs = fund_measures(lines, accounts, net_assets)
+    bs = {f: round_money(v, currency) for f, v in bs.items()}
+    senders = sorted((f for f, v in bs.items() if v < 0 and _restricted(funds, f)), key=lambda f: f or "")
+    if not senders:
+        return
+    receivers = [f for f, v in bs.items() if v > 0]
+
+    await _refuse_moved_backing(session, company_id, action, funds)
+    role, authority = await read_authority(session, company_id, action.actor_id)
+    sender = _fund_name(funds, senders[0])
+    if not role_has_permission(authority, role, "manage_accounting"):
+        raise RestrictedFundMovement("posting.fund.movement_permission", fund=sender,
+                                     permission=missing_permission_refusal("manage_accounting")["params"]["label"])
+    for receiver in (f for f in receivers if _restricted(funds, f)):
+        purposes = {str(funds[f].get("purpose") or "").strip() for f in (*senders, receiver)}
+        if not role_has_permission(authority, role, "reallocate_restricted_funds") or len(purposes) != 1:
+            raise RestrictedFundMovement("posting.fund.change_needs_reallocation", fund=sender,
+                                         to=_fund_name(funds, receiver))
+        action.authorized_by = str(action.actor_id)
+
+    delta: dict[tuple[str | None, str], Decimal] = {}
+    for e in lines:
+        key = (e.get("fund_id") or None, e["account"])
+        delta[key] = delta.get(key, Decimal(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+    held_types = {"asset", "liability"}
+    for as_of in sorted({max(action.dates, default=""), (await company_today(session, company_id)).isoformat()} - {""}):
+        held = await fund_account_balances(session, company_id, as_of=as_of)
+        for fund_id in senders:
+            balances = held.get(fund_id, {})
+            given = -sum((v for (f, code), v in delta.items() if f == fund_id
+                          and (accounts.get(code) or {}).get("account_type") in held_types), Decimal(0))
+            holdings = sum((v for code, v in balances.items()
+                            if (accounts.get(code) or {}).get("account_type") in held_types), Decimal(0))
+            checks = [(holdings, given)] + [
+                (balances.get(code, Decimal(0)), -v) for (f, code), v in sorted(delta.items(), key=lambda kv: kv[0][1])
+                if f == fund_id and v < 0 and (accounts.get(code) or {}).get("account_type") == "asset"]
+            for after, taken in checks:
+                if round_money(after, currency) < 0:
+                    raise RestrictedFundMovement(
+                        "posting.fund.change_exceeds_balance", fund=_fund_name(funds, fund_id),
+                        available=str(round_money(after + taken, currency)), amount=str(round_money(taken, currency)),
+                        currency=currency)
+
+
+async def _refuse_moved_backing(session: AsyncSession, company_id, action: FundChangeAction,
+                                funds: dict[str, dict]) -> None:
+    """A line backing a standing release (one not reversed) is never moved onto a restricted
+    fund: the spending it stands for would be charged to restricted money twice. A backing
+    line of an entry the action voided counts as moved when the action posted its account
+    on a restricted fund."""
+    from celerp.models.projections import Projection
+    from celerp.services.journal_reversals import standing_reversals
+    from celerp.services.money import to_decimal
+
+    onto = {e["account"] for e in action.lines if _restricted(funds, e.get("fund_id"))
+            and to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)}
+    voided = set(action.voided)
+    if not onto or not voided:
+        return
+    states = dict((await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(sorted(voided))))).all())
+    releases = await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.state["je_type"].as_string() == "fund_release"))
+    for eid, state in releases:
+        state = state or {}
+        if state.get("status") != "posted" or state.get("reverses") or await standing_reversals(session, company_id, str(eid)):
+            continue
+        for item in state.get("backing") or ():
+            entries = (states.get(item.get("je_id")) or {}).get("entries") or []
+            index = item.get("line_index")
+            if isinstance(index, int) and 0 <= index < len(entries) and entries[index].get("account") in onto:
+                raise RestrictedFundMovement("posting.fund.change_backing", release=str(state.get("memo") or eid))
+
+
 def _restricted(funds: dict[str, dict], fund_id) -> bool:
     return bool((funds.get(fund_id or "") or {}).get("restricted"))
 

@@ -25,6 +25,8 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
             current["void_reason"] = data["reason"]
         if data.get("reversed_on"):
             current["reversed_on"] = data["reversed_on"]
+        if data.get("replaced_by"):
+            current["replaced_by"] = data["replaced_by"]
 
     elif event_type == "acc.period.closed":
         current.update({"entity_type": "period", "period": data["period"], "status": "closed"})

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Mapping
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import (
@@ -3103,6 +3103,41 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     await _notify_asset_lines(session, company_id, user_id, doc_id, "revert")
 
 
+async def void_record_postings(session, *, company_id, user_id, doc_id: str, trigger: str, reason: str,
+                               goods_movements: bool = False, replaced_by: Mapping[str, str] | None = None) -> int:
+    """Void every posted recognition-family entry of the document as one batch and return its
+    number: one more than the highest ``void_batch`` its void events carry, written in each
+    void's metadata and idempotency key, so every void and unvoid cycle keeps its events
+    distinct and the unvoid restores exactly the latest batch. ``replaced_by`` (entry id
+    suffix -> the id of the copy that replaces it) is written into the data of the voids it
+    names; only Change fund passes it."""
+    void_events = await _doc_void_events(session, company_id, doc_id)
+    batch = 1 + max(
+        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
+        default=0,
+    )
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, goods_movements)).items():
+        if (row.state or {}).get("status") != "posted":
+            continue
+        data = je_void_data(reason, row.state)
+        if replaced_by and suffix in replaced_by:
+            data["replaced_by"] = replaced_by[suffix]
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=f"je:auto:{doc_id}:{suffix}",
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=data,
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
+            metadata_={"trigger": trigger, "doc_id": doc_id, "void_batch": batch},
+        )
+    return batch
+
+
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
                               goods_movements: bool = False) -> None:
     """Reverse every posted recognition-family auto-JE when a finalized doc is
@@ -3121,28 +3156,8 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
     goods_movements: the doc received goods and sent every one of them back; the entries of
     those receipts and returns reverse with it, so it leaves nothing booked.
     """
-    void_events = await _doc_void_events(session, company_id, doc_id)
-    batch = 1 + max(
-        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
-        default=0,
-    )
-    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, goods_movements)).items():
-        je_id = f"je:auto:{doc_id}:{suffix}"
-        if (row.state or {}).get("status") != "posted":
-            continue
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.voided",
-            data=je_void_data(f"Reversed: {doc_id} voided", row.state),
-            actor_id=user_id,
-            location_id=None,
-            source="auto_je",
-            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
-            metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
-        )
+    await void_record_postings(session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.voided",
+                               reason=f"Reversed: {doc_id} voided", goods_movements=goods_movements)
     await reverse_imported_carriage(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.voided",
         carriage=await imported_carriage(session, company_id, doc_id))
@@ -4756,47 +4771,91 @@ async def _free_goods_only(session, company_id, doc_id: str, allocations: dict) 
     return out
 
 
+async def current_entry(session, company_id, je_id: str) -> str:
+    """The live entry standing for ``je_id``: the entry itself, unless Change fund voided it
+    and posted it again (``replaced_by``), when the copy it was replaced by, followed to the
+    latest one."""
+    seen = {je_id}
+    while True:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+        state = (row.state or {}) if row is not None else {}
+        nxt = state.get("replaced_by") if state.get("status") == "void" else None
+        if not nxt or nxt in seen:
+            return je_id
+        seen.add(nxt)
+        je_id = nxt
+
+
+def _restore_id(doc_id: str, root: str, family) -> str:
+    """The id of the next copy of a recognition family: {root}:unvoid:{n}, n one more than the
+    copies the family already holds, which _recognition_root strips back to the family."""
+    return f"je:auto:{doc_id}:{root}:unvoid:{1 + sum(1 for s in family if s != root)}"
+
+
+async def restore_ids(session, company_id, doc_id: str, goods_movements: bool = False) -> dict[str, str]:
+    """suffix -> the id its copy will take, for each posted recognition-family entry of the
+    document: fixed before a void, so the void can name the copy replacing it."""
+    jes = await _doc_recognition_jes(session, company_id, doc_id, goods_movements)
+    roots = {s: _recognition_root(s, goods_movements) for s in jes}
+    return {s: _restore_id(doc_id, roots[s], [t for t in jes if roots[t] == roots[s]])
+            for s, row in jes.items() if (row.state or {}).get("status") == "posted"}
+
+
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
                                   goods_movements: bool = False) -> None:
-    """Restore exactly what the immediately preceding void removed.
-
-    Finds the recognition JEs the most recent void batch reversed and re-posts
-    each as a new JE copying its memo and entries verbatim, funds included
-    (peer_lines.copy_posted_lines) - never recomputing:
-    costs may have moved since the doc was voided, and an unvoid must put back the
-    numbers the void took out, not today's. The copy keeps the entry's own date
-    unless that date is locked, when it posts on the open date the shared rule
-    gives (posting_dates.correction_day). Each restore
-    lives at je:auto:{doc_id}:{root}:unvoid:{n}, so repeated void/unvoid cycles
-    keep every generation distinct, and a family that already holds a posted JE
-    is skipped (the restore already happened). One copy mechanism covers every
-    doc type and family: invoice finalize, bill conversion, COGS backfill, and
-    COGS adjustments alike.
-
-    An imported document's own entry from an earlier release is never restored (the
-    opening balances hold the document), and the reversal its void posted of what they
-    hold is taken back (take_back_imported_reversals).
-
-    Docs voided before batch stamping existed have per-JE void events with no
-    batch number; for those, each recognition family whose latest void event
-    came from a doc void (not a revert to draft) restores the JE that event
-    reversed.
+    """Restore exactly what the immediately preceding void removed
+    (repost_record_postings of the latest void batch, with no relabel), then take back the
+    reversal an imported document's void posted of what the opening balances hold
+    (take_back_imported_reversals) and tell the module keeping its assets.
 
     goods_movements: as for void_for_doc_voided, so the receipt and return entries the void
     reversed are restored with the document's own.
     """
-    from celerp.models.ledger import LedgerEntry
+    batches = [int(e.metadata_["void_batch"]) for e in await _doc_void_events(session, company_id, doc_id)
+               if (e.metadata_ or {}).get("void_batch")]
+    await repost_record_postings(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+                                 batch=max(batches) if batches else None, relabel=None, trigger="doc.unvoided",
+                                 goods_movements=goods_movements)
+    await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
+    await _notify_asset_lines(session, company_id, user_id, doc_id, "unvoid")
 
+
+async def repost_record_postings(session, *, company_id, user_id, doc_id: str, batch: int | None,
+                                 relabel: Callable[[list[dict]], list[dict]] | None, trigger: str,
+                                 goods_movements: bool = False) -> dict[str, str]:
+    """Post again each entry void batch ``batch`` of the document reversed, and return voided
+    entry id -> the id of its copy.
+
+    Each copy writes the voided entry's memo and lines again verbatim, funds included
+    (peer_lines.copy_posted_lines), never recomputing: costs may have moved since the void,
+    and the copy must put back the numbers the void took out, not today's. It lives at the
+    family's restore id (_restore_id), so every cycle keeps each generation distinct, and a
+    family that already holds a posted entry is skipped (the restore already happened). One
+    copy mechanism covers every doc type and family: invoice finalize, bill conversion, COGS
+    backfill and COGS adjustments alike. An imported document's own entry from an earlier
+    release is never posted again (the opening balances hold the document).
+
+    ``relabel`` (Change fund only, inside an open fund_change_action, else RuntimeError)
+    rewrites each copy's lines and keeps each entry's own date. Without it the copy keeps
+    the entry's date unless that date is locked, when it posts on the open date the shared
+    rule gives (posting_dates.correction_day).
+
+    ``batch`` None: the document was voided before batch stamping existed, its void events
+    carry no batch number; each recognition family whose latest void came from a doc void
+    (not a revert to draft) posts again the entry that void reversed.
+    """
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.journal_accounts import open_fund_change
+
+    if relabel is not None and open_fund_change(session) is None:
+        raise RuntimeError("A relabelled repost runs only inside an open fund change")
     prefix = f"je:auto:{doc_id}:"
     jes = await _doc_recognition_jes(session, company_id, doc_id, goods_movements)
     void_events = await _doc_void_events(session, company_id, doc_id)
     imported = await imported_document(session, company_id, doc_id)
 
-    batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
-    if batched:
-        last_batch = max(int(e.metadata_["void_batch"]) for e in batched)
-        to_restore = [e.entity_id for e in batched
-                      if int(e.metadata_["void_batch"]) == last_batch]
+    if batch is not None:
+        to_restore = [e.entity_id for e in void_events if int((e.metadata_ or {}).get("void_batch") or 0) == batch]
     else:
         last_void_by_root: dict[str, object] = {}
         for event in void_events:  # oldest first, so the latest event wins
@@ -4806,6 +4865,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         to_restore = [e.entity_id for e in last_void_by_root.values()
                       if (e.metadata_ or {}).get("trigger") == "doc.voided"]
 
+    copies: dict[str, str] = {}
     for voided_je_id in to_restore:
         suffix = voided_je_id[len(prefix):]
         root = _recognition_root(suffix, goods_movements)
@@ -4819,7 +4879,6 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         entries = state.get("entries") or []
         if not entries:
             continue
-        generation = 1 + sum(1 for s in family if s != root)
         created = (await session.execute(
             _select(LedgerEntry)
             .where(
@@ -4838,25 +4897,29 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         if allocations:
             allocations = await _free_goods_only(session, company_id, doc_id, allocations)
         metadata_ = {
-            **_recognition_metadata("doc.unvoided", doc_id, allocations),
+            **_recognition_metadata(trigger, doc_id, allocations),
             "restores": voided_je_id,
         }
         if line_allocations := ((created.metadata_ or {}) if created else {}).get("line_allocations"):
             metadata_["line_allocations"] = line_allocations
+        je_id = _restore_id(doc_id, root, family)
+        generation = je_id.rsplit(":", 1)[1]
+        lines = copy_posted_lines(voided_je_id, entries, reverse=False)
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}", record_id=doc_id,
+            je_id=je_id, record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
             memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
-            ts=await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
-            entries=copy_posted_lines(voided_je_id, entries, reverse=False),
+            ts=state.get("ts") if relabel is not None
+            else await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
+            entries=relabel(lines) if relabel is not None else lines,
             metadata_=metadata_,
         )
-    await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
-    await _notify_asset_lines(session, company_id, user_id, doc_id, "unvoid")
+        copies[voided_je_id] = je_id
+    return copies
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, lot_costs: dict[str, float], cycle: int = 0, ts: str | None = None) -> None:

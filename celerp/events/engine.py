@@ -1014,6 +1014,15 @@ async def emit_event(
         raise
     await savepoint.commit()
 
+    # A fund change open in this session counts every journal event it writes, whichever
+    # path writes it (journal_accounts.fund_change_action), and judges them once.
+    if entry.event_type in ("acc.journal_entry.created", "acc.journal_entry.voided"):
+        from celerp.services.journal_accounts import open_fund_change
+
+        if (action := open_fund_change(session)) is not None:
+            stored = await session.get(Projection, (entry.company_id, entry.entity_id))
+            action.record(entry.entity_id, entry.event_type, (stored.state if stored is not None else None) or {})
+
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:
         await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
