@@ -1045,8 +1045,8 @@ class PyScan(ast.NodeVisitor):
         """(defining module, name) for a call by plain name or through a repo module; (None, name)
         for a method call."""
         if isinstance(func, ast.Attribute):
-            mod = (self.qual(func.value) or "")
-            return (mod, func.attr) if mod in MODULE_FUNCS else (None, func.attr)
+            mod = self.qual(func.value)
+            return (mod, func.attr) if mod and mod in MODULE_FUNCS else (None, func.attr)
         if not isinstance(func, ast.Name):
             return None
         if func.id in self.imported:

@@ -30,3 +30,6 @@ GO = "go"
 MODE = "a()" if __debug__ else "b()"
 def ok2(v):
     return Script(MODE + ";"), Button("x", onclick=call("celerp." + "go", v))
+class Rows:                                                            # a method id parameter given a prefixed value
+    def cell(self, rid): return Div(id=rid)
+    def page(self, v): return self.cell(f"row-{v}")
