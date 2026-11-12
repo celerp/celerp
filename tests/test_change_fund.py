@@ -502,6 +502,18 @@ async def test_change_fund_then_undo_leaves_every_fund_zero(client, session, aut
     assert (await _post(client, auth, f"/docs/{doc}/unvoid")).status_code == 200
     assert await _standing(session, auth, prefix) == changed
 
+    # The import run again over the posted record is refused as an edit, so the copy stands;
+    # reverting to draft voids the live copy, and finalizing again posts the changed fund.
+    record = _issued_import(doc, [_line(None, "Supplies", 45)])
+    record["data"]["doc_type"] = kind
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={"records": [record], "upsert": True})
+    assert r.status_code == 200 and r.json()["updated"] == 0 and r.json()["errors"], r.text
+    assert await _standing(session, auth, prefix) == changed
+    assert (await _post(client, auth, f"/docs/{doc}/revert-to-draft")).status_code == 200
+    assert await _standing(session, auth, prefix) == {}
+    assert (await _post(client, auth, f"/docs/{doc}/finalize")).status_code == 200
+    assert await _standing(session, auth, prefix) == changed
+
 
 async def test_change_fund_opening_held_document_refused(client, session, auth):
     """A purchase order imported into books whose opening balances hold it, billed since:
