@@ -130,6 +130,32 @@ async def test_fx_and_fee_lines_follow_receipt_fund_split(client, session, auth)
     assert _account_by_fund(fees, BANK) == {f["R"]: -2.4, None: -1.2}
 
 
+async def test_dispute_adjustment_follows_receipt_fund_split(client, session, auth):
+    """Money a card dispute takes from the account, and its loss, leave each fund as the
+    receipt it disputes banked it."""
+    from datetime import datetime, timezone
+
+    from celerp.services import auto_je
+
+    f = await _setup(client, auth)
+    doc = await _gift_and_ticket(client, auth, f)
+    assert (await _pay(client, auth, doc, 90)).status_code == 200  # R 60, unrestricted 30
+    session.expire_all()
+    payment = (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc})).state["payments"][0]
+    for step in ("funds_withdrawn", "lost"):
+        await auto_je.post_dispute_adjustment(
+            session, company_id=auth["company_id"], user_id=auth["user_id"], doc_id=doc, payment=payment,
+            dispute_id="dp_fund", step=step, amount_minor=9000, currency="usd",
+            occurred_at=datetime(2026, 3, 5, 12, tzinfo=timezone.utc))
+    await session.commit()
+    withdrawn = (await _entry(session, auth, f"je:auto:{doc}:dispute:dp_fund:funds_withdrawn"))["entries"]
+    assert _account_by_fund(withdrawn, "1170") == {f["R"]: 60.0, None: 30.0}
+    assert _account_by_fund(withdrawn, BANK) == {f["R"]: -60.0, None: -30.0}
+    lost = (await _entry(session, auth, f"je:auto:{doc}:dispute:dp_fund:lost"))["entries"]
+    assert _account_by_fund(lost, "6945") == {f["R"]: 60.0, None: 30.0}
+    assert _account_by_fund(lost, "1170") == {f["R"]: -60.0, None: -30.0}
+
+
 async def test_refund_and_payment_void_keep_receipt_fund(client, session, auth):
     """A refund (or a chargeback recorded as one) and a payment void give back each fund's
     share of the receipt they reverse, read from the receipt's own entry."""
