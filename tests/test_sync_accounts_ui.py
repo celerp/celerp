@@ -278,7 +278,7 @@ HELD_JOURNAL = {
             "entries": [{"account": "1111", "debit": 100.0, "credit": 0.0, "origin": "accountant"},
                         {"account": "4100", "debit": 0.0, "credit": 100.0, "origin": "accountant"}]},
     "fund_lines": [{"account": "1111", "balances": {"fund:r": 60.0, "unrestricted": 140.0}},
-                   {"account": "4100", "balances": {"fund:r": -60.0}}]}
+                   {"account": "4100", "balances": {"fund:r": 60.0}}]}
 HELD_DOC = {
     "id": "h-doc", "source_company_id": "c-3", "label": "B-7", "at": "2026-10-17T09:00:00",
     "reason": "Waiting for a fund on each line",
@@ -310,8 +310,10 @@ def _fund_app(monkeypatch, *, refuse=None):
 
 
 def _hidden(html: str, name: str) -> str | None:
-    found = re.search(rf'<input type="hidden" name="{name}"[^>]*value="([^"]*)"', html)
-    return found.group(1) if found else None
+    for tag in re.findall(r'<input type="hidden"[^>]*>', html):
+        if f'name="{name}"' in tag:
+            return re.search(r'value="([^"]*)"', tag).group(1)
+    return None
 
 
 async def test_held_line_shows_balance_per_fund_and_no_preselected_choice(monkeypatch):
@@ -323,7 +325,7 @@ async def test_held_line_shows_balance_per_fund_and_no_preselected_choice(monkey
     assert journal.index("Set all outside lines to") < journal.index('name="line_1"') < journal.index('name="line_2"')
     assert _hidden(journal, "all") == "" and _hidden(journal, "line_1") == "" and _hidden(journal, "line_2") == ""
     assert _hidden(journal, "revision") == "3" and _hidden(journal, "request_key")
-    # Each line shows its account's balance per fund, on the account's own side.
+    # Each line shows its account's balance per fund, as the books sign it on the account's normal side.
     assert "1111 Bank: Building fund 60.00, Unrestricted 140.00" in journal
     assert "4100 Donations: Building fund 60.00" in journal
     # Post is always enabled; the account fixes are not offered for a fund hold.
@@ -352,13 +354,14 @@ async def test_held_funds_post_sends_choices_and_names_the_record(monkeypatch):
 
 
 async def test_refused_held_funds_post_keeps_the_choices(monkeypatch):
-    refusal = {"message": "Reclass program costs came from your accountant: choose the fund for this document. "
-                          "Line 1 has no fund of its own.", "message_key": "posting.fund.choice_needed"}
+    from celerp.services.journal_accounts import FundChoiceNeeded
+    from celerp.services.peer_lines import source_label
+    refusal = FundChoiceNeeded("Reclass program costs", source_label("accountant"), [1]).detail
     paths, calls = _fund_app(monkeypatch, refuse=refusal)
     endpoint = paths["/accounting/sync-accounts/holds/{item_id}/funds"]
     form = {"revision": "3", "request_key": "k-1", "all": "", "line_1": "", "line_2": "fund:r"}
     html = to_xml(await endpoint(Request(form), "h-funds"))
-    assert "Line 1 has no fund of its own." in html
+    assert "Reclass program costs came from" in html and "Line 1 has no fund of its own." in html
     journal = html[html.index(">Reclass program costs<"):html.index(">B-7<")]
     assert _hidden(journal, "line_2") == "fund:r" and _hidden(journal, "line_1") == ""
     assert _hidden(journal, "request_key") == "k-1"  # a retry stays the same request

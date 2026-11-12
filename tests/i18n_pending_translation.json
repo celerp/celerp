@@ -494,6 +494,29 @@
     "fund.set_all_outside": {
       "en": "Set all outside lines to",
       "params": []
+    },
+    "fund.account_balances": {
+      "en": "{account}: {balances}",
+      "params": [
+        "account",
+        "balances"
+      ]
+    },
+    "fund.account_no_balance": {
+      "en": "{account}: No balance yet",
+      "params": [
+        "account"
+      ]
+    },
+    "sync_accounts.funds_hint": {
+      "en": "Choose a fund or Unrestricted for each line, then Post. Set all outside lines to fills every line still at --.",
+      "params": []
+    },
+    "sync_accounts.posted": {
+      "en": "{record} posted.",
+      "params": [
+        "record"
+      ]
     }
   }
 }

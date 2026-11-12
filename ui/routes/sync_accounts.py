@@ -1,11 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Sync accounts: records a connected company sent that wait for an account, each with
-its fix; the accounts sync added here, each kept, archived or removed; and the first
-review of a new client's accounts. Every action answers in place."""
+its fix, or for a fund on each line, each posted with the funds chosen for it; the
+accounts sync added here, each kept, archived or removed; and the first review of a new
+client's accounts. Every action answers in place."""
 
 from __future__ import annotations
 
+import uuid
 from urllib.parse import quote
 
 from fasthtml.common import *
@@ -13,9 +15,11 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.services.peer_lines import UNRESTRICTED, waits_for_funds
 from ui.components.attrs import hx_vals
+from ui.components.funds import fund_options
 from ui.components.shell import flash, toast_header
-from ui.components.table import EMPTY, searchable_select
+from ui.components.table import EMPTY, fmt_money, searchable_select
 from ui.config import get_token as _token
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.financial_reports import ledger_path
@@ -76,7 +80,66 @@ def _hold_fix(item: dict, chart: list[dict], lang: str) -> FT:
     return Div(Div(*quick, cls="flex-row gap-sm") if quick else "", use_other, add_new, cls="flex-col gap-sm")
 
 
-def _holds(items: list[dict], chart: list[dict], lang: str) -> FT | str:
+def _fund_balances(held: dict, accounts: dict[str, str], fund_names: dict[str, str], lang: str) -> FT | str:
+    """A held line's account and what each fund holds on it, muted beside its Fund select."""
+    code = held.get("account")
+    if not code:
+        return ""
+    name = accounts.get(code, code)
+    parts = [f"{fund_names.get(fund, fund)} {fmt_money(amount)}" for fund, amount in (held.get("balances") or {}).items()]
+    return Div(t("fund.account_balances", lang, account=name, balances=", ".join(parts)) if parts
+               else t("fund.account_no_balance", lang, account=name), cls="text-muted")
+
+
+def _fund_hold(item: dict, chart: list[dict], funds: list[dict], lang: str, kept: dict | None) -> FT:
+    """A record held for a fund on each line: its lines, each with a Fund select at -- and
+    its account's balance per fund, "Set all outside lines to" above them, and Post, which is
+    never disabled (the books judge the choices). ``kept`` holds a refused Post's choices
+    and request, so the user changes what was refused and posts the same request again."""
+    fix, kept = item["fix"], kept or {}
+    journal = fix.get("kind") == "funds"
+    lines = [line for line in (fix.get("entries") if journal else (fix.get("sent") or {}).get("line_items")) or []
+             if isinstance(line, dict)]
+    held = item.get("fund_lines") or []
+    accounts = {a["code"]: _name(a) for a in chart}
+    fund_names = {UNRESTRICTED: t("label.unrestricted", lang), **{f["id"]: f["name"] for f in funds}}
+    options = fund_options(funds)
+
+    def choice(name: str, label: str) -> FT:
+        return searchable_select(name, options, value=kept.get(name) or "", placeholder=EMPTY, aria_label=label)
+
+    def money(value) -> FT:
+        return Td(fmt_money(value) if value else "", cls="cell--money")
+
+    rows = []
+    for n, line in enumerate(lines, 1):
+        fund = Td(choice(f"line_{n}", t("th.fund", lang)),
+                  _fund_balances(held[n - 1] if n <= len(held) else {}, accounts, fund_names, lang))
+        if journal:
+            rows.append(Tr(Td(accounts.get(line.get("account"), line.get("account") or EMPTY)),
+                           money(line.get("debit")), money(line.get("credit")), fund))
+        else:
+            code = held[n - 1].get("account") if n <= len(held) else None
+            rows.append(Tr(Td(line.get("name") or line.get("description") or EMPTY),
+                           Td(accounts.get(code, code) if code else EMPTY), money(line.get("line_total")), fund))
+    head = ((Th(t("th.account", lang)), Th(t("th.debit", lang), cls="cell--number"),
+             Th(t("th.credit", lang), cls="cell--number")) if journal
+            else (Th(t("th.description", lang)), Th(t("th.account", lang)), Th(t("th.total", lang), cls="cell--number")))
+    return Form(
+        P(t("sync_accounts.funds_hint", lang), cls="settings-hint"),
+        Div(Label(t("fund.set_all_outside", lang), cls="form-label"),
+            choice("all", t("fund.set_all_outside", lang)), cls="fund-set-all gap-sm"),
+        Table(Thead(Tr(*head, Th(t("th.fund", lang)))), Tbody(*rows), cls="data-table"),
+        Hidden(name="revision", value=str(fix.get("revision") or 0)),
+        Hidden(name="request_key", value=kept.get("request_key") or uuid.uuid4().hex),
+        Button(t("btn.post", lang), type="submit", cls="btn btn--primary btn--sm"),
+        hx_post=f"{PAGE}/holds/{quote(item['id'], safe='')}/funds", cls="flex-col gap-sm", **_SWAP,
+    )
+
+
+def _holds(items: list[dict], chart: list[dict], lang: str, funds: list[dict] | None = None,
+           kept: dict[str, dict] | None = None) -> FT | str:
+    """The held records, each with its fix; ``kept`` maps a record to a refused Post's form."""
     if not items:
         return ""
     return Div(
@@ -86,7 +149,9 @@ def _holds(items: list[dict], chart: list[dict], lang: str) -> FT | str:
             Thead(Tr(Th(t("th.date", lang)), Th(t("sync_accounts.record", lang)),
                      Th(t("sync_accounts.why", lang)), Th(t("th.actions", lang)))),
             Tbody(*[Tr(Td((item.get("at") or "")[:10] or EMPTY), Td(item.get("label") or EMPTY),
-                       Td(item.get("reason") or EMPTY), Td(_hold_fix(item, chart, lang)), cls="data-row")
+                       Td(item.get("reason") or EMPTY),
+                       Td(_fund_hold(item, chart, funds or [], lang, (kept or {}).get(item["id"]))
+                          if waits_for_funds(item.get("fix")) else _hold_fix(item, chart, lang)), cls="data-row")
                     for item in items]),
             cls="data-table",
         ),
@@ -168,13 +233,17 @@ def _review(company: dict, chart: list[dict], lang: str) -> FT:
     )
 
 
-async def sync_accounts_body(token: str, lang: str, error: str | None = None) -> FT:
-    """The page body, read fresh after every action; a read failure says so in place."""
+async def sync_accounts_body(token: str, lang: str, error: str | None = None,
+                             kept: dict[str, dict] | None = None) -> FT:
+    """The page body, read fresh after every action; a read failure says so in place.
+    ``kept`` maps a record held for funds to the choices of its refused Post."""
     notice = [flash(error)] if error else []
     try:
         held = await api.peer_holds(token)
         review = (await api.peer_review(token)).get("companies") or []
         chart = (await api.get_chart(token)).get("items") or []
+        funds = ((await api.list_funds(token)).get("items") or []
+                 if any(waits_for_funds(i.get("fix")) for i in held.get("items") or []) else [])
     except api.APIError as exc:
         return Div(*notice, flash(refusal_text(exc.detail)), id="sync-accounts")
     # A record waiting for a review is listed with the review, and again once it is fixed.
@@ -183,7 +252,7 @@ async def sync_accounts_body(token: str, lang: str, error: str | None = None) ->
     added = held.get("added") or []
     if not (holds or added or review):
         return Div(*notice, P(t("sync_accounts.nothing", lang), cls="empty-state-msg"), id="sync-accounts")
-    return Div(*notice, *[_review(c, chart, lang) for c in review], _holds(holds, chart, lang),
+    return Div(*notice, *[_review(c, chart, lang) for c in review], _holds(holds, chart, lang, funds, kept),
                _added(added, lang), id="sync-accounts")
 
 
@@ -239,6 +308,28 @@ def setup_routes(app) -> None:
             started = False
         message = t("sync_accounts.fixed_syncing" if started else "sync_accounts.fixed_next_sync", lang)
         return html_response(await sync_accounts_body(token, lang), headers=toast_header(message, "success"))
+
+    @app.post(PAGE + "/holds/{item_id}/funds")
+    async def sync_accounts_post_funds(request: Request, item_id: str):
+        """Post a record held for funds with the choices made on its lines; it posts now, as
+        this user. A refusal is shown in place with the choices kept."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        form = dict(await request.form())
+        lines = {key.removeprefix("line_"): value for key, value in form.items()
+                 if key.startswith("line_") and key.removeprefix("line_").isdigit() and value}
+        body = {"revision": int(form.get("revision") or 0), "request_key": form.get("request_key") or "",
+                "choices": {**({"all": form["all"]} if form.get("all") else {}), "lines": lines}}
+        try:
+            listed = (await api.peer_holds(token)).get("items") or []
+            label = next((i.get("label") for i in listed if i.get("id") == item_id), None) or EMPTY
+            await api.post_peer_hold_funds(token, item_id, body)
+        except api.APIError as exc:
+            return await sync_accounts_body(token, lang, refusal_text(exc.detail), kept={item_id: form})
+        return html_response(await sync_accounts_body(token, lang),
+                             headers=toast_header(t("sync_accounts.posted", lang, record=label), "success"))
 
     @app.post(PAGE + "/added/{item_id}")
     async def sync_accounts_added(request: Request, item_id: str):

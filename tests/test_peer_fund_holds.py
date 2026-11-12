@@ -131,8 +131,8 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
 
 async def test_held_lines_carry_balance_per_fund(real_client, real_engine, monkeypatch):
     """Each line of a record held for funds names the account it posts to and that account's
-    posted balance per fund (debit less credit; "unrestricted" for the unrestricted group),
-    read when Sync accounts lists it, so the user sees what each fund holds before choosing."""
+    posted balance per fund ("unrestricted" for the unrestricted group, on the account's normal
+    side), read when Sync accounts lists it, so the user sees what each fund holds before choosing."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from celerp.services.journal_accounts import fund_account_balances

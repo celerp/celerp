@@ -111,13 +111,15 @@ class FundChoiceNeeded(UnbalancedJournalEntry):
     """An entry for a record that came from outside with a line no fund choice covers
     (peer_lines.check_outside_record). ``fix`` tells the reader what to choose: the
     document's fund and the numbers of the lines that have none of their own, each also
-    named after the English message."""
+    named after the English message and, keyed, in ``also`` for a translated reading."""
     status_code = 409
 
     def __init__(self, record: str, source: dict, lines: list[int]):
         super().__init__("posting.fund.choice_needed", record=record, source=source)
-        self.detail["message"] = " ".join([self.detail["message"], *(
-            catalog_refusal("posting.fund.line_without_choice", line=n)["message"] for n in lines)])
+        also = [catalog_refusal("posting.fund.line_without_choice", line=n) for n in lines]
+        self.detail["message"] = " ".join([self.detail["message"], *(line["message"] for line in also)])
+        if also:
+            self.detail["also"] = also
         self.fix = {"kind": "funds", "document": True, "lines": lines}
 
 

@@ -54,6 +54,7 @@ from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
+from celerp.services.peer_lines import UNRESTRICTED, held_accounts, waits_for_funds
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
@@ -5256,20 +5257,43 @@ class PeerReview(BaseModel):
     answers: list[PeerReviewAnswer] = Field(default_factory=list, max_length=1000)
 
 
+async def _held_fund_lines(session: AsyncSession, company_id: uuid.UUID, items: list[dict]) -> None:
+    """Give each listed item held for funds ``fund_lines``: per line, the account it posts to
+    and that account's posted balance per fund id (UNRESTRICTED for the unrestricted group)
+    from the fund balance sheet's query, signed on the account's normal side as the ledger
+    reports it."""
+    held = [item for item in items if waits_for_funds(item.get("fix"))]
+    if not held:
+        return
+    types = dict((await session.execute(select(Account.code, Account.account_type).where(
+        Account.company_id == company_id))).all())
+    by_account: dict[str, dict[str, float]] = {}
+    for fund, accounts in (await fund_account_balances(session, company_id)).items():
+        for code, amount in accounts.items():
+            normal = amount if _is_debit_normal(types.get(code, "unknown")) else -amount
+            by_account.setdefault(code, {})[fund or UNRESTRICTED] = to_stored_float(normal)
+    for item in held:
+        item["fund_lines"] = [{"account": code, "balances": by_account.get(code, {}) if code else {}}
+                              for code in held_accounts(item["fix"])]
+
+
 @router.get("/peer/holds")
 async def peer_holds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Records a connected company sent that wait for one of their accounts to be fixed,
-    and the accounts sync added here, newest first; each added account says whether it
-    can still be removed, or why it can only be archived."""
+    """Records a connected company sent that wait for one of their accounts to be fixed or
+    for a fund on each line (each such line with its account's balance per fund), and the
+    accounts sync added here, newest first; each added account says whether it can still be
+    removed, or why it can only be archived."""
     added = await peer_accounts.added(session, company_id)
     for item in added:
         item["why"] = await removal_problem(session, company_id, item["code"])
         item["removable"] = item["why"] is None
-    return {"items": await peer_accounts.holds(session, company_id), "added": added}
+    items = await peer_accounts.holds(session, company_id)
+    await _held_fund_lines(session, company_id, items)
+    return {"items": items, "added": added}
 
 
 class PeerAddedAction(BaseModel):

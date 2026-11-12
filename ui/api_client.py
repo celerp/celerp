@@ -3851,7 +3851,7 @@ async def reverse_from_accountant(token: str, je_id: str) -> dict:
 
 
 async def peer_holds(token: str) -> dict:
-    """GET records held for an account and the accounts sync added, newest first."""
+    """GET records held for an account or a fund on each line, and the accounts sync added, newest first."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/peer/holds")).json()
 
@@ -3859,6 +3859,12 @@ async def peer_holds(token: str) -> dict:
 async def fix_peer_hold(token: str, item_id: str, body: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/fix", json=body)).json()
+
+
+async def post_peer_hold_funds(token: str, item_id: str, body: dict) -> dict:
+    """Post a record held for funds with the choices: {revision, choices: {all, lines}, request_key}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/funds", json=body)).json()
 
 
 async def settle_added_account(token: str, item_id: str, action: str) -> dict:

@@ -7558,5 +7558,9 @@
   "fund.from_source": "From {source}",
   "fund.uses": "uses {fund}",
   "fund.document_label": "Fund for this document",
-  "fund.set_all_outside": "Set all outside lines to"
+  "fund.set_all_outside": "Set all outside lines to",
+  "fund.account_balances": "{account}: {balances}",
+  "fund.account_no_balance": "{account}: No balance yet",
+  "sync_accounts.funds_hint": "Choose a fund or Unrestricted for each line, then Post. Set all outside lines to fills every line still at --.",
+  "sync_accounts.posted": "{record} posted."
 }

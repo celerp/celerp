@@ -609,6 +609,24 @@ def outside_fund_needs(doc: Mapping) -> list[int | None]:
     return needs
 
 
+def waits_for_funds(fix) -> bool:
+    """Whether a held item's ``fix`` waits for a local user's fund choices: a journal's
+    (``funds``) or a connected company's document's (``doc_funds``)."""
+    from celerp.services.peer_documents import DOC_FUNDS
+
+    return (fix or {}).get("kind") in ("funds", DOC_FUNDS)
+
+
+def held_accounts(fix: Mapping) -> list[str | None]:
+    """The account each line of a held item posts to, numbered as a choice names it (from 1):
+    a journal's line account, a document line's purchasing account (None where the line
+    names none and its account follows from the document)."""
+    if fix.get("kind") == "funds":
+        return [line.get("account") for line in fix.get("entries") or [] if isinstance(line, dict)]
+    return [line.get("account_code") for line in (fix.get("sent") or {}).get("line_items") or []
+            if isinstance(line, dict)]
+
+
 async def outside_waiting(session, company_id) -> dict:
     """The outside records waiting for a fund choice in a company with funds in use: ``held``,
     the items a connected company sent that wait for funds (a ``funds`` or ``doc_funds`` fix,
@@ -623,14 +641,13 @@ async def outside_waiting(session, company_id) -> dict:
     from celerp.services.auto_je import IMPORT_TREATMENT
     from celerp.services.journal_accounts import funds_enabled
     from celerp.modules.boundary import is_running
-    from celerp.services.peer_documents import DOC_FUNDS
 
     company = await session.get(Company, company_id)
     if company is None or not funds_enabled(dict(company.settings or {})):
         return {"count": 0, "held": 0, "documents": []}
     fixes = (await session.scalars(select(CompanyPeerAttention.fix).where(
         CompanyPeerAttention.company_id == company_id))).all()
-    held = sum(1 for fix in fixes if (fix or {}).get("kind") in ("funds", DOC_FUNDS))
+    held = sum(1 for fix in fixes if waits_for_funds(fix))
     if not is_running("celerp-docs"):  # documents wait only where Documents can open them
         return {"count": held, "held": held, "documents": []}
     from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
