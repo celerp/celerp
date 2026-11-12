@@ -3247,6 +3247,8 @@
   "enum.vertical_preset.books_media": "الكتب ووسائل الإعلام",
   "enum.vertical_preset.coins_precious_metals": "العملات المعدنية والمعادن الثمينة",
   "enum.vertical_preset.consulting": "الاستشارات",
+  "enum.vertical_preset.nonprofit": "غير ربحي",
+  "enum.vertical_tag.nonprofit": "غير ربحي",
   "enum.vertical_preset.cosmetics": "مستحضرات التجميل والعناية",
   "enum.vertical_preset.electronics": "الإلكترونيات",
   "enum.vertical_preset.fashion": "الأزياء والملابس",
@@ -7745,5 +7747,18 @@
   "enum.member_standing.current": "Current",
   "enum.member_standing.in_grace": "In grace",
   "enum.member_standing.lapsed": "Lapsed",
-  "enum.member_standing.lifetime": "Lifetime"
+  "enum.member_standing.lifetime": "Lifetime",
+  "category.membership": "Membership",
+  "category.donation": "Donation",
+  "category.event_ticket": "Event Ticket",
+  "attr.membership_term": "Membership Term",
+  "attr.membership_level": "Membership Level",
+  "attr.benefits": "Benefits",
+  "attr.notes": "Notes",
+  "attr.gift_type": "Gift Type",
+  "attr.campaign": "Campaign",
+  "attr.event_name": "Event",
+  "attr.event_date": "Event Date",
+  "attr.venue": "Venue",
+  "attr.ticket_type": "Ticket Type"
 }

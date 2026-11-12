@@ -25,7 +25,7 @@ _VERTICAL_TAGS: tuple[str, ...] = (
     "agricultural", "artwork", "automotive", "books_media",
     "coins_precious_metals", "consulting", "cosmetics", "electronics",
     "fashion", "food_beverage", "furniture", "gems_jewelry", "hardware",
-    "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
+    "nonprofit", "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
 from ui.i18n import t, get_lang, category_label, category_labels

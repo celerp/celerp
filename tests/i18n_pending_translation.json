@@ -1318,6 +1318,58 @@
     "enum.member_standing.lifetime": {
       "en": "Lifetime",
       "params": []
+    },
+    "category.membership": {
+      "en": "Membership",
+      "params": []
+    },
+    "category.donation": {
+      "en": "Donation",
+      "params": []
+    },
+    "category.event_ticket": {
+      "en": "Event Ticket",
+      "params": []
+    },
+    "attr.membership_term": {
+      "en": "Membership Term",
+      "params": []
+    },
+    "attr.membership_level": {
+      "en": "Membership Level",
+      "params": []
+    },
+    "attr.benefits": {
+      "en": "Benefits",
+      "params": []
+    },
+    "attr.notes": {
+      "en": "Notes",
+      "params": []
+    },
+    "attr.gift_type": {
+      "en": "Gift Type",
+      "params": []
+    },
+    "attr.campaign": {
+      "en": "Campaign",
+      "params": []
+    },
+    "attr.event_name": {
+      "en": "Event",
+      "params": []
+    },
+    "attr.event_date": {
+      "en": "Event Date",
+      "params": []
+    },
+    "attr.venue": {
+      "en": "Venue",
+      "params": []
+    },
+    "attr.ticket_type": {
+      "en": "Ticket Type",
+      "params": []
     }
   },
   "modules": {

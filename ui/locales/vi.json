@@ -3247,6 +3247,8 @@
   "enum.vertical_preset.books_media": "Sách & Phương tiện truyền thông",
   "enum.vertical_preset.coins_precious_metals": "Tiền xu & Kim loại quý",
   "enum.vertical_preset.consulting": "Dịch vụ tư vấn",
+  "enum.vertical_preset.nonprofit": "Phi lợi nhuận",
+  "enum.vertical_tag.nonprofit": "Phi lợi nhuận",
   "enum.vertical_preset.cosmetics": "Mỹ phẩm & Làm đẹp",
   "enum.vertical_preset.electronics": "Điện tử",
   "enum.vertical_preset.fashion": "Thời trang & May mặc",
@@ -7745,5 +7747,18 @@
   "enum.member_standing.current": "Current",
   "enum.member_standing.in_grace": "In grace",
   "enum.member_standing.lapsed": "Lapsed",
-  "enum.member_standing.lifetime": "Lifetime"
+  "enum.member_standing.lifetime": "Lifetime",
+  "category.membership": "Membership",
+  "category.donation": "Donation",
+  "category.event_ticket": "Event Ticket",
+  "attr.membership_term": "Membership Term",
+  "attr.membership_level": "Membership Level",
+  "attr.benefits": "Benefits",
+  "attr.notes": "Notes",
+  "attr.gift_type": "Gift Type",
+  "attr.campaign": "Campaign",
+  "attr.event_name": "Event",
+  "attr.event_date": "Event Date",
+  "attr.venue": "Venue",
+  "attr.ticket_type": "Ticket Type"
 }

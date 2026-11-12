@@ -3248,6 +3248,8 @@
   "enum.vertical_preset.books_media": "Libri e media",
   "enum.vertical_preset.coins_precious_metals": "Monete e metalli preziosi",
   "enum.vertical_preset.consulting": "Consulenza",
+  "enum.vertical_preset.nonprofit": "Non profit",
+  "enum.vertical_tag.nonprofit": "Non profit",
   "enum.vertical_preset.cosmetics": "Cosmetici e bellezza",
   "enum.vertical_preset.electronics": "Elettronica",
   "enum.vertical_preset.fashion": "Moda e abbigliamento",
@@ -7745,5 +7747,18 @@
   "enum.member_standing.current": "Current",
   "enum.member_standing.in_grace": "In grace",
   "enum.member_standing.lapsed": "Lapsed",
-  "enum.member_standing.lifetime": "Lifetime"
+  "enum.member_standing.lifetime": "Lifetime",
+  "category.membership": "Membership",
+  "category.donation": "Donation",
+  "category.event_ticket": "Event Ticket",
+  "attr.membership_term": "Membership Term",
+  "attr.membership_level": "Membership Level",
+  "attr.benefits": "Benefits",
+  "attr.notes": "Notes",
+  "attr.gift_type": "Gift Type",
+  "attr.campaign": "Campaign",
+  "attr.event_name": "Event",
+  "attr.event_date": "Event Date",
+  "attr.venue": "Venue",
+  "attr.ticket_type": "Ticket Type"
 }
