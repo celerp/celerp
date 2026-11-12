@@ -295,6 +295,25 @@ async def test_change_fund_judged_once_over_the_action(client, session, auth):
     assert await _held(session, auth, None) == Decimal(100)
 
 
+async def test_change_fund_balance_rule_counts_every_account_the_fund_holds(client, session, auth):
+    """A sender's holdings are measured over every account it holds, not only the accounts the
+    change touches: R's gift of 100 in the bank, with 70 of purpose spending still owed on a
+    liability account, holds 30, so moving the gift to Unrestricted is refused; once a second
+    gift covers it, the move posts."""
+    f = await _setup(client, auth)
+    gift = await _outside_journal(client, auth, [("1111", 100, 0), ("4100", 0, 100)], f["R"])
+    await _emit(session, auth, [("6200", 70, 0, f["R"]), ("2210", 0, 70, f["R"])])
+    await session.commit()
+    r = await _change_journal(client, session, auth, gift, all="unrestricted")
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_exceeds_balance", r.text
+    assert r.json()["detail"]["params"]["available"] == "30.00"
+    assert (await _state(session, auth, gift))["status"] == "posted"
+    await _emit(session, auth, [("1112", 40, 0, f["R"]), ("4100", 0, 40, f["R"])])
+    await session.commit()
+    r = await _change_journal(client, session, auth, gift, all="unrestricted")
+    assert r.status_code == 200, r.text
+
+
 async def test_fund_change_action_counts_every_journal_event(client, session, auth):
     """A journal event emitted directly inside the action is counted: moving R's gift to a
     restricted fund of another purpose is refused on leaving the action. A relabel or a
