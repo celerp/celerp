@@ -31,7 +31,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from ui.routes.financial_reports import REPORTS, ledger_path, subject_token
+from ui.routes.financial_reports import AS_OF_REPORTS, REPORTS, ledger_path, subject_token
 
 GOLDEN_DIR = Path(__file__).parent / "report_goldens"
 
@@ -39,6 +39,7 @@ GOLDEN_DIR = Path(__file__).parent / "report_goldens"
 # moves with the calendar and takes the golden with it.
 PERIOD = [("from", "2026-01-01"), ("to", "2026-03-31")]
 AS_OF = "2026-03-31"
+FUND_PERIOD = [("from", "2026-04-01"), ("to", "2026-04-30")]
 
 
 def _h(tok: str) -> dict:
@@ -51,7 +52,8 @@ async def _seed(client) -> tuple[str, str]:
     An invoice part paid puts a customer on the statement and cash through the bank;
     a second invoice leaves a balance outstanding at the period end; the rent entry
     gives the P&L an expense; the manual entry against receivables carries a contact
-    key, which is what keeps a hand-posted line attributed on the subledger.
+    key, which is what keeps a hand-posted line attributed on the subledger; a
+    restricted fund overspent gives the fund reports something to show.
     """
     addr = f"e2e-{uuid.uuid4().hex[:8]}@reports.test"
     r = await client.post("/auth/register", json={
@@ -118,6 +120,27 @@ async def _seed(client) -> tuple[str, str]:
                  "import_treatment": "opening_balances"}})
     assert r.status_code == 200, r.text
 
+    # The books use funds: a restricted gift spent past what it holds gives the fund
+    # balance sheet and fund activity their figures, and the fund reconciliation the
+    # overdrawn fund and its negative net assets to list. Dated after the period the
+    # other reports read (the fund reports read FUND_PERIOD), so their figures stay as
+    # they were.
+    r = await client.put("/accounting/funds/setting", headers=_h(tok), json={"enabled": True})
+    assert r.status_code == 200, r.text
+    r = await client.post("/accounting/funds", headers=_h(tok), json={
+        "request_key": uuid.uuid4().hex, "name": "Library gift", "restricted": True,
+        "purpose": "Books for the reading room"})
+    assert r.status_code == 200, r.text
+    fund = r.json()["id"]
+    for ts, memo, debit, credit, amount in (("2026-04-01", "Library gift", "1111", "4100", 60.0),
+                                            ("2026-04-10", "Reading room books", "6200", "1111", 80.0)):
+        r = await client.post("/accounting/journal-entries", headers=_h(tok), json={
+            "ts": ts, "memo": memo,
+            "entries": [{"account": debit, "debit": amount, "credit": 0, "fund_id": fund},
+                        {"account": credit, "debit": 0, "credit": amount, "fund_id": fund}],
+            "idempotency_token": uuid.uuid4().hex})
+        assert r.status_code == 200, r.text
+
     return tok, contact
 
 
@@ -138,18 +161,20 @@ GOLDEN_KEYS += _EXPORT_KEYS
 
 def _urls(contact: str) -> dict[str, str]:
     """The URL each report is read at."""
-    period = "&".join(f"{k}={v}" for k, v in PERIOD)
     urls = {}
     for key in REPORTS:
         path = REPORTS[key][0]
-        if key == "balance-sheet":
-            urls[key] = f"{path}?as_of={AS_OF}"
+        dates = FUND_PERIOD if key.startswith("fund-") else PERIOD
+        period = "&".join(f"{k}={v}" for k, v in dates)
+        if key in AS_OF_REPORTS:
+            urls[key] = f"{path}?as_of={dates[1][1]}"
         elif key == "statement":
             urls[key] = (f"{path}?{period}"
                          f"&account={subject_token('c', contact)}"
                          f"&account={subject_token('a', '1120')}")
         else:
             urls[key] = f"{path}?{period}"
+    period = "&".join(f"{k}={v}" for k, v in PERIOD)
     urls["ledger"] = f"{ledger_path('1120')}?{period}"
     # A print sheet and a CSV take the period as date_from/date_to, the names
     # report_kit.date_params writes into the links a reader clicks; the on-screen
@@ -289,6 +314,15 @@ async def test_every_report_renders_its_own_figures_end_to_end(seeded):
 
     ledger = await _fetch(ui, tok, urls["ledger"])
     assert "Late delivery charge" in ledger
+
+    fund_bs = await _fetch(ui, tok, urls["fund-balance-sheet"])
+    assert "Library gift" in fund_bs and "-฿20.00" in fund_bs, "the gift's 60 less the 80 spent from it"
+
+    activity = await _fetch(ui, tok, urls["fund-activity"])
+    assert "60.00" in activity and "80.00" in activity, "received and spent by the gift"
+
+    recon = await _fetch(ui, tok, urls["fund-reconciliation"])
+    assert "Library gift" in recon and "-฿20.00" in recon, "the overdrawn gift"
 
 
 @pytest.mark.asyncio

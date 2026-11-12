@@ -1,0 +1,57 @@
+<div id="main-content" class="main-content">
+  <div class="page-header">
+    <h1 class="page-title">Fund balance sheet</h1>
+    <div class="page-actions"></div>
+  </div>
+  <div>
+    <div id="report-nav" class="flex-row flex-wrap gap-sm mb-md">
+<span class="cell--muted">Accounting Reports:</span><a href="/reports/pnl?to=2026-04-30" class="drilldown-link">P&amp;L</a><a href="/reports/balance-sheet?as_of=2026-04-30" class="drilldown-link">Balance Sheet</a><a href="/reports/cash-flow?to=2026-04-30" class="drilldown-link">Cash Flow</a><a href="/reports/trial-balance?to=2026-04-30" class="drilldown-link">Trial Balance</a><a href="/reports/general-ledger?to=2026-04-30" class="drilldown-link">General Ledger</a><a href="/accounting?to=2026-04-30" class="drilldown-link">Journal</a><a href="/reports/extended-journal?to=2026-04-30" class="drilldown-link">Extended Journal</a><a href="/reports/statement?to=2026-04-30" class="drilldown-link">Statement of Account</a><a href="/reports/opening-tie-out?to=2026-04-30" class="drilldown-link">Opening balance check</a><span class="report-nav-current">Fund balance sheet</span><a href="/reports/funds/activity?to=2026-04-30" class="drilldown-link">Fund activity</a><a href="/reports/funds/reconciliation?as_of=2026-04-30" class="drilldown-link">Fund reconciliation</a>    </div>
+    <div class="date-filter-bar">
+<form enctype="multipart/form-data" action="/reports/funds/balance-sheet" method="get" class="date-custom-form"><label class="form-label">As of date:</label>        <input type="date" name="as_of" value="2026-04-30" class="date-input">
+<button type="submit" class="btn btn--secondary btn--sm">Apply</button></form>    </div>
+    <div class="flex-row mt-md mb-md">
+      <div class="page-actions flex-row gap-sm ml-auto">
+<a href="/reports/export/funds/balance-sheet/csv?as_of=2026-04-30" class="btn btn--ghost btn--icon" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg></a><a href="/reports/print/funds/balance-sheet?as_of=2026-04-30" target="_blank" class="btn btn--ghost btn--icon" title="Print"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg></a>      </div>
+    </div>
+    <div class="report-view">
+      <table class="data-table data-table--compact">
+        <thead>
+          <tr>
+            <th>Account</th>
+            <th class="cell--number">Library gift</th>
+            <th class="cell--number">the unrestricted funds</th>
+            <th class="cell--number">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+<a href="/reports/ledger/1111?date_to=2026-04-30&amp;src=fund-balance-sheet" class="drilldown-link">1111 Default Bank Account (Checking)</a>            </td>
+            <td class="cell--number">-฿20.00</td>
+            <td class="cell--number">฿15.00</td>
+            <td class="cell--number">-฿5.00</td>
+          </tr>
+          <tr>
+            <td>
+<a href="/reports/ledger/1120?date_to=2026-04-30&amp;src=fund-balance-sheet" class="drilldown-link">1120 Accounts Receivable</a>            </td>
+            <td class="cell--number">฿0.00</td>
+            <td class="cell--number">฿105.00</td>
+            <td class="cell--number">฿105.00</td>
+          </tr>
+          <tr class="row--total">
+            <td>
+<strong>Net assets</strong>            </td>
+            <td class="cell--number">
+<strong>-฿20.00</strong>            </td>
+            <td class="cell--number">
+<strong>฿120.00</strong>            </td>
+            <td class="cell--number">
+<strong>฿100.00</strong>            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="valuation-bar">
+<span class="val-chip">Restricted net assets: -฿20.00</span><span class="val-chip">Available net assets: ฿120.00</span>      </div>
+    </div>
+  </div>
+</div>

@@ -24,7 +24,7 @@ from test_helpers import make_test_token
 from ui.api_client import APIError
 from ui.i18n import t
 from ui.routes.financial_reports import (
-    MOVED_TABS, REPORTS, ledger_path, parse_subject, subject_token,
+    AS_OF_REPORTS, MOVED_TABS, REPORTS, ledger_path, parse_subject, subject_token,
 )
 
 
@@ -43,7 +43,11 @@ def _cookies(role: str = "owner") -> dict:
     return {"celerp_token": make_test_token(role=role)}
 
 
-_COMPANY = {"id": "c1", "name": "TestCo", "currency": "THB", "settings": {"currency": "THB"}}
+# Books that use funds, so every report in REPORTS is offered; _NO_FUNDS is the same
+# company without them, offering the fund reports nowhere.
+_COMPANY = {"id": "c1", "name": "TestCo", "currency": "THB",
+            "settings": {"currency": "THB", "funds_enabled": True}}
+_NO_FUNDS = {**_COMPANY, "settings": {"currency": "THB"}}
 _CONTACTS = {"items": [
     {"id": "contact:9", "name": "Acme Ltd", "contact_type": "customer"},
     {"id": "contact:7", "name": "Supplier Co", "contact_type": "supplier"},
@@ -146,12 +150,29 @@ _TIE_OUT = {
                                "base_amount": 60.0, "status": "final"}]}],
 }
 
+_FUNDS = {"items": [{"id": "fund:1", "name": "Library gift", "restricted": True}]}
+_FUND_COLUMNS = {"opening": 0.0, "received": 60.0, "spent": 80.0, "released": 0.0,
+                 "transferred": 0.0, "closing": -20.0}
+_FUND_BS = {"as_of": "2026-03-31", "funds": [
+    {"id": "unrestricted", "name": "Unrestricted", "net_assets": 100.0},
+    {"id": "fund:1", "name": "Library gift", "net_assets": -20.0}],
+    "accounts": [{"code": "1111", "name": "Bank", "amounts": {"unrestricted": 100.0, "fund:1": -20.0},
+                  "total": 80.0}],
+    "restricted_net_assets": -20.0, "available_net_assets": 100.0}
+_FUND_ACTIVITY = {"funds": [{"id": "fund:1", "name": "Library gift", **_FUND_COLUMNS}],
+                  "movements": [], "fund_changes": []}
+_FUND_RECON = {"balanced": True, "differences": [], "mirrors": [], "attribution": [], "fund_changes": [],
+               "overdrawn": [{"fund_id": "fund:1", "fund": "Library gift", "account": "1111", "balance": -20.0}],
+               "negative_net_assets": [{"fund_id": "fund:1", "fund": "Library gift", "net_assets": -20.0}]}
+
 _DEFAULTS = {
     "get_company": _COMPANY, "list_contacts": _CONTACTS, "get_chart": _CHART,
     "get_soa": _SOA, "get_ledger": _LEDGER, "get_pnl": _PNL, "get_balance_sheet": _BS,
     "get_trial_balance": _TB, "get_general_ledger": _GL, "get_cash_flow": _CASH_FLOW,
     "get_ar_aging": _AGING, "get_ap_aging": _AGING, "get_journal": _JOURNAL,
     "get_extended_journal": _EXTENDED_JOURNAL, "get_opening_tie_out": _TIE_OUT,
+    "list_funds": _FUNDS, "get_fund_waiting": {"count": 0}, "get_fund_balance_sheet": _FUND_BS,
+    "get_fund_activity": _FUND_ACTIVITY, "get_fund_reconciliation": _FUND_RECON,
 }
 
 
@@ -413,20 +434,31 @@ async def test_report_nav_appears_on_every_report_page(ui_client, key):
         assert (f'href="{path}' in nav) is (other != key), other
 
 
+@pytest.mark.parametrize("url", ["/reports", REPORTS["pnl"][0]])
+@pytest.mark.asyncio
+async def test_books_without_funds_offer_no_fund_report(ui_client, url):
+    """Without funds every figure would sit under Unrestricted, so neither the index nor a
+    report's navigation strip offers the fund reports; the other reports stay."""
+    r = await _get(ui_client, url, get_company=_NO_FUNDS)
+    assert r.status_code == 200
+    for key, (path, _print, _csv, _title) in REPORTS.items():
+        assert (f'href="{path}' in r.text) is (not key.startswith("fund-")), key
+
+
 @pytest.mark.asyncio
 async def test_report_nav_carries_the_date_range(ui_client):
     """The period the reader set survives the hop to the next report, rather than
-    every link dropping them back on the default range. The balance sheet is a
+    every link dropping them back on the default range. A balance sheet is a
     snapshot rather than a period, so it takes the period end as its as-of date,
     which is what the ledger's back link already does."""
     r = await _get(ui_client, "/reports/pnl?from=2026-02-01&to=2026-02-28")
     nav = _nav(r.text)
     assert nav
     for key, (path, _print, _csv, _title) in REPORTS.items():
-        if key in ("pnl", "balance-sheet"):
+        if key == "pnl":
             continue
-        assert f'href="{path}?from=2026-02-01&amp;to=2026-02-28"' in nav, key
-    assert f'href="{REPORTS["balance-sheet"][0]}?as_of=2026-02-28"' in nav
+        query = "as_of=2026-02-28" if key in AS_OF_REPORTS else "from=2026-02-01&amp;to=2026-02-28"
+        assert f'href="{path}?{query}"' in nav, key
 
 
 @pytest.mark.asyncio
