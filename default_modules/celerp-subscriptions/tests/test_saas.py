@@ -279,3 +279,41 @@ async def test_invoice_snapshot_unchanged_after_amendment(owner_ui, session, mon
     [issued] = [d for d in await billed_docs(session, eid) if d["entity_id"] == march["entity_id"]]
     fixed = ("line_items", "subtotal", "tax", "total", "issue_date", "service_start", "service_end", "ref_id")
     assert {k: issued.get(k) for k in fixed} == {k: march.get(k) for k in fixed}
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity"])
+async def test_amendment_refuses_non_finite_quantity(owner_ui, monkeypatch, raw):
+    """A quantity that is not a finite number (JSON allows NaN and Infinity) is refused at the
+    request body, and nothing is written."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    body = '{"effective": "2026-03-10", "quantities": {%s: %s}, "request_key": "%s"}' % (
+        json.dumps(line), raw, uuid.uuid4())
+    r = await owner_ui.api.post(f"/subscriptions/{eid}/amend", content=body,
+                                headers={"content-type": "application/json"})
+    assert r.status_code == 422 and r.json()["detail"][0]["type"] == "finite_number", r.text
+    assert not (await template(owner_ui.api, {}, eid)).get("amendments")
+
+
+async def test_seat_change_to_zero_on_a_paid_period(owner_ui, session, monkeypatch):
+    """March billed in advance and paid in full: a change to 0 seats from 15 March issues the
+    credit note for the 17 days left (16.45) against the paid invoice, which stays paid, and a
+    document for the new terms with nothing to bill; April bills 0 seats."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    [march] = await billed_docs(session, eid)
+    r = await owner_ui.api.post(f"/docs/{march['entity_id']}/payment", json={
+        "amount": 30.0, "payment_date": "2026-03-02", "bank_account": "1111", "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    freeze_day(monkeypatch, "2026-03-15")
+    r = await _amend(owner_ui.api, eid, "2026-03-15", {line: 0})
+    assert r.status_code == 200, r.text
+    docs = await billed_docs(session, eid)
+    [credit] = _of(docs, "credit_note")
+    assert credit["total"] == 16.45 and credit["status"] not in ("draft", "void")
+    [march_now] = [d for d in docs if d["entity_id"] == march["entity_id"]]
+    assert march_now["amount_outstanding"] == 0
