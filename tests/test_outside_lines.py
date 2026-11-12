@@ -19,7 +19,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from celerp.models.projections import Projection
-from test_income_accounts import _finalize_entry, _issued, _item, _line
+from test_income_accounts import _finalize_entry, _issued, _item, _line, ui_client  # noqa: F401 (fixture)
 from test_credit_note_settlement_owned import _post
 
 pytestmark = pytest.mark.asyncio
@@ -282,3 +282,152 @@ async def test_no_funds_company_outside_lines_unchanged(client, session, auth):
     entry = await _entry_state(session, auth["company_id"], je)
     assert entry["status"] == "posted" and _amounts(entry["entries"]) == _amounts(entries)
     assert entry.get("origin") == ORIGIN and [e.get("origin") for e in entry["entries"]] == [ORIGIN, ORIGIN]
+
+
+# ── fund choices ───────────────────────────────────────────────────────────────────────
+
+async def _fund_company(client, auth) -> str:
+    """Funds on, with one unrestricted fund; returns its id."""
+    from test_funds import _fund, _funds_on
+
+    r = await _funds_on(client, auth)
+    assert r.status_code == 200, r.text
+    return await _fund(client, auth, "General", restricted=False, purpose=None)
+
+
+async def _choose(client, auth, doc: str, **body):
+    version = (await _doc(client, auth, doc))["version"]
+    return await client.post(f"/docs/{doc}/fund-choices", headers=auth["headers"],
+                             json={"expected_version": version, **body})
+
+
+def _choices(state: dict) -> tuple:
+    return state.get("fund_choice"), [(li.get("fund_choice"), li.get("fund_id")) for li in state["line_items"]]
+
+
+async def test_fund_choice_grant_built_only_in_peer_lines(client, auth):
+    from fund_census import sources
+
+    builders = set()
+    for module, path in sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        def walk(node, fn):
+            for child in ast.iter_child_nodes(node):
+                here = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
+                if isinstance(child, ast.Call) and getattr(child.func, "id", getattr(child.func, "attr", None)) == "FundChoiceGrant":
+                    builders.add((module, here))
+                walk(child, here)
+
+        walk(tree, "<module>")
+    assert builders == {("celerp.services.peer_lines", "require_fund_choices"),
+                        ("celerp.services.peer_lines", "granted_from_stored")}, builders
+
+    # A write that sets a different choice without a grant is refused; the Fund control,
+    # which builds one, sets it.
+    fund = await _fund_company(client, auth)
+    doc, _, _ = await _two_line_import(client, auth)
+    first, second = (await _doc(client, auth, doc))["line_items"]
+    r = await _patch(client, auth, doc, line_items=[_as_sent(first, fund_choice=fund, fund_id=fund), _as_sent(second)])
+    assert r.status_code == 409 and _key(r) == "posting.fund.choice_not_granted", r.text
+    r = await _choose(client, auth, doc, lines={first["line_id"]: fund})
+    assert r.status_code == 200, r.text
+    assert _choices(await _doc(client, auth, doc)) == (None, [(fund, fund), (None, None)])
+
+
+async def test_local_edit_of_marked_line_clears_choices_with_notice(client, auth, ui_client):
+    from unittest.mock import AsyncMock
+
+    from test_income_accounts import _ui_api
+
+    fund = await _fund_company(client, auth)
+    doc, _, _ = await _two_line_import(client, auth)
+    first, second = (await _doc(client, auth, doc))["line_items"]
+    chosen = ("unrestricted", [(fund, fund), ("unrestricted", None)])
+    r = await _choose(client, auth, doc, document="unrestricted", lines={first["line_id"]: fund, second["line_id"]: "unrestricted"})
+    assert r.status_code == 200, r.text
+    assert _choices(await _doc(client, auth, doc)) == chosen
+
+    # A description-only edit through the line editor keeps every choice.
+    r = await _patch(client, auth, doc, line_items=[_as_sent(first, name="Outside A, renamed"), _as_sent(second)])
+    assert r.status_code == 200 and not r.json().get("fund_choices_cleared"), r.text
+    assert _choices(await _doc(client, auth, doc)) == chosen
+
+    # A unit price change on one marked line clears every choice on the document in that write.
+    r = await _patch(client, auth, doc, line_items=[_as_sent(first, unit_price=45, line_total=45), _as_sent(second)])
+    assert r.status_code == 200, r.text
+    assert r.json()["fund_choices_cleared"] == {"lines": [1, 2], "document": True}
+    state = await _doc(client, auth, doc)
+    assert _choices(state) == (None, [(None, None), (None, None)])
+    assert state["line_items"][0]["unit_price"] == 45 and state["line_items"][0]["origin"] == ORIGIN
+
+    # A document discount change clears them too.
+    r = await _choose(client, auth, doc, lines={first["line_id"]: fund})
+    assert r.status_code == 200, r.text
+    r = await _patch(client, auth, doc, discount=5, discount_type="flat")
+    assert r.status_code == 200, r.text
+    assert r.json()["fund_choices_cleared"] == {"lines": [1], "document": False}
+    assert _choices(await _doc(client, auth, doc)) == (None, [(None, None), (None, None)])
+
+    # The line editor shows the notice beside the cells, naming the lines.
+    patch_doc = AsyncMock(return_value={"version": 9, "fund_choices_cleared": {"lines": [1, 2], "document": True}})
+    with _ui_api(patch_doc=patch_doc, get_doc=AsyncMock(return_value=state)):
+        r = await ui_client.post(f"/docs/{doc}/lines", json={"line_items": state["line_items"], "expected_version": 3})
+    assert r.status_code == 200, r.text
+    assert r.json()["fund_notice"] == (
+        "Amounts changed, so the fund choices on lines 1, 2 and the fund for this document were cleared: choose again")
+
+
+async def test_reserved_keys_kept_without_funds_and_checked_at_turn_on(client, session, auth):
+    from test_funds import _funds_on
+
+    item = await _item(client, auth, "Reserved")
+    # Without funds in use, inbound keys are stored as sent: an import line's origin, a line's
+    # fund and choice, and a journal line's fund.
+    marked = await _imported(client, auth, [_line(item, "Reserved", 10, origin="accountant")])
+    carried = await _imported(client, auth, [_line(item, "Reserved", 20, fund_choice="fund:elsewhere",
+                                                   fund_id="fund:elsewhere")])
+    assert (await _doc(client, auth, marked))["line_items"][0]["origin"] == "accountant"
+    assert _choices(await _doc(client, auth, carried))[1] == [("fund:elsewhere", "fund:elsewhere")]
+    je = f"je:{uuid.uuid4()}"
+    entries = [{"account": "1111", "debit": 8.0, "credit": 0, "fund_id": "fund:elsewhere"},
+               {"account": "4100", "debit": 0, "credit": 8.0, "fund_id": "fund:elsewhere"}]
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": je, "event_type": "acc.journal_entry.created", "source": "csv",
+        "idempotency_key": uuid.uuid4().hex, "data": {"status": "posted", "ts": "2026-01-15", "entries": entries}}]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    assert [e.get("fund_id") for e in (await _entry_state(session, auth["company_id"], je))["entries"]] == [
+        "fund:elsewhere", "fund:elsewhere"]
+
+    # Turning funds on is refused while an unposted record carries a fund key, naming it; a
+    # record that carries only its origin never blocks.
+    r = await _funds_on(client, auth)
+    assert r.status_code == 422 and _key(r) == "fund.turn_on_outside_keys", r.text
+    params = r.json()["detail"]["params"]
+    assert params["count"] == 1 and params["records"] == carried.split(":", 1)[1], params
+    r = await _post(client, auth, f"/docs/{carried}/finalize")
+    assert r.status_code == 200, r.text
+    r = await _funds_on(client, auth)
+    assert r.status_code == 200, r.text
+
+    # With funds in use, inbound data carrying any of the keys is refused naming it.
+    for key, value in (("origin", "accountant"), ("fund_choice", "unrestricted"), ("fund_id", "fund:elsewhere")):
+        eid = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+        r = await client.post("/docs/import", headers=auth["headers"], json={
+            "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+            "data": {"doc_type": "invoice", "status": "draft", "ref_id": eid.split(":")[1],
+                     "line_items": [_line(item, "Reserved", 5, **{key: value})], "total": 5}})
+        assert r.status_code == 422 and _key(r) == "posting.fund.inbound_key", r.text
+        assert r.json()["detail"]["params"]["field"] == key
+    r = await client.post("/accounting/import/batch", headers=auth["headers"], json={"records": [{
+        "entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
+        "idempotency_key": uuid.uuid4().hex, "data": {"status": "posted", "ts": "2026-01-16", "entries": entries}}]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert "came in with fund_id" in r.text, r.text
+
+    # Turning funds off is refused while an unposted record holds a local choice, naming it.
+    r = await _choose(client, auth, marked, lines={(await _doc(client, auth, marked))["line_items"][0]["line_id"]: "unrestricted"})
+    assert r.status_code == 200, r.text
+    r = await _funds_on(client, auth, False)
+    assert r.status_code == 422 and _key(r) == "fund.turn_off_choices_held", r.text
+    assert r.json()["detail"]["params"]["records"] == marked.split(":", 1)[1]
