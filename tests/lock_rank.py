@@ -43,7 +43,11 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from shipped_sources import SHIPPED_ROOTS
+
+# CI runs this file as a script (python tests/lock_rank.py ...), which puts tests/ on the path, not the
+# repository root that holds the shared source-root list.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shipped_sources import SHIPPED_ROOTS  # noqa: E402
 
 # ── The one map ────────────────────────────────────────────────────────────────
 # class -> rank. Lower ranks are taken first. Filled from the measured graph.
