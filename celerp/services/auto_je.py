@@ -60,8 +60,8 @@ from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
 from celerp.services.journal_accounts import (
-    CONTROL, HEADER, UnbalancedJournalEntry, bank_currencies, fund_legs, funds_enabled, income_account_of, lock_accounts,
-    require_income_account,
+    CONTROL, HEADER, UnbalancedJournalEntry, bank_currencies, copy_fund_split, fund_legs, fund_open_amounts,
+    fund_open_shares, funds_enabled, income_account_of, lock_accounts, posted_fund_shares, require_income_account,
 )
 from celerp.services.peer_lines import copy_posted_lines, leg_funds, posted_line_funds
 from celerp.services.line_measures import splitting_allowed
@@ -1029,24 +1029,27 @@ async def release_credit_note_open(session, *, company_id, user_id, doc_id: str,
 
 
 async def _restate_receivable(session, *, company_id, user_id, doc_id: str, settings: dict, ar: str, gap,
-                              je_id: str, op: str, memo: str, ts, metadata_: dict) -> None:
-    """Move the receivable back by ``gap`` (what an entry took off it less what it should
-    have) against exchange gain or loss. Posts nothing when ``gap`` is 0."""
+                              je_id: str, op: str, memo: str, ts, metadata_: dict, follows: str) -> None:
+    """Move the receivable back by ``gap`` (what the entry ``follows`` took off it less what
+    it should have) against exchange gain or loss, split by fund as that entry split its
+    receivable. Posts nothing when ``gap`` is 0."""
     if not gap:
         return
     entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
                             credit=to_stored_float(max(-gap, _Dec(0))))]
+    entries = await _with_fx_difference(session, company_id, entries)
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, op, "c"), idem_posted=je_idempotency_key(doc_id, op, "p"),
-        memo=memo, ts=ts, entries=await _with_fx_difference(session, company_id, entries),
-        metadata_=metadata_,
+        memo=memo, ts=ts, metadata_=metadata_,
+        entries=await _split_as_posted(session, company_id, entries, follows, {ar}, await company_currency(
+            session, company_id), sources=f"je:auto:{doc_id}:fin"),
     )
 
 
 async def _credit_note_payment_receivable(session, company_id, doc_id: str, payment: dict, ar: str):
     """What a credit note's refund or application put back on the receivable for the credit
-    note, as its posted entry shows, or None when it has no posted entry."""
+    note, as its posted entry shows (None when it has no posted entry), and that entry."""
     index = payment.get("index")
     if payment.get("method") == "refund":
         je_id = f"je:auto:{doc_id}:pay:{index}"
@@ -1054,9 +1057,9 @@ async def _credit_note_payment_receivable(session, company_id, doc_id: str, paym
         je_id = f"je:auto:{payment.get('target_doc_id')}:cnapply:{doc_id}:{index}"
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is None or (row.state or {}).get("status") != "posted":
-        return None
+        return None, je_id
     lines = [e for e in (row.state or {}).get("entries") or [] if e.get("account") == ar and to_decimal(e.get("debit"))]
-    return sum((to_decimal(e.get("debit")) for e in lines), _Dec(0)) if lines else None
+    return (sum((to_decimal(e.get("debit")) for e in lines), _Dec(0)) if lines else None), je_id
 
 
 async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str, doc: dict,
@@ -1086,12 +1089,12 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
             gap=taken - to_decimal(_sale_totals(doc, base_currency)[0]), je_id=f"je:auto:{doc_id}:fin:rate",
             op="credit_note.rate", memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
             ts=ts or finalized_entry_day(doc),
-            metadata_={"trigger": "doc.finalized", "doc_id": doc_id})
+            metadata_={"trigger": "doc.finalized", "doc_id": doc_id}, follows=f"je:auto:{doc_id}:fin")
     rate = require_doc_rate(doc, base_currency)
     for payment in doc.get("payments") or []:
         if payment.get("status", "active") != "active" or payment.get("method") not in ("refund", "applied"):
             continue
-        put_back = await _credit_note_payment_receivable(session, company_id, doc_id, payment, ar)
+        put_back, follows = await _credit_note_payment_receivable(session, company_id, doc_id, payment, ar)
         if put_back is None:
             continue
         index = payment.get("index")
@@ -1102,7 +1105,7 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
             memo=f"{'Refund' if payment.get('method') == 'refund' else 'Application'} {index} of credit note "
                  f"{doc_id} brought to its invoice's rate",
             ts=ts or payment.get("payment_date"),
-            metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": index})
+            metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": index}, follows=follows)
 
 
 async def void_credit_note_payment_rate(session, *, company_id, user_id, doc_id: str, payment_index) -> bool:
@@ -1325,7 +1328,7 @@ async def payment_bank_fx(session, company_id, doc_id: str, base_currency: str, 
     return lambda code: fx if currencies.get(code) == currency else None
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float, fund_allocation: list[tuple[str | None, float]] | None = None) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account the cash moves through. None only for a payment
@@ -1346,19 +1349,33 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     Both rates are required - no default. A rate silently defaulting to 1 next to a real
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
+
+    With funds in use the payment settles each fund's open share of the document's balance
+    (journal_accounts.fund_open_shares), or the shares of ``fund_allocation`` (fund or None,
+    in the document's currency, adding up to ``amount``), and the entry records the split.
     """
     paid_key = str(payment_index)
     ledger_amount, bank_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
                                                  settlement_rate=settlement_rate)
 
     bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
+    control_codes: set[str] = set()
 
     def entries_for(control, bank):
-        return payment_lines(doc_type, control, {"account": bank}, ledger_amount, bank_amount, bank_fx=bank_fx(bank))
+        def control_line(**amounts):
+            line = control(**amounts)
+            control_codes.add(line["account"])
+            return line
+        return payment_lines(doc_type, control_line, {"account": bank}, ledger_amount, bank_amount,
+                             bank_fx=bank_fx(bank))
 
     entries = await _settlement_accounts(
         session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
         entries_for=entries_for)
+    entries, split = await fund_open_shares(
+        session, company_id, doc_id, control_codes, entries, base_currency.upper(),
+        amount=round_money(ledger_amount, base_currency),
+        allocation=[(fund, to_decimal(share)) for fund, share in fund_allocation] if fund_allocation else None)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1371,8 +1388,21 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
+        extra={"fund_allocation": split} if split else None,
     )
 
+
+
+async def _split_as_posted(session, company_id, entries: list[dict], follows: str, codes: set[str], base: str,
+                           sources: str | None = None) -> list[dict]:
+    """With funds in use, ``entries`` split as the posted entry ``follows`` split its lines on
+    ``codes`` (attribution rules P and V), each line naming ``sources`` (else ``follows``) as
+    the entry it follows."""
+    if not funds_enabled(await current_settings(session, company_id)):
+        return entries
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": follows})
+    posted = ((row.state or {}).get("entries") or []) if row is not None else []
+    return copy_fund_split(entries, posted_fund_shares(posted, codes), base, sources or follows)
 
 
 async def create_for_online_fees(
@@ -1385,6 +1415,7 @@ async def create_for_online_fees(
 
     Gross settlement of the invoice remains unchanged. Every provider transaction is
     a separate signed cash movement, including actual fee refunds. No inferred fees.
+    With funds in use the fees split by fund as the receipt they were charged on banked.
     """
     import hashlib
     import json
@@ -1472,7 +1503,9 @@ async def create_for_online_fees(
         je_id=f"je:auto:{doc_id}:online-fees:{token}", record_id=doc_id,
         idem_create=create_key, idem_posted=je_idempotency_key("online-fees", suffix, "p"),
         memo=f"Online payment processing fees for {doc_id}",
-        ts=day, currency=base, entries=entries,
+        ts=day, currency=base,
+        entries=await _split_as_posted(session, company_id, entries, f"je:auto:{doc_id}:pay:{payment.get('index')}",
+                                       {bank}, base),
         metadata_={"trigger": "doc.online_fees", "doc_id": doc_id,
                    "reference": reference, "fee_hash": digest,
                    "transaction_id": tx, "fee_currency": fees["currency"],
@@ -1510,24 +1543,43 @@ async def payment_return_entries(session, company_id, *, doc_id: str, payment_in
         return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True,
                              bank_fx=bank_fx(bank_line["account"]))
 
-    original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
+    paid_id = f"je:auto:{doc_id}:pay:{payment_index}"
+    original = await session.get(Projection, {"company_id": company_id, "entity_id": paid_id})
     posted = (original.state or {}).get("entries") or [] if original is not None else []
-    if len(posted) < 2:
+    # One line per account: a payment split by fund wrote each of its lines once per fund.
+    distinct = list({(e["account"], tuple(e.get("account_roles") or ())): e for e in posted[::-1]}.values())
+    distinct = sorted(distinct, key=posted.index)
+    if len(distinct) < 2:
         return await _settlement_accounts(
             session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
             entries_for=entries_for)
     # The payment's entry is [control, bank] for an outflow and [bank, control] for
     # a receipt, then its exchange difference, if any.
-    control_entry, bank_entry = (posted[0], posted[1]) if outflow else (posted[1], posted[0])
+    control_entry, bank_entry = (distinct[0], distinct[1]) if outflow else (distinct[1], distinct[0])
     control_template = _reversal_template(control_entry)
 
     def control_line(debit=0.0, credit=0.0):
         return {**control_template, "debit": debit, "credit": credit}
     entries = entries_for(control_line, _reversal_template(bank_entry))
-    difference = _reversal_template(posted[2]) if len(posted) > 2 else None
+    difference = _reversal_template(distinct[2]) if len(distinct) > 2 else None
     if difference is None:
-        return await _with_fx_difference(session, company_id, entries)
-    return _balanced_with_fx_difference(entries, difference)
+        entries = await _with_fx_difference(session, company_id, entries)
+    else:
+        entries = _balanced_with_fx_difference(entries, difference)
+    if not funds_enabled(await current_settings(session, company_id)):
+        return entries
+    # Each fund gets back its part of what the pieces so far and this one take off the
+    # control line, less what the earlier pieces took (rule V), so the pieces add up to
+    # each fund's part of the payment exactly.
+    shares = posted_fund_shares(posted, {control_entry["account"]})
+
+    def taken(given_back: float) -> list:
+        ledger = payment_amounts(amount=given_back, base_currency=base_currency, doc_rate=doc_rate,
+                                 settlement_rate=settlement_rate)[0] if given_back else 0
+        return allocate_pro_rata(ledger, [share for _, share in shares], base_currency) if shares else []
+    pieces = [after - before for after, before in zip(taken(already_given_back + amount), taken(already_given_back))]
+    return copy_fund_split(entries, [(fund, piece) for (fund, _), piece in zip(shares, pieces) if piece],
+                           base_currency, paid_id)
 
 
 async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:

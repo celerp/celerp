@@ -612,6 +612,9 @@ class DocPaymentBody(BaseModel):
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
+    # How the payment settles by fund: fund id (or "unrestricted") -> amount in the
+    # document's currency, adding up to the payment. Absent: each fund's open share.
+    fund_allocation: dict[str, FiniteFloat] | None = None
 
     _real_date = field_validator("payment_date")(_calendar_date)
 
@@ -4349,6 +4352,22 @@ async def require_payment_bank_currency(session, company_id, bank_code: str, doc
             doc_currency=str(doc_currency).upper(), base=base))
 
 
+def _fund_allocation(given: dict | None, amount: Decimal, currency: str) -> list[tuple[str | None, float]] | None:
+    """A payment's explicit split by fund as (fund or None, amount) pairs: no share below
+    zero, the shares adding up to the payment. Each share is held to its fund's open part
+    when the payment posts (journal_accounts.fund_open_shares)."""
+    from celerp.services.peer_lines import UNRESTRICTED
+
+    if not given:
+        return None
+    shares = [(None if fund == UNRESTRICTED else fund, round_money(share, currency)) for fund, share in given.items()]
+    allocated = sum((share for _, share in shares), Decimal(0))
+    if any(share < 0 for _, share in shares) or allocated != amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "fund.payment_allocation_total", allocated=str(allocated), amount=str(amount), currency=currency))
+    return [(fund, to_stored_float(share)) for fund, share in shares]
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
                             request: str | None = None, commit: bool = True, moves_cash: bool = True,
@@ -4429,6 +4448,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         )
     amount = to_stored_float(amount_d)
     body["amount"] = amount
+    allocation = _fund_allocation(body.get("fund_allocation"), amount_d, doc_currency)
     bank_code = body.get("bank_account")
     if not bank_code:
         raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_bank_account_required"))
@@ -4484,6 +4504,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         bank_account_code=bank_code, doc_type=doc_state.get("doc_type", "invoice"),
         payment_date=body["payment_date"],
         base_currency=books.base_currency, doc_rate=books.doc_rate, settlement_rate=books.settlement_rate,
+        fund_allocation=allocation,
     )
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle(

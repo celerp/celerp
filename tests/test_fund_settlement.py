@@ -80,7 +80,7 @@ async def test_partial_receipt_fixed_rule_and_explicit_override(client, session,
     params = _refusal(await _pay(client, auth, doc, 70, fund_allocation={f["R"]: 70}),
                       "posting.fund.allocation_exceeds_open")
     assert params["fund"] == "Library gift" and params["open"] == "60.00"
-    _refusal(await _pay(client, auth, doc, 30, fund_allocation={f["R"]: 10}), "fund.transfer_allocation_total")
+    _refusal(await _pay(client, auth, doc, 30, fund_allocation={f["R"]: 10}), "fund.payment_allocation_total")
     _refusal(await _pay(client, auth, doc, 30, fund_allocation={f["U1"]: 30}),
              "posting.fund.allocation_exceeds_open")
 

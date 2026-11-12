@@ -1226,6 +1226,9 @@ class AccJournalEntryCreated(BaseModel):
     # posting: the record it posts for.
     origin: str | None = None
     record_id: str | None = None
+    # A settlement split by fund: how (``open_share`` or ``explicit``) and each fund's share
+    # ("unrestricted" for the lines carrying no fund), in the books' currency.
+    fund_allocation: dict | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

@@ -502,6 +502,15 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
             raise HTTPException(status_code=422, detail=catalog_refusal(
                 "fund.transfer_allocation_total", allocated=str(allocated), amount=str(amount), currency=currency))
         return [(fund, share) for fund, share in allocation if share]
+    return _shares_within(held, amount, currency)
+
+
+def _shares_within(held: Mapping[str | None, Decimal], amount: Decimal, currency: str,
+                   ) -> list[tuple[str | None, Decimal]]:
+    """``amount`` split over the funds of ``held`` pro rata to what each holds, none above what
+    it holds, the unrestricted group (None) taking any amount beyond what they hold together."""
+    from celerp.services.money import allocate_pro_rata
+
     holders = sorted((fund for fund, balance in held.items() if balance > 0), key=lambda f: f or "")
     covered = sum((held[fund] for fund in holders), Decimal(0))
     if covered >= amount:
@@ -510,6 +519,88 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
     shares = {fund: held[fund] for fund in holders}
     shares[None] = shares.get(None, Decimal(0)) + amount - covered
     return list(shares.items())
+
+
+# The je id suffixes of a note applied to a document: its lines settle two records.
+_NOTE_APPLIED = ("cnapply:", "dnapply:")
+
+
+async def fund_open_amounts(session: AsyncSession, company_id, record_id: str, codes: set[str],
+                            ) -> dict[str | None, tuple[Decimal, str]]:
+    """Each fund's open part (None: the unrestricted group's) of the balance ``record_id``
+    holds on its control accounts ``codes``, with the posted entry that put the most of it
+    there. Read from every posted automatic entry of the record and every note application
+    naming it as the note: a note application's line settles the record its ``posted_from``
+    names (one written before funds were in use: its first line the document's, its second
+    the note's). A fund settled past nothing has nothing open."""
+    from sqlalchemy import or_
+
+    from celerp.models.projections import Projection
+    from celerp.services.money import to_decimal
+
+    prefix = f"je:auto:{record_id}:"
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        or_(Projection.entity_id.startswith(prefix, autoescape=True),
+            *(Projection.entity_id.contains(f":{kind}{record_id}:", autoescape=True) for kind in _NOTE_APPLIED)),
+    ))).all()
+    moved: dict[str | None, dict[str, Decimal]] = {}
+    for entity_id, state in rows:
+        if (state or {}).get("status") != "posted":
+            continue
+        own = entity_id.startswith(prefix)
+        applied = not own or entity_id[len(prefix):].startswith(_NOTE_APPLIED)
+        for i, line in enumerate(state.get("entries") or []):
+            if line.get("account") not in codes:
+                continue
+            source = line.get("posted_from")
+            if applied and not (source.startswith(prefix) if source else i == (0 if own else 1)):
+                continue
+            by_entry = moved.setdefault(line.get("fund_id") or None, {})
+            by_entry[entity_id] = by_entry.get(entity_id, Decimal(0)) + to_decimal(line.get("debit") or 0) \
+                - to_decimal(line.get("credit") or 0)
+    sign = 1 if sum((v for by_entry in moved.values() for v in by_entry.values()), Decimal(0)) >= 0 else -1
+    out = {}
+    for fund, by_entry in moved.items():
+        amount = sign * sum(by_entry.values(), Decimal(0))
+        if amount > 0:
+            out[fund] = (amount, max(by_entry, key=lambda entity_id: (sign * by_entry[entity_id], entity_id)))
+    return out
+
+
+async def fund_open_shares(session: AsyncSession, company_id, record_id: str, codes: set[str], entries: list[dict],
+                           base: str, *, amount: Decimal, allocation: list[tuple[str | None, Decimal]] | None = None,
+                           ) -> tuple[list[dict], dict | None]:
+    """A settlement of ``amount`` (books currency, what its control line moves) of the balance
+    ``record_id`` holds on ``codes``, written once per fund (attribution rule S): pro rata to
+    each fund's open part (fund_open_amounts), the unrestricted group taking any amount beyond
+    what is open; or by an explicit ``allocation`` of weights by fund, the caller having
+    checked they add up to the settlement, each fund's share at most its open part. Each line
+    names in ``posted_from`` the entry that put its fund's balance there. Returns the lines and
+    the split as recorded on the entry, or the lines unchanged and None with funds off."""
+    from celerp.services.money import allocate_pro_rata, round_money, to_stored_float
+
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not funds_enabled(settings):
+        if allocation:
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+        return entries, None
+    held = await fund_open_amounts(session, company_id, record_id, codes)
+    if allocation:
+        shares = [(fund, share) for (fund, _), share in zip(allocation, allocate_pro_rata(
+            amount, [weight for _, weight in allocation], base)) if share]
+        funds = await funds_by_id(session, company_id)
+        for fund, share in shares:
+            if share > held.get(fund, (Decimal(0), ""))[0]:
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "posting.fund.allocation_exceeds_open", fund=_fund_name(funds, fund),
+                    open=str(round_money(held.get(fund, (Decimal(0), ""))[0], base)),
+                    amount=str(share), currency=base))
+    else:
+        shares = _shares_within({fund: open_ for fund, (open_, _) in held.items()}, amount, base)
+    lines = copy_fund_split(entries, shares, base, {fund: source for fund, (_, source) in held.items()})
+    return lines, {"rule": "explicit" if allocation else "open_share",
+                   "shares": {fund or peer_lines.UNRESTRICTED: to_stored_float(share) for fund, share in shares}}
 
 
 def split_lines_by_fund(entries: list[dict], shares: list[tuple[str | None, Decimal]], base: str) -> list[dict]:
@@ -528,6 +619,30 @@ def split_lines_by_fund(entries: list[dict], shares: list[tuple[str | None, Deci
             parts[i].append({**line, **{field: to_stored_float(amounts[i]) for field, amounts in split.items()},
                              **({"fund_id": fund} if fund else {})})
     return [line for part in parts for line in part]
+
+
+def posted_fund_shares(posted: list[dict], codes: set[str]) -> list[tuple[str | None, Decimal]]:
+    """Each fund's part of what a posted entry moved on ``codes``, in the order its lines name them."""
+    from celerp.services.money import to_decimal
+
+    net: dict[str | None, Decimal] = {}
+    for line in posted:
+        if line.get("account") in codes:
+            fund = line.get("fund_id") or None
+            net[fund] = net.get(fund, Decimal(0)) + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0)
+    return [(fund, abs(amount)) for fund, amount in net.items() if amount]
+
+
+def copy_fund_split(entries: list[dict], shares: list[tuple[str | None, Decimal]], base: str,
+                    sources: Mapping[str | None, str] | str) -> list[dict]:
+    """``entries`` split by ``shares`` (split_lines_by_fund), each line naming in
+    ``posted_from`` the posted entry its fund's part follows: ``sources`` by fund, or one entry
+    for all (attribution rules S, SM, P and V). No shares: the lines unchanged."""
+    if not shares:
+        return entries
+    return [{**line, **({"posted_from": source} if (source := sources if isinstance(sources, str)
+                                                    else sources.get(line.get("fund_id") or None)) else {})}
+            for line in split_lines_by_fund(entries, shares, base)]
 
 
 # How fund_legs gives a line its fund, besides a basis of document lines.

@@ -122,7 +122,7 @@ async def test_every_auto_posting_names_its_record(client, session, auth):
     assert len(calls) > 30, "the census found too few auto postings to be reading the source"
     missing = [(m, c.lineno) for m, c in calls if not any(kw.arg == "record_id" for kw in c.keywords)]
     assert missing == [], f"auto postings that do not name their record: {missing}"
-    assert {f for _, f in _posted_from_writers()} <= {"copy_posted_lines", "fund_open_shares"}, _posted_from_writers()
+    assert {f for _, f in _posted_from_writers()} <= {"copy_posted_lines", "copy_fund_split"}, _posted_from_writers()
 
     item = await _item(client, auth, "Linked")
     doc = await _issued(client, auth, "invoice", [_line(item, "Linked", 25)])
