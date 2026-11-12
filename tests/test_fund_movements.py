@@ -139,17 +139,29 @@ async def test_restore_of_movement_needs_grant(client, session, auth):
 
 
 async def test_grant_not_usable_from_child_task(client, session, auth):
-    """A task spawned inside the grant finds it spent once the movement posted, and cannot
-    use it for another entity before."""
+    """A task spawned inside the grant cannot use it for another entity, and a task spawned
+    before the movement posted finds the grant spent once it has. The movement itself posts
+    in the task that entered the grant, as post_fund_movement does; each spawned task posts
+    on a session of its own, as it would in production."""
+    from celerp import db
+
     f = await _setup(client, auth)
     lines = _shapes(f)["c"][0]
     je_id = f"je:fund:{uuid.uuid4()}"
+    posted = asyncio.Event()
+
+    async def child(entity_id=None, wait=False):
+        if wait:
+            await posted.wait()
+        async with db.LifecycleSessionLocal() as own:
+            return await _emit(own, auth, lines, entity_id=entity_id, je_type="fund_transfer")
+
     async with fund_movement_grant(auth["company_id"], je_id, auth["user_id"]):
-        before = asyncio.create_task(_emit(session, auth, lines, je_type="fund_transfer"))
-        await _refused(before)
-        await asyncio.create_task(_emit(session, auth, lines, entity_id=je_id, je_type="fund_transfer"))
-        after = asyncio.create_task(_emit(session, auth, lines, entity_id=je_id, je_type="fund_transfer"))
-        await _refused(after)
+        await _refused(asyncio.create_task(child()))
+        late = asyncio.create_task(child(je_id, wait=True))
+        await _emit(session, auth, lines, entity_id=je_id, je_type="fund_transfer")
+        posted.set()
+        await _refused(late)
 
 
 async def test_value_cannot_cross_funds_outside_a_movement(client, session, auth):
