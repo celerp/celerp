@@ -43,7 +43,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.consignment.bought", "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
     "fa.class.created", "fa.class.updated", "fa.asset.created", "fa.asset.updated", "fa.asset.status",
-    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.maint.recorded", "fa.maint.status",
+    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.movement.updated", "fa.maint.recorded", "fa.maint.status",
     "fa.asset.exception", "fa.reading.recorded", "fa.skip.recorded", "fa.skip.withdrawn",
     "fa.correction.requested", "fa.correction.applied", "fa.correction.withdrawn", "fa.correction.undone",
     "fa.review.recorded", "fa.review.status", "fa.recon.recorded",

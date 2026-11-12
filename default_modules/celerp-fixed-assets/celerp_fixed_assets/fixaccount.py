@@ -126,6 +126,7 @@ def _day(books: runs.Books) -> str:
 
 async def _sources(session, company_id, assets: list[tuple[str, dict]], account: str, cut: str) -> list[str | None]:
     """Where the balance on ``account`` was recognized, in the order it is taken back."""
+    from celerp.services.auto_je import live_entries
     from celerp.services.module_journals import ledger_key
 
     from celerp_fixed_assets.operations import asset_movements
@@ -137,7 +138,9 @@ async def _sources(session, company_id, assets: list[tuple[str, dict]], account:
                 je = c.get("journal_id")
                 if je and not je.startswith(f"je:mod:{MODULE}:") and je not in journals:
                     journals.append(je)
-    return [None, *journals, ledger_key(cut)]
+    # A source Change fund replaced is taken back from the copy standing for it.
+    live = await live_entries(session, company_id, journals)
+    return [None, *dict.fromkeys(live[je] for je in journals), ledger_key(cut)]
 
 
 async def _split(session, company_id, account: str, amount: Decimal, keys: list[str | None],

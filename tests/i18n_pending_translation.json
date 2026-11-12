@@ -634,6 +634,10 @@
     "event.fund.unarchived": {
       "en": "Fund unarchived",
       "params": []
+    },
+    "event.fa.movement.updated": {
+      "en": "Fixed asset value movement updated",
+      "params": []
     }
   },
   "modules": {
@@ -643,6 +647,21 @@
         "params": [
           "asset_fund",
           "line_fund",
+          "number"
+        ]
+      },
+      "fixed_assets.err_change_fund_splits_asset": {
+        "en": "{number} was bought on lines that would end up on different funds ({funds}). An asset keeps one fund, so choose the same fund for all of its lines.",
+        "params": [
+          "funds",
+          "number"
+        ]
+      },
+      "fixed_assets.err_change_fund_class_move": {
+        "en": "{number} moved with the account change of {cls} on {date}. Undo that account change, change the fund, then make the account change again.",
+        "params": [
+          "cls",
+          "date",
           "number"
         ]
       }

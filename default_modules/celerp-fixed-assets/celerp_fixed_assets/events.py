@@ -227,6 +227,7 @@ EVENTS: dict[str, type[BaseModel]] = {
     "fa.asset.financials": AssetFinancials,
     "fa.asset.moved": AssetMoved,
     "fa.movement.recorded": MovementRecorded,
+    "fa.movement.updated": Changes,
     "fa.src.claimed": SourceClaimed,
     "fa.src.released": SourceReleased,
     "fa.maint.recorded": MaintenanceRecorded,

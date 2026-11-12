@@ -120,8 +120,16 @@ async def _books(session, company_id) -> Books:
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(_JOURNAL, autoescape=True)))).all()
+    states = dict(rows)
     journals: dict[int, dict[int, dict]] = {}
     for entity_id, state in rows:
+        if ":fund:" in entity_id:
+            continue
+        # A run journal Change fund replaced stands as the copy it was replaced by.
+        seen = {entity_id}
+        while state.get("status") == "void" and state.get("replaced_by") in states.keys() - seen:
+            seen.add(state["replaced_by"])
+            state = states[state["replaced_by"]]
         month, cycle = entity_id.removeprefix(_JOURNAL).split(":")
         journals.setdefault(parse_period(month), {})[int(cycle)] = {"id": entity_id, **state}
     return Books(settings, records, journals)
@@ -340,8 +348,11 @@ class Charge:
                 if not str(c.get("journal_id")).startswith(_JOURNAL):
                     key = (c["journal_id"], c.get("line_index"))
                     net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
-        journals = {je for (je, _), amount in net.items() if amount}
-        for je in journals:
+        from celerp.services.auto_je import live_entries
+
+        # A journal Change fund replaced is read at the copy standing for it.
+        journals = await live_entries(session, company_id, [je for (je, _), amount in net.items() if amount])
+        for je in journals.values():
             state = await _state(session, company_id, je)
             if state is not None and state.get("status") == "void":
                 return True

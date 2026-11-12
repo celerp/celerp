@@ -4787,6 +4787,17 @@ async def current_entry(session, company_id, je_id: str) -> str:
         je_id = nxt
 
 
+async def live_entries(session, company_id, ids) -> dict[str, str]:
+    """Each of ``ids`` -> the entry standing for it now (current_entry): itself, or, where
+    Change fund voided it and posted it again, the copy."""
+    ids = list(dict.fromkeys(ids))
+    replaced = set((await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids),
+        Projection.state["status"].as_string() == "void",
+        Projection.state["replaced_by"].as_string().is_not(None)))).scalars().all()) if ids else set()
+    return {je_id: await current_entry(session, company_id, je_id) if je_id in replaced else je_id for je_id in ids}
+
+
 def _restore_id(doc_id: str, root: str, family) -> str:
     """The id of the next copy of a recognition family: {root}:unvoid:{n}, n one more than the
     copies the family already holds, which _recognition_root strips back to the family."""

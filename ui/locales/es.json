@@ -7585,5 +7585,6 @@
   "event.fund.created": "Fund created",
   "event.fund.updated": "Fund updated",
   "event.fund.archived": "Fund archived",
-  "event.fund.unarchived": "Fund unarchived"
+  "event.fund.unarchived": "Fund unarchived",
+  "event.fa.movement.updated": "Fixed asset value movement updated"
 }
