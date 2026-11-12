@@ -283,13 +283,12 @@ async def funds_tab(token: str, banner: FT | str = "", kept: tuple[str, dict] | 
     return funds_card(await funds_books(token), banner, kept)
 
 
-async def _answer(token: str, said: str = "", refused: APIError | None = None,
+async def _answer(token: str, said: str = "", refused: str = "",
                   kept: tuple[str, dict] | None = None) -> FT:
-    """The tab after an action: what it did, or why it was refused, above the tab as stored.
+    """The tab after an action: what it did, or why it was refused (the refusal's sentence,
+    once the caller has let an ended session through to sign-in), above the tab as stored.
     When the tab cannot be read, the action's own answer alone."""
-    if refused is not None:
-        api.raise_if_signed_out(refused)
-    banner = (P(error_message(refused), cls="error-banner mb-md") if refused is not None
+    banner = (P(refused, cls="error-banner mb-md") if refused
               else P(said, cls="success-banner mb-md") if said else "")
     try:
         return await funds_tab(token, banner, kept)
@@ -344,7 +343,8 @@ def setup_routes(app):
         try:
             await api.set_funds_setting(token, enabled)
         except APIError as e:
-            return await _answer(token, refused=e)
+            api.raise_if_signed_out(e)
+            return await _answer(token, refused=error_message(e))
         return await _answer(token, t("funds.turned_on" if enabled else "funds.turned_off"))
 
     @app.post(FUNDS_URL)
@@ -359,7 +359,8 @@ def setup_routes(app):
                                                  "opening_date": values["opening_date"] or None,
                                                  "request_key": required_operation_key(form)})
         except APIError as e:
-            return await _answer(token, refused=e, kept=("add", values))
+            api.raise_if_signed_out(e)
+            return await _answer(token, refused=error_message(e), kept=("add", values))
         return await _answer(token, t("funds.added", name=fund["name"]))
 
     @app.get(f"{FUNDS_URL}/opening-line")
@@ -367,7 +368,8 @@ def setup_routes(app):
         try:
             return opening_line(await funds_books(_token(request)))
         except APIError as e:
-            return await _answer(_token(request), refused=e)
+            api.raise_if_signed_out(e)
+            return await _answer(_token(request), refused=error_message(e))
 
     def _movement_route(kind: str):
         async def post_movement(request: Request):
@@ -378,7 +380,8 @@ def setup_routes(app):
             try:
                 await api.move_funds(token, kind, {"request_key": required_operation_key(form), **body})
             except APIError as e:
-                return await _answer(token, refused=e, kept=(kind, typed))
+                api.raise_if_signed_out(e)
+                return await _answer(token, refused=error_message(e), kept=(kind, typed))
             return await _answer(token, t("funds.movement_posted", movement=movement_title(kind)))
         app.post(f"{FUNDS_URL}/{kind}")(post_movement)
 
@@ -391,7 +394,8 @@ def setup_routes(app):
         try:
             fund = await api.archive_fund(token, fund_id)
         except APIError as e:
-            return await _answer(token, refused=e)
+            api.raise_if_signed_out(e)
+            return await _answer(token, refused=error_message(e))
         return await _answer(token, t("funds.archived", name=fund["name"]))
 
     @app.post(FUNDS_URL + "/{fund_id}/unarchive")
@@ -400,7 +404,8 @@ def setup_routes(app):
         try:
             fund = await api.unarchive_fund(token, fund_id)
         except APIError as e:
-            return await _answer(token, refused=e)
+            api.raise_if_signed_out(e)
+            return await _answer(token, refused=error_message(e))
         return await _answer(token, t("funds.unarchived", name=fund["name"]))
 
     async def _row(request: Request, fund_id: str, draw):
@@ -408,7 +413,8 @@ def setup_routes(app):
         try:
             fund = await _fund(token, fund_id)
         except APIError as e:
-            return await _answer(token, refused=e)
+            api.raise_if_signed_out(e)
+            return await _answer(token, refused=error_message(e))
         return draw(fund) if fund is not None else await _answer(token)
 
     @app.get(FUNDS_URL + "/{fund_id}/edit")
@@ -435,5 +441,5 @@ def setup_routes(app):
             except APIError:
                 fund = None
             if fund is None:
-                return await _answer(token, refused=e)
+                return await _answer(token, refused=error_message(e))
             return fund_row_editor({**fund, **typed}, error_message(e))
