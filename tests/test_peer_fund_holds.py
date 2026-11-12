@@ -170,26 +170,45 @@ async def test_held_journal_fund_moving_assignment_refused(real_client, real_eng
     assert {e.get("fund_id") for e in state["entries"]} == {fund}
 
 
-async def test_firm_journal_fund_id_refused(real_client, real_engine, monkeypatch):
-    """A firm line carrying fund_id, or any key the journal transport does not carry, is
-    declined naming the key; nothing posts and nothing is held for funds."""
+def _feed_with(monkeypatch, key: str, value) -> None:
+    """The firm's journal feed with ``key`` added to the first line of every journal."""
     from celerp.services import peer_journals
 
+    feed = peer_journals.journal_feed
+
+    async def with_key(*args, **kwargs):
+        body = await feed(*args, **kwargs)
+        for journal in body["items"]:
+            journal["entries"][0][key] = value
+        return body
+
+    monkeypatch.setattr(peer_journals, "journal_feed", with_key)
+
+
+@pytest.mark.parametrize("key", ["fund_id", "budget_line"])
+async def test_firm_journal_fund_id_refused(real_client, real_engine, monkeypatch, key):
+    """A firm line carrying fund_id, or any key the journal transport does not carry, is
+    declined naming the key; nothing posts and nothing is held for funds."""
     tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
     await _funds_client(real_client, tok)
     await _firm_journal(real_client, firm_tok, "Carries a fund", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
-    feed = peer_journals.journal_feed
-
-    async def with_fund(*args, **kwargs):
-        body = await feed(*args, **kwargs)
-        for journal in body["items"]:
-            journal["entries"][0]["fund_id"] = "fund:elsewhere"
-        return body
-
-    monkeypatch.setattr(peer_journals, "journal_feed", with_fund)
+    _feed_with(monkeypatch, key, "fund:elsewhere")
     _route_to_app(monkeypatch, [])
     results = await _two_way(client_company, credential)
     assert _from_firm(await _journals(real_engine, client_company)) == {}
     assert await _held(real_client, tok) == []
     [entry] = results["journals"].attention
-    assert "fund_id" in entry["reason"], entry
+    assert key in entry["reason"], entry
+
+
+async def test_firm_journal_from_release_before_funds_posts(real_client, real_engine, monkeypatch):
+    """A firm on a release before funds sends its lines with account_roles: the journal is not
+    declined; it posts in books without funds, each line with the roles these books give it."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    await _firm_journal(real_client, firm_tok, "Older firm", [(BANK, 10.0, 0.0), (EXPENSE, 0.0, 10.0)])
+    _feed_with(monkeypatch, "account_roles", ["sent_by_firm"])
+    _route_to_app(monkeypatch, [])
+    results = await _two_way(client_company, credential)
+    assert results["journals"].attention == []
+    [state] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert all(e.get("account_roles") != ["sent_by_firm"] for e in state["entries"]), state["entries"]

@@ -249,6 +249,8 @@ class _Line(BaseModel):
 # The line keys a journal carries between the firm and the client, either way; the fund a
 # line belongs to is each company's own.
 LINE_FIELDS = tuple(_Line.model_fields)
+# Sent on firm lines by releases before funds; carries no fund data, so it is dropped on arrival.
+LEGACY_LINE_KEY = "account_roles"
 
 
 def transport_lines(entries) -> list[dict]:
@@ -499,7 +501,7 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
                               firm_company: uuid.UUID, item: dict) -> _Placed:
     from celerp.services.journal_accounts import require_destinations
 
-    entries = [dict(line) for line in item.get("entries") or []]
+    entries = [{k: v for k, v in line.items() if k != LEGACY_LINE_KEY} for line in item.get("entries") or []]
     if item.get("held"):
         return _Placed(entries, str(item["held"]))
     extra = next((key for line in entries for key in line if key not in LINE_FIELDS), None)
