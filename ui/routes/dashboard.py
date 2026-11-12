@@ -20,6 +20,7 @@ from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from celerp.services.journal_accounts import funds_enabled
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
@@ -774,6 +775,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             _older_stock_banner(settings, role),
+            await _fund_waiting_banner(token, settings, role),
             welcome or "",
             await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
@@ -1071,6 +1073,26 @@ def _older_stock_banner(settings: dict, role: str) -> FT | str:
                       hx_post="/dashboard/older-stock/dismiss",
                       hx_target="#older-stock-banner", hx_swap="outerHTML"),
                cls="info-banner", id="older-stock-banner")
+
+
+async def _fund_waiting_banner(token: str, settings: dict, role: str) -> FT | str:
+    """The outside records waiting for a fund choice, for those who choose funds: Choose funds
+    opens the documents to choose for, Sync accounts the held items. Absent at 0, with funds
+    off, and when the count cannot be read."""
+    if not funds_enabled(settings) or not _role_has_permission(settings, role, "manage_accounting"):
+        return ""
+    try:
+        waiting = await api.get_fund_waiting(token)
+    except APIError:
+        return ""
+    count = waiting.get("count") or 0
+    if not count:
+        return ""
+    sync = [" ", A(t("sync_accounts.title"), href="/accounting/sync-accounts")] if waiting.get("held") else []
+    return Div(Span("ℹ️", cls="info-banner-icon"),
+               Span(t("fund.waiting.count_one") if count == 1 else t("fund.waiting.count", count=count), " ",
+                    A(t("fund.waiting.link"), href="/docs?fund_choice=needed"), *sync),
+               cls="info-banner", id="fund-waiting-banner")
 
 
 async def _load_dashboard(token: str):

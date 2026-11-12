@@ -460,6 +460,20 @@
     "label.unrestricted": {
       "en": "Unrestricted",
       "params": []
+    },
+    "fund.waiting.count": {
+      "en": "{count} outside documents waiting for a fund choice",
+      "params": [
+        "count"
+      ]
+    },
+    "fund.waiting.count_one": {
+      "en": "1 outside document waiting for a fund choice",
+      "params": []
+    },
+    "fund.waiting.link": {
+      "en": "Choose funds",
+      "params": []
     }
   }
 }

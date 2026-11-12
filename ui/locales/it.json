@@ -7551,5 +7551,8 @@
   "docs_import.fund_set_all": "Set all imported documents to",
   "th.fund": "Fund",
   "th.line": "Line",
-  "label.unrestricted": "Unrestricted"
+  "label.unrestricted": "Unrestricted",
+  "fund.waiting.count": "{count} outside documents waiting for a fund choice",
+  "fund.waiting.count_one": "1 outside document waiting for a fund choice",
+  "fund.waiting.link": "Choose funds"
 }

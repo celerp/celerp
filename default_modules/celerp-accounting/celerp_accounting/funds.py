@@ -39,7 +39,7 @@ from celerp.services.journal_accounts import (
 )
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.peer_lines import (
-    CONNECTION_DEFAULTS, checked, default_active, default_key, records_carrying,
+    CONNECTION_DEFAULTS, checked, default_active, default_key, outside_waiting, records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
 
@@ -150,6 +150,17 @@ async def list_funds(
 ) -> dict:
     funds = await funds_by_id(session, company_id)
     return {"items": sorted((_view(f, s) for f, s in funds.items()), key=lambda v: v["name"].casefold())}
+
+
+@router.get("/funds/waiting")
+async def list_waiting_for_funds(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    """The outside records waiting for a fund choice (peer_lines.outside_waiting): the count
+    the dashboard shows, the held items Sync accounts posts and the documents to choose for."""
+    return await outside_waiting(session, company_id)
 
 
 @router.put("/funds/setting")

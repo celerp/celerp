@@ -559,7 +559,7 @@ _PER_PAGE = 50
 _DOC_FLAG_KEYS = ("overdue_only", "awaiting_only", "paid_only", "unfulfilled_only", "not_restocked", "not_stocked")
 _DOC_STATE_KEYS = ("q", "type", "status", "status_in", "contact_id", *_DOC_FLAG_KEYS, "all_issued",
                    "converted_to_type", "view", "ids", "sort", "dir", "per_page", "preset", "from", "to",
-                   "accounting_sync")
+                   "accounting_sync", "fund_choice")
 _DOC_BOOL_KEYS = frozenset({*_DOC_FLAG_KEYS, "all_issued"})
 # The keys a status card replaces when clicked; card links carry everything else.
 _DOC_STATUS_KEYS = ("status", "status_in", *_DOC_FLAG_KEYS, "all_issued", "converted_to_type", "view", "ids")
@@ -633,6 +633,8 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["all_issued"] = "1"
     elif state.get("status"):
         params["status"] = state["status"]
+    elif state.get("fund_choice"):
+        pass  # the documents waiting for a fund choice are drafts and open documents alike
     elif not has_status_filter and state.get("type") in _ALL_ISSUED_DEFAULT_TYPES:
         params["all_issued"] = "1"
     else:
@@ -644,6 +646,8 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["converted_to_type"] = state["converted_to_type"]
     if state.get("accounting_sync") in ("included", "excluded"):
         params["accounting_sync"] = state["accounting_sync"]
+    if state.get("fund_choice") == "needed":
+        params["fund_choice"] = "needed"
     if date_from:
         params["date_from"] = date_from
     if date_to:
@@ -662,11 +666,14 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
 
 async def _doc_list_dates(request: Request, state: dict[str, str], company: dict) -> tuple[str, str, str]:
     """(date_from, date_to, preset) for the list: an explicit id batch is never windowed, an
-    explicit selection wins, else the company default preset."""
+    explicit selection wins, the documents waiting for a fund choice are not windowed by
+    default (a draft of any age waits), else the company default preset."""
     if state.get("ids"):
         return "", "", "all"
     if any(state.get(k) for k in _DATE_KEYS):
         return _parse_dates(request, company)
+    if state.get("fund_choice"):
+        return "", "", "all"
     default_preset = company.get("docs_default_preset") or "last_12m"
     if default_preset == "all":
         return "", "", "all"

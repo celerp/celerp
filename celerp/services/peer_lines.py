@@ -593,6 +593,55 @@ async def records_carrying(session, company_id, keys: tuple[str, ...]) -> list[s
     return sorted(found)
 
 
+def outside_fund_needs(doc: Mapping) -> list[int | None]:
+    """What of ``doc`` a fund choice must still cover before its entry posts (_covers): each
+    line from outside with no choice of its own or the document's, by number, and None for a
+    record from outside with no lines and no document choice (its whole total is header)."""
+    covers, document = _covers(doc)
+    needs: list[int | None] = [n for n, cover in covers.items() if cover is _ABSENT]
+    if not covers and document is _ABSENT:
+        needs.append(None)
+    return needs
+
+
+async def outside_waiting(session, company_id) -> dict:
+    """The outside records waiting for a fund choice in a company with funds in use: ``held``,
+    the items a connected company sent that wait for funds (a ``funds`` or ``doc_funds`` fix,
+    posted from Sync accounts), and ``documents``, the documents that post (on finalize or on
+    receipt) with no posted entry of their own and a leg no choice covers
+    (outside_fund_needs). ``count`` is both together; all zero with funds off."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+    from celerp.models.company_peer import CompanyPeerAttention
+    from celerp.models.projections import Projection
+    from celerp.services.auto_je import IMPORT_TREATMENT
+    from celerp.services.journal_accounts import funds_enabled
+    from celerp.services.peer_documents import DOC_FUNDS
+    from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
+
+    company = await session.get(Company, company_id)
+    if company is None or not funds_enabled(dict(company.settings or {})):
+        return {"count": 0, "held": 0, "documents": []}
+    fixes = (await session.scalars(select(CompanyPeerAttention.fix).where(
+        CompanyPeerAttention.company_id == company_id))).all()
+    held = sum(1 for fix in fixes if (fix or {}).get("kind") in ("funds", DOC_FUNDS))
+    rows = await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string().in_((*TOTAL_POSTED_DOC_TYPES, "purchase_order")),
+        Projection.state["status"].as_string().notin_(("void", "converted"))))
+    needing = {entity_id: state for entity_id, state in rows
+               if (state or {}).get(IMPORT_TREATMENT) != "opening_balances" and outside_fund_needs(state or {})}
+    if needing:
+        posted = set((await session.scalars(select(Projection.state["record_id"].as_string()).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+            Projection.state["record_id"].as_string().in_(needing),
+            Projection.state["status"].as_string() == "posted"))).all())
+        needing = {k: v for k, v in needing.items() if k not in posted}
+    documents = sorted(needing)
+    return {"count": held + len(documents), "held": held, "documents": documents}
+
+
 def mark_journal(data: dict, origin: str) -> None:
     """An arrival journal: the entry and every line carry ``origin`` (an inbound value stays as sent)."""
     data.setdefault("origin", origin)

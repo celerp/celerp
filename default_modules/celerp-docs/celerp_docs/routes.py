@@ -69,7 +69,7 @@ from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_met
                                           resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
 from celerp.services.peer_lines import (
     LINE_KEYS as OUTSIDE_LINE_KEYS, ImportFundChoices, chosen_lines, copied_header, granted_from_stored,
-    require_fund_choices,
+    outside_waiting, require_fund_choices,
 )
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
@@ -1121,6 +1121,7 @@ class DocListFilters:
     not_stocked: bool = False
     converted_to_type: str | None = None
     accounting_sync: Literal["excluded", "included"] | None = None
+    fund_choice: Literal["needed"] | None = None
     ids: str | None = None
     sort: str | None = None
     dir: str = "desc"
@@ -1330,8 +1331,12 @@ async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters)
 async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters, tz: str):
     """The list's filter step for ``f``: its SQL WHERE (``_doc_sql_where``) and the row-by-row
     predicate over displayed rows (``_doc_filter``, None when no such filter is set). The list,
-    its CSV export and its summary all select their rows through this, so they cannot drift."""
-    return _doc_sql_where(company_id, f, tz), await _doc_filter(session, company_id, f)
+    its CSV export and its summary all select their rows through this, so they cannot drift.
+    ``fund_choice=needed`` keeps the documents waiting for a fund choice (outside_waiting)."""
+    where = _doc_sql_where(company_id, f, tz)
+    if f.fund_choice == "needed":
+        where.append(Projection.entity_id.in_((await outside_waiting(session, company_id))["documents"]))
+    return where, await _doc_filter(session, company_id, f)
 
 
 # The filters the status cards split the list by. The cards count the set the other filters

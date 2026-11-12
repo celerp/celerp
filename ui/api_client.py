@@ -945,6 +945,12 @@ async def get_company(token: str) -> dict:
         return _flatten_company(data)
 
 
+async def get_fund_waiting(token: str) -> dict:
+    """The outside records waiting for a fund choice: {count, held, documents}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/waiting")).json()
+
+
 async def list_funds(token: str) -> dict:
     """The company's funds, archived ones included, by name."""
     async with _api_client(token) as c:

@@ -17,7 +17,7 @@ import pytest
 
 from test_dashboard_getting_started import _Dash, _dashboard, ui  # noqa: F401 (fixture)
 from test_income_accounts import _draft, _item, _line
-from test_outside_lines import _choose, _fund_company, _imported
+from test_outside_lines import _choose, _fund_company, _imported, _issued_import
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,7 +55,8 @@ async def _operator(session, auth) -> dict:
 
 async def test_waiting_for_fund_choice_count_shown(client, session, auth):
     """Two held items and one uncovered draft count 3; a held item fixed elsewhere, a local
-    draft and an outside draft whose document choice covers it do not. The document list
+    draft, an outside draft whose document choice covers it, and issued imports with no
+    choice that posted or sit in the opening balances do not. The document list
     filtered by fund_choice=needed holds exactly the uncovered draft. Funds off counts 0 and
     a user without the fund permission is refused."""
     from celerp.services.peer_documents import DOC_FUNDS
@@ -67,6 +68,12 @@ async def test_waiting_for_fund_choice_count_shown(client, session, auth):
     waiting = await _imported(client, auth, [_line(item, "Outside", 30.0)])
     covered = await _imported(client, auth, [_line(item, "Covered", 20.0)])
     await _draft(client, auth, "invoice", [_line(item, "Local", 10.0)])
+    # Issued imports already in the books: one posted now, one held in the opening balances.
+    for treatment in ("record_now", "opening_balances"):
+        record = _issued_import(f"doc:INV-{uuid.uuid4().hex[:8]}", [_line(item, "Issued", 15.0)])
+        record["data"]["import_treatment"] = treatment
+        r = await client.post("/docs/import", headers=auth["headers"], json=record)
+        assert r.status_code == 200, r.text
 
     assert await _waiting(client, auth["headers"]) == {"count": 0, "held": 0, "documents": []}
 
@@ -82,6 +89,14 @@ async def test_waiting_for_fund_choice_count_shown(client, session, auth):
     r = await _choose(client, auth, waiting, document="unrestricted")
     assert r.status_code == 200, r.text
     assert await _waiting(client, auth["headers"]) == {"count": 2, "held": 2, "documents": []}
+
+    # A bill of one total with no lines waits for the document's choice.
+    lineless = f"doc:BILL-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import", headers=auth["headers"], json={
+        "entity_id": lineless, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "bill", "status": "draft", "ref_id": lineless.split(":")[1], "line_items": [], "total": 40.0}})
+    assert r.status_code == 200, r.text
+    assert await _waiting(client, auth["headers"]) == {"count": 3, "held": 2, "documents": [lineless]}
 
     r = await client.get("/accounting/funds/waiting", headers=await _operator(session, auth))
     assert r.status_code == 403, r.text
@@ -111,3 +126,12 @@ async def test_waiting_for_fund_choice_banner_on_dashboard(ui):  # noqa: F811
         assert "/accounting/sync-accounts" not in html
     with _banner_api({"count": 0, "held": 0, "documents": []}):
         assert "waiting for a fund choice" not in await _dashboard(ui, settings=funds_on)
+
+
+async def test_waiting_document_list_keeps_drafts_and_every_date():
+    """Choose funds opens the list with drafts and open documents alike and no date window,
+    so a draft of any age that waits is on it."""
+    from ui.routes.documents import _doc_api_params
+
+    params = _doc_api_params({"fund_choice": "needed"}, "", "", limit=None)
+    assert params == {"fund_choice": "needed"}, params
