@@ -155,3 +155,12 @@ def test_a_failed_lookup_index_build_never_stops_the_upgrade(path, names, failur
     # stay built, and an index the revision would have replaced on success stays, so lookups keep it.
     assert set(op.drops_after_failure) == failed, (path.name, op.drops_after_failure)
     assert {n for n in names if op.state[n] is True} == set(names) - failed, (path.name, op.state)
+
+
+@pytest.mark.parametrize(("failure", "answer"), [({}, True), ({"stays_invalid": True}, False),
+                                                 ({"fail_create": "ix_probe"}, False)])
+def test_build_lookup_index_answers_whether_the_index_is_valid(failure, answer, monkeypatch):
+    from celerp.migrations._lookup_index import build_lookup_index
+    op = _Op(["ix_probe"], **failure)
+    monkeypatch.setattr("celerp.migrations._lookup_index.op", op)
+    assert build_lookup_index("ix_probe", "projections", lambda: op.create_index("ix_probe")) is answer

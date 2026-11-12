@@ -141,7 +141,8 @@ def test_js_refuses_holes_in_literals(template):
         js(template, "x")
 
 
-@pytest.mark.parametrize("template", ["x { y", "}", ".a { color: red } }"])
+@pytest.mark.parametrize("template", ["x { y", "}", ".a { color: red } }", "{0!r}", "{a!r}", "{0:>5}", "{a:>5}",
+                                      "{a.b}", "{0[1]}", "a\u0000HOLE\u0000b", "\u0000"])
 def test_malformed_templates_are_refused(template):
     assert hole_positions(template, "html") == ["malformed template"]
     with pytest.raises(ValueError):
