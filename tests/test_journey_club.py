@@ -240,3 +240,88 @@ async def test_e2e1_spending_release_transfer_year_close_and_donor_statement(cli
             fund or "unrestricted": held[row["code"]] for fund, held in ledger.items() if held.get(row["code"])}
     net = {fund["id"]: fund["net_assets"] for fund in sheet["funds"]}
     assert (net[f["R"]], net["unrestricted"], net[f["U1"]]) == (400.0, 600.0, 0.0)
+
+
+async def _holds(session, auth, fund) -> Decimal:
+    """What ``fund`` holds: its assets less its liabilities."""
+    held = (await fund_account_balances(session, auth["company_id"])).get(fund, {})
+    return sum((v for code, v in held.items() if code[0] in "12"), Decimal(0))
+
+
+async def test_e2e1_change_fund_moves_recognition_runs_under_the_fund_rule(client, session, auth, monkeypatch):
+    """Stage 3: two imported reading programme invoices on the restricted gift recognize their
+    income monthly (gifts themselves are never deferred); after six posted
+    runs a bookkeeper without Reallocate restricted funds cannot move the first to another
+    restricted fund of the same purpose and nothing is posted; the treasurer can, and the runs
+    follow. With the gift's cash spent on its purpose, moving the second invoice to Unrestricted
+    is refused until a new gift covers it, then its runs follow too. A Change fund reaching a
+    run in a closed period is refused naming the lock date."""
+    from test_change_fund import REASON, _change_doc, _standing
+    from test_fund_movement_posting import _set_role
+    from test_outside_lines import _issued_import
+    from test_revenue_recognition import _deferred_item, _post_month, _schedules, _service
+
+    h = auth["headers"]
+    _freeze(monkeypatch, "2026-01-05")
+    f = await _club(client, auth)
+    r = await client.post("/accounting/funds", headers=h, json={
+        "request_key": uuid.uuid4().hex, "name": "Reading room", "restricted": True, "purpose": "Scholarships"})
+    assert r.status_code == 200, r.text
+    room = r.json()["id"]
+    plan = await _deferred_item(client, auth, "Reading programme")
+    a, b = f"doc:IMP-{uuid.uuid4().hex[:8]}", f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=h, json={
+        "records": [_issued_import(a, [_service(plan, 1460, end="2026-12-31", name="Reading programme")]),
+                    _issued_import(b, [_service(plan, 600, end="2026-06-30", name="Reading programme")])],
+        "fund_choices": {"all": f["R"]}})
+    assert r.status_code == 200 and r.json()["created"] == 2, r.text
+
+    _freeze(monkeypatch, "2026-07-05")
+    for month in range(1, 7):
+        assert (await _post_month(client, auth, f"2026-{month:02d}")).status_code == 200
+    [schedule_a] = await _schedules(session, auth, a)
+    deferred = schedule_a["deferred_account"]
+    runs = await _standing(session, auth, "je:auto:rev:")
+    assert runs == {(f["R"], deferred): Decimal("1324.00"), (f["R"], "4100"): Decimal("-1324.00")}, runs
+    assert await _holds(session, auth, f["R"]) == 1724
+
+    await _set_role(session, auth, "manager")
+    await session.commit()
+    r = await _change_doc(client, session, auth, a, document=room)
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_needs_reallocation", r.text
+    assert (await _schedules(session, auth, a))[0]["fund_id"] == f["R"]
+    assert await _standing(session, auth, "je:auto:rev:") == runs
+    await _set_role(session, auth, "admin")
+    await session.commit()
+    r = await _change_doc(client, session, auth, a, document=room)
+    assert r.status_code == 200, r.text
+    assert (await _schedules(session, auth, a))[0]["fund_id"] == room
+    assert await _standing(session, auth, "je:auto:rev:") == {
+        (f["R"], deferred): Decimal("600.00"), (f["R"], "4100"): Decimal("-600.00"),
+        (room, deferred): Decimal("724.00"), (room, "4100"): Decimal("-724.00")}
+    assert await _holds(session, auth, f["R"]) == 1000 and await _holds(session, auth, room) == 724
+
+    books = await _issued(client, auth, "bill", [{**_line(None, "Scholarship awards", 800), "receive_as": "expense",
+                                                 "fund_id": f["R"]}], issue_date="2026-07-05", subtotal=800, total=800)
+    await _pay(client, auth, books, 400.0, "2026-07-05")
+    assert await _held(session, auth, f["R"]) == 0 and await _holds(session, auth, f["R"]) == 200
+    r = await _change_doc(client, session, auth, b, document="unrestricted")
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_exceeds_balance", r.text
+    assert (await _schedules(session, auth, b))[0]["fund_id"] == f["R"]
+
+    donor = await _member(client, auth, "Bea Donor", "bea@club.test")
+    gift = await _issued(client, auth, "invoice", [_line(f["gift"], "Library gift", 500.0, fund_id=f["R"])],
+                         contact_id=donor, issue_date="2026-07-05", price_list="Retail", subtotal=500.0, total=500.0)
+    await _pay(client, auth, gift, 500.0, "2026-07-05")
+    r = await _change_doc(client, session, auth, b, document="unrestricted")
+    assert r.status_code == 200, r.text
+    assert (await _schedules(session, auth, b))[0]["fund_id"] is None
+    standing = await _standing(session, auth, "je:auto:rev:")
+    assert standing[(None, "4100")] == Decimal("-600.00") and (f["R"], "4100") not in standing
+    assert await _holds(session, auth, f["R"]) == 100
+
+    assert (await client.post("/accounting/period-lock", headers=h, json={"lock_date": "2026-06-30"})).status_code == 200
+    r = await _change_doc(client, session, auth, a, document=f["R"], reason=REASON)
+    assert r.status_code == 422 and _key(r) == "error.period_locked", r.text
+    assert r.json()["detail"]["params"]["date"] == "2026-06-30"
+    assert (await _schedules(session, auth, a))[0]["fund_id"] == room
