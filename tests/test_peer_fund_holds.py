@@ -521,3 +521,82 @@ async def test_outside_money_change_clears_document_choice_with_reason(real_clie
     [item] = await _held(real_client, firm_tok, "doc_funds")
     assert item["fix"]["reason"]["message_key"] == "fund.choices_cleared_by_source.total"
     assert (await _state(real_client, firm_tok, copy))["status"] == "draft"
+
+
+def _fund_keys(lines: list[dict]) -> list:
+    return [(li.get("fund_id"), li.get("fund_choice")) for li in lines if li.get("fund_id") or li.get("fund_choice")]
+
+
+def _sent_with(monkeypatch, key: str, value) -> None:
+    """Every document the client sends with ``key`` added to its first line."""
+    from celerp.services import peer_documents
+
+    send = peer_documents.transport_document
+
+    def with_key(state):
+        data = send(state)
+        data["line_items"][0][key] = value
+        return data
+
+    monkeypatch.setattr(peer_documents, "transport_document", with_key)
+
+
+@pytest.mark.parametrize("direction", ["firm_journal", "client_journal", "outbound_document",
+                                       "inbound_document", "document_import"])
+async def test_fund_id_never_crosses_companies(real_client, real_engine, monkeypatch, direction):
+    """A fund is one company's own: books that use funds send journals and documents with no
+    fund on any line, so nothing arrives with one in the other company; a document line that
+    arrives carrying a fund is refused naming the line, and an import file carrying one is
+    refused for that record, pointing to the import screen."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    _route_to_app(monkeypatch, [])
+    if direction in ("firm_journal", "client_journal"):
+        sender, books, copies = ((firm_tok, client_company, _from_firm) if direction == "firm_journal"
+                                 else (tok, firm_company, _from_client))
+        fund = await _funds_client(real_client, sender)
+        r = await real_client.post("/accounting/journal-entries", headers=auth(sender), json={
+            "ts": DAY, "memo": "Grant interest", "idempotency_token": uuid.uuid4().hex,
+            "entries": [{"account": BANK, "debit": 70.0, "credit": 0.0, "fund_id": fund},
+                        {"account": EXPENSE, "debit": 0.0, "credit": 70.0, "fund_id": fund}]})
+        assert r.status_code == 200, r.text
+        await _two_way(client_company, credential)
+        [copy] = copies(await _journals(real_engine, books)).values()
+        assert len(copy["entries"]) == 2 and _fund_keys(copy["entries"]) == [], copy["entries"]
+        return
+    if direction == "document_import":
+        await _funds_client(real_client, tok)
+        good, carried = (f"doc:IMP-{uuid.uuid4().hex[:8]}" for _ in range(2))
+        r = await real_client.post("/docs/import/batch", headers=auth(tok), json={"records": [{
+            "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+            "data": {"doc_type": "invoice", "status": "draft", "ref_id": eid.split(":")[1], "total": 30.0,
+                     "line_items": [_LINES[1], {**_LINES[0], "fund_id": "fund:elsewhere"} if eid == carried
+                                    else _LINES[0]]}} for eid in (good, carried)]})
+        assert r.status_code == 200 and r.json()["created"] == 1, r.text
+        assert "Choose funds on the import screen, not in the file" in r.text, r.text
+        assert (await real_client.get(f"/docs/{carried}", headers=auth(tok))).status_code == 404
+        return
+    if direction == "outbound_document":
+        fund = await _funds_client(real_client, tok)
+        lines = [{**li, "fund_id": fund} for li in _LINES]
+    else:
+        await _funds_client(real_client, firm_tok)
+        _sent_with(monkeypatch, "fund_id", "fund:elsewhere")
+        lines = _LINES
+    vendor = await real_client.post("/crm/contacts", json={"name": "Utility Co", "contact_type": "vendor"},
+                                    headers=auth(tok))
+    assert vendor.status_code in (200, 201), vendor.text
+    r = await real_client.post("/docs", headers=auth(tok), json={
+        "doc_type": "bill", "contact_id": vendor.json()["id"], "date": DAY, "line_items": lines,
+        "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code in (200, 201), r.text
+    bill = r.json()["id"]
+    results = await _two_way(client_company, credential)
+    copy = await _copy_of(real_engine, firm_company, bill)
+    if direction == "outbound_document":
+        assert results["documents_out"].ok, results["documents_out"].errors
+        assert _fund_keys((await _state(real_client, firm_tok, copy))["line_items"]) == []
+        return
+    assert copy is None and await _held(real_client, firm_tok, "doc_funds") == []
+    [entry] = results["documents_out"].attention
+    assert "Line 1" in entry["reason"] and "fund_id" in entry["reason"], entry
