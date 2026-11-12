@@ -1393,6 +1393,19 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
+async def doc_fund_open(session, company_id, doc_id: str, doc_type: str) -> dict[str | None, Decimal]:
+    """Each fund's open part (None: the unrestricted group's), in the books' currency, of the
+    receivable or payable a document still holds, as its next payment splits it
+    (journal_accounts.fund_open_amounts on the account create_for_doc_payment settles).
+    Empty with funds off."""
+    settings = await current_settings(session, company_id)
+    if not funds_enabled(settings):
+        return {}
+    role = _control_role(doc_type)
+    code = await party_origin(session, company_id, doc_id, role, settings) \
+        or (await resolve_many(session, company_id, [role]))[role]
+    return {fund: amount for fund, (amount, _) in (await fund_open_amounts(session, company_id, doc_id, {code})).items()}
+
 
 async def _split_as_posted(session, company_id, entries: list[dict], follows: str, codes: set[str], base: str,
                            sources: str | None = None) -> list[dict]:

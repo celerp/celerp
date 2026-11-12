@@ -2918,7 +2918,8 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds,
+                        fund_open=await _doc_fund_open(token, doc, _co_settings)),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3866,6 +3867,7 @@ celerpUpdateBulkAlloc();
                 "payment_date": payment_date,
                 "bank_account": bank_account,
                 "conversion_rate": conversion_rate,
+                **_submitted_fund_allocation(form),
                 **submitted_operation_key(form),
             })
         except APIError as e:
@@ -6398,13 +6400,61 @@ def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, s
     return options
 
 
+FUND_ALLOCATION_FIELD = "fund_allocation:"  # the payment form's amount for one fund: this, then the fund
+
+
+def _payment_fund_split(fund_open: dict | None, outstanding: Decimal, currency: str) -> FT | str:
+    """An invoice's or bill's open balance by fund on its payment form: each fund's open part
+    (``fund_open`` from GET /docs/{id}/fund-open, in the books' currency) and the rule that
+    splits a payment by it, then Allocate by fund: one amount per fund in the document's
+    currency, empty until filled in, each hinting the share the rule gives the whole balance."""
+    from celerp.services.money import allocate_pro_rata
+
+    funds = (fund_open or {}).get("funds") or []
+    if not funds:
+        return ""
+    books, dp = fund_open["currency"], currency_dp(currency)
+    shares = allocate_pro_rata(outstanding, [to_decimal(f["open"]) for f in funds], currency)
+    names = [f["name"] or t("label.unrestricted") for f in funds]
+    return Div(
+        Div(t("documents.by_fund"), cls="form-label"),
+        Table(
+            Thead(Tr(Th(t("th.fund")), Th(t("th.outstanding"), cls="cell--number"))),
+            Tbody(*(Tr(Td(name), Td(fmt_money(f["open"], books), cls="cell--number")) for f, name in zip(funds, names))),
+            cls="data-table data-table--compact",
+        ),
+        P(t("documents.fund_split_rule"), cls="text-muted"),
+        Details(
+            Summary(t("documents.allocate_by_fund")),
+            P(t("documents.allocate_by_fund_hint"), cls="text-muted"),
+            Div(*(Div(Label(name, cls="form-label"),
+                      Input(type="number", name=f"{FUND_ALLOCATION_FIELD}{f['fund']}", placeholder=f"{share:.{dp}f}",
+                            step=_money_step(currency), min="0", cls="form-input"), cls="form-group")
+                  for f, name, share in zip(funds, names, shares)), cls="form-row"),
+        ),
+        cls="payment-fund-split",
+    )
+
+
+def _submitted_fund_allocation(form) -> dict:
+    """The amounts typed under Allocate by fund, as the payment's ``fund_allocation`` (an empty
+    amount counting as nothing), or nothing when every amount was left empty. Each is sent as
+    typed: the API refuses one that is not a number."""
+    typed = {str(k)[len(FUND_ALLOCATION_FIELD):]: str(form.get(k, "")).strip()
+             for k in form.keys() if str(k).startswith(FUND_ALLOCATION_FIELD)}
+    if not any(typed.values()):
+        return {}
+    return {"fund_allocation": {fund: amount or "0" for fund, amount in typed.items()}}
+
+
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
                      targets: list[dict] | None = None, tz: str | None = None,
-                     chart_accounts: list[dict] | None = None) -> FT:
+                     chart_accounts: list[dict] | None = None, fund_open: dict | None = None) -> FT:
     """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
 
     DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
     documents a credit note may be applied to; the picker shows only those still open.
+    ``fund_open`` (funds in use) adds the open balance by fund to an invoice's or bill's form.
     Each payment's account reads by code and name from ``chart_accounts`` (``account_label``),
     the bare code only for an account the chart no longer holds.
     Hidden for drafts, void docs, and non-payable doc types.
@@ -6665,6 +6715,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",
                     ),
+                    _payment_fund_split(fund_open, outstanding_d, currency),
                     operation_key_input(),
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
@@ -7577,6 +7628,22 @@ async def _doc_funds(token: str, doc: dict, settings: dict) -> list | None:
         return None
 
 
+async def _doc_fund_open(token: str, doc: dict, settings: dict) -> dict | None:
+    """An open invoice's or bill's balance by fund, for its payment form; None with funds off, on
+    any other document, or when it can't be read (the payment still splits by the rule then)."""
+    from celerp.services.journal_accounts import funds_enabled
+
+    if not funds_enabled(settings) or doc.get("doc_type") not in ("invoice", "bill") \
+            or doc.get("status") in ("draft", "void") or not (outstanding_balance(doc) or 0) > 0:
+        return None
+    try:
+        return await api.get_doc_fund_open(token, doc.get("entity_id") or doc.get("id") or "")
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return None
+
+
 def _fund_notice(cleared: dict | None) -> str:
     """What a save that changed amounts says about the fund choices it cleared."""
     if not cleared:
@@ -7641,7 +7708,7 @@ def subscription_meta_cells(doc: dict) -> tuple:
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
-                draw_targets: list | None = None, funds: list | None = None) -> FT:
+                draw_targets: list | None = None, funds: list | None = None, fund_open: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -11632,7 +11699,7 @@ async function celerpCsvImport(input, entityId) {{
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
         _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz,
-                         chart_accounts=chart_accounts),
+                         chart_accounts=chart_accounts, fund_open=fund_open),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

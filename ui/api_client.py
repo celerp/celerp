@@ -1928,6 +1928,11 @@ async def record_payment(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/payment", json=data)).json()
 
 
+async def get_doc_fund_open(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/fund-open")).json()
+
+
 # ---------------------------------------------------------------------------
 # CRM / contacts
 # ---------------------------------------------------------------------------

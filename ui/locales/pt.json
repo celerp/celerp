@@ -7668,5 +7668,9 @@
   "settings_accounting.reverse_close_title": "Reverse a year close",
   "settings_accounting.reverse_close_help": "Undo the latest close of a year, for example to post a late bill. Unlock the period first, then close the year again when you are done.",
   "btn.reverse_close": "Reverse close",
-  "settings_accounting.close_reversed": "The close of {date} is reversed."
+  "settings_accounting.close_reversed": "The close of {date} is reversed.",
+  "documents.by_fund": "By fund",
+  "documents.fund_split_rule": "A payment settles each fund in proportion to what it has open.",
+  "documents.allocate_by_fund": "Allocate by fund",
+  "documents.allocate_by_fund_hint": "Leave these empty to keep that split. If you fill them in, they must add up to the payment."
 }

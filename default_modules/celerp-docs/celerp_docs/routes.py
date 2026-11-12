@@ -4576,6 +4576,27 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     return {"event_id": entry.id}
 
 
+@router.get("/{entity_id}/fund-open", dependencies=[require_permission("view_documents")],
+            summary="Each fund's open part of a document's balance")
+async def get_doc_fund_open(entity_id: str, company_id: str = Depends(get_current_company_id),
+                            session: AsyncSession = Depends(get_session)) -> dict:
+    """What an invoice or bill still holds open by fund, in the books' currency: the split its
+    next payment takes unless the payment names its own (DocPaymentBody.fund_allocation).
+    No funds with funds off; the unrestricted group (``fund`` "unrestricted") carries no name."""
+    from celerp.services import auto_je
+    from celerp.services.journal_accounts import fund_name, funds_by_id
+    from celerp.services.peer_lines import UNRESTRICTED
+
+    row = await _get_doc(session, company_id, entity_id)
+    base = str((await current_settings(session, company_id)).get("currency") or "USD").upper()
+    held = await auto_je.doc_fund_open(session, company_id, entity_id, str(row.state.get("doc_type") or ""))
+    funds = await funds_by_id(session, company_id) if held else {}
+    order = sorted(held, key=lambda fund: (fund is None, fund_name(funds, fund)))
+    return {"currency": base, "funds": [
+        {"fund": fund or UNRESTRICTED, "name": fund and fund_name(funds, fund), "open": to_stored_float(round_money(held[fund], base))}
+        for fund in order]}
+
+
 class RefundBody(BaseModel):
     payment_index: int  # the payment the money is given back from
     amount: FiniteFloat

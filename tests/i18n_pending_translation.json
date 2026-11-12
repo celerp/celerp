@@ -980,6 +980,22 @@
       "params": [
         "date"
       ]
+    },
+    "documents.by_fund": {
+      "en": "By fund",
+      "params": []
+    },
+    "documents.fund_split_rule": {
+      "en": "A payment settles each fund in proportion to what it has open.",
+      "params": []
+    },
+    "documents.allocate_by_fund": {
+      "en": "Allocate by fund",
+      "params": []
+    },
+    "documents.allocate_by_fund_hint": {
+      "en": "Leave these empty to keep that split. If you fill them in, they must add up to the payment.",
+      "params": []
     }
   },
   "modules": {
