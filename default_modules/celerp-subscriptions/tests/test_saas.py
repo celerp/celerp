@@ -163,3 +163,119 @@ async def test_subscribers_and_plans_in_the_saas_sidebar_only(vertical, shown):
 
     keys = {item.get("key") for item in module_nav({"vertical": vertical} if vertical else {})}
     assert ({"subscribers", "plans"} <= keys) is shown and (shown or not ({"subscribers", "plans"} & keys))
+
+
+# ── Amendments: a seat change from an effective date ────────────────────────
+
+SEATS = {"description": "Team plan", "quantity": 3, "unit_price": 10.0, "line_total": 30.0}
+
+
+async def _amend(api, eid: str, effective: str, quantities: dict, key: str | None = None):
+    return await api.post(f"/subscriptions/{eid}/amend", json={
+        "effective": effective, "quantities": quantities, "request_key": key or str(uuid.uuid4())})
+
+
+async def _line_id(api, eid: str) -> str:
+    return (await template(api, {}, eid))["line_items"][0]["line_id"]
+
+
+def _of(docs: list[dict], doc_type: str) -> list[dict]:
+    return [d for d in docs if d["doc_type"] == doc_type]
+
+
+async def test_amendment_validation(owner_ui, monkeypatch):
+    """An effective date before the start of the last billed period is refused naming that
+    start; a quantity below 0, a line the agreement does not have, a change that changes
+    nothing and a missing request key are refused, and nothing is written."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    freeze_day(monkeypatch, "2026-04-01")
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    r = await _amend(owner_ui.api, eid, "2026-03-20", {line: 5})
+    assert r.status_code == 409 and _says(r, "subscriptions.err_amend_before_billed", day="2026-04-01"), r.text
+    r = await _amend(owner_ui.api, eid, "2026-04-10", {line: -1})
+    assert r.status_code == 422 and _says(r, "subscriptions.err_amend_quantity"), r.text
+    r = await _amend(owner_ui.api, eid, "2026-04-10", {"line:missing": 2})
+    assert r.status_code == 422 and _says(r, "subscriptions.err_amend_line"), r.text
+    r = await _amend(owner_ui.api, eid, "2026-04-10", {line: 3})
+    assert r.status_code == 422 and _says(r, "subscriptions.err_amend_unchanged"), r.text
+    r = await owner_ui.api.post(f"/subscriptions/{eid}/amend", json={"effective": "2026-04-10", "quantities": {line: 4}})
+    assert r.status_code == 422, r.text
+    assert not (await template(owner_ui.api, {}, eid)).get("amendments")
+
+
+async def test_seat_change_prorates_advance_via_credit_and_debit(owner_ui, session, monkeypatch):
+    """Billed in advance for March (3 seats at 10), a change to 5 seats from 15 March credits the
+    old terms for the 17 days left of 31 (16.45) against the March invoice line and bills the new
+    terms for them (27.42), both linked to the agreement and the period; the credit is applied to
+    the invoice. The same request repeats the same answer; changing back credits the debit invoice.
+    April bills 5 seats."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    [march] = await billed_docs(session, eid)
+    freeze_day(monkeypatch, "2026-03-15")
+    r = await _amend(owner_ui.api, eid, "2026-03-15", {line: 5}, key="seats-5")
+    assert r.status_code == 200, r.text
+    again = await _amend(owner_ui.api, eid, "2026-03-15", {line: 5}, key="seats-5")
+    assert again.status_code == 200 and again.json() == r.json(), again.text
+    docs = await billed_docs(session, eid)
+    [credit], [debit] = _of(docs, "credit_note"), [d for d in _of(docs, "invoice") if d["entity_id"] != march["entity_id"]]
+    assert (credit["total"], debit["total"]) == (16.45, 27.42)
+    for doc in (credit, debit):
+        assert doc["status"] not in ("draft", "void")
+        assert (doc["period_index"], doc["service_start"], doc["service_end"]) == (0, "2026-03-15", "2026-03-31")
+    assert credit["original_doc_id"] == march["entity_id"]
+    assert credit["line_items"][0]["source_line_id"] == march["line_items"][0]["line_id"]
+    assert (credit["line_items"][0]["quantity"], debit["line_items"][0]["quantity"]) == (3, 5)
+    assert {r.json()["credit_note_id"], r.json()["invoice_id"]} == {credit["entity_id"], debit["entity_id"]}
+    [march_now] = [d for d in await billed_docs(session, eid) if d["entity_id"] == march["entity_id"]]
+    assert march_now["amount_outstanding"] == 13.55
+    back = await _amend(owner_ui.api, eid, "2026-03-15", {line: 3})
+    assert back.status_code == 200, back.text
+    [undo] = [d for d in _of(await billed_docs(session, eid), "credit_note") if d["entity_id"] != credit["entity_id"]]
+    assert undo["original_doc_id"] == debit["entity_id"] and undo["total"] == 27.42
+    freeze_day(monkeypatch, "2026-04-01")
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    [april] = [d for d in await billed_docs(session, eid) if d.get("period_index") == 1]
+    assert [(li["quantity"], li["line_total"]) for li in april["line_items"]] == [(3, 30.0)]
+
+
+async def test_arrears_period_splits_effective_segments(owner_ui, session, monkeypatch):
+    """Billed in arrears, a change from 1 to 3 seats from 11 March bills March on 1 April as two
+    lines, one per effective segment, each prorated by its days of 31, and issues no credit or
+    debit document."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", billing_timing="arrears",
+                          line_items=[dict(SEATS, quantity=1, unit_price=100.0, line_total=100.0)])
+    line = await _line_id(owner_ui.api, eid)
+    freeze_day(monkeypatch, "2026-03-10")
+    assert (await _amend(owner_ui.api, eid, "2026-03-11", {line: 3})).status_code == 200
+    assert await billed_docs(session, eid) == []
+    freeze_day(monkeypatch, "2026-04-01")
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    [march] = await billed_docs(session, eid)
+    assert [(li["quantity"], li["line_total"], li["service_start"], li["service_end"]) for li in march["line_items"]] == [
+        (1, 32.26, "2026-03-01", "2026-03-10"), (3, 203.23, "2026-03-11", "2026-03-31")]
+    assert march["total"] == 235.49
+
+
+async def test_invoice_snapshot_unchanged_after_amendment(owner_ui, session, monkeypatch):
+    """An issued invoice never changes: an amendment from a later period leaves the March invoice
+    exactly as it was, and one inside March leaves its lines and totals as issued (only the
+    applied credit moves what it still owes)."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    [march] = await billed_docs(session, eid)
+    assert (await _amend(owner_ui.api, eid, "2026-04-05", {line: 4})).status_code == 200
+    [same] = await billed_docs(session, eid)
+    assert same == march
+    assert (await _amend(owner_ui.api, eid, "2026-03-20", {line: 6})).status_code == 200
+    [issued] = [d for d in await billed_docs(session, eid) if d["entity_id"] == march["entity_id"]]
+    fixed = ("line_items", "subtotal", "tax", "total", "issue_date", "service_start", "service_end", "ref_id")
+    assert {k: issued.get(k) for k in fixed} == {k: march.get(k) for k in fixed}
