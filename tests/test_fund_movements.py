@@ -50,12 +50,12 @@ def _lines(lines) -> list[dict]:
     return [{"account": a, "debit": d, "credit": c, **({"fund_id": f} if f else {})} for a, d, c, f in lines]
 
 
-async def _emit(session, auth, lines, *, je_type="manual", entity_id=None, actor="user", restores=False):
+async def _emit(session, auth, lines, *, je_type="manual", entity_id=None, actor="user", restores=False, ts="2026-03-01"):
     from celerp.events.engine import emit_event
     je_id = entity_id or f"je:manual:{uuid.uuid4()}"
     await emit_event(session, company_id=auth["company_id"], entity_id=je_id, entity_type="journal_entry",
                      event_type="acc.journal_entry.created",
-                     data={"memo": "Funds", "ts": "2026-03-01", "entries": _lines(lines), "je_type": je_type,
+                     data={"memo": "Funds", "ts": ts, "entries": _lines(lines), "je_type": je_type,
                            "status": "posted"},
                      actor_id=auth["user_id"] if actor == "user" else actor, location_id=None, source="test",
                      idempotency_key=f"test:{je_id}:{uuid.uuid4().hex}",

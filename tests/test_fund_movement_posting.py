@@ -28,9 +28,9 @@ async def _gift(session, auth, fund, amount=100):
     return await _emit(session, auth, [("1111", amount, 0, fund), ("4100", 0, amount, fund)])
 
 
-async def _bill(session, auth, fund, amount=60):
+async def _bill(session, auth, fund, amount=60, ts="2026-03-01"):
     """Purpose spending of ``amount`` charged to ``fund``, paid from the bank; line 0 is the expense."""
-    return await _emit(session, auth, [("6200", amount, 0, fund), ("1111", 0, amount, fund)])
+    return await _emit(session, auth, [("6200", amount, 0, fund), ("1111", 0, amount, fund)], ts=ts)
 
 
 async def _post(client, auth, path, **body):
@@ -160,6 +160,35 @@ async def test_fund_transfer_audited_and_reversible(client, session, auth):
                               json={"date": DATE, "reason": "Entered twice"})
     assert again.json()["je_id"] == back.json()["je_id"]
     assert await _held(session, auth, f["U1"]) == 100 and await _held(session, auth, f["U2"]) == 0
+
+
+async def test_backdated_movement_cannot_take_what_later_spending_used(client, session, auth):
+    """U1 holds 100 on the movement's date but spends 80 of it a month later: a transfer of 100
+    dated before the spending is refused, as it would leave U1 owing 80 from then on, and 20
+    moves. A bank transfer's allocation by fund is held to the same least balance."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["U1"])
+    await _bill(session, auth, f["U1"], 80, ts="2026-04-01")
+    r = await _post(client, auth, "transfer", from_fund=f["U1"], to_fund=f["U2"], amount="100")
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_exceeds_balance", r.text
+    assert r.json()["detail"]["params"]["available"] == "20.00"
+    r = await _post(client, auth, "transfer", from_fund=f["U1"], to_fund=f["U2"], amount="20")
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, f["U1"]) == 0 and await _held(session, auth, f["U2"]) == 20
+
+    await _gift(session, auth, f["R"])
+    await _bill(session, auth, f["R"], 70, ts="2026-04-01")
+    bank = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
+        "bank_name": "Coast Bank", "account_number": "0002", "bank_type": "checking", "currency": "USD",
+        "opening_balance": 0})
+    source = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
+        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking", "currency": "USD",
+        "opening_balance": 0, "account_code": "1111"})
+    r = await client.post("/accounting/transfers", headers=auth["headers"], json={
+        "from_bank_id": source.json()["id"], "to_bank_id": bank.json()["id"], "amount": 100.0, "date": DATE,
+        "allocation": [{"fund": f["R"], "amount": 100}]})
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_exceeds_balance", r.text
+    assert r.json()["detail"]["params"]["available"] == "30.00"
 
 
 async def test_expense_then_release(client, session, auth):

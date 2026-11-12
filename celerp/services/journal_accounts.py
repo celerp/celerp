@@ -400,26 +400,58 @@ def _fund_name(funds: dict[str, dict], fund_id) -> str:
     return funds[fund_id]["name"] if fund_id in funds else (fund_id or unrestricted_label())
 
 
-async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str | None = None,
-                                ) -> dict[str | None, dict[str, Decimal]]:
-    """Each fund's (None: the unrestricted group's) non-zero posted balance, debit less
-    credit, by account, counting the entries dated on or before ``as_of`` when given. It
-    reads the journal as the ledger does (ledger_rows.journal_rows), so an entry voided out
-    of a locked period still counts on its own day and its reversal on reversed_on."""
+async def _fund_day_changes(session: AsyncSession, company_id) -> dict[str, dict[tuple[str | None, str], Decimal]]:
+    """Each day's posted change, debit less credit, per (fund, account), None for the
+    unrestricted group. It reads the journal as the ledger does (ledger_rows.journal_rows),
+    so an entry voided out of a locked period still counts on its own day and its reversal
+    on reversed_on."""
     from celerp.services.ledger_rows import journal_rows
     from celerp.services.money import to_decimal
 
-    sums: dict[str | None, dict[str, Decimal]] = {}
+    days: dict[str, dict[tuple[str | None, str], Decimal]] = {}
     for _, state, day in await journal_rows(session, company_id):
-        if as_of and day > as_of:
-            continue
+        changes = days.setdefault(day, {})
         for line in state.get("entries") or ():
             if isinstance(line, dict) and line.get("account"):
-                by_account = sums.setdefault(line.get("fund_id") or None, {})
-                by_account[line["account"]] = (by_account.get(line["account"], Decimal(0))
-                                               + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
-    return {fund: held for fund, accounts in sums.items()
-            if (held := {code: amount for code, amount in accounts.items() if amount})}
+                key = (line.get("fund_id") or None, line["account"])
+                changes[key] = (changes.get(key, Decimal(0))
+                                + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
+    return days
+
+
+async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str | None = None,
+                                ) -> dict[str | None, dict[str, Decimal]]:
+    """Each fund's (None: the unrestricted group's) non-zero posted balance, debit less
+    credit, by account, counting the entries dated on or before ``as_of`` when given."""
+    sums: dict[tuple[str | None, str], Decimal] = {}
+    for day, changes in (await _fund_day_changes(session, company_id)).items():
+        if not (as_of and day > as_of):
+            for key, amount in changes.items():
+                sums[key] = sums.get(key, Decimal(0)) + amount
+    held: dict[str | None, dict[str, Decimal]] = {}
+    for (fund, code), amount in sums.items():
+        if amount:
+            held.setdefault(fund, {})[code] = amount
+    return held
+
+
+async def fund_balance_range(session: AsyncSession, company_id, *, as_of: str,
+                             ) -> dict[tuple[str | None, str], tuple[Decimal, Decimal]]:
+    """Per (fund, account): the least and the greatest balance, debit less credit, it carries
+    from ``as_of`` on (its balance that day, then after each later day), so what a fund gives
+    on a date is what it still holds once every later entry has posted."""
+    days = await _fund_day_changes(session, company_id)
+    running: dict[tuple[str | None, str], Decimal] = {}
+    for day in sorted(d for d in days if d <= as_of):
+        for key, amount in days[day].items():
+            running[key] = running.get(key, Decimal(0)) + amount
+    span = {key: (amount, amount) for key, amount in running.items()}
+    for day in sorted(d for d in days if d > as_of):
+        for key, amount in days[day].items():
+            running[key] = balance = running.get(key, Decimal(0)) + amount
+            low, high = span.get(key, (Decimal(0), Decimal(0)))
+            span[key] = (min(low, balance), max(high, balance))
+    return span
 
 
 async def pooled_split(session: AsyncSession, company_id, account: str, amount: Decimal, currency: str, *,
@@ -429,7 +461,8 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
     ``account`` (rule B): pro rata to what each holds there on ``as_of``, none above what it
     holds, the unrestricted group taking any amount beyond what the funds hold together. An
     explicit ``allocation`` replaces the split: each share at most what its fund holds there,
-    adding up to ``amount``. Funds off: the unrestricted group moves it all."""
+    adding up to ``amount``. What a fund holds there is the least it holds from ``as_of`` on
+    (fund_balance_range). Funds off: the unrestricted group moves it all."""
     from celerp.services.money import allocate_pro_rata, round_money
 
     settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
@@ -437,8 +470,9 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
         if allocation:
             raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
         return [(None, amount)]
-    held = {fund: round_money(by_account.get(account, Decimal(0)), currency)
-            for fund, by_account in (await fund_account_balances(session, company_id, as_of=as_of)).items()}
+    held = {fund: round_money(low, currency)
+            for (fund, code), (low, _) in (await fund_balance_range(session, company_id, as_of=as_of)).items()
+            if code == account}
     if allocation is not None:
         funds = await funds_by_id(session, company_id)
         for fund, share in allocation:
@@ -499,7 +533,8 @@ async def _check_movement(session: AsyncSession, company_id, data: dict, entries
     restricted funds of one purpose with a reason and a donor authorization. An opening
     assigns the unrestricted group's balances to funds (a reversal gives them back) and
     leaves no restricted fund's net assets negative. A fund never gives more of an account
-    than it holds on it at the entry's date, nor gives the opposite side of it. A release
+    than it holds on it from the entry's date on (fund_balance_range), nor gives the
+    opposite side of it. A release
     names the purpose spending it pays for (_release_backing)."""
     from celerp.services.money import round_money, to_decimal
 
@@ -566,13 +601,13 @@ async def _check_movement(session: AsyncSession, company_id, data: dict, entries
             await _release_backing(session, company_id, data, round_money(na[target], currency), funds,
                                    _fund_name(funds, source), currency)
 
-    held = await fund_account_balances(session, company_id, as_of=str(data.get("ts") or "")[:10] or None)
+    span = await fund_balance_range(session, company_id, as_of=str(data.get("ts") or "")[:10] or "9999-12-31")
     for code, by_fund in sorted(delta.items()):
         for fund_id in sorted((f for f in by_fund if f in givers), key=lambda f: f or ""):
             change = by_fund[fund_id]
-            balance = round_money(held.get(fund_id, {}).get(code, Decimal(0)), currency)
-            if not balance or (balance > 0) == (change > 0) or abs(balance) < abs(change):
-                available = abs(balance) if balance and (balance > 0) != (change > 0) else Decimal(0)
+            low, high = span.get((fund_id, code), (Decimal(0), Decimal(0)))
+            available = max(round_money(low if change < 0 else -high, currency), Decimal(0))
+            if available < abs(change):
                 raise RestrictedFundMovement(
                     "posting.fund.movement_exceeds_balance", fund=_fund_name(funds, fund_id), code=code,
                     available=str(round_money(available, currency)), amount=str(round_money(abs(change), currency)),
