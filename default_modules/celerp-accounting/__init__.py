@@ -22,6 +22,7 @@ PLUGIN_MANIFEST = {
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
+        "periodic_operation": {"handler": "celerp_accounting.recognition:run_due", "module": "celerp-accounting"},
         "projection_handler": [
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},

@@ -160,13 +160,13 @@ HELPERS: dict[str, tuple[str, str]] = {
     f"{_CORE}/peer_journals.py::post_held": ("ARRIVAL-JE", "posts a held journal through _post or _post_client_journal"),
     f"{_CORE}/peer_documents.py::post_held_document": ("ARRIVAL", "posts a held document through create_imported_doc"),
     f"{_ACC}/routes.py::reverse_year_close": ("COPY-JE", "reversal of a year close"),
+    f"{_ACC}/recognition.py::run_recognition": ("DERIVED-JE", "schedule legs from the deferred line"),
+    f"{_ACC}/recognition.py::reverse_recognition": ("COPY-JE", "reversal of a recognition run"),
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::claim_period": (
         "COPY", "bills a period through _bill"),
 }
 
 PENDING = {  # function -> (class, what it will write)
-    "run_recognition": ("DERIVED-JE", "schedule legs from the deferred line"),
-    "reverse_recognition": ("COPY-JE", "reversal of a recognition run"),
     "post_dispute_adjustment": ("DERIVED-JE", "a payment dispute on the receipt's split"),
     "amend": ("COPY", "a seat change's credit note and debit invoice copy the template lines"),
 }

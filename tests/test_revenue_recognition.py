@@ -336,8 +336,8 @@ async def test_auto_post_recognition_requires_authorization(client, session, aut
 
 @pytest.mark.parametrize("lapse", ["permission", "deactivated"])
 async def test_recognition_autopost_stops_when_authorizer_loses_permission(client, session, auth, monkeypatch, lapse):
-    """The dispatcher checks the authorizer on every pass: once they lose manage_accounting or are
-    deactivated it posts nothing and the summary says so; a manual post still works."""
+    """The dispatcher checks the authorizer on every pass: once they lose manage_accounting (moved to
+    a role without it) or are deactivated it posts nothing and the summary says so; a manual post still works."""
     _freeze(monkeypatch, "2026-01-05")
     plan = await _deferred_item(client, auth)
     await _invoice(client, auth, [_service(plan, 900)])
@@ -346,8 +346,7 @@ async def test_recognition_autopost_stops_when_authorizer_loses_permission(clien
     await _tick(session, auth, "2026-02-02")
     assert _by_month(await _runs(client, auth))["2026-01"] == [(0, 310.0, "posted")]
     if lapse == "permission":
-        r = await client.patch("/companies/me/role-permissions", headers=auth["headers"],
-                               json={"perm_key": "manage_accounting", "role_key": "manager", "granted": False})
+        r = await client.patch(f"/companies/me/users/{manager_id}", headers=auth["headers"], json={"role": "viewer"})
     else:
         r = await client.patch(f"/companies/me/users/{manager_id}", headers=auth["headers"], json={"is_active": False})
     assert r.status_code == 200, r.text

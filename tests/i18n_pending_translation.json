@@ -1010,6 +1010,43 @@
     "recognition.err_flag_invalid": {
       "en": "Recognize over the service period must be on or off. Send true or false.",
       "params": []
+    },
+    "recognition.err_month": {
+      "en": "{month} is not a month. Send it as YYYY-MM, for example 2026-01.",
+      "params": [
+        "month"
+      ]
+    },
+    "recognition.err_month_locked": {
+      "en": "The books are locked through {lock_date}, so this run cannot be dated in its own month. Date it {first_open}, the first open day, or move the period lock.",
+      "params": [
+        "first_open",
+        "lock_date"
+      ]
+    },
+    "recognition.err_post_on": {
+      "en": "This run can only be dated {first_open}: a run is dated the last day of its month, or the first open day when its month is locked.",
+      "params": [
+        "first_open"
+      ]
+    },
+    "recognition.err_run_not_posted": {
+      "en": "No recognition run of {month} is posted, so there is nothing to reverse.",
+      "params": [
+        "month"
+      ]
+    },
+    "recognition.summary_lapsed": {
+      "en": "Automatic recognition stopped: authorization lapsed",
+      "params": []
+    },
+    "recognition.notice_lapsed.title": {
+      "en": "Automatic recognition stopped",
+      "params": []
+    },
+    "recognition.notice_lapsed.body": {
+      "en": "Automatic recognition stopped: authorization lapsed. The member who turned it on no longer manages accounting or has left. Post the runs on Revenue recognition, or turn automatic posting on again.",
+      "params": []
     }
   },
   "modules": {

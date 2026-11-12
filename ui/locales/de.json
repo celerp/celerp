@@ -7675,5 +7675,12 @@
   "documents.allocate_by_fund_hint": "Leave these empty to keep that split. If you fill them in, they must add up to the payment.",
   "funds.opening_date": "Opening date",
   "recognition.err_service_period": "{line} recognizes over its service period, so it needs a service start and end, with the end on or after the start.",
-  "recognition.err_flag_invalid": "Recognize over the service period must be on or off. Send true or false."
+  "recognition.err_flag_invalid": "Recognize over the service period must be on or off. Send true or false.",
+  "recognition.err_month": "{month} is not a month. Send it as YYYY-MM, for example 2026-01.",
+  "recognition.err_month_locked": "The books are locked through {lock_date}, so this run cannot be dated in its own month. Date it {first_open}, the first open day, or move the period lock.",
+  "recognition.err_post_on": "This run can only be dated {first_open}: a run is dated the last day of its month, or the first open day when its month is locked.",
+  "recognition.err_run_not_posted": "No recognition run of {month} is posted, so there is nothing to reverse.",
+  "recognition.summary_lapsed": "Automatic recognition stopped: authorization lapsed",
+  "recognition.notice_lapsed.title": "Automatic recognition stopped",
+  "recognition.notice_lapsed.body": "Automatic recognition stopped: authorization lapsed. The member who turned it on no longer manages accounting or has left. Post the runs on Revenue recognition, or turn automatic posting on again."
 }
