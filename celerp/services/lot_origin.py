@@ -805,7 +805,7 @@ async def _place(session: AsyncSession, company_id) -> bool:
         lines += [_lot_line(settings, target, credit=float(-transferred))] if transferred < 0 else []
         journal.append(_placement_entry(pid, "transfer"))
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=None, je_id=journal[-1],
+            session, company_id=company_id, user_id=None, je_id=journal[-1], record_id=None,
             idem_create=f"older-stock-placed:{pid}:transfer:c", idem_posted=f"older-stock-placed:{pid}:transfer:p",
             memo="Older stock moved onto its inventory account", entries=lines,
             metadata_={"trigger": "older_stock.placed", "placement": pid}, ts=day)
@@ -1188,7 +1188,7 @@ async def _normalize(session: AsyncSession, company_id, user_id) -> bool:
     if moved:
         amount, (debit, credit) = abs(moved), ((p, purchased), (ob, opening)) if moved > 0 else ((ob, opening), (p, purchased))
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=None, je_id=je_id,
+            session, company_id=company_id, user_id=None, je_id=je_id, record_id=None,
             idem_create=f"inventory-origin:{company_id}:c", idem_posted=f"inventory-origin:{company_id}:p",
             memo="Opening inventory moved into purchased inventory, where older releases booked its sales",
             entries=[_line(debit[0], debit[1], debit=float(amount)), _line(credit[0], credit[1], credit=float(amount))],
@@ -1359,7 +1359,7 @@ async def post_opening_stock_delta(session: AsyncSession, company_id, values: di
         lines = [_line(re_code, retained, debit=total),
                  *(_lot_line(settings, code, credit=float(v)) for code, v in values.items())]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=actor_id, je_id=je_id,
+        session, company_id=company_id, user_id=actor_id, je_id=je_id, record_id=None,
         idem_create=f"{idem}:c", idem_posted=f"{idem}:p", memo=memo, entries=lines, metadata_=metadata, ts=day)
 
 
@@ -1481,7 +1481,7 @@ async def book_lot_value(session: AsyncSession, company_id, actor_id, code: str,
         lines = [_line(other, role, debit=amount), _lot_line(settings, code, credit=amount)]
         memo = "Stock value decreased"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=actor_id, je_id=je_id,
+        session, company_id=company_id, user_id=actor_id, je_id=je_id, record_id=None,
         idem_create=f"{idem}:c", idem_posted=f"{idem}:p", memo=memo, entries=lines, metadata_=metadata, ts=day)
 
 
@@ -1685,7 +1685,7 @@ async def _move(session: AsyncSession, company_id, moves: list[tuple[Projection,
              + [_lot_line(settings, c, credit=float(-v)) for c, v in sorted(net.items()) if v < 0])
     if lines:
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=actor_id, je_id=_move_je(move_id),
+            session, company_id=company_id, user_id=actor_id, je_id=_move_je(move_id), record_id=None,
             idem_create=f"older-stock-moved:{move_id}:c", idem_posted=f"older-stock-moved:{move_id}:p",
             memo="Older stock moved to another inventory account", entries=lines,
             metadata_={"trigger": "older_stock.moved", "move": move_id}, ts=day)

@@ -43,7 +43,7 @@ async def _older_stock(session, auth, cost: float, qty: float) -> str:
                      actor_id=uid, location_id=None, source="api", idempotency_key=f"{po}:line:0",
                      metadata_={"source_doc": po})
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=uid, je_id=f"je:auto:{po}:rcv:1",
+        session, company_id=cid, user_id=uid, je_id=f"je:auto:{po}:rcv:1", record_id=po,
         idem_create=f"{po}:rcv:c", idem_posted=f"{po}:rcv:p", memo=f"Auto JE for {po} received",
         entries=[{"account": "1130-P", "debit": cost, "credit": 0.0},
                  {"account": "2110", "debit": 0.0, "credit": cost}], metadata_={})
@@ -140,7 +140,7 @@ async def test_lots_whose_excess_the_books_already_carry_are_restated_off_retain
     raw, order, lots = await _older_run(client, session, auth, 1, 1)
     p, re = await role(session, auth, PURCHASED), await role(session, auth, RETAINED)
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:ob{order}",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:ob{order}", record_id=None,
         idem_create=f"ob{order}:c", idem_posted=f"ob{order}:p", memo="Opening inventory",
         entries=[{"account": p, "debit": 50.0, "credit": 0.0}, {"account": re, "debit": 0.0, "credit": 50.0}],
         metadata_={})
@@ -307,7 +307,7 @@ async def test_reconciling_shows_what_each_inventory_account_holds(client, sessi
     raw, order, _ = await _older_run(client, session, auth, 1)
     p = await role(session, auth, PURCHASED)
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:x{order}",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=f"je:auto:x{order}", record_id=None,
         idem_create=f"x{order}:c", idem_posted=f"x{order}:p", memo="Purchase",
         entries=[{"account": p, "debit": 25.0, "credit": 0.0}, {"account": "2110", "debit": 0.0, "credit": 25.0}],
         metadata_={})

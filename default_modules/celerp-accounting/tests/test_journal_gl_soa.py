@@ -2608,7 +2608,7 @@ async def test_by_doc_includes_related_credit_and_return_postings(client, sessio
     ):
         je_id = f"je:test:{suffix}:{note_id}"
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
             idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
             memo=suffix, ts="2026-02-02", entries=_bal(5.0), metadata_=metadata,
         )
@@ -2636,7 +2636,7 @@ async def test_unclassified_journal_cannot_inherit_invoice_items_by_amount(clien
     company_id, user_id = _ids(tok)
     je_id = f"je:test:unclassified:{doc}"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
         memo="Unclassified journal", ts="2026-02-02", entries=_bal(10.0),
         metadata_={"doc_id": doc},
@@ -2668,7 +2668,7 @@ async def test_by_doc_files_a_stale_line_contact_where_the_ledger_does_and_shows
     company_id, user_id = _ids(tok)
     je_id = f"je:test:{doc}:stale"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo="Stale party", ts="2026-02-04",
         entries=[{"account": "1120", "debit": 7.0, "credit": 0, "contact": "contact:gone"},
                  {"account": "4100", "debit": 0, "credit": 7.0}],
@@ -2730,7 +2730,7 @@ async def test_by_doc_includes_real_supplier_credit_note_application(client, ses
     company_id, user_id = _ids(tok)
     je_id = f"je:test:dnapply:{note_id}"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
         memo="Supplier note", ts="2026-02-02", entries=_bal(10.0),
         metadata_={"doc_id": bill, "dn_id": note_id, "trigger": "dn.applied"},

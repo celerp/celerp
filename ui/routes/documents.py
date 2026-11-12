@@ -277,6 +277,9 @@ def _receive_kind_select(li: dict | None) -> FT:
 # credits. Every save sends them back as stored, so editing a draft keeps its links. A carried
 # value travels as JSON, so a number or a flag comes back as one.
 _CARRIED_LINE_KEYS = ("source_line_id", "asset_id", "asset_returned")
+# An invoice line's keys a credit note created from it leaves behind: its own id and total, and
+# where it came from and its fund, which the note takes from the invoice line it credits.
+_NOT_CREDITED_LINE_KEYS = ("id", "line_total", "line_id", "origin", "fund_choice", "fund_id")
 
 
 def _carried_inputs(li: dict) -> list:
@@ -3713,11 +3716,13 @@ celerpUpdateBulkAlloc();
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)
                 # and its taxes: one it cannot carry is refused by name, never left off the note.
+                # Each line names the invoice line it credits (_NOT_CREDITED_LINE_KEYS).
                 source = await api.get_doc(token, entity_id)
                 if (named := uncomputable_tax(source)) is not None:
                     return _action_error(unreadable_tax_refusal(named, source).detail)
                 line_items = [
-                    {k: v for k, v in li.items() if k not in ("id", "line_total")}
+                    {**{k: v for k, v in li.items() if k not in _NOT_CREDITED_LINE_KEYS},
+                     **({"source_line_id": li["line_id"]} if li.get("line_id") else {})}
                     for li in (source.get("line_items") or [])
                 ]
                 cn_payload = {

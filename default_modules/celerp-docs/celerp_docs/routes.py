@@ -64,6 +64,7 @@ from celerp.services.business_time import business_date_at, business_date_of, co
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
                                           resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
+from celerp.services.peer_lines import LINE_KEYS as OUTSIDE_LINE_KEYS, copied_header, granted_from_stored
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -2089,7 +2090,7 @@ def _attach_drawn_from(lines: list, memo_draw: MemoDraw | None) -> None:
 
 async def create_doc_record(payload: DocCreatePayload, company_id, role: str, settings: dict, user,
                             session: AsyncSession, *, commit: bool = True,
-                            memo_draw: MemoDraw | None = None) -> dict:
+                            memo_draw: MemoDraw | None = None, origin: str | None = None) -> dict:
     """Create a document (create_doc). ``commit=False`` leaves the transaction open, so a
     caller that creates inside a larger change keeps it atomic. Only the memo draw passes
     *memo_draw*, the grant to add the lines it copies."""
@@ -2203,6 +2204,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
 
     entry = await emit_event(
         session,
+        origin=origin,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="doc",
@@ -2265,7 +2267,8 @@ _LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
 def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
     change beyond each line's description and account. Each line is compared over every key
-    the stored line or the save holds, so a field the save leaves out counts as removed. A
+    the stored line or the save holds, so a field the save leaves out counts as removed, except
+    the outside-line keys (peer_lines.LINE_KEYS), which a save that omits them keeps. A
     document whose issue posted its total keeps every line too, and a save that leaves one out
     is refused as a structural edit: its total, and what a payment collects, follow the lines
     as issued."""
@@ -2280,7 +2283,7 @@ def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     for i, line in enumerate(incoming):
         original = stored[i] if i < len(stored) else {}
         for k in [*original, *(k for k in line if k not in original)]:
-            if k in _LI_FINALIZED_EDITABLE:
+            if k in _LI_FINALIZED_EDITABLE or (k in OUTSIDE_LINE_KEYS and k not in line):
                 continue
             if line.get(k) != original.get(k):
                 # Revert to Draft refuses a void document, which comes back through Unvoid.
@@ -2315,7 +2318,7 @@ def _same_value(field: str, old, new) -> bool:
 
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
                           *, scan_runs: list[dict] | None = None,
-                          memo_draw: MemoDraw | MemoReturn | None = None) -> dict:
+                          memo_draw: MemoDraw | MemoReturn | None = None, origin: str | None = None) -> dict:
     """Apply a document edit without committing, so an import can make it part of a larger unit.
     Only the document scan passes `scan_runs`, the scan ledger no caller may patch. Only a memo
     draw and Back to memo pass `memo_draw`, the grant to add or remove the drawn lines they name."""
@@ -2469,7 +2472,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if not effective:
         return {"event_id": None, "version": row.version}
     entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+        session, origin=origin, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": effective, "idempotency_key": idem_key},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=idem_key or str(uuid.uuid4()), metadata_={"request": digest}, memo_draw=memo_draw,
@@ -4651,7 +4654,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     )
     await auto_je._emit_auto_posted_je(
         session, company_id=company_id, user_id=actor_id,
-        je_id=f"je:auto:{entity_id}:payrefundrev:{key}",
+        je_id=f"je:auto:{entity_id}:payrefundrev:{key}", record_id=entity_id,
         idem_create=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "c"),
         idem_posted=je_idempotency_key(entity_id, f"payment.refund_reversed:{key}", "p"),
         memo=f"Auto JE for {entity_id} payment refund reversed (index {index})",
@@ -7951,14 +7954,14 @@ async def _supplier_credit_for_return(session, company, user_id, doc_id: str, st
             "contact_id": state.get("contact_id"), "contact_name": state.get("contact_name"),
             "currency": state.get("currency"),
             **({"conversion_rate": state["conversion_rate"]} if state.get("conversion_rate") is not None else {}),
-            "original_doc_id": doc_id, "source_return": key,
+            "original_doc_id": doc_id, "source_return": key, **copied_header(state),
             "issue_date": business_date_of(None, (company.settings or {}).get("timezone")),
             "line_items": [{"name": f"Goods returned on {bill_number}", "quantity": 1,
                             "unit_price": total, "line_total": total}],
             "subtotal": total, "tax": 0.0, "total": total,
             "status": "final", "finalized": True, "amount_paid": 0.0, "amount_outstanding": total,
         },
-        actor_id=user_id, location_id=None, source="api",
+        actor_id=user_id, location_id=None, source="api", fund_grant=granted_from_stored([], state),
         idempotency_key=_step_key(key, "supplier-credit"), metadata_={"source_doc": doc_id},
     )
     return note_id, total, number
@@ -8183,7 +8186,8 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id})
         await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
-            session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
+            session, fund_grant=granted_from_stored(new_data["line_items"], new_data),
+            company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
             actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
         )
         entry = await emit_event(
@@ -8379,7 +8383,7 @@ async def import_doc(
     company = await session.get(Company, company_id)
     base_currency = company.settings.get("currency", "USD") if company else "USD"
     entry = await import_service.create_imported_doc(session, company_id, user, role, settings, body, base_currency,
-                                                     post_ledger=True)
+                                                     post_ledger=True, origin="file_import")
     await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
@@ -8681,7 +8685,7 @@ async def batch_import_docs(
         return BatchImportResult(**peer)
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     outcome = await import_service.import_doc_records(
-        session, company_id, user, role, settings, body.records, upsert=body.upsert,
+        session, company_id, user, role, settings, body.records, origin="file_import", upsert=body.upsert,
     )
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
@@ -8824,9 +8828,10 @@ async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str
     return row
 
 
-async def _emit_list(session, company_id, entity_id, event_type, data, user, idem_key=None, meta=None):
+async def _emit_list(session, company_id, entity_id, event_type, data, user, idem_key=None, meta=None,
+                     *, origin: str | None = None, fund_grant=None):
     return await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="list",
+        session, origin=origin, fund_grant=fund_grant, company_id=company_id, entity_id=entity_id, entity_type="list",
         event_type=event_type, data=data, actor_id=user.id, location_id=None,
         source="api", idempotency_key=idem_key or str(uuid.uuid4()), metadata_=meta or {},
     )
@@ -9270,7 +9275,7 @@ async def create_list(
 
 
 async def create_list_record(payload: ListCreatePayload, company_id, role: str, settings: dict, user,
-                             session: AsyncSession, *, commit: bool = True) -> dict:
+                             session: AsyncSession, *, commit: bool = True, origin: str | None = None) -> dict:
     """Create a List (create_list). ``commit=False`` leaves the transaction open, so a
     caller that creates inside a larger change keeps it atomic."""
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -9323,7 +9328,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
             session, company_id, settings, role, data.get("line_items") or [], None,
         )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key,
-                             meta={"request": digest})
+                             meta={"request": digest}, origin=origin)
     if commit:
         await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -9345,7 +9350,8 @@ async def patch_list(
     return result
 
 
-async def write_list_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: ListPatch) -> dict:
+async def write_list_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: ListPatch,
+                           *, origin: str | None = None) -> dict:
     """Apply a List edit without committing, so an import can make it part of a larger unit."""
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
@@ -9413,7 +9419,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         return {"event_id": None, "version": row.version}
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
-                             {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
+                             {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest}, origin=origin)
     if getattr(entry, "was_deduped", False):
         return _patch_replay(entry, "list.updated", entity_id, digest)
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
@@ -10275,7 +10281,8 @@ async def convert_list(
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
     await emit_event(
-        session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
+        session, fund_grant=granted_from_stored(new_data["line_items"], new_data),
+        company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
         source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
@@ -10306,7 +10313,8 @@ async def duplicate_list(
                      **({"list_type": state["list_type"]} if state.get("list_type") else {}),
                      "line_items": strip_line_ids(new_data["line_items"])})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
-    entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
+    entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user,
+                             fund_grant=granted_from_stored(new_data["line_items"], new_data))
     await session.commit()
     return {"event_id": entry.id, "id": new_entity_id}
 
@@ -10463,7 +10471,7 @@ async def import_list(
     data = await free_import_numbers(session, company_id, body.entity_id, body.data)
 
     entry = await emit_event(
-        session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
+        session, origin="file_import", company_id=company_id, entity_id=body.entity_id, entity_type="list",
         event_type="list.created", data=await _issued_import_data(session, company_id, data),
         actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
@@ -10559,8 +10567,8 @@ async def batch_import_lists(
                 canonical = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
                 upsert_idem = f"{rec.idempotency_key}:upsert:{hashlib.sha256(canonical.encode()).hexdigest()}"
                 result = await write_list_patch(
-                    session, company_id, role, settings, user, replay.entity_id,
-                    ListPatch(
+                    session, company_id, role, settings, user, replay.entity_id, origin="file_import",
+                    payload=ListPatch(
                         fields_changed=fields_changed,
                         idempotency_key=upsert_idem,
                         expected_version=row.version if "line_items" in fields_changed else None,
@@ -10582,7 +10590,7 @@ async def batch_import_lists(
             await _lock_imported_contact(session, company_id, "list", rec.data)
             data = await free_import_numbers(session, company_id, rec.entity_id, rec.data)
             entry = await emit_event(
-                session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
+                session, origin="file_import", company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=await _issued_import_data(session, company_id, data),
                 actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,

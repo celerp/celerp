@@ -92,7 +92,7 @@ async def test_the_books_check_reports_an_account_carrying_more_than_its_stock(c
     cid, po = auth["company_id"], f"doc:{uuid.uuid4()}"
     before = (await _stock_check(client, auth["headers"]))["details"]
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:{po}:rcv:1",
+        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:{po}:rcv:1", record_id=po,
         idem_create=f"{po}:rcv:c", idem_posted=f"{po}:rcv:p", memo=f"Auto JE for {po} received",
         entries=[{"account": "1130-P", "debit": 40.0, "credit": 0.0},
                  {"account": "2110", "debit": 0.0, "credit": 40.0}],

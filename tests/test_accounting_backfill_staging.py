@@ -353,7 +353,7 @@ async def _bill_imported_by_earlier_release(s, company_id) -> None:
                      actor_id=None, location_id=None, source="test", idempotency_key=f"test:doc.created:{bill}",
                      metadata_={auto_je.IMPORTED_SNAPSHOT: True})
     await auto_je._emit_auto_posted_je(
-        s, company_id=company_id, user_id=None, je_id=f"je:auto:{bill}:bill",
+        s, company_id=company_id, user_id=None, je_id=f"je:auto:{bill}:bill", record_id=bill,
         idem_create=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "c"),
         idem_posted=auto_je.je_idempotency_key(bill, "po.converted_to_bill:0", "p"),
         memo="Imported bill", ts="2026-01-01",

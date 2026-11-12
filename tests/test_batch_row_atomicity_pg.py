@@ -127,7 +127,8 @@ async def test_an_import_update_is_left_for_the_caller_to_commit(committed_engin
     edited = {**draft, "data": {**draft["data"], "customer_note": "second"}}
     async with factory() as s:
         outcome = await import_service.import_doc_records(
-            s, company_id, user, "admin", {}, [docs.DocImportRecord(**edited)], upsert=True)
+            s, company_id, user, "admin", {}, [docs.DocImportRecord(**edited)], upsert=True,
+            origin="file_import")
         assert [r.status for r in outcome.records] == ["updated"]
         await s.rollback()
 
@@ -198,7 +199,8 @@ async def test_a_journal_imported_twice_at_once_is_counted_once(committed_engine
         {"account": "1120", "debit": 10, "credit": 0}, {"account": "4100", "debit": 0, "credit": 10}]})
 
     async def run(s):
-        outcome = await accounting.import_journal_records(s, company_id, user.id, [accounting.AccImportRecord(**rec)])
+        outcome = await accounting.import_journal_records(s, company_id, user.id, [accounting.AccImportRecord(**rec)],
+                                                            origin="file_import")
         await s.commit()
         return outcome.route_counts()
 

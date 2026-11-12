@@ -37,6 +37,7 @@ from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
 from celerp.services.document_lines import strip_line_ids
+from celerp.services.peer_lines import granted_from_stored
 from celerp.services.permissions import missing_permission, role_has_permission
 from celerp.services.record_quantities import template_label
 from celerp.services.terms import resolve_document_terms
@@ -646,7 +647,8 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         doc = {**doc, "ref_id": ref, **resolve_document_terms(state, company.settings or {}, kind)}
         if "customer_note" in state:
             doc["customer_note"] = state.get("customer_note") or ""
-        await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
+        await emit_event(session, fund_grant=granted_from_stored(doc["line_items"]),
+                         company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
                          data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=claim_key)
         await session.flush()
         await finalize_document(doc_id, company_id, actor, session, commit=False)

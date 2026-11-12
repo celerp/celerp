@@ -1179,6 +1179,9 @@ class JELine(BaseModel):
     # The fund the line belongs to (a fund entity id); absent on a line of the
     # unrestricted group, which is every line of a company that never used funds.
     fund_id: str | None = None
+    # A line that came from outside, and the fund this company chose for it (peer_lines).
+    origin: str | None = None
+    fund_choice: str | None = None
 
 
 class AccJournalEntryFx(BaseModel):
@@ -1215,6 +1218,10 @@ class AccJournalEntryCreated(BaseModel):
     # posted) and the hash of the request that posted it.
     source: dict | None = None
     intent_hash: str | None = None
+    # An outside journal: where it came from (peer_lines.ORIGINS). An automatic
+    # posting: the record it posts for.
+    origin: str | None = None
+    record_id: str | None = None
 
 
 class AccJournalEntryPosted(BaseModel):

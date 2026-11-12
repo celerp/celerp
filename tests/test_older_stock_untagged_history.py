@@ -218,7 +218,7 @@ async def _cash_sale_in_stock_history(session, client, auth, trigger: str) -> li
     await _older_release(session, auth)
     je = f"je:{uuid.uuid4()}"
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, record_id=None, idem_create=f"{je}:c",
         idem_posted=f"{je}:p", memo="Cash sale", metadata_={"trigger": trigger},
         entries=[{"account": "1111", "debit": 5000.0, "credit": 0.0}, {"account": "4100", "debit": 0.0, "credit": 5000.0}])
     await session.commit()

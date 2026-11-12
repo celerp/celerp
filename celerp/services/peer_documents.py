@@ -250,7 +250,7 @@ async def receive_document(
         record.data = incoming
     outcome = await import_doc_records(
         session, grant.company_id, SimpleNamespace(id=member.id), member.role,
-        dict(company.settings or {}), [record], upsert=True, post_ledger=True)
+        dict(company.settings or {}), [record], origin="connected_company", upsert=True, post_ledger=True)
     if len(outcome.records) != 1 or outcome.records[0].status not in (
         "created", "updated", "skipped",
     ):
@@ -349,7 +349,8 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
 
 def _keep_own_line_fields(lines: list[dict], target: dict, parcels: set[str]) -> None:
     """Each line keeps the receiving document's line at the same position's id, which is that
-    record's own identity for the line, never the source's. What a line received and the parcel
+    record's own identity for the line, never the source's, and its marker of where the line
+    came from (peer_lines), which this company wrote on arrival. What a line received and the parcel
     its receipt created belong to the receiving company's own receipts, which are brought to
     the source's after the import; each line keeps the receiving document's values for them
     meanwhile."""
@@ -357,8 +358,9 @@ def _keep_own_line_fields(lines: list[dict], target: dict, parcels: set[str]) ->
     held = target.get("line_items") or []
     for index, line in enumerate(lines):
         before = held[index] if index < len(held) and isinstance(held[index], dict) else {}
-        if "line_id" in before:
-            line["line_id"] = before["line_id"]
+        for key in ("line_id", "origin"):
+            if key in before:
+                line[key] = before[key]
         if "quantity_received" in before:
             line["quantity_received"] = before["quantity_received"]
         else:

@@ -61,6 +61,7 @@ async def import_doc_records(
     settings: dict,
     records: Sequence[DocImportRecord],
     *,
+    origin: str,
     upsert: bool = False,
     post_ledger: bool = True,
 ) -> ImportOutcome:
@@ -136,10 +137,11 @@ async def import_doc_records(
         try:
             async with session.begin_nested():
                 if upserting:
-                    status = await _upsert_doc(session, company_id, user, role, settings, rec)
+                    status = await _upsert_doc(session, company_id, user, role, settings, rec, origin=origin)
                 else:
                     entry = await create_imported_doc(
                         session, company_id, user, role, settings, rec, base_currency, post_ledger=post_ledger,
+                        origin=origin,
                     )
                     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
@@ -151,7 +153,7 @@ async def import_doc_records(
     return outcome
 
 
-async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportRecord) -> OutcomeStatus:
+async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportRecord, *, origin: str) -> OutcomeStatus:
     """Refresh an imported document's editable fields through the normal document edit."""
     row = await _get_doc(session, company_id, rec.entity_id)
     fields_changed = _doc_import_fields_changed(row.state, rec.data)
@@ -165,13 +167,14 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     result = await write_doc_patch(
         session, company_id, role, settings, user, rec.entity_id,
         DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem, expected_version=row.version),
+        origin=origin,
     )
     return "skipped" if result.get("event_id") is None else "updated"
 
 
 async def create_imported_doc(
     session, company_id, user, role: str, settings: dict, rec: DocImportRecord, base_currency: str, *,
-    post_ledger: bool,
+    post_ledger: bool, origin: str,
 ):
     """Write one imported document and, when it is issued into live books, what its import
     treatment books for it (import_treatment): nothing when the opening balances hold it,
@@ -209,6 +212,7 @@ async def create_imported_doc(
             data = await imported_opening_snapshot(session, company_id, data)
     entry = await emit_event(
         session,
+        origin=origin,
         company_id=company_id,
         entity_id=rec.entity_id,
         entity_type="doc",

@@ -203,5 +203,65 @@
     "params": [
       "year_end"
     ]
+  },
+  "posting.fund.origin_fixed": {
+    "en": "This line came from {source}; its origin cannot be changed",
+    "params": [
+      "source"
+    ]
+  },
+  "posting.fund.document_origin_fixed": {
+    "en": "This document came from {source}; its origin cannot be changed",
+    "params": [
+      "source"
+    ]
+  },
+  "posting.fund.key_not_taken": {
+    "en": "A line carries a field these books do not take: {field}",
+    "params": [
+      "field"
+    ]
+  },
+  "posting.fund.choice_not_granted": {
+    "en": "Choose the fund for line {line} with its Fund control",
+    "params": [
+      "line"
+    ]
+  },
+  "posting.fund.document_choice_not_granted": {
+    "en": "Choose the fund for this document with its Fund for this document control",
+    "params": []
+  },
+  "fund.origin.file_import": {
+    "en": "a file import",
+    "params": []
+  },
+  "fund.origin.migration": {
+    "en": "a migration",
+    "params": []
+  },
+  "fund.origin.connected_company": {
+    "en": "a connected company",
+    "params": []
+  },
+  "fund.origin.accountant": {
+    "en": "your accountant",
+    "params": []
+  },
+  "fund.origin.client": {
+    "en": "your client",
+    "params": []
+  },
+  "fund.origin.shared_document": {
+    "en": "a shared document",
+    "params": []
+  },
+  "fund.origin.accounting_system": {
+    "en": "your accounting app",
+    "params": []
+  },
+  "fund.origin.unknown": {
+    "en": "another app",
+    "params": []
   }
 }

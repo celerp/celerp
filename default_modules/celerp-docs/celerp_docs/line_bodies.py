@@ -51,6 +51,10 @@ class LineItem(BaseModel):
     asset_returned: bool | None = None
     # A credit note line: the invoice line it credits.
     source_line_id: str | None = None
+    # A line that came from outside: where from, and the fund chosen for it (peer_lines).
+    origin: str | None = None
+    fund_choice: str | None = None
+    fund_id: str | None = None
     # A migrated line: the tracking category -> option its source books gave it.
     tracking: dict[str, str] | None = None
     # Entered in the line editor's own columns: customs details, the purchase category and whether

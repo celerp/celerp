@@ -286,7 +286,7 @@ async def _legacy(client, session, auth, lot, doc_type="purchase_order", qty=10,
                                        items=[])
     else:
         await auto_je._emit_auto_posted_je(
-            session, company_id=cid, user_id=uid, je_id=f"je:auto:{doc}:bill",
+            session, company_id=cid, user_id=uid, je_id=f"je:auto:{doc}:bill", record_id=doc,
             idem_create=auto_je.je_idempotency_key(doc, "po.converted_to_bill:0", "c"),
             idem_posted=auto_je.je_idempotency_key(doc, "po.converted_to_bill:0", "p"),
             memo=f"Auto JE for {doc} converted to bill", ts="2026-01-01",

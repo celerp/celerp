@@ -251,6 +251,7 @@ async def _emit_auto_posted_je(
     company_id,
     user_id,
     je_id: str,
+    record_id: str | None,
     idem_create: str,
     idem_posted: str,
     memo: str,
@@ -263,7 +264,9 @@ async def _emit_auto_posted_je(
     """Post an automatic JE. The one place its amounts become money: every line is rounded
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
-    their lines to balance once rounded. *extra* adds fields the created event records
+    their lines to balance once rounded. *record_id* names the record the entry posts for
+    (a document, a List, an item, an order; None for an entry of no record), so the boundary
+    judges the entry by where that record came from. *extra* adds fields the created event records
     with the entry (a module journal's source and request hash). A line that moves nothing
     once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
@@ -280,6 +283,8 @@ async def _emit_auto_posted_je(
         raise UnbalancedJournalEntry("error.auto_je_unbalanced", memo=memo, debits=str(debits),
                                      credits=str(credits), currency=currency)
     payload = {**(extra or {}), "memo": memo, "entries": entries}
+    if record_id:
+        payload["record_id"] = record_id
     if ts:
         payload["ts"] = ts
 
@@ -748,7 +753,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
@@ -891,7 +896,7 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+            je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
             idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
             memo=memo or f"Auto JE for credit note {doc_id} finalized",
@@ -927,7 +932,7 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for supplier credit note {doc_id} finalized",
@@ -955,7 +960,7 @@ async def release_credit_note_open(session, *, company_id, user_id, doc_id: str,
         return
     entries = built[0]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:release",
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:release", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, "credit_note.release", "c"),
         idem_posted=je_idempotency_key(doc_id, "credit_note.release", "p"),
         memo=f"Credit left open on {doc_id} released: its invoice is void",
@@ -973,7 +978,7 @@ async def _restate_receivable(session, *, company_id, user_id, doc_id: str, sett
     entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
                             credit=to_stored_float(max(-gap, _Dec(0))))]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, op, "c"), idem_posted=je_idempotency_key(doc_id, op, "p"),
         memo=memo, ts=ts, entries=await _with_fx_difference(session, company_id, entries),
         metadata_=metadata_,
@@ -1073,7 +1078,7 @@ async def _post_opening_settled(session, *, company_id, user_id, doc_id: str, do
                _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS,
                      debit=0.0 if party_debited else amount, credit=amount if party_debited else 0.0)]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:{suffix}",
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:{suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, op, "c"),
         idem_posted=je_idempotency_key(doc_id, op, "p"),
         memo=memo,
@@ -1299,7 +1304,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:pay:{paid_key}",
+        je_id=f"je:auto:{doc_id}:pay:{paid_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
@@ -1405,7 +1410,7 @@ async def create_for_online_fees(
     day = await correction_day(session, company_id, original_day) or original_day
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id,
-        je_id=f"je:auto:{doc_id}:online-fees:{token}",
+        je_id=f"je:auto:{doc_id}:online-fees:{token}", record_id=doc_id,
         idem_create=create_key, idem_posted=je_idempotency_key("online-fees", suffix, "p"),
         memo=f"Online payment processing fees for {doc_id}",
         ts=day, currency=base, entries=entries,
@@ -1505,7 +1510,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{kind}:{key}",
+        je_id=f"je:auto:{doc_id}:{kind}:{key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{op}:{key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{op}:{key}", "p"),
         memo=memo,
@@ -1569,7 +1574,7 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         # Entity id carries the application's index: the same note can be applied to
         # the same document more than once, and each application must be a distinct
         # entry so voiding one never erases another.
-        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}",
+        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "p"),
         memo=f"Auto JE for {label} {note_id} applied to {doc_id}",
@@ -1624,7 +1629,7 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv{suffix}",
+        je_id=f"je:auto:{po_id}:rcv{suffix}", record_id=po_id,
         idem_create=je_idempotency_key(po_id, f"po.received{suffix}", "c"),
         idem_posted=je_idempotency_key(po_id, f"po.received{suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
@@ -1669,7 +1674,7 @@ async def create_for_imported_document(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{suffix}",
+        je_id=f"je:auto:{doc_id}:{suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type, "p"),
         memo=f"Imported entry for {doc_id}",
@@ -1866,7 +1871,7 @@ async def create_for_landed_capitalisation(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}",
+        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
         memo=f"Auto JE for {doc_id} landed-cost capitalisation",
@@ -2071,7 +2076,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:rtn-value:{return_key}",
+            je_id=f"je:auto:{doc_id}:rtn-value:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
@@ -2120,7 +2125,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:rtn:{return_key}",
+            je_id=f"je:auto:{doc_id}:rtn:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
@@ -2142,7 +2147,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}",
+            je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} landed cost of goods returned to supplier",
@@ -2188,7 +2193,7 @@ async def reverse_return_charges(session, *, company_id, user_id, doc_id: str, r
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:rtn-bill:{revert_count}",
+        je_id=f"je:auto:{doc_id}:rtn-bill:{revert_count}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "p"),
         memo=f"Auto JE for {doc_id} tax and exchange difference of its returns, reversed with the bill",
@@ -2287,7 +2292,7 @@ async def create_for_receipt_undone(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:rcv:undo:{undo_key}",
+        je_id=f"je:auto:{doc_id}:rcv:undo:{undo_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "p"),
         memo=f"Auto JE for {doc_id} goods received undone",
@@ -2417,7 +2422,7 @@ async def create_for_bill_conversion(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:bill",
+        je_id=f"je:auto:{doc_id}:bill", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
@@ -2668,7 +2673,7 @@ async def reverse_imported_carriage(session, *, company_id, user_id, doc_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"{prefix}{n}",
+        je_id=f"{prefix}{n}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "p"),
         memo=f"Reversed: {doc_id} as held in the opening balances",
@@ -3048,7 +3053,7 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:cogs-backfill",
+        je_id=f"je:auto:{doc_id}:cogs-backfill", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, "invoice.cogs_backfill", "c"),
         idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
         memo=f"Auto JE for {doc_id} COGS backfill",
@@ -3288,7 +3293,7 @@ async def create_for_merge_reclassification(
     for code, a in reclass.moves.items():
         lines.append(_lot_line(settings, code, debit=to_stored_float(max(-a, _Dec(0))), credit=to_stored_float(max(a, _Dec(0)))))
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id),
+        session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id), record_id=None,
         idem_create=je_idempotency_key(merged_id, "item.merged.reclass", "c"),
         idem_posted=je_idempotency_key(merged_id, "item.merged.reclass", "p"),
         memo=f"Inventory reclassified on merge into {merged_sku}",
@@ -4269,7 +4274,7 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
         skus = sorted({str((rows[c.lot_id].state or {}).get("sku") or "") for c in claims if c.lot_id in rows})
         await _emit_auto_posted_je(
             session, company_id=company_id, user_id=user_id,
-            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}",
+            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "p"),
             memo=f"Cost of {', '.join(skus)} moved from {from_number} to {doc_number}, which shipped them",
@@ -4547,7 +4552,7 @@ async def create_for_doc_cogs_adjustment(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{family}:{cycle_tag}",
+        je_id=f"je:auto:{doc_id}:{family}:{cycle_tag}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "p"),
         memo=memo or f"COGS adjustment for {doc_number}",
@@ -4682,7 +4687,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}",
+            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
             memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
@@ -4711,7 +4716,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_tag}",
+        je_id=f"je:auto:{doc_id}:{cycle_tag}", record_id=doc_id,
         idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
@@ -4736,7 +4741,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return:{je_suffix}",
+        je_id=f"je:auto:{cn_id}:return:{je_suffix}", record_id=cn_id,
         idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
@@ -4768,7 +4773,7 @@ async def create_for_consigned_return_bought(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{bill_id}:consigned-return:{lot_id}",
+        je_id=f"je:auto:{bill_id}:consigned-return:{lot_id}", record_id=bill_id,
         idem_create=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "c"),
         idem_posted=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "p"),
         memo=f"Consigned goods returned by a customer, bought on {bill_id}",
@@ -4793,7 +4798,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}",
+        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}", record_id=cn_id,
         idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
@@ -4854,7 +4859,7 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:landed-left:{undo_key}",
+        je_id=f"je:auto:{doc_id}:landed-left:{undo_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "p"),
         memo=f"Auto JE for {doc_id} landed cost the lots no longer hold when its capitalisation was reversed",
@@ -4894,7 +4899,7 @@ async def create_for_mfg_movement(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{order_id}:{movement}",
+        je_id=f"je:auto:{order_id}:{movement}", record_id=order_id,
         idem_create=je_idempotency_key(order_id, f"mfg.{movement}", "c"),
         idem_posted=je_idempotency_key(order_id, f"mfg.{movement}", "p"),
         memo=memo,
@@ -4941,7 +4946,7 @@ async def create_for_line_adjustment(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=_list_adjustment_je_id(scope, kind, cycle),
+        je_id=_list_adjustment_je_id(scope, kind, cycle), record_id=list_id,
         idem_create=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "p"),
         memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
@@ -5178,7 +5183,7 @@ async def book_opening_inventory(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=ob_je_id,
+        je_id=ob_je_id, record_id=None,
         idem_create=f"opening-inv:{company_id}:c:{version}",
         idem_posted=f"opening-inv:{company_id}:p:{version}",
         memo="Opening inventory balance (pre-system stock)",

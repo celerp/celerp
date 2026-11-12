@@ -184,7 +184,8 @@ async def test_value_cannot_cross_funds_outside_a_movement(client, session, auth
         entity_id=f"je:imp:{uuid.uuid4()}", event_type="acc.journal_entry.created", source="import",
         idempotency_key=f"imp:{uuid.uuid4().hex}",
         data={"memo": "Cross", "ts": "2026-03-01", "entries": _lines(cross), "je_type": "import"})
-    outcome = await import_service.import_journal_records(session, auth["company_id"], auth["user_id"], [record])
+    outcome = await import_service.import_journal_records(session, auth["company_id"], auth["user_id"], [record],
+                                                            origin="file_import")
     assert [o.status for o in outcome.records] in (["rejected"], ["failed"]), outcome.records
     assert "moves only through Transfer between funds" in str(outcome.records[0].message)
 

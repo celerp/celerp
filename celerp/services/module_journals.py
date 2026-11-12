@@ -318,7 +318,7 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
 
     try:
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=source.entity_id,
             idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo=memo, entries=entries,
             metadata_={"module": module, "operation": operation}, ts=date,
             extra={"source": {"module": module, **source.fields()}, "intent_hash": intent_hash})

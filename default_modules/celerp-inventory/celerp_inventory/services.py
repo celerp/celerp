@@ -2582,7 +2582,7 @@ async def upsert_from_connector(
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="item",
             event_type="item.created", idem_key=idem_key, data=data,
-            on_create={"status": "draft" if has_cost else "available"},
+            on_create={"status": "draft" if has_cost else "available"}, origin=None,
             update=functools.partial(update_item_from_connector, company_id=company_id),
         )
         entity_id = f"item:{idem_key}"

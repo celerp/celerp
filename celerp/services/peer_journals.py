@@ -395,7 +395,7 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
                "peer_source": {"journal": source_entity_id, "company": str(source)},
                **({"reverses": reverses} if reverses else {})}
     key = f"peer:je:{source}:{claim.source_key}"
-    await emit_event(session, company_id=company_id, entity_id=claim.target_id,
+    await emit_event(session, origin="client", company_id=company_id, entity_id=claim.target_id,
                      entity_type="journal_entry", event_type="acc.journal_entry.created",
                      data=created, actor_id=None, location_id=None, source="connector",
                      idempotency_key=f"{key}:c", metadata_={})
@@ -592,8 +592,8 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                 "je_type": "manual", "status": "posted",
                 "peer_origin": {"journal": firm_je, "firm": firm, "firm_company": str(firm_company),
                                 "revision": revision}}
-        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-                         event_type="acc.journal_entry.created", data=data, actor_id=None,
+        await emit_event(session, origin="accountant", company_id=company_id, entity_id=je_id,
+                         entity_type="journal_entry", event_type="acc.journal_entry.created", data=data, actor_id=None,
                          location_id=None, source="connector", idempotency_key=f"{je_id}:c", metadata_={})
         await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                          event_type="acc.journal_entry.posted", data={"ts": item["ts"]}, actor_id=None,

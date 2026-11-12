@@ -93,7 +93,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
             "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key, operation=operation)
+        return await _emit_doc(session, company_id, data, idem_key, operation=operation, origin=None)
 
 
 def _imported_invoice_markers() -> tuple[str, ...]:
@@ -194,7 +194,7 @@ async def mark_doc_pushed(
 
 async def _emit_doc(
     session, company_id: str, data: dict, idem_key: str,
-    external_identity: tuple[str, str] | None = None, operation: str | None = None,
+    external_identity: tuple[str, str] | None = None, operation: str | None = None, *, origin: str | None,
 ) -> str:
     # ``operation``: the first sync importing the document, recorded on its creation only.
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
@@ -206,7 +206,7 @@ async def _emit_doc(
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
-        external_identity=external_identity, metadata_=first_sync_metadata(operation),
+        external_identity=external_identity, metadata_=first_sync_metadata(operation), origin=origin,
     )
     await session.commit()
     return outcome
@@ -1018,7 +1018,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,
-                metadata_=first_sync_metadata(operation),
+                metadata_=first_sync_metadata(operation), origin=None,
             )
             existing = await session.get(
                 Projection,
@@ -1288,6 +1288,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, operati
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("quickbooks_invoice_id", str(invoice["Id"])), operation=operation,
+            origin="accounting_system",
         )
 
 
@@ -1343,4 +1344,5 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict, operation: st
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("xero_invoice_id", str(invoice["InvoiceID"])), operation=operation,
+            origin="accounting_system",
         )

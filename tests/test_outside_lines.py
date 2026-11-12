@@ -175,6 +175,8 @@ async def test_marker_survives_every_line_write(client, auth):
     assert copy["line_items"][0]["line_id"] != source["line_items"][0]["line_id"]
     assert copy.get("origin") == ORIGIN
 
+    r = await client.post(f"/lists/{eid}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
     r = await client.post(f"/lists/{eid}/convert", headers=auth["headers"], json={"target_type": "invoice"})
     assert r.status_code == 200, r.text
     body = r.json()

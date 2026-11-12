@@ -81,8 +81,11 @@ async def import_journal_records(
     company_id: uuid.UUID,
     actor_id: uuid.UUID,
     records: Sequence[AccImportRecord],
+    *,
+    origin: str,
 ) -> ImportOutcome:
-    """Create imported journal entries once per per-company idempotency key and entity."""
+    """Create imported journal entries once per per-company idempotency key and entity,
+    each marked with where it came from (``origin``: ``file_import`` or ``migration``)."""
     outcome = ImportOutcome()
     keys = [r.idempotency_key for r in records]
     existing_keys = set((await session.execute(
@@ -119,6 +122,7 @@ async def import_journal_records(
                 await check_line_contacts(session, company_id, [e for e in entries if isinstance(e, dict)])
             entry = await emit_event(
                 session,
+                origin=origin,
                 company_id=company_id,
                 entity_id=rec.entity_id,
                 entity_type="journal_entry",

@@ -30,6 +30,7 @@ from celerp.services.document_lines import (
     linked_items,
     normalize_line_ids,
 )
+from celerp.services.peer_lines import HEADER_KEYS, FundChoiceGrant, judge_header_keys, judge_line_keys, mark_journal
 from celerp.services.business_time import business_date_of
 
 
@@ -249,9 +250,11 @@ async def _connector_entity_id(
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
     external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
-    update=None, metadata_: dict | None = None,
+    update=None, metadata_: dict | None = None, origin: str | None,
 ) -> str:
-    """Create-or-update a projection from a connector payload.
+    """Create-or-update a projection from a connector payload. ``origin``: where the record
+    came from (peer_lines.ORIGINS), or None for a record that is the company's own (a shop
+    platform's order); each connector states it.
 
     Returns "created" (new projection), "updated" (existing projection, changed
     content), or "noop" (this exact content was already applied, or the record is one
@@ -306,6 +309,7 @@ async def connector_upsert(
         # A platform's codes are recorded as the platform holds them; a duplicate is
         # reported by the resolver and Doctor rather than failing the sync.
         preserve_external_code_conflicts=entity_type == "item",
+        origin=origin,
         company_id=company_id,
         entity_id=entity_id,
         entity_type=entity_type,
@@ -648,8 +652,11 @@ async def unattended(work):
 
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
-    memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
+    memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
+    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, **kwargs
 ) -> LedgerEntry:
+    # ``origin``: only an arrival writer passes it (peer_lines.ORIGINS), marking the record and
+    # the lines it brings; ``fund_grant``: the fund keys this write may set (peer_lines).
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
@@ -744,9 +751,13 @@ async def emit_event(
             await access.guard_journal_change(
                 session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["event_type"], kwargs["data"])
 
-    # Every journal line, whoever produced it, passes the one account boundary.
+    # Every journal line, whoever produced it, passes the one account boundary. An arrival
+    # journal carries its origin on the entry and every line before the boundary reads them.
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
+
+        if origin is not None:
+            mark_journal(kwargs["data"], origin)
 
         await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
                                     actor_id=kwargs.get("actor_id"), entity_id=kwargs["entity_id"])
@@ -776,8 +787,12 @@ async def emit_event(
                      and "new" in change})
         line_set = sets.get("line_items") if isinstance(sets.get("line_items"), list) else None
         sets["line_items"] = line_set
+        # The header fund keys the write sets (peer_lines).
+        header = {key: data[key] for key in HEADER_KEYS if key in data}
+        header.update({key: change["new"] for key, change in changed.items()
+                       if key in HEADER_KEYS and isinstance(change, dict) and "new" in change})
         stored = {}
-        if line_set is not None or "contact_id" in sets or "currency" in sets:
+        if line_set is not None or "contact_id" in sets or "currency" in sets or header or origin is not None:
             # The stored record, read only when it is of the same type (the Projection PK
             # is (company_id, entity_id) with no type discriminator).
             proj = await session.get(
@@ -789,6 +804,14 @@ async def emit_event(
                 # Every line carries a stable line id: new lines get one, lines already on
                 # the record keep theirs, and a malformed or repeated id is refused.
                 normalize_line_ids(line_set, stored.get("line_items"))
+                # Where a line came from and the fund chosen for it are kept, written only by
+                # an arrival or a copy, and changed only as a grant names them.
+                judge_line_keys(stored.get("line_items"), line_set, origin=origin, grant=fund_grant)
+            if marker := judge_header_keys(stored, header, origin=origin, grant=fund_grant):
+                if isinstance(data.get("fields_changed"), dict):
+                    data["fields_changed"].update({key: {"old": None, "new": value} for key, value in marker.items()})
+                else:
+                    data.update(marker)
             # A line drawn from a memo is added only by the draw, leaves only by Back to
             # memo, and keeps what it is and the invoice's customer and currency meanwhile.
             await assert_drawn_lines_authorized(

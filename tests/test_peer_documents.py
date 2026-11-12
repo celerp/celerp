@@ -43,7 +43,7 @@ async def test_draft_document_uses_existing_importer_and_maps_dependencies(monke
         return f"{entity_type}:mapped"
     async def imported(session, company_id, user, role, settings, records, **kwargs):
         assert company_id == grant.company_id
-        assert user.id and role == "owner" and kwargs == {"upsert": True, "post_ledger": True}
+        assert user.id and role == "owner" and kwargs == {"origin": "connected_company", "upsert": True, "post_ledger": True}
         received.extend(records)
         return SimpleNamespace(records=[SimpleNamespace(status="created")])
     async def commit(*args, **kwargs):
