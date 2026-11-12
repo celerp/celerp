@@ -336,3 +336,65 @@ async def test_transfer_bank_to_bank_keeps_fund_split(client, session, auth):
     assert await _held(session, auth, None) == 0 and await _held(session, auth, f["R"]) == 50
     assert await _held(session, auth, None, to) == 50 and await _held(session, auth, f["R"], to) == 150
 
+
+async def _close(client, auth, year_end="2026-12-31"):
+    return await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": year_end})
+
+
+async def _results(session, auth, account):
+    """Each fund's balance on ``account``, through the year end."""
+    return {fund: held.get(account) for fund, held in (await fund_account_balances(
+        session, auth["company_id"], as_of="2026-12-31")).items() if held.get(account)}
+
+
+async def test_year_close_by_fund_no_double_count(client, session, auth):
+    """Each fund's income and expense close to its own net assets: R's gift less R's spending
+    to restricted net assets on R, a board-designated fund's to retained earnings on that fund,
+    the unrestricted group's to retained earnings with no fund. No result is counted twice,
+    and every income and expense account ends the year at zero on every fund."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    await _bill(session, auth, f["R"], 30)
+    await _gift(session, auth, f["U1"], 20)
+    await _gift(session, auth, None, 50)
+    await _bill(session, auth, None, 15)
+    before = await _results(session, auth, "3200")
+    r = await _close(client, auth)
+    assert r.status_code == 200, r.text
+    assert await _results(session, auth, "4100") == {} and await _results(session, auth, "6200") == {}
+    assert await _results(session, auth, f["rna"]) == {f["R"]: -70}
+    after = await _results(session, auth, "3200")
+    assert after.get(f["U1"]) == -20 and after.get(None, 0) - before.get(None, 0) == -35
+    assert f["R"] not in after
+    entry = await _entry(session, auth, r.json()["je_id"])
+    assert entry["je_type"] == "year_close" and entry["authorized_by"] == str(auth["user_id"])
+
+
+async def test_year_close_reverse_restores_and_reclose(client, session, auth):
+    """Reverse close, once the period is open again, restores every fund's income and expense
+    balances; reversing again returns the same reversal; closing again posts a new entry under
+    the next cycle. While the year is locked the reversal is refused."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    await _gift(session, auth, None, 50)
+    closed = await _close(client, auth)
+    assert closed.status_code == 200, closed.text
+    reverse = lambda: client.post("/accounting/close-year/2026-12-31/reverse", headers=auth["headers"],
+                                  json={"reason": "Late bills"})
+    r = await reverse()
+    assert r.status_code in (409, 422), r.text
+    assert await _results(session, auth, "4100") == {}
+
+    await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": None})
+    r = await reverse()
+    assert r.status_code == 200, r.text
+    assert await _results(session, auth, "4100") == {f["R"]: -100, None: -50}
+    assert await _results(session, auth, f["rna"]) == {}
+    again = await reverse()
+    assert again.status_code == 200 and again.json()["je_id"] == r.json()["je_id"], again.text
+    assert await _results(session, auth, "4100") == {f["R"]: -100, None: -50}
+
+    reclosed = await _close(client, auth)
+    assert reclosed.status_code == 200, reclosed.text
+    assert reclosed.json()["je_id"] != closed.json()["je_id"]
+    assert await _results(session, auth, "4100") == {} and await _results(session, auth, f["rna"]) == {f["R"]: -100}
