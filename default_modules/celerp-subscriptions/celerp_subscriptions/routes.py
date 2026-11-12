@@ -32,7 +32,7 @@ from ui.i18n import t
 
 BATCH_CAP = 50
 # Schedule terms that place the periods: fixed once any period is claimed.
-PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
+PLACING_FIELDS = ("anchor_date", "trial_end", "frequency", "custom_interval_days", "billing_timing")
 # What a template not yet on a schedule may change: the terms that let it move onto one.
 _MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
@@ -106,6 +106,7 @@ class CatchUpBody(BaseModel):
 
 class ScheduleBody(BaseModel):
     anchor_date: date | None = None
+    trial_end: date | None = None
     frequency: str | None = None
     custom_interval_days: int | None = None
     billing_timing: str | None = None
@@ -541,6 +542,8 @@ def _build_router() -> APIRouter:
         path first (billing.bill_refusal)."""
         sent = body.model_dump(include=body.model_fields_set)
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
+        if changes.get("trial_end") and "anchor_date" not in changes:
+            changes["anchor_date"] = changes["trial_end"]  # the first period starts when the trial ends
         company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if migration.is_legacy(proj.state):

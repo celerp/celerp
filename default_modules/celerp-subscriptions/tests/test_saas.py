@@ -10,6 +10,7 @@ through the subscriptions API on a frozen business day.
 """
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -37,9 +38,9 @@ async def _plan(api, name: str, price: float) -> str:
 
 
 def _says(r, key: str, **params) -> bool:
-    from ui.i18n import t
-
-    return t(key, **params) in r.text
+    """The API refused with ``key`` and ``params`` (its message shows a date in the company's format)."""
+    detail = r.json().get("detail")
+    return isinstance(detail, dict) and detail.get("message_key") == key and detail.get("params") == params
 
 
 async def test_plans_empty_state(owner_ui):
@@ -94,7 +95,7 @@ async def test_new_subscriber_plan_quantity_trial(owner_ui, monkeypatch):
     sub = await template(owner_ui.api, {}, eid)
     assert sub.get("kind") == "subscription" and sub["contact_id"] == payer
     [line] = sub["line_items"]
-    assert line["entity_id"] == team and float(line["quantity"]) == 5 and float(line["unit_price"]) == 20.0
+    assert line["item_id"] == team and float(line["quantity"]) == 5 and float(line["unit_price"]) == 20.0
     assert sub["trial_end"] == "2026-03-15" and sub["anchor_date"] == "2026-03-15"
     listed = await owner_ui.get("/subscribers", params={"status": "draft"})
     assert f"/subscriptions/{eid}" in listed.text
@@ -112,7 +113,8 @@ async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, s
     r = await owner_ui.post("/subscriptions/new", params={"direction": "sales", "kind": "subscription"},
                             data={"contact_id": payer, "plan_id": chosen, "seats": seats})
     assert r.status_code != 204 and "HX-Redirect" not in r.headers, r.text[:300]
-    assert ("seat" in r.text.lower()) if plan else ("plan" in r.text.lower())
+    said = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+    assert said["type"] == "error" and (("seat" if plan else "plan") in said["message"].lower()), said
     assert (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"] == before
 
 

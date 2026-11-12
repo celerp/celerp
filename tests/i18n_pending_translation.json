@@ -1496,6 +1496,68 @@
       "params": [
         "name"
       ]
+    },
+    "subscriptions.err_trial_first_bill": {
+      "en": "The first bill date is the trial end, {day}. Change the trial end to move it.",
+      "params": [
+        "day"
+      ]
+    },
+    "nav.subscribers": {
+      "en": "Subscribers",
+      "params": []
+    },
+    "nav.plans": {
+      "en": "Plans",
+      "params": []
+    },
+    "page.new_subscriber": {
+      "en": "New subscriber",
+      "params": []
+    },
+    "page.new_plan": {
+      "en": "New plan",
+      "params": []
+    },
+    "subscriptions.subscribers_empty": {
+      "en": "No subscribers yet.",
+      "params": []
+    },
+    "subscriptions.plans_empty": {
+      "en": "No plans yet. A plan is a service item in the SaaS plan category.",
+      "params": []
+    },
+    "subscriptions.plans_hint": {
+      "en": "Each plan with its price and how many active or paused subscribers it has. Open a plan to change its name or price.",
+      "params": []
+    },
+    "subscriptions.new_subscriber_hint": {
+      "en": "The plan is billed at its price on your default price list, once per seat. With a trial end, the first bill date is the trial end.",
+      "params": []
+    },
+    "subscriptions.plan": {
+      "en": "Plan",
+      "params": []
+    },
+    "subscriptions.seats": {
+      "en": "Seats",
+      "params": []
+    },
+    "subscriptions.trial_end": {
+      "en": "Trial end",
+      "params": []
+    },
+    "subscriptions.err_seats": {
+      "en": "Seats must be a whole number of at least 1, not {seats}.",
+      "params": [
+        "seats"
+      ]
+    },
+    "subscriptions.err_not_plan": {
+      "en": "{name} is not a SaaS plan. Choose an item in the SaaS plan category.",
+      "params": [
+        "name"
+      ]
     }
   },
   "modules": {

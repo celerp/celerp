@@ -56,7 +56,7 @@ SCHEDULE_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_
 # its page and History read it: an agreement made through Documents, an import or an earlier
 # release stores few of them. Every field a writer sets is named here.
 UNSET = {
-    "anchor_date": None, "start_date": None, "frequency": "monthly", "custom_interval_days": None,
+    "anchor_date": None, "trial_end": None, "start_date": None, "frequency": "monthly", "custom_interval_days": None,
     "billing_timing": "advance", "term_start": None, "term_end": None, "cancel_at_period_end": None,
     "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
     "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
@@ -113,6 +113,8 @@ class Term:
 # checks them all (check_terms), so every writer and reader holds the same rule.
 TERMS = {
     "anchor_date": Term("date", "subscriptions.err_schedule_date"),
+    # A trial ends where the first period starts: set, it is the anchor date (check_terms).
+    "trial_end": Term("date", "subscriptions.err_schedule_date"),
     "frequency": Term("choice", "subscriptions.err_schedule_frequency", choices=FREQUENCIES),
     "custom_interval_days": Term("whole", "subscriptions.err_custom_interval", low=1, high=MAX_INTERVAL_DAYS),
     "billing_timing": Term("choice", "subscriptions.err_schedule_timing", choices=TIMINGS),
@@ -141,7 +143,8 @@ def term_error(name: str, value) -> ScheduleError | None:
 
 def check_terms(state: dict) -> None:
     """ScheduleError naming the first stored term that does not hold what TERMS declares. Every
-    set term is checked; the custom interval is also required for a custom frequency."""
+    set term is checked; the custom interval is also required for a custom frequency, and a
+    trial end and a first bill date both set are the same day."""
     for name in TERMS:
         value = state.get(name)
         required = name == "custom_interval_days" and shown("frequency", state.get("frequency")) == "custom"
@@ -151,6 +154,8 @@ def check_terms(state: dict) -> None:
             raise exc
     if state.get("term_start") and state.get("term_end") and state["term_start"] >= state["term_end"]:
         raise ScheduleError("subscriptions.err_term_order")
+    if state.get("trial_end") and state.get("anchor_date") and state["trial_end"] != state["anchor_date"]:
+        raise ScheduleError("subscriptions.err_trial_first_bill", day=state["trial_end"])
 
 
 def _date(value) -> date:

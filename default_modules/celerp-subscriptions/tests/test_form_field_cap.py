@@ -62,6 +62,9 @@ RENDERERS = {
     "_catch_up_card": lambda n: subs_ui._catch_up_card(_catch_up(n), _subs(-(-n // 11))),
     # One form per period row: its own fields never depend on how many rows the table has.
     "_period_actions": lambda n: subs_ui._period_actions("doc:SUB-0", {"period_index": n, "state": "open"}),
+    # Plans are options of one box, never fields of their own.
+    "_subscriber_form": lambda n: subs_ui._subscriber_form(
+        [{"id": f"item:{i}", "name": f"Plan {i}"} for i in range(n)], {"direction": "sales", "kind": "subscription"}),
 }
 
 

@@ -74,7 +74,7 @@ _STATUS_CSS = {
 # Billing actions carry the operation key as the request key, so a repeated click bills once.
 _BILLING_ACTIONS = ("generate-due", "bill-early")
 # The schedule fields the detail page edits, each with how its submitted text is read.
-_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int, "billing_timing": str,
+_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "trial_end": str, "custom_interval_days": int, "billing_timing": str,
                    "term_start": str, "term_end": str, "cancel_at_period_end": lambda v: v == "true",
                    "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int,
                    RECOGNIZE_FIELD: lambda v: v == "true", "kind": str, "beneficiary_contact_id": str,
@@ -124,6 +124,7 @@ _FIELD_TEXT = {
     "frequency": ("th.frequency", lambda v: display_enum(v, "subscription_frequency")),
     "custom_interval_days": ("subscriptions.custom_interval_title", lambda v: str(v) if v else None),
     "anchor_date": ("label.first_bill_date", lambda v: v),
+    "trial_end": ("subscriptions.trial_end", lambda v: v),
     "start_date": ("label.start_date", lambda v: v),
     "billing_timing": ("subscriptions.billing_timing", lambda v: t(f"subscriptions.timing_{v}")),
     "term_start": ("subscriptions.term_start", lambda v: v),
@@ -297,7 +298,8 @@ def _sub_table(subs: list[dict], state: dict) -> FT:
                                    _list_base(state)), id="sub-table")
     if not subs:
         text = _LIST_TEXT[state["kind"]]
-        return Div(empty_state_cta(t(text["empty"]), t(text["new"]), _new_url(state), hx_post=True), id="sub-table")
+        return Div(empty_state_cta(t(text["empty"]), t(text["new"]), text.get("form") or _new_url(state),
+                                   hx_post=not text.get("form")), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
@@ -399,6 +401,7 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
                         style="width:80px", **attrs),
                   id="sub-custom-days", style="" if freq == "custom" else "display:none"),
             _date("anchor_date"),
+            _date("trial_end"),
             Label(_label("billing_timing"),
                   Select(*[Option(_value_text("billing_timing", m), value=m, selected=(m == timing)) for m in _TIMINGS],
                          name="value", hx_patch=f"{base}/billing_timing", **attrs)),
@@ -999,9 +1002,15 @@ async def _all_agreements(token: str, direction: str | None = None, *, review: b
 
 # The pages that list agreements, by the kind they list ("" lists every kind), and their words.
 # Members lists standing, not agreements, so it has its own page.
-_LIST_PATHS = {"": "/subscriptions", "retainer": "/retainers"}
+# Subscribers makes its agreements through its New subscriber form (_subscriber_form), so its New
+# button and empty state lead there.
+_LIST_PATHS = {"": "/subscriptions", "retainer": "/retainers", "subscription": "/subscribers"}
 _LIST_TEXT = {"": {"new": "page.new_subscription", "empty": "label.no_subscription_templates_found"},
-              "retainer": {"new": "page.new_retainer", "empty": "subscriptions.retainers_empty", "title": "nav.retainers"}}
+              "retainer": {"new": "page.new_retainer", "empty": "subscriptions.retainers_empty", "title": "nav.retainers"},
+              "subscription": {"new": "page.new_subscriber", "empty": "subscriptions.subscribers_empty",
+                               "title": "nav.subscribers", "form": "#new-subscriber"}}
+# A SaaS plan is a service item in this category; a subscriber's seats are its line's quantity.
+PLAN_CATEGORY = "saas_plan"
 
 
 def _list_state(params, path: str = "/subscriptions") -> dict:
@@ -1026,6 +1035,85 @@ def _list_base(state: dict) -> str:
 def _new_url(state: dict) -> str:
     """Where the list page's New button posts: a draft of the kind the page lists."""
     return f"/subscriptions/new?{urlencode({'direction': state['direction'], **({'kind': state['kind']} if state['kind'] else {})})}"
+
+
+def _new_button(state: dict, cls: str) -> FT:
+    """The list page's New action: a link to its form when it has one, else a blank draft."""
+    text = _LIST_TEXT[state["kind"]]
+    if text.get("form"):
+        return A(t(text["new"]), href=text["form"], cls=cls)
+    return Button(t(text["new"]), hx_post=_new_url(state), hx_swap="none", cls=cls)
+
+
+async def _plans(token: str) -> list[dict]:
+    """Every SaaS plan item, read page by page so none is left out."""
+    items: list[dict] = []
+    while True:
+        resp = await api.list_items(token, {"category": PLAN_CATEGORY, "status": "all", "limit": 500,
+                                            "offset": len(items)})
+        batch = resp.get("items", [])
+        items.extend(batch)
+        if len(batch) < 500 or len(items) >= resp.get("total", 0):
+            return items
+
+
+def _subscriber_form(plans: list[dict], state: dict) -> FT:
+    """New subscriber: the contact, the plan, its seats and an optional trial end, which is the
+    first bill date."""
+    label = lambda key, field: Label(t(key), field, cls="form-label")
+    return Form(
+        H3(t("page.new_subscriber")),
+        Div(
+            label("th.contact", searchable_select("contact_id", [], aria_label=t("th.contact"),
+                                                  search_url="/contacts/search-options?contact_type=customer&add_new=0")),
+            label("subscriptions.plan", searchable_select(
+                "plan_id", [(p.get("id") or p.get("entity_id", ""), p.get("name") or p.get("sku") or "") for p in plans],
+                aria_label=t("subscriptions.plan"))),
+            label("subscriptions.seats", Input(type="number", name="seats", value="1", min="1", step="1",
+                                               cls="form-input", style="width:80px")),
+            label("subscriptions.trial_end", Input(type="date", name="trial_end", cls="form-input")),
+            Button(t("page.new_subscriber"), type="submit", cls="btn btn--primary"),
+            style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end",
+        ),
+        P(t("subscriptions.new_subscriber_hint"), cls="text-muted"),
+        id="new-subscriber", cls="card mt-sm", hx_post=_new_url(state), hx_swap="none",
+    )
+
+
+async def _subscriber_draft(token: str, form) -> dict | str:
+    """The draft New subscriber makes: the plan as its one line at the plan's price on the
+    company's default list, the seats as its quantity, and the trial end as its first bill
+    date. Why not, worded for the reader, when the seats are not a whole number of at least one
+    or the item is not a SaaS plan."""
+    seats = (form.get("seats") or "").strip()
+    if not seats.isdigit() or int(seats) < 1:
+        return t("subscriptions.err_seats", seats=seats or EMPTY)
+    plan_id = form.get("plan_id") or ""
+    plan = await api.get_item(token, plan_id) if plan_id else {}
+    if plan.get("category") != PLAN_CATEGORY:
+        return t("subscriptions.err_not_plan", name=plan.get("name") or plan_id or EMPTY)
+    from celerp.services.pricing import resolve_price
+
+    line = {"entity_id": plan_id, "sku": plan.get("sku"), "description": plan.get("name") or "",
+            "quantity": int(seats), "unit": plan.get("sell_by"),
+            "unit_price": resolve_price(plan, await api.get_default_price_list(token))}
+    trial = (form.get("trial_end") or "").strip()
+    return {"contact_id": form.get("contact_id") or None, "line_items": [line],
+            **({"trial_end": trial, "anchor_date": trial} if trial else {})}
+
+
+def _plans_table(plans: list[dict], counts: dict[str, int], price_list: str, currency: str | None) -> FT:
+    from celerp.services.pricing import resolve_price
+
+    def _row(p: dict) -> FT:
+        pid = p.get("id") or p.get("entity_id", "")
+        return Tr(Td(A(p.get("name") or p.get("sku") or pid, href=f"/inventory/{pid}")),
+                  Td(fmt_money(resolve_price(p, price_list), currency), cls="cell--number"),
+                  Td(str(counts.get(pid, 0)), cls="cell--number"), cls="data-row")
+
+    return _data_table(Thead(Tr(Th(t("subscriptions.plan")), Th(price_list, cls="cell--number"),
+                                Th(t("nav.subscribers"), cls="cell--number"))),
+                       Tbody(*[_row(p) for p in plans]))
 
 
 def _listed(items: list[dict], state: dict) -> list[dict]:
@@ -1266,7 +1354,7 @@ def setup_routes(app) -> None:
                 title,
                 search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
                            url=search_url, label=t(f"subscriptions.search_{side}")),
-                Button(t(text["new"]), hx_post=_new_url(state), hx_swap="none", cls="btn btn--primary"),
+                _new_button(state, "btn btn--primary"),
                 Button(t("btn.generate_all_due"), hx_get=f"/subscriptions/due?direction={direction}",
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
@@ -1277,6 +1365,7 @@ def setup_routes(app) -> None:
             _review_banner(all_items, state),
             Div(id="sub-due-panel", data_esc_clear="1"),
             _PANEL_ESC_JS,
+            _subscriber_form(await _plans(token), state) if text.get("form") else "",
             cards,
             table,
             pagination(page, total, per_page, path, extra),
@@ -1291,6 +1380,43 @@ def setup_routes(app) -> None:
     @app.get("/retainers")
     async def retainers_list(request: Request):
         return await list_page(request, "/retainers")
+
+    @app.get("/subscribers")
+    async def subscribers_list(request: Request):
+        return await list_page(request, "/subscribers")
+
+    @app.get("/plans")
+    async def plans_page(request: Request):
+        """SaaS plans: each plan item with its price on the default price list and how many
+        active or paused agreements bill it."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
+            return r
+        title = t("nav.plans")
+        try:
+            plans = await _plans(token)
+            price_list = await api.get_default_price_list(token)
+            agreements = await _all_agreements(token, "sales", kind="subscription")
+        except APIError as exc:
+            api.raise_if_signed_out(exc)
+            body = Div(error_message(exc), cls="flash flash--warning")
+        else:
+            counts: dict[str, int] = {}
+            for a in agreements:
+                if a.get("status") in ("active", "paused"):
+                    for pid in {li.get("item_id") for li in a.get("line_items") or []}:
+                        counts[pid] = counts.get(pid, 0) + 1
+            currency = (await _get_company(token)).get("currency")
+            body = (_plans_table(plans, counts, price_list, currency) if plans else
+                    empty_state_cta(t("subscriptions.plans_empty"), t("page.new_plan"),
+                                    "/inventory/create-blank?type=plan", hx_post=True))
+        new_plan = Button(t("page.new_plan"), hx_post="/inventory/create-blank?type=plan", hx_swap="none",
+                          cls="btn btn--primary")
+        content = Div(page_header(title, new_plan), P(t("subscriptions.plans_hint"), cls="text-muted"), body,
+                      cls="page-content")
+        return await base_shell(content, title=title, request=request, nav_active="plans")
 
     @app.get("/members")
     async def members_list(request: Request):
@@ -1332,14 +1458,20 @@ def setup_routes(app) -> None:
     @app.post("/subscriptions/new")
     async def create_subscription(request: Request, direction: str = "sales", kind: str = ""):
         """A blank draft agreement; the Retainers and Members pages name its kind (the API refuses
-        one it does not know)."""
+        one it does not know). Subscribers' New subscriber form names a subscription and sends
+        its plan, seats and trial (_subscriber_draft)."""
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = _DIRECTION_DOC_TYPE.get(direction, "subscription_invoice")
+        draft: dict | str = {}
         try:
+            if kind == "subscription":
+                draft = await _subscriber_draft(token, await request.form())
+                if isinstance(draft, str):
+                    return _action_error(draft)
             result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly",
-                                                           **({"kind": kind} if kind else {})})
+                                                           **({"kind": kind} if kind else {}), **draft})
         except APIError as e:
             return _refused(e)
         doc_id = result.get("entity_id") or result.get("id") or ""

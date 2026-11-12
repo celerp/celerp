@@ -124,7 +124,7 @@ async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, ro
 
 # One value for each schedule setting that differs from what a running automatic agreement starting
 # 2026-07-01 holds; every ScheduleBody field is listed, so a new setting has to be classified here.
-_CHANGED_TERM = {"anchor_date": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,
+_CHANGED_TERM = {"anchor_date": "2026-07-05", "trial_end": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,
                  "billing_timing": "arrears", "term_start": "2026-07-01", "term_end": "2027-07-01",
                  "cancel_at_period_end": True, "catchup_periods": 3, "generation_mode": "auto_invoice",
                  "auto_send": True}

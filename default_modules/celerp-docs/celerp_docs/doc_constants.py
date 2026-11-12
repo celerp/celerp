@@ -96,7 +96,7 @@ SCHEDULE_REMOVED_FIELDS: frozenset[str] = frozenset({"next_run_date", "generated
 # through its schedule, which checks them against the periods already claimed. A draft may
 # carry them when it is created.
 SCHEDULE_TERM_FIELDS: frozenset[str] = frozenset({
-    "anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
+    "anchor_date", "trial_end", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
     "cancel_at_period_end", "catchup_periods", "kind", "beneficiary_contact_id", "grace_days",
 })
 

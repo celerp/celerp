@@ -1872,14 +1872,19 @@ def setup_routes(app):
 
     @app.post("/inventory/create-blank")
     async def inventory_create_blank(request: Request):
-        """Create a minimal item, or with ?type=component a component (the "+ Add new
-        component" picker option), and open its detail page."""
+        """Create a minimal item, with ?type=component a component (the "+ Add new
+        component" picker option), or with ?type=plan a SaaS plan (a service item in the
+        plan category, from the Plans page), and open its detail page."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         blank = {"name": "New Item", "quantity": 0, "sell_by": "piece"}
         if request.query_params.get("type") == "component":
             blank.update(name="New Component", inventory_type="component")
+        elif request.query_params.get("type") == "plan":
+            from ui.routes.subscriptions import PLAN_CATEGORY
+
+            blank.update(name="New Plan", inventory_type="service", category=PLAN_CATEGORY)
         try:
             result = await api.create_item(token, blank)
             item_id = result.get("id", result.get("entity_id", ""))
