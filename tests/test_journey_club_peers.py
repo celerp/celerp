@@ -269,3 +269,65 @@ async def test_club_lineless_bill_standing_default_and_supplier_void(real_client
     assert (await _state(real_client, firm_tok, copy))["status"] == "void"
     after = await _ledger(real_engine, books)
     assert {f: _funds_held(after, f) for f in after} == {f: _funds_held(before, f) for f in before}
+
+
+async def test_club_journal_at_fund_firm_posted_with_choices_then_voided(real_client, real_engine, monkeypatch):
+    """The accounting firm's copy of the club uses funds. The club's own journal is held at the
+    firm with no fund chosen; Post with no choice is refused naming both lines, and a firm user
+    posts it with a fund chosen on each line. The club's void of its journal is the way back (a
+    company's own journal is undone by voiding it; Reverse is for the accountant's journals):
+    on the next sync the firm's entry is void with no choice asked and the firm's restricted
+    fund is back where it was."""
+    from test_peer_fund_holds import _from_client, _held_client_journal
+    from test_peer_sync_end_to_end import _company_of
+
+    tok, firm_tok, club, credential, fund, item, club_je = await _held_client_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 60.0, 0.0), (EXPENSE, 0.0, 60.0)])
+    firm = _company_of(firm_tok)
+    assert _from_client(await _journals(real_engine, firm)) == {}
+    r = await _post_held(real_client, firm_tok, item)
+    assert r.status_code == 409 and r.json()["fix"]["lines"] == [1, 2], r.text
+
+    r = await _post_held(real_client, firm_tok, item, lines={1: fund, 2: fund})
+    assert r.status_code == 200, r.text
+    [(copy, state)] = _from_client(await _journals(real_engine, firm)).items()
+    assert [(e["account"], e.get("fund_id")) for e in state["entries"]] == [(BANK, fund), (EXPENSE, fund)]
+    assert await _fund_bank(real_engine, firm, fund) == 60
+
+    r = await real_client.post(f"/accounting/journal-entries/{club_je}/void", headers=auth(tok),
+                               json={"reason": "Paid twice"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(club, credential)
+    assert all(res.ok for res in results.values()), {k: res.errors for k, res in results.items()}
+    assert await _held(real_client, firm_tok) == []
+    assert (await _journals(real_engine, firm))[copy]["status"] == "void"
+    assert await _fund_bank(real_engine, firm, fund) == 0
+
+
+async def test_club_firm_journal_posts_from_accountant_default(real_client, real_engine, monkeypatch):
+    """The firm's first journal to the club, 40.00 more of the restricted fund's purpose paid from
+    the bank, is held and the club posts it on the restricted fund. The club then sets the
+    accountant's standing default to that fund: the firm's next journal, 25.00 more, posts on
+    arrival with the fund on every line, tagged with the default, and nothing waits on Sync
+    accounts."""
+    from test_fund_connection_defaults import _set_default, _tag
+    from test_peer_sync_end_to_end import _company_of
+
+    tok, firm_tok, club, credential, fund = await _club(real_client, real_engine, monkeypatch)
+    firm = _company_of(firm_tok)
+    await _journal(real_client, firm_tok, "Hall repairs", [(EXPENSE, 40.0, 0.0), (BANK, 0.0, 40.0)])
+    await _two_way(club, credential)
+    [item] = await _held(real_client, tok)
+    assert (await _post_held(real_client, tok, item, every=fund)).status_code == 200
+    assert await _fund_bank(real_engine, club, fund) == 140
+
+    r = await _set_default(real_client, tok, "accountant", firm, fund)
+    assert r.status_code == 200, r.text
+    await _journal(real_client, firm_tok, "Hall paint", [(EXPENSE, 25.0, 0.0), (BANK, 0.0, 25.0)])
+    results = await _two_way(club, credential)
+    assert all(res.ok for res in results.values()), {k: res.errors for k, res in results.items()}
+    assert await _held(real_client, tok) == []
+    [entry] = [s for s in _from_firm(await _journals(real_engine, club)).values() if s["memo"] == "Hall paint"]
+    assert [(e["account"], e.get("fund_id")) for e in entry["entries"]] == [(EXPENSE, fund), (BANK, fund)]
+    assert entry["fund_choice_source"] == _tag("accountant", firm)
+    assert await _fund_bank(real_engine, club, fund) == 115
