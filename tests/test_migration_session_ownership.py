@@ -284,3 +284,51 @@ async def test_open_runs_stop_leading_back_once_the_person_may_no_longer_manage_
 
     assert await _access(changed) == ([], [], 404)
     assert await _access(restored) == ([run_id], [run_id], 200)
+
+
+@pytest.mark.asyncio
+async def test_migration_runs_only_in_staged_company_without_funds(real_client, real_engine, migration_env):
+    """A migration writes only into a staged company, whose token reaches no fund route, so no
+    fund is ever asked during a run; the reconciled role map holds no restricted net assets
+    account (only turning funds on maps it); migrated journal lines are marked ``migration`` and post as before."""
+    from celerp.accounting_roles import UNGUESSED_ROLES, AccountRole
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp.models.projections import Projection
+    from celerp.services.account_roles import reconcile_company, role_map
+    from celerp_accounting.import_service import AccImportRecord, import_journal_records
+
+    await register_admin(real_client)  # the install's first user, before the run's owner
+    run_id, company_id, user_id = await staged_run(real_engine, start=False)
+    token = await _token(real_engine, user_id, company_id)
+    async with maker(real_engine)() as s:
+        assert (await s.get(Company, company_id)).is_migration_staged
+    for method, path, body in (("put", "/accounting/funds/setting", {"enabled": True}),
+                               ("get", "/accounting/funds", None),
+                               ("put", "/accounting/funds/connection-defaults",
+                                {"origin": "accounting_system", "source_key": "xero", "value": "unrestricted",
+                                 "expected_version": 0, "request_key": "k"})):
+        r = await real_client.request(method.upper(), path, headers=auth(token), **({"json": body} if body else {}))
+        assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED, (path, r.text)
+
+    assert AccountRole.RESTRICTED_NET_ASSETS in UNGUESSED_ROLES  # reconcile never maps it
+    async with maker(real_engine)() as s:
+        admin = await s.scalar(select(User).where(User.email == "admin@perm.example"))
+        running = await s.scalar(select(UserCompany.company_id).where(UserCompany.user_id == admin.id))
+        await reconcile_company(s, running)
+        await s.commit()
+        assert AccountRole.RESTRICTED_NET_ASSETS.value not in role_map((await s.get(Company, running)).settings)
+
+        entity_id = f"je:{uuid.uuid4()}"
+        outcome = await import_journal_records(s, running, admin.id, [AccImportRecord(
+            entity_id=entity_id, event_type="acc.journal_entry.created", source="migration",
+            idempotency_key=uuid.uuid4().hex, data={"status": "posted", "ts": "2026-01-16", "memo": "Migrated",
+                                                     "entries": [{"account": "1111", "debit": 9.0, "credit": 0},
+                                                                 {"account": "4100", "debit": 0, "credit": 9.0}]})],
+            origin="migration")
+        await s.commit()
+        assert [r.status for r in outcome.records] == ["created"], outcome.records
+        state = (await s.get(Projection, (running, entity_id))).state
+    assert state["status"] == "posted" and state.get("origin") == "migration"
+    assert [e.get("origin") for e in state["entries"]] == ["migration", "migration"]
+    assert not any(e.get("fund_id") for e in state["entries"])
