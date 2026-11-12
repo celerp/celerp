@@ -246,3 +246,18 @@ async def test_barcode_preview_refuses_a_bad_height_plainly(client: AsyncClient,
         r = await ui.get("/api/labels/preview/barcode", params={"value": "12345", "height": height})
     assert r.status_code == 422, r.text
     assert r.text == "Bar height (mm) must be a number from 1 to 30."
+
+
+def test_printing_reads_a_template_without_changing_it():
+    """A print puts the numbers it reads into canonical form on a copy: the template it was
+    handed (a cached or stored one) keeps every value as it was."""
+    import copy
+
+    from celerp_labels.service import printable_template
+
+    template = {"format": "custom", "width_mm": "50", "height_mm": "30",
+                "fields": [{"key": "name", "x": "2", "y": "", "fontSize": "12"}]}
+    before = copy.deepcopy(template)
+    printed = printable_template(template)
+    assert template == before
+    assert printed["fields"] == [{"key": "name", "x": 2, "fontSize": 12}]
