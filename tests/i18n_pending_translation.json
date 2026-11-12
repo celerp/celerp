@@ -189,5 +189,13 @@
   "perm.name.reallocate_restricted_funds": {
     "en": "Reallocate restricted funds",
     "params": []
+  },
+  "fund.transfer_allocation_total": {
+    "en": "The amounts by fund add up to {allocated} {currency}, but the transfer moves {amount} {currency}. Change them so they add up to the amount transferred.",
+    "params": [
+      "allocated",
+      "currency",
+      "amount"
+    ]
   }
 }

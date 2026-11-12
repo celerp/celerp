@@ -422,6 +422,64 @@ async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str
             if (held := {code: amount for code, amount in accounts.items() if amount})}
 
 
+async def pooled_split(session: AsyncSession, company_id, account: str, amount: Decimal, currency: str, *,
+                       as_of: str, allocation: list[tuple[str | None, Decimal]] | None = None,
+                       ) -> list[tuple[str | None, Decimal]]:
+    """Each fund's share (None: the unrestricted group's) of ``amount`` moved off the pooled
+    ``account`` (rule B): pro rata to what each holds there on ``as_of``, none above what it
+    holds, the unrestricted group taking any amount beyond what the funds hold together. An
+    explicit ``allocation`` replaces the split: each share at most what its fund holds there,
+    adding up to ``amount``. Funds off: the unrestricted group moves it all."""
+    from celerp.services.money import allocate_pro_rata, round_money
+
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not funds_enabled(settings):
+        if allocation:
+            raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
+        return [(None, amount)]
+    held = {fund: round_money(by_account.get(account, Decimal(0)), currency)
+            for fund, by_account in (await fund_account_balances(session, company_id, as_of=as_of)).items()}
+    if allocation is not None:
+        funds = await funds_by_id(session, company_id)
+        for fund, share in allocation:
+            if share > held.get(fund, Decimal(0)):
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "posting.fund.movement_exceeds_balance", fund=_fund_name(funds, fund), code=account,
+                    available=str(max(held.get(fund, Decimal(0)), Decimal(0))), amount=str(round_money(share, currency)),
+                    currency=currency))
+        allocated = round_money(sum((share for _, share in allocation), Decimal(0)), currency)
+        if allocated != amount:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "fund.transfer_allocation_total", allocated=str(allocated), amount=str(amount), currency=currency))
+        return [(fund, share) for fund, share in allocation if share]
+    holders = sorted((fund for fund, balance in held.items() if balance > 0), key=lambda f: f or "")
+    covered = sum((held[fund] for fund in holders), Decimal(0))
+    if covered >= amount:
+        return [(fund, share) for fund, share in zip(holders, allocate_pro_rata(
+            amount, [held[fund] for fund in holders], currency)) if share]
+    shares = {fund: held[fund] for fund in holders}
+    shares[None] = shares.get(None, Decimal(0)) + amount - covered
+    return list(shares.items())
+
+
+def split_lines_by_fund(entries: list[dict], shares: list[tuple[str | None, Decimal]], base: str) -> list[dict]:
+    """``entries`` written once per fund, each line carrying that fund's part of its amounts
+    in proportion to ``shares``, so every fund's lines balance as the whole entry did."""
+    from celerp.services.money import allocate_pro_rata, to_decimal, to_stored_float
+
+    weights = [share for _, share in shares]
+    parts: list[list[dict]] = [[] for _ in shares]
+    for line in entries:
+        split = {field: allocate_pro_rata(to_decimal(line[field]), weights, currency)
+                 for field, currency in (("debit", base), ("credit", base),
+                                         ("fx_debit", line.get("fx_currency")), ("fx_credit", line.get("fx_currency")))
+                 if line.get(field)}
+        for i, (fund, _) in enumerate(shares):
+            parts[i].append({**line, **{field: to_stored_float(amounts[i]) for field, amounts in split.items()},
+                             **({"fund_id": fund} if fund else {})})
+    return [line for part in parts for line in part]
+
+
 def _movement_template(funds: dict[str, dict], fund_id) -> RestrictedFundMovement:
     return RestrictedFundMovement("posting.fund.movement_template", fund=_fund_name(funds, fund_id))
 

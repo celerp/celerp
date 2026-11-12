@@ -62,14 +62,14 @@ from celerp.services.peer_import import SourceRevision, peer_batch
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
-from celerp.services.journal_accounts import require_destinations
+from celerp.services.journal_accounts import pooled_split, require_destinations, split_lines_by_fund
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
     to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
-from celerp.schemas.numbers import FiniteFloat
+from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -3083,6 +3083,11 @@ async def patch_bank_account(
 # Transfers
 # ---------------------------------------------------------------------------
 
+class FundShare(BaseModel):
+    fund: str | None
+    amount: PositiveFloat
+
+
 class TransferCreate(BaseModel):
     from_bank_id: uuid.UUID
     to_bank_id: uuid.UUID
@@ -3096,6 +3101,9 @@ class TransferCreate(BaseModel):
     # What the destination account receives in its own currency, when it is kept in
     # another currency than both the source account and the books.
     to_amount: FiniteFloat | None = None
+    # Each fund's share of the amount, in the books' currency, replacing the split pro rata
+    # to what each fund holds on the source account.
+    allocation: list[FundShare] | None = None
 
 
 @router.post("/transfers")
@@ -3154,6 +3162,11 @@ async def create_transfer(
                 raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
             entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
                                      received, moved, debit=True)
+    moved = to_decimal(entries[0]["credit"])
+    allocation = None if payload.allocation is None else [
+        (share.fund, round_money(share.amount, base)) for share in payload.allocation]
+    entries = split_lines_by_fund(entries, await pooled_split(
+        session, company_id, from_bank.chart_account_code, moved, base, as_of=payload.date, allocation=allocation), base)
 
     await emit_event(
         session,
@@ -3467,24 +3480,31 @@ async def _je_entries_for_account(
 ) -> list[dict]:
     """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
-    ``_bank_line_amounts``)."""
+    ``_bank_line_amounts``). An entry's lines moving money the same way are one row, so
+    an entry split by fund reads as the single amount the bank moved."""
     base = await _base_currency(session, company_id)
-    result = []
+    rows: dict[tuple, dict] = {}
     for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == bank.chart_account_code:
                 if _line_amounts(entry) is None:
                     continue
                 amounts = _bank_line_amounts(bank, base, je_id, entry)
-                debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
-                result.append({
+                inflow = None if amounts is None else amounts[0] > amounts[1]
+                row = rows.setdefault((je_id, inflow), {
                     "je_id": je_id,
                     "ts": state.get("ts") or state.get("created_at") or "",
                     "memo": state.get("memo", ""),
-                    "debit": debit,
-                    "credit": credit,
-                    "amount": None if amounts is None else to_stored_float(round_money(amounts[0] - amounts[1], bank.currency)),
+                    "amounts": (Decimal(0), Decimal(0)),
                 })
+                row["amounts"] = None if amounts is None or row["amounts"] is None else (
+                    row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
+    result = []
+    for row in rows.values():
+        amounts = row.pop("amounts")
+        debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
+        result.append({**row, "debit": debit, "credit": credit, "amount": None if amounts is None else
+                       to_stored_float(round_money(amounts[0] - amounts[1], bank.currency))})
     refs = await _je_doc_refs(session, company_id, sorted({r["je_id"] for r in result}))
     for r in result:
         r["memo"] = _je_memo(r["memo"], refs.get(r["je_id"]))

@@ -287,3 +287,52 @@ async def test_fund_routes_pass_authenticated_actor(client, session, auth):
     with pytest.raises(RestrictedFundMovement):
         await _emit(session, auth, [("3200", 1, 0, f["U1"]), ("1111", 0, 1, f["U1"]), ("1111", 1, 0, f["U2"]),
                                     ("3200", 0, 1, f["U2"])], je_type="fund_transfer")
+
+
+async def test_transfer_bank_to_bank_keeps_fund_split(client, session, auth):
+    """A bank transfer moves each fund's share of the source account with it (rule B): R's 100
+    gift in bank A moved to bank B leaves R holding bank B. With the unrestricted group also in
+    bank A, a transfer splits pro rata to what each holds there; an explicit allocation by fund
+    replaces the split, never above what a fund holds there and adding up to the amount moved."""
+    f = await _setup(client, auth)
+
+    async def bank(name, number, code=None):
+        r = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
+            "bank_name": name, "account_number": number, "bank_type": "checking", "currency": "USD",
+            "opening_balance": 0, **({"account_code": code} if code else {})})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    a, b = await bank("Harbor Bank", "0001", "1111"), await bank("Coast Bank", "0002")
+    to = b["chart_account_code"]
+
+    async def transfer(amount, **extra):
+        return await client.post("/accounting/transfers", headers=auth["headers"], json={
+            "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": amount, "date": DATE, **extra})
+
+    await _gift(session, auth, f["R"])
+    r = await transfer(100.0)
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, f["R"], to) == 100 and await _held(session, auth, f["R"]) == 0
+
+    await _gift(session, auth, f["R"])
+    await _gift(session, auth, None, 50)
+    r = await transfer(60.0)
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, f["R"], to) == 140 and await _held(session, auth, None, to) == 20
+    assert await _held(session, auth, f["R"]) == 60 and await _held(session, auth, None) == 30
+    from celerp_accounting.models import BankAccount
+    from celerp_accounting.routes import _je_entries_for_account
+    rows = await _je_entries_for_account(session, auth["company_id"], await session.get(BankAccount, uuid.UUID(b["id"])))
+    assert [row["amount"] for row in rows if row["je_id"] == r.json()["je_id"]] == [60.0]
+
+    r = await transfer(40.0, allocation=[{"fund": None, "amount": 31}, {"fund": f["R"], "amount": 9}])
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_exceeds_balance", r.text
+    assert r.json()["detail"]["params"]["available"] == "30.00"
+    r = await transfer(40.0, allocation=[{"fund": None, "amount": 30}, {"fund": f["R"], "amount": 5}])
+    assert r.status_code == 422 and _key(r) == "fund.transfer_allocation_total", r.text
+    r = await transfer(40.0, allocation=[{"fund": None, "amount": 30}, {"fund": f["R"], "amount": 10}])
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, None) == 0 and await _held(session, auth, f["R"]) == 50
+    assert await _held(session, auth, None, to) == 50 and await _held(session, auth, f["R"], to) == 150
+
