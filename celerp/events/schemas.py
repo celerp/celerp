@@ -686,6 +686,19 @@ class DocVoided(BaseModel):
     pre_void_fulfillment: str | None = None
 
 
+class FundChanged(BaseModel):
+    """Change fund on a posted outside record (doc.fund_changed, acc.journal_entry.fund_changed):
+    why, the choices before and after, who held the reallocation authority when the change
+    needed it, and the answer a repeat of the request gets."""
+    model_config = {"populate_by_name": True}
+
+    reason: str
+    from_: dict = Field(alias="from")
+    to: dict
+    authorized_by: str | None = None
+    result: dict
+
+
 class DocRevertedToDraft(BaseModel):
     reverted_by: str
     previous_status: str
@@ -1596,6 +1609,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.linked": DocLinked,
     "doc.finalized": DocFinalized,
     "doc.voided": DocVoided,
+    "doc.fund_changed": FundChanged,
     "doc.reverted_to_draft": DocRevertedToDraft,
     "doc.unvoided": DocUnvoided,
     "doc.closed": DocClosed,
@@ -1667,6 +1681,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.journal_entry.created": AccJournalEntryCreated,
     "acc.journal_entry.posted": AccJournalEntryPosted,
     "acc.journal_entry.voided": AccJournalEntryVoided,
+    "acc.journal_entry.fund_changed": FundChanged,
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
     "acc.reconciliation.reopened": AccReconciliationReopened,

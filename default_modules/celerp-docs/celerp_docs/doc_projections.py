@@ -289,6 +289,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["source_po_ref"] = data["source_po_ref"]
         if data.get("doc_type"):
             current["doc_type"] = data["doc_type"]
+    elif event_type == "doc.fund_changed":
+        # Change fund writes the document's new choices with doc.updated; this event records
+        # the change itself (reason, before and after) on the ledger.
+        pass
     elif event_type == "doc.voided":
         # A void of a document already void (older releases accepted one) changes nothing:
         # the status to restore stays the one it had before the first void.

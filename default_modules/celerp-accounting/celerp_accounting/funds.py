@@ -39,7 +39,8 @@ from celerp.services.journal_accounts import (
 )
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.peer_lines import (
-    CONNECTION_DEFAULTS, checked, default_active, default_key, outside_waiting, records_carrying,
+    CONNECTION_DEFAULTS, ChangeFundIn, change_posted_fund, checked, default_active, default_key, outside_waiting,
+    records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
 
@@ -603,3 +604,26 @@ async def reverse_fund_movement(
     return await _posted(session, post_fund_movement(
         session, company_id, request_key=f"reverse:{je_id}", ts=payload.date, reason=payload.reason, actor=user.id,
         reverses=je_id))
+
+
+class JournalChangeFundIn(ChangeFundIn):
+    """Change fund on a posted outside journal: ``all`` the fund of the entry and of every line
+    ``lines`` (line number from 1 -> fund id or "unrestricted") does not name."""
+    all: str | None = None
+
+
+@router.post("/journal/{entity_id}/change-fund")
+async def change_journal_fund(
+    entity_id: str,
+    payload: JournalChangeFundIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change fund on a posted journal that came from outside: it is voided and posted again
+    as {entity id}:fund:{n} on the new funds in one action (peer_lines.change_posted_fund)."""
+    result = await change_posted_fund(session, company_id, entity_id, payload, user.id, journal=True,
+                                      **({"document": payload.all} if payload.all is not None else {}))
+    await session.commit()
+    return result

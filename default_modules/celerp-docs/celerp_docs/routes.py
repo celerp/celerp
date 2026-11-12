@@ -68,8 +68,8 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
                                           resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
 from celerp.services.peer_lines import (
-    LINE_KEYS as OUTSIDE_LINE_KEYS, ImportFundChoices, chosen_lines, copied_header, granted_from_stored,
-    outside_waiting, require_fund_choices,
+    LINE_KEYS as OUTSIDE_LINE_KEYS, ChangeFundIn, ImportFundChoices, change_posted_fund, chosen_lines, copied_header,
+    granted_from_stored, outside_waiting, require_fund_choices,
 )
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
@@ -2289,6 +2289,24 @@ async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: s
         return {"event_id": None, "version": row.version}
     await session.commit()
     return {"event_id": entry.id, "version": entry.id}
+
+
+class DocChangeFundIn(ChangeFundIn):
+    """Change fund on a posted document: ``document`` its fund, ``lines`` a fund per line
+    from outside (line id -> fund id or "unrestricted")."""
+    document: str | None = None
+
+
+@router.post("/{entity_id}/change-fund")
+async def change_doc_fund(entity_id: str, payload: DocChangeFundIn, company_id: str = Depends(get_current_company_id),
+                          _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                          session: AsyncSession = Depends(get_session)) -> dict:
+    """Change fund on a posted document that came from outside: its entries are voided and
+    posted again on the new funds in one action (peer_lines.change_posted_fund)."""
+    result = await change_posted_fund(session, company_id, entity_id, payload, user.id, journal=False,
+                                      **({"document": payload.document} if payload.document is not None else {}))
+    await session.commit()
+    return result
 
 
 async def write_fund_choices(session: AsyncSession, company_id, entity_id: str, state: dict, *, actor_id,

@@ -28,6 +28,10 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("replaced_by"):
             current["replaced_by"] = data["replaced_by"]
 
+    elif event_type == "acc.journal_entry.fund_changed":
+        # The entry stays as voided, replaced_by naming its copy; this event records the change
+        # itself (reason, before and after) on the ledger.
+        pass
     elif event_type == "acc.period.closed":
         current.update({"entity_type": "period", "period": data["period"], "status": "closed"})
     elif event_type == "acc.period.reopened":

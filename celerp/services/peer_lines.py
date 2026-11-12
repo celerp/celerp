@@ -30,6 +30,7 @@ One rule judges these keys on every write of a document's or a List's lines and 
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -674,3 +675,227 @@ def mark_journal(data: dict, origin: str) -> None:
     for line in data.get("entries") or []:
         if isinstance(line, dict):
             line.setdefault("origin", origin)
+
+
+# ── Change fund on a posted outside record ──────────────────────────────────────────────
+
+# What a posted leg holds besides what it is: its amounts, its fund and what it was built from.
+_LEG_AMOUNTS = ("debit", "credit", "fx_debit", "fx_credit")
+_LEG_FUND = ("fund_id", "fund_choice", "posted_from")
+
+
+def _merged_legs(legs: list[dict], key) -> list[dict]:
+    """``legs`` merged where ``key`` is the same, in first-seen order: debit and credit (and
+    the fx pair) netted, ``source_lines`` joined."""
+    from decimal import Decimal
+
+    from celerp.services.money import to_decimal, to_stored_float
+
+    groups: dict[str, list[dict]] = {}
+    for leg in legs:
+        groups.setdefault(json.dumps(key(leg), sort_keys=True, default=str), []).append(leg)
+    out = []
+    for same in groups.values():
+        line = {k: v for k, v in same[0].items() if k not in (*_LEG_AMOUNTS, "source_lines")}
+        for dr, cr in (("debit", "credit"), ("fx_debit", "fx_credit")):
+            if any(dr in leg or cr in leg for leg in same):
+                net = sum((to_decimal(leg.get(dr) or 0) - to_decimal(leg.get(cr) or 0) for leg in same), Decimal(0))
+                line[dr], line[cr] = to_stored_float(max(net, Decimal(0))), to_stored_float(max(-net, Decimal(0)))
+        if any("source_lines" in leg for leg in same):
+            line["source_lines"] = sorted({n for leg in same for n in leg.get("source_lines") or ()})
+        out.append(line)
+    return out
+
+
+def document_relabel(doc: Mapping, settings: Mapping, currency: str):
+    """How Change fund writes a document's posted entries again on the funds ``doc`` now
+    carries (repost_record_postings ``relabel``), accounts and amounts as posted: the legs
+    are merged back by account and the lines behind them, then carried again by fund_legs
+    (rule LG): a leg takes the fund of the lines behind it, split by their gross shares
+    (bill_line_charges) when several stand behind it, a leg no line stands behind the
+    document's fund, the receivable or payable each fund's balancing figure, a stock or cost
+    leg no fund (rule 7); last, legs of one account and fund are regrouped."""
+    from celerp.accounting_roles import AccountRole
+    from celerp.services.account_roles import scope_codes
+    from celerp.services.auto_je import bill_line_charges
+    from celerp.services.journal_accounts import CONTROL, HEADER, fund_legs, stock_codes
+
+    funds, header = leg_funds(doc)
+    gross = {n: amount for n, (amount, _, _) in enumerate(bill_line_charges(dict(doc)), 1)}
+    stock = stock_codes(dict(settings))
+    control = scope_codes(dict(settings), AccountRole.RECEIVABLE) | scope_codes(dict(settings), AccountRole.PAYABLE)
+
+    def kind(leg: Mapping):
+        if leg["account"] in stock:
+            return None
+        if leg["account"] in control:
+            return CONTROL
+        return tuple(leg.get("source_lines") or ()) or HEADER
+
+    def relabel(lines: list[dict]) -> list[dict]:
+        bare = [{k: v for k, v in line.items() if k not in _LEG_FUND} for line in lines]
+        legs = _merged_legs(bare, lambda leg: [kind(leg), {k: v for k, v in leg.items()
+                                                            if k not in (*_LEG_AMOUNTS, "source_lines")}])
+        bases = [{n: gross.get(n, 0) for n in basis} if isinstance(basis, tuple) else basis
+                 for basis in map(kind, legs)]
+        if bases.count(CONTROL) > 1:
+            raise RuntimeError("A document entry with more than one receivable or payable line cannot be relabelled")
+        carried = fund_legs([{k: v for k, v in leg.items() if k != "source_lines"} if kind(leg) is None else leg
+                             for leg in legs], bases, funds, header, currency)
+        return _merged_legs(carried, lambda leg: {k: v for k, v in leg.items()
+                                                  if k not in (*_LEG_AMOUNTS, "source_lines")})
+    return relabel
+
+
+class ChangeFundIn(BaseModel):
+    """A Change fund request: the new choices (``lines`` by line id on a document, by line
+    number on a journal; a fund id or "unrestricted"), why, the record's version it was made
+    from and the key that makes a repeat answer with the first result."""
+    expected_version: int
+    request_key: str = Field(min_length=1)
+    reason: str
+    lines: dict[str, str] = Field(default_factory=dict)
+
+
+def _choices_of(state: Mapping, numbered: bool) -> dict:
+    """The fund choices a record carries: its own and each marked line's (by line id, or by
+    number for a journal)."""
+    lines = state.get("entries" if numbered else "line_items") or []
+    return {"document": state.get("fund_choice"),
+            "lines": {(str(n) if numbered else line.get("line_id")): line.get("fund_choice")
+                      for n, line in enumerate(lines, 1) if isinstance(line, dict) and line.get("origin")}}
+
+
+async def change_posted_fund(session, company_id, record_id: str, change: ChangeFundIn, actor, *,
+                             journal: bool, document: Any = _ABSENT) -> dict:
+    """Change fund on a posted record that came from outside: a document (``document`` its
+    choice, ``change.lines`` by line id) or an outside journal (``journal``; ``document`` the
+    choice of the entry and every line ``change.lines`` does not name, lines by number).
+
+    Checked in order, each refusal writing nothing: funds in use, the actor's
+    manage_accounting under the lock, the repeat (a change already stored under the request
+    key answers with its first result), the reason, the version, the values, a record
+    carrying ``origin``, posted, not settled by a payment or note, not held by the opening
+    balances, every entry it voids in an open period. Then, inside one fund_change_action:
+    the document's choices are written, its entries voided as one batch naming the copies
+    replacing them and posted again on the new funds (document_relabel), and the modules
+    keeping a record that copied a fund from it move it (doc_posting_dependents); a journal is
+    voided and posted again as ``{je_id}:fund:{n}``. The action is judged once on leaving
+    it; ``doc.fund_changed`` (``acc.journal_entry.fund_changed``) records the change last."""
+    from sqlalchemy import func, select
+
+    from celerp.events.engine import _check_period_lock, emit_event
+    from celerp.models.company import Company
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je, doc_posting_dependents
+    from celerp.services.company_lock import lock_fund_ledger, lock_projections
+    from celerp.services.je_keys import je_void_data
+    from celerp.services.journal_accounts import fund_change_action, funds_by_id, funds_enabled
+    from celerp.services.permissions import locked_authority
+
+    await lock_fund_ledger(session, company_id, shared=False)
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not funds_enabled(settings):
+        raise _refused(422, "fund.not_enabled")
+    await locked_authority(session, company_id, actor, ("manage_accounting",))
+    key = f"fundchange:{record_id}:{change.request_key}"
+    stored = await session.scalar(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).limit(1))
+    if stored is not None:
+        return dict(stored.data.get("result") or {})
+    reason = change.reason.strip()
+    if not reason:
+        raise _refused(422, "posting.fund.change_reason_missing")
+    row = (await lock_projections(session, company_id, [record_id])).get(record_id)
+    if row is None or row.entity_type != ("journal_entry" if journal else "doc"):
+        raise _refused(404, "acct.err_je_not_found" if journal else "documents.document_not_found")
+    if row.version != change.expected_version:
+        raise HTTPException(status_code=409, detail={**catalog_refusal("posting.fund.change_stale"),
+                                                     "code": "stale_version"})
+    state = dict(row.state or {})
+    if document is _ABSENT and not change.lines:
+        raise _refused(422, "posting.fund.choice_empty")
+    if document not in (_ABSENT, UNRESTRICTED) and document not in await funds_by_id(session, company_id):
+        raise _refused(422, "posting.fund.document_choice_missing")
+
+    if journal:
+        bare = [{k: v for k, v in line.items() if k not in FUND_KEYS} for line in state.get("entries") or []
+                if isinstance(line, dict)]
+        keys, grant = await chosen_journal_lines(session, company_id, bare, lines=change.lines,
+                                                 every=None if document is _ABSENT else document)
+        if not state.get("origin"):
+            raise _refused(422, "posting.fund.change_not_outside")
+        if state.get("status") != "posted":
+            raise _refused(422, "posting.fund.change_not_posted")
+        dates = [state.get("ts")]
+    else:
+        await require_fund_choices(session, company_id, state, lines=change.lines,
+                                   **({} if document is _ABSENT else {"document": document}))
+        if not (state.get("origin") or any(isinstance(li, dict) and li.get("origin")
+                                           for li in state.get("line_items") or [])):
+            raise _refused(422, "posting.fund.change_not_outside")
+        copies = await auto_je.restore_ids(session, company_id, record_id, goods_movements=True)
+        if not copies:
+            raise _refused(422, "posting.fund.change_not_posted")
+        if float(state.get("amount_paid") or 0) or float(state.get("credited") or 0):
+            raise _refused(422, "posting.fund.change_settled")
+        name = str(state.get("ref_id") or record_id)
+        if await auto_je.imported_carriage(session, company_id, record_id):
+            raise _refused(422, "posting.fund.change_opening_held", document=name)
+        prefix = f"je:auto:{record_id}:"
+        dates = list((await session.scalars(select(Projection.state["ts"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_id.in_([prefix + suffix for suffix in copies])))).all())
+    if earliest := min((str(d)[:10] for d in dates if d), default=None):
+        await _check_period_lock(session, company_id, {"ts": earliest})
+
+    before = _choices_of(state, journal)
+    async with fund_change_action(session, company_id, actor) as action:
+        if journal:
+            root = record_id.split(":fund:", 1)[0]
+            taken = await session.scalar(select(func.count()).select_from(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_id.startswith(f"{root}:fund:", autoescape=True)))
+            copy_id = f"{root}:fund:{taken + 1}"
+            await emit_event(
+                session, company_id=company_id, entity_id=record_id, entity_type="journal_entry",
+                event_type="acc.journal_entry.voided", data={**je_void_data(reason, state), "replaced_by": copy_id},
+                actor_id=actor, location_id=None, source="fund_change", idempotency_key=f"{key}:void")
+            lines = [{k: v for k, v in line.items() if k not in (*FUND_KEYS, "posted_from")} | chosen
+                     for line, chosen in zip(copy_posted_lines(record_id, bare, reverse=False), keys)]
+            data = {k: state[k] for k in ("memo", "ts", "je_type", "peer_origin", "peer_source", "reverses",
+                                          "source", "origin") if state.get(k) is not None}
+            await emit_event(
+                session, company_id=company_id, entity_id=copy_id, entity_type="journal_entry",
+                event_type="acc.journal_entry.created",
+                data={**data, "status": "posted", "entries": lines, **grant.header},
+                actor_id=actor, location_id=None, source="fund_change", idempotency_key=f"{key}:copy",
+                fund_grant=grant)
+            result = {"copies": {record_id: copy_id}}
+        else:
+            from celerp_docs.routes import write_fund_choices
+
+            await write_fund_choices(session, company_id, record_id, state, actor_id=actor,
+                                     idempotency_key=f"{key}:choices", lines=change.lines,
+                                     **({} if document is _ABSENT else {"document": document}))
+            await session.refresh(row)
+            relabel = document_relabel(row.state or {}, settings, str(settings.get("currency") or "USD"))
+            batch = await auto_je.void_record_postings(
+                session, company_id=company_id, user_id=actor, doc_id=record_id, trigger="fund_change",
+                reason=reason, goods_movements=True, replaced_by=copies)
+            reposted = await auto_je.repost_record_postings(
+                session, company_id=company_id, user_id=actor, doc_id=record_id, batch=batch, relabel=relabel,
+                trigger="fund_change", goods_movements=True)
+            await doc_posting_dependents.move(session, company_id=company_id, user_id=actor, doc_id=record_id,
+                                              relabel=relabel)
+            result = {"copies": reposted}
+    after = (await session.get(Projection, {"company_id": company_id, "entity_id": result["copies"][record_id]})
+             if journal else row)
+    await emit_event(
+        session, company_id=company_id, entity_id=record_id, entity_type="journal_entry" if journal else "doc",
+        event_type="acc.journal_entry.fund_changed" if journal else "doc.fund_changed",
+        data={"reason": reason, "from": before, "to": _choices_of(after.state or {}, journal),
+              "authorized_by": action.authorized_by, "result": result},
+        actor_id=actor, location_id=None, source="fund_change", idempotency_key=key)
+    return result

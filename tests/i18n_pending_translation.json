@@ -566,6 +566,54 @@
       "params": [
         "source"
       ]
+    },
+    "posting.fund.change_reason_missing": {
+      "en": "Say why the fund is changing. The reason is kept with the change.",
+      "params": []
+    },
+    "posting.fund.change_not_outside": {
+      "en": "Change fund is only for records that came from outside. Use the document void or the journal reverse.",
+      "params": []
+    },
+    "posting.fund.change_not_posted": {
+      "en": "This record has not posted yet. Choose its fund before it posts.",
+      "params": []
+    },
+    "posting.fund.change_settled": {
+      "en": "A payment or note is recorded against this document. Void it, change the fund, then record it again.",
+      "params": []
+    },
+    "posting.fund.change_opening_held": {
+      "en": "The opening balances hold {document}: reverse its opening balance and enter it again with the fund.",
+      "params": [
+        "document"
+      ]
+    },
+    "posting.fund.change_backing": {
+      "en": "Release {release} is backed by this line: reverse the release first.",
+      "params": [
+        "release"
+      ]
+    },
+    "posting.fund.change_needs_reallocation": {
+      "en": "Moving money of {fund} to {to} needs the Reallocate restricted funds permission and the same purpose on both funds.",
+      "params": [
+        "fund",
+        "to"
+      ]
+    },
+    "posting.fund.change_exceeds_balance": {
+      "en": "{fund} holds {available} {currency}; this change would take {amount} {currency} out of it.",
+      "params": [
+        "amount",
+        "available",
+        "currency",
+        "fund"
+      ]
+    },
+    "posting.fund.change_stale": {
+      "en": "Someone changed this record after you opened it. Try again to see it as it is now.",
+      "params": []
     }
   }
 }

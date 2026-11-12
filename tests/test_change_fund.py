@@ -74,14 +74,14 @@ async def _change_doc(client, session, auth, doc, *, version=None, request_key=N
     if version is None:
         version = (await _doc(client, auth, doc))["version"]
     return await client.post(f"/docs/{doc}/change-fund", headers=auth["headers"], json={
-        "expected_version": version, "request_key": request_key or uuid.uuid4().hex, "reason": reason, **choices})
+        "expected_version": version, "request_key": uuid.uuid4().hex if request_key is None else request_key, "reason": reason, **choices})
 
 
 async def _change_journal(client, session, auth, je, *, version=None, request_key=None, reason=REASON, **choices):
     if version is None:
         version = await _version(session, auth, je)
     return await client.post(f"/accounting/journal/{je}/change-fund", headers=auth["headers"], json={
-        "expected_version": version, "request_key": request_key or uuid.uuid4().hex, "reason": reason, **choices})
+        "expected_version": version, "request_key": uuid.uuid4().hex if request_key is None else request_key, "reason": reason, **choices})
 
 
 def _shape(entries: list[dict]) -> list[tuple]:
@@ -234,7 +234,7 @@ async def test_change_fund_concurrent_and_repeat_safe(client, session, auth):
 
 async def test_change_fund_cost_onto_restricted_posts(client, session, auth):
     """A manager moves an outside cost onto R while R holds enough: posts, R's bank down 300
-    and the unrestricted group's up 300. Onto R holding 100: refused by the balance rule.
+    and the unrestricted group's up 300 (from -300 to 0). Onto R holding 100: refused by the balance rule.
     Back to Unrestricted (R only gains): posts with manage_accounting alone."""
     f = await _setup(client, auth)
     await _emit(session, auth, [("1111", 1000, 0, f["R"]), ("4100", 0, 1000, f["R"])])
@@ -243,7 +243,7 @@ async def test_change_fund_cost_onto_restricted_posts(client, session, auth):
     await _set_role(session, auth, "manager")
     r = await _change_journal(client, session, auth, je, all=f["R"])
     assert r.status_code == 200, r.text
-    assert await _held(session, auth, f["R"]) == Decimal(700) and await _held(session, auth, None) == Decimal(300)
+    assert await _held(session, auth, f["R"]) == Decimal(700) and await _held(session, auth, None) == Decimal(0)
     assert _funds_of((await _state(session, auth, f"{je}:fund:1"))["entries"]) == {f["R"]}
 
     poor = await _outside_journal(client, auth, [("6200", 800, 0), ("1111", 0, 800)], "unrestricted")
