@@ -59,7 +59,9 @@ from celerp.services import doc_asset_lines
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
-from celerp.services.journal_accounts import UnbalancedJournalEntry, bank_currencies, lock_accounts
+from celerp.services.journal_accounts import (
+    UnbalancedJournalEntry, bank_currencies, income_account_of, lock_accounts, require_income_account,
+)
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
@@ -89,6 +91,16 @@ def _origin_line(settings: dict, code: str, role, debit=0.0, credit=0.0) -> dict
     if code in scope_codes(settings, role):
         return _line(code, role, debit, credit)
     return {"account": code, "debit": debit, "credit": credit}
+
+
+def _revenue_line(settings: dict, code: str, debit=0.0, credit=0.0) -> dict:
+    """A line moving a sale's revenue on ``code``: posted for sales revenue when that
+    account has served it, else explicitly unclassified, so an income account another
+    role targets (other income as the stock gain account) is never read as that role.
+    It reads as revenue by its account's type (_revenue_sold_on)."""
+    if code in scope_codes(settings, R.SALES_REVENUE):
+        return _line(code, R.SALES_REVENUE, debit, credit)
+    return {"account": code, "account_roles": [], "debit": debit, "credit": credit}
 
 
 def _lot_line(settings: dict, key: str, debit=0.0, credit=0.0) -> dict:
@@ -593,14 +605,19 @@ async def _asset_split(session, company_id, doc: dict, base_currency: str, reven
     """A sale document's asset lines taken out of its revenue: (the line allocations, a
     clearing line per asset line on the account its sale clears through, the revenue the
     other lines leave). Asset lines post their share of the net to clearing (Cr on an
-    invoice, Dr on a credit note), tagged with the asset; with none the revenue is whole."""
-    if not doc_asset_lines.asset_lines(doc) or not doc.get("line_items"):
+    invoice, Dr on a credit note), tagged with the asset, and their allocations name that
+    account; with none the revenue is whole. No allocations without lines."""
+    if not doc.get("line_items"):
         return None, [], revenue
     allocations = _line_allocations(doc, base_currency, revenue)
+    if not doc_asset_lines.asset_lines(doc):
+        return allocations, [], revenue
     code = await resolve(session, company_id, R.ASSET_DISPOSAL_CLEARING)
     clearing, cleared = [], _Dec(0)
     for index, share in allocations.items():
         asset_id = doc["line_items"][int(index)].get("asset_id")
+        if asset_id:
+            share["account"] = code
         if asset_id and share["base"]:
             amount = to_decimal(share["base"])
             cleared += amount
@@ -658,8 +675,50 @@ def finalized_entry_day(doc: dict) -> str | None:
     return doc.get("finalized_at") or doc.get("issue_date")
 
 
+async def _line_income_accounts(session, company_id, doc: dict, settings: dict) -> dict[str, str]:
+    """The income account of each line selling an item that names one, its own or its
+    category's (income_account_of), keyed by the line's index as a string. Lines without
+    one, and asset lines, are not listed. Each account is checked again
+    (require_income_account, naming the item), since it may have changed since it was saved."""
+    lines = [li if isinstance(li, dict) and not li.get("asset_id") else {} for li in doc.get("line_items") or []]
+    ids = {line_item_id(li) for li in lines} - {None}
+    if not ids:
+        return {}
+    items = {row.entity_id: row.state or {} for row in (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(sorted(ids))))).scalars().all()}
+    accounts: dict[str, str] = {}
+    for index, li in enumerate(lines):
+        item = items.get(line_item_id(li))
+        code = income_account_of(settings, item)
+        if code:
+            if code not in accounts.values():
+                await require_income_account(session, company_id, code, item=item.get("name") or li.get("name") or code)
+            accounts[str(index)] = code
+    return accounts
+
+
+def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, str], default: str, revenue, *,
+                  whole: bool) -> list[dict]:
+    """A sale's revenue credits: each line's share (``allocations``) on its income account
+    (``incomes``, _revenue_line), and what the other lines leave on the sales revenue
+    account ``default``. Every allocation without an account is named ``default``. With
+    no income account of its own on any line the revenue is one ``default`` line, posted
+    even at zero when ``whole`` (nothing else carries the sale)."""
+    own: dict[str, _Dec] = {}
+    for index, share in (allocations or {}).items():
+        code = share.setdefault("account", incomes.get(index, default))
+        if index in incomes and code != default:
+            own[code] = own.get(code, _Dec(0)) + to_decimal(share["base"])
+    rest = to_decimal(revenue) - sum(own.values(), _Dec(0))
+    lines = [_line(default, R.SALES_REVENUE, credit=to_stored_float(rest))] if rest or (whole and not own) else []
+    return lines + [_revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
-    refuse_unissuable_taxes(await current_settings(session, company_id), "invoice", doc)
+    settings = await current_settings(session, company_id)
+    refuse_unissuable_taxes(settings, "invoice", doc)
+    incomes = await _line_income_accounts(session, company_id, doc, settings)
     total, tax, revenue = _sale_totals(doc, base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "invoice")
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
@@ -675,13 +734,12 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         roles.append(R.COGS)
     acc = await resolve_many(session, company_id, roles)
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
-    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing]
-    if revenue or not clearing:
-        entries.append(_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, credit=revenue))
+    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing,
+               *_income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue, whole=not clearing)]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
     if cogs > 0:
-        entries += _cogs_lines(await current_settings(session, company_id), acc[R.COGS],
+        entries += _cogs_lines(settings, acc[R.COGS],
                                cogs_result.by_account, await company_currency(session, company_id))
     await record_consignor_payables(session, company_id, user_id, cogs_result.payables)
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
@@ -707,7 +765,7 @@ async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> 
     """Each account a document's live finalize entry moved revenue on, with its net credit
     (below zero on a discount account the sale was debited to), in code order. A line names
     its revenue by its role, or one that carries no role (an imported document's own lines)
-    by its account being a revenue account in the chart. Empty when it moved none."""
+    by its account being a revenue account in the chart (_revenue_line). Empty when it moved none."""
     lines = [e for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
              if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
              and (row.state or {}).get("status") == "posted"
@@ -739,14 +797,34 @@ def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> 
             *zip([c for c, _ in debited], (-share for share in allocate_pro_rata(back, [a for _, a in debited], currency)))]
 
 
+async def _posted_line_accounts(session, company_id, doc_id: str) -> dict[str, str]:
+    """line_id -> the account a document's live finalize entry credited that line on, read
+    from the entry's line allocations as posted (never from the item's account today)."""
+    from celerp.models.ledger import LedgerEntry
+
+    live = [f"je:auto:{doc_id}:{suffix}" for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+            if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
+            and (row.state or {}).get("status") == "posted"]
+    if not live:
+        return {}
+    created = (await session.execute(_select(LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(live)),
+        LedgerEntry.event_type == "acc.journal_entry.created"))).scalars().all()
+    return {share["line_id"]: share["account"] for metadata_ in created
+            for share in ((metadata_ or {}).get("line_allocations") or {}).values()
+            if share.get("line_id") and share.get("account")}
+
+
 async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
                              releasing: bool = False) -> tuple[list[dict], dict | None] | None:
     """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
     account its invoice recognized it on), or with *releasing* the same lines the other
-    way round, with its line allocations when it credits an asset sale. Revenue goes back
+    way round, with its line allocations (_asset_split). Revenue goes back
     on the accounts the invoice sold on, in the proportions it credited them (an imported
-    invoice can split its sale over several); a line crediting an asset's sale goes on
-    sale clearing (_asset_split). None when it carries no amount."""
+    invoice can split its sale over several), except a line linked to an invoice line
+    (source_line_id): its share goes back on the account that invoice line was credited
+    on (_posted_line_accounts), and its allocation names it. A line crediting an asset's
+    sale goes on sale clearing (_asset_split). None when it carries no amount."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return None
@@ -764,9 +842,21 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         amount = abs(amount)
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
+    posted = await _posted_line_accounts(session, company_id, original) if sold_on else {}
+    linked: dict[str, _Dec] = {}
+    for index, share in (allocations or {}).items():
+        line = doc["line_items"][int(index)]
+        code = posted.get(line.get("source_line_id")) if isinstance(line, dict) and not line.get("asset_id") else None
+        if code:
+            share["account"] = code
+            linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
     if sold_on:
-        entries = [_origin_line(settings, code, R.SALES_REVENUE, **side(to_stored_float(share), True))
-                   for code, share in _revenue_shares(revenue, sold_on, base_currency) if share]
+        rest = to_decimal(revenue) - sum(linked.values(), _Dec(0))
+        shares: dict[str, _Dec] = dict(linked)
+        for code, share in (_revenue_shares(rest, sold_on, base_currency) if rest else []):
+            shares[code] = shares.get(code, _Dec(0)) + share
+        entries = [_revenue_line(settings, code, **side(to_stored_float(share), True))
+                   for code, share in shares.items() if share]
     elif revenue or not clearing:
         entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
     else:
