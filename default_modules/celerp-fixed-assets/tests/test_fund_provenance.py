@@ -128,3 +128,89 @@ async def test_fixed_asset_account_move_keeps_each_fund(fa):
     assert by[("1216", s["R"])] == (D("12000"), D(0)) and by[("1216", s["U"])] == (D("6000"), D(0))
     assert sum(cr for (acct, fund), (_, cr) in by.items() if (acct, fund) == ("1210", s["R"])) == D("12000")
     assert sum(cr for (acct, fund), (_, cr) in by.items() if (acct, fund) == ("1210", s["U"])) == D("6000")
+
+
+async def _bill_asset_on(fa: FA, fund: str, name: str, amount: int) -> str:
+    """An open bill from the document import whose one line buys ``name`` onto the vehicles
+    account, its fund chosen on the import; it posts as it is imported."""
+    from test_income_accounts import _line
+    from test_outside_lines import _issued_import
+
+    doc = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    record = _issued_import(doc, [_line(None, name, amount, account_code="1210")])
+    record["data"].update(doc_type="bill", contact_id="supplier:1")
+    r = await fa.client.post("/docs/import/batch", headers=fa.h, json={
+        "records": [record], "fund_choices": {"records": {doc: fund}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    return doc
+
+
+async def _change_bill(fa: FA, doc: str, fund: str):
+    from celerp.models.projections import Projection
+
+    fa.session.expire_all()
+    row = await fa.session.get(Projection, {"company_id": fa.auth["company_id"], "entity_id": doc})
+    return await fa.client.post(f"/docs/{doc}/change-fund", headers=fa.h, json={
+        "document": fund, "lines": {}, "reason": "Bought for the board, not the gift",
+        "expected_version": row.version, "request_key": uuid.uuid4().hex})
+
+
+async def _fa_standing(fa: FA) -> dict[tuple[str | None, str], D]:
+    """(fund, account) -> what the posted fixed-asset journals hold, zeros left out."""
+    out: dict[tuple[str | None, str], D] = {}
+    for je in await fa.module_journals():
+        if je.get("status") != "posted":
+            continue
+        for e in je["entries"]:
+            key = (e.get("fund_id"), e["account"])
+            out[key] = out.get(key, D(0)) + D(str(e.get("debit") or 0)) - D(str(e.get("credit") or 0))
+    return {k: v for k, v in out.items() if v}
+
+
+async def test_change_fund_moves_dependents(fa):
+    """An asset bought on an outside bill's line on R, depreciated in a run beside an asset on
+    U: Change fund on the bill to U moves the asset's fund and every fixed-asset entry it has
+    (its share of the run included) onto U at their own dates, inside the one judged action;
+    with the run's month locked the whole change is refused and nothing moves."""
+    await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
+    funds = await _funds(fa)
+    bill = await _bill_asset_on(fa, funds["R"], "Outreach car", 12000)
+    await _bought(fa, "1210", 6000, funds["U"], "Board runabout")
+    car = (await fa.register((await fa.line("Outreach car"))["source"], key="reg-car"))["assets"][0]["id"]
+    van = (await fa.register((await fa.line("Board runabout"))["source"], key="reg-van"))["assets"][0]["id"]
+    assert (await fa.state(car))["fund_id"] == funds["R"]
+    await fa.operate("/runs", {"month": "2026-01"}, key="run-jan")
+    before = await _fa_standing(fa)
+    assert any(fund == funds["R"] for fund, _ in before), before
+
+    await fa.client.post("/accounting/period-lock", headers=fa.h, json={"lock_date": "2026-01-31"})
+    locked = await _change_bill(fa, bill, funds["U"])
+    assert locked.status_code == 422, locked.text
+    assert (await fa.state(car))["fund_id"] == funds["R"] and await _fa_standing(fa) == before
+    await fa.client.post("/accounting/period-lock", headers=fa.h, json={"lock_date": None})
+
+    r = await _change_bill(fa, bill, funds["U"])
+    assert r.status_code == 200, r.text
+    assert (await fa.state(car))["fund_id"] == funds["U"]
+    assert (await fa.state(van))["fund_id"] == funds["U"]
+    after = await _fa_standing(fa)
+    moved: dict[tuple[str | None, str], D] = {}
+    for (fund, account), amount in before.items():
+        key = (funds["U"] if fund == funds["R"] else fund, account)
+        moved[key] = moved.get(key, D(0)) + amount
+    assert after == {k: v for k, v in moved.items() if v}
+    # The car's movement still reads its share of the run, now on U.
+    prefix = "je:mod:celerp-fixed-assets:"
+    mv = next(m for m in await fa.entities("fa_movement") if m["asset_id"] == car and m["operation"] == "run")
+    live = await fa.module_journals()
+    from celerp.services.auto_je import current_entry
+
+    run_id = await current_entry(fa.session, fa.auth["company_id"], f"{prefix}run:2026-01:1")
+    run = next(je for je in live if je["entity_id"] == run_id)
+    assert run.get("status") == "posted" and run_id != f"{prefix}run:2026-01:1"
+    line = run["entries"][mv["contributions"][0]["line_index"]]
+    assert (line["account"], line.get("fund_id")) == ("1220", funds["U"])
+    # The next run posts the car on U.
+    await fa.operate("/runs", {"month": "2026-02"}, key="run-feb")
+    feb = next(je for je in await fa.module_journals() if je["entity_id"] == f"{prefix}run:2026-02:1")
+    assert {fund for _, fund in _by_fund(feb)} == {funds["U"]}
