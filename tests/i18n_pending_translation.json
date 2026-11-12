@@ -1395,6 +1395,107 @@
     "donors.err_confirm_send": {
       "en": "Confirm the send first: statements go out by email and cannot be recalled once delivered.",
       "params": []
+    },
+    "nav.donors": {
+      "en": "Donors",
+      "params": []
+    },
+    "donors.intro": {
+      "en": "Each donor's gifts received and kept in the period, net of refunds. Send each donor a statement of their gifts by email.",
+      "params": []
+    },
+    "donors.empty": {
+      "en": "No gifts recorded yet.",
+      "params": []
+    },
+    "donors.th_donor": {
+      "en": "Donor",
+      "params": []
+    },
+    "donors.th_gifts": {
+      "en": "Gifts",
+      "params": []
+    },
+    "donors.th_statement": {
+      "en": "Statement",
+      "params": []
+    },
+    "donors.no_email": {
+      "en": "No email",
+      "params": []
+    },
+    "donors.statement_sent": {
+      "en": "Sent",
+      "params": []
+    },
+    "donors.statement_not_sent": {
+      "en": "Not sent",
+      "params": []
+    },
+    "donors.pdf": {
+      "en": "PDF",
+      "params": []
+    },
+    "donors.wording_title": {
+      "en": "Statement wording",
+      "params": []
+    },
+    "donors.wording_hint": {
+      "en": "Write {name} where the donor's name should go.",
+      "params": [
+        "name"
+      ]
+    },
+    "donors.wording_saved": {
+      "en": "Wording saved.",
+      "params": []
+    },
+    "donors.send_title": {
+      "en": "Send statements",
+      "params": []
+    },
+    "donors.send_hint": {
+      "en": "Each donor with an email address gets one email for this period. Donors who already have this statement with this wording are not sent it again. A sent email cannot be recalled.",
+      "params": []
+    },
+    "donors.confirm_send": {
+      "en": "I have checked the list above. Send the statements.",
+      "params": []
+    },
+    "donors.btn_send": {
+      "en": "Send statements",
+      "params": []
+    },
+    "donors.confirm_resend": {
+      "en": "Send {name} this statement again?",
+      "params": [
+        "name"
+      ]
+    },
+    "donors.done_sent": {
+      "en": "{sent} sent, {skipped} skipped with no email address.",
+      "params": [
+        "sent",
+        "skipped"
+      ]
+    },
+    "donors.done_already": {
+      "en": "{already} already sent earlier, not sent again.",
+      "params": [
+        "already"
+      ]
+    },
+    "donors.done_failed": {
+      "en": "Could not send to {names}. Select Send statements to try again.",
+      "params": [
+        "names"
+      ]
+    },
+    "donors.done_resent": {
+      "en": "Statement sent again to {name}.",
+      "params": [
+        "name"
+      ]
     }
   },
   "modules": {

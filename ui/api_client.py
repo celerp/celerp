@@ -2380,6 +2380,37 @@ async def subscriptions_members(token: str) -> dict:
         return _raise(await c.get("/subscriptions/members")).json()
 
 
+async def donor_statements_preview(token: str, date_from: str, date_to: str) -> dict:
+    """Returns {donors, wording}: each donor of the period with their gifts, email and whether
+    their statement under the current wording was sent."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/donors/statements/preview", params={"from": date_from, "to": date_to})).json()
+
+
+async def send_donor_statements(token: str, date_from: str, date_to: str, confirm: bool,
+                                resend: list[str]) -> dict:
+    """Returns {results}: each donor's statement sent, skipped without an email, or failed."""
+    async with _api_client(token, timeout=60.0) as c:
+        return _raise(await c.post("/donors/statements/send", json={
+            "from": date_from, "to": date_to, "confirm": confirm, "resend": resend})).json()
+
+
+async def get_donor_wording(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/donors/statements/wording")).json()
+
+
+async def set_donor_wording(token: str, text: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.put("/donors/statements/wording", json={"text": text})).json()
+
+
+async def donor_statement_pdf(token: str, contact_id: str, date_from: str, date_to: str) -> bytes:
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.get(f"/donors/{quote(contact_id, safe='')}/statement.pdf",
+                                  params={"from": date_from, "to": date_to})).content
+
+
 async def acknowledge_subscriptions_summary(token: str, keys: list[str]) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/subscriptions/summary/ack", json={"keys": keys})).json()

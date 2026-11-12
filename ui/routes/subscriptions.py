@@ -35,6 +35,7 @@ from ui.components.shell import base_shell, module_active, page_header, toast_he
 from ui.components.table import (EMPTY, breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value,
                                  search_bar, searchable_select, status_cards)
 from ui.config import get_token as _token, get_role as _get_role
+from ui.routes.action_answers import _done, _redrawn, _refused, _refused_redrawn
 from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
@@ -44,42 +45,6 @@ from ui.components.encode import as_js, html_response, safe_url, to_markup
 logger = logging.getLogger(__name__)
 
 _PER_PAGE = 50
-
-
-def _refused(e: APIError):
-    """The API's refusal of an action, shown where the user is."""
-    api.raise_if_signed_out(e)
-    return _action_error(e)
-
-
-def _done(back: str, message: str, kind: str = "success") -> Response:
-    """An action that worked: go back to *back* and say what it did there."""
-    return Response(status_code=204, headers={"HX-Redirect": back, **toast_header(message, kind)})
-
-
-async def _redrawn(draw, fallback=None, said: str = ""):
-    """What a done action shows next, read after it: ``draw()``'s answer. When a read fails,
-    the action is still done: ``fallback()`` and ``said`` (what the action's own answer says)
-    with a warning that offers Try again, never a refusal."""
-    try:
-        return await draw()
-    except APIError as e:
-        api.raise_if_signed_out(e)
-        warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
-        return html_response(fallback() if fallback else (), headers=toast_header(warning, "warning"))
-
-
-async def _refused_redrawn(e: APIError, draw):
-    """A refused action whose control already shows the refused value: the refusal with every view
-    drawn again from what is stored (``draw()``'s markup). When that read fails, the refusal alone."""
-    refusal = _refused(e)
-    try:
-        views = await draw()
-    except APIError as read_error:
-        api.raise_if_signed_out(read_error)
-        return refusal
-    return html_response(views, headers={k: v for k, v in refusal.headers.items()
-                                        if k not in ("content-length", "content-type")})
 
 
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.

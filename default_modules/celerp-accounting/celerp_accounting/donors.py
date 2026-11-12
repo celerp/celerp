@@ -24,7 +24,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from fasthtml.common import H2, Div, P, Table, Tbody, Td, Th, Thead, Tr
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from celerp.db import get_session
 from celerp.downloads import content_disposition
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import email as email_service
 from celerp.services.account_roles import current_settings, merge_survivors
@@ -161,6 +162,13 @@ def _worded(text: str, name: str) -> str:
 class WordingIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
+    @field_validator("text")
+    @classmethod
+    def _not_blank(cls, text: str) -> str:
+        if not text.strip():
+            raise ValueError("blank")
+        return text.strip()
+
 
 # --- Donors and statements ---
 
@@ -199,6 +207,20 @@ def _statement_html(company: str, row: dict, text: str, date_from: str, date_to:
     )))
 
 
+def _statement_key(party: str, date_from: str, date_to: str, version: int) -> str:
+    """The idempotency key of a donor's statement for a period under one wording version."""
+    return f"donor-statement:{party}:{date_from}:{date_to}:v{version}"
+
+
+async def _with_sent(session: AsyncSession, company_id, rows: list[dict], date_from: str, date_to: str,
+                     version: int) -> list[dict]:
+    """``rows`` each marked with whether the period's statement under this wording was sent."""
+    keys = {_statement_key(row["contact_id"], date_from, date_to, version): row for row in rows}
+    sent = set((await session.execute(select(LedgerEntry.idempotency_key).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(sorted(keys))))).scalars()) if keys else set()
+    return [{**row, "statement_sent": key in sent} for key, row in keys.items()]
+
+
 async def _free_key(session: AsyncSession, company_id, key: str) -> str:
     """The key of the next resend of the statement ``key``."""
     n = 1
@@ -219,7 +241,8 @@ class SendIn(BaseModel):
 async def send_statements(session: AsyncSession, company_id, user_id, payload: SendIn) -> list[dict]:
     """Email each donor of the period their statement and answer per donor: sent, no_email (no
     address, skipped) or failed (nothing recorded, so sending again retries). A statement already
-    sent answers with its first result unless ``resend`` names the donor. Each donor holds the
+    sent answers with its first result, marked ``repeat``; ``resend`` sends again to the donors it names, and only
+    to them. Each donor holds the
     company from the check to its record and commits on its own, so one failure never undoes
     another's record and a second send at once waits and answers with the first."""
     date_from, date_to = _period(payload.date_from.isoformat(), payload.date_to.isoformat())
@@ -228,17 +251,18 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
     currency = books_currency(settings)
     company = (await session.get(Company, company_id)).name
     results = []
-    for row in await _donor_rows(session, company_id, date_from, date_to):
+    rows = await _donor_rows(session, company_id, date_from, date_to)
+    for row in [r for r in rows if r["contact_id"] in payload.resend] if payload.resend else rows:
         party = row["contact_id"]
         answer = {"contact_id": party, "name": row["name"], "total": row["total"]}
         if row["no_email"]:
             results.append({**answer, "state": "no_email"})
             continue
-        key = f"donor-statement:{party}:{date_from}:{date_to}:v{words['version']}"
+        key = _statement_key(party, date_from, date_to, words["version"])
         await lock_company(session, company_id)  # two sends at once email a donor once
         earlier = await find_event_by_idempotency(session, company_id, key)
         if earlier is not None and party not in payload.resend:
-            results.append((earlier.metadata_ or {}).get("result") or answer)
+            results.append({**((earlier.metadata_ or {}).get("result") or answer), "repeat": True})
             await session.rollback()
             continue
         if earlier is not None:
@@ -286,10 +310,13 @@ async def preview_statements(
     _c: None = _READ[0], _p: None = _READ[1],
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Who a send for the period reaches, each with their total and gifts; a donor with no
-    email address is marked and would be skipped."""
+    """Who a send for the period reaches, each with their total and gifts and whether their
+    statement under the current wording was sent; a donor with no email address is marked and
+    would be skipped."""
+    words = wording(await current_settings(session, company_id))
     rows = await _donor_rows(session, company_id, *_period(date_from, date_to))
-    return {"donors": rows, "wording": wording(await current_settings(session, company_id))}
+    return {"donors": await _with_sent(session, company_id, rows, date_from, date_to, words["version"]),
+            "wording": words}
 
 
 @router.post("/statements/send")
@@ -329,8 +356,8 @@ async def put_wording(
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     current = wording(settings)
-    if payload.text.strip() != current["text"]:
-        settings[WORDING] = {"text": payload.text.strip(), "version": current["version"] + 1}
+    if payload.text != current["text"]:
+        settings[WORDING] = {"text": payload.text, "version": current["version"] + 1}
         company.settings = settings
         session.add(company)
     await session.commit()

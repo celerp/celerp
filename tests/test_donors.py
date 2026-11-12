@@ -138,7 +138,7 @@ def _mailbox(monkeypatch) -> list[dict]:
 async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkeypatch):
     """Preview lists who a send reaches; the send needs explicit confirmation, reports each
     donor, skips one without an email, returns its first result when repeated, and sends again
-    only when resend names the donor or the wording changed."""
+    only to the donors resend names, or to all once the wording changed."""
     donors = await _statement_donors(client, auth)
     sent = _mailbox(monkeypatch)
     r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
@@ -154,7 +154,7 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     assert results[donors["email"]]["state"] == "sent" and results[donors["none"]]["state"] == "no_email"
     assert [m["to"] for m in sent] == ["cy@test.test"]
     again = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})
-    assert {row["contact_id"]: row for row in again.json()["results"]}[donors["email"]] == results[donors["email"]]
+    assert {row["contact_id"]: row for row in again.json()["results"]}[donors["email"]] == {**results[donors["email"]], "repeat": True}
     assert len(sent) == 1
     resend = await client.post("/donors/statements/send", headers=auth["headers"],
                                json={**body, "confirm": True, "resend": [donors["email"]]})
