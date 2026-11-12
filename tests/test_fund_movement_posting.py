@@ -19,8 +19,6 @@ from sqlalchemy import update
 from celerp.services.journal_accounts import RestrictedFundMovement, fund_account_balances, fund_movement_grant
 from test_fund_movements import _emit, _refused, _setup
 
-pytestmark = pytest.mark.asyncio
-
 DATE = "2026-03-02"
 
 
@@ -41,6 +39,11 @@ async def _post(client, auth, path, **body):
 
 def _key(r) -> str:
     return r.json()["detail"]["message_key"]
+
+
+async def _entry(session, auth, je_id) -> dict:
+    from celerp.models.projections import Projection
+    return (await session.get(Projection, (auth["company_id"], je_id), populate_existing=True)).state
 
 
 async def _held(session, auth, fund, account="1111"):
@@ -101,7 +104,7 @@ async def test_movement_needs_actor_permission_read_at_boundary(client, session,
     async with fund_movement_grant(auth["company_id"], je_id, auth["user_id"]):
         detail = await _refused(_emit(session, auth, lines, entity_id=je_id, je_type="fund_transfer"))
     assert detail["message_key"] == "posting.fund.movement_permission"
-    assert detail["params"]["permission"]["params"]["label"]["message_key"] == "perm.name.manage_accounting"
+    assert detail["params"]["permission"]["message_key"] == "perm.name.manage_accounting"
 
     await _set_role(session, auth, "admin")
     r2 = (await client.post("/accounting/funds", headers=auth["headers"], json={
@@ -113,7 +116,7 @@ async def test_movement_needs_actor_permission_read_at_boundary(client, session,
     je_id = f"je:fund:{uuid.uuid4()}"
     async with fund_movement_grant(auth["company_id"], je_id, auth["user_id"]):
         detail = await _refused(_emit(session, auth, lines, entity_id=je_id, je_type="fund_reallocation"))
-    assert detail["params"]["permission"]["params"]["label"]["message_key"] == "perm.name.reallocate_restricted_funds"
+    assert detail["params"]["permission"]["message_key"] == "perm.name.reallocate_restricted_funds"
 
 
 async def test_transfer_validation_restricted_refused(client, session, auth):
@@ -146,7 +149,7 @@ async def test_fund_transfer_audited_and_reversible(client, session, auth):
     r = await _post(client, auth, "transfer", from_fund=f["U1"], to_fund=f["U2"], amount="30")
     assert r.status_code == 200, r.text
     je_id = r.json()["je_id"]
-    entry = (await client.get(f"/accounting/journal-entries/{je_id}", headers=auth["headers"])).json()
+    entry = await _entry(session, auth, je_id)
     assert entry["je_type"] == "fund_transfer" and entry["reason"] == "Board minute 12"
     assert entry["authorized_by"] == str(auth["user_id"])
     back = await client.post(f"/accounting/funds/movements/{je_id}/reverse", headers=auth["headers"],
@@ -187,21 +190,22 @@ async def test_expense_then_release(client, session, auth):
 
 
 async def test_reallocation_same_purpose_authorized_only(client, session, auth):
-    """A reallocation goes only to a restricted fund with the identical purpose, carries a
+    """A reallocation goes only to a restricted fund with the identical purpose (never to an
+    unrestricted fund, even one given the same purpose), carries a
     reason and a donor authorization reference, and needs reallocate_restricted_funds."""
     f = await _setup(client, auth)
     await _gift(session, auth, f["R"])
 
-    async def fund(name, purpose):
+    async def fund(name, purpose, restricted=True):
         return (await client.post("/accounting/funds", headers=auth["headers"], json={
-            "request_key": uuid.uuid4().hex, "name": name, "restricted": True, "purpose": purpose})).json()["id"]
+            "request_key": uuid.uuid4().hex, "name": name, "restricted": restricted, "purpose": purpose})).json()["id"]
 
     same, other = await fund("Library gift two", "Scholarships"), await fund("Roof appeal", "Roof")
+    designated = await fund("Scholarship reserve", "Scholarships", restricted=False)
     ok = {"from_fund": f["R"], "amount": "25", "donor_authorization": "Letter 2026-02"}
-    r = await _post(client, auth, "reallocate", **{**ok, "to_fund": other})
-    assert r.status_code == 422 and _key(r) == "posting.fund.movement_template", r.text
-    r = await _post(client, auth, "reallocate", **{**ok, "to_fund": f["U1"]})
-    assert r.status_code == 422 and _key(r) == "posting.fund.movement_template", r.text
+    for to_fund in (other, f["U1"], designated):
+        r = await _post(client, auth, "reallocate", **{**ok, "to_fund": to_fund})
+        assert r.status_code == 422 and _key(r) == "posting.fund.movement_template", r.text
     r = await _post(client, auth, "reallocate", **{**ok, "to_fund": same, "donor_authorization": " "})
     assert r.status_code == 422 and _key(r) == "posting.fund.reallocation_needs_authorization", r.text
     await _set_role(session, auth, "manager")
@@ -278,7 +282,7 @@ async def test_fund_routes_pass_authenticated_actor(client, session, auth):
     r = await _post(client, auth, "transfer", from_fund=f["U1"], to_fund=f["U2"], amount="5",
                     actor=str(uuid.uuid4()), authorized_by=str(uuid.uuid4()))
     assert r.status_code == 200, r.text
-    entry = (await client.get(f"/accounting/journal-entries/{r.json()['je_id']}", headers=auth["headers"])).json()
+    entry = await _entry(session, auth, r.json()["je_id"])
     assert entry["authorized_by"] == str(auth["user_id"])
     with pytest.raises(RestrictedFundMovement):
         await _emit(session, auth, [("3200", 1, 0, f["U1"]), ("1111", 0, 1, f["U1"]), ("1111", 1, 0, f["U2"]),

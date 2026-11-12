@@ -712,11 +712,15 @@ async def emit_event(
             void=kwargs["event_type"] == "acc.journal_entry.voided",
             reverses=kwargs["data"].get("reverses") if kwargs["event_type"] == "acc.journal_entry.created" else None)
 
-    # A void of an entry in a locked period is dated to an open day instead of mutating
-    # the period: one rule for every void path.
+    # A movement between funds is never voided, only reversed, and a void of an entry in a
+    # locked period is dated to an open day instead of mutating the period: one rule for
+    # every void path.
     if kwargs["event_type"] == "acc.journal_entry.voided":
+        from celerp.services.journal_accounts import check_fund_void
         from celerp.services.posting_dates import void_reversal
 
+        if not restoring:
+            await check_fund_void(session, kwargs.get("company_id"), kwargs["entity_id"])
         await void_reversal(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["data"])
 
     # Enforce period lock
@@ -727,7 +731,7 @@ async def emit_event(
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import hold_fund_ledger, hold_movement_actor
 
-        await hold_fund_ledger(session, kwargs.get("company_id"))
+        await hold_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
         await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
     # Every journal entry change, whoever produced it, is judged against the bank

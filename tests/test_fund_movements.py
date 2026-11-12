@@ -112,6 +112,7 @@ async def test_movement_shape_refused_with_funds_turned_off(client, session, aut
 async def test_movement_refused_for_system_actor(client, session, auth):
     """The system actor cannot move fund money, even inside a grant for that actor."""
     f = await _setup(client, auth)
+    await _emit(session, auth, [("1111", 10, 0, f["U1"]), ("4100", 0, 10, f["U1"])])
     lines = _shapes(f)["c"][0]
     je_id = f"je:fund:{uuid.uuid4()}"
     async with fund_movement_grant(auth["company_id"], je_id, None):
@@ -122,6 +123,7 @@ async def test_movement_refused_for_system_actor(client, session, auth):
 async def test_grant_consumed_once_and_scoped_to_entity(client, session, auth):
     """A grant passes only the entity and actor it was entered for, and only once."""
     f = await _setup(client, auth)
+    await _emit(session, auth, [("1111", 10, 0, f["U1"]), ("4100", 0, 10, f["U1"])])
     lines = _shapes(f)["c"][0]
     je_id = f"je:fund:{uuid.uuid4()}"
     async with fund_movement_grant(auth["company_id"], je_id, auth["user_id"]):
@@ -146,6 +148,7 @@ async def test_grant_not_usable_from_child_task(client, session, auth):
     from celerp import db
 
     f = await _setup(client, auth)
+    await _emit(session, auth, [("1111", 10, 0, f["U1"]), ("4100", 0, 10, f["U1"])])
     lines = _shapes(f)["c"][0]
     je_id = f"je:fund:{uuid.uuid4()}"
     posted = asyncio.Event()

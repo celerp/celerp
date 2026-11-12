@@ -1,22 +1,24 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Funds: the funds setting and fund maintenance.
+"""Funds: the funds setting, fund maintenance and movements between funds.
 
 A fund is an entity (``fund:<id>``) projected from fund.created, fund.updated,
 fund.archived and fund.unarchived. Journal lines name it in ``fund_id``; lines without
 one are the unrestricted group. What a posting may do with funds is judged at the
 journal boundary (journal_accounts.check_fund_rules). Every change here that reads fund
 balances holds the fund ledger exclusively (lock_fund_ledger), so no posting commits
-between the check and the change.
+between the check and the change. Money moves between funds only through
+post_fund_movement, the one caller of the movement grant.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,8 +30,13 @@ from celerp.services.account_roles import role_map, set_role
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import lock_fund_ledger, locked_company
 from celerp.services.company_settings import record_change
-from celerp.services.journal_accounts import FUNDS_ENABLED, funds_by_id, funds_enabled, lock_accounts
-from celerp.services.money import to_decimal
+from celerp.schemas.numbers import PositiveFloat
+from celerp.services.je_keys import je_idempotency_key
+from celerp.services.journal_accounts import (
+    FUND_MOVEMENT_TYPES, FUNDS_ENABLED, fund_account_balances, fund_movement_grant, funds_by_id, funds_enabled,
+    lock_accounts,
+)
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -63,19 +70,7 @@ def _view(fund_id: str, state: dict) -> dict:
 
 async def fund_balances(session: AsyncSession, company_id) -> dict[str, dict[str, Decimal]]:
     """Each fund's non-zero posted balance (debit less credit) by account."""
-    rows = await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))
-    sums: dict[str, dict[str, Decimal]] = {}
-    for (state,) in rows:
-        if (state or {}).get("status") != "posted":
-            continue
-        for line in state.get("entries") or ():
-            if isinstance(line, dict) and line.get("fund_id"):
-                by_account = sums.setdefault(line["fund_id"], {})
-                by_account[line["account"]] = (by_account.get(line["account"], Decimal(0))
-                                               + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
-    return {fund: held for fund, accounts in sums.items()
-            if (held := {code: amount for code, amount in accounts.items() if amount})}
+    return {fund: held for fund, held in (await fund_account_balances(session, company_id)).items() if fund}
 
 
 async def _refuse_held(session: AsyncSession, company_id, fund_ids=None) -> None:
@@ -264,3 +259,205 @@ async def unarchive_fund(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     return await _set_archived(session, company_id, fund_id, False, user)
+
+
+class _Movement(BaseModel):
+    request_key: str
+    date: date
+    reason: str = Field(min_length=1)
+
+
+class TransferIn(_Movement):
+    from_fund: str | None
+    to_fund: str | None
+    amount: PositiveFloat
+    account: str | None = None
+
+
+class BackingIn(BaseModel):
+    je_id: str
+    line_index: int
+    amount: PositiveFloat
+
+
+class ReleaseIn(_Movement):
+    fund: str
+    to_fund: str | None
+    backing: list[BackingIn] = Field(min_length=1)
+    account: str | None = None
+
+
+class ReallocateIn(TransferIn):
+    donor_authorization: str
+
+
+class AssignmentIn(BaseModel):
+    account: str
+    fund: str | None
+    amount: PositiveFloat
+
+
+class OpeningIn(_Movement):
+    assignments: list[AssignmentIn] = Field(min_length=1)
+
+
+class ReverseIn(BaseModel):
+    date: date
+    reason: str = Field(min_length=1)
+
+
+def _distinct(giver: str | None, receiver: str | None) -> None:
+    if giver == receiver:
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.movement_same_fund"))
+
+
+async def _leg_lines(session: AsyncSession, company_id, settings: dict, legs) -> list[dict]:
+    """The journal lines of moving each leg's ``amount`` of ``account`` from the fund
+    ``giver`` to ``receiver`` (None: the unrestricted group): the account changes hands
+    and each fund's net assets (restricted net assets for a restricted fund, retained
+    earnings otherwise) take the other side."""
+    roles = role_map(settings)
+    currency = str(settings.get("currency") or "USD")
+    funds = await funds_by_id(session, company_id)
+    accounts = await lock_accounts(session, company_id, {account for _, _, account, _ in legs}) or {}
+
+    def line(fund_id, account, amount):
+        return {"account": account, "debit": to_stored_float(max(amount, Decimal(0))),
+                "credit": to_stored_float(max(-amount, Decimal(0))), **({"fund_id": fund_id} if fund_id else {})}
+
+    def net_assets(fund_id):
+        restricted = (funds.get(fund_id or "") or {}).get("restricted")
+        return roles.get(AccountRole.RESTRICTED_NET_ASSETS if restricted else AccountRole.RETAINED_EARNINGS)
+
+    lines = []
+    for giver, receiver, account, amount in legs:
+        amount = round_money(to_decimal(amount), currency)
+        if (accounts.get(account) or {}).get("account_type") in ("liability", "equity"):
+            amount = -amount
+        lines += [line(giver, net_assets(giver), amount), line(giver, account, -amount),
+                  line(receiver, account, amount), line(receiver, net_assets(receiver), -amount)]
+    return lines
+
+
+async def post_fund_movement(session: AsyncSession, company_id, *, request_key: str, ts: date, reason: str, actor,
+                             kind: str | None = None, legs=(), reverses: str | None = None,
+                             details: dict | None = None) -> dict:
+    """Post one movement between funds: ``kind`` built from ``legs`` (giver, receiver,
+    account, amount), or the reversal of the movement ``reverses``. It holds the fund
+    ledger exclusively and opens the movement grant for this entry and ``actor`` only;
+    the journal boundary judges the rest (journal_accounts.check_fund_rules). Repeat-safe
+    on ``request_key``: a repeat answers with the entry it posted."""
+    await lock_fund_ledger(session, company_id, shared=False)
+    je_id = f"je:fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{request_key}')}"
+    if await session.get(Projection, (company_id, je_id)) is not None:
+        return {"je_id": je_id}
+    company = await locked_company(session, company_id)
+    if reverses is None:
+        entries = await _leg_lines(session, company_id, company.settings or {}, legs)
+    else:
+        original = await session.get(Projection, (company_id, reverses))
+        state = original.state if original is not None and original.entity_type == "journal_entry" else {}
+        if state.get("je_type") not in FUND_MOVEMENT_TYPES or state.get("status") != "posted":
+            raise HTTPException(status_code=404, detail=catalog_refusal("fund.movement_not_found"))
+        kind = state["je_type"]
+        entries = [{"account": e["account"], "debit": e.get("credit") or 0, "credit": e.get("debit") or 0,
+                    **({"fund_id": e["fund_id"]} if e.get("fund_id") else {})} for e in state.get("entries") or ()]
+    data = {"memo": reason, "ts": ts.isoformat(), "entries": entries, "je_type": kind, "status": "posted",
+            "reason": reason, **({"reverses": reverses} if reverses else {}), **(details or {})}
+    async with fund_movement_grant(company_id, je_id, actor):
+        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                         event_type="acc.journal_entry.created", data=data, actor_id=actor, location_id=None,
+                         source="api", idempotency_key=je_idempotency_key(je_id, kind, "c"), metadata_={})
+    await session.commit()
+    return {"je_id": je_id}
+
+
+async def _account(session: AsyncSession, company_id, chosen: str | None) -> str | None:
+    """The account a movement moves: the one chosen, else the default deposit account."""
+    if chosen:
+        return chosen
+    company = await locked_company(session, company_id)
+    return role_map(company.settings or {}).get(AccountRole.DEFAULT_DEPOSIT)
+
+
+@router.post("/funds/transfer")
+async def transfer_between_funds(
+    payload: TransferIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move money of an account between two unrestricted funds."""
+    _distinct(payload.from_fund, payload.to_fund)
+    account = await _account(session, company_id, payload.account)
+    return await post_fund_movement(
+        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)])
+
+
+@router.post("/funds/release")
+async def release_from_restriction(
+    payload: ReleaseIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Release restricted money to an unrestricted fund for the purpose spending it paid for."""
+    _distinct(payload.fund, payload.to_fund)
+    account = await _account(session, company_id, payload.account)
+    amount = sum((to_decimal(b.amount) for b in payload.backing), Decimal(0))
+    return await post_fund_movement(
+        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        kind="fund_release", legs=[(payload.fund, payload.to_fund, account, amount)],
+        details={"backing": [b.model_dump() for b in payload.backing]})
+
+
+@router.post("/funds/reallocate")
+async def reallocate_restricted_funds(
+    payload: ReallocateIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Move restricted money to another restricted fund of the same purpose, with the donor's authorization."""
+    _distinct(payload.from_fund, payload.to_fund)
+    account = await _account(session, company_id, payload.account)
+    return await post_fund_movement(
+        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        kind="fund_reallocation", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)],
+        details={"donor_authorization": payload.donor_authorization})
+
+
+@router.post("/funds/opening")
+async def opening_balances_by_fund(
+    payload: OpeningIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Assign balances the unrestricted group holds to funds, as the books' opening by fund."""
+    for assignment in payload.assignments:
+        _distinct(None, assignment.fund)
+    return await post_fund_movement(
+        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        kind="fund_opening", legs=[(None, a.fund, a.account, a.amount) for a in payload.assignments])
+
+
+@router.post("/funds/movements/{je_id}/reverse")
+async def reverse_fund_movement(
+    je_id: str,
+    payload: ReverseIn,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo a movement between funds by its reversal. Repeat-safe: reversing it again
+    answers with the same reversal."""
+    return await post_fund_movement(
+        session, company_id, request_key=f"reverse:{je_id}", ts=payload.date, reason=payload.reason, actor=user.id,
+        reverses=je_id)

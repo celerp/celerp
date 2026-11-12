@@ -118,5 +118,76 @@
       "fund",
       "permission"
     ]
+  },
+  "posting.fund.movement_template": {
+    "en": "This movement of {fund} doesn't fit its type. A transfer moves money between unrestricted funds, a release takes restricted money to an unrestricted fund, a reallocation moves it to a restricted fund with the same purpose, and an opening assigns unrestricted balances to funds. Each one only moves balance-sheet accounts between funds.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.movement_income_expense": {
+    "en": "Account {code} is an income or expense account. A movement between funds moves balance-sheet accounts only.",
+    "params": [
+      "code"
+    ]
+  },
+  "posting.fund.movement_exceeds_balance": {
+    "en": "{fund} holds {available} {currency} on account {code}, so it can't give {amount} {currency}.",
+    "params": [
+      "fund",
+      "available",
+      "currency",
+      "code",
+      "amount"
+    ]
+  },
+  "posting.fund.reallocation_needs_authorization": {
+    "en": "Reallocating money of {fund} needs a reason and a reference to the donor's written authorization.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.opening_restricted_negative": {
+    "en": "This opening would leave the net assets of {fund} below zero. Assign the assets that cover its liabilities in the same opening.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.release_backing_missing": {
+    "en": "A release from {fund} must name the purpose spending it pays for: posted expense lines, charged to no fund, that add up to the amount released.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.release_backing_charged": {
+    "en": "That spending is already charged to a fund, so it can't back a release from {fund}. Only spending charged to no fund can.",
+    "params": [
+      "fund"
+    ]
+  },
+  "posting.fund.release_backing_used": {
+    "en": "The spending on account {code} has already been released from restriction, so it can't back this release from {fund} as well.",
+    "params": [
+      "code",
+      "fund"
+    ]
+  },
+  "posting.fund.movement_void": {
+    "en": "This entry moves money of {fund} between funds, so it can't be voided. Reverse it instead.",
+    "params": [
+      "fund"
+    ]
+  },
+  "fund.movement_same_fund": {
+    "en": "Choose two different funds. Money can't move from a fund to itself.",
+    "params": []
+  },
+  "fund.movement_not_found": {
+    "en": "Celerp couldn't find this movement between funds, or it isn't posted.",
+    "params": []
+  },
+  "perm.name.reallocate_restricted_funds": {
+    "en": "Reallocate restricted funds",
+    "params": []
   }
 }

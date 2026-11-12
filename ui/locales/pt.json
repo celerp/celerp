@@ -7488,5 +7488,17 @@
   "posting.fund.stock_unrestricted": "A line on account {code}, which holds stock or its cost, can't carry the restricted fund {fund}. Stock and its cost are held unrestricted.",
   "posting.fund.movement_outside": "This entry moves money of {fund} between funds. Restricted money moves only through Transfer between funds, Release from restriction or Reallocate restricted funds.",
   "posting.fund.movement_needs_user": "Money of {fund} moves between funds only when a person posts the movement, never by an automatic posting.",
-  "posting.fund.movement_permission": "Moving money of {fund} between funds needs the {permission} permission."
+  "posting.fund.movement_permission": "Moving money of {fund} between funds needs the {permission} permission.",
+  "posting.fund.movement_template": "This movement of {fund} doesn't fit its type. A transfer moves money between unrestricted funds, a release takes restricted money to an unrestricted fund, a reallocation moves it to a restricted fund with the same purpose, and an opening assigns unrestricted balances to funds. Each one only moves balance-sheet accounts between funds.",
+  "posting.fund.movement_income_expense": "Account {code} is an income or expense account. A movement between funds moves balance-sheet accounts only.",
+  "posting.fund.movement_exceeds_balance": "{fund} holds {available} {currency} on account {code}, so it can't give {amount} {currency}.",
+  "posting.fund.reallocation_needs_authorization": "Reallocating money of {fund} needs a reason and a reference to the donor's written authorization.",
+  "posting.fund.opening_restricted_negative": "This opening would leave the net assets of {fund} below zero. Assign the assets that cover its liabilities in the same opening.",
+  "posting.fund.release_backing_missing": "A release from {fund} must name the purpose spending it pays for: posted expense lines, charged to no fund, that add up to the amount released.",
+  "posting.fund.release_backing_charged": "That spending is already charged to a fund, so it can't back a release from {fund}. Only spending charged to no fund can.",
+  "posting.fund.release_backing_used": "The spending on account {code} has already been released from restriction, so it can't back this release from {fund} as well.",
+  "posting.fund.movement_void": "This entry moves money of {fund} between funds, so it can't be voided. Reverse it instead.",
+  "fund.movement_same_fund": "Choose two different funds. Money can't move from a fund to itself.",
+  "fund.movement_not_found": "Celerp couldn't find this movement between funds, or it isn't posted.",
+  "perm.name.reallocate_restricted_funds": "Reallocate restricted funds"
 }

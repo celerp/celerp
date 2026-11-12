@@ -240,16 +240,18 @@ async def funds_by_id(session: AsyncSession, company_id, ids=None) -> dict[str, 
     return {entity_id: state or {} for entity_id, state in await session.execute(query)}
 
 
-async def hold_fund_ledger(session: AsyncSession, company_id) -> dict:
+async def hold_fund_ledger(session: AsyncSession, company_id, entity_id=None, actor_id=None) -> dict:
     """Lock the company, read its settings under that lock and, when it has funds turned
-    on, hold its fund ledger shared (lock_fund_ledger) once in this transaction; return
-    the settings. A posting calls it before it locks any other row."""
+    on, hold its fund ledger once in this transaction (lock_fund_ledger): exclusively for
+    the entry a movement grant is open for (``entity_id`` emitted by ``actor_id``), whose
+    cap reads fund balances, shared for every other posting; return the settings. A
+    posting calls it before it locks any other row."""
     from celerp.services.company_lock import lock_company, lock_fund_ledger, noted
 
     await lock_company(session, company_id)
     settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
     if funds_enabled(settings) and not any(c == str(company_id) for c, _ in noted(session, "funds")):
-        await lock_fund_ledger(session, company_id, shared=True)
+        await lock_fund_ledger(session, company_id, shared=_open_grant(company_id, entity_id, actor_id) is None)
     return settings
 
 
@@ -362,10 +364,11 @@ def _moving_fund(entries: list[dict], funds: dict[str, dict]) -> str:
 
 
 async def _authorize_movement(session: AsyncSession, company_id, data: dict, entries: list[dict],
-                              funds: dict[str, dict], *, actor_id, entity_id) -> None:
+                              funds: dict[str, dict], na: dict, *, actor_id, entity_id) -> None:
     """A movement-shaped entry posts only inside the grant for this entity and actor, from a
-    user whose role, read under the company lock (hold_movement_actor), may manage accounting. The actor
-    is recorded on the entry as ``authorized_by``."""
+    user whose role, read under the company lock (hold_movement_actor), may manage accounting.
+    A reallocation, and a reversal that takes money out of a restricted fund, also needs
+    reallocate_restricted_funds. The actor is recorded on the entry as ``authorized_by``."""
     from celerp.services.permissions import missing_permission_refusal, role_has_permission
 
     fund = _moving_fund(entries, funds)
@@ -376,11 +379,226 @@ async def _authorize_movement(session: AsyncSession, company_id, data: dict, ent
     if actor_id is None or grant.authority is None:
         raise RestrictedFundMovement("posting.fund.movement_needs_user", fund=fund)
     role, authority = grant.authority
-    if not role_has_permission(authority, role, "manage_accounting"):
-        raise RestrictedFundMovement(
-            "posting.fund.movement_permission", fund=fund,
-            permission=missing_permission_refusal("manage_accounting")["params"]["label"])
+    needed = ["manage_accounting"]
+    if data.get("je_type") == "fund_reallocation" or (data.get("reverses") and any(
+            v < 0 and _restricted(funds, f) for f, v in na.items())):
+        needed.append("reallocate_restricted_funds")
+    for permission in needed:
+        if not role_has_permission(authority, role, permission):
+            raise RestrictedFundMovement(
+                "posting.fund.movement_permission", fund=fund,
+                permission=missing_permission_refusal(permission)["params"]["label"])
     data["authorized_by"] = str(actor_id)
+
+
+def _restricted(funds: dict[str, dict], fund_id) -> bool:
+    return bool((funds.get(fund_id or "") or {}).get("restricted"))
+
+
+def _fund_name(funds: dict[str, dict], fund_id) -> str:
+    return funds[fund_id]["name"] if fund_id in funds else (fund_id or unrestricted_label())
+
+
+async def fund_account_balances(session: AsyncSession, company_id, *, as_of: str | None = None,
+                                ) -> dict[str | None, dict[str, Decimal]]:
+    """Each fund's (None: the unrestricted group's) non-zero posted balance, debit less
+    credit, by account, counting the entries dated on or before ``as_of`` when given."""
+    from celerp.models.projections import Projection
+    from celerp.services.money import to_decimal
+
+    rows = await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry"))
+    sums: dict[str | None, dict[str, Decimal]] = {}
+    for (state,) in rows:
+        state = state or {}
+        if state.get("status") != "posted" or (as_of and str(state.get("ts") or "")[:10] > as_of):
+            continue
+        for line in state.get("entries") or ():
+            if isinstance(line, dict) and line.get("account"):
+                by_account = sums.setdefault(line.get("fund_id") or None, {})
+                by_account[line["account"]] = (by_account.get(line["account"], Decimal(0))
+                                               + to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0))
+    return {fund: held for fund, accounts in sums.items()
+            if (held := {code: amount for code, amount in accounts.items() if amount})}
+
+
+def _movement_template(funds: dict[str, dict], fund_id) -> RestrictedFundMovement:
+    return RestrictedFundMovement("posting.fund.movement_template", fund=_fund_name(funds, fund_id))
+
+
+async def _check_movement(session: AsyncSession, company_id, data: dict, entries: list[dict],
+                          accounts: dict[str, dict], settings: dict, funds: dict[str, dict],
+                          net_assets: set[str]) -> None:
+    """The template and the cap a movement meets, once _authorize_movement let it post.
+
+    Only a fund movement type or a year close moves money. A year close carries no
+    balance-sheet line but net assets. Every other movement carries no income or expense
+    line (receivables and payables only in an opening), and on each account it only
+    moves the balance between funds (the funds' changes add up to zero). A transfer,
+    release or reallocation has one fund giving net assets and one receiving them, the
+    original orientation read reversed on a reversal: a transfer between two unrestricted
+    funds, a release from a restricted fund to an unrestricted one, a reallocation between
+    restricted funds of one purpose with a reason and a donor authorization. An opening
+    assigns the unrestricted group's balances to funds (a reversal gives them back) and
+    leaves no restricted fund's net assets negative. A fund never gives more of an account
+    than it holds on it at the entry's date, nor gives the opposite side of it. A release
+    names the purpose spending it pays for (_release_backing)."""
+    from celerp.services.money import round_money, to_decimal
+
+    je_type = data.get("je_type")
+    if je_type not in FUND_MOVEMENT_TYPES and je_type != YEAR_CLOSE:
+        raise RestrictedFundMovement("posting.fund.movement_outside", fund=_moving_fund(entries, funds))
+    currency = str(settings.get("currency") or "USD")
+    reverses = bool(data.get("reverses"))
+    moved = [e for e in entries if e["account"] not in net_assets]
+    if je_type == YEAR_CLOSE:
+        for e in moved:
+            if (accounts.get(e["account"]) or {}).get("account_type") in _BALANCE_SHEET_TYPES:
+                raise _movement_template(funds, e.get("fund_id"))
+        return
+
+    parties = set().union(*(scope_codes(settings, role) for role in (AccountRole.RECEIVABLE, AccountRole.PAYABLE)))
+    delta: dict[str, dict[str | None, Decimal]] = {}
+    for e in moved:
+        if (accounts.get(e["account"]) or {}).get("account_type") not in _BALANCE_SHEET_TYPES:
+            raise RestrictedFundMovement("posting.fund.movement_income_expense", code=e["account"])
+        if e["account"] in parties and je_type != "fund_opening":
+            raise _movement_template(funds, e.get("fund_id"))
+        by_fund = delta.setdefault(e["account"], {})
+        fund_id = e.get("fund_id") or None
+        by_fund[fund_id] = by_fund.get(fund_id, Decimal(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+    for code, by_fund in delta.items():
+        by_fund = {f: v for f, v in by_fund.items() if round_money(v, currency)}
+        delta[code] = by_fund
+        if round_money(sum(by_fund.values(), Decimal(0)), currency):
+            raise _movement_template(funds, next(iter(by_fund), None))
+
+    na, _ = fund_measures(entries, accounts, net_assets)
+    na = {f: v for f, v in na.items() if round_money(v, currency)}
+    if je_type == "fund_opening":
+        for code, by_fund in delta.items():
+            if not by_fund.get(None) or any(v * by_fund[None] > 0 for f, v in by_fund.items() if f is not None):
+                raise _movement_template(funds, next(iter(by_fund), None))
+        if not reverses:
+            for fund_id, v in na.items():
+                if v < 0 and _restricted(funds, fund_id):
+                    raise RestrictedFundMovement("posting.fund.opening_restricted_negative", fund=_fund_name(funds, fund_id))
+        givers = {f for by_fund in delta.values() for f in by_fund if (f is not None) == reverses}
+    else:
+        senders = [f for f, v in na.items() if v < 0]
+        receivers = [f for f, v in na.items() if v > 0]
+        involved = {e.get("fund_id") or None for e in entries}
+        if len(senders) != 1 or len(receivers) != 1 or involved != {senders[0], receivers[0]}:
+            raise _movement_template(funds, (senders or receivers or [None])[0])
+        source, target = (receivers[0], senders[0]) if reverses else (senders[0], receivers[0])
+        if je_type == "fund_transfer":
+            allowed = not _restricted(funds, source) and not _restricted(funds, target)
+        elif je_type == "fund_release":
+            allowed = _restricted(funds, source) and not _restricted(funds, target)
+        else:
+            allowed = _restricted(funds, source) and _restricted(funds, target) and (
+                str(funds[source].get("purpose") or "").strip() == str(funds[target].get("purpose") or "").strip())
+        if not allowed:
+            raise _movement_template(funds, source)
+        if je_type == "fund_reallocation" and not (
+                str(data.get("reason") or "").strip() and (reverses or str(data.get("donor_authorization") or "").strip())):
+            raise RestrictedFundMovement("posting.fund.reallocation_needs_authorization", fund=_fund_name(funds, source))
+        givers = {senders[0]}
+        if je_type == "fund_release" and not reverses:
+            await _release_backing(session, company_id, data, round_money(na[target], currency), funds,
+                                   _fund_name(funds, source), currency)
+
+    held = await fund_account_balances(session, company_id, as_of=str(data.get("ts") or "")[:10] or None)
+    for code, by_fund in sorted(delta.items()):
+        for fund_id in sorted((f for f in by_fund if f in givers), key=lambda f: f or ""):
+            change = by_fund[fund_id]
+            balance = round_money(held.get(fund_id, {}).get(code, Decimal(0)), currency)
+            if not balance or (balance > 0) == (change > 0) or abs(balance) < abs(change):
+                available = abs(balance) if balance and (balance > 0) != (change > 0) else Decimal(0)
+                raise RestrictedFundMovement(
+                    "posting.fund.movement_exceeds_balance", fund=_fund_name(funds, fund_id), code=code,
+                    available=str(round_money(available, currency)), amount=str(round_money(abs(change), currency)),
+                    currency=currency)
+
+
+async def _release_backing(session: AsyncSession, company_id, data: dict, amount: Decimal,
+                          funds: dict[str, dict], fund: str, currency: str) -> None:
+    """A release of ``amount`` from ``fund`` names, in ``data["backing"]``, the purpose
+    spending it pays for: posted lines on expense accounts, charged to no fund, adding up
+    to the amount, each line released no further than its own amount less what the
+    releases still standing (not reversed) already took from it."""
+    from celerp.models.projections import Projection
+    from celerp.services.journal_reversals import standing_reversals
+    from celerp.services.money import round_money, to_decimal
+
+    backing = data.get("backing") or []
+    missing = RestrictedFundMovement("posting.fund.release_backing_missing", fund=fund)
+    if not isinstance(backing, list) or not backing:
+        raise missing
+    claims: dict[tuple[str, int], Decimal] = {}
+    for item in backing:
+        if not isinstance(item, dict) or not isinstance(item.get("line_index"), int):
+            raise missing
+        key = (str(item.get("je_id") or ""), item["line_index"])
+        claims[key] = claims.get(key, Decimal(0)) + to_decimal(item.get("amount") or 0)
+    if any(v <= 0 for v in claims.values()) or round_money(sum(claims.values(), Decimal(0)) - amount, currency):
+        raise missing
+
+    rows = await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.in_(sorted({je for je, _ in claims}))))
+    states = {str(eid): state or {} for eid, state in rows}
+    lines = {}
+    for je_id, index in claims:
+        entries = states.get(je_id, {}).get("entries") or []
+        if states.get(je_id, {}).get("status") != "posted" or not 0 <= index < len(entries):
+            raise missing
+        lines[(je_id, index)] = entries[index]
+    accounts = await lock_accounts(session, company_id, {line.get("account") for line in lines.values()}) or {}
+    for line in lines.values():
+        if (accounts.get(line.get("account")) or {}).get("account_type") != "expense":
+            raise missing
+        if line.get("fund_id"):
+            raise RestrictedFundMovement("posting.fund.release_backing_charged", fund=fund)
+
+    taken: dict[tuple[str, int], Decimal] = {}
+    releases = await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.state["je_type"].as_string() == "fund_release"))
+    for eid, state in releases:
+        state = state or {}
+        if state.get("status") != "posted" or state.get("reverses") or await standing_reversals(session, company_id, str(eid)):
+            continue
+        for item in state.get("backing") or ():
+            key = (str(item.get("je_id")), item.get("line_index"))
+            if key in claims:
+                taken[key] = taken.get(key, Decimal(0)) + to_decimal(item.get("amount") or 0)
+    for key, claim in claims.items():
+        line = lines[key]
+        spent = to_decimal(line.get("debit") or 0) - to_decimal(line.get("credit") or 0)
+        if round_money(claim + taken.get(key, Decimal(0)) - spent, currency) > 0:
+            raise RestrictedFundMovement("posting.fund.release_backing_used", fund=fund, code=line.get("account"))
+
+
+async def check_fund_void(session: AsyncSession, company_id, entity_id: str) -> None:
+    """A movement between funds is undone by its reversal, never voided: refuse a void of a
+    stored entry that has a movement shape (_movement_shape). Every void path passes here
+    (events.engine.emit_event)."""
+    from celerp.models.projections import Projection
+
+    state = await session.scalar(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id == entity_id)) or {}
+    entries = [e for e in (state.get("entries") or []) if isinstance(e, dict) and e.get("account")]
+    settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
+    if not entries or not (funds_enabled(settings) or role_map(settings).get(AccountRole.RESTRICTED_NET_ASSETS)):
+        return
+    funds = await funds_by_id(session, company_id, {e["fund_id"] for e in entries if e.get("fund_id")})
+    accounts = await lock_accounts(session, company_id, {e["account"] for e in entries}) or {}
+    restricted_na = set(scope_codes(settings, AccountRole.RESTRICTED_NET_ASSETS))
+    retained = set(scope_codes(settings, AccountRole.RETAINED_EARNINGS))
+    if _movement_shape(state, entries, accounts, settings, funds, restricted_na, retained):
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "posting.fund.movement_void", fund=_moving_fund(entries, funds)))
 
 
 def _check_fund_lines(settings: dict, entries: list[dict], named: set[str], funds: dict[str, dict],
@@ -426,15 +644,15 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
                            actor_id=None, entity_id=None) -> None:
     """The fund rules every journal entry meets, whoever produced it.
 
-    A company that has funds turned on holds its fund ledger shared (lock_fund_ledger)
-    and reads the setting under the company lock, so a fund cap or turning funds off
+    A company that has funds turned on holds its fund ledger (hold_fund_ledger) and reads the setting under the company lock, so a fund cap or turning funds off
     never interleaves with a posting. Then: (1) each fund named exists, and an archived
     one takes no new posting, though a reversal or a restored entry still lands; (2) each
     fund balances on its own, the lines without a fund counting as one; (3) a restricted
     net assets line carries a restricted fund and a retained earnings line never does;
     (7) a line on a stock or stock cost account (STOCK_ROLES) never carries a restricted
-    fund; (4, 6) a movement-shaped entry (_movement_shape), restored copies included,
-    posts only as _authorize_movement allows. With funds off, a new line carrying a fund
+    fund; (4, 5, 6) a movement-shaped entry (_movement_shape), restored copies included,
+    posts only as _authorize_movement allows and meets its type's template and cap
+    (_check_movement). With funds off, a new line carrying a fund
     is refused, and only the movement shapes are judged."""
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
@@ -450,7 +668,9 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
         _check_fund_lines(settings, entries, named, funds, restricted_na, retained, new=new)
 
     if _movement_shape(data, entries, accounts or {}, settings, funds, restricted_na, retained):
-        await _authorize_movement(session, company_id, data, entries, funds, actor_id=actor_id, entity_id=entity_id)
+        na, _ = fund_measures(entries, accounts or {}, restricted_na | retained)
+        await _authorize_movement(session, company_id, data, entries, funds, na, actor_id=actor_id, entity_id=entity_id)
+        await _check_movement(session, company_id, data, entries, accounts or {}, settings, funds, restricted_na | retained)
 
 
 def unrestricted_label() -> str:
