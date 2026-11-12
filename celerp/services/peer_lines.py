@@ -40,10 +40,15 @@ from celerp.accounting_roles import catalog_refusal
 
 FUND_KEYS = ("fund_choice", "fund_id")  # what a local choice sets on a line
 LINE_KEYS = ("origin", *FUND_KEYS)
-HEADER_KEYS = ("origin", "fund_choice", "fund_choice_source")
+# fund_choice_reason: why an outside revision cleared the choices, until a user chooses again.
+HEADER_KEYS = ("origin", "fund_choice", "fund_choice_source", "fund_choice_reason")
 UNRESTRICTED = "unrestricted"  # the choice of no fund
 # What a marked line's money is worked out from: a change to any of them clears the choices.
 _LINE_MONEY_KEYS = ("item_id", "account", "quantity", "unit_price", "discount", "taxes")
+# What an outside revision changed, named in the reason it clears the choices with
+# (fund.choices_cleared_by_source.<change>): the lines, else the total, else the tax.
+_LINE_CHANGES = {"item_id": "lines", "account": "lines", "taxes": "tax"}
+_HEADER_CHANGES = {"doc_taxes": "tax", "tax_rate": "tax"}
 # Where an outside record came from, each with its label (fund.origin.<origin>).
 ORIGINS = frozenset({"file_import", "migration", "connected_company", "accountant", "client",
                      "shared_document", "accounting_system"})
@@ -79,6 +84,21 @@ def granted_from_stored(lines: list, header: Mapping | None = None) -> FundChoic
     return FundChoiceGrant(lines=granted, header={key: header[key] for key in HEADER_KEYS if key in (header or {})})
 
 
+def _checked(funds: Mapping, value, key: str, /, **params):
+    """A choice as given when it is Unrestricted or an active fund of ``funds``; none is
+    refused with ``key``."""
+    if value == UNRESTRICTED:
+        return value
+    if value is None or value == "":
+        raise _refused(422, key, **params)
+    fund = funds.get(value)
+    if fund is None:
+        raise _refused(422, "posting.fund.unknown", fund=str(value))
+    if fund.get("archived"):
+        raise _refused(422, "posting.fund.archived", fund=fund.get("name", value))
+    return value
+
+
 async def require_fund_choices(session, company_id, record: Mapping, *, document: Any = _ABSENT,
                                every: Any = _ABSENT, lines: Mapping[str, Any]) -> FundChoiceGrant:
     """The grant of a local user's choice on ``record``: ``document`` its document choice,
@@ -88,18 +108,6 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
     from celerp.services.journal_accounts import funds_by_id
 
     funds = await funds_by_id(session, company_id)
-
-    def checked(value, missing: str, **params):
-        if value == UNRESTRICTED:
-            return value
-        if value is None or value == "":
-            raise _refused(422, missing, **params)
-        fund = funds.get(value)
-        if fund is None:
-            raise _refused(422, "posting.fund.unknown", fund=str(value))
-        if fund.get("archived"):
-            raise _refused(422, "posting.fund.archived", fund=fund.get("name", value))
-        return value
 
     numbered = {li.get("line_id"): (n, li) for n, li in enumerate(record.get("line_items") or [], 1)
                 if isinstance(li, dict)}
@@ -112,16 +120,16 @@ async def require_fund_choices(session, company_id, record: Mapping, *, document
     granted = {}
     for line_id, (n, line) in numbered.items():
         if line_id in lines:
-            value = checked(lines[line_id], "posting.fund.choice_missing", line=n)
+            value = _checked(funds, lines[line_id], "posting.fund.choice_missing", line=n)
         elif every is not _ABSENT and line.get("origin"):
-            value = checked(every, "posting.fund.choice_missing", line=n)
+            value = _checked(funds, every, "posting.fund.choice_missing", line=n)
         else:
             continue
         granted[line_id] = {"fund_choice": value, "fund_id": None if value == UNRESTRICTED else value}
-    header = {}
+    header = {"fund_choice_reason": None} if record.get("fund_choice_reason") else {}
     if document is not _ABSENT:
-        header = {"fund_choice": checked(document, "posting.fund.document_choice_missing"),
-                  "fund_choice_source": "user"}
+        header.update(fund_choice=_checked(funds, document, "posting.fund.document_choice_missing"),
+                      fund_choice_source="user")
     return FundChoiceGrant(lines=granted, header=header)
 
 
@@ -244,8 +252,8 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
     that arrived from outside (``data["origin"]``) is its own record, each line covered by its
     own choice or the entry's. A line is covered when every line behind it has a choice and
     the line carries the fund that choice gives; stock and stock cost lines carry no fund and
-    need none, nor does the document line behind them on the entry's other lines (the payable
-    for goods added to stock), and a copy of a line the record posted (_copied_legs) keeps the fund it posted
+    need none, nor does a stock line (one whose own legs all go to stock) on the entry's
+    other lines (the payable for goods added to stock), and a copy of a line the record posted (_copied_legs) keeps the fund it posted
     with. Anything else raises FundChoiceNeeded naming the lines to choose for."""
     from celerp.models.projections import Projection
     from celerp.services.journal_accounts import FundChoiceNeeded, stock_codes
@@ -267,7 +275,13 @@ async def check_outside_record(session, company_id, data: Mapping, entries: list
         legs = [(line, line.get("source_lines") or []) for line in entries]
         record = str(state.get("ref_id") or data["record_id"].split(":", 1)[-1])
     stock = stock_codes(dict(settings))
-    stock_lines = {n for line, numbers in legs if line["account"] in stock for n in numbers}
+    # A stock line is one whose own legs (those behind it alone) all go to stock; a leg spread
+    # over several lines (carriage, tax, the payable) says nothing about any one of them.
+    own: dict[int, list[bool]] = {}
+    for line, numbers in legs:
+        if len(numbers) == 1:
+            own.setdefault(numbers[0], []).append(line["account"] in stock)
+    stock_lines = {n for n, flags in own.items() if all(flags)}
     copied = await _copied_legs(session, company_id, data, entries)
     uncovered: set[int] = set()
     refused = False
@@ -296,8 +310,8 @@ def source_label(origin) -> dict:
     return catalog_refusal(f"fund.origin.{origin if origin in ORIGINS else 'unknown'}")
 
 
-def _refused(status: int, message_key: str, /, **params) -> HTTPException:
-    return HTTPException(status_code=status, detail=catalog_refusal(message_key, **params))
+def _refused(status: int, key: str, /, **params) -> HTTPException:
+    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def _marked_or_linked(line: dict) -> bool:
@@ -400,25 +414,32 @@ def _measure(values: Mapping, key: str):
     return None if value in (None, "", 0, [], {}) else value
 
 
-def keep_fund_choices(stored: Mapping, line_set: list | None, written: Mapping) -> tuple[list | None, dict]:
+def keep_fund_choices(stored: Mapping, line_set: list | None, written: Mapping, *,
+                      source: str | None = None) -> tuple[list | None, dict]:
     """Clear the record's fund choices when this write changes its money (LK5): a kept marked
     line's amounts (``_LINE_MONEY_KEYS``) or a header money input in ``written`` (the money
     inputs the write sets, celerp_docs.doc_money.DOC_MONEY_INPUTS, as the engine reads them). Every
-    ``fund_choice`` and the ``fund_id`` of every marked line go, in the same write. Returns
-    the line set to write (the stored lines cleared when the write carries none) and what
-    was cleared, ``{"lines": [line numbers], "document": bool}``; ``(line_set, {})`` when
-    nothing was."""
+    ``fund_choice`` and the ``fund_id`` of every marked line go, in the same write. A revision
+    from outside (``source``, the arrival's origin) also changes the lines when it adds or
+    removes one, and its result names the change as ``reason``, the refusal stored on the
+    record until a user chooses again. Returns the line set to write (the stored lines cleared
+    when the write carries none) and what was cleared, ``{"lines": [line numbers], "document":
+    bool, "reason": refusal}``; ``(line_set, {})`` when nothing was."""
     stored_lines = [li for li in stored.get("line_items") or [] if isinstance(li, dict)]
     held = any(li.get("fund_choice") for li in stored_lines) or bool(stored.get("fund_choice"))
     if not held:
         return line_set, {}
     before = {li.get("line_id"): li for li in stored_lines if li.get("origin")}
-    changed = any(_measure(written, key) != _measure(stored, key)
-                  for key in written if key != "line_items")
+    changes = {_HEADER_CHANGES.get(key, "total") for key in written
+               if key != "line_items" and _measure(written, key) != _measure(stored, key)}
     for line in line_set or ():
         old = before.get(line.get("line_id")) if isinstance(line, dict) else None
-        changed = changed or (old is not None and any(_measure(line, k) != _measure(old, k) for k in _LINE_MONEY_KEYS))
-    if not changed:
+        changes |= {_LINE_CHANGES.get(k, "total") for k in _LINE_MONEY_KEYS
+                    if old is not None and _measure(line, k) != _measure(old, k)}
+    if source is not None and line_set is not None and (
+            [li.get("line_id") for li in line_set if isinstance(li, dict)] != [li.get("line_id") for li in stored_lines]):
+        changes.add("lines")
+    if not changes:
         return line_set, {}
     lines = [dict(li) for li in stored_lines] if line_set is None else line_set
     cleared = []
@@ -427,7 +448,12 @@ def keep_fund_choices(stored: Mapping, line_set: list | None, written: Mapping) 
             cleared.append(n)
         if isinstance(line, dict) and line.get("origin"):
             line.pop("fund_id", None)
-    return lines, {"lines": cleared, "document": bool(stored.get("fund_choice"))}
+    result = {"lines": cleared, "document": bool(stored.get("fund_choice"))}
+    if source is not None:
+        # A price change moves a line's tax amount too: the tax is named only when it alone changed.
+        change = next(c for c in ("lines", "total", "tax") if c in changes)
+        result["reason"] = catalog_refusal(f"fund.choices_cleared_by_source.{change}", source=source_label(source))
+    return lines, result
 
 
 async def records_carrying(session, company_id, keys: tuple[str, ...]) -> list[str]:

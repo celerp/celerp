@@ -840,10 +840,13 @@ async def emit_event(
                     data["fields_changed"].update({key: {"old": None, "new": value} for key, value in marker.items()})
                 else:
                     data.update(marker)
-            # A change to the money of a marked line or of the record clears its fund choices.
-            cleared_lines, fund_choices_cleared = keep_fund_choices(stored, line_set, money)
+            # A change to the money of a marked line or of the record clears its fund choices;
+            # a revision from outside stores why, until a user chooses again.
+            cleared_lines, fund_choices_cleared = keep_fund_choices(stored, line_set, money, source=origin)
             if fund_choices_cleared:
                 cleared = {"fund_choice": None, "fund_choice_source": None} if fund_choices_cleared["document"] else {}
+                if "reason" in fund_choices_cleared:
+                    cleared["fund_choice_reason"] = fund_choices_cleared["reason"]
                 if line_set is None:
                     cleared["line_items"] = cleared_lines
                 if isinstance(data.get("fields_changed"), dict):

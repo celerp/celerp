@@ -371,5 +371,23 @@
       "currency",
       "applicable"
     ]
+  },
+  "fund.choices_cleared_by_source.total": {
+    "en": "The total was changed by {source}: choose the fund again",
+    "params": [
+      "source"
+    ]
+  },
+  "fund.choices_cleared_by_source.lines": {
+    "en": "The lines were changed by {source}: choose the fund again",
+    "params": [
+      "source"
+    ]
+  },
+  "fund.choices_cleared_by_source.tax": {
+    "en": "The tax was changed by {source}: choose the fund again",
+    "params": [
+      "source"
+    ]
   }
 }

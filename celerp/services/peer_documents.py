@@ -301,8 +301,12 @@ async def receive_document(
     except (HTTPException, FundChoiceNeeded) as exc:
         fix = getattr(exc, "fix", None)
         if (fix or {}).get("kind") == "funds":
-            # Held for a local user's choice: the lines to choose for and the document as sent.
+            # Held for a local user's choice: the lines to choose for, the document as sent and
+            # why a revision of it cleared the choices made on its draft.
             exc.fix = {**fix, "kind": DOC_FUNDS, "revision": source_revision, "sent": sent}
+            held = await session.get(Projection, (grant.company_id, claim.target_id), populate_existing=True)
+            if reason := ((held.state or {}) if held is not None else {}).get("fund_choice_reason"):
+                exc.fix["reason"] = reason
         raise
     if source_status == "sent" and target_status != "sent":
         from celerp_docs.routes import DocSendBody, mark_doc_sent
