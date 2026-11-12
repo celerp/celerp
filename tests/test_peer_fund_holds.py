@@ -569,6 +569,82 @@ _LINES = [{"name": "Electricity", "quantity": 1, "unit_price": 50.0, "line_total
            "account_code": "6300", "receive_as": "expense"}]
 
 
+async def _lineless(shape, real_client, real_engine, monkeypatch):
+    """An outside document with no lines in books that use funds, as ``shape`` brings it:
+    (token, books, fund, draft document id or None, held item or None). The import is a
+    record issued with header money only, the one way a lineless document posts."""
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    if shape == "peer":
+        from celerp.services import peer_documents
+        from test_peer_accounts import _bill
+
+        fund = await _funds_client(real_client, firm_tok)
+        sent = peer_documents.transport_document
+        monkeypatch.setattr(peer_documents, "transport_document", lambda state: {**sent(state), "line_items": []})
+        await _bill(real_client, tok, [{"name": "Electricity", "quantity": 1, "unit_price": 80.0, "line_total": 80.0,
+                                        "account_code": "6300", "receive_as": "expense"}], f"lineless-{uuid.uuid4().hex[:6]}")
+        _route_to_app(monkeypatch, [])
+        assert not (await _two_way(client_company, credential))["documents_out"].ok
+        [item] = await _held(real_client, firm_tok, "doc_funds")
+        return firm_tok, _company_of(firm_tok), fund, None, item
+    fund = await _funds_client(real_client, tok)
+    ref = f"LL-{uuid.uuid4().hex[:6]}"
+    if shape == "connector":
+        from celerp.events.engine import connector_upsert
+
+        async with maker(real_engine)() as s:
+            await connector_upsert(s, company_id=uuid.UUID(client_company), entity_type="doc", event_type="doc.created",
+                                   idem_key=f"quickbooks:bill:{ref}", origin="accounting_system", data={
+                                       "doc_type": "bill", "ref_id": ref, "status": "draft", "total": 80,
+                                       "currency": "USD", "line_items": []})
+            await s.commit()
+        return tok, client_company, fund, f"doc:quickbooks:bill:{ref}", None
+    return tok, client_company, fund, None, None
+
+
+async def _issued_lineless(real_client, tok: str, **fund_choices):
+    eid = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    r = await real_client.post("/docs/import/batch", headers=auth(tok), json={**fund_choices, "records": [{
+        "entity_id": eid, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "invoice", "status": "final", "ref_id": eid.split(":")[1], "issue_date": DAY,
+                 "line_items": [], "shipping": 15, "total": 15, "import_treatment": "record_now"}}]})
+    assert r.status_code == 200, r.text
+    return eid, r.json()
+
+
+@pytest.mark.parametrize("shape", ["connector", "import", "peer"])
+async def test_lineless_outside_document_needs_document_choice(real_client, real_engine, monkeypatch, shape):
+    """In books that use funds, an outside document with no lines posts nothing no one chose.
+    A batch import invoice issued with header money only is refused naming the document and
+    asking for its fund, and with the document's fund chosen on the import it posts every
+    leg on that fund. A connected accounting system's draft bill of one total stays a draft,
+    and a connected company's issued bill that arrives without lines stays held, with the
+    fund chosen too: a document with no lines is never finalized."""
+    tok, books, fund, doc, item = await _lineless(shape, real_client, real_engine, monkeypatch)
+    before = dict(await _journals(real_engine, books))
+    if shape == "import":
+        eid, body = await _issued_lineless(real_client, tok)
+        assert body["created"] == 0 and any(
+            e.startswith(f"{eid}: ") and "choose the fund for this document" in e for e in body["errors"]), body
+        assert await _journals(real_engine, books) == before
+        eid, body = await _issued_lineless(real_client, tok, fund_choices={"all": fund})
+        assert body["created"] == 1, body
+        [(_, entry)] = _entries_of(await _journals(real_engine, books), eid)
+        assert {e.get("fund_id") for e in entry["entries"]} == {fund}, entry["entries"]
+        return
+    if item is not None:
+        assert (item["fix"]["document"], item["fix"]["lines"]) == (True, []), item
+        assert item["reason"].endswith("choose the fund for this document."), item
+        r = await _post_held(real_client, tok, item, every=fund)
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == "documents.err_finalize_no_lines", r.text
+        assert len(await _held(real_client, tok, "doc_funds")) == 1
+    else:
+        await _choose_on(real_client, tok, doc, document=fund)
+        r = await real_client.post(f"/docs/{doc}/finalize", headers=auth(tok))
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == "documents.err_finalize_no_lines", r.text
+        assert (await _state(real_client, tok, doc))["status"] == "draft"
+    assert await _journals(real_engine, books) == before
+
 async def _connected_draft(real_client, real_engine, monkeypatch):
     """A client's draft bill of two expense lines copied as a draft into the firm's books,
     which use funds. Returns (tok, firm_tok, client_company, credential, fund, bill, copy)."""
