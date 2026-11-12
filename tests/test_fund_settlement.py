@@ -223,6 +223,9 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     before = await arrive(uuid.uuid4().hex[:8])
     state = (await client.get(f"/docs/{before}", headers=auth["headers"])).json()
     assert state.get("fund_choice") is None, state
+    # An open document with no entry of its own waits for its choice until it has one.
+    waiting = (await client.get("/accounting/funds/waiting", headers=auth["headers"])).json()
+    assert (waiting["count"], waiting["documents"]) == (1, [before]), waiting
     r = await client.post(f"/docs/{before}/fund-choices", headers=auth["headers"],
                           json={"expected_version": state["version"], "document": f["U1"]})
     assert r.status_code == 200, r.text
@@ -236,6 +239,8 @@ async def test_accounting_system_document_takes_fund_choice(client, session, aut
     doc = await arrive(uuid.uuid4().hex[:8])
     state = (await client.get(f"/docs/{doc}", headers=auth["headers"])).json()
     assert (state["fund_choice"], state["fund_choice_source"]) == (f["R"], "default:accounting_system:quickbooks"), state
+    waiting = (await client.get("/accounting/funds/waiting", headers=auth["headers"])).json()
+    assert waiting["count"] == 0, waiting
     # A later sync of an invoice already here keeps the choice it has.
     await arrive(before.rsplit(":", 1)[1], "updated", number="REF")
     state = (await client.get(f"/docs/{before}", headers=auth["headers"])).json()
