@@ -4,12 +4,15 @@
 
 The form parser stops at 1000 fields, so a form whose fields grow with its rows fails once a
 page lists enough of them, with nothing done. A bulk table's selection therefore posts as one
-field (the ticked rows as a JSON list), as Mark as read posts its keys. The guard reads every
+field (the ticked rows as a JSON list), as Mark as read posts its keys, and the Quantities form
+posts its per-line boxes as one JSON object. The guard reads every
 form the subscriptions UI builds from the code, renders each with 3 and with 1001 rows, and
 requires the same fields at both sizes: a new form fails until it is rendered here, and a form
 whose fields grow with its rows fails outright.
 """
 from __future__ import annotations
+
+from datetime import date
 
 import ast
 import json
@@ -63,6 +66,9 @@ RENDERERS = {
     # One form per period row: its own fields never depend on how many rows the table has.
     "_period_actions": lambda n: subs_ui._period_actions("doc:SUB-0", {"period_index": n, "state": "open"}),
     # Plans are options of one box, never fields of their own.
+    # One quantity box per line of the agreement, the lines its own page shows.
+    "_quantities_section": lambda n: subs_ui._quantities_section("doc:SUB-0", {"line_items": [
+        {"line_id": f"line:{i}", "description": f"Seat {i}", "quantity": 1} for i in range(n)]}, date(2026, 1, 1)),
     "_subscriber_form": lambda n: subs_ui._subscriber_form(
         [{"id": f"item:{i}", "name": f"Plan {i}"} for i in range(n)], {"direction": "sales", "kind": "subscription"}),
 }
@@ -81,6 +87,10 @@ def _posted(form) -> list[tuple[str, str]]:
         assert "e.detail.parameters.item=" in subs_ui._CHOSEN_ROWS_JS
         fields.append(("item", json.dumps(
             [c["value"] for c in form.select(".bulk-select") if c.has_attr("checked")])))
+    if form.has_attr("data-quantities"):
+        assert any(subs_ui._QUANTITIES_JS.strip() in js.get_text() for js in form.find_all("script"))
+        assert "e.detail.parameters.quantities=" in subs_ui._QUANTITIES_JS
+        fields.append(("quantities", json.dumps({c["data-line"]: c.get("value", "") for c in form.select(".amend-qty")})))
     return fields
 
 

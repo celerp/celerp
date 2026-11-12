@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
@@ -24,7 +25,8 @@ import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from celerp.accounting_roles import RECOGNIZE_FIELD
-from celerp_subscriptions.billing import ENDED, bills, doc_kind, send_written
+from celerp.services.business_time import business_today
+from celerp_subscriptions.billing import ENDED, amendments_of, bills, doc_kind, lines_on, send_written
 from celerp_subscriptions.periods import shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
@@ -703,6 +705,17 @@ _CHOSEN_ROWS_JS = """
 """
 
 
+_QUANTITIES_JS = """
+(function(){
+  if(window.__celerpQuantities)return;window.__celerpQuantities=true;
+  document.addEventListener('htmx:configRequest',function(e){
+    var f=e.detail.elt.closest('form[data-quantities]');if(!f)return;var q={};
+    f.querySelectorAll('.amend-qty').forEach(function(box){q[box.dataset.line]=box.value;});
+    e.detail.parameters.quantities=JSON.stringify(q);});
+})();
+"""
+
+
 def _bulk_form(*children, **attrs) -> FT:
     """A form over a bulk table: its ticked rows post as the one ``item`` field."""
     return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows=True, **attrs)
@@ -918,6 +931,58 @@ def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
     )
 
 
+def _quantity_text(value) -> str:
+    return EMPTY if value is None else f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _quantities_section(entity_id: str, sub: dict, today) -> FT | str:
+    """Each line's quantity in force today, a box for its new quantity and the date the change
+    takes effect (today unless chosen), and the changes made so far, newest first, each with the
+    documents that settled the days already billed. The boxes post as the one ``quantities``
+    field (a JSON object of line id to quantity), so a long agreement stays under the form's
+    field limit. A change is undone by changing the quantity
+    back from the same date."""
+    lines = [li for li in lines_on(sub, today) if li.get("line_id")]
+    if not lines:
+        return ""
+    by_id = {li["line_id"]: li.get("description") or EMPTY for li in lines}
+
+    def _line_row(li: dict) -> FT:
+        qty = _quantity_text(li.get("quantity"))
+        return Tr(Td(li.get("description") or EMPTY), Td(qty, cls="cell--number"),
+                  Td(Input(type="number", value=qty, min="0", step="any", data_line=li["line_id"],
+                           cls="form-input form-input--inline amend-qty", style="width:90px"), cls="cell--number"))
+
+    def _change_row(a: dict) -> FT:
+        shown_lines = ", ".join(f"{by_id.get(li.get('line_id'), li.get('description') or EMPTY)}: "
+                                f"{_quantity_text(li.get('quantity'))}" for li in a.get("line_items") or [])
+        docs = [A(d.removeprefix("doc:"), href=f"/docs/{d}") for d in (a.get("credit_note_id"), a.get("invoice_id")) if d]
+        return Tr(Td(sentence("subscriptions.amend_from", day=a.get("effective"))), Td(shown_lines or EMPTY),
+                  _sentence_cell(*docs) if docs else Td(EMPTY))
+
+    changes = list(reversed(amendments_of(sub)))
+    return Div(
+        H3(t("subscriptions.quantities_heading")),
+        P(t("subscriptions.quantities_hint"), cls="text-muted"),
+        Form(
+            operation_key_input(),
+            _data_table(Thead(Tr(Th(t("th.description")), Th(t("subscriptions.th_quantity_now"), cls="cell--number"),
+                                 Th(t("subscriptions.th_quantity_new"), cls="cell--number"))),
+                        Tbody(*[_line_row(li) for li in lines])),
+            Div(Label(t("subscriptions.amend_effective"),
+                      Input(type="date", name="effective", value=today.isoformat(), required=True,
+                            cls="form-input form-input--inline")),
+                Button(t("btn.change_quantities"), type="submit", cls="btn btn--primary btn--sm"),
+                cls="form-actions"),
+            Script(_QUANTITIES_JS),
+            hx_post=f"/subscriptions/{entity_id}/amend", hx_swap="none", data_quantities=True,
+        ),
+        _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.quantity")), Th(t("th.document")))),
+                    Tbody(*[_change_row(a) for a in changes])) if changes else "",
+        id="sub-quantities", cls="mt-lg",
+    )
+
+
 def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -> FT | str:
     """Earlier documents that could not be matched to a period on their own: place each in
     the period it billed, or set it aside when it billed no period of its own. Placing one
@@ -1049,7 +1114,7 @@ def _new_button(state: dict, cls: str) -> FT:
     """The list page's New action: a link to its form when it has one, else a blank draft."""
     text = _LIST_TEXT[state["kind"]]
     if text.get("form"):
-        return A(t(text["new"]), href=text["form"], cls=cls)
+        return A(t(text["new"]), href=safe_url(text["form"]), cls=cls)
     return Button(t(text["new"]), hx_post=_new_url(state), hx_swap="none", cls=cls)
 
 
@@ -1583,6 +1648,7 @@ def setup_routes(app) -> None:
                 suppress_pdf=True,
             ),
             _schedule_section(entity_id, doc) if status not in ENDED else "",
+            _quantities_section(entity_id, doc, business_today(tz)) if status in ("active", "paused") else "",
             _billing_section(entity_id, doc, _defers(co_settings, doc)),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule, historical_page=period_before is not None),
@@ -1592,6 +1658,32 @@ def setup_routes(app) -> None:
         )
 
     # --- Lifecycle actions ---
+
+    @app.post("/subscriptions/{entity_id}/amend")
+    async def subscription_amend_ui(request: Request, entity_id: str):
+        """The Quantities form: each line's new quantity from the effective date (billing.amend)."""
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        try:
+            posted = json.loads(str(form.get("quantities", "")))
+            quantities = {str(line): float(str(qty).strip()) for line, qty in posted.items()}
+        except (ValueError, AttributeError):
+            quantities = {"": math.nan}
+        if not all(math.isfinite(q) for q in quantities.values()):
+            return _action_error(t("subscriptions.err_amend_quantity"))
+        body = {"effective": str(form.get("effective", "")).strip(), "quantities": quantities,
+                "request_key": str(form.get(FIELD, "")).strip()}
+        try:
+            done = await api.amend_subscription(token, entity_id, body)
+        except APIError as e:
+            return _refused(e)
+        said = (sentence("subscriptions.done_amended_settled", day=done["effective"],
+                         credit_note=done["credit_note_id"].removeprefix("doc:"),
+                         document=done["invoice_id"].removeprefix("doc:"))
+                if done.get("credit_note_id") else sentence("subscriptions.done_amended", day=done["effective"]))
+        return _done(f"/subscriptions/{entity_id}", said)
 
     @app.post("/subscriptions/{entity_id}/{action}")
     async def subscription_action_ui(request: Request, entity_id: str, action: str):

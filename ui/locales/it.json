@@ -7808,5 +7808,14 @@
   "subscriptions.err_amend_line": "This subscription has no such line. Reload the page and try again.",
   "subscriptions.err_amend_unchanged": "These are already the quantities on that date, so nothing would change.",
   "subscriptions.err_amend_draft": "This subscription is still a draft. Change its lines on its page instead.",
-  "subscriptions.history_amended": "Quantities changed from {day}"
+  "subscriptions.history_amended": "Quantities changed from {day}",
+  "subscriptions.quantities_heading": "Quantities",
+  "subscriptions.quantities_hint": "Change a quantity, such as the number of seats, from a date. Periods from that date bill the new quantity. If the date falls in a period already billed, a credit note and a new document settle the days left. To undo a change, change the quantity back from the same date.",
+  "subscriptions.th_quantity_now": "Now",
+  "subscriptions.th_quantity_new": "New quantity",
+  "subscriptions.amend_effective": "From",
+  "btn.change_quantities": "Change quantities",
+  "subscriptions.amend_from": "From {day}",
+  "subscriptions.done_amended": "Quantities changed from {day}.",
+  "subscriptions.done_amended_settled": "Quantities changed from {day}. {credit_note} credits the days already billed and {document} bills them at the new quantities."
 }

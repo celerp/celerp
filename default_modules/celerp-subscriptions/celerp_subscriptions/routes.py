@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
+from celerp.schemas.numbers import FiniteFloat
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
@@ -74,7 +75,7 @@ class RequestBody(BaseModel):
 
 class AmendBody(BaseModel):
     effective: date
-    quantities: dict[str, float] = Field(..., min_length=1)  # line id -> its quantity from ``effective``
+    quantities: dict[str, FiniteFloat] = Field(..., min_length=1)  # line id -> its quantity from ``effective``
     request_key: str = Field(..., min_length=1, max_length=200)
 
 

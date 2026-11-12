@@ -2316,6 +2316,11 @@ async def subscription_action(token: str, entity_id: str, action: str, body: dic
         return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
 
 
+async def amend_subscription(token: str, entity_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/amend", json=body)).json()
+
+
 async def get_subscription_periods(token: str, entity_id: str, *, before: int | None = None) -> dict:
     """Returns one bounded page, newest period first, with an older-page cursor."""
     async with _api_client(token) as c:

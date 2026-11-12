@@ -168,6 +168,20 @@ async def _lifecycle(ui, session, monkeypatch, arm):
     assert (await ui.api.get(f"/docs/{eid}")).json()["status"] == "paused"
 
 
+async def _amend(ui, session, monkeypatch, arm):
+    """A change inside a billed period names its date and the two documents that settle it."""
+    eid = await _due(ui, monkeypatch)
+    assert (await ui.post(f"/subscriptions/{eid}/generate-due", data={"idempotency_key": "k4"})).status_code < 400
+    line = (await ui.api.get(f"/docs/{eid}")).json()["line_items"][0]
+    arm()
+    r = await ui.post(f"/subscriptions/{eid}/amend", data={
+        "effective": "2026-07-01",
+        "quantities": json.dumps({line["line_id"]: float(line.get("quantity") or 1) + 1}),
+        "idempotency_key": "k5"})
+    _not_refused(r)
+    _facts_hold(_answer_text(r), await _fresh(ui.api, eid))
+
+
 async def _period(ui, session, monkeypatch, arm):
     """Skip names the dates it skipped; a send says what happened to the email, as stored."""
     _no_email(monkeypatch)
@@ -254,6 +268,7 @@ SCENARIOS = {
     "POST /subscriptions/catch-up/{action}": _catch_up,
     "POST /subscriptions/summary/ack": _summary_ack,
     "POST /subscriptions/new": _new,
+    "POST /subscriptions/{entity_id}/amend": _amend,
     "POST /subscriptions/{entity_id}/{action}": _lifecycle,
     "POST /subscriptions/{entity_id}/periods/{k}/{action}": _period,
     "POST /subscriptions/{entity_id}/history/{doc_id}/{action}": _history,

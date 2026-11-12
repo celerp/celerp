@@ -1586,6 +1586,50 @@
       "params": [
         "day"
       ]
+    },
+    "subscriptions.quantities_heading": {
+      "en": "Quantities",
+      "params": []
+    },
+    "subscriptions.quantities_hint": {
+      "en": "Change a quantity, such as the number of seats, from a date. Periods from that date bill the new quantity. If the date falls in a period already billed, a credit note and a new document settle the days left. To undo a change, change the quantity back from the same date.",
+      "params": []
+    },
+    "subscriptions.th_quantity_now": {
+      "en": "Now",
+      "params": []
+    },
+    "subscriptions.th_quantity_new": {
+      "en": "New quantity",
+      "params": []
+    },
+    "subscriptions.amend_effective": {
+      "en": "From",
+      "params": []
+    },
+    "btn.change_quantities": {
+      "en": "Change quantities",
+      "params": []
+    },
+    "subscriptions.amend_from": {
+      "en": "From {day}",
+      "params": [
+        "day"
+      ]
+    },
+    "subscriptions.done_amended": {
+      "en": "Quantities changed from {day}.",
+      "params": [
+        "day"
+      ]
+    },
+    "subscriptions.done_amended_settled": {
+      "en": "Quantities changed from {day}. {credit_note} credits the days already billed and {document} bills them at the new quantities.",
+      "params": [
+        "credit_note",
+        "day",
+        "document"
+      ]
     }
   },
   "modules": {
