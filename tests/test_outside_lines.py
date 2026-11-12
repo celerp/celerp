@@ -446,10 +446,10 @@ async def _gift_fund(client, auth) -> str:
     return await _fund(client, auth, "Library gift")
 
 
-def _needs_choice(r, record: str, lines: list[int]) -> None:
+def _needs_choice(r, record: str, lines: list[int], origin: str = ORIGIN) -> None:
     assert r.status_code == 409 and _key(r) == "posting.fund.choice_needed", r.text
     detail = r.json()["detail"]
-    assert detail["params"]["record"] == record and detail["params"]["source"]["message_key"] == "fund.origin.file_import"
+    assert detail["params"]["record"] == record and detail["params"]["source"]["message_key"] == f"fund.origin.{origin}"
     assert r.json()["fix"] == {"kind": "funds", "document": True, "lines": lines}, r.json()
 
 
@@ -483,7 +483,8 @@ async def test_outside_line_without_choice_refused_at_prepare(client, session, a
     await session.rollback()
 
 
-@pytest.mark.parametrize("shape", ["lines", "bill", "po_receipt", "opening_held"])
+@pytest.mark.parametrize("shape", ["lines", "bill", "po_receipt", "opening_held", "credit_note", "debit_note",
+                                   "list_copy", "shared_book", "connector", "migration"])
 async def test_outside_choice_check_covers_every_posting_entry_point(client, session, auth, monkeypatch, shape):
     """An outside record with a leg no choice covers is refused at finalize with the J9c
     refusal, nothing posts and the draft stays a draft; its twin with a choice posts with that
@@ -497,6 +498,11 @@ async def test_outside_choice_check_covers_every_posting_entry_point(client, ses
         return await _po_receipt_needs_choice(client, session, auth, gift)
     if shape == "opening_held":
         return await _opening_held_needs_choice(client, session, auth, gift)
+    if shape in _FINALIZED:
+        made = _FINALIZED[shape](client, auth, session) if shape == "connector" else _FINALIZED[shape](client, auth)
+        return await _finalize_needs_choice(client, session, auth, gift, *await made)
+    if shape == "migration":
+        return await _migration_needs_choice(client, session, auth)
     item = await _item(client, auth, "Outside")
     if shape == "lines":
         doc = await _imported(client, auth, [_line(item, "Outside", 40), _line(item, "Outside", 60)])
@@ -599,6 +605,104 @@ async def _opening_held_needs_choice(client, session, auth, gift: str) -> None:
     [reversal] = await _entry_ids(session, auth) - before
     legs = (await _entry_state(session, auth["company_id"], reversal))["entries"]
     assert {leg.get("fund_id") for leg in legs} == {gift}, legs
+
+
+async def _finalize_needs_choice(client, session, auth, gift: str, doc: str, uncovered: list[int], origin: str) -> None:
+    """Finalize of an outside draft is refused naming its uncovered lines, nothing posts and
+    the draft stays a draft; with a document choice every leg posts to that fund."""
+    ref = (await _doc(client, auth, doc))["ref_id"]
+    before = await _entry_ids(session, auth)
+    _needs_choice(await _post(client, auth, f"/docs/{doc}/finalize"), ref, uncovered, origin)
+    assert (await _doc(client, auth, doc))["status"] == "draft"
+    assert await _entry_ids(session, auth) == before
+    assert (await _choose(client, auth, doc, document=gift)).status_code == 200
+    r = await _post(client, auth, f"/docs/{doc}/finalize")
+    assert r.status_code == 200, r.text
+    posted = await _entry_ids(session, auth) - before
+    assert posted
+    for entry in posted:
+        legs = (await _entry_state(session, auth["company_id"], entry))["entries"]
+        assert {leg.get("fund_id") for leg in legs} == {gift}, legs
+
+
+async def _note(client, auth, doc_type: str) -> tuple[str, list[int], str]:
+    """An unlinked credit or debit note brought in by the document import."""
+    line = {**_line(None, "Supplies", 25), "receive_as": "expense"} if doc_type == "debit_note" else \
+        _line(await _item(client, auth, "Outside"), "Outside", 25)
+    return await _imported(client, auth, [line], doc_type=doc_type, contact_id="contact:1"), [1], ORIGIN
+
+
+async def _credit_note(client, auth):
+    return await _note(client, auth, "credit_note")
+
+
+async def _debit_note(client, auth):
+    return await _note(client, auth, "debit_note")
+
+
+async def _list_copy(client, auth) -> tuple[str, list[int], str]:
+    """An imported List duplicated, the copy finalized and converted to an invoice."""
+    item = await _item(client, auth, "Outside")
+    eid = f"list:IMP-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/lists/import", headers=auth["headers"], json={
+        "entity_id": eid, "event_type": "list.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"list_type": "quotation", "status": "draft", "line_items": [_line(item, "Outside", 40)]}})
+    assert r.status_code == 200, r.text
+    copy = (await client.post(f"/lists/{eid}/duplicate", headers=auth["headers"])).json()["id"]
+    assert (await client.post(f"/lists/{copy}/finalize", headers=auth["headers"])).status_code == 200
+    r = await client.post(f"/lists/{copy}/convert", headers=auth["headers"], json={"target_type": "invoice"})
+    assert r.status_code == 200, r.text
+    return r.json().get("target_doc_id") or r.json()["id"], [1], ORIGIN
+
+
+async def _shared_book(client, auth) -> tuple[str, list[int], str]:
+    """A supplier's invoice received as a shared document and booked as a draft bill."""
+    from test_received_documents import _bundle, _doc as _sent
+
+    sent = {**_sent("invoice", f"S-{uuid.uuid4().hex[:6]}"), "line_items": [
+        {"description": "Supplies", "quantity": 1, "unit_price": 30}]}
+    r = await client.post("/docs/import-bundle", json=_bundle(sent, document=f"doc:{uuid.uuid4().hex[:6]}"),
+                          headers=auth["headers"], follow_redirects=False)
+    assert r.status_code == 302, r.text
+    rid = r.headers["location"].rsplit("/", 1)[-1]
+    r = await client.post(f"/docs/received/{rid}/book", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    return r.json()["id"], [1], "shared_document"
+
+
+async def _connector(client, auth, session) -> tuple[str, list[int], str]:
+    """An invoice written by the accounting-system connector's upsert, as QuickBooks maps one."""
+    from celerp.events.engine import connector_upsert
+
+    qid = uuid.uuid4().hex[:8]
+    await connector_upsert(
+        session, company_id=auth["company_id"], entity_type="doc", event_type="doc.created",
+        idem_key=f"quickbooks:invoice:{qid}", origin="accounting_system", data={
+            "doc_type": "invoice", "ref_id": f"QB-{qid}", "status": "draft", "total": 50, "currency": "USD",
+            "line_items": [{"name": "Consulting", "quantity": 1, "unit_price": 50, "line_total": 50}]})
+    await session.commit()
+    return f"doc:quickbooks:invoice:{qid}", [1], "accounting_system"
+
+
+_FINALIZED = {"credit_note": _credit_note, "debit_note": _debit_note, "list_copy": _list_copy,
+              "shared_book": _shared_book, "connector": _connector}
+
+
+async def _migration_needs_choice(client, session, auth) -> None:
+    """The migration sink's writer, the journal import marked ``migration``, rejects a record
+    whose lines no choice covers with the J9c refusal, and posts nothing."""
+    from celerp_accounting.import_service import AccImportRecord, import_journal_records
+
+    before = await _entry_ids(session, auth)
+    outcome = await import_journal_records(session, auth["company_id"], auth["user_id"], [
+        AccImportRecord(entity_id=f"je:{uuid.uuid4()}", event_type="acc.journal_entry.created", source="migration",
+                        idempotency_key=uuid.uuid4().hex, data={"status": "posted", "ts": "2026-01-16", "memo": "Migrated",
+                        "entries": [{"account": "1111", "debit": 9.0, "credit": 0},
+                                    {"account": "4100", "debit": 0, "credit": 9.0}]})], origin="migration")
+    await session.commit()
+    [record] = outcome.records
+    assert record.status == "failed" and "choose the fund for this document" in str(record.message), record
+    assert await _entry_ids(session, auth) == before
 
 
 async def _no_check(*_args, **_kwargs) -> None:
