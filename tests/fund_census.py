@@ -100,3 +100,55 @@ def census(repo: pathlib.Path = REPO, roots=APP_ROOTS) -> tuple[set[str], set[st
         variable |= visitor.variable
     producers.discard(f"{_AUTO_JE}:_emit_auto_posted_je")
     return producers, variable - producers
+
+
+_VOIDED = "acc.journal_entry.voided"
+_UNDO_HELPERS = frozenset({"_void_je_if_posted"})
+
+
+class _Undo(ast.NodeVisitor):
+    """Each function that voids an entry (a voided event, or the per-entry void helper), with
+    every name its outermost function calls."""
+
+    def __init__(self, module: str):
+        self.module, self.stack = module, []
+        self.undo: set[str] = set()
+        self.calls: dict[str, set[str]] = {}
+
+    def _function(self, node) -> None:
+        self.stack.append(node.name)
+        if len(self.stack) == 1:
+            self.calls[node.name] = {_name(c.func) for c in ast.walk(node) if isinstance(c, ast.Call)}
+        self.generic_visit(node)
+        self.stack.pop()
+
+    visit_FunctionDef = visit_AsyncFunctionDef = _function
+
+    def visit_ClassDef(self, node) -> None:
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        value = _event_type(node)
+        if self.stack and ((isinstance(value, ast.Constant) and value.value == _VOIDED)
+                           or _name(node.func) in _UNDO_HELPERS):
+            self.undo.add(":".join((self.module, ".".join(self.stack))))
+        self.generic_visit(node)
+
+
+
+def undo_census(repo: pathlib.Path = REPO, roots=APP_ROOTS, extra=()) -> dict[str, set[str]]:
+    """Every function that voids a journal entry, plus ``extra`` (the producers the fund rule
+    table says reverse one) -> the names its outermost function calls (a nested helper is
+    judged by the function holding it)."""
+    out: dict[str, set[str]] = {}
+    for module, path in sources(repo, roots):
+        visitor = _Undo(module)
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        for name in visitor.undo | {n for n in extra if n.split(":", 1)[0] == module}:
+            outer = name.split(":", 1)[1].split(".", 1)[0]
+            out[name] = visitor.calls.get(outer, set())
+    for helper in _UNDO_HELPERS:
+        out.pop(f"{_AUTO_JE}:{helper}", None)
+    return out

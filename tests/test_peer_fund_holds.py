@@ -850,3 +850,64 @@ async def test_fund_id_never_crosses_companies(real_client, real_engine, monkeyp
     assert copy is None and await _held(real_client, firm_tok, "doc_funds") == []
     [entry] = results["documents_out"].attention
     assert "Line 1" in entry["reason"] and "fund_id" in entry["reason"], entry
+
+
+async def _version_of(engine, company_id: str, entity_id: str) -> int:
+    from celerp.models.projections import Projection
+
+    async with maker(engine)() as s:
+        return (await s.get(Projection, {"company_id": uuid.UUID(company_id), "entity_id": entity_id})).version
+
+
+async def _fund_bank(engine, company_id: str, fund: str):
+    from celerp.services.journal_accounts import fund_account_balances
+
+    async with maker(engine)() as s:
+        return (await fund_account_balances(s, uuid.UUID(company_id))).get(fund, {}).get(BANK, 0)
+
+
+async def test_change_fund_on_firm_journal_then_undo(real_client, real_engine, monkeypatch):
+    """Two journals of the firm posted at the client on the unrestricted funds, each moved to
+    the restricted fund by Change fund. Reverse from accountant asked from the original's row
+    reverses the copy, and asked again from the copy's row answers with that same reversal:
+    the restricted fund ends at zero. The firm's void of the other journal, arriving by sync,
+    voids its copy. Nothing the change wrote reaches the firm."""
+    from celerp.services.peer_journals import local_id, reversal_id
+
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    fund = await _funds_client(real_client, tok)
+    lines = [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)]
+    firm_jes = [await _journal(real_client, firm_tok, memo, lines) for memo in ("Interest received", "Refund received")]
+    _route_to_app(monkeypatch, [])
+    await _two_way(client_company, credential)
+    for item in await _held(real_client, tok):
+        assert (await _post_held(real_client, tok, item, every="unrestricted")).status_code == 200
+    firm_before = await _journals(real_engine, firm_company)
+    copies = []
+    for firm_je in firm_jes:
+        je_id = local_id(uuid.UUID(firm_company), firm_je)
+        r = await real_client.post(f"/accounting/journal/{je_id}/change-fund", headers=auth(tok), json={
+            "expected_version": await _version_of(real_engine, client_company, je_id),
+            "request_key": uuid.uuid4().hex, "reason": "Belongs to the grant", "all": fund})
+        assert r.status_code == 200, r.text
+        copies.append((je_id, r.json()["copies"][je_id]))
+    assert await _fund_bank(real_engine, client_company, fund) == 200
+    results = await _two_way(client_company, credential)
+    assert all(res.ok for res in results.values()), {k: res.errors for k, res in results.items()}
+    assert await _journals(real_engine, firm_company) == firm_before, "nothing the change wrote reaches the firm"
+
+    (original, copy), (other, other_copy) = copies
+    r = await real_client.post(f"/accounting/journal-entries/{original}/reverse", headers=auth(tok))
+    assert r.status_code == 200 and r.json()["je_id"] == reversal_id(copy), r.text
+    again = await real_client.post(f"/accounting/journal-entries/{copy}/reverse", headers=auth(tok))
+    assert again.status_code == 200 and again.json() == {**r.json(), "already": True}, again.text
+
+    r = await real_client.post(f"/accounting/journal-entries/{firm_jes[1]}/void", headers=auth(firm_tok),
+                               json={"reason": "Wrong"})
+    assert r.status_code == 200, r.text
+    results = await _two_way(client_company, credential)
+    assert all(res.ok for res in results.values()), {k: res.errors for k, res in results.items()}
+    journals = await _journals(real_engine, client_company)
+    assert journals[other_copy]["status"] == "void"
+    assert await _fund_bank(real_engine, client_company, fund) == 0

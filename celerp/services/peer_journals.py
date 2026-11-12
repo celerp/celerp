@@ -175,7 +175,9 @@ async def _caller_grant(session: AsyncSession, ctx):
 
 async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
     """The firm's own manual journal entries after ``after``, posted or voided, for the
-    client its key belongs to; never one that came from that client. A line naming a
+    client its key belongs to; never one that came from that client or another company
+    (``peer_origin``), and never the void of an entry Change fund replaced (``replaced_by``):
+    a fund change stays in these books, as fund ids never cross a company. A line naming a
     contact the client does not hold is held back with the reason. Each entry carries
     the firm's accounts its lines name, with their parents, for the client to place."""
     grant = await _caller_grant(session, ctx)
@@ -191,6 +193,8 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
         Projection.state["je_type"].as_string() == "manual",
         Projection.state["status"].as_string().in_(("posted", "void")),
         Projection.state["peer_source"].as_string().is_(None),
+        Projection.state["peer_origin"].as_string().is_(None),
+        Projection.state["replaced_by"].as_string().is_(None),
         Projection.entity_id.not_in(mapped),
     ).order_by(Projection.entity_id).limit(_PAGE))).all()
     contacts = dict((await session.execute(select(
@@ -288,7 +292,11 @@ class _Answered(BaseModel):
 
 
 async def _firm_journal(session: AsyncSession, company_id: uuid.UUID, je_id: str) -> dict | None:
-    row = await session.get(Projection, (company_id, je_id))
+    """A journal as it stands, read at its live entry: the copy Change fund posted in its
+    place, when it did (auto_je.current_entry)."""
+    from celerp.services.auto_je import current_entry
+
+    row = await session.get(Projection, (company_id, await current_entry(session, company_id, je_id)))
     return dict(row.state or {}) if row is not None and row.entity_type == "journal_entry" else None
 
 
@@ -391,10 +399,13 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
     if claim.replay:
         return "skipped"
     if claim.mapping is not None:
-        state = await _firm_journal(session, company_id, claim.target_id) or {}
+        from celerp.services.auto_je import current_entry
+
+        live = await current_entry(session, company_id, claim.target_id)
+        state = await _firm_journal(session, company_id, live) or {}
         if journal.status == "void" and state.get("status") == "posted":
             await emit_event(
-                session, company_id=company_id, entity_id=claim.target_id,
+                session, company_id=company_id, entity_id=live,
                 entity_type="journal_entry", event_type="acc.journal_entry.voided",
                 data=je_void_data(f"Voided by {grant.label}", state), actor_id=None,
                 location_id=None, source="connector",
@@ -582,6 +593,7 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
     chooses a fund for each line (post_held). The firm hears of a decline, and of
     a posting that follows one, through the answer the caller sends (answered)."""
     from celerp.db import get_session_ctx
+    from celerp.services.auto_je import current_entry
     from celerp.services.journal_accounts import FundChoiceNeeded
 
     firm_je, revision = str(item.get("id") or ""), item.get("revision")
@@ -596,6 +608,11 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
         existing = await session.get(Projection, (company_id, je_id))
         state = dict(existing.state or {}) if existing is not None else None
         if item.get("status") == "void":
+            if state is not None:
+                # The firm voids the entry standing for its journal: the copy Change fund
+                # posted in its place, when it did.
+                je_id = await current_entry(session, company_id, je_id)
+                state = await _firm_journal(session, company_id, je_id)
             if state is not None and state.get("status") == "posted":
                 # A reversal posted here before the firm's void arrived already cancels the
                 # entry; it is voided with it, so the entry is cancelled once.
@@ -883,7 +900,12 @@ def reverse_day(settings: dict, original) -> tuple[str | None, str | None]:
 async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id: str) -> dict:
     """Reverse a journal the firm posted, or undo such a reversal by reversing it: one
     reversal each, posted on reverse_day, with a notice when it posts today instead of the
-    entry's own date. The reversal reaches the firm on the next sync. Commits."""
+    entry's own date. The reversal reaches the firm on the next sync. Commits. Asked from an
+    entry Change fund replaced, it reverses the copy standing in its place
+    (auto_je.current_entry), so the entry is reversed once whichever row it is asked from."""
+    from celerp.services.auto_je import current_entry
+
+    je_id = await current_entry(session, company_id, je_id)
     row = await session.get(Projection, (company_id, je_id))
     state = dict(row.state or {}) if row is not None and row.entity_type == "journal_entry" else None
     if state is None:

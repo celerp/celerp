@@ -2951,10 +2951,11 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
 async def void_supplier_return(session, *, company_id, user_id, doc_id: str, return_key: str,
                                note_id: str) -> None:
     """Reverse the entries one return to the supplier posted on a document (the goods, their
-    corrected cost and their landed cost), when the supplier credit note it raised is voided.
-    An entry already void is skipped, so a retry reverses nothing twice."""
+    corrected cost and their landed cost), when the supplier credit note it raised is voided,
+    each at the entry standing for it (current_entry). An entry already void is skipped, so a
+    retry reverses nothing twice."""
     for kind in ("rtn", "rtn-value", "landed-rtn"):
-        je_id = f"je:auto:{doc_id}:{kind}:{return_key}"
+        je_id = await current_entry(session, company_id, f"je:auto:{doc_id}:{kind}:{return_key}")
         await _void_je_if_posted(
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=je_id,
             idem_key=f"{je_id}:void:{note_id}", reason=f"Reversed: supplier credit note {note_id} voided",

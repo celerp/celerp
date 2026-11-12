@@ -447,3 +447,85 @@ async def test_source_void_unchanged_in_every_company(client, session, auth, fun
         assert "replaced_by" not in (await _ledger(session, auth, f"je:auto:{doc}:{live}"))[-1].data
         restored = await _state(session, auth, f"je:auto:{doc}:fin:unvoid:{cycle}")
         assert restored["status"] == "posted" and _shape(restored["entries"]) == _shape(original["entries"])
+
+
+# ── what undoes a changed record ───────────────────────────────────────────────────────
+
+async def _standing(session, auth, prefix: str) -> dict:
+    """(fund, account) -> what the posted entries under ``prefix`` hold, zeros left out."""
+    session.expire_all()
+    out: dict = {}
+    for row in (await session.scalars(select(Projection).where(
+            Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
+            Projection.entity_id.startswith(prefix, autoescape=True)))).all():
+        if (row.state or {}).get("status") != "posted":
+            continue
+        for e in row.state.get("entries") or []:
+            key = (e.get("fund_id"), e["account"])
+            out[key] = out.get(key, Decimal(0)) + Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+    return {k: v for k, v in out.items() if v}
+
+
+async def _outside_bill(client, auth, fund: str, amount=30) -> str:
+    """An open bill for supplies brought in by the document import on ``fund``; it posts on import."""
+    doc = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    record = _issued_import(doc, [{**_line(None, "Supplies", amount), "receive_as": "expense"}])
+    record["data"].update(doc_type="bill", contact_id="supplier:1")
+    r = await client.post("/docs/import/batch", headers=auth["headers"], json={
+        "records": [record], "fund_choices": {"records": {doc: fund}}})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    return doc
+
+
+@pytest.mark.parametrize("kind", ["invoice", "bill"])
+async def test_change_fund_then_undo_leaves_every_fund_zero(client, session, auth, kind):
+    """Post, Change fund, then the source void: the record's own entries leave every fund at
+    zero on every account they touch, the copy voided with them; unvoid restores the changed
+    fund, not the one the record was posted on."""
+    from test_credit_note_settlement_owned import _post
+
+    f = await _setup(client, auth)
+    if kind == "invoice":
+        doc, before, after = await _outside_invoice(client, auth, f["R"]), f["R"], None
+        r = await _change_doc(client, session, auth, doc, document="unrestricted")
+    else:
+        doc, before, after = await _outside_bill(client, auth, "unrestricted"), None, f["U1"]
+        r = await _change_doc(client, session, auth, doc, document=f["U1"])
+    assert r.status_code == 200, r.text
+    prefix = f"je:auto:{doc}:"
+    changed = await _standing(session, auth, prefix)
+    assert changed and {fund for fund, _ in changed} == {after}, changed
+    assert before not in {fund for fund, _ in changed}
+
+    assert (await _post(client, auth, f"/docs/{doc}/void", {"reason": "Raised in error"})).status_code == 200
+    assert await _standing(session, auth, prefix) == {}
+    assert (await _post(client, auth, f"/docs/{doc}/unvoid")).status_code == 200
+    assert await _standing(session, auth, prefix) == changed
+
+
+async def test_change_fund_opening_held_document_refused(client, session, auth):
+    """A purchase order imported into books whose opening balances hold it, billed since:
+    Change fund is refused with the opening-balance message, nothing written; a document the
+    opening balances do not hold changes."""
+    from test_cost_restatement import _item as _lot_item
+    from test_credit_note_settlement_owned import _post
+    from test_imported_document_cutover import _import
+    from test_outside_lines import _choose
+    from test_receipt_accounting import _OPENING
+
+    f = await _setup(client, auth)
+    lot = await _lot_item(client, auth, _OPENING, qty=10)
+    po = await _import(client, auth, lot, qty=10, received=4)
+    r = await _post(client, auth, f"/docs/{po}/finalize")
+    if r.status_code == 409 and _key(r) == "posting.fund.choice_needed":
+        assert (await _choose(client, auth, po, document="unrestricted")).status_code == 200
+        r = await _post(client, auth, f"/docs/{po}/finalize")
+    assert r.status_code == 200, r.text
+    held = await _standing(session, auth, f"je:auto:{po}:")
+    assert held, "the bill posted what the opening balances do not hold"
+    r = await _change_doc(client, session, auth, po, document=f["U1"])
+    assert r.status_code == 422 and _key(r) == "posting.fund.change_opening_held", r.text
+    assert await _standing(session, auth, f"je:auto:{po}:") == held
+
+    doc = await _outside_invoice(client, auth, f["R"])
+    assert (await _change_doc(client, session, auth, doc, document="unrestricted")).status_code == 200

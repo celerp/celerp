@@ -337,9 +337,13 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
 
 async def reverse_journal(session, *, company_id, user_id, module: str, key: str, operation: str,
                           reason: str, reversed_on: str | None = None) -> ReversedJournal:
-    """Void ``module``'s journal under ``key``; voiding it again returns it as it is."""
+    """Void ``module``'s journal under ``key``, at the entry standing for it (the copy Change
+    fund posted in its place, when it did: auto_je.current_entry); voiding it again returns
+    it as it is."""
+    from celerp.services.auto_je import current_entry
+
     _check_caller(module)
-    je_id = _je_id(module, key)
+    je_id = await current_entry(session, company_id, _je_id(module, key))
     op = _operation(module, operation)
     await _authorize(session, company_id, user_id, module, op)
     row = (await lock_projections(session, company_id, [je_id])).get(je_id)

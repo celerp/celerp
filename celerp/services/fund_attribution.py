@@ -26,6 +26,8 @@ RULE_CLASSES: dict[str, str] = {
     "M": "the fund the user chose on each line",
     "M/B": "the user's chosen fund, or a pooled balance split by fund",
     "B": "a pooled balance moved between accounts, split by fund",
+    "CF": ("Change fund: the legs it voids posted again unchanged but for the fund the record now "
+           "carries (rule LG on a document, a local user's choice on a journal), judged once over the action"),
     "FM": ("the giving and receiving funds the movement names, each against its own net assets; "
            "a year close closes each fund's results to that fund's own net assets"),
 }
@@ -69,8 +71,9 @@ FUND_ATTRIBUTION: dict[str, str] = {
     "celerp.services.auto_je:reverse_imported_carriage": "V",
     "celerp.services.auto_je:reverse_return_charges": "V",
     "celerp.services.auto_je:void_for_doc_payment": "V",
-    "celerp.services.auto_je:void_for_doc_voided": "X",
     "celerp.services.auto_je:void_for_list_adjustment": "X",
+    "celerp.services.auto_je:void_record_postings": "X",
+    "celerp.services.auto_je:repost_record_postings": "V",
     "celerp.services.auto_je:void_landed_capitalisation": "V",
     "celerp.services.lot_origin:_move": "U-stock",
     "celerp.services.lot_origin:_normalize": "U-stock",
@@ -84,6 +87,7 @@ FUND_ATTRIBUTION: dict[str, str] = {
     "celerp.services.peer_journals:_post": "O",
     "celerp.services.peer_journals:_post_client_journal": "O",
     "celerp.services.peer_journals:reverse": "V",
+    "celerp.services.peer_lines:change_posted_fund": "CF",
     "celerp_accounting.funds:post_fund_movement": "FM",
     "celerp_accounting.import_service:import_journal_records": "O",
     "celerp_accounting.migration_sink:_journal_record": "O",
@@ -134,4 +138,47 @@ NON_JOURNAL_EMITTERS: dict[str, str] = {
     "celerp_inventory.services:update_item_from_connector": "event dict of item.* types",
     "celerp_inventory.services:write_import_batch": "refuses every primary record whose event_type is not item.created; follow-ups are item.patched",
     "celerp_manufacturing.movements:_Op.emit": "manufacturing movement callers pass item.* literals",
+}
+
+
+# How each producer that voids or reverses an entry finds the entry it undoes. Change fund voids an
+# entry and posts it again under a new id, naming the copy in ``replaced_by``, so an undo reading a
+# fixed id would leave the copy standing. "current_entry": it resolves the id through
+# auto_je.current_entry; "family": it enumerates the record's live family, copies included; any
+# other value says why Change fund never replaces what it undoes. Checked by
+# tests/test_fund_attribution.py against the source.
+UNDO_LIVE_ENTRY: dict[str, str] = {
+    "celerp.services.auto_je:book_opening_inventory": "never: an entry of its own no outside record carries, so Change fund never replaces it",
+    "celerp.services.auto_je:correct_earlier_import.void": "family",
+    "celerp.services.auto_je:create_for_doc_unvoided": "family",
+    "celerp.services.auto_je:create_for_receipt_undone": "family",
+    "celerp.services.auto_je:create_for_supplier_return": "family",
+    "celerp.services.auto_je:release_credit_note_open": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp.services.auto_je:restore_return_charges": "family",
+    "celerp.services.auto_je:repost_record_postings": "family",
+    "celerp.services.auto_je:reverse_imported_carriage": "never: what the opening balances hold; Change fund refuses a document they hold",
+    "celerp.services.auto_je:reverse_return_charges": "family",
+    "celerp.services.auto_je:take_back_imported_reversals": "never: what the opening balances hold; Change fund refuses a document they hold",
+    "celerp.services.auto_je:void_credit_note_payment_rate": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp.services.auto_je:void_for_doc_finalized": "family",
+    "celerp.services.auto_je:void_for_doc_payment": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp.services.auto_je:void_for_list_adjustment": "never: an entry of its own no outside record carries, so Change fund never replaces it",
+    "celerp.services.auto_je:void_for_merge_reclassification": "never: an entry of its own no outside record carries, so Change fund never replaces it",
+    "celerp.services.auto_je:void_imported_used": "never: what the opening balances hold; Change fund refuses a document they hold",
+    "celerp.services.auto_je:void_landed_capitalisation": "family",
+    "celerp.services.auto_je:void_record_postings": "family",
+    "celerp.services.auto_je:void_supplier_return": "current_entry",
+    "celerp.services.module_journals:reverse_journal": "current_entry",
+    "celerp.services.peer_journals:apply_firm_journal": "current_entry",
+    "celerp.services.peer_journals:receive_journal": "current_entry",
+    "celerp.services.peer_journals:reverse": "current_entry",
+    "celerp.services.peer_lines:change_posted_fund": "family",
+    "celerp_accounting.routes:_void_one": "never: voids the entry the user opened; a replaced entry is void already and refused as not posted",
+    "celerp_accounting.routes:_void_reconciliation_created_je": "never: an entry of its own no outside record carries, so Change fund never replaces it",
+    "celerp_admin.routes:_check_uncaused_recognition_jes": "never: sweeps entries by their own posted state",
+    "celerp_admin.routes:_check_zero_amount_jes": "never: sweeps entries by their own posted state",
+    "celerp_docs.routes:delete_payment": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp_docs.routes:reverse_payment_refund": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp_docs.routes:void_payment": "never: a payment or note entry; Change fund refuses a settled document",
+    "celerp_inventory.routes:undo_import_batch": "never: an entry of its own no outside record carries, so Change fund never replaces it",
 }
