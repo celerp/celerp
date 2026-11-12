@@ -159,9 +159,11 @@ async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent(
             self.read.add(key)
             return super().__contains__(key)
 
-    # Recognize over the service period is read by the books when a bill posts, never by
-    # unattended billing, so no consent covers it (periods.TERMS).
-    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields) - {"recognize_over_service_period"}
+    # Recognize over the service period is read by the books when a bill posts, and the kind,
+    # member and grace days by the vertical pages, never by unattended billing, so no consent
+    # covers them (periods.TERMS).
+    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields) - {
+        "recognize_over_service_period", "kind", "beneficiary_contact_id", "grace_days"}
     settings = set(ScheduleBody.model_fields)
     for frequency, timing in (("monthly", "advance"), ("custom", "arrears")):
         state = Recorded({"status": "active", "anchor_date": "2026-01-01", "frequency": frequency,

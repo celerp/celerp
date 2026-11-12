@@ -27,7 +27,8 @@ _REFUSAL = "This agreement has billed periods, so its frequency cannot change."
 _VALUES = {"frequency": "custom", "anchor_date": "2026-12-01", "custom_interval_days": "10", "billing_timing": "arrears",
            "term_start": "2026-12-01", "term_end": "2027-12-01", "cancel_at_period_end": "true",
            "generation_mode": "auto_invoice", "auto_send": "true", "catchup_periods": "3",
-           "recognize_over_service_period": "true"}
+           "recognize_over_service_period": "true", "kind": "membership", "beneficiary_contact_id": "contact:member",
+           "grace_days": "7"}
 
 
 async def _patch(field: str, value: str, sub=None):

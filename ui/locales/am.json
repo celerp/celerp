@@ -7726,5 +7726,11 @@
   "settings_inventory.category_gift": "Gifts",
   "subscriptions.err_kind": "Choose subscription, retainer or membership.",
   "subscriptions.err_beneficiary": "Choose the member this membership is for, or leave it empty.",
-  "subscriptions.err_grace_days": "Enter the grace period as a whole number of days, from 0 to 365."
+  "subscriptions.err_grace_days": "Enter the grace period as a whole number of days, from 0 to 365.",
+  "subscriptions.kind": "Agreement type",
+  "subscriptions.kind_subscription": "Subscription",
+  "subscriptions.kind_retainer": "Retainer",
+  "subscriptions.kind_membership": "Membership",
+  "subscriptions.member": "Member",
+  "subscriptions.grace_days": "Grace days"
 }

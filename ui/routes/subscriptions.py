@@ -32,7 +32,8 @@ from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
 from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, module_active, page_header, toast_header
-from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
+from ui.components.table import (EMPTY, breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value,
+                                 search_bar, searchable_select, status_cards)
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
@@ -111,10 +112,12 @@ _BILLING_ACTIONS = ("generate-due", "bill-early")
 _SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int, "billing_timing": str,
                    "term_start": str, "term_end": str, "cancel_at_period_end": lambda v: v == "true",
                    "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int,
-                   RECOGNIZE_FIELD: lambda v: v == "true"}
+                   RECOGNIZE_FIELD: lambda v: v == "true", "kind": str, "beneficiary_contact_id": str,
+                   "grace_days": int}
 # What a schedule value that does not read as its type is told.
 _FIELD_ERRORS = {"custom_interval_days": "subscriptions.err_custom_days",
-                 "catchup_periods": "subscriptions.err_catchup_window"}
+                 "catchup_periods": "subscriptions.err_catchup_window",
+                 "grace_days": "subscriptions.err_grace_days"}
 # What each lifecycle action says it did; a billing action names its document and period.
 _ACTION_DONE = {"activate": "subscriptions.done_activated", "pause": "subscriptions.done_paused",
                 "resume": "subscriptions.done_resumed", "cancel": "subscriptions.done_cancelled"}
@@ -165,7 +168,11 @@ _FIELD_TEXT = {
     "auto_send": ("subscriptions.auto_send", _yes_no),
     "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v)),
     RECOGNIZE_FIELD: ("item.recognize_over_service_period", _yes_no),
+    "kind": ("subscriptions.kind", lambda v: t(f"subscriptions.kind_{v}")),
+    "beneficiary_contact_id": ("subscriptions.member", lambda v: v),
+    "grace_days": ("subscriptions.grace_days", lambda v: str(v)),
 }
+_KINDS = ("subscription", "retainer", "membership")
 
 
 def _label(field: str) -> str:
@@ -178,6 +185,13 @@ def _value_text(field: str, value) -> str | None:
 
 def _term_change(field: str):
     return lambda c: change_text(_label(field), _value_text(field, c.get("old")), _value_text(field, c.get("new")))
+
+
+def _member_change(c: dict) -> str | None:
+    """The member before and after, each by the name the change recorded (else its id)."""
+    names = c.get("names") or {}
+    return change_text(_label("beneficiary_contact_id"), names.get(c.get("old"), c.get("old")),
+                       names.get(c.get("new"), c.get("new")))
 
 
 def _consents_change(c: dict) -> str:
@@ -240,6 +254,7 @@ def _count_change(label: str):
 
 register_fields({
     **{f: _term_change(f) for f in _FIELD_TEXT},
+    "beneficiary_contact_id": _member_change,
     "consents": _consents_change,
     "periods": _periods_change,
     "billing_failure": _billing_failure_change,
@@ -402,8 +417,43 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
                          name="value", hx_patch=f"{base}/cancel_at_period_end", **attrs)),
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
+        _kind_row(base, sub, attrs),
         id="sub-schedule", cls="mt-lg",
     )
+
+
+def _kind_row(base: str, sub: dict, attrs: dict) -> FT:
+    """What the agreement is (subscription, retainer or membership), the member a membership is
+    for and the days after a bill's due date a member stays in good standing. The member is
+    picked from every contact by search; choosing none clears it."""
+    kind = shown("kind", sub.get("kind"))
+    member = sub.get("beneficiary_contact_id") or ""
+    members = [("", EMPTY)] + ([(member, sub.get("beneficiary_name") or member)] if member else [])
+    return Div(
+        Label(_label("kind"),
+              Select(*[Option(_value_text("kind", k), value=k, selected=(k == kind)) for k in _KINDS],
+                     name="value", hx_patch=f"{base}/kind", **attrs)),
+        Label(_label("beneficiary_contact_id"),
+              searchable_select("value", members, value=member, aria_label=_label("beneficiary_contact_id"),
+                                search_url="/contacts/search-options?contact_type=all&add_new=0",
+                                hx_patch=f"{base}/beneficiary_contact_id", **_SCHEDULE_CONTROL)),
+        Label(_label("grace_days"),
+              Input(type="number", name="value", value=str(shown("grace_days", sub.get("grace_days"))), min="0",
+                    hx_patch=f"{base}/grace_days", style="width:80px", **attrs)),
+        style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center", cls="mt-sm",
+    )
+
+
+async def _with_member(token: str, sub: dict) -> dict:
+    """The agreement with its member's name for the page, else as it is (a member no longer
+    found shows by its id)."""
+    member = sub.get("beneficiary_contact_id")
+    if not member:
+        return sub
+    try:
+        return {**sub, "beneficiary_name": (await api.get_contact(token, member)).get("name")}
+    except APIError:
+        return sub
 
 
 def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
@@ -1236,13 +1286,16 @@ def setup_routes(app) -> None:
     # --- Create blank draft → redirect to detail ---
 
     @app.post("/subscriptions/new")
-    async def create_subscription(request: Request, direction: str = "sales"):
+    async def create_subscription(request: Request, direction: str = "sales", kind: str = ""):
+        """A blank draft agreement; the Retainers and Members pages name its kind (the API refuses
+        one it does not know)."""
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = _DIRECTION_DOC_TYPE.get(direction, "subscription_invoice")
         try:
-            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly"})
+            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly",
+                                                           **({"kind": kind} if kind else {})})
         except APIError as e:
             return _refused(e)
         doc_id = result.get("entity_id") or result.get("id") or ""
@@ -1319,7 +1372,7 @@ def setup_routes(app) -> None:
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        doc = _with_schedule(doc, schedule)
+        doc = _with_schedule(await _with_member(token, doc), schedule)
         actions_left, actions_right = _action_groups(entity_id, doc, schedule)
 
         return await base_shell(
@@ -1438,7 +1491,7 @@ def setup_routes(app) -> None:
 
         async def read() -> tuple[dict, str]:
             """The agreement as stored and every view of its schedule drawn from it."""
-            sub = await api.get_subscription(token, entity_id)
+            sub = await _with_member(token, await api.get_subscription(token, entity_id))
             settings = (await api.get_company(token)).get("settings") or {}
             return sub, _stored_schedule_views(entity_id, sub, await api.get_subscription_periods(token, entity_id),
                                                _defers(settings, sub))

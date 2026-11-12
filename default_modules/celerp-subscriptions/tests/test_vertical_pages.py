@@ -115,7 +115,8 @@ async def test_lifetime_membership_one_time_invoice(owner_ui, monkeypatch):
     assert r.status_code == 200, r.text
     item = r.json()["id"]
     who = await contact(api, {}, f"life-{uuid.uuid4().hex[:6]}@test.test")
-    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "total": 500.0, "line_items": [
+    # The invoice names its price list, so the line keeps its price rather than the contact's list's.
+    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail", "total": 500.0, "line_items": [
         {"item_id": item, "name": "Lifetime membership", "quantity": 1, "unit_price": 500.0, "line_total": 500.0}]})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]

@@ -307,6 +307,11 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
                    for k in touched}
         if refs := {k: await doc_ref(session, company_id, d) for k, d in claimed.items() if d}:
             fields["periods"]["refs"] = refs
+    if "beneficiary_contact_id" in changes:
+        # The member before and after by the name each contact had then, so History names them.
+        members = {fields["beneficiary_contact_id"]["old"], changes["beneficiary_contact_id"]} - {None}
+        if names := {c: n for c in members if (n := ((await doc_state(session, company_id, c)) or {}).get("name"))}:
+            fields["beneficiary_contact_id"]["names"] = names
     writing = _WRITING.set(entity_id)
     try:
         await emit_event(

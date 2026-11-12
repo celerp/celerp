@@ -1242,6 +1242,30 @@
     "subscriptions.err_grace_days": {
       "en": "Enter the grace period as a whole number of days, from 0 to 365.",
       "params": []
+    },
+    "subscriptions.kind": {
+      "en": "Agreement type",
+      "params": []
+    },
+    "subscriptions.kind_subscription": {
+      "en": "Subscription",
+      "params": []
+    },
+    "subscriptions.kind_retainer": {
+      "en": "Retainer",
+      "params": []
+    },
+    "subscriptions.kind_membership": {
+      "en": "Membership",
+      "params": []
+    },
+    "subscriptions.member": {
+      "en": "Member",
+      "params": []
+    },
+    "subscriptions.grace_days": {
+      "en": "Grace days",
+      "params": []
     }
   },
   "modules": {

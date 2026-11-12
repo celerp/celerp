@@ -10,7 +10,7 @@ import uuid
 import pytest
 from bs4 import BeautifulSoup
 
-from agreement_kit import agreement, freeze_day, generate_due
+from agreement_kit import agreement, freeze_day, generate_due, template
 from ui.routes.documents import persist_then_post
 
 
@@ -238,7 +238,8 @@ async def test_a_bill_names_its_period_and_leads_back_to_its_agreement(owner_ui,
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",
             "term_start": "2026-04-01", "term_end": "2027-04-01", "cancel_at_period_end": "true",
             "catchup_periods": "3", "generation_mode": "manual_due", "auto_send": "true",
-            "recognize_over_service_period": "true"}
+            "recognize_over_service_period": "true", "kind": "membership", "grace_days": "7",
+            "beneficiary_contact_id": None}
 
 
 def _comparable(soup) -> str:
@@ -261,6 +262,8 @@ async def test_a_schedule_save_redraws_every_element_that_shows_the_schedule(own
     freeze_day(monkeypatch, "2026-03-15")
     for field, value in _CHANGED.items():
         eid = await agreement(owner_ui.api, {}, start="2026-04-01")
+        # The member is a real contact, so the page names it: the agreement's own.
+        value = value or (await template(owner_ui.api, {}, eid))["contact_id"]
         r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule", json={"generation_mode": "auto_invoice"})
         assert r.status_code == 200, r.text
         page = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
