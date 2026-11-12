@@ -927,6 +927,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/peer_lines.py", "outside_waiting"):
         "imports Documents only while it runs in this process (is_running), and counts no "
         "documents otherwise, since only Documents opens them for a fund choice",
+    ("celerp/services/peer_lines.py", "change_posted_fund"):
+        "imports Documents only for a document, which reaches it only through the Documents "
+        "module's own Change fund route; a journal's Change fund imports nothing",
     ("celerp/services/peer_documents.py", "_replay_receipts"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_receipt"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_fulfilment"): _PEER,

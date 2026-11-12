@@ -17,6 +17,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.services.money import document_line_amount
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY, breadcrumbs, display_enum, fmt_money, format_value, searchable_select
@@ -300,7 +301,8 @@ async def _fund_choice(token: str, docs: list[dict], company: dict, submitted) -
             Td(d["doc_number"]),
             Td(str(n)),
             Td(line.get("description") or line.get("sku") or EMPTY),
-            Td(fmt_money(line.get("line_total") or 0.0, company.get("currency")), cls="cell--number"),
+            Td(fmt_money(document_line_amount(line, d.get("currency") or company.get("currency")),
+                         company.get("currency")), cls="cell--number"),
             Td(_select(_FUND_LINE_FIELD.format(line=n, **d), t("th.fund"))),
         ) for n, line in enumerate(d["line_items"], 1)]
 

@@ -149,6 +149,9 @@ ROWS: dict[str, tuple[str, str]] = {
     f"{_UI}::list_detail": ("READ", "List page"),
     "ui/routes/inventory.py::send_to_action": ("SEND", "stored lines plus items"),
     "ui/routes/subscriptions_import.py::subs_import_confirm": ("SEND", "agreement import sends no lines"),
+    f"{_CORE}/peer_lines.py::change_posted_fund": (
+        "CHOICE", "Change fund on an outside journal: the posted lines copied with their origin and each line's "
+        "new choice under the grant require_fund_choices builds"),
 }
 
 HELPERS: dict[str, tuple[str, str]] = {

@@ -614,6 +614,26 @@
     "posting.fund.change_stale": {
       "en": "Someone changed this record after you opened it. Try again to see it as it is now.",
       "params": []
+    },
+    "event.doc.fund_changed": {
+      "en": "Fund changed",
+      "params": []
+    },
+    "event.fund.created": {
+      "en": "Fund created",
+      "params": []
+    },
+    "event.fund.updated": {
+      "en": "Fund updated",
+      "params": []
+    },
+    "event.fund.archived": {
+      "en": "Fund archived",
+      "params": []
+    },
+    "event.fund.unarchived": {
+      "en": "Fund unarchived",
+      "params": []
     }
   }
 }

@@ -266,12 +266,19 @@ async def hold_fund_ledger(session: AsyncSession, company_id, entity_id=None, ac
     the entry a movement grant is open for (``entity_id`` emitted by ``actor_id``), whose
     cap reads fund balances, shared for every other posting; return the settings. A
     posting calls it before it locks any other row."""
-    from celerp.services.company_lock import lock_company, lock_fund_ledger, noted
+    from celerp.services.company_lock import lock_company
 
     await lock_company(session, company_id)
+    return await held_fund_ledger(session, company_id, entity_id, actor_id)
+
+
+async def held_fund_ledger(session: AsyncSession, company_id, entity_id=None, actor_id=None) -> dict:
+    """hold_fund_ledger for a caller that already holds the company lock (the event engine)."""
+    from celerp.services.company_lock import hold_fund_lock, noted
+
     settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
     if funds_enabled(settings) and not any(c == str(company_id) for c, _ in noted(session, "funds")):
-        await lock_fund_ledger(session, company_id, shared=_open_grant(company_id, entity_id, actor_id) is None)
+        await hold_fund_lock(session, company_id, shared=_open_grant(company_id, entity_id, actor_id) is None)
     return settings
 
 
@@ -325,7 +332,7 @@ def _open_grant(company_id, entity_id, actor_id) -> _MovementGrant | None:
 async def hold_movement_actor(session: AsyncSession, company_id, entity_id, actor_id) -> None:
     """When a movement grant is open for this entry, read the acting user's role under the
     company lock now, before the posting locks any other row, so the membership row keeps
-    its place in the lock order. emit_event calls it right after hold_fund_ledger."""
+    its place in the lock order. emit_event calls it right after held_fund_ledger."""
     from celerp.services.permissions import read_authority
 
     grant = _open_grant(company_id, entity_id, actor_id)
@@ -1127,7 +1134,7 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
                            actor_id=None, entity_id=None) -> None:
     """The fund rules every journal entry meets, whoever produced it.
 
-    A company that has funds turned on holds its fund ledger (hold_fund_ledger) and reads the setting under the company lock, so a fund cap or turning funds off
+    A company that has funds turned on holds its fund ledger (held_fund_ledger, under the company lock emit_event takes) and reads the setting, so a fund cap or turning funds off
     never interleaves with a posting. Then: (1) each fund named exists, and an archived
     one takes no new posting, though a reversal or a restored entry still lands; (2) each
     fund balances on its own, the lines without a fund counting as one; (3) a restricted
@@ -1143,7 +1150,7 @@ async def check_fund_rules(session: AsyncSession, company_id, data: dict, entrie
     copies a line the record posted."""
     named = {e["fund_id"] for e in entries if e.get("fund_id")}
     new = not (restored or data.get("reverses"))
-    settings = await hold_fund_ledger(session, company_id)
+    settings = await held_fund_ledger(session, company_id)
     if not funds_enabled(settings) and named and new and not data.get("origin"):
         raise HTTPException(status_code=422, detail=catalog_refusal("posting.fund.funds_off"))
     if not funds_enabled(settings) and not role_map(settings).get(AccountRole.RESTRICTED_NET_ASSETS):

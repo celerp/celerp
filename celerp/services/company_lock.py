@@ -259,6 +259,13 @@ async def lock_fund_ledger(session: AsyncSession, company_id, *, shared: bool) -
     rows, account share locks. SQLite writes one transaction at a time already."""
     if not shared:
         await lock_company(session, company_id)
+    await hold_fund_lock(session, company_id, shared=shared)
+
+
+async def hold_fund_lock(session: AsyncSession, company_id, *, shared: bool) -> None:
+    """The fund advisory lock of lock_fund_ledger alone, for a caller that already holds
+    the company lock (the event engine, which observes the company lock and never takes it
+    on another writer's behalf)."""
     if session.get_bind().dialect.name == "postgresql":
         verb = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
         await session.execute(text(f"SELECT {verb}(hashtextextended(:k, 0))"), {"k": f"funds:{company_id}"})

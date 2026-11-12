@@ -7580,5 +7580,10 @@
   "posting.fund.change_backing": "Release {release} is backed by this line: reverse the release first.",
   "posting.fund.change_needs_reallocation": "Moving money of {fund} to {to} needs the Reallocate restricted funds permission and the same purpose on both funds.",
   "posting.fund.change_exceeds_balance": "{fund} holds {available} {currency}; this change would take {amount} {currency} out of it.",
-  "posting.fund.change_stale": "Someone changed this record after you opened it. Try again to see it as it is now."
+  "posting.fund.change_stale": "Someone changed this record after you opened it. Try again to see it as it is now.",
+  "event.doc.fund_changed": "Fund changed",
+  "event.fund.created": "Fund created",
+  "event.fund.updated": "Fund updated",
+  "event.fund.archived": "Fund archived",
+  "event.fund.unarchived": "Fund unarchived"
 }

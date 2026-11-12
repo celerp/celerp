@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.services.money import document_line_amount
 from celerp.services.peer_lines import UNRESTRICTED, waits_for_funds
 from ui.components.attrs import hx_vals
 from ui.components.funds import fund_options
@@ -121,7 +122,8 @@ def _fund_hold(item: dict, chart: list[dict], funds: list[dict], lang: str, kept
         else:
             code = held[n - 1].get("account") if n <= len(held) else None
             rows.append(Tr(Td(line.get("name") or line.get("description") or EMPTY),
-                           Td(accounts.get(code, code) if code else EMPTY), money(line.get("line_total")), fund))
+                           Td(accounts.get(code, code) if code else EMPTY),
+                           money(document_line_amount(line, (fix.get("sent") or {}).get("currency"))), fund))
     head = ((Th(t("th.account", lang)), Th(t("th.debit", lang), cls="cell--number"),
              Th(t("th.credit", lang), cls="cell--number")) if journal
             else (Th(t("th.description", lang)), Th(t("th.account", lang)), Th(t("th.total", lang), cls="cell--number")))

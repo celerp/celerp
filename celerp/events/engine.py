@@ -656,11 +656,12 @@ async def unattended(work):
 async def _judge_inbound(session, company_id, found: list[tuple[str, int | None]], origin: str) -> None:
     """An arrival bringing fund keys (peer_lines.inbound_keys): kept as sent while funds are
     off, refused while they are on (peer_lines.refuse_inbound). Read under the company lock, so it never
-    interleaves with turning funds on, which checks what unposted records carry."""
+    interleaves with turning funds on, which checks what unposted records carry (emit_event
+    takes the company lock before it calls this)."""
     if found:
-        from celerp.services.journal_accounts import funds_enabled, hold_fund_ledger
+        from celerp.services.journal_accounts import funds_enabled, held_fund_ledger
 
-        if funds_enabled(await hold_fund_ledger(session, company_id)):
+        if funds_enabled(await held_fund_ledger(session, company_id)):
             refuse_inbound(found, origin)
 
 
@@ -749,11 +750,16 @@ async def emit_event(
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
     # A new journal entry holds its company's fund ledger before it locks any other row,
+    # and an arrival reads the fund setting, both under the company lock taken here first,
     # so the fund lock keeps its place in the lock order (company, fund ledger, rows).
-    if kwargs["event_type"] == "acc.journal_entry.created":
-        from celerp.services.journal_accounts import hold_fund_ledger, hold_movement_actor
+    if kwargs["event_type"] == "acc.journal_entry.created" or origin is not None:
+        from celerp.services.company_lock import lock_company
 
-        await hold_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
+        await lock_company(session, kwargs["company_id"])
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import held_fund_ledger, hold_movement_actor
+
+        await held_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
         await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
     # Every journal entry change, whoever produced it, is judged against the bank
