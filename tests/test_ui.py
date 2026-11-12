@@ -16859,6 +16859,44 @@ class TestFilesSectionRenders:
         assert "file-desc" in html
         assert "Main contract" in html
 
+    def test_files_section_scripts_find_their_elements(self):
+        """Every element a files section script looks up by id is in the section, so the column
+        resize finds its table and gives its columns their drag handles. Each script reads its
+        ids from its own data-cfg; an id expression this check cannot resolve fails it."""
+        import html as _html
+        import json as _json
+        from ui.components.files import files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        page = to_xml(files_section("contact", "c1", files))
+        ids = set(re.findall(r'\bid="([^"]+)"', page))
+
+        def resolve(expr: str, cfg, body: str):
+            expr = expr.strip()
+            if expr == "JSON.parse(document.currentScript.dataset.cfg)":
+                return cfg
+            m = re.fullmatch(r"CFG\.(\w+)", expr)
+            if m:
+                return cfg[m.group(1)]
+            m = re.fullmatch(r"'([^']*)'\s*\+\s*SID", expr)
+            if m and "var SID=CFG.sid;" in body:
+                return m.group(1) + cfg["sid"]
+            raise AssertionError(f"unresolved id expression {expr!r}")
+
+        looked_up = []
+        for attrs, body in re.findall(r"<script([^>]*)>(.*?)</script>", page, re.S):
+            cfg = re.search(r"""data-cfg=(?:"([^"]*)"|'([^']*)')""", attrs)
+            if cfg:
+                cfg = _json.loads(_html.unescape(cfg.group(1) or cfg.group(2)))
+                for m in re.finditer(r"getElementById\(", body):
+                    depth, end = 1, m.end()
+                    while depth:
+                        depth += {"(": 1, ")": -1}.get(body[end], 0)
+                        end += 1
+                    looked_up.append(resolve(body[m.end():end - 1], cfg, body))
+        assert {"files-table-c1", "files-section-c1", "file-drop-zone-c1"} <= set(looked_up)
+        assert [i for i in looked_up if i not in ids] == []
+
     def test_files_section_doc_entity(self):
         """files_section with entity_type='doc' uses /docs/ URLs."""
         from ui.components.files import files_section
