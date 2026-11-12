@@ -224,17 +224,30 @@ async def test_funds_tab_empty_state_add_and_archive(ui_client):
         page = (await ui_client.get("/settings/accounting", params={"tab": "funds"})).text
     assert "No funds yet. Everything posts as unrestricted until you add one." in page and "Add fund" in page
 
-    fund = {"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books", "archived": False}
+    fund = {"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books",
+            "opening_date": "2026-01-05", "archived": False}
     create = AsyncMock(return_value=fund)
     no_spending = AsyncMock(return_value={"items": []})
     with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),
                  create_fund=create, list_release_spending=no_spending):
         r = await ui_client.post("/settings/accounting/funds", data={
-            "name": "Library gift", "restricted": "1", "purpose": "Books", "idempotency_key": "k1"})
+            "name": "Library gift", "restricted": "1", "purpose": "Books", "opening_date": "2026-01-05",
+            "idempotency_key": "k1"})
     body = create.await_args.args[1]
     assert body["restricted"] is True and body["purpose"] == "Books" and body["request_key"]
+    assert body["opening_date"] == "2026-01-05" and "Opening date" in r.text and "5 Jan 2026" in r.text
     assert "Library gift added." in r.text and 'hx-get="/settings/accounting/funds/fund%3A1/edit"' in r.text
     assert "editable-cell" in r.text and "/settings/accounting/funds/fund%3A1/archive" in r.text
+
+    with _ui_api(list_funds=AsyncMock(return_value={"items": [fund]})):
+        editor = (await ui_client.get("/settings/accounting/funds/fund%3A1/edit")).text
+    assert 'type="date" name="opening_date" value="2026-01-05"' in editor
+    update = AsyncMock(return_value={**fund, "opening_date": None})
+    with _ui_api(update_fund=update):
+        r = await ui_client.patch("/settings/accounting/funds/fund%3A1", data={
+            "name": "Library gift", "purpose": "Books", "opening_date": ""})
+    assert update.await_args.args[2] == {"name": "Library gift", "purpose": "Books", "opening_date": ""}
+    assert "5 Jan 2026" not in r.text and r.status_code == 200
 
     refused = AsyncMock(side_effect=APIError(422, "These funds still hold balances: Library gift: 1111."))
     with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": [fund]}),

@@ -136,7 +136,7 @@ async def test_fund_create_update_archive_validation(client, auth):
     listed = {f["id"]: f for f in (await client.get("/accounting/funds", headers=auth["headers"])).json()["items"]}
     assert listed[board]["archived"] is True and listed[gift]["archived"] is False
     assert listed[gift] | {"archived": False} == {"id": gift, "name": "Music and arts", "restricted": True,
-                                                  "purpose": "Instruments", "archived": False}
+                                                  "purpose": "Instruments", "opening_date": None, "archived": False}
     for _ in range(2):
         assert (await client.post(f"/accounting/funds/{board}/unarchive", headers=auth["headers"])).status_code == 200
     listed = {f["id"]: f for f in (await client.get("/accounting/funds", headers=auth["headers"])).json()["items"]}
@@ -248,3 +248,30 @@ async def test_stock_lines_refuse_restricted_fund(client, session, auth):
     assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.fund.stock_unrestricted", r.text
     assert (await client.get(f"/docs/{bill}", headers=auth["headers"])).json()["status"] == "draft"
     await _issued(client, auth, "bill", [{**_line(paper, "Paper stock", 40), "receive_as": "stock", "fund_id": board}])
+
+
+async def test_fund_opening_date_and_cleared_purpose(client, auth):
+    """A fund keeps the date it opened: given when it is added, changed or cleared later, and an
+    invalid date is refused. Clearing a board-designated fund's purpose sticks."""
+    assert (await _funds_on(client, auth)).status_code == 200
+    r = await client.post("/accounting/funds", headers=auth["headers"], json={
+        "request_key": uuid.uuid4().hex, "name": "Building reserve", "restricted": False, "purpose": "Roof",
+        "opening_date": "2026-01-01"})
+    assert r.status_code == 200, r.text
+    board = r.json()["id"]
+    assert r.json()["opening_date"] == "2026-01-01"
+    _refusal(await client.post("/accounting/funds", headers=auth["headers"], json={
+        "request_key": uuid.uuid4().hex, "name": "Bad date", "opening_date": "2026-13-01"}), "acct.err_date_invalid")
+
+    async def stored() -> dict:
+        items = (await client.get("/accounting/funds", headers=auth["headers"])).json()["items"]
+        return next(f for f in items if f["id"] == board)
+
+    r = await client.patch(f"/accounting/funds/{board}", headers=auth["headers"], json={"opening_date": "2026-02-01"})
+    assert r.status_code == 200 and r.json()["opening_date"] == "2026-02-01", r.text
+    assert (await stored())["opening_date"] == "2026-02-01"
+    _refusal(await client.patch(f"/accounting/funds/{board}", headers=auth["headers"], json={"opening_date": "20260201"}),
+             "acct.err_date_invalid")
+    r = await client.patch(f"/accounting/funds/{board}", headers=auth["headers"], json={"opening_date": "", "purpose": ""})
+    assert r.status_code == 200, r.text
+    assert (await stored())["opening_date"] is None and (await stored())["purpose"] is None
