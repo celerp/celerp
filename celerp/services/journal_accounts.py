@@ -447,6 +447,17 @@ class FundChangeAction:
         if state.get("ts"):
             self.dates.append(str(state["ts"])[:10])
 
+    def moves(self) -> bool:
+        """Whether the action changes any fund's amount on any account: a void and repost
+        putting every amount back on the fund it was on moves nothing."""
+        from celerp.services.money import to_decimal
+
+        net: dict[tuple[str | None, str], Decimal] = {}
+        for e in self.lines:
+            key = (e.get("fund_id") or None, e["account"])
+            net[key] = net.get(key, Decimal(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+        return any(net.values())
+
 
 def open_fund_change(session) -> FundChangeAction | None:
     """The fund change open in this session, if any."""

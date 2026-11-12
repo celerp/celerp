@@ -776,7 +776,9 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
     manage_accounting under the lock, the repeat (a change already stored under the request
     key answers with its first result), the reason, the version, the values, a record
     carrying ``origin``, posted, not settled by a payment or note, not held by the opening
-    balances, every entry it voids in an open period. Then, inside one fund_change_action:
+    balances, every entry it voids in an open period; and, after the work below, that it
+    moves some amount to another fund (a document's own choice does not move a line that has
+    its own). Then, inside one fund_change_action:
     the document's choices are written, its entries voided as one batch naming the copies
     replacing them and posted again on the new funds (document_relabel), and the modules
     keeping a record that copied a fund from it move it (doc_posting_dependents); a journal is
@@ -890,6 +892,8 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
             await doc_posting_dependents.move(session, company_id=company_id, user_id=actor, doc_id=record_id,
                                               relabel=relabel)
             result = {"copies": reposted}
+        if not action.moves():
+            raise _refused(422, "posting.fund.change_moves_nothing")
     after = (await session.get(Projection, {"company_id": company_id, "entity_id": result["copies"][record_id]})
              if journal else row)
     await emit_event(

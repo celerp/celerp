@@ -224,7 +224,7 @@ async def test_change_fund_that_moves_nothing_refused(client, session, auth, kin
         record = f"doc:IMP-{uuid.uuid4().hex[:8]}"
         r = await client.post("/docs/import/batch", headers=auth["headers"], json={
             "records": [_issued_import(record, [_line(i, f"Outside {n}", 50) for n, i in enumerate(items)])],
-            "fund_choices": {"all": f["R"]}})
+            "fund_choices": {"lines": {f"{record}:1": f["R"], f"{record}:2": f["R"]}}})
         assert r.status_code == 200 and r.json()["created"] == 1, r.text
         entry = f"je:auto:{record}:fin"
         change = lambda **kw: _change_doc(client, session, auth, record, **kw)  # noqa: E731

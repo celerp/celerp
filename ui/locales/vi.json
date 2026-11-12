@@ -7923,5 +7923,6 @@
   "collection.stopped_no_books": "the company's time zone or the invoice's exchange rate cannot be used",
   "collection.stopped_amount_changed": "the invoice now owes less than the charge asked for",
   "collection.stopped_cloud": "Celerp Cloud refused it ({reason})",
-  "subscriptions.err_collection_sales_only": "Only a sales agreement can collect from a card. A purchasing agreement records what you owe a supplier."
+  "subscriptions.err_collection_sales_only": "Only a sales agreement can collect from a card. A purchasing agreement records what you owe a supplier.",
+  "posting.fund.change_moves_nothing": "Nothing would move: each line already has its own fund. Change the fund on the lines instead."
 }

@@ -2079,6 +2079,10 @@
     "subscriptions.err_collection_sales_only": {
       "en": "Only a sales agreement can collect from a card. A purchasing agreement records what you owe a supplier.",
       "params": []
+    },
+    "posting.fund.change_moves_nothing": {
+      "en": "Nothing would move: each line already has its own fund. Change the fund on the lines instead.",
+      "params": []
     }
   },
   "modules": {
