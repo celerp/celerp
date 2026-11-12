@@ -963,6 +963,19 @@ async def list_funds(token: str) -> dict:
         return _raise(await c.get("/accounting/funds")).json()
 
 
+async def list_connection_defaults(token: str) -> dict:
+    """The standing fund of every connection records arrive through: {items}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/connection-defaults")).json()
+
+
+async def set_connection_default(token: str, body: dict) -> dict:
+    """Set, change or clear a connection's standing fund:
+    {origin, source_key, value | null, expected_version, request_key}."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/funds/connection-defaults", json=body)).json()
+
+
 def role_from_company(company: dict) -> str:
     """Return the DB-authoritative current role from /companies/me."""
     return company.get("current_role") or ""

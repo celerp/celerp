@@ -517,6 +517,55 @@
       "params": [
         "record"
       ]
+    },
+    "fund.defaults_title": {
+      "en": "Default funds",
+      "params": []
+    },
+    "fund.defaults_hint": {
+      "en": "Documents and entries from these connections take the default fund when they first arrive and post without waiting for a choice. You can still change a document's fund until it posts.",
+      "params": []
+    },
+    "fund.default_label": {
+      "en": "Default fund for documents from {source}",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.default_set_by": {
+      "en": "Set by {user} on {date}",
+      "params": [
+        "date",
+        "user"
+      ]
+    },
+    "fund.default_inactive": {
+      "en": "Inactive: {user} can no longer choose funds",
+      "params": [
+        "user"
+      ]
+    },
+    "fund.default_read_only": {
+      "en": "Only users who can manage funds can change this",
+      "params": []
+    },
+    "fund.from_default": {
+      "en": "Fund from your default for {source}",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.default_saved": {
+      "en": "Default fund for {source} saved.",
+      "params": [
+        "source"
+      ]
+    },
+    "fund.default_cleared": {
+      "en": "Default fund for {source} cleared. New documents from it will wait for a fund choice.",
+      "params": [
+        "source"
+      ]
     }
   }
 }

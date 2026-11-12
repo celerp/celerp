@@ -6,12 +6,16 @@ lines to" above the lines. Each is a click-to-edit field over the searchable fun
 a save answers with every control again, so the others follow the one that changed."""
 from __future__ import annotations
 
+import re
+import uuid
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from fasthtml.common import *
 
 from celerp.services.peer_lines import UNRESTRICTED, origin_key, outside_fund_needs
 from celerp.services.permissions import role_has_permission
+from ui.components.attrs import hx_vals
 from ui.components.encode import js
 from ui.components.table import EMPTY, searchable_select
 from ui.i18n import t
@@ -90,9 +94,12 @@ def _field(view: FundView, target: str, dom_id: str, *content, oob: bool = False
 
 
 def document_field(view: FundView, *, oob: bool = False) -> FT:
-    """The value of "Fund for this document", with where the document came from."""
-    return _field(view, DOCUMENT, "doc-fund", Span(view.name(view.doc.get("fund_choice"))), " ",
-                  origin_badge(view.doc.get("origin")), oob=oob)
+    """The value of "Fund for this document", with where the document came from, or that its
+    connection's standing default chose it."""
+    origin = view.doc.get("origin")
+    tag = (Span(t("fund.from_default", source=t(origin_key(origin))), cls="badge badge--origin")
+           if str(view.doc.get("fund_choice_source") or "").startswith("default:") else origin_badge(origin))
+    return _field(view, DOCUMENT, "doc-fund", Span(view.name(view.doc.get("fund_choice"))), " ", tag, oob=oob)
 
 
 def document_meta(view: FundView) -> FT:
@@ -162,3 +169,96 @@ def saved(view: FundView, target: str) -> tuple:
         pieces.pop(DOCUMENT)
     main = pieces.pop(target)(False) if target in pieces else ""
     return (main, *(piece(True) for piece in pieces.values()))
+
+
+# The origins a connection's page in Settings > Connectors holds a default for: the Celerp
+# connection holds connected companies, clients and the accountant; an accounting app
+# (origin accounting_system) holds its own, keyed by its platform.
+_CELERP_ORIGINS = ("connected_company", "client", "accountant")
+
+
+def connection_defaults_of(items: list[dict], platform: str) -> list[dict]:
+    """The connections whose standing fund the page of ``platform`` shows."""
+    if platform == "celerp":
+        return [i for i in items if i.get("origin") in _CELERP_ORIGINS]
+    return [i for i in items if i.get("origin") == "accounting_system" and i.get("source_key") == platform]
+
+
+@dataclass(frozen=True)
+class DefaultsView:
+    """What the standing funds on one connection's page show: the funds (archived ones too,
+    so a stored choice reads by name), the users by id (who set each default) and whether
+    this user may change them."""
+    platform: str
+    funds: list[dict]
+    users: dict[str, str]
+    editable: bool
+
+    def url(self, item: dict, *, edit: bool = False) -> str:
+        query = urlencode({"origin": item["origin"], "source_key": item["source_key"], **({"edit": 1} if edit else {})})
+        return f"/settings/connectors/{self.platform}/fund-default?{query}"
+
+    def name(self, value) -> str:
+        return FundView({}, self.funds, False).name(value)
+
+    def user(self, user_id) -> str:
+        return self.users.get(user_id or "", EMPTY)
+
+
+def _default_id(item: dict) -> str:
+    return f"fund-default-{item['origin']}-{re.sub(r'[^A-Za-z0-9_-]', '-', str(item['source_key']))}"
+
+
+def _default_values(item: dict, **extra) -> dict:
+    return {"origin": item["origin"], "source_key": item["source_key"],
+            "expected_version": int(item.get("version") or 0), **extra}
+
+
+def connection_default(view: DefaultsView, item: dict, *, saving: dict | None = None,
+                       error: str | None = None) -> FT:
+    """One connection's "Default fund for documents from <source>": the fund (click to edit
+    with the fund permission), who set it and when, Clear while one is set, and Inactive when
+    its setter can no longer choose funds. ``saving`` holds a refused save's form, kept in the
+    editor with the reason and Try again."""
+    dom_id = _default_id(item)
+    label = Div(t("fund.default_label", source=item.get("label") or item["source_key"]), cls="meta-label")
+    if saving is not None:
+        restore = js("if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:'#'+{1},swap:'outerHTML'}});}}",
+                     view.url(item), dom_id)
+        return Div(label, Form(
+            searchable_select("value", fund_options(view.funds), value=saving.get("value") or item.get("fund_choice") or "",
+                              placeholder=EMPTY, aria_label=t("fund.default_label", source=item.get("label") or ""),
+                              autofocus=True),
+            *(Hidden(name=k, value=str(v)) for k, v in _default_values(
+                item, request_key=saving.get("request_key") or uuid.uuid4().hex).items()),
+            *((Span(error, cls="field-error", role="alert"), " ",
+               Button(t("btn.try_again"), type="submit", cls="btn btn--ghost btn--xs")) if error else ()),
+            cls="editable-cell editable-cell--editing", onkeydown=restore, hx_trigger="change, submit",
+            hx_post=f"/settings/connectors/{view.platform}/fund-default", hx_target=f"#{dom_id}", hx_swap="outerHTML"),
+            id=dom_id, cls="meta-cell")
+    choice = item.get("fund_choice")
+    value = (Div(Span(view.name(choice)), hx_get=view.url(item, edit=True), hx_target=f"#{dom_id}",
+                 hx_swap="outerHTML", hx_trigger="click", title=t("documents.click_to_edit"), cls="editable-cell")
+             if view.editable else Div(Span(view.name(choice))))
+    notes = []
+    if choice:
+        notes.append(Span(t("fund.default_set_by", user=view.user(item.get("set_by")), date=(item.get("set_at") or "")[:10]),
+                          cls="text-muted"))
+        if not item.get("active"):
+            notes.append(Span(t("fund.default_inactive", user=view.user(item.get("set_by"))), cls="badge badge--warning"))
+    if not view.editable:
+        notes.append(Span(t("fund.default_read_only"), cls="text-muted"))
+    elif choice:
+        notes.append(Button(t("btn.clear"), type="button", cls="btn btn--ghost btn--xs",
+                            hx_post=f"/settings/connectors/{view.platform}/fund-default",
+                            hx_vals=hx_vals(_default_values(item, value="", request_key=uuid.uuid4().hex)),
+                            hx_target=f"#{dom_id}", hx_swap="outerHTML"))
+    return Div(label, value, *(Div(n) for n in notes), id=dom_id, cls="meta-cell")
+
+
+def connection_defaults_card(view: DefaultsView, items: list[dict]) -> FT | str:
+    """The standing funds of a connection's page; nothing when it has no connection to hold one."""
+    if not items:
+        return ""
+    return Div(H3(t("fund.defaults_title")), P(t("fund.defaults_hint"), cls="settings-hint"),
+               *(connection_default(view, item) for item in items), cls="settings-card flex-col gap-sm")

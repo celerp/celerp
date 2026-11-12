@@ -1201,7 +1201,7 @@
  },
  {
   "site": "celerp/services/peer_journals.py apply_firm_journal emit_event",
-  "count": 4,
+  "count": 2,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },

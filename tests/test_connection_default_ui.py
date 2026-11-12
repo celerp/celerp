@@ -36,7 +36,7 @@ def _company(*, funds: bool = True, role: str = "owner", grants: dict | None = N
     settings = {"funds_enabled": True} if funds else {}
     if grants:
         settings["role_grants"] = grants
-    return {"id": "c1", "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01",
+    return {"id": "00000000-0000-0000-0000-000000000002", "name": "Test Corp", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01",
             "settings": settings, "current_role": role}
 
 
@@ -114,7 +114,6 @@ async def test_connection_default_read_only_and_inactive(ui_client):
 
 async def test_connection_default_saves_in_place_and_keeps_a_refused_choice(ui_client):
     from ui.api_client import APIError
-    from ui.routes import settings_connectors as routes
 
     form = {"origin": "connected_company", "source_key": _PEER, "value": "fund:r",
             "expected_version": "2", "request_key": "rk-1"}
@@ -144,8 +143,7 @@ async def test_connection_default_saves_in_place_and_keeps_a_refused_choice(ui_c
     assert r.status_code == 200
     text = _text(r.text)
     assert "Someone changed this default fund" in text and "Try again" in text
-    assert re.search(r'<option[^>]*value="fund:r"[^>]*selected', r.text), "the refused choice is kept"
-    assert routes  # the route module is the one serving the page
+    assert re.search(r'<input type="hidden" name="value"[^>]*value="fund:r"', r.text), "the refused choice is kept"
 
 
 async def test_document_filled_from_default_is_tagged(ui_client):

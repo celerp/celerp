@@ -31,6 +31,7 @@ from celerp.connectors.base import (
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 from ui.components.encode import html_response, js, safe_url
+from ui.components.funds import DefaultsView, connection_default, connection_defaults_card, connection_defaults_of
 
 log = logging.getLogger(__name__)
 
@@ -1356,6 +1357,36 @@ def _from_accountant(items: list[dict] | None, lang: str, error: str | None = No
     )
 
 
+async def _defaults_view(token: str, platform: str) -> tuple[DefaultsView, list[dict]] | None:
+    """The standing funds of ``platform``'s page and the connections it holds them for; None
+    with funds off (the page shows no default control then)."""
+    from celerp.services.journal_accounts import funds_enabled
+    from celerp.services.permissions import role_has_permission
+    from ui import api_client as api
+
+    company = await api.get_company(token)
+    settings = company.get("settings") or {}
+    if not funds_enabled(settings):
+        return None
+    items = connection_defaults_of((await api.list_connection_defaults(token)).get("items") or [], platform)
+    funds = (await api.list_funds(token)).get("items") or []
+    users = {u["id"]: u.get("name") or u.get("email") or u["id"] for u in (await api.get_users(token)).get("items") or []}
+    editable = role_has_permission(settings, api.role_from_company(company), "manage_accounting")
+    return DefaultsView(platform, funds, users, editable), items
+
+
+async def _fund_defaults_card(token: str, platform: str) -> FT | str:
+    """The connection's standing funds, left out when they can't be read."""
+    from ui.api_client import APIError
+    try:
+        found = await _defaults_view(token, platform)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return ""
+    return connection_defaults_card(*found) if found else ""
+
+
 def _sync_accounts_card(lang: str) -> FT:
     """Where records held for an account, and accounts sync added, are settled."""
     from ui.routes.sync_accounts import PAGE
@@ -2130,11 +2161,62 @@ def setup_routes(app):
             body,
             await _first_sync_summary(token, platform, config, lang),
             await _from_accountant_section(token, lang) if platform == "celerp" else "",
+            await _fund_defaults_card(token, platform),
             _sync_accounts_card(lang) if platform == "celerp" else "",
             title=f"{name} - Celerp",
             nav_active="settings",
             request=request,
         )
+
+    async def _fund_default_of(request: Request, platform: str, origin: str, source_key: str):
+        """The page's view and the connection (``origin``, ``source_key``) it shows, or the
+        reason there is none as a cell error."""
+        from ui.api_client import APIError
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error"), None
+        try:
+            found = await _defaults_view(token, platform)
+        except APIError as e:
+            return P(refusal_text(e.detail), cls="cell-error"), None
+        if found is None:
+            return P(t("fund.not_enabled"), cls="cell-error"), None
+        view, items = found
+        item = next((i for i in items if i["origin"] == origin and i["source_key"] == source_key), None)
+        if item is None:
+            return P(t("fund.connection_unknown"), cls="cell-error"), None
+        return view, item
+
+    @app.get("/settings/connectors/{platform}/fund-default")
+    async def connection_default_field(request: Request, platform: str, origin: str = "", source_key: str = "",
+                                       edit: int = 0):
+        """A connection's standing fund: its display, or (``edit``) its fund select."""
+        view, item = await _fund_default_of(request, platform, origin, source_key)
+        if item is None:
+            return view
+        return connection_default(view, item, saving={} if edit and view.editable else None)
+
+    @app.post("/settings/connectors/{platform}/fund-default")
+    async def connection_default_save(request: Request, platform: str):
+        """Set, change or clear (no value) a connection's standing fund. The saved default is
+        drawn again with a toast; a refusal keeps the choice in the select with the reason and
+        Try again."""
+        from ui import api_client as api
+        from ui.components.shell import toast_header
+        form = dict(await request.form())
+        view, item = await _fund_default_of(request, platform, form.get("origin") or "", form.get("source_key") or "")
+        if item is None:
+            return view
+        value = form.get("value") or None
+        body = {"origin": item["origin"], "source_key": item["source_key"], "value": value,
+                "expected_version": int(form.get("expected_version") or 0), "request_key": form.get("request_key") or ""}
+        try:
+            await api.set_connection_default(_token(request), body)
+        except api.APIError as e:
+            return connection_default(view, item, saving=form, error=refusal_text(e.detail))
+        _, saved = await _fund_default_of(request, platform, item["origin"], item["source_key"])
+        message = t("fund.default_saved" if value else "fund.default_cleared", source=item.get("label") or "")
+        return html_response(connection_default(view, saved or item), headers=toast_header(message, "success"))
 
     @app.post("/settings/connectors/{platform}/connect-apikey")
     async def connector_connect_apikey(request: Request, platform: str):

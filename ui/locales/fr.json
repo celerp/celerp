@@ -7562,5 +7562,14 @@
   "fund.account_balances": "{account}: {balances}",
   "fund.account_no_balance": "{account}: No balance yet",
   "sync_accounts.funds_hint": "Choose a fund or Unrestricted for each line, then Post. Set all outside lines to fills every line still at --.",
-  "sync_accounts.posted": "{record} posted."
+  "sync_accounts.posted": "{record} posted.",
+  "fund.defaults_title": "Default funds",
+  "fund.defaults_hint": "Documents and entries from these connections take the default fund when they first arrive and post without waiting for a choice. You can still change a document's fund until it posts.",
+  "fund.default_label": "Default fund for documents from {source}",
+  "fund.default_set_by": "Set by {user} on {date}",
+  "fund.default_inactive": "Inactive: {user} can no longer choose funds",
+  "fund.default_read_only": "Only users who can manage funds can change this",
+  "fund.from_default": "Fund from your default for {source}",
+  "fund.default_saved": "Default fund for {source} saved.",
+  "fund.default_cleared": "Default fund for {source} cleared. New documents from it will wait for a fund choice."
 }
