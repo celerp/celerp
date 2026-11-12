@@ -971,6 +971,12 @@ async def emit_event(
     await lock_company(session, kwargs["company_id"])
     item = kwargs.get("entity_type") == "item"
     if item:
+        # An item's apply can post journal entries (opening stock at the draft boundary, a
+        # value change), so its fund ledger is held here, after the company lock and before
+        # the row lock, keeping the order company, fund ledger, rows.
+        from celerp.services.journal_accounts import held_fund_ledger
+
+        await held_fund_ledger(session, kwargs["company_id"])
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
         _record_consignor_payable(kwargs, previous_item_state)
