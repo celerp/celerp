@@ -59,6 +59,7 @@ class EventType(StrEnum):
     CRM_CONTACT_ADDRESS_ADDED = "crm.contact.address_added"
     CRM_CONTACT_ADDRESS_UPDATED = "crm.contact.address_updated"
     CRM_CONTACT_ADDRESS_REMOVED = "crm.contact.address_removed"
+    CRM_CONTACT_STATEMENT_SENT = "crm.contact.statement_sent"
     CRM_DEAL_CREATED = "crm.deal.created"
     CRM_DEAL_STAGE_CHANGED = "crm.deal.stage_changed"
     CRM_DEAL_WON = "crm.deal.won"

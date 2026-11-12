@@ -87,6 +87,7 @@ PERMISSIONS: list[Permission] = [
     Permission("revert_items_to_draft", "manager", True, "viewer"),
     Permission("import_export_data", "manager", True, "viewer"),
     Permission("view_payments", "manager", True, "viewer"),
+    Permission("send_statements", "manager", True, "viewer"),
     Permission("view_financial_reports", "manager", True, "viewer"),
     Permission("manage_accounting", "manager", True, "viewer"),
     Permission("reallocate_restricted_funds", "admin", True, "viewer"),

@@ -70,6 +70,7 @@ OWNERS: dict[str, str] = {
     "category_display_names": "PATCH /companies/me/categories/{category_key}",
     "category_income_accounts": "PUT /companies/me/categories/{category_key}/income-account",
     "gift_categories": "PUT /companies/me/categories/{category_key}/gift",
+    "donor_statement_wording": "PUT /donors/statements/wording",
     "column_prefs": "PATCH /companies/me/column-prefs",
     "taxes": "PATCH /companies/me/taxes",
     "purchasing_taxes": "PATCH /companies/me/purchasing-taxes",

@@ -1370,6 +1370,31 @@
     "attr.ticket_type": {
       "en": "Ticket Type",
       "params": []
+    },
+    "donors.statement_wording_default": {
+      "en": "Thank you, {name}, for your support. This statement lists the gifts we received from you in this period.",
+      "params": [
+        "name"
+      ]
+    },
+    "donors.statement_heading": {
+      "en": "Gifts from {start} to {end}",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "donors.statement_subject": {
+      "en": "Your gifts to {company}, {start} to {end}",
+      "params": [
+        "company",
+        "end",
+        "start"
+      ]
+    },
+    "donors.err_confirm_send": {
+      "en": "Confirm the send first: statements go out by email and cannot be recalled once delivered.",
+      "params": []
     }
   },
   "modules": {

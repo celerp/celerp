@@ -7032,6 +7032,8 @@
   "perm.name.revert_items_to_draft": "เปลี่ยนรายการสินค้ากลับเป็นฉบับร่าง",
   "perm.name.import_export_data": "นำเข้าและส่งออกข้อมูล",
   "perm.name.view_payments": "ดูการชำระเงิน",
+  "perm.name.send_statements": "ส่งใบแจ้งยอดผู้บริจาค",
+  "event.crm.contact.statement_sent": "ส่งใบแจ้งยอดผู้บริจาคแล้ว",
   "perm.name.view_financial_reports": "ดูรายงานทางการเงิน",
   "perm.name.manage_accounting": "จัดการบัญชี",
   "perm.name.manage_module_settings": "จัดการการตั้งค่าโมดูล",
@@ -7760,5 +7762,9 @@
   "attr.event_name": "Event",
   "attr.event_date": "Event Date",
   "attr.venue": "Venue",
-  "attr.ticket_type": "Ticket Type"
+  "attr.ticket_type": "Ticket Type",
+  "donors.statement_wording_default": "Thank you, {name}, for your support. This statement lists the gifts we received from you in this period.",
+  "donors.statement_heading": "Gifts from {start} to {end}",
+  "donors.statement_subject": "Your gifts to {company}, {start} to {end}",
+  "donors.err_confirm_send": "Confirm the send first: statements go out by email and cannot be recalled once delivered."
 }

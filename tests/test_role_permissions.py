@@ -75,6 +75,7 @@ EXPECTED_CATALOGUE = {
     "revert_items_to_draft": ("manager", True, "viewer"),
     "import_export_data": ("manager", True, "viewer"),
     "view_payments": ("manager", True, "viewer"),
+    "send_statements": ("manager", True, "viewer"),
     "view_financial_reports": ("manager", True, "viewer"),
     "manage_accounting": ("manager", True, "viewer"),
     "reallocate_restricted_funds": ("admin", True, "viewer"),

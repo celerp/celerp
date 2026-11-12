@@ -63,6 +63,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "crm.contact.note_added", "crm.contact.note_updated", "crm.contact.note_removed",
     "crm.contact.person_added", "crm.contact.person_updated", "crm.contact.person_removed",
     "crm.contact.address_added", "crm.contact.address_updated", "crm.contact.address_removed",
+    "crm.contact.statement_sent",
     "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
     "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
     "memo.created", "memo.returned",

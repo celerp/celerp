@@ -635,6 +635,15 @@ class CrmContactAddressRemoved(BaseModel):
     address_id: str
 
 
+class CrmContactStatementSent(BaseModel):
+    """A donor statement emailed to the contact: its period, wording version, total and address."""
+    date_from: str
+    date_to: str
+    version: int
+    total: float
+    email: str
+
+
 # -----------------
 # Documents
 # -----------------
@@ -1636,6 +1645,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "crm.contact.address_added": CrmContactAddressAdded,
     "crm.contact.address_updated": CrmContactAddressUpdated,
     "crm.contact.address_removed": CrmContactAddressRemoved,
+    "crm.contact.statement_sent": CrmContactStatementSent,
     "crm.contact.file_attached": EntityFileAttached,
     "crm.contact.file_tagged": EntityFileTagged,
     "crm.contact.file_deleted": EntityFileDeleted,

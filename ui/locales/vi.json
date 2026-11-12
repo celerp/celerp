@@ -7032,6 +7032,8 @@
   "perm.name.revert_items_to_draft": "Chuyển mặt hàng về trạng thái nháp",
   "perm.name.import_export_data": "Nhập và xuất dữ liệu",
   "perm.name.view_payments": "Xem thanh toán",
+  "perm.name.send_statements": "Gửi bảng kê nhà tài trợ",
+  "event.crm.contact.statement_sent": "Đã gửi bảng kê nhà tài trợ",
   "perm.name.view_financial_reports": "Xem báo cáo tài chính",
   "perm.name.manage_accounting": "Quản lý kế toán",
   "perm.name.manage_module_settings": "Quản lý cài đặt mô-đun",
@@ -7760,5 +7762,9 @@
   "attr.event_name": "Event",
   "attr.event_date": "Event Date",
   "attr.venue": "Venue",
-  "attr.ticket_type": "Ticket Type"
+  "attr.ticket_type": "Ticket Type",
+  "donors.statement_wording_default": "Thank you, {name}, for your support. This statement lists the gifts we received from you in this period.",
+  "donors.statement_heading": "Gifts from {start} to {end}",
+  "donors.statement_subject": "Your gifts to {company}, {start} to {end}",
+  "donors.err_confirm_send": "Confirm the send first: statements go out by email and cannot be recalled once delivered."
 }

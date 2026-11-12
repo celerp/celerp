@@ -7032,6 +7032,8 @@
   "perm.name.revert_items_to_draft": "Repasser les articles en brouillon",
   "perm.name.import_export_data": "Importer et exporter des données",
   "perm.name.view_payments": "Afficher les paiements",
+  "perm.name.send_statements": "Envoyer les relevés des donateurs",
+  "event.crm.contact.statement_sent": "Relevé du donateur envoyé",
   "perm.name.view_financial_reports": "Afficher les rapports financiers",
   "perm.name.manage_accounting": "Gérer la comptabilité",
   "perm.name.manage_module_settings": "Gérer les paramètres des modules",
@@ -7760,5 +7762,9 @@
   "attr.event_name": "Event",
   "attr.event_date": "Event Date",
   "attr.venue": "Venue",
-  "attr.ticket_type": "Ticket Type"
+  "attr.ticket_type": "Ticket Type",
+  "donors.statement_wording_default": "Thank you, {name}, for your support. This statement lists the gifts we received from you in this period.",
+  "donors.statement_heading": "Gifts from {start} to {end}",
+  "donors.statement_subject": "Your gifts to {company}, {start} to {end}",
+  "donors.err_confirm_send": "Confirm the send first: statements go out by email and cannot be recalled once delivered."
 }

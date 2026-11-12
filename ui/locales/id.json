@@ -7032,6 +7032,8 @@
   "perm.name.revert_items_to_draft": "Kembalikan barang ke status draf",
   "perm.name.import_export_data": "Impor dan ekspor data",
   "perm.name.view_payments": "Lihat pembayaran",
+  "perm.name.send_statements": "Kirim laporan donatur",
+  "event.crm.contact.statement_sent": "Laporan donatur terkirim",
   "perm.name.view_financial_reports": "Lihat laporan keuangan",
   "perm.name.manage_accounting": "Kelola akuntansi",
   "perm.name.manage_module_settings": "Kelola pengaturan modul",
@@ -7760,5 +7762,9 @@
   "attr.event_name": "Event",
   "attr.event_date": "Event Date",
   "attr.venue": "Venue",
-  "attr.ticket_type": "Ticket Type"
+  "attr.ticket_type": "Ticket Type",
+  "donors.statement_wording_default": "Thank you, {name}, for your support. This statement lists the gifts we received from you in this period.",
+  "donors.statement_heading": "Gifts from {start} to {end}",
+  "donors.statement_subject": "Your gifts to {company}, {start} to {end}",
+  "donors.err_confirm_send": "Confirm the send first: statements go out by email and cannot be recalled once delivered."
 }
