@@ -51,6 +51,8 @@ SERVER_BUILT = {
     "default_modules/celerp-docs/celerp_docs/routes.py::_supplier_credit_for_return":
         "builds the supplier credit from the return",
     "default_modules/celerp-docs/celerp_docs/routes.py::reprice_doc": "writes the line prices it computes",
+    "default_modules/celerp-docs/celerp_docs/routes.py::write_fund_choices":
+        "writes only the fund choices require_fund_choices grants",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::_follow_books_currency": "writes the currency",
@@ -86,9 +88,12 @@ def test_every_writer_of_documents_checks_owned_fields_or_says_why_it_need_not()
 def test_the_copy_rule_keeps_no_owned_or_removed_field():
     """A record copied or converted from another (record_copy) keeps only the keys it names, and a
     bought consignment's bill adds its totals: none of them is a field the lifecycle or the
-    schedule owns, or one an earlier release kept on a template."""
-    kept = RECORD_KEYS | LINE_KEYS | CONVERSION_KEYS | set(DOC_TOTAL_FIELDS)
-    owned = kept & (LIFECYCLE_OWNED_FIELDS | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS)
+    schedule owns, or one an earlier release kept on a template. A line's own service period is
+    the caller's (a deferred line's, celerp.services.recognition.service_period); the period the
+    schedule writes on a bill's header stays owned."""
+    owned_fields = LIFECYCLE_OWNED_FIELDS | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS
+    owned = ((RECORD_KEYS | CONVERSION_KEYS | set(DOC_TOTAL_FIELDS)) & owned_fields) | (
+        LINE_KEYS & (owned_fields - {"service_start", "service_end"}))
     assert not owned, f"the copy rule keeps owned or removed fields: {sorted(owned)}"
 
 

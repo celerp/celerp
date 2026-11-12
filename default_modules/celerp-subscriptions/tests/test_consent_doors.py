@@ -35,6 +35,9 @@ from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
 STATUS_DOORS = sorted(name for name, (_, keys, _) in route_doors().items() if "status" in keys)
 
 WRITE_AGREEMENT = "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement"
+# Writers of a "consents" key that is not an agreement's: the company setting holding who
+# authorized an unattended operation of the books (company_settings.OWNERS).
+COMPANY_CONSENTS = {"default_modules/celerp-accounting/celerp_accounting/recognition.py::set_authorization"}
 
 
 async def _configured(client, session, monkeypatch, *, status: str = "active", send: bool = False):
@@ -326,7 +329,7 @@ def test_consent_is_written_only_where_every_automatic_field_is():
     """The consent writers are the automatic-field writers' one sink: only write_agreement writes
     consents, every module function writing an automatic field reaches it (census, nothing
     unresolved, nothing outside it), and no Documents door takes an automatic field."""
-    assert consent_writers() == {WRITE_AGREEMENT}
+    assert consent_writers() == {WRITE_AGREEMENT, *COMPANY_CONSENTS}
     writers = automatic_writers()
     assert writers and {name: u for name, (_, u) in writers.items() if u} == {}
     assert {name: keys for name, keys in outside_writes().items() if set(keys) & automatic_fields()} == {}

@@ -23,14 +23,15 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
-from celerp_subscriptions.billing import ENDED, bills, send_written
+from celerp.accounting_roles import RECOGNIZE_FIELD
+from celerp_subscriptions.billing import ENDED, bills, doc_kind, send_written
 from celerp_subscriptions.periods import shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
 from ui.api_client import APIError, error_message
-from ui.components.shell import base_shell, page_header, toast_header
+from ui.components.shell import base_shell, module_active, page_header, toast_header
 from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error, persist_then_post
@@ -109,7 +110,8 @@ _BILLING_ACTIONS = ("generate-due", "bill-early")
 # The schedule fields the detail page edits, each with how its submitted text is read.
 _SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int, "billing_timing": str,
                    "term_start": str, "term_end": str, "cancel_at_period_end": lambda v: v == "true",
-                   "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int}
+                   "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int,
+                   RECOGNIZE_FIELD: lambda v: v == "true"}
 # What a schedule value that does not read as its type is told.
 _FIELD_ERRORS = {"custom_interval_days": "subscriptions.err_custom_days",
                  "catchup_periods": "subscriptions.err_catchup_window"}
@@ -162,6 +164,7 @@ _FIELD_TEXT = {
     "generation_mode": ("subscriptions.billing_mode", lambda v: t(f"subscriptions.mode_{v}")),
     "auto_send": ("subscriptions.auto_send", _yes_no),
     "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v)),
+    RECOGNIZE_FIELD: ("item.recognize_over_service_period", _yes_no),
 }
 
 
@@ -433,13 +436,19 @@ def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
             Span(*right, id="sub-actions-right", style="display:contents"))
 
 
-def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict) -> str:
+def _defers(settings: dict, sub: dict) -> bool:
+    """Whether the agreement's bills can recognize over their service period: a sales
+    agreement in a company that keeps its books."""
+    return doc_kind(sub) == "invoice" and module_active(settings, "celerp-accounting")
+
+
+def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict, defers: bool) -> str:
     """Every element showing the schedule, drawn from what the agreement stores, each swapped
     out of band by its id."""
-    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule, defers) if v != ""))
 
 
-def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
+def _schedule_views(entity_id: str, sub: dict, schedule: dict, defers: bool) -> list[FT]:
     """Every element of the agreement page that shows its schedule or billing settings: the
     actions with the bill date note and badge, the header's frequency and next bill date, the
     Schedule and Billing sections and the Periods table. The page draws each in its place and a
@@ -449,7 +458,7 @@ def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
     sub = _with_schedule(sub, schedule)
     return [*_action_groups(entity_id, sub, schedule), *subscription_meta_cells(sub),
             _schedule_section(entity_id, sub) if sub.get("status") not in ENDED else "",
-            _billing_section(entity_id, sub), _periods_table(entity_id, schedule)]
+            _billing_section(entity_id, sub, defers), _periods_table(entity_id, schedule)]
 
 
 def _pause_button(entity_id: str):
@@ -819,10 +828,18 @@ def _auto_badge(sub: dict) -> FT:
     return Span(t(key), cls="badge badge--active", **attrs) if key else Span(**attrs)
 
 
-def _billing_section(entity_id: str, sub: dict) -> FT:
-    """How the agreement bills: by hand or on its own, whether it sends what it bills, and
-    how many past periods automatic billing may still bill after a gap. Each automatic
-    mode names when it was authorized; setting it back to manual undoes it."""
+def _yes_no_control(base: str, field: str, on: bool, attrs: dict) -> FT:
+    return Label(_label(field),
+                 Select(Option(_yes_no(False), value="false", selected=not on),
+                        Option(_yes_no(True), value="true", selected=on),
+                        name="value", hx_patch=f"{base}/{field}", **attrs))
+
+
+def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
+    """How the agreement bills: by hand or on its own, whether it sends what it bills, how
+    many past periods automatic billing may still bill after a gap and, when its bills can
+    defer revenue (_defers), whether they recognize over their service period. Each
+    automatic mode names when it was authorized; setting it back to manual undoes it."""
     base = f"/subscriptions/{entity_id}/schedule"
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     mode = shown("generation_mode", sub.get("generation_mode"))
@@ -833,14 +850,12 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
             Label(_label("generation_mode"),
                   Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in _MODES],
                          name="value", hx_patch=f"{base}/generation_mode", **attrs)),
-            Label(_label("auto_send"),
-                  Select(Option(_yes_no(False), value="false", selected=not sub.get("auto_send")),
-                         Option(_yes_no(True), value="true", selected=bool(sub.get("auto_send"))),
-                         name="value", hx_patch=f"{base}/auto_send", **attrs)),
+            _yes_no_control(base, "auto_send", bool(sub.get("auto_send")), attrs),
             Label(_label("catchup_periods"),
                   Input(type="number", name="value", min="0", max="12", value=str(shown("catchup_periods", sub.get("catchup_periods"))),
                         hx_patch=f"{base}/catchup_periods", style="width:80px", **attrs),
                   title=t("subscriptions.catchup_window_title")),
+            _yes_no_control(base, RECOGNIZE_FIELD, bool(sub.get(RECOGNIZE_FIELD)), attrs) if defers else "",
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
         *[P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
@@ -1331,7 +1346,7 @@ def setup_routes(app) -> None:
                 suppress_pdf=True,
             ),
             _schedule_section(entity_id, doc) if status not in ENDED else "",
-            _billing_section(entity_id, doc),
+            _billing_section(entity_id, doc, _defers(co_settings, doc)),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule, historical_page=period_before is not None),
             title=f"{type_label} {ref} - Celerp",
@@ -1421,9 +1436,15 @@ def setup_routes(app) -> None:
         # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value is not None else {})}
 
+        async def read() -> tuple[dict, str]:
+            """The agreement as stored and every view of its schedule drawn from it."""
+            sub = await api.get_subscription(token, entity_id)
+            settings = (await api.get_company(token)).get("settings") or {}
+            return sub, _stored_schedule_views(entity_id, sub, await api.get_subscription_periods(token, entity_id),
+                                               _defers(settings, sub))
+
         async def stored():
-            return _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
-                                          await api.get_subscription_periods(token, entity_id))
+            return (await read())[1]
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:
@@ -1431,9 +1452,7 @@ def setup_routes(app) -> None:
             return await _refused_redrawn(e, stored)
 
         async def draw():
-            sub = await api.get_subscription(token, entity_id)
-            schedule = await api.get_subscription_periods(token, entity_id)
-            views = _stored_schedule_views(entity_id, sub, schedule)
+            sub, views = await read()
             # The version the save stored, for the page's next lines save, as a document's field saves hand it.
             version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):

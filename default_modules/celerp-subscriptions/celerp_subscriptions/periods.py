@@ -56,7 +56,7 @@ UNSET = {
     "billing_timing": "advance", "term_start": None, "term_end": None, "cancel_at_period_end": None,
     "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
     "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
-    "released_bills": {}, "resume_restarts": False,
+    "released_bills": {}, "resume_restarts": False, "recognize_over_service_period": False,
 }
 
 
@@ -115,6 +115,9 @@ TERMS = {
     "catchup_periods": Term("whole", "subscriptions.err_catchup_window", low=0, high=CATCHUP_CAP),
     "generation_mode": Term("choice", "subscriptions.err_generation_mode", choices=GENERATION_MODES),
     "auto_send": Term("flag", "subscriptions.err_auto_send"),
+    # Read by the books when a bill posts (celerp.services.recognition.deferred_line), not by
+    # the schedule, so changing it asks no consent (billing.CONSENT_TERMS).
+    "recognize_over_service_period": Term("flag", "recognition.err_flag_invalid"),
 }
 
 

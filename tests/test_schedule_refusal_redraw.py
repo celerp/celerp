@@ -26,7 +26,8 @@ _REFUSAL = "This agreement has billed periods, so its frequency cannot change."
 # A value each schedule field reads as its type, so every PATCH reaches the API.
 _VALUES = {"frequency": "custom", "anchor_date": "2026-12-01", "custom_interval_days": "10", "billing_timing": "arrears",
            "term_start": "2026-12-01", "term_end": "2027-12-01", "cancel_at_period_end": "true",
-           "generation_mode": "auto_invoice", "auto_send": "true", "catchup_periods": "3"}
+           "generation_mode": "auto_invoice", "auto_send": "true", "catchup_periods": "3",
+           "recognize_over_service_period": "true"}
 
 
 async def _patch(field: str, value: str, sub=None):
@@ -34,7 +35,8 @@ async def _patch(field: str, value: str, sub=None):
     get_sub = sub or AsyncMock(return_value=_SUB)
     with patch("ui.api_client.update_subscription_schedule", new=AsyncMock(side_effect=APIError(409, _REFUSAL))), \
          patch("ui.api_client.get_subscription", new=get_sub), \
-         patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value=_PERIODS)):
+         patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value=_PERIODS)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
             ui.cookies.update(authed_cookies("owner"))
             return await ui.patch(f"/subscriptions/doc:sub-1/schedule/{field}", data={"value": value},
@@ -66,7 +68,7 @@ async def test_schedule_refusal_redraws_frequency_views():
 async def test_every_schedule_refusal_redraws_the_stored_views():
     from ui.routes.subscriptions import _SCHEDULE_EDITS, _schedule_views
     assert set(_VALUES) == set(_SCHEDULE_EDITS)
-    stored = _oob_ids(to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views("doc:sub-1", _SUB, _PERIODS) if v != "")))
+    stored = _oob_ids(to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views("doc:sub-1", _SUB, _PERIODS, True) if v != "")))
     assert "sub-custom-days" in stored or "sub-schedule" in stored
     for field, value in _VALUES.items():
         r = await _patch(field, value)

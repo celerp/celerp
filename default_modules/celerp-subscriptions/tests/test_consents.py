@@ -23,7 +23,7 @@ AUTHORIZED = {"generation": "Automatic billing authorized", "sending": "Automati
 
 
 def _shown(eid: str, sub: dict) -> set[str]:
-    html = to_xml(_billing_section(eid, sub))
+    html = to_xml(_billing_section(eid, sub, defers=False))
     return {mode for mode, text in AUTHORIZED.items() if text in html}
 
 
@@ -118,7 +118,7 @@ async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, ro
     who = hd if role == "owner" else (await member(client, session, hd, role))[0]
     r = await schedule(client, who, eid, generation_mode="auto_invoice_collect")
     assert r.status_code == 422 and r.json()["detail"]["message_key"] == "subscriptions.err_generation_mode"
-    html = to_xml(_billing_section(eid, await template(client, hd, eid)))
+    html = to_xml(_billing_section(eid, await template(client, hd, eid), defers=False))
     assert "collect" not in html.lower()
 
 
@@ -159,7 +159,9 @@ async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent(
             self.read.add(key)
             return super().__contains__(key)
 
-    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields)
+    # Recognize over the service period is read by the books when a bill posts, never by
+    # unattended billing, so no consent covers it (periods.TERMS).
+    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields) - {"recognize_over_service_period"}
     settings = set(ScheduleBody.model_fields)
     for frequency, timing in (("monthly", "advance"), ("custom", "arrears")):
         state = Recorded({"status": "active", "anchor_date": "2026-01-01", "frequency": frequency,

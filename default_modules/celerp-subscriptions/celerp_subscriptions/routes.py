@@ -115,6 +115,7 @@ class ScheduleBody(BaseModel):
     catchup_periods: int | None = None
     generation_mode: str | None = None
     auto_send: bool | None = None
+    recognize_over_service_period: bool | None = None
 
     @field_validator("anchor_date", "generation_mode", "frequency", "billing_timing", "catchup_periods", mode="before")
     @classmethod
