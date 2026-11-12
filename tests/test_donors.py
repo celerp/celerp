@@ -168,6 +168,29 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
 
 
+async def test_donor_gifts_newest_first_and_statement_amounts_right_aligned(client, auth, monkeypatch):
+    """A donor's gifts read newest first in their history and statement, and the statement's
+    amount column, its header included, sits right-aligned over the figures, as on screen."""
+    import re
+
+    from ui.i18n import t
+
+    await _books(client, auth)
+    donor = await _donor(client, auth, "Eve Donor", "eve@test.test")
+    for amount, day in ((10, "2026-03-05"), (30, "2026-03-20"), (20, "2026-03-12")):
+        await _direct_gift(client, auth, donor, amount, day)
+    assert [g["date"] for g in (await _history(client, auth, donor))["gifts"]] == ["2026-03-20", "2026-03-12", "2026-03-05"]
+    sent = _mailbox(monkeypatch)
+    r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True})
+    assert r.status_code == 200 and len(sent) == 1, r.text
+    html = sent[0]["html"]
+    assert re.findall(r"2026-03-\d\d", html) == ["2026-03-01", "2026-03-31", "2026-03-20", "2026-03-12", "2026-03-05"]
+    header = re.search(r"<th([^>]*)>%s</th>" % re.escape(t("label.amount")), html)
+    assert header and "text-align: right" in header.group(1).replace("text-align:right", "text-align: right"), html
+    figures = re.findall(r"<td([^>]*)>[\d,.]+ \w{3}</td>", html)
+    assert len(figures) == 4 and all("right" in attrs for attrs in figures), html
+
+
 async def test_thank_you_wording_tax_neutral_default(client, auth):
     r = await client.get("/donors/statements/wording", headers=auth["headers"])
     assert r.status_code == 200, r.text

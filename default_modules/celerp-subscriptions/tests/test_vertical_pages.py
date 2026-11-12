@@ -198,6 +198,30 @@ async def test_agreement_kind_member_grace_checked_and_changed_on_schedule(owner
     assert (await api.get("/subscriptions", params={"kind": "club"})).status_code == 422
 
 
+async def test_the_member_must_be_a_contact_of_the_company(owner_ui, monkeypatch):
+    """A member that names no contact of the company (a made-up id, or a document's) is refused
+    by every writer: Documents' create and the agreement's schedule; a real contact stands."""
+    from ui.i18n import t
+
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    refused = t("subscriptions.err_beneficiary")
+    for bad in ("contact:nobody", "doc:INV-0001"):
+        r = await api.post("/docs", json={"doc_type": "subscription_invoice", "contact_id": "contact:test-001",
+                                          "frequency": "monthly", "start_date": "2026-03-01",
+                                          "beneficiary_contact_id": bad,
+                                          "line_items": [{"name": "Dues", "quantity": 1, "unit_price": 10.0,
+                                                          "line_total": 10.0}], "total": 10.0})
+        assert r.status_code == 422 and refused in r.text, (bad, r.text)
+    eid = await agreement(api, {}, start="2026-03-01", kind="membership")
+    r = await api.patch(f"/subscriptions/{eid}/schedule", json={"beneficiary_contact_id": "contact:nobody"})
+    assert r.status_code == 422 and refused in r.text, r.text
+    member = await contact(api, {}, "member-one@example.com")
+    r = await api.patch(f"/subscriptions/{eid}/schedule", json={"beneficiary_contact_id": member})
+    assert r.status_code == 200, r.text
+    assert (await template(api, {}, eid))["beneficiary_contact_id"] == member
+
+
 @pytest.mark.parametrize(("vertical", "shown", "hidden"), [
     ("consulting", "retainers", "members"), ("nonprofit", "members", "retainers"), (None, None, "members"),
 ])
