@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import uuid
+from datetime import date
 
 import pytest
 from sqlalchemy import update
@@ -187,6 +188,83 @@ async def test_expense_then_release(client, session, auth):
     assert back.status_code == 200, back.text
     r = await _post(client, auth, "release", fund=f["R"], to_fund=None, backing=backing)
     assert r.status_code == 200, r.text
+
+
+async def test_release_requires_purpose_spending_and_reverse_undoes(client, session, auth):
+    """A release above the purpose spending it names is refused naming the shortfall rule; a
+    release from an unrestricted fund, or to a restricted one, is refused by the template; a
+    release within its spending posts and reversing it puts every fund back as it was."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    await _gift(session, auth, None)
+    spending = await _bill(session, auth, None)
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=None,
+                    backing=[{"je_id": spending, "line_index": 0, "amount": "80"}])
+    assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_used", r.text
+    backing = [{"je_id": spending, "line_index": 0, "amount": "60"}]
+    await _gift(session, auth, f["U1"])
+    r = await _post(client, auth, "release", fund=f["U1"], to_fund=None, backing=backing)
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_template", r.text
+    r2 = await client.post("/accounting/funds", headers=auth["headers"], json={
+        "request_key": uuid.uuid4().hex, "name": "Second scholarship", "restricted": True, "purpose": "Scholarships"})
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=r2.json()["id"], backing=backing)
+    assert r.status_code == 422 and _key(r) == "posting.fund.movement_template", r.text
+    before = await fund_account_balances(session, auth["company_id"])
+
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=None, backing=backing)
+    assert r.status_code == 200, r.text
+    assert await _held(session, auth, f["R"]) == 40 and await _held(session, auth, None) == 100
+    back = await client.post(f"/accounting/funds/movements/{r.json()['je_id']}/reverse", headers=auth["headers"],
+                             json={"date": DATE, "reason": "Wrong bill"})
+    assert back.status_code == 200, back.text
+    assert await fund_account_balances(session, auth["company_id"]) == before
+
+
+@pytest.mark.parametrize("writer", ["manual", "auto", "transfer", "recon_create", "recon_split", "recon_writeoff",
+                                    "year_close", "close_in_grant", "reversal"])
+async def test_restricted_money_leaves_only_by_release_or_authorized_reallocation(client, session, auth, writer):
+    """Whichever writer produced it, an entry that takes money out of the restricted fund R is
+    judged at the journal boundary: the entry types of manual entries, document postings, bank
+    transfers, statement lines and year closes giving R's money to another fund are refused
+    outside a movement; a year close cannot carry a fund's results to another fund; and the
+    reversal of a reallocation or of an opening, taking money out of a restricted fund, needs
+    the authority to reallocate."""
+    from celerp_accounting.funds import post_fund_movement
+    from celerp.services.journal_accounts import YEAR_CLOSE, UnbalancedJournalEntry
+
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"])
+    if writer == "reversal":
+        r2 = await client.post("/accounting/funds", headers=auth["headers"], json={
+            "request_key": uuid.uuid4().hex, "name": "Second scholarship", "restricted": True,
+            "purpose": "Scholarships"})
+        await _gift(session, auth, None, 30)
+        moved = [await _post(client, auth, "reallocate", from_fund=f["R"], to_fund=r2.json()["id"], amount="25",
+                             donor_authorization="Donor letter 3"),
+                 await _post(client, auth, "opening", assignments=[{"account": "1111", "fund": f["R"], "amount": "30"}])]
+        assert [m.status_code for m in moved] == [200, 200], [m.text for m in moved]
+        reverse = lambda m: client.post(f"/accounting/funds/movements/{m.json()['je_id']}/reverse",
+                                        headers=auth["headers"], json={"date": DATE, "reason": "Donor withdrew"})
+        await _set_role(session, auth, "manager")
+        for m in moved:
+            r = await reverse(m)
+            assert r.status_code == 422 and _key(r) == "posting.fund.movement_permission", r.text
+        assert await _held(session, auth, r2.json()["id"]) == 25 and await _held(session, auth, f["R"]) == 105
+        await _set_role(session, auth, "admin")
+        assert [(await reverse(m)).status_code for m in moved] == [200, 200]
+    elif writer == "close_in_grant":
+        await session.commit()  # a close starts its own transaction, as the route's does
+        with pytest.raises(UnbalancedJournalEntry):
+            await post_fund_movement(
+                session, auth["company_id"], je_id="je:close:2026-12-31", kind=YEAR_CLOSE, ts=date(2026, 12, 31),
+                reason="Close", actor=auth["user_id"],
+                entries=[{"account": "4100", "debit": 100, "credit": 0, "fund_id": f["R"]},
+                         {"account": "3200", "debit": 0, "credit": 100, "fund_id": f["U1"]}])
+    else:
+        cross = [("6200", 25, 0, f["R"]), ("1111", 0, 25, f["R"]), ("1111", 25, 0, f["U1"]), ("4100", 0, 25, f["U1"])]
+        detail = await _refused(_emit(session, auth, cross, je_type=writer))
+        assert detail["message_key"] == "posting.fund.movement_outside"
+    assert await _held(session, auth, f["R"]) == 100
 
 
 async def test_reallocation_same_purpose_authorized_only(client, session, auth):
