@@ -29,7 +29,7 @@ from celerp_fixed_assets import notices, projections, reclassify, runs, setup, s
 from celerp.services.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
-    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use)
+    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use, same_fund)
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.projections import BUCKETS, money, said
 
@@ -317,6 +317,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
     value = value if isinstance(value, dict) else {}
     entry, claim = await _claimed_here(d, str(value.get("old") or ""))
     line = await _open_line(d.session, d.company_id, value.get("new"))
+    await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] != "acquisition":
         raise setup.unprocessable("Replace a source with a bill line or manual journal line acquiring the asset.")
     carrying, held, key = _carrying(d, claim)
@@ -350,6 +351,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
 async def _link_source(d: Draft, value, fa: dict) -> None:
     line = await _open_line(d.session, d.company_id, (value or {}).get("source") if isinstance(value, dict) else None)
     account = d.cls["asset_account"]
+    await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] not in ("acquisition", "reduction") or line["account"] != account:
         raise setup.unprocessable(f"Link a line on {account}, the asset account of this asset's class.")
     amount = _dec(line["amount"]) * (1 if line["kind"] == "acquisition" else -1)

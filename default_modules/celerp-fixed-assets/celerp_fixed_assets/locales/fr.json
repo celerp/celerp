@@ -1080,5 +1080,6 @@
   "fixed_assets.err_line_no_such_asset": "{line} : cette immobilisation n'existe pas.",
   "fixed_assets.err_sale_module_off": "{numbers} : activez le module Immobilisations pour vendre une immobilisation.",
   "fixed_assets.err_sale_not_here": "{number} n'est pas vendu sur cette facture. Lancez la vente depuis sa page pour créer un brouillon de facture.",
-  "fixed_assets.err_credit_not_sold_there": "{number} n'a pas été vendu sur la facture {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} n'a pas été vendu sur la facture {invoice}.",
+  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}."
 }

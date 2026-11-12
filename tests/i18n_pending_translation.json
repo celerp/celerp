@@ -635,5 +635,17 @@
       "en": "Fund unarchived",
       "params": []
     }
+  },
+  "modules": {
+    "celerp-fixed-assets": {
+      "fixed_assets.err_line_other_fund": {
+        "en": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}.",
+        "params": [
+          "asset_fund",
+          "line_fund",
+          "number"
+        ]
+      }
+    }
   }
 }

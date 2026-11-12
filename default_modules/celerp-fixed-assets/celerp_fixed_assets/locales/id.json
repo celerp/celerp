@@ -1080,5 +1080,6 @@
   "fixed_assets.err_line_no_such_asset": "{line}: aset tersebut tidak ada.",
   "fixed_assets.err_sale_module_off": "{numbers}: aktifkan modul Aset Tetap untuk menjual aset.",
   "fixed_assets.err_sale_not_here": "{number} tidak dijual melalui faktur ini. Mulai penjualan dari halaman aset untuk membuat draf faktur.",
-  "fixed_assets.err_credit_not_sold_there": "{number} tidak dijual melalui faktur {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} tidak dijual melalui faktur {invoice}.",
+  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}."
 }

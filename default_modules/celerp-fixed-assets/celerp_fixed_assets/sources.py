@@ -48,6 +48,24 @@ async def _posted_journals(session, company_id, ids: list[str] | None = None, pr
     return {eid: state for eid, state in (await session.execute(query)).all()}
 
 
+async def _live_ids(session, company_id, ids: list[str]) -> dict[str, str]:
+    """Each of ``ids`` -> the entry standing for it now: itself, or, where Change fund voided
+    it and posted it again, the copy (auto_je.current_entry)."""
+    from celerp.services.auto_je import current_entry
+
+    replaced = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids),
+        Projection.state["status"].as_string() == "void",
+        Projection.state["replaced_by"].as_string().is_not(None)))).scalars().all()
+    return {je_id: await current_entry(session, company_id, je_id) if je_id in replaced else je_id for je_id in ids}
+
+
+def _bill_line_fund(je: dict, account: str, number: int) -> str | None:
+    """The fund the bill's entry posted document line ``number`` (1-based) on ``account`` to."""
+    return next((e.get("fund_id") for e in je.get("entries") or []
+                 if e.get("account") == account and number in (e.get("source_lines") or ())), None)
+
+
 async def _bill_lines(session, company_id, company_settings: dict, asset_accounts: set[str]) -> list[dict]:
     from celerp.services.account_roles import line_has_role
     from celerp.services.auto_je import bill_line_base
@@ -55,11 +73,13 @@ async def _bill_lines(session, company_id, company_settings: dict, asset_account
     docs = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string().in_(BILL_TYPES)))).all()
-    journals = await _posted_journals(session, company_id, ids=[f"je:auto:{d}:bill" for d, _ in docs])
+    live = await _live_ids(session, company_id, [f"je:auto:{d}:bill" for d, _ in docs])
+    journals = await _posted_journals(session, company_id, ids=list(live.values()))
     base = books_currency(company_settings)
     out = []
     for doc_id, doc in docs:
-        je = journals.get(f"je:auto:{doc_id}:bill")
+        je_id = live[f"je:auto:{doc_id}:bill"]
+        je = journals.get(je_id)
         if je is None:
             continue
         amounts = None
@@ -76,8 +96,8 @@ async def _bill_lines(session, company_id, company_settings: dict, asset_account
                 "source": f"{doc_id}:{li.get('line_id') or idx}", "kind": "acquisition",
                 "description": li.get("name") or li.get("description") or "", "account": account,
                 "amount": str(amounts.get(idx, Decimal(0))), "quantity": _quantity(li.get("quantity")),
-                "date": _day(je.get("ts")), "journal_id": f"je:auto:{doc_id}:bill", "line_index": idx,
-                "document": doc_id, "document_ref": doc.get("ref_id"), "href": f"/docs/{doc_id}"})
+                "date": _day(je.get("ts")), "journal_id": je_id, "line_index": idx,
+                "fund_id": _bill_line_fund(je, account, idx + 1), "document": doc_id, "document_ref": doc.get("ref_id"), "href": f"/docs/{doc_id}"})
     return out
 
 
@@ -97,7 +117,8 @@ async def _manual_lines(session, company_id, asset_accounts: set[str], accum_acc
             out.append({
                 "source": f"{je_id}:{idx}", "kind": kind, "description": je.get("memo") or "",
                 "account": account, "amount": str(amount), "quantity": 1, "date": _day(je.get("ts")),
-                "journal_id": je_id, "line_index": idx, "document": je_id, "document_ref": None,
+                "journal_id": je_id, "line_index": idx, "fund_id": entry.get("fund_id"), "document": je_id,
+                "document_ref": None,
                 "href": f"/accounting?q={quote_plus(je_id)}"})
     return out
 

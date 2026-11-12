@@ -51,13 +51,15 @@ class JournalLine:
     with ``recognized_in``, by that posted journal (a bill line the module took over) or,
     as ``ledger_key(day)``, by the ledger to that day (a balance brought in at a cutover).
     Any other line is a new destination and must be an account the chart accepts for
-    new postings."""
+    new postings. ``fund_id`` is the fund the line carries (attribution rule P: the fund
+    of the object whose value it moves); None is the unrestricted group."""
     account: str
     debit: Decimal = Decimal(0)
     credit: Decimal = Decimal(0)
     role: str | None = None
     moves_recognized: bool = False
     recognized_in: str | None = None
+    fund_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -279,7 +281,10 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
 
 def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: JournalSource, intent: dict) -> str:
     body = {"operation": operation, "date": date, "source": source.fields(), "intent": intent,
-            "lines": [{**asdict(ln), "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
+            # A line with no fund hashes without the field, so a journal stored before lines
+            # carried funds still matches its own retry.
+            "lines": [{**{k: v for k, v in asdict(ln).items() if k != "fund_id" or v},
+                       "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
                       for ln in lines]}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -313,6 +318,8 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
             entry["account_roles"] = [ln.role]
         if ln.recognized_in:
             entry["recognized_in"] = ln.recognized_in
+        if ln.fund_id:
+            entry["fund_id"] = ln.fund_id
         entries.append(entry)
     from celerp.services.auto_je import _emit_auto_posted_je
 

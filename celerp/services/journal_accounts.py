@@ -510,7 +510,7 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
 
     await _refuse_moved_backing(session, company_id, action, funds)
     role, authority = await read_authority(session, company_id, action.actor_id)
-    sender = _fund_name(funds, senders[0])
+    sender = fund_name(funds, senders[0])
     if not role_has_permission(authority, role, "manage_accounting"):
         raise RestrictedFundMovement("posting.fund.movement_permission", fund=sender,
                                      permission=missing_permission_refusal("manage_accounting")["params"]["label"])
@@ -518,7 +518,7 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
         purposes = {str(funds[f].get("purpose") or "").strip() for f in (*senders, receiver)}
         if not role_has_permission(authority, role, "reallocate_restricted_funds") or len(purposes) != 1:
             raise RestrictedFundMovement("posting.fund.change_needs_reallocation", fund=sender,
-                                         to=_fund_name(funds, receiver))
+                                         to=fund_name(funds, receiver))
         action.authorized_by = str(action.actor_id)
 
     delta: dict[tuple[str | None, str], Decimal] = {}
@@ -540,7 +540,7 @@ async def judge_fund_change(session: AsyncSession, action: FundChangeAction) -> 
             for after, taken in checks:
                 if round_money(after, currency) < 0:
                     raise RestrictedFundMovement(
-                        "posting.fund.change_exceeds_balance", fund=_fund_name(funds, fund_id),
+                        "posting.fund.change_exceeds_balance", fund=fund_name(funds, fund_id),
                         available=str(round_money(after + taken, currency)), amount=str(round_money(taken, currency)),
                         currency=currency)
 
@@ -580,7 +580,8 @@ def _restricted(funds: dict[str, dict], fund_id) -> bool:
     return bool((funds.get(fund_id or "") or {}).get("restricted"))
 
 
-def _fund_name(funds: dict[str, dict], fund_id) -> str:
+def fund_name(funds: dict[str, dict], fund_id) -> str:
+    """The name a refusal shows for ``fund_id`` (``funds`` from funds_by_id)."""
     return funds[fund_id]["name"] if fund_id in funds else (fund_id or unrestricted_label())
 
 
@@ -663,7 +664,7 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
         for fund, share in allocation:
             if share > held.get(fund, Decimal(0)):
                 raise HTTPException(status_code=422, detail=catalog_refusal(
-                    "posting.fund.movement_exceeds_balance", fund=_fund_name(funds, fund), code=account,
+                    "posting.fund.movement_exceeds_balance", fund=fund_name(funds, fund), code=account,
                     available=str(max(held.get(fund, Decimal(0)), Decimal(0))), amount=str(round_money(share, currency)),
                     currency=currency))
         allocated = round_money(sum((share for _, share in allocation), Decimal(0)), currency)
@@ -762,7 +763,7 @@ async def fund_open_shares(session: AsyncSession, company_id, record_id: str, co
         for fund, share in shares:
             if share > held.get(fund, (Decimal(0), ""))[0]:
                 raise HTTPException(status_code=422, detail=catalog_refusal(
-                    "posting.fund.allocation_exceeds_open", fund=_fund_name(funds, fund),
+                    "posting.fund.allocation_exceeds_open", fund=fund_name(funds, fund),
                     open=str(round_money(held.get(fund, (Decimal(0), ""))[0], base)),
                     amount=str(share), currency=base))
     else:
@@ -796,7 +797,7 @@ async def note_fund_lines(session: AsyncSession, company_id, *, doc_id: str, doc
         fund = short[0] if short else None
         funds = await funds_by_id(session, company_id)
         raise HTTPException(status_code=422, detail=catalog_refusal(
-            "posting.fund.note_exceeds_open", fund=_fund_name(funds, fund),
+            "posting.fund.note_exceeds_open", fund=fund_name(funds, fund),
             open=str(in_doc.get(fund, Decimal(0))), applicable=str(sum(applicable.values(), Decimal(0))),
             currency=currency))
     shares = _shares_within(applicable, amount, currency)
@@ -907,7 +908,7 @@ def fund_legs(entries: list[dict], bases: list, funds: Mapping[int, str | None],
 
 
 def _movement_template(funds: dict[str, dict], fund_id) -> RestrictedFundMovement:
-    return RestrictedFundMovement("posting.fund.movement_template", fund=_fund_name(funds, fund_id))
+    return RestrictedFundMovement("posting.fund.movement_template", fund=fund_name(funds, fund_id))
 
 
 async def _check_movement(session: AsyncSession, company_id, data: dict, entries: list[dict],
@@ -967,7 +968,7 @@ async def _check_movement(session: AsyncSession, company_id, data: dict, entries
         if not reverses:
             for fund_id, v in na.items():
                 if v < 0 and _restricted(funds, fund_id):
-                    raise RestrictedFundMovement("posting.fund.opening_restricted_negative", fund=_fund_name(funds, fund_id))
+                    raise RestrictedFundMovement("posting.fund.opening_restricted_negative", fund=fund_name(funds, fund_id))
         givers = {f for by_fund in delta.values() for f in by_fund if (f is not None) == reverses}
     else:
         senders = [f for f, v in na.items() if v < 0]
@@ -987,11 +988,11 @@ async def _check_movement(session: AsyncSession, company_id, data: dict, entries
             raise _movement_template(funds, source)
         if je_type == "fund_reallocation" and not (
                 str(data.get("reason") or "").strip() and (reverses or str(data.get("donor_authorization") or "").strip())):
-            raise RestrictedFundMovement("posting.fund.reallocation_needs_authorization", fund=_fund_name(funds, source))
+            raise RestrictedFundMovement("posting.fund.reallocation_needs_authorization", fund=fund_name(funds, source))
         givers = {senders[0]}
         if je_type == "fund_release" and not reverses:
             await _release_backing(session, company_id, data, round_money(na[target], currency), funds,
-                                   _fund_name(funds, source), currency)
+                                   fund_name(funds, source), currency)
 
     span = await fund_balance_range(session, company_id, as_of=str(data.get("ts") or "")[:10] or "9999-12-31")
     for code, by_fund in sorted(delta.items()):
@@ -1001,7 +1002,7 @@ async def _check_movement(session: AsyncSession, company_id, data: dict, entries
             available = max(round_money(low if change < 0 else -high, currency), Decimal(0))
             if available < abs(change):
                 raise RestrictedFundMovement(
-                    "posting.fund.movement_exceeds_balance", fund=_fund_name(funds, fund_id), code=code,
+                    "posting.fund.movement_exceeds_balance", fund=fund_name(funds, fund_id), code=code,
                     available=str(round_money(available, currency)), amount=str(round_money(abs(change), currency)),
                     currency=currency)
 

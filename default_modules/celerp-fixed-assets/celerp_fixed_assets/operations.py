@@ -164,9 +164,16 @@ async def _post(session, company_id, user_id, *, key: str, operation: str, day: 
                 tags: dict | None = None) -> str:
     """Post one module journal. Its intent is the operation key unless ``intent`` names
     what the journal is for (a run month's journal is the same whichever operation posts it).
-    ``tags`` are the markers a report reads back from the journal's source."""
+    ``tags`` are the markers a report reads back from the journal's source. An asset's own
+    journal carries the asset's fund on every line that names none (rule P)."""
+    from dataclasses import replace
+
     from celerp.services.module_journals import JournalSource, post_journal
 
+    if source_id.startswith("fa:asset:"):
+        fund = ((await _state(session, company_id, source_id)) or {}).get("fund_id")
+        if fund:
+            lines = [ln if ln.fund_id else replace(ln, fund_id=fund) for ln in lines]
     posted = await post_journal(session, company_id=company_id, user_id=user_id, module=MODULE, key=key,
                                 operation=operation, date=day, memo=memo, lines=lines,
                                 source=JournalSource(source_id, href, label, tags), intent=intent or {"op_key": op_key})
@@ -274,8 +281,12 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     money, is recorded before the first managed period is confirmed (``managed=False``)."""
     from celerp.services.permissions import locked_authority
 
+    from celerp.services.journal_accounts import held_fund_ledger
+
     op_key = _op_key(body)
     await locked_authority(session, company_id, user_id, keys)
+    # The fund ledger is held before any asset row: a journal on a fund takes it (lock order).
+    await held_fund_ledger(session, company_id)
     fa = await (setup.require_managed if managed else setup.require_started)(session, company_id)
     intent_hash = _intent_hash(op_type, body)
     if not body.get("preview"):
@@ -421,12 +432,26 @@ async def _open_line(session, company_id, source) -> dict:
     return line
 
 
+async def same_fund(session, company_id, line: dict, asset: dict) -> None:
+    """Refuse joining ``line`` to ``asset`` when they are on different funds: an asset holds
+    the one fund it was bought on (rule P)."""
+    if (line.get("fund_id") or None) == (asset.get("fund_id") or None):
+        return
+    from celerp.services.journal_accounts import fund_name, funds_by_id
+
+    funds = await funds_by_id(session, company_id)
+    raise setup.refuse("fixed_assets.err_line_other_fund", number=asset["number"],
+                       line_fund=fund_name(funds, line.get("fund_id")), asset_fund=fund_name(funds, asset.get("fund_id")))
+
+
 def _reclass(line: dict, account: str, amount: Decimal):
+    """Two lines moving ``amount`` of ``line`` onto ``account``, on the line's own fund."""
     from celerp.services.module_journals import JournalLine
 
-    return [JournalLine(account=account, debit=amount),
+    fund = line.get("fund_id")
+    return [JournalLine(account=account, debit=amount, fund_id=fund),
             JournalLine(account=line["account"], credit=amount, moves_recognized=True,
-                        recognized_in=line["journal_id"])]
+                        recognized_in=line["journal_id"], fund_id=fund)]
 
 
 async def register(session, company_id, user_id, body: dict) -> dict:
@@ -511,7 +536,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
             asset_id = await _create_asset(
                 session, company_id, user_id, number=number, name=context["name"], class_id=context["cls"]["id"],
                 status="active", available_date=context["available"], op_key=op_key,
-                sources_=[{**source_ref, "amount": str(cost)}], policy=context["policy"])
+                sources_=[{**source_ref, "amount": str(cost)}], policy=context["policy"], fund_id=line["fund_id"])
             contributions = [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(cost)}]
             if reclass:
                 je_id = await _post(session, company_id, user_id, key=f"asset:{asset_id.removeprefix('fa:asset:')}:reg:1",
@@ -590,6 +615,7 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
             asset = await _state(session, company_id, asset_id)
             if asset is None or not asset_id.startswith("fa:asset:") or asset.get("status") != "active":
                 raise setup.unprocessable("Choose active assets to link the depreciation to.")
+            await same_fund(session, company_id, line, asset)
             shares.append((asset_id, asset["number"], _money_in(a.get("amount"), "Each amount", currency, positive=True)))
         total = sum((s for _, _, s in shares), Decimal(0))
         if total != round_money(_dec(line["amount"]), currency):

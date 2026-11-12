@@ -1080,5 +1080,6 @@
   "fixed_assets.err_line_no_such_asset": "{line}: esse ativo não existe.",
   "fixed_assets.err_sale_module_off": "{numbers}: ative o módulo Ativos imobilizados para vender um ativo.",
   "fixed_assets.err_sale_not_here": "{number} não está sendo vendido por esta fatura. Inicie a venda pela página do ativo para criar a fatura em rascunho.",
-  "fixed_assets.err_credit_not_sold_there": "{number} não foi vendido pela fatura {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} não foi vendido pela fatura {invoice}.",
+  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}."
 }

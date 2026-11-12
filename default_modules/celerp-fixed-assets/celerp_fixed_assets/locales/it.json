@@ -1080,5 +1080,6 @@
   "fixed_assets.err_line_no_such_asset": "{line}: questo cespite non esiste.",
   "fixed_assets.err_sale_module_off": "{numbers}: attiva il modulo Cespiti per vendere un cespite.",
   "fixed_assets.err_sale_not_here": "{number} non viene venduto con questa fattura. Avvia la vendita dalla pagina del cespite per creare una bozza di fattura.",
-  "fixed_assets.err_credit_not_sold_there": "{number} non è stato venduto con la fattura {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} non è stato venduto con la fattura {invoice}.",
+  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}."
 }

@@ -416,20 +416,22 @@ async def _charges(session, company_id, books: Books, through: int, start: int) 
 
 
 def _lines(items: list[dict]):
-    """A month's journal: one debit per expense account, one credit per accumulated
-    depreciation account; each item learns the index of the credit line it is part of."""
+    """A month's journal: one debit per expense account and fund, one credit per accumulated
+    depreciation account and fund (each asset's own fund, rule P); each item learns the index
+    of the credit line it is part of."""
     from celerp.services.module_journals import JournalLine
 
-    debits: dict[str, Decimal] = {}
-    credits: dict[str, Decimal] = {}
+    debits: dict[tuple[str, str], Decimal] = {}
+    credits: dict[tuple[str, str], Decimal] = {}
     for it in items:
-        debits[it["expense"]] = debits.get(it["expense"], Decimal(0)) + it["amount"]
-        credits[it["accumulated"]] = credits.get(it["accumulated"], Decimal(0)) + it["amount"]
-    lines = [JournalLine(account=a, debit=v) for a, v in sorted(debits.items())]
-    index = {a: len(lines) + i for i, a in enumerate(sorted(credits))}
-    lines += [JournalLine(account=a, credit=v) for a, v in sorted(credits.items())]
+        debit, credit = (it["expense"], it["fund"] or ""), (it["accumulated"], it["fund"] or "")
+        debits[debit] = debits.get(debit, Decimal(0)) + it["amount"]
+        credits[credit] = credits.get(credit, Decimal(0)) + it["amount"]
+    lines = [JournalLine(account=a, debit=v, fund_id=f or None) for (a, f), v in sorted(debits.items())]
+    index = {key: len(lines) + i for i, key in enumerate(sorted(credits))}
+    lines += [JournalLine(account=a, credit=v, fund_id=f or None) for (a, f), v in sorted(credits.items())]
     for it in items:
-        it["line_index"] = index[it["accumulated"]]
+        it["line_index"] = index[(it["accumulated"], it["fund"] or "")]
     return lines
 
 
@@ -460,7 +462,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         for k, amount in c.postable():
             t = target.get(k, month)
             items[t].append({"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
-                             "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated, "catch_up": t != k})
+                             "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated,
+                             "fund": c.asset.get("fund_id"), "catch_up": t != k})
         by_month: dict[int, list[int]] = {}
         for k in c.held(month):
             by_month.setdefault(target.get(k, month), []).append(k)
