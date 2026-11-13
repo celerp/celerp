@@ -2458,6 +2458,7 @@
   "enum.settlement_kind.payment": "Payments",
   "enum.doc_type.production_order": "Production Order",
   "enum.doc_type.list": "Quotation",
+  "enum.doc_type.quotation": "Sales Quotation",
   "manufacturing.help_status_planned": "Created but not started - components not yet issued.",
   "manufacturing.help_status_in_progress": "Started - components issued and the run is being worked.",
   "manufacturing.help_status_on_hold": "Paused - work stopped for now; can be resumed.",

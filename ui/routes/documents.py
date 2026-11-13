@@ -4864,12 +4864,12 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         _new_url, _ = _new_list_target(list_type)
         if list_type == "audit":
-            _new_btn = A(t("documents.new_audit"), href=safe_url(_new_url), cls="btn btn--primary")
+            _new_btn = A(_new_list_label(list_type, lang), href=safe_url(_new_url), cls="btn btn--primary")
         elif list_type == "shipping_doc":
-            _new_btn = Button(t("page.new_shipping_doc"), hx_post=_new_url,
+            _new_btn = Button(_new_list_label(list_type, lang), hx_post=_new_url,
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
-            _new_btn = Button(t("page.new_list"), hx_post=_new_url, hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+            _new_btn = Button(_new_list_label(list_type, lang), hx_post=_new_url, hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
         export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
             Div(
@@ -11887,13 +11887,25 @@ def _new_list_target(list_type: str) -> tuple[str, bool]:
     return f"/lists/create-blank?type={list_type}" if list_type in _LIST_TYPES else "/lists/create-blank", True
 
 
+def _new_list_label(list_type: str, lang: str | None = None) -> str:
+    """The New button on a lists page names the type it makes, so a page filtered to transfers
+    never offers a New Quotation that makes a transfer."""
+    if list_type == "audit":
+        return t("documents.new_audit", lang)
+    if list_type == "shipping_doc":
+        return t("page.new_shipping_doc", lang)
+    if not list_type or list_type == "quotation" or list_type not in _LIST_TYPES:
+        return t("page.new_list", lang)
+    return t("table.new_doc_type", lang, type=_list_type_label(list_type))
+
+
 def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None,
                 list_type: str = "") -> FT:
     if not lists:
         windowed = period_empty_text(period, lang)
         new_url, posts = _new_list_target(list_type)
         return Div(
-            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), new_url,
+            empty_state_cta(windowed or t("label.no_lists_yet", lang), _new_list_label(list_type, lang), new_url,
                             hx_post=posts, hint=t("lists.empty_hint", lang),
                             more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="list-table",

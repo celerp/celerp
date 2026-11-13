@@ -259,7 +259,7 @@ async def test_a_refused_numbering_save_keeps_the_row_open_with_the_reason(ui_cl
     assert 'name="value"' in r.text and 'value="QUO"' in r.text
     assert 'hx-patch="/settings/numbering/transfer/prefix"' in r.text
     assert "/settings/numbering/transfer/reset" in r.text and "LST-2611-0041" in r.text
-    message = t("documents.err_numbering_overlap", lang, doc_type=t("settings_sales.doc_type_quotation", lang))
+    message = t("documents.err_numbering_overlap", lang, doc_type=t("enum.doc_type.quotation", lang))
     assert message in r.text and "{" not in message
     assert reset.text.lstrip().startswith("<tr") and message in reset.text
     assert 'name="value"' not in reset.text

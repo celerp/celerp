@@ -733,10 +733,6 @@
       "en": "Vendor Credit Memo",
       "params": []
     },
-    "enum.doc_type.list": {
-      "en": "Quotation",
-      "params": []
-    },
     "error.ai_signed_out": {
       "en": "Celerp AI isn't available because you aren't signed in to Celerp Connect. Sign in in Remote Access, then ask again.",
       "params": []
@@ -1014,14 +1010,6 @@
       "en": "Credit Memos",
       "params": []
     },
-    "nav.lists": {
-      "en": "Quotations",
-      "params": []
-    },
-    "nav.lists_quotations": {
-      "en": "Quotations",
-      "params": []
-    },
     "nav.received_documents": {
       "en": "Shared Documents",
       "params": []
@@ -1179,10 +1167,6 @@
     },
     "page.list_items": {
       "en": "Line Items",
-      "params": []
-    },
-    "page.lists": {
-      "en": "Quotations",
       "params": []
     },
     "page.new_list": {

@@ -320,7 +320,7 @@ def role_label(role: str, fallback: str) -> str:
 _DOC_TYPE_LABEL_KEYS = {
     "invoice": "settings.doc_type_invoice",
     "purchase_order": "settings.doc_type_purchase_order",
-    "quotation": "settings_sales.doc_type_quotation",
+    "quotation": "enum.doc_type.quotation",
     "credit_note": "settings.doc_type_credit_note",
     "debit_note": "settings.doc_type_debit_note",
     "bill": "settings.doc_type_bill",
