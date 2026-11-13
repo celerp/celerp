@@ -332,6 +332,9 @@ _DOC_TYPE_LABEL_KEYS = {
     "list": "enum.doc_type.list",
     "consignment_in": "settings.doc_type_consignment_in",
     "receipt": "settings.doc_type_receipt",
+    "production_order": "documents.page_stock_orders",
+    "subscription_invoice": "subscriptions.type_sales",
+    "subscription_po": "subscriptions.type_purchasing",
 }
 
 

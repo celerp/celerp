@@ -10,6 +10,7 @@ All activity/history sections should use ``activity_table()`` for DRY rendering.
 """
 
 from __future__ import annotations
+from ui.components.cards import section_header
 
 from collections.abc import Callable
 
@@ -92,7 +93,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
 
 # File events (item.file.*, doc.file_*, crm.contact.file_*) share one label set and one
 # renderer across all entity types, keyed by the operation suffix (attached/tagged/...).
-_FILE_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs"}
+_FILE_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs", "list": "lists"}
 # File-op label i18n keys, resolved at render time (see event_label). Keyed by the
 # operation suffix; the value is the ``event.file.<op>`` key.
 _FILE_OP_LABELS = {op: f"event.file.{op}" for op in
@@ -1152,6 +1153,53 @@ def _lifecycle_rows_spec(e: dict, currency: str | None = None,
     return None
 
 
+def _suppressed(e: dict, subject_entity_id: str | None) -> bool:
+    """Whether an entry is left out of activity and history: system events, the mechanical side
+    effects of a split, transform or merge, and an origin row away from the entity's own page."""
+    raw_type = str(e.get("event_type") or "")
+    if raw_type in _SYSTEM_EVENT_TYPES:
+        return True
+    metadata = e.get("metadata_") or e.get("metadata") or {}
+    reason = metadata.get("reason", "") if isinstance(metadata, dict) else ""
+    if raw_type in _ORIGIN_EVENT_TYPES:
+        # The child's own page shows its origin row; the dashboard de-dups against the
+        # mother's summary event (which already names this child).
+        return not (bool(subject_entity_id) and str(e.get("entity_id") or "") == subject_entity_id)
+    # Suppress mechanical side-effect events from split/transform/merge operations.
+    if reason in _OPERATION_NOISE_REASONS:
+        return True
+    # item.created with parent_id = child created by split/transform; shown via the
+    # mother's item.split/item.transform summary (and the child's origin event) instead.
+    return raw_type == "item.created" and isinstance(metadata, dict) and bool(metadata.get("parent_id"))
+
+
+def _entry_specs(e: dict, subject_entity_id: str | None, currency: str | None, category_names: dict | None,
+                 deleted: dict[str, dict] | None, docs_on: bool) -> list[tuple]:
+    """[(event content, detail, row id suffix), ...] for one ledger entry; empty when it is not shown."""
+    if _suppressed(e, subject_entity_id):
+        return []
+    raw_type = str(e.get("event_type") or "")
+    # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
+    spec = _lifecycle_rows_spec(e, currency, category_names, deleted)
+    if spec is not None:
+        return spec
+    content = _event_content(e)
+    data = e.get("data") or {}
+    # File events (any entity): filename linked to the file (name only once deleted).
+    if _is_file_event(raw_type) and isinstance(data, dict):
+        return [(content, _file_event_detail(e, data, raw_type), "")]
+    detail = detail_from_entry(data, raw_type, currency, category_names, docs_on=docs_on) if isinstance(data, dict) else ""
+    # Drop rows that carried only noise (empty→empty field changes with no other detail)
+    if not detail and isinstance(data, dict) and data.get("fields_changed"):
+        return []
+    return [(content, detail, "")]
+
+
+def _event_content(e: dict) -> FT | str:
+    display_text, url = _event_display(e)
+    return A(display_text, href=safe_url(url), cls="table-link") if url else display_text
+
+
 def activity_table(ledger: list[dict], *, title: str | None = None,
                    section_cls: str = "section", icon: str = "",
                    empty_msg: str | None = None,
@@ -1202,50 +1250,8 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         return Tr(Td(content), when_cell, user_cell, detail_cell, **attrs)
 
     def _rows(e: dict) -> list[FT]:
-        raw_type = str(e.get("event_type") or "")
-
-        # Suppress system-internal events entirely
-        if raw_type in _SYSTEM_EVENT_TYPES:
-            return []
-
-        metadata = e.get("metadata_") or e.get("metadata") or {}
-        reason = metadata.get("reason", "") if isinstance(metadata, dict) else ""
-
-        if raw_type in _ORIGIN_EVENT_TYPES:
-            # The child's own page shows its origin row; the dashboard de-dups against the
-            # mother's summary event (which already names this child).
-            on_own_page = bool(subject_entity_id) and str(e.get("entity_id") or "") == subject_entity_id
-            if not on_own_page:
-                return []
-        else:
-            # Suppress mechanical side-effect events from split/transform/merge operations.
-            if reason in _OPERATION_NOISE_REASONS:
-                return []
-            # item.created with parent_id = child created by split/transform; shown via the
-            # mother's item.split/item.transform summary (and the child's origin event) instead.
-            if raw_type == "item.created" and isinstance(metadata, dict) and metadata.get("parent_id"):
-                return []
-
-        # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
-        spec = _lifecycle_rows_spec(e, currency, category_names, deleted)
-        if spec is not None:
-            return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
-
-        # Generic rendering
-        display_text, url = _event_display(e)
-        content = A(display_text, href=safe_url(url), cls="table-link") if url else display_text
-
-        data = e.get("data") or {}
-        # File events (any entity): filename linked to the file (name only once deleted).
-        if _is_file_event(raw_type) and isinstance(data, dict):
-            return [_assemble(e, content, _file_event_detail(e, data, raw_type), "")]
-        detail = detail_from_entry(data, raw_type, currency, category_names, docs_on=docs_on) if isinstance(data, dict) else ""
-
-        # Drop rows that carried only noise (empty→empty field changes with no other detail)
-        if not detail and isinstance(data, dict) and data.get("fields_changed"):
-            return []
-
-        return [_assemble(e, content, detail, "")]
+        return [_assemble(e, content, detail, suffix) for content, detail, suffix in
+                _entry_specs(e, subject_entity_id, currency, category_names, deleted, docs_on)]
 
     # Filter first, then slice — so max_display counts meaningful rows only
     all_rows: list[FT] = []
@@ -1295,3 +1301,211 @@ def activity_table(ledger: list[dict], *, title: str | None = None,
         resizer,
         cls=section_cls,
     )
+
+
+# ── History: one row per field change ──────────────────────────────────────
+
+# Query parameters the History filters keep in the URL.
+HISTORY_FILTERS = ("hist_event", "hist_field", "hist_who")
+
+
+def _blank(v) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip()) or v == [] or v == {}
+
+
+def _history_value(key: str, value, currency: str | None, category_names: dict | None) -> str:
+    """A changed value as stored, formatted by its field type; an empty one reads "--". A list
+    of plain values reads as the values; any other list or object, as what it holds."""
+    if _blank(value):
+        return EMPTY
+    if isinstance(value, list) and not any(isinstance(v, (list, dict)) for v in value):
+        return ", ".join(str(v) for v in value)
+    if isinstance(value, (list, dict)):
+        label_key = f"activity.change.{key}"
+        return t(label_key) if label_key in _COMPLEX_CHANGE_KEYS else t("activity.generic_updated", field=_field_name(key))
+    return _fmt_field_value(key, value, currency, category_names)
+
+
+_COMPLEX_CHANGE_KEYS = frozenset(f"activity.change.{k}" for k in (
+    "line_items", "received_items", "fulfilled_items", "taxes", "addresses", "payments", "tc_items", "attributes"))
+
+
+def _line_key(li: dict) -> str:
+    return str(li.get("line_id") or li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or "")
+
+
+def _line_value(li: dict | None, currency: str | None) -> str:
+    """A line as the History shows it: quantity, unit price and tax rate."""
+    if not li:
+        return EMPTY
+    parts = []
+    if li.get("quantity") is not None:
+        unit = str(li.get("unit") or li.get("sell_by") or "").strip()
+        parts.append(f"{fmt_qty(li.get('quantity'))}{' ' + unit if unit and unit != 'piece' else ''}")
+    price = li.get("unit_price") if li.get("unit_price") is not None else li.get("price")
+    if price is not None:
+        parts.append(f"@ {fmt_price(price, 'unit_price', currency)}")
+    if li.get("tax_rate") not in (None, ""):
+        parts.append(f"({fmt_rate(li.get('tax_rate'))}%)")
+    return " ".join(parts) or EMPTY
+
+
+def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str]]:
+    """(field, old, new) for each line added, removed or changed."""
+    old_by = {_line_key(li): li for li in (old or []) if isinstance(li, dict)}
+    new_by = {_line_key(li): li for li in (new or []) if isinstance(li, dict)}
+    out = []
+    for key in [*new_by, *(k for k in old_by if k not in new_by)]:
+        o, n = old_by.get(key), new_by.get(key)
+        before, after = _line_value(o, currency), _line_value(n, currency)
+        if before == after:
+            continue
+        li = n or o
+        name = str(li.get("name") or li.get("sku") or t("th.item"))
+        out.append((f"{t('th.item')}: {name}", before, after))
+    return out
+
+
+def field_changes(data: dict, event_type: str, currency: str | None = None,
+                  category_names: dict | None = None) -> list[tuple[str, str, str]]:
+    """(field label, old value, new value) for every field an event changed, in the order stored.
+    System fields, totals recomputed from the lines and raw ids beside their names are left out,
+    as in the one-line summary; cost amounts the reader may not see never arrive (the API strips
+    them). Empty when the event changed no field."""
+    changed = data.get("fields_changed") if isinstance(data, dict) else None
+    if not isinstance(changed, dict):
+        return []
+    show_totals = event_type in _TOTAL_EVENT_TYPES
+    fields = {k: v for k, v in changed.items()
+              if k not in _SYSTEM_FIELDS and (show_totals or k not in _DERIVED_DOC_FIELDS)
+              and k not in {"attachments", "preview_image_id"}}
+    for id_field, companion in _ID_FIELD_COMPANIONS.items():
+        if id_field in fields and companion in fields:
+            del fields[id_field]
+    rows: list[tuple[str, str, str]] = []
+    for key, change in fields.items():
+        if key in _FIELD_DESCRIBERS:
+            # A module's own field reads as that module names it (register_fields).
+            if isinstance(change, dict) and "old" in change and change.get("old") == change.get("new") \
+                    and not change.get("drop"):
+                continue
+            if text := _FIELD_DESCRIBERS[key](change if isinstance(change, dict) else {"new": change}):
+                label, sep, rest = text.partition(": ")
+                before, arrow, after = rest.partition(" → ")
+                rows.append((label, before, after) if sep and arrow else (text, EMPTY, EMPTY))
+            continue
+        old, new = _change_old_new(change)
+        if key == "line_items" and (isinstance(new, list) or isinstance(old, list)):
+            rows.extend(_line_changes(old if isinstance(old, list) else [], new if isinstance(new, list) else [], currency))
+            continue
+        if (_blank(old) and _blank(new)) or old == new:
+            continue
+        rows.append((_field_name(key), _history_value(key, old, currency, category_names),
+                     _history_value(key, new, currency, category_names)))
+    return rows
+
+
+def history_rows(ledger: list[dict], *, subject_entity_id: str | None = None, currency: str | None = None,
+                 category_names: dict | None = None, deleted: dict[str, dict] | None = None,
+                 docs_on: bool = False) -> list[dict]:
+    """The History's rows: one per field an event changed, or one for an event that changed no
+    field (created, finalized, voided ...), whose detail, if any, reads as its new value."""
+    out: list[dict] = []
+    for e in ledger:
+        specs = _entry_specs(e, subject_entity_id, currency, category_names, deleted, docs_on)
+        if not specs:
+            continue
+        base = {"id": e.get("id"), "when": format_timestamp(str(e.get("ts") or "")) or EMPTY,
+                "who": actor_label(e), "event": event_label(str(e.get("event_type") or ""))}
+        data = e.get("data") or {}
+        changes = (field_changes(data, str(e.get("event_type") or ""), currency, category_names)
+                   if isinstance(data, dict) and _lifecycle_rows_spec(e, currency, category_names, deleted) is None
+                   else [])
+        if changes:
+            for n, (field, old, new) in enumerate(changes):
+                out.append({**base, "content": specs[0][0], "field": field, "old": old, "new": new,
+                            "suffix": f"-f{n}" if n else "", "first": n == 0})
+            continue
+        for content, detail, suffix in specs:
+            out.append({**base, "content": content, "field": EMPTY, "old": EMPTY,
+                        "new": detail or EMPTY, "suffix": suffix, "first": True})
+    return out
+
+
+def filter_history(rows: list[dict], filters: dict | None) -> list[dict]:
+    """The rows whose event, field and who match the chosen filters (each blank = any)."""
+    filters = filters or {}
+    want = {"event": filters.get("hist_event"), "field": filters.get("hist_field"), "who": filters.get("hist_who")}
+    return [r for r in rows if all(not v or r[k] == v for k, v in want.items())]
+
+
+def _history_filters(rows: list[dict], filters: dict, filter_url: str, target: str | None) -> FT:
+    """Event, Field and Who selects; choosing one reloads the History with the choice in the URL."""
+    def select(name: str, key: str, label_key: str) -> FT:
+        values = sorted({r[key] for r in rows if r[key] and r[key] != EMPTY})
+        current = filters.get(name) or ""
+        return Label(
+            Span(t(label_key), cls="form-label"),
+            Select(Option(t("activity.filter_any"), value=""),
+                   *[Option(v, value=v, selected=v == current) for v in values],
+                   name=name, cls="form-input form-input--sm"),
+            cls="history-filter")
+    htmx = {"hx_get": filter_url, "hx_target": target, "hx_swap": "outerHTML", "hx_trigger": "change"} if target else {}
+    return Form(
+        select("hist_event", "event", "th.event"),
+        select("hist_field", "field", "activity.th_field"),
+        select("hist_who", "who", "documents.th_who"),
+        method="get", action=filter_url, cls="history-filters",
+        **({"onchange": "this.submit()"} if not target else {}), **htmx)
+
+
+def history_table(ledger: list[dict], *, title: str | None = None, section_cls: str = "doc-section",
+                  rows: list[dict] | None = None, page_rows: list[dict] | None = None,
+                  filters: dict | None = None,
+                  filter_url: str | None = None, filter_target: str | None = None,
+                  max_display: int | None = None, history_url: str | None = None,
+                  footer: FT | str = "", empty_msg: str | None = None, section_id: str | None = None,
+                  subject_entity_id: str | None = None, currency: str | None = None,
+                  category_names: dict | None = None, deleted: dict[str, dict] | None = None,
+                  docs_on: bool = False, show_header: bool = True) -> FT:
+    """The History card every record shows: Date, Who, Event, Field, Old value, New value.
+
+    ``rows`` (from ``history_rows``, unfiltered) may be passed instead of ``ledger``; ``page_rows``
+    is then the filtered page to show, while the filter choices still come from every row. With ``filter_url`` the card offers Event, Field and Who filters kept
+    in the URL (``filter_target`` set: the card reloads in place; else the page reloads)."""
+    filters = {k: v for k, v in (filters or {}).items() if k in HISTORY_FILTERS and v}
+    all_rows = rows if rows is not None else history_rows(
+        ledger, subject_entity_id=subject_entity_id, currency=currency,
+        category_names=category_names, deleted=deleted, docs_on=docs_on)
+    shown = page_rows if page_rows is not None else filter_history(all_rows, filters)
+    visible = shown[:max_display] if max_display else shown
+    header = section_header(title or t("documents.history"), icon_name="history") if show_header else ""
+    controls = _history_filters(all_rows, filters, filter_url, filter_target) \
+        if filter_url and (all_rows or filters) else ""
+
+    def tr(r: dict) -> FT:
+        attrs = {"id": f"evt-{r['id']}{r['suffix']}"} if r.get("id") is not None else {}
+        return Tr(Td(r["when"], cls="col-when"), Td(r["who"], cls="col-user"), Td(r["content"], cls="col-event"),
+                  Td(r["field"], cls="col-field"), Td(r["old"], cls="col-old"), Td(r["new"], cls="col-new"),
+                  cls="" if r.get("first", True) else "history-row--cont", **attrs)
+
+    if visible:
+        body = Div(Table(
+            Thead(Tr(Th(t("th.date")), Th(t("documents.th_who")), Th(t("th.event")),
+                     Th(t("activity.th_field")), Th(t("activity.th_old_value")), Th(t("activity.th_new_value")))),
+            Tbody(*[tr(r) for r in visible]),
+            cls="data-table history-table"), cls="table-scroll-wrap")
+    else:
+        body = P(t("activity.history_no_match") if filters else (empty_msg or t("documents.no_activity_recorded")),
+                 cls="empty-state-msg")
+    note = ""
+    if max_display and len(shown) > max_display:
+        text = t("activity.showing_last", n=len(visible))
+        note = P(text + " - ", A(t("activity.see_all"), href=safe_url(history_url), cls="table-link"), cls="table-footer-note") \
+            if history_url else P(text, cls="table-footer-note")
+    return Div(header, controls, body, note, footer, cls=section_cls, **({"id": section_id} if section_id else {}))
+
+
+def _icon(name: str):
+    from ui.components.icons import icon
+    return icon(name)

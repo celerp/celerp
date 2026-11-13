@@ -9,6 +9,7 @@ Screenshots go to context/reviews/phase1/ for the professionalism review.
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import gettempdir
 
 import pytest
 
@@ -17,7 +18,7 @@ from .inline_edit import cancel_editor, ready, set_cell, settled
 pytestmark = pytest.mark.browser
 
 SCOPE = "#recipe-section"
-SHOTS = Path("context/reviews/phase1")
+SHOTS = Path(gettempdir()) / "celerp-inventory-batch06"
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +77,7 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     mat_row = page.locator('td[data-col="recipe__components__0__quantity"]').locator("xpath=..")
     row_text = mat_row.inner_text()
     assert "80" in row_text and "400" in row_text
-    mat_head = page.locator(".recipe-block:has-text('Materials') .recipe-section-total").first
+    mat_head = page.locator(".doc-section:has-text('Materials') .recipe-section-total").first
     assert "400" in mat_head.inner_text()
     # The unit cost is not editable here (no edit_url / dblclick handler on those cells).
     assert page.locator('td[data-col="recipe__components__0__unit_cost"]').count() == 0
@@ -102,7 +103,7 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
 
     # No Save button anywhere; Clear remains (GDR 2a).
     assert page.locator("button:has-text('Save recipe')").count() == 0
-    assert page.locator("button:has-text('Clear recipe')").count() == 1
+    assert page.locator(".clear-recipe-wrap > button").count() == 1
 
     # Progress survives navigation: leave the tab and come back.
     page.goto(f"{ui_server}/inventory/{item_id}?tab=details", wait_until="domcontentloaded")
@@ -176,7 +177,9 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     # Total previews Qty x Rate live, before clicking + Add.
     hours.fill("2")
     rate.fill("30")
-    assert amount.input_value() == "60.00"
+    assert page.locator("output[name=labor_new_total]").inner_text() == "60.00"
+    assert page.locator("output[name=labor_new_total]").evaluate("el => el.tabIndex") == -1
+    assert page.locator("output[name=labor_new_total]").evaluate("el => {el.focus(); return document.activeElement !== el;}")
     # Daily behaves like Hourly (still rate-based, Total stays the computed preview).
     page.select_option("select[name=labor_new_kind]", "daily")
     assert hours.is_editable() and not amount.is_editable()

@@ -39,8 +39,9 @@ def test_detail_page_shows_gl_impact_to_a_role_granted_it():
 
 
 def test_a_list_page_loads_gl_impact_for_a_role_with_accounting_access():
-    # A write-off or an audit List posts to the books; its page shows what it posted.
-    assert f"/docs/doc:list-1{_PLACEHOLDER}" in _page(doc_type="list", role="owner")
+    # A write-off or an audit List posts to the books; its page shows what it posted,
+    # through the same GL Impact renderer as a document.
+    assert "/lists/doc:list-1/gl-impact" in _page(doc_type="list", role="owner")
     assert _PLACEHOLDER not in _page(doc_type="list", role="viewer")
 
 
@@ -68,7 +69,7 @@ _POSTED = {
 def test_posted_document_lists_accounts_party_items_and_journal_links():
     html = to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD"))
     for expected in ("1120 Accounts Receivable", "4100 Sales", "5100 Cost of Goods Sold", "Acme Ltd",
-                     "Widget x 2", t("documents.gl_impact_void")):
+                     "Widget \u00d7 2", t("documents.gl_impact_void").upper()):
         assert expected in html, expected
     assert "/accounting?q=INV-1" in html
 
@@ -84,7 +85,7 @@ def test_entries_read_newest_first_as_the_journal_lists_them():
     """The API answers oldest first; the panel lists the newest entry on top, like the Journal
     the heading links to."""
     html = to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD"))
-    assert html.index("2026-02-02") < html.index("2026-02-01")
+    assert html.index("2 Feb 2026") < html.index("1 Feb 2026")
 
 
 def test_an_entry_with_no_event_label_is_headed_by_its_memo():
@@ -95,6 +96,37 @@ def test_an_entry_with_no_event_label_is_headed_by_its_memo():
     assert "je:auto" not in html
     # A line with no resolvable party name shows an empty cell, never the raw contact id.
     assert "contact:1" not in html
+
+
+def test_an_entry_is_named_once_however_many_lines_it_has():
+    from bs4 import BeautifulSoup
+    section = BeautifulSoup(to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD")), "html.parser")
+    assert len(section.select(".gl-impact-entry a")) == len(_POSTED["entries"])
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "quotation", "bill", "purchase_order", "memo", "credit_note", "debit_note"])
+def test_one_ledger_table_totals_only_non_void_lines(doc_type):
+    from bs4 import BeautifulSoup
+    data = {**_POSTED, "doc_type": doc_type}
+    section = BeautifulSoup(to_xml(_doc_gl_impact_section(data, "doc:inv-1", "USD")), "html.parser")
+    assert len(section.select("table")) == 1
+    assert len(section.select("tbody tr")) == 3
+    assert section.select_one("th").text == "Source document"
+    assert section.select_one(".gl-impact-source a") is None
+    assert section.select_one(".gl-impact-row--void").text.find("VOID") >= 0
+    assert section.select_one(".gl-impact-row--posted").text.find("Posted") >= 0
+    footer = section.select_one("tfoot").text
+    assert footer.count("$100.00") == 2 and "Balanced" in footer
+    assert "$42.00" not in footer
+    assert "Related records" not in section.text
+
+
+def test_a_line_names_its_item_with_quantity_and_unit_not_the_raw_memo():
+    data = {**_POSTED, "entries": [{**_POSTED["entries"][0], "lines": [
+        {**_POSTED["entries"][0]["lines"][1], "quantity": 1.5, "unit": "kg"},
+        {**_POSTED["entries"][0]["lines"][0]}]}]}
+    html = to_xml(_doc_gl_impact_section(data, "doc:inv-1", "USD"))
+    assert "Widget \u00d7 1.5" in html and "Invoice INV-1</td>" not in html
 
 
 def test_draft_invoice_says_it_is_not_posted_yet():
@@ -158,3 +190,17 @@ async def test_endpoint_displays_a_ledger_failure_instead_of_an_empty_section(ui
     assert response.status_code == 200
     assert t("documents.gl_impact") in response.text
     assert "Unavailable" in response.text
+
+
+@pytest.mark.parametrize("unit,expected", [("kg", "Widget × 1.5 kg"), ("", "Widget × 1.5"), ("piece", "Widget × 1.5 piece")])
+def test_gl_item_keeps_its_name_quantity_and_optional_unit(unit, expected):
+    from ui.routes.documents import _gl_line_item
+    assert _gl_line_item({"item":"Widget","quantity":1.5,"unit":unit}) == expected
+
+
+def test_single_posted_entry_renders_one_table_with_balanced_totals():
+    from bs4 import BeautifulSoup
+    data={**_POSTED,"entries":_POSTED["entries"][:1]}
+    html=BeautifulSoup(to_xml(_doc_gl_impact_section(data,"doc:inv-1","USD")),"html.parser")
+    assert len(html.select('table'))==1 and len(html.select('tbody tr'))==2
+    assert 'Balanced' in html.select_one('tfoot').text

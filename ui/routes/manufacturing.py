@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -457,8 +458,8 @@ def setup_routes(app):
             params["date_to"] = date_to
         return params, date_from, date_to, preset
 
-    def _intro(icon: str, text: str) -> FT:
-        return Div(Span(icon, cls="info-banner-icon"), Span(text), cls="info-banner")
+    def _intro(name: str, text: str) -> FT:
+        return Div(Span(icon(name), cls="info-banner-icon"), Span(text), cls="info-banner")
 
     def _dp_filter_args(request: Request) -> tuple[str, str]:
         """(document-type, search) from the query string. Type is the board's main filter; finer
@@ -496,7 +497,7 @@ def setup_routes(app):
         all_lines = _demand_lines(rows)
         lines = _dp_search(_demand_filter(all_lines, dtype), q)
         body = (
-            _intro("📊", t("manufacturing.demand_intro")),
+            _intro("chart-column", t("manufacturing.demand_intro")),
             _type_filter_bar(all_lines, dtype),
             bulk_toolbar("mfg-table", [
                 {"value": "make", "label": t("manufacturing.action_make_selected"),
@@ -551,7 +552,7 @@ def setup_routes(app):
                      if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
-            _intro("🏭", t("manufacturing.wip_intro")),
+            _intro("factory", t("manufacturing.wip_intro")),
             _mfg_status_cards(orders_all, active, "/manufacturing/production"),
             bulk_toolbar("mfg-table", [
                 {"value": "start", "label": t("btn.start"), "method": "post",
@@ -679,7 +680,7 @@ def setup_routes(app):
                 t("manufacturing.component_requirements"),
                 Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
             ),
-            _intro("📋", t("manufacturing.requirements_intro")),
+            _intro("clipboard-list", t("manufacturing.requirements_intro")),
             head,
             _need_table(t("manufacturing.raw_materials"), data.get("raw_materials", [])),
             _need_table(t("manufacturing.sub_assemblies"), data.get("sub_assemblies", [])),

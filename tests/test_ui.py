@@ -1253,7 +1253,8 @@ class TestActivityFeed:
             "data": {"fields_changed": {"status": {"old": "active", "new": "reserved"}}},
         }]))
         assert "2026-03-20" in html
-        assert "Status: active → reserved" in html
+        assert '<td class="col-field">Status</td>' in html  # History: one row per field change
+        assert ">active<" in html and ">reserved<" in html
         assert "—" not in html.split("2026-03-20")[0]  # timestamp cell is not blank
 
     def test_ledger_table_empty(self):
@@ -3210,10 +3211,10 @@ class TestDocumentPolish:
             # The failure now surfaces as a persistent lower-right toast that
             # stays until dismissed, not an inline hint beside Send. It keeps the
             # message and the link to Web Access to connect again.
-            assert "Web Access refused this computer" in content
+            assert "Remote Access refused this computer" in content
             assert '"error",true,{"href": "/settings/cloud"' in content
             assert "/settings/cloud" in content
-            assert "Open Web Access" in content
+            assert "Open Remote Access" in content
             # The message is carried by the toast call, not rendered inline as
             # element text beside Send (that inline hint is gone).
             assert ">Web Access refused this computer" not in content
@@ -3238,7 +3239,7 @@ class TestDocumentPolish:
         assert r.status_code == 200
         assert b"send-modal-d-1" in r.content
         assert b"next=doc-send" not in r.content
-        assert b"Web Access refused this computer" not in r.content
+        assert b"Remote Access refused this computer" not in r.content
 
     @pytest.mark.asyncio
     async def test_list_send_hidden_when_relay_credential_rejected(self, ui_client):
@@ -3265,7 +3266,7 @@ class TestDocumentPolish:
         assert "send-modal-list-1" not in content
         # Same persistent lower-right toast fallback as the doc path, not an
         # inline hint: message plus the reconnect deep link, no inline anchor.
-        assert "Web Access refused this computer" in content
+        assert "Remote Access refused this computer" in content
         assert "celerpToast(" in content
         assert "/settings/cloud" in content
         assert ">Web Access refused this computer" not in content
@@ -3476,7 +3477,7 @@ class TestWriteoffListDetail:
 
     @pytest.mark.asyncio
     async def test_closed_writeoff_offers_undo_button(self, ui_client):
-        """A closed (written_off) write-off offers Undo write-off: the terminal is reversible."""
+        """A closed (written_off) write-off offers Undo inventory adjustment: the terminal is reversible."""
         lst = {**self._wo_list(), "status": "closed", "result": "written_off"}
         ui_client.cookies.update(_authed())
         with (
@@ -3488,7 +3489,7 @@ class TestWriteoffListDetail:
             r = await ui_client.get("/lists/list:WO-1")
         assert r.status_code == 200
         html = r.content.decode()
-        assert "Undo write-off" in html
+        assert "Undo inventory adjustment" in html
         assert "/lists/list:WO-1/action/undo-write-off" in html
 
     @pytest.mark.asyncio
@@ -3730,7 +3731,7 @@ class TestPhase2DeepPolish:
         """H7: full paginated item history page (the Activity tab's 'see all' surface)."""
         events = [{"id": i, "event_type": "item.created", "entity_id": "gc:123",
                    "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}
-                  for i in range(50)]
+                  for i in range(120)]
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4255,7 +4256,7 @@ class TestManufacturingPage:
         ):
             r = await ui_client.get("/manufacturing")
         assert r.status_code == 200
-        assert b"Demand Planning" in r.content
+        assert b"Production Planning (MRP)" in r.content
         # Flat demand line: product, document, and a Needed coverage badge.
         assert b"mfg-table" in r.content and b"RING" in r.content
         assert b"INV-1" in r.content and b"Needed" in r.content
@@ -12241,7 +12242,7 @@ class TestPaymentsSettingsPage:
         with self._mocks(relay=True, enabled=False, state="revoked"):
             r = await ui_client.get("/settings/payments")
         assert r.status_code == 200
-        assert "Use Reconnect Stripe in Web Access, Online Payments to finish checking them." in r.text
+        assert "Use Reconnect Stripe in Remote Access, Online Payments to finish checking them." in r.text
         # One action: reconnect. No sales pitch, no disconnect, no deposit settings.
         assert r.text.count('action="/settings/payments/connect"') == 1
         assert "Reconnect Stripe" in r.text
@@ -13222,7 +13223,7 @@ class TestBulkActionsPhase6SendTo:
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
         assert r.status_code == 200
-        assert b"Send to List" in r.content
+        assert b"Send to Quotation" in r.content
 
     @pytest.mark.asyncio
     async def test_lists_from_items_new_creates_draft(self, ui_client):
@@ -14331,10 +14332,11 @@ class TestVerticalCategoryDefaults:
                 f"{name}: expected default_sell_by='piece', got '{cat['default_sell_by']}'"
             )
 
-    # ── 5b: gem categories have pieces field ─────────────────────────────────
+    # ── 5b: gem categories count pieces with the core field ─────────────────
 
     def test_gem_categories_have_pieces_field(self):
-        """Gem categories must have a 'pieces' field in their fields array."""
+        """Gem items count pieces with the core item field, so no gem category adds a second
+        'pieces' field of its own (one field, one editor on the item page)."""
         gem_cats = [
             "colored_stone", "diamond", "emerald", "ruby",
             "sapphire", "pearl", "rough_gemstone", "mineral_specimen",
@@ -14342,16 +14344,14 @@ class TestVerticalCategoryDefaults:
         for name in gem_cats:
             cat = self._load(name)
             field_keys = [f["key"] for f in cat.get("fields", [])]
-            assert "pieces" in field_keys, (
-                f"{name}: missing 'pieces' field in fields array"
+            assert "pieces" not in field_keys, (
+                f"{name}: 'pieces' is a core item field, not a category field"
             )
 
     def test_pieces_field_has_correct_schema(self):
-        """The pieces field in gem categories must be type='number'."""
-        cat = self._load("colored_stone")
-        pieces_field = next(
-            (f for f in cat.get("fields", []) if f["key"] == "pieces"), None
-        )
+        """The core pieces field every item has is type='number', labelled Pieces."""
+        from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA
+        pieces_field = next((f for f in DEFAULT_ITEM_SCHEMA if f["key"] == "pieces"), None)
         assert pieces_field is not None
         assert pieces_field["type"] == "number"
         assert pieces_field["label"] == "Pieces"
@@ -14961,12 +14961,12 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_credit_note_shows_issue_credit_note(self, ui_client):
-        """Draft credit note shows 'Issue Credit Note'."""
+        """Draft credit note shows 'Issue Credit Memo'."""
         cn_doc = {**_BLANK_DOC, "doc_type": "credit_note", "entity_id": "doc:CN-001", "ref_id": "CN-001"}
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=cn_doc)):
             r = await ui_client.get("/docs/doc:CN-001")
-        assert b"Issue Credit Note" in r.content
+        assert b"Issue Credit Memo" in r.content
 
     @pytest.mark.asyncio
     async def test_memo_shows_issue_memo(self, ui_client):
@@ -15406,7 +15406,7 @@ class TestProformaNumbering:
 
     def test_list_type_numbering_rows_are_labelled_in_the_users_language(self):
         from ui.i18n import doc_type_label
-        for dt, label in (("transfer", "Transfer"), ("audit", "Audit"), ("writeoff", "Write-off")):
+        for dt, label in (("transfer", "Transfer Order"), ("audit", "Stock Count"), ("writeoff", "Inventory Adjustment")):
             assert doc_type_label(dt) == label
 
     def test_finalize_projection_updates_ref(self):
@@ -15570,7 +15570,7 @@ class TestPriceLists:
         html = r.text
         assert 'id="derived_unit_trade_price"' in html
         assert 'hx-swap-oob="true"' in html
-        assert ">70<" in html            # refreshed unit value
+        assert ">$70.00<" in html        # shared currency formatter for the refreshed unit
         assert "140.00" in html          # refreshed total (70 x 2)
 
     @pytest.mark.asyncio
@@ -15954,7 +15954,7 @@ class TestBugFixesBatch25Mar6Bugs:
         ledger = [{"event_type": "item.updated", "ts": "2026-03-25T10:00:00", "data": {}, "actor_id": "user:admin"}]
         html = to_xml(_ledger_table(ledger))
         assert "user:admin" in html
-        assert "User" in html
+        assert ">Who<" in html
 
     # Bug 6: Bulk split sends only 1 child
     @pytest.mark.asyncio

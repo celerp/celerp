@@ -141,7 +141,7 @@ async def test_invoice_import_refuses_a_paid_amount_it_cannot_have(client, sessi
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["message_key"] == key, r.text
     if paid > 0:
-        assert "credit note" in r.json()["detail"]["message"], r.text
+        assert "credit memo" in r.json()["detail"]["message"], r.text
     _locale_has(key)
     assert await _state(session, auth, inv) == {}
     assert await _books(session, auth) == {"1120": 0.0, "3200": 0.0, "4100": 0.0, "1111": 0.0, "6960": 0.0}

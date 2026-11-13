@@ -1613,9 +1613,10 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
 
 
 class SequencePatch(BaseModel):
+    model_config = {"extra": "forbid"}
     prefix: str | None = None
     pattern: str | None = None
-    next: int | None = None
+    next: int | None = Field(default=None, ge=1, strict=True)
 
 
 @router.get("/sequences")
@@ -1626,11 +1627,23 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
     return await numbering_rows(session, company)
 
 
+# The module whose documents a counter numbers, where that is not Documents itself: its
+# numbering is changed only while the company has that module on.
+_NUMBERING_MODULES = {
+    "production_order": "celerp-manufacturing",
+    "subscription_invoice": "celerp-subscriptions",
+    "subscription_po": "celerp-subscriptions",
+}
+
+
 @router.patch("/sequences/{doc_type}")
 async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await locked_company(session, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    if module := _NUMBERING_MODULES.get(doc_type):
+        from celerp.modules.boundary import require_on
+        require_on(company.settings, module)
     try:
         update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except Refused as e:
@@ -2361,8 +2374,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         if has_issued_note or has_active_application or tied_note:
             raise HTTPException(status_code=409, detail=refusal(
                 "docs.contact_credit_fixed",
-                "This document has an issued or applied credit note. Undo its credit applications and "
-                "void or revert the linked credit note before changing the contact."))
+                "This document has an issued or applied credit memo. Undo its credit applications and "
+                "void or revert the linked credit memo before changing the contact."))
     if selecting:
         client_values = {k: (v or {}).get("new") for k, v in fields_changed.items()}
         selection = await _contact_selection_values(
@@ -2886,8 +2899,8 @@ async def finalize_document(
         # lots at cost; a note issued by hand only adjusts a price or a charge.
         raise HTTPException(status_code=409, detail=refusal(
             "debit_note.stock_line",
-            "Goods on this line are in stock. Use Return items on the bill so they leave stock; a supplier "
-            "credit note adjusts a price or a charge only."))
+            "Goods on this line are in stock. Use Return items on the bill so they leave stock; a vendor "
+            "credit memo adjusts a price or a charge only."))
 
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
@@ -3240,12 +3253,12 @@ def credit_note_currency(invoice_state: dict, base_currency: str, currency, rate
             rate_text = f"{float(inv_rate):g}"
             raise HTTPException(status_code=422, detail=refusal(
                 "credit_note.currency_differs_rate",
-                f"A credit note reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
+                f"A credit memo reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
                 f"is in {inv_currency} at rate {rate_text}. Leave the currency and rate as the invoice's.",
                 invoice=number, currency=inv_currency, rate=rate_text))
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.currency_differs",
-            f"A credit note reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
+            f"A credit memo reverses its invoice's sale in the invoice's currency and rate: invoice {number} "
             f"is in {inv_currency}. Leave the currency and rate as the invoice's.",
             invoice=number, currency=inv_currency))
     out = {"currency": inv_currency}
@@ -3321,19 +3334,19 @@ async def credit_note_original(session, company_id, data: dict, *, for_update: b
     if not state:
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.original_missing",
-            f"This credit note names {number} as the invoice it credits, but no document {number} exists in "
-            f"this company. Create or import that invoice here first, then the credit note.", invoice=number))
+            f"This credit memo names {number} as the invoice it credits, but no document {number} exists in "
+            f"this company. Create or import that invoice here first, then the credit memo.", invoice=number))
     if state.get("doc_type") != "invoice":
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.original_not_invoice",
-            f"This credit note names {number}, which is not an invoice. A credit note credits an invoice: "
+            f"This credit memo names {number}, which is not an invoice. A credit memo credits an invoice: "
             f"choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
             document=number))
     if state.get("status") in (None, "draft"):
         raise HTTPException(status_code=422, detail=refusal(
             "credit_note.original_not_issued",
-            f"This credit note credits invoice {number}, which is still a draft. Finalize the invoice first, "
-            f"then the credit note.", invoice=number))
+            f"This credit memo credits invoice {number}, which is still a draft. Finalize the invoice first, "
+            f"then the credit memo.", invoice=number))
     return row
 
 
@@ -3357,7 +3370,7 @@ async def supplier_credit_original(session, company_id, data: dict, *, for_updat
             or (data.get("currency") or state.get("currency")) != state.get("currency")):
         raise HTTPException(status_code=409, detail=refusal(
             "debit_note.original_mismatch",
-            f"A supplier credit note is issued against an issued bill or purchase order from the same supplier, "
+            f"A vendor credit memo is issued against an issued bill or purchase order from the same supplier, "
             f"in the same currency. {number} is not one: choose another bill, or leave the bill empty.",
             document=number))
     return row
@@ -3376,8 +3389,8 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
     inv_number = str(invoice.state.get("doc_number") or invoice.state.get("ref_id") or original)
     raise HTTPException(status_code=409, detail=refusal(
         "credit_note.invoice_void",
-        f"Credit note {number} credits invoice {inv_number}, which is void. The sale no longer exists, "
-        f"so nothing is refunded, applied or restored against the credit note.",
+        f"Credit memo {number} credits invoice {inv_number}, which is void. The sale no longer exists, "
+        f"so nothing is refunded, applied or restored against the credit memo.",
         credit_note=number, invoice=inv_number))
 
 
@@ -3443,11 +3456,11 @@ async def check_imported_snapshot(session, company_id, entity_id: str, data: dic
             raise HTTPException(status_code=422, detail=refusal(
                 "doc_import.paid_over_total",
                 f"Invoice {number} says {params['paid']} was paid on a total of {params['total']}. The paid amount "
-                f"cannot exceed the invoice total: import any overpayment as a credit note.", **params))
+                f"cannot exceed the invoice total: import any overpayment as a credit memo.", **params))
         raise HTTPException(status_code=422, detail=refusal(
             "doc_import.refunded_over_total",
-            f"Credit note {number} says {params['paid']} was refunded on a total of {params['total']}. The "
-            f"refunded amount cannot exceed the credit note total.", **params))
+            f"Credit memo {number} says {params['paid']} was refunded on a total of {params['total']}. The "
+            f"refunded amount cannot exceed the credit memo total.", **params))
     if (invoice := await credit_note_original(session, company_id, data)) is not None:
         credit_note_currency(invoice.state, base_currency, data.get("currency"), data.get("conversion_rate"))
     elif doc_type == "invoice" and data.get("status") not in (None, "draft"):
@@ -3568,12 +3581,12 @@ async def _undo_under_credit_note(session, company_id, state: dict, invoice_id: 
     if supplier:
         return HTTPException(status_code=409, detail=refusal(
             f"docs.{action}_under_supplier_credit_note",
-            f"This document cannot be {undone}: supplier credit notes {listed} are issued against it. "
-            f"Void those supplier credit notes first, then try again.", numbers=listed))
+            f"This document cannot be {undone}: vendor credit memos {listed} are issued against it. "
+            f"Void those vendor credit memos first, then try again.", numbers=listed))
     return HTTPException(status_code=409, detail=await goods_out_refusal(session, company_id, invoice_id, state, refusal(
         f"docs.{action}_under_credit_note",
-        f"This invoice cannot be {undone}: credit notes {listed} are issued against it. Void those "
-        f"credit notes first, then try again.", numbers=listed)))
+        f"This invoice cannot be {undone}: credit memos {listed} are issued against it. Void those "
+        f"credit memos first, then try again.", numbers=listed)))
 
 
 @router.post("/{entity_id}/close")
@@ -3656,7 +3669,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
         raise HTTPException(status_code=409, detail=refusal(
             "docs.reopen_memo_only",
             f"Only a closed memo can be reopened. {number} closed because its invoice is void and stays closed; "
-            "to credit the customer, issue a new credit note on a live invoice.", document=number))
+            "to credit the customer, issue a new credit memo on a live invoice.", document=number))
     restored = row.state.get("pre_close_status") or "final"
     await require_moving_fits_units(session, company_id, entity_id, "doc", {**row.state, "status": restored})
     event_data = payload.model_dump(exclude_none=True)
@@ -3798,8 +3811,8 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     if state.get("doc_type") == "debit_note" and state.get("source_return"):
         _refuse(refusals, "return_note", refusal(
             "debit_note.revert_return",
-            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
-            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
+            "This vendor credit memo was raised by a return, so it cannot go back to draft. To undo "
+            "the return, void the credit memo: the goods go back into stock and the bill owes them again."))
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
     _is_inbound = state.get("doc_type", "") in INBOUND_DOC_TYPES
     revertable = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
@@ -4041,7 +4054,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         if state.get("source_return"):
             raise HTTPException(status_code=409, detail=refusal(
                 "debit_note.unvoid_return",
-                "This supplier credit note was raised by a return, and voiding it took the return back: the "
+                "This vendor credit memo was raised by a return, and voiding it took the return back: the "
                 "goods are in stock again. To send them back, use Return items on the bill."))
         await supplier_credit_original(session, company_id, state, for_update=True)
     await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": restored_status})
@@ -7620,7 +7633,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 raise HTTPException(status_code=422, detail=refusal(
                     "docs.return_lot_transformed",
                     f"{name} was made by processing goods received on this document, so it cannot go "
-                    "back to the supplier at cost. Ask the supplier for a credit note instead.", sku=name))
+                    "back to the supplier at cost. Ask the supplier for a credit memo instead.", sku=name))
             if left is None:
                 raise HTTPException(status_code=422, detail=refusal(
                     "docs.return_lot_not_received",
@@ -7640,7 +7653,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
                 raise HTTPException(status_code=422, detail=refusal(
                     "docs.return_lot_split_before_receipt",
                     f"{name} was split off before this document's goods came in, so none of them are "
-                    "in it. Ask the supplier for a credit note instead.", sku=name))
+                    "in it. Ask the supplier for a credit memo instead.", sku=name))
         root_of[it.item_id] = root
         returnable[root] = left - it.quantity_returned
 
@@ -7706,7 +7719,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_lot_merged",
                 f"Cannot return {sku}: it was merged into {into}, so its goods are no longer in it. Ask the "
-                "supplier for a credit note instead.", sku=sku, into=into))
+                "supplier for a credit memo instead.", sku=sku, into=into))
         # Consigned goods sold, or held for a sale, are owed to the consignor as money, not
         # as goods: what the sale booked against the consignor stays settled once. Goods a
         # sale shipped have already left the lot, and a voided invoice holds nothing.
@@ -7981,7 +7994,7 @@ async def _refuse_void_under_supplier_credit(session, company_id, note: dict) ->
                         for p in live if p.get("method") == "refund") or "--"
     raise HTTPException(status_code=409, detail=refusal(
         "docs.void_under_supplier_credit",
-        f"This supplier credit note is still applied to bills {bills} and refunded {refunds}. Unapply it "
+        f"This vendor credit memo is still applied to bills {bills} and refunded {refunds}. Unapply it "
         f"from each bill and void each refund on it first, then void it.", bills=bills, refunds=refunds))
 
 
@@ -7999,7 +8012,7 @@ async def _undo_supplier_return(session, company_id, user_id, note_id: str, note
     if returned is None or returned.entity_id != doc_id or returned.event_type != "doc.items_returned":
         raise HTTPException(status_code=409, detail=refusal(
             "debit_note.return_missing",
-            "The return this supplier credit note was raised for cannot be found, so voiding it cannot "
+            "The return this vendor credit memo was raised for cannot be found, so voiding it cannot "
             "put the goods back. Void the goods with a stock adjustment instead."))
     data = returned.data or {}
     await auto_je.void_supplier_return(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
@@ -13470,7 +13483,7 @@ async def undo_receive_record(entity_id: str, company_id: str, user, session: As
                 raise HTTPException(status_code=422, detail=refusal(
                     "docs.undo_receipt_merged",
                     f"SKU '{sku}' was merged into {into} since this document received it, so the receipt "
-                    f"cannot be undone. Ask the supplier for a credit note instead.", sku=sku, into=into))
+                    f"cannot be undone. Ask the supplier for a credit memo instead.", sku=sku, into=into))
             needed = came_in.get(lot, 0.0) or added.get(lot, (0.0, 0.0))[0]
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.undo_receipt_units_sold",
@@ -13593,6 +13606,17 @@ async def undo_receive_record(entity_id: str, company_id: str, user, session: As
 # ── Doc File Attachments ───────────────────────────────────────────────────────
 
 
+async def _get_file_owner(session, company_id, entity_id, *, for_update=False):
+    """Document attachments also belong to Lists rendered by the shared detail page."""
+    if for_update:
+        row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None or row.entity_type not in {"doc", "list"}:
+        raise HTTPException(status_code=404, detail=catalog_refusal("documents.document_not_found"))
+    return row
+
+
 def _get_doc_file(files: list[dict], file_id: str) -> dict:
     match = next((f for f in files if f.get("id") == file_id), None)
     if match is None:
@@ -13600,6 +13624,7 @@ def _get_doc_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
+@lists_router.post("/{entity_id}/files")
 @router.post("/{entity_id}/files")
 async def upload_doc_file(
     entity_id: str,
@@ -13627,11 +13652,12 @@ async def upload_doc_file(
             raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
-        await _get_doc(session, company_id, entity_id, for_update=True)
-        entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
+        row = await _get_file_owner(session, company_id, entity_id, for_update=True)
+        entry = await attach_file(session, company_id, row.entity_type, entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
 
+@lists_router.get("/{entity_id}/files/{file_id}")
 @router.get("/{entity_id}/files/{file_id}")
 async def download_doc_file(
     entity_id: str,
@@ -13644,7 +13670,7 @@ async def download_doc_file(
     from pathlib import Path
     from celerp.services.attachments import local_attachment_url_path
 
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_file_owner(session, company_id, entity_id)
     match = _get_doc_file(row.state.get("files", []), file_id)
 
     url = match.get("url", "")
@@ -13668,6 +13694,7 @@ async def download_doc_file(
     )
 
 
+@lists_router.patch("/{entity_id}/files/{file_id}/tag")
 @router.patch("/{entity_id}/files/{file_id}/tag")
 async def tag_doc_file(
     entity_id: str,
@@ -13678,15 +13705,15 @@ async def tag_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.file_tagged",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "document_tag": document_tag, "filename": f.get("filename")},
+        entity_type=row.entity_type,
+        event_type=f"{row.entity_type}.file_tagged",
+        data={"entity_id": entity_id, "entity_type": row.entity_type, "file_id": file_id, "document_tag": document_tag, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -13698,6 +13725,7 @@ async def tag_doc_file(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
+@lists_router.patch("/{entity_id}/files/{file_id}/description")
 @router.patch("/{entity_id}/files/{file_id}/description")
 async def update_doc_file_description(
     entity_id: str,
@@ -13708,15 +13736,15 @@ async def update_doc_file_description(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.file_description_updated",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "description": description, "filename": f.get("filename")},
+        entity_type=row.entity_type,
+        event_type=f"{row.entity_type}.file_description_updated",
+        data={"entity_id": entity_id, "entity_type": row.entity_type, "file_id": file_id, "description": description, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -13728,6 +13756,7 @@ async def update_doc_file_description(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
+@lists_router.delete("/{entity_id}/files/{file_id}")
 @router.delete("/{entity_id}/files/{file_id}")
 async def delete_doc_file(
     entity_id: str,
@@ -13737,15 +13766,15 @@ async def delete_doc_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.file_deleted",
-        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "filename": f.get("filename")},
+        entity_type=row.entity_type,
+        event_type=f"{row.entity_type}.file_deleted",
+        data={"entity_id": entity_id, "entity_type": row.entity_type, "file_id": file_id, "filename": f.get("filename")},
         actor_id=user.id,
         location_id=None,
         source="api",

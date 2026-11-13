@@ -6,13 +6,6 @@
   ],
   "fields": [
     {
-      "key": "pieces",
-      "label": "Pieces",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "pearl_type",
       "label": "Pearl Type",
       "type": "select",
@@ -111,7 +104,7 @@
       "options": [
         "GIA",
         "GRS",
-        "G\u00fcbelin",
+        "Gübelin",
         "SSEF",
         "Other"
       ],

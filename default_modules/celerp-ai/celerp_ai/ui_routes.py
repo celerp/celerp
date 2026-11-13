@@ -20,6 +20,7 @@ from ui.components.cloud_gate import (
     topup_url,
     is_partner_managed,
 )
+from ui.components.icons import icon
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
@@ -78,10 +79,10 @@ def _get_scenarios(lang: str = "en") -> list[dict]:
 
 def _get_example_queries(lang: str = "en") -> list[dict]:
     return [
-        {"icon": "📎", "title": t("ai.query_receipts_title", lang), "query": t("ai.query_receipts_query", lang), "needs_files": True},
-        {"icon": "📦", "title": t("ai.query_restock_title", lang), "query": t("ai.query_restock_query", lang), "needs_files": False},
-        {"icon": "🔍", "title": t("ai.query_audit_title", lang), "query": t("ai.query_audit_query", lang), "needs_files": False},
-        {"icon": "📊", "title": t("ai.query_summary_title", lang), "query": t("ai.query_summary_query", lang), "needs_files": False},
+        {"icon": "paperclip", "title": t("ai.query_receipts_title", lang), "query": t("ai.query_receipts_query", lang), "needs_files": True},
+        {"icon": "package", "title": t("ai.query_restock_title", lang), "query": t("ai.query_restock_query", lang), "needs_files": False},
+        {"icon": "search", "title": t("ai.query_audit_title", lang), "query": t("ai.query_audit_query", lang), "needs_files": False},
+        {"icon": "chart-column", "title": t("ai.query_summary_title", lang), "query": t("ai.query_summary_query", lang), "needs_files": False},
     ]
 
 
@@ -1850,7 +1851,7 @@ def _empty_state(lang: str = "en") -> FT:
     """Chat empty state with example query cards."""
     cards = [
         Button(
-            Span(q["icon"], cls="ai-empty-state__card-icon"),
+            Span(icon(q["icon"]), cls="ai-empty-state__card-icon"),
             Div(
                 Strong(q["title"], cls="ai-empty-state__card-title"),
                 P(q["query"], cls="ai-empty-state__card-query"),
@@ -1863,7 +1864,7 @@ def _empty_state(lang: str = "en") -> FT:
     ]
     return Div(
         Div(
-            P("✨", cls="ai-empty-state__icon"),
+            P(icon("sparkles"), cls="ai-empty-state__icon"),
             H3(t("page.how_can_i_help"), cls="ai-empty-state__heading"),
             P(t("msg.here_are_some_things_i_can_do"), cls="ai-empty-state__sub"),
             cls="ai-empty-state__welcome",
@@ -1909,7 +1910,7 @@ def _showcase_view(lang: str = "en", *, offer: dict | None = None, owner: bool |
                 ),
                 Div(id="showcase-messages", cls="ai-showcase__messages"),
                 Div(
-                    Span("📎", cls="ai-showcase__input-icon"),
+                    Span(icon("paperclip"), cls="ai-showcase__input-icon"),
                     Div(t("msg.ask_anything_about_your_business_data"),
                         cls="ai-showcase__input-field ai-input__field--disabled"),
                     Span(t("btn.send"), cls="ai-showcase__input-send"),
@@ -2015,7 +2016,7 @@ def _chat_view(
         Div(
             # Collapse toggle
             Button(
-                "☰",
+                icon("menu"),
                 cls="ai-sidebar__toggle",
                 id="ai-sidebar-toggle",
                 title=t("ai.toggle_sidebar", lang),
@@ -2025,7 +2026,7 @@ def _chat_view(
             Div(
                 A(t("btn._new", lang), href="/ai",
                   cls="btn btn--secondary ai-sidebar__new"),
-                Button(t("btn._memory", lang),
+                Button(icon("brain"), " ", t("btn._memory", lang),
                     cls="btn btn--secondary ai-sidebar__memory-btn",
                     style="width:100%;text-align:left;",
                     hx_get="/ai/memory-panel",
@@ -2040,7 +2041,7 @@ def _chat_view(
                 A("+", href="/ai", cls="ai-sidebar__icon-btn",
                   title=t("ai.new_conversation", lang)),
                 Button(
-                    "🧠",
+                    icon("brain"),
                     cls="ai-sidebar__icon-btn",
                     title=t("ai.memory", lang),
                     hx_get="/ai/memory-panel",
@@ -2122,7 +2123,7 @@ def _chat_view(
                 ),
                 # Drop zone
                 Div(
-                    Span("📁", cls="ai-chat-dropzone__icon"),
+                    Span(icon("folder"), cls="ai-chat-dropzone__icon"),
                     Span(t("msg.drop_files_here_or_click_to_browse", lang), cls="ai-chat-dropzone__label"),
                     Div(id="ai-file-chips", cls="ai-file-chips"),
                     id="ai-chat-dropzone", cls="ai-chat-dropzone",
@@ -2151,6 +2152,7 @@ def _chat_view(
 def _chat_text(lang: str = "en") -> dict:
     """The chat page's translated strings, which the chat script reads as CELERP_AI_TEXT."""
     return {
+        "icon_x": str(icon("x")),
         "upload_failed": t("ai.upload_failed", lang),
         "upload_network": t("ai.upload_network_error", lang),
         "uploading": t("ai.uploading", lang),
@@ -2437,7 +2439,7 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
                         var remove = document.createElement('button');
                         remove.type = 'button';
                         remove.className = 'ai-file-chip__remove';
-                        remove.textContent = '✕';
+                        remove.innerHTML = CELERP_AI_TEXT.icon_x;
                         remove.setAttribute('aria-label', CELERP_AI_TEXT.remove_file.replace('{name}', fname));
                         remove.addEventListener('click', function(e) {
                             e.stopPropagation();

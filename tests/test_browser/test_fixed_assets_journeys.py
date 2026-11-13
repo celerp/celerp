@@ -741,7 +741,7 @@ def test_j7_missing_reading_holds_one_asset_and_the_next_run_catches_up(page: Pa
 
 def _finalize_doc(page: Page) -> None:
     """Finalize the open credit note from its own page."""
-    page.get_by_role("button", name="Issue Credit Note").click()
+    page.get_by_role("button", name="Issue Credit Memo").click()
 
 
 def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(page: Page, fresh_company):
@@ -785,7 +785,7 @@ def test_j8_over_credit_is_refused_then_the_asset_is_returned_from_correct_sale(
         page.locator("#fa-preview").get_by_role("button", name="Confirm").click()
     with page.expect_navigation():
         _finalize_doc(page)
-    expect(page.get_by_role("button", name="Issue Credit Note")).to_have_count(0)
+    expect(page.get_by_role("button", name="Issue Credit Memo")).to_have_count(0)
     page.goto(f"/fixed-assets/assets/{car}")
     expect(page.locator(f"[id='fa-sale-{car}']")).to_contain_text("Returned")
     assert next(a for a in _ok(c.get(f"{API}/assets"))["items"] if a["id"] == car)["status"] == "active"

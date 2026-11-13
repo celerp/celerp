@@ -12,5 +12,129 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "activity.filter_any": {
+      "en": "Any",
+      "params": []
+    },
+    "activity.history_no_match": {
+      "en": "No history matches these filters.",
+      "params": []
+    },
+    "activity.th_field": {
+      "en": "Field",
+      "params": []
+    },
+    "activity.th_new_value": {
+      "en": "New value",
+      "params": []
+    },
+    "activity.th_old_value": {
+      "en": "Old value",
+      "params": []
+    },
+    "date.month_short_1": {
+      "en": "Jan",
+      "params": []
+    },
+    "date.month_short_10": {
+      "en": "Oct",
+      "params": []
+    },
+    "date.month_short_11": {
+      "en": "Nov",
+      "params": []
+    },
+    "date.month_short_12": {
+      "en": "Dec",
+      "params": []
+    },
+    "date.month_short_2": {
+      "en": "Feb",
+      "params": []
+    },
+    "date.month_short_3": {
+      "en": "Mar",
+      "params": []
+    },
+    "date.month_short_4": {
+      "en": "Apr",
+      "params": []
+    },
+    "date.month_short_5": {
+      "en": "May",
+      "params": []
+    },
+    "date.month_short_6": {
+      "en": "Jun",
+      "params": []
+    },
+    "date.month_short_7": {
+      "en": "Jul",
+      "params": []
+    },
+    "date.month_short_8": {
+      "en": "Aug",
+      "params": []
+    },
+    "date.month_short_9": {
+      "en": "Sep",
+      "params": []
+    },
+    "documents.gl_impact_balanced": {
+      "en": "Balanced",
+      "params": []
+    },
+    "documents.gl_impact_entry_for": {
+      "en": "Journal entry for {ref}, {date}",
+      "params": [
+        "date",
+        "ref"
+      ]
+    },
+    "documents.gl_impact_posted": {
+      "en": "Posted",
+      "params": []
+    },
+    "documents.gl_impact_source": {
+      "en": "Source document",
+      "params": []
+    },
+    "inventory.confirm_archive": {
+      "en": "Archive this item?",
+      "params": []
+    },
+    "inventory.confirm_expire": {
+      "en": "Expire this item?",
+      "params": []
+    },
+    "inventory.confirm_revert_draft": {
+      "en": "Revert this item to draft?",
+      "params": []
+    },
+    "inventory.description_help": {
+      "en": "Full product description, including detailed specifications.",
+      "params": []
+    },
+    "inventory.lifecycle_actions": {
+      "en": "Lifecycle actions",
+      "params": []
+    },
+    "inventory.packaging_type": {
+      "en": "Packaging type",
+      "params": []
+    },
+    "inventory.short_description_help": {
+      "en": "A brief product summary for compact lists and labels.",
+      "params": []
+    },
+    "inventory.split_manual": {
+      "en": "Manual split",
+      "params": []
+    },
+    "inventory.split_no_weight": {
+      "en": "No net weight is recorded for this item.",
+      "params": []
+    }
+  }
 }

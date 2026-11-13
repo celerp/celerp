@@ -593,7 +593,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("linked", [])
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
-    elif event_type == "doc.file_attached":
+    elif event_type in ("doc.file_attached", "list.file_attached"):
         current.setdefault("files", [])
         current["files"].append({
             "id": data["file_id"],
@@ -605,17 +605,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             "document_tag": data.get("document_tag") or "",
             "uploaded_at": data.get("uploaded_at") or "",
         })
-    elif event_type == "doc.file_tagged":
+    elif event_type in ("doc.file_tagged", "list.file_tagged"):
         for f in current.get("files", []):
             if f.get("id") == data.get("file_id"):
                 f["document_tag"] = data.get("document_tag", "")
                 break
-    elif event_type == "doc.file_description_updated":
+    elif event_type in ("doc.file_description_updated", "list.file_description_updated"):
         for f in current.get("files", []):
             if f.get("id") == data.get("file_id"):
                 f["description"] = data.get("description", "")
                 break
-    elif event_type == "doc.file_deleted":
+    elif event_type in ("doc.file_deleted", "list.file_deleted"):
         current["files"] = [f for f in current.get("files", []) if f.get("id") != data["file_id"]]
     elif event_type == "doc.note_added":
         # First-class doc_note entity (same pattern as contact_note)

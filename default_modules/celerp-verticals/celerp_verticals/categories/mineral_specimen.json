@@ -70,13 +70,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "pieces",
-      "label": "Pieces",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "grade",
       "label": "Aesthetic Grade",
       "type": "select",

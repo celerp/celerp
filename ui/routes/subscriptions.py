@@ -36,6 +36,9 @@ from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
+from ui.routes.settings_sales import _numbering_content
+from ui.components.module_off import can_open
+from celerp.services.permissions import role_has_permission
 from ui.i18n import refusal_text, sentence, t
 from ui.components.encode import as_js, html_response, to_markup
 
@@ -258,6 +261,7 @@ _DIRECTION_DOC_TYPE = {
     "sales": "subscription_invoice",
     "purchasing": "subscription_po",
 }
+_SUBSCRIPTION_DOC_TYPES = frozenset(_DIRECTION_DOC_TYPE.values())
 
 
 # ---------------------------------------------------------------------------
@@ -1160,12 +1164,31 @@ def setup_routes(app) -> None:
     # --- List page ---
 
     @app.get("/subscriptions")
-    async def subscriptions_list(request: Request, direction: str = "sales", status: str = "", review: bool = False):
+    async def subscriptions_list(request: Request, direction: str = "sales", status: str = "", review: bool = False,
+                                 tab: str = ""):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
+        company = getattr(request.state, "auth_company", None)
+        if company is None:
+            try:
+                company = await api.get_company(token)
+            except APIError:
+                company = {}
+        numbering_on = can_open(company, "celerp-subscriptions")
+        can_number = numbering_on and role_has_permission(
+            company.get("settings") or {}, api.role_from_company(company), "manage_module_settings")
+        if tab == "numbering":
+            if r := await _check_permission(request, "manage_module_settings"):
+                return r
+            if not numbering_on:
+                return RedirectResponse("/subscriptions", status_code=302)
+            return await base_shell(
+                page_header(t("page.document_numbering")),
+                await _numbering_content(token, _SUBSCRIPTION_DOC_TYPES),
+                title=t("page.document_numbering"), request=request, nav_active="subscriptions_sales")
         state = _list_state(request.query_params)
         q, page, per_page = state["q"], state["page"], state["per_page"]
         all_items = await _all_agreements(token, direction, review=review)
@@ -1189,6 +1212,8 @@ def setup_routes(app) -> None:
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
                   data_import_hint=True) if can_import else "",
+                (A(t("settings_sales.tab_numbering"), href="/subscriptions?tab=numbering",
+                   cls="btn btn--secondary") if can_number else ""),
             ),
             *_list_banners(catch_up, summary),
             *[Div(error, cls="flash flash--warning") for error in banner_errors],

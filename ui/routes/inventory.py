@@ -24,8 +24,10 @@ import ui.api_client as api
 from ui.components.module_off import can_open
 from ui.components.deleted_items import deleted_items, deleted_label, is_deleted
 from ui.components.demo_items import DEMO_ITEMS_FILTER
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.api_client import APIError, _flatten_item_attrs, error_message
+from ui.components.cards import section_card, section_header
+from ui.components.item_fields import item_detail_schema, item_display_values
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
@@ -58,8 +60,7 @@ from celerp.importers.tabular import known_headers
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.money import currency_dp, rate_dp
 from celerp.output.doc_print import fmt_rate, input_rate
-from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
-from ui.i18n import t, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
+from ui.i18n import t, t_or, get_lang, is_rtl, field_label, price_list_label, category_label, category_labels, refusal_text, doc_type_label
 from celerp.services.units import format_qty, is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import FULL, proposed_sell_qty, splitting_allowed, stored_sell_qty
 from celerp_inventory.services import (
@@ -131,6 +132,28 @@ function _updateSplitDelta(form) {
 """
 
 _BULK_SPLIT_JS = """
+function validateSplitInputs(form) {
+  var fields = form.matches('[data-validates-split]') ? form.querySelectorAll('[name="child_qty"]') : [];
+  for (var input of fields) {
+    if (!Number.isFinite(Number(input.value)) || !input.value.trim() || Number(input.value) <= 0) {
+      input.setCustomValidity(form.dataset.invalidQty); input.focus(); input.reportValidity(); return false;
+    }
+  }
+  return true;
+}
+if (!window._splitValidationInstalled) {
+  window._splitValidationInstalled = true;
+  document.addEventListener('input', function(e) { if(e.target.setCustomValidity) e.target.setCustomValidity(''); });
+  document.addEventListener('keydown', function(e) {
+    var form=e.target.closest('form[data-validates-split]');
+    if(e.key==='Enter' && form && !validateSplitInputs(form)) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+  document.addEventListener('submit', function(e) {
+    var form=e.target.closest('form[data-validates-split]');
+    if(form && !validateSplitInputs(form)) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+}
+
 function _setMotherQty(form, val, decimals) {
   // Mother qty is now an editable input; update its value reactively.
   // Only updates if the user has NOT manually edited the mother qty field.
@@ -374,6 +397,7 @@ function bulkSplitChildWeightChanged(input) {
 }
 function bulkSplitSkuChanged(input) {}
 function bulkSplitSubmit(formEl) {
+  if (!validateSplitInputs(formEl)) return false;
   var existing = formEl.querySelector('input[name="entity_id"]');
   if (!existing || !existing.value) {
     var checked = document.querySelector('.row-select:checked');
@@ -614,7 +638,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         if removable:
             label = t("inventory.child")
             trailing = Td(
-                Button("✕", type="button", cls="btn btn--ghost btn--xs split-remove-child-btn",
+                Button(icon("x"), type="button", cls="btn btn--ghost btn--xs split-remove-child-btn",
                        title=t("inventory.remove_child"),
                        onclick="var f=this.closest('form');var tr=this.closest('tr');if(tr)tr.remove();splitRecalc(f);"),
                 cls="sp-td sp-remove-td",
@@ -707,6 +731,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
                    value=wfmt.format(preview.get("parent_weight") or 0))]
             if show_weight else []
         ),
+        P(t_or("inventory.split_no_weight", "No net weight is recorded for this item."), cls="form-hint") if not has_weight and sell_by_type != "weight" else None,
         Table(
             Thead(Tr(*headers)),
             Tbody(mother_row, child_row),
@@ -735,7 +760,9 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         hx_post=action,
         hx_target=target,
         hx_swap="outerHTML",
-        onsubmit="bulkSplitSubmit(this)",
+        onsubmit="return bulkSplitSubmit(this)",
+        data_validates_split="true",
+        data_invalid_qty=t("inv.split_quantity_must_be_greater_than_0"),
         id=form_id,
         **form_data,
     )
@@ -963,6 +990,24 @@ async def _export_columns(token: str, p: dict) -> list[str]:
     return [c for c in cols if c not in image_keys]
 
 
+def _inventory_toolbar(p: dict, settings: dict, role: str, lang: str = "en", *, oob: bool = False) -> FT:
+    """The same permission and status rules on first load and filtered navigation."""
+    read_only_view = p.get("status") in {"sold", "archived", "disposed"}
+    can_write = not read_only_view
+    can_exchange = role_has_permission(settings, role, "import_export_data")
+    return Div(
+        Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary")
+        if can_write and role_has_permission(settings, role, "edit_inventory") else None,
+        A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if can_exchange else None,
+        A(import_icon(), t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary", data_import_hint=True)
+        if can_write and can_exchange else None,
+        A(t("inv.customize_fields", lang), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm")
+        if can_write and can_exchange else None,
+        id="inventory-toolbar-actions", cls="flex-row gap-sm",
+        **({"hx_swap_oob": "outerHTML"} if oob else {}),
+    )
+
+
 async def _render_inventory_fragment(
     token: str, p: dict, lang: str, role: str, **content_kwargs,
 ):
@@ -991,10 +1036,11 @@ async def _render_inventory_fragment(
             return RedirectResponse("/login", status_code=302)
         return _inventory_content_error(p, lang)
     try:
-        return await _inventory_content(
+        content = await _inventory_content(
             token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
             lang=lang, role=role, **content_kwargs,
         )
+        return content, _inventory_toolbar(p, company.get("settings") or {}, role, lang, oob=True)
     except APIError as e:
         if e.status == 401:
             return RedirectResponse("/login", status_code=302)
@@ -1424,8 +1470,6 @@ def setup_routes(app):
         ) if v}
         _search_url = "/inventory/content" + (f"?{urlencode(_search_filters)}" if _search_filters else "")
 
-        _can_import_export = role_has_permission(_settings, _role, "import_export_data")
-        _can_edit_inventory = role_has_permission(_settings, _role, "edit_inventory")
         return await base_shell(
             page_header(
                 t("page.inventory", lang),
@@ -1437,10 +1481,7 @@ def setup_routes(app):
                     label=t(_STATUS_SEARCH_LABELS.get(p.get("status") or "available", "inventory.search_any"), lang),
                     value=p.get("q", ""),
                 ),
-                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
-                A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if _can_import_export else "",
-                A(import_icon(), t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
-                A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _can_import_export else "",
+                _inventory_toolbar(p, _settings, _role, lang),
             ),
             content,
             Script(_SPLIT_DELTA_JS),
@@ -1940,10 +1981,7 @@ def setup_routes(app):
         schema = _apply_edit_permission(schema, _get_role(request), company.get("settings") or {}, is_draft=_is_draft(item))
         # Merge category-specific fields for this item's category
         item_cat = item.get("category", "")
-        if item_cat and item_cat in cat_schemas:
-            global_keys = {f["key"] for f in schema}
-            extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
-            schema = schema + extra
+        schema = item_detail_schema(schema, cat_schemas.get(item_cat) or [], item_cat)
 
         # A draft's creator may set its cost even without view_inventory_costs, but
         # /me/price-lists strips the cost definition for that role, so the pricing tab's
@@ -1989,7 +2027,7 @@ def setup_routes(app):
                 Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
                     Div(
-                        A(raw_html(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                        A(icon("clipboard-list"), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
                           cls="btn btn--ghost btn--icon", title=t("inventory.print_production_worksheet")),
                         _print_label_dropdown(entity_id),
                         A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
@@ -2012,7 +2050,8 @@ def setup_routes(app):
     @app.get("/inventory/{entity_id}/history")
     async def item_history_page(request: Request, entity_id: str):
         """Full, paginated activity history for one item (the Activity tab shows only the
-        most recent; this is the 'see all' surface). Reuses activity_table + pagination."""
+        most recent; this is the 'see all' surface). The shared History table, filtered by Event,
+        Field and Who from the URL and paged here over the item's history."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -2024,20 +2063,28 @@ def setup_routes(app):
         offset = (page - 1) * per_page
         item, company, category_names = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
-        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset})
+        # The item's whole history: the filters and their choices cover all of it, paged here.
+        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": 1000})
 
         currency = company.get("currency")
         activities = resp.get("items", [])
-        total = resp.get("total", 0)
         name = item.get("name") or item.get("sku") or entity_id
 
-        from ui.components.activity import activity_table
+        from urllib.parse import urlencode
+        from ui.components.activity import HISTORY_FILTERS, filter_history, history_rows, history_table
+        filters = {k: request.query_params.get(k) for k in HISTORY_FILTERS if request.query_params.get(k)}
         deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
-        table = activity_table(activities, title="", section_cls="", subject_entity_id=entity_id,
-                               currency=currency, category_names=category_names, resizable=True,
-                               deleted=deleted_parents, docs_on=can_open(company, "celerp-docs"))
+        rows = history_rows(activities, subject_entity_id=entity_id, currency=currency,
+                            category_names=category_names, deleted=deleted_parents,
+                            docs_on=can_open(company, "celerp-docs"))
+        shown = filter_history(rows, filters)
+        total = len(shown)
+        table = history_table([], rows=rows, page_rows=shown[offset:offset + per_page], filters=filters,
+                              filter_url=f"/inventory/{entity_id}/history", section_cls="section",
+                              show_header=False)
         pages = max(1, (total + per_page - 1) // per_page)
-        pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
+        pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history",
+                           extra_params=urlencode(filters)) if pages > 1 else ""
 
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.inventory"), "/inventory"),
@@ -2102,7 +2149,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             hidden = await api.get_items_metadata(token, unlisted) if unlisted else {}
         except APIError:
             hidden = {}  # the rows fall back to "(unavailable)", as before
-        return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
+        return _recipe_section(entity_id, item, items, company.get("currency") or (company.get("settings") or {}).get("currency"),
                                show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind, hidden=hidden)
 
     def _recipe_saved_status(msg: str | None = None, kind: str = "saved"):
@@ -2128,7 +2175,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
-        cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
+        cur = company.get("currency") or (company.get("settings") or {}).get("currency")
         return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
                                  kept_keys=kept_keys)
 
@@ -2897,7 +2944,13 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                         return refused
                 else:
                     old_val = old_item.get(field)
-                    await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
+                    changes = {field: {"old": old_val, "new": value}}
+                    if (old_item.get("_legacy_core_fields") or {}).get("weight") == "weight_g":
+                        if field == "weight":
+                            changes["weight_unit"] = {"old": old_item.get("_legacy_weight_unit"), "new": "gram"}
+                        elif field == "weight_unit":
+                            changes["weight"] = {"old": None, "new": old_item["weight"]}
+                    await api.patch_item(token, entity_id, changes)
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
@@ -3110,10 +3163,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
         ]
         # Merge category-specific fields
         item_cat = item.get("category", "")
-        if item_cat and item_cat in cat_schemas:
-            global_keys = {f["key"] for f in schema}
-            extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
-            schema = schema + extra
+        schema = item_detail_schema(schema, cat_schemas.get(item_cat) or [], item_cat)
         # Build pricing_keys to exclude from detail_fields
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {price_key(n) for n in pl_names}
@@ -4394,7 +4444,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                     name = pl.get("name", "")
                     unit, total = _readonly_price_cells(
                         price_key(name), resolve_price(item_after, name),
-                        qty_after, qty_after > 0, rdp, oob=True,
+                        qty_after, qty_after > 0, rdp, oob=True, currency=company_after.get("currency"),
                     )
                     oob_cells.extend([unit, total])
             except APIError:
@@ -5754,6 +5804,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         primary_options=po, secondary_options=so,
                         primary_editable=ped or pri in _rek,
                         secondary_editable=sed or sec in _rek,
+                        hide_empty_secondary=pri in ("weight", "gross_weight"),
                     )
                 return renderer
             renderers[primary] = _make()
@@ -6403,7 +6454,7 @@ def _print_label_dropdown(entity_id: str) -> FT:
     """Print label icon button with HTMX-loaded template dropdown."""
     dropdown_id = f"print-label-dd-{entity_id.replace(':', '-')}"
     return Div(
-        Button("🖨",
+        Button(icon("printer"),
             cls="btn btn--secondary btn--icon",
             title=t("btn._print_labels"),
             onclick=call("celerpToggleOpen", dropdown_id),
@@ -6483,7 +6534,7 @@ def _recipe_money(v, currency: str | None) -> str:
     """Format a derived cost; '--' (not blank) for unset, per GDR §2k."""
     if v in (None, ""):
         return EMPTY
-    return f"{currency or ''}{float(v):,.2f}"
+    return fmt_money(v, currency)
 
 
 # Editable fields per recipe section, with their system-standard cell types.
@@ -6569,12 +6620,12 @@ def _recipe_cost_card(entity_id: str, item: dict, currency: str | None) -> FT:
             if has_recipe else
             t("inventory.cost_standard_hint"))
     children = [
-        H3(t("inventory.cost_summary"), cls="section-title"),
+        section_header(t("inventory.cost_summary"), icon_name="credit-card"),
         Table(Tbody(_row(t("inventory.materials"), "materials_cost"), _row(t("inventory.labor"), "labor_cost"),
-                    _row(t("inventory.overhead"), "overhead_cost"), _row(t("inventory.unit_cost"), "unit_cost", total=True)), cls="detail-table"),
+                    _row(t("inventory.overhead"), "overhead_cost"), _row(t("inventory.unit_cost"), "unit_cost", total=True)), cls="detail-table doc-card-table"),
         P(hint, cls="hint"),
     ]
-    return Div(*children, id="recipe-cost-card", cls="detail-card recipe-cost-summary")
+    return Div(*children, id="recipe-cost-card", cls="doc-section recipe-cost-summary")
 
 
 def _item_image_files(item: dict) -> list[dict]:
@@ -6602,9 +6653,9 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     images = _item_image_files(item)
     if not images:
         return Div(
-            H3(t("inventory.product_images"), cls="section-title"),
+            section_header(t("inventory.product_images"), icon_name="camera"),
             P(t("inventory.no_product_images"), cls="hint"),
-            cls="detail-card wf-gallery wf-gallery--empty",
+            cls="doc-section wf-gallery wf-gallery--empty",
             id="wf-gallery",
         )
 
@@ -6625,11 +6676,11 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
         if len(images) > 1 else ""
     )
     return Div(
-        H3(t("inventory.product_images"), cls="section-title"),
+        section_header(t("inventory.product_images"), icon_name="camera"),
         Img(src=safe_url(_src(hero)), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
         thumbs,
         P(t("inventory.click_thumb_main"), cls="hint") if len(images) > 1 else "",
-        cls="detail-card wf-gallery",
+        cls="doc-section wf-gallery",
         id="wf-gallery",
     )
 
@@ -6793,11 +6844,8 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
               cls="hint") if not steps else ""
 
     return Div(
-        Div(
-            H3(t("inventory.production_workflow"), cls="section-title"),
-            Span(summary, cls="wf-summary") if steps else "",
-            cls="recipe-section-head",
-        ),
+        section_header(t("inventory.production_workflow"), icon_name="factory",
+                       extra=Span(summary, cls="wf-summary") if steps else None),
         P(t("inventory.workflow_intro"),
           cls="hint"),
         table,
@@ -6806,7 +6854,7 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
                hx_post=f"{base}?action=add", **{k: v for k, v in _struct.items() if k != "hx_post"}),
         Script(COLUMN_FILTER_JS), Script(ENHANCED_TABLE_JS), Script(WORKFLOW_JS),
         id="workflow-section",
-        cls="detail-card recipe-block",
+        cls="doc-section recipe-block",
         **{"data-base": base, "data-total-label": t("inventory.total_time_label")},
     )
 
@@ -7101,7 +7149,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="data-row",
         )
 
-    cur_label = f" ({currency})" if currency else ""
+    cur_label = f" ({currency_symbol(currency).strip()})" if currency else ""
 
     # Permanent "add" row at the bottom of each table: committing on first input creates a real,
     # persisted row (then a fresh add-row appears). No orphan blank rows to lose on navigation.
@@ -7128,37 +7176,42 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     _live_total = ("var r=this.closest('tr'),"
                    "q=parseFloat(r.querySelector('[name=labor_new_hours]').value)||0,"
                    "rt=parseFloat(r.querySelector('[name=labor_new_rate]').value)||0,"
-                   "t=r.querySelector('[name=labor_new_amount]');"
-                   "if(t.readOnly){t.value=(q&&rt)?(q*rt).toFixed(2):'';}")
+                   "t=r.querySelector('[name=labor_new_total]');"
+                   "t.value=(q&&rt)?(q*rt).toFixed(2):'';")
     # Switching Type flips which fields apply AND clears the now-inapplicable ones so no stale
     # greyed values linger (Qty/Rate for Fixed; the flat Total for rate-based).
     _kind_toggle = ("var r=this.closest('tr'),fx=this.value==='fixed',"
                     "q=r.querySelector('[name=labor_new_hours]'),"
                     "rt=r.querySelector('[name=labor_new_rate]'),"
-                    "t=r.querySelector('[name=labor_new_amount]');"
-                    "q.disabled=fx;rt.disabled=fx;t.readOnly=!fx;"
-                    "if(fx){q.value='';rt.value='';t.value='';}"
-                    "else{var a=(parseFloat(q.value)||0)*(parseFloat(rt.value)||0);t.value=a?a.toFixed(2):'';}")
+                    "t=r.querySelector('[name=labor_new_amount]'),o=r.querySelector('[name=labor_new_total]');"
+                    "q.disabled=fx;rt.disabled=fx;t.hidden=!fx;t.disabled=!fx;o.hidden=fx;"
+                    "if(fx){q.value='';rt.value='';t.value='';o.value='';}"
+                    "else{t.value='';var a=(parseFloat(q.value)||0)*(parseFloat(rt.value)||0);o.value=a?a.toFixed(2):'';}")
+    # Computed previews use the company's money precision, just like saved totals.
+    _live_total = _live_total.replace("toFixed(2)", f"toFixed({currency_dp(currency or 'USD')})")
+    _kind_toggle = _kind_toggle.replace("toFixed(2)", f"toFixed({currency_dp(currency or 'USD')})")
     # Clicking + Add with the required text field empty flashes it red instead of failing silently.
     _add_validate = ("var q=this.closest('tr').querySelector('.recipe-req');"
                      "if(q&&!q.value.trim()){q.classList.add('field-flash-error');q.focus();"
                      "setTimeout(function(){q.classList.remove('field-flash-error');},1500);"
                      "event.stopImmediatePropagation();event.preventDefault();return false;}")
     labor_add_row = Tr(
-        Td(Input(type="text", name="labor_new_op", value="", placeholder=t("inventory.ph_add_operation"), cls="recipe-req", onkeydown=_add_enter)),
+        Td(Input(type="text", name="labor_new_op", value="", placeholder=t("inventory.ph_add_operation"), cls="form-input recipe-req", onkeydown=_add_enter)),
         Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _labor_kind_labels().items()],
-                  name="labor_new_kind", cls="labor-kind", onchange=_kind_toggle)),
-        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
-        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+                  name="labor_new_kind", cls="form-input labor-kind", onchange=_kind_toggle)),
+        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
         # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
-        Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", readonly=True, onkeydown=_add_enter), cls="cell--number"),
+        Td(Output("", name="labor_new_total", cls="recipe-amount"),
+           Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0",
+                 cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls="cell--number"),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     oh_add_row = Tr(
-        Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="recipe-req", onkeydown=_add_enter)),
-        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="form-input recipe-req", onkeydown=_add_enter)),
+        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="form-input cell--number", onkeydown=_add_enter), cls="cell--number"),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
@@ -7182,14 +7235,6 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )
-
-    def _section_head(title: str, total_key: str) -> FT:
-        """Section title with its running total on the right (GDR §4: currency right-aligned)."""
-        return Div(
-            H3(title, cls="section-title"),
-            Span(_recipe_money(recipe.get(total_key), currency), cls="recipe-section-total"),
-            cls="recipe-section-head",
-        )
 
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
@@ -7239,13 +7284,13 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             Div(
                 Label(t("inventory.output_qty_label"), For="output_qty"),
                 Input(type="number", id="output_qty", name="output_qty",
-                      value=f"{float(recipe.get('output_qty', 1)):g}", min="0.001", step="any", cls="cell--number", **_save),
+                      value=f"{float(recipe.get('output_qty', 1)):g}", min="0.001", step="any", cls="form-input cell--number", **_save),
                 P(t("inventory.unit_cost_formula"), cls="hint"),
-                cls="detail-card recipe-block",
+                cls="doc-section recipe-block",
             ),
-            Div(_section_head(t("inventory.materials"), "materials_cost"), materials, cls="detail-card recipe-block"),
-            Div(_section_head(t("inventory.labor"), "labor_cost"), labor, cls="detail-card recipe-block"),
-            Div(_section_head(t("inventory.overhead"), "overhead_cost"), overhead, cls="detail-card recipe-block"),
+            section_card(t("inventory.materials"), materials, header_extra=Span(_recipe_money(recipe.get("materials_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
+            section_card(t("inventory.labor"), labor, header_extra=Span(_recipe_money(recipe.get("labor_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
+            section_card(t("inventory.overhead"), overhead, header_extra=Span(_recipe_money(recipe.get("overhead_cost"), currency), cls="recipe-section-total ml-auto"), body_cls="recipe-block"),
             # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
             Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
             clear_action,
@@ -7377,13 +7422,13 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
 
     return Div(
         flash_el,
-        Div(H3(t("inventory.open_demand"), cls="section-title"),
+        Div(section_header(t("inventory.open_demand"), icon_name="clipboard-list"),
             P(t("inventory.open_demand_hint"), cls="hint"),
-            demand_tbl, cls="detail-card recipe-block"),
+            demand_tbl, cls="doc-section recipe-block"),
         Div(
-            H3(t("inventory.work_orders_title"), cls="section-title"),
+            section_header(t("inventory.work_orders_title"), icon_name="factory"),
             P(t("inventory.work_orders_hint"), cls="hint"),
-            runs_view, cls="detail-card recipe-block"),
+            runs_view, cls="doc-section recipe-block"),
         Script(COLUMN_FILTER_JS),
         Script(ENHANCED_TABLE_JS),
         # Re-seed the Status default-exclude (hide Completed/Cancelled) on every (re)render — runs
@@ -7501,14 +7546,15 @@ def _fmt_rate(v: float, rdp: int) -> str:
 
 
 def _readonly_price_cells(conventional_key: str, price_val: float, qty: float,
-                          has_qty: bool, rdp: int, oob: bool = False):
+                          has_qty: bool, rdp: int, oob: bool = False, currency: str | None = None):
     """The unit/total value spans of a read-only pricing row.
 
     Shared by the pricing form render and the price-save response: after a base
     price saves, the same spans return as out-of-band swaps so derived rows update
     immediately without re-rendering the form or moving the user's focus."""
-    unit_val = _fmt_rate(price_val, rdp) if price_val else ""
-    total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
+    from celerp.output.doc_print import fmt_rate
+    unit_val = (fmt_rate(price_val, currency) if currency else _fmt_rate(price_val, rdp)) if price_val else ""
+    total_val = (fmt_money(price_val * qty, currency) if currency else f"{price_val * qty:.2f}") if price_val and has_qty else ""
     oob_kw = {"hx_swap_oob": "true"} if oob else {}
     unit = Span(unit_val or EMPTY, cls="form-input form-input--readonly",
                 id=f"derived_unit_{conventional_key}", **oob_kw)
@@ -7573,7 +7619,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
-    cur_sym = currency or ""
+    cur_sym = currency_symbol(currency)
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
     cdp, rdp = currency_dp(currency or "USD"), rate_dp(currency or "USD")
@@ -7586,6 +7632,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         return [Th(t("th.price_list")), Th(unit_hdr, cls="cell--right"), Th(total_hdr, cls="cell--right")]
 
     def _cur(v):
+        if getattr(v, "tag", "") == "span":
+            return v
         return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
 
     # Schema editability is config-driven: derived lists' price columns are marked
@@ -7622,7 +7670,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             # Read-only display: recipe-managed cost (edited on the Manufacturing tab)
             # or a derived price list (computed from the base price list). The value spans
             # carry ids so a base-price save can refresh them out-of-band.
-            unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
+            unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp, currency=currency)
             return (
                 Td(pl_name, cls="detail-label"),
                 Td(_cur(unit_span), cls="cell--right"),
@@ -7671,11 +7719,11 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             body = [Tr(*cells, Td(*actions)) for cells, actions in rows]
         else:
             body = [Tr(*cells) for cells, _ in rows]
-        return Div(
-            H3(title, cls="section-title"),
-            Table(Thead(Tr(*headers)), Tbody(*body), cls="detail-table"),
-            P(note, cls="hint") if note else "",
-            cls="detail-card",
+        return section_card(
+            title,
+            Table(Thead(Tr(*headers)), Tbody(*body), cls="detail-table doc-card-table"),
+            P(note, cls="empty-state-msg") if note else "",
+            icon_name="credit-card",
         )
 
     cost_lists = [pl for pl in price_lists if is_cost_list_name(pl.get("name", ""))]
@@ -7705,14 +7753,14 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
 
     if str(item.get("status") or "").lower() == "sold" and item.get("sold_price") is not None:
         sold_val = float(item["sold_price"])
-        unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp)
-        cards.append(Div(
-            H3(t("inventory.card_sold_price"), cls="section-title"),
+        unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp, currency=currency)
+        cards.append(section_card(
+            t("inventory.card_sold_price"),
             Table(Thead(Tr(*price_headers())),
                   Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span), cls="cell--right"),
                            Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"))),
-                  cls="detail-table"),
-            cls="detail-card",
+                  cls="detail-table doc-card-table"),
+            icon_name="credit-card",
         ))
 
     return Div(
@@ -7749,6 +7797,7 @@ function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
 def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | None = None, currency: str | None = None, cell_renderers: dict | None = None) -> FT:
     if not fields:
         return ""
+    item = item_display_values(item)
     if title is None:
         title = t("th.details")
     from ui.components.table import display_cell
@@ -7769,16 +7818,14 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | N
                 domain="item_status",
             )
         return Tr(
-            Td(field_label(f), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
+            Td(field_label(f), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""),
+               P(f["help_text"], cls="form-hint") if f.get("help_text") else None, cls="detail-label"),
             cell,
         )
-    return Div(
-        H3(title, cls="section-title"),
-        Table(
-            Tbody(*[_row(f) for f in fields]),
-            cls="detail-table",
-        ),
-        cls="detail-card",
+    return section_card(
+        title,
+        Table(Tbody(*[_row(f) for f in fields]), cls="detail-table doc-card-table"),
+        icon_name="package",
     )
 
 
@@ -7831,11 +7878,11 @@ def _undo_merge_block(entity_id: str, ledger: list[dict]) -> FT | str:
 def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None,
                   category_names: dict | None = None, deleted: dict[str, dict] | None = None,
                   docs_on: bool = False) -> FT:
-    from ui.components.activity import activity_table
+    from ui.components.activity import history_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
-    return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
-                          category_names=category_names, history_url=history_url, resizable=True, deleted=deleted,
-                          docs_on=docs_on)
+    return history_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency,
+                         category_names=category_names, history_url=history_url, deleted=deleted,
+                         docs_on=docs_on, empty_msg=t("activity.empty"))
 
 
 # ---------------------------------------------------------------------------
@@ -8111,6 +8158,7 @@ async def _item_split_preview(token: str, entity_id: str) -> dict:
 # come from the form's data attributes, and the preview is written as text.
 _BATCH_SPLIT_JS = """
 function batchSplitPreview(form) {
+  form.querySelectorAll('input').forEach(el=>el.setCustomValidity(''));
   var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
   var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
   var avail = parseFloat(form.getAttribute('data-avail')) || 0;
@@ -8126,10 +8174,14 @@ function batchSplitPreview(form) {
   }
 }
 function batchSplitSubmit(form) {
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
-  if (!qty || qty <= 0) { alert(form.getAttribute('data-alert-qty')); return; }
-  if (!count || count < 2) { alert(form.getAttribute('data-alert-count')); return; }
+  var qtyEl = form.querySelector('[name=batch_qty]');
+  var countEl = form.querySelector('[name=batch_count]');
+  var qty = Number(qtyEl.value);
+  var count = Number(countEl.value);
+  if (!Number.isFinite(qty) || qty <= 0) { qtyEl.setCustomValidity(form.dataset.alertQty); qtyEl.focus(); qtyEl.reportValidity(); return; }
+  if (!Number.isFinite(count) || !Number.isInteger(count) || count < 2) { countEl.setCustomValidity(form.dataset.alertCount); countEl.focus(); countEl.reportValidity(); return; }
+  var complementEl = form.querySelector('[name=batch_complement]');
+  if (complementEl && (complementEl.validity.badInput || (complementEl.value && (!Number.isFinite(Number(complementEl.value)) || Number(complementEl.value) <= 0)))) { complementEl.setCustomValidity(form.dataset.alertQty); complementEl.focus(); complementEl.reportValidity(); return; }
   var btn = form.querySelector('.btn--batch-submit');
   if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   var compEl = form.querySelector('[name=batch_complement]');
@@ -8188,17 +8240,25 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
         _batch_qty_title   = t("inv.tooltip.batch_qty").replace("{unit}", sell_by_label)
         _batch_count_title = t("inv.tooltip.batch_count")
 
-        # Combined card: shared split table (Mother + N children) above, Batch Split below.
+        # One Split control with mutually exclusive manual and batch modes.
         split_card = Div(
-            _split_table_form(
+            Strong(icon("scissors"), " ", t("inv.u2702_split"), cls="action-card-title"),
+            Select(
+                Option(t("inventory.split_manual"), value="manual"),
+                Option(t("inv.batch_split"), value="batch"),
+                cls="form-input form-input--sm split-mode",
+                aria_label=t("inv.u2702_split"),
+                onchange="var c=this.closest('.split-control');c.querySelectorAll('[data-split-mode]').forEach(p=>p.hidden=p.dataset.splitMode!==this.value);",
+            ),
+            Div(_split_table_form(
                 split_preview,
                 action=f"/api/items/{entity_id}/split-inline",
                 target="#item-action-error",
                 form_id=f"split-form-{safe_id}",
                 allow_add_child=True,
                 child_sku_editable=False,
-            ),
-            Hr(cls="action-card-divider"),
+            ), data_split_mode="manual"),
+            Div(
             # Batch Split submits via JS; onsubmit guard blocks accidental Enter submission.
             Form(
                 Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
@@ -8222,7 +8282,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                           step="1", min="2",
                           cls="form-input form-input--sm batch-split-count",
                           oninput="batchSplitPreview(this.form)"),
-                    Button(t("th.batch"), type="button",
+                    Button(t("btn.confirm"), type="button",
                            title=t("inv.tooltip.batch_submit"),
                            cls="btn btn--primary btn--xs btn--batch-submit",
                            onclick="batchSplitSubmit(this.closest('form'))"),
@@ -8230,7 +8290,8 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                 ),
                 Div(cls="batch-split-preview"),
                 Script(_BATCH_SPLIT_JS),
-                onsubmit="return false;",
+                onsubmit="batchSplitSubmit(this);return false;",
+                onkeydown="if(event.key==='Enter'){event.preventDefault();batchSplitSubmit(this);}",
                 **{
                     "data-unit": sell_by_label,
                     "data-avail": current_qty,
@@ -8239,19 +8300,19 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                     "data-alert-qty": t("inventory.js_enter_valid_qty"),
                     "data-alert-count": t("inventory.count_min_two"),
                 },
-            ),
-            cls="action-card",
+            ), data_split_mode="batch", hidden=True),
+            cls="action-card split-control",
         )
     else:
         split_card = Div(
-            Strong(t("inv.u2702_split"), cls="action-card-title"),
+            Strong(icon("scissors"), " ", t("inv.u2702_split"), cls="action-card-title"),
             P(split_refusal, cls="action-card-hint"),
             cls="action-card action-card--disabled",
         )
 
     duplicate_card = Div(
         Form(
-            Strong(t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
+            Strong(icon("copy"), " ", t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
             Div(
                 Input(type="text", name="new_sku", placeholder=t("inventory.ph_new_sku"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
@@ -8266,13 +8327,14 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
 
     expire_card = Div(
         Form(
-            Strong(t("inv.u23f3_expire"), cls="action-card-title"),
+            Strong(icon("hourglass"), " ", t("inv.u23f3_expire"), cls="action-card-title"),
             Div(
                 Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
             hx_post=f"/api/items/{entity_id}/expire",
+            hx_confirm=t("inventory.confirm_expire"),
             hx_target="#item-action-error",
             hx_swap="outerHTML",
         ),
@@ -8281,13 +8343,14 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
 
     archive_card = Div(
         Form(
-            Strong(t("inv.u1f4e6_archive"), cls="action-card-title"),
+            Strong(icon("archive"), " ", t("inv.u1f4e6_archive"), cls="action-card-title"),
             Div(
                 Input(type="text", name="reason", placeholder=t("inventory.ph_reason"), cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
             hx_post=f"/api/items/{entity_id}/archive",
+            hx_confirm=t("inventory.confirm_archive"),
             hx_target="#item-action-error",
             hx_swap="outerHTML",
         ),
@@ -8341,6 +8404,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                     ),
                     P(t("inventory.revert_no_history"), cls="action-card-hint"),
                     hx_post=f"/api/items/{entity_id}/revert-to-draft",
+            hx_confirm=t("inventory.confirm_revert_draft"),
                     hx_target="#item-action-error",
                     hx_swap="outerHTML",
                 ),
@@ -8386,13 +8450,14 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
             cls="action-card",
         )
 
-    return Div(
-        H3(t("th.actions"), cls="section-title"),
+    return section_card(
+        t("th.actions"),
         Span("", id="item-action-error"),
         Div(
             split_card,
             duplicate_card,
-            *lifecycle_cards,
+            Div(Strong(t("inventory.lifecycle_actions"), cls="action-card-title"),
+                *lifecycle_cards, cls="action-card") if lifecycle_cards else None,
             rtv_card,
             bbi_card,
             cls="action-cards-grid",
@@ -8400,6 +8465,8 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
         P(t("inv.to_merge_items_select_multiple_from_the_inventory"), cls="form-hint"),
         *([Div(*module_item_actions, cls="actions-group", style="margin-top:0.5rem")] if module_item_actions else []),
         id="item-advanced-panel",
-        cls="detail-card",
+        collapsible=True,
+        icon_name="scissors",
+        body_cls="recipe-block",
     )
 

@@ -7,7 +7,9 @@ Used by contacts, documents, and any other entity that supports file attachments
 Single source for document tag slugs via _DOCUMENT_TAGS.
 """
 from __future__ import annotations
+from ui.components.cards import section_header
 
+from ui.components.icons import icon
 from fasthtml.common import *
 
 from ui.components.attrs import hx_vals
@@ -444,7 +446,7 @@ def files_section(
             if is_image:
                 hero_cell = Td(
                     Button(
-                        "⭐" if is_hero else "☆",
+                        Span(icon("star"), cls="file-hero-star file-hero-star--on" if is_hero else "file-hero-star"),
                         hx_post=f"{file_action_base}/{fid}/hero",
                         hx_target=f"#files-section-{sid}",
                         hx_swap="outerHTML",
@@ -559,15 +561,16 @@ def files_section(
         .then(function(){if(txt&&document.body.contains(zone)) txt.textContent=zone.dataset.dropText;});
     }
     zone.addEventListener('click',function(e){
-      if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
+      if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')){
+        inp.removeAttribute('capture'); inp.accept=zone.dataset.accept; inp.click();
+      }
     });
     inp.addEventListener('change',function(){ if(inp.files.length) upload(inp.files[0]); });
-    var cam=document.getElementById('file-camera-input-' + SID);
     var camBtn=zone.querySelector('.file-camera-btn');
-    if(cam&&camBtn){
-      camBtn.addEventListener('click',function(e){e.preventDefault(); cam.click();});
-      cam.addEventListener('change',function(){ if(cam.files.length) upload(cam.files[0]); });
-    }
+    if(camBtn) camBtn.addEventListener('click',function(e){
+      e.preventDefault(); inp.accept='image/jpeg,image/png';
+      inp.setAttribute('capture','environment'); inp.click();
+    });
     zone.addEventListener('dragover',function(e){e.preventDefault();zone.classList.add('file-drop-zone--active');});
     zone.addEventListener('dragleave',function(){zone.classList.remove('file-drop-zone--active');});
     zone.addEventListener('drop',function(e){
@@ -584,26 +587,26 @@ def files_section(
 """
 
     upload_zone = Div(
-        Div("📁", cls="file-drop-icon"),
+        Div(icon("folder"), cls="file-drop-icon"),
         Div(t("msg.drop_files_here"), cls="file-drop-text"),
-        Input(type="file", id=f"file-drop-input-{sid}", style="display:none"),
+        Input(type="file", id=f"file-drop-input-{sid}",
+              accept="image/*,video/*,.pdf,.doc,.docx,.txt", style="display:none"),
         # On a phone this opens the camera, so a receipt is photographed straight into
         # the document; desktop browsers open the file picker for images.
         Button(t("msg.take_photo"), type="button", cls="btn btn--sm btn--secondary file-camera-btn"),
-        Input(type="file", id=f"file-camera-input-{sid}", accept="image/*",
-              capture="environment", style="display:none"),
         Script(drop_js, data_cfg=js_value({"sid": sid, "url": str(base_url)})),
         cls="file-drop-zone",
         id=f"file-drop-zone-{sid}",
         # Translated strings the JS above reads via dataset instead of splicing
         # into the script source (R2).
+        data_accept="image/*,video/*,.pdf,.doc,.docx,.txt",
         data_drop_text=t("msg.drop_files_here"),
         data_uploading_text=t("msg.uploading"),
         data_upload_failed_text=t("msg.upload_failed"),
     )
 
     children = [
-        H3(title or t("label.files"), cls="section-title"),
+        section_header(title or t("label.files"), icon_name="paperclip"),
         filter_bar,
         Div(table, cls="table-scroll-wrap"),
         Script(resize_js, data_cfg=js_value({"table": f"files-table-{sid}"})),
@@ -625,5 +628,6 @@ def files_section(
         *children[1:],
         Script(FILES_JS),
         id=f"files-section-{sid}",
+        cls="doc-section",
         data_quiet_error="1",
     )

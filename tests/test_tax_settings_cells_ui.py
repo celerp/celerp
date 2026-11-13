@@ -17,6 +17,14 @@ from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
 from ui.i18n import t
 
+
+@pytest.fixture(autouse=True)
+def _owner_company():
+    """The numbering cells check manage_module_settings, which reads the company; an owner
+    passes. A test that needs another company patches get_company inside this one."""
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value={"current_role": "owner", "settings": {}})):
+        yield
+
 pytestmark = pytest.mark.asyncio
 
 _PREFIXES = [("taxes", "get_taxes", "patch_taxes"),
@@ -200,7 +208,8 @@ async def test_numbering_cell_left_unchanged_saves_nothing(ui_client, field, sho
     type stays on the counter it draws from (here the shared one)."""
     saved = AsyncMock(return_value={})
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value={"current_role": "owner", "settings": {}})), \
+         patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
          patch("ui.api_client.patch_doc_sequence", new=saved):
         r = await ui_client.patch(f"/settings/numbering/transfer/{field}", data={"value": f" {shown} "})
     assert r.status_code == 200 and "cell-error" not in r.text
@@ -211,7 +220,8 @@ async def test_numbering_cell_left_unchanged_saves_nothing(ui_client, field, sho
 async def test_numbering_cell_changed_is_saved(ui_client):
     saved = AsyncMock(return_value={})
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value={"current_role": "owner", "settings": {}})), \
+         patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
          patch("ui.api_client.patch_doc_sequence", new=saved):
         r = await ui_client.patch("/settings/numbering/transfer/prefix", data={"value": "QUOTE"})
     assert r.status_code == 200

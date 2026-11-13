@@ -15,13 +15,13 @@ PLUGIN_MANIFEST = {
     "slots": {
         "nav": [
             {"group": "Sales Documents", "key": "invoices", "href": "/docs?type=invoice", "label": "Invoices", "label_key": "nav.invoices", "order": 20, "settings_href": "/settings/sales", "permission": "view_documents"},
-            {"group": "Sales Documents", "key": "credit-notes", "href": "/docs?type=credit_note", "label": "Credit Notes", "label_key": "nav.credit_notes", "order": 20.8, "permission": "view_documents"},
+            {"group": "Sales Documents", "key": "credit-notes", "href": "/docs?type=credit_note", "label": "Credit Memos", "label_key": "nav.credit_notes", "order": 20.8, "permission": "view_documents"},
             {"group": "Sales Documents", "key": "memos", "href": "/docs?type=memo", "label": "Consignment Out", "label_key": "nav.consignment_out", "order": 20.5, "permission": "view_documents"},
             {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists / Quotations", "label_key": "nav.lists_quotations", "order": 21, "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "received", "href": "/docs/received", "label": "Received", "label_key": "nav.received_documents", "order": 25.5, "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "purchase-orders", "href": "/docs?type=purchase_order", "label": "Purchase Orders", "label_key": "nav.purchase_orders", "order": 26, "settings_href": "/settings/purchasing", "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "vendor-bills", "href": "/docs?type=bill", "label": "Vendor Bills", "label_key": "nav.vendor_bills", "order": 26.5, "permission": "view_documents"},
-            {"group": "Purchasing Documents", "key": "supplier-credit-notes", "href": "/docs?type=debit_note", "label": "Supplier Credit Notes", "label_key": "nav.supplier_credit_notes", "order": 26.8, "permission": "view_documents"},
+            {"group": "Purchasing Documents", "key": "supplier-credit-notes", "href": "/docs?type=debit_note", "label": "Vendor Credit Memos", "label_key": "nav.supplier_credit_notes", "order": 26.8, "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "consignment-in", "href": "/docs?type=consignment_in", "label": "Consignment In", "label_key": "nav.consignment_in", "order": 27, "permission": "view_documents"},
             {"group": "Finance", "key": "payments", "href": "/payments", "label": "Payments", "label_key": "nav.payments", "order": 51.5, "permission": "view_payments"},
         ],

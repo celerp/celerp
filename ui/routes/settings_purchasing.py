@@ -19,7 +19,7 @@ from ui.routes.settings import _token, _check_permission, _taxes_tab, _terms_con
 from ui.routes.settings_general import _section_breadcrumb
 from ui.routes.settings_sales import _numbering_content
 
-_PURCHASING_DOC_TYPES = frozenset({"purchase_order", "bill", "consignment_in"})
+_PURCHASING_DOC_TYPES = frozenset({"purchase_order", "bill", "consignment_in", "debit_note"})
 
 
 def _purchasing_tabs(active: str, lang: str = "en") -> FT:

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -106,7 +107,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             _unit_display_cell(uname, "unit_type", utype),
             Td(
                 Button(
-                    "✕",
+                    icon("x"),
                     cls="btn btn--danger btn--xs",
                     type="button",
                     hx_delete=f"/settings/units/{uname}",
@@ -257,7 +258,7 @@ def _categories_tab(
                 _cat_schema_display_cell(cat, idx, "show_in_table", f),
                 _cat_schema_display_cell(cat, idx, "options", f),
                 Td(
-                    Button("✕", cls="btn btn--danger btn--xs",
+                    Button(icon("x"), cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
                            hx_confirm=t("settings_inventory.delete_field_confirm", name=f.get('key', idx)),
                            hx_target="#cat-fields-result", hx_swap="innerHTML"),

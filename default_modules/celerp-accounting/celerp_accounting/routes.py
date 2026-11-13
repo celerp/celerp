@@ -63,7 +63,6 @@ from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
-from celerp.services.line_measures import line_label
 from celerp.services.money import (
     books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
     to_base, to_decimal, to_stored_float,
@@ -1513,8 +1512,9 @@ def _doc_item_lines(doc: dict, base: str) -> list[dict]:
         if line_total <= 0:
             continue
         out.append({
-            "item": line_label(li),
+            "item": str(li.get("description") or li.get("name") or li.get("sku") or li.get("item_id") or li.get("entity_id") or ""),
             "quantity": li.get("quantity"),
+            "unit": li.get("unit") or li.get("sell_by"),
             "unit_price": li.get("unit_price"),
             "fx_amount": to_stored_float(line_total),
             "amount": to_decimal(to_base(to_stored_float(line_total), rate, base)),
@@ -1558,6 +1558,7 @@ def _item_row(line: dict, side: str, doc_line: dict, amount: Decimal) -> dict:
         f"fx_{other}": None,
         "item": doc_line["item"],
         "quantity": doc_line["quantity"],
+        "unit": doc_line.get("unit"),
         "unit_price": doc_line["unit_price"],
     }
 

@@ -78,13 +78,6 @@
       "type": "text",
       "options": [],
       "visible_to_roles": []
-    },
-    {
-      "key": "batch_no",
-      "label": "Batch / Bottling No.",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
     }
   ],
   "default_sell_by": "piece",
