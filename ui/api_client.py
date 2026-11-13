@@ -28,6 +28,13 @@ _CONNECT_KEY = CONNECT_HEADER.lower().encode()
 _CALLER_KEY = CALLER_HEADER.lower().encode()
 
 
+def _segment(value: str) -> str:
+    """``value`` as one path segment: every reserved character escaped, and a segment of dots
+    (".", "..") escaped too, which the client would otherwise resolve into another path."""
+    quoted = quote(value, safe="")
+    return quoted.replace(".", "%2E") if quoted.strip(".") == "" else quoted
+
+
 class CallerMiddleware:
     """Pure ASGI middleware: records each request's caller, which every call into the local
     API names in CALLER_HEADER so the API's rate limits count the visitor, never the UI
@@ -967,14 +974,14 @@ async def change_doc_fund(token: str, entity_id: str, body: dict) -> dict:
 async def get_journal_funds(token: str, je_id: str) -> dict:
     """A journal's version and its lines by number, each with the fund it posted on."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/accounting/journal/{quote(je_id, safe='')}/funds")).json()
+        return _raise(await c.get(f"/accounting/journal/{_segment(je_id)}/funds")).json()
 
 
 async def change_journal_fund(token: str, je_id: str, body: dict) -> dict:
     """Change fund on a posted journal from outside: {expected_version, request_key, reason,
     all, lines (line number from 1 -> fund)}."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/journal/{quote(je_id, safe='')}/change-fund", json=body)).json()
+        return _raise(await c.post(f"/accounting/journal/{_segment(je_id)}/change-fund", json=body)).json()
 
 
 async def list_funds(token: str) -> dict:
@@ -998,17 +1005,17 @@ async def create_fund(token: str, body: dict) -> dict:
 async def update_fund(token: str, fund_id: str, body: dict) -> dict:
     """Rename a fund or change its purpose: {name, purpose}; answers the fund."""
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/accounting/funds/{quote(fund_id, safe='')}", json=body)).json()
+        return _raise(await c.patch(f"/accounting/funds/{_segment(fund_id)}", json=body)).json()
 
 
 async def archive_fund(token: str, fund_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/funds/{quote(fund_id, safe='')}/archive")).json()
+        return _raise(await c.post(f"/accounting/funds/{_segment(fund_id)}/archive")).json()
 
 
 async def unarchive_fund(token: str, fund_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/funds/{quote(fund_id, safe='')}/unarchive")).json()
+        return _raise(await c.post(f"/accounting/funds/{_segment(fund_id)}/unarchive")).json()
 
 
 async def list_release_spending(token: str) -> dict:
@@ -1046,7 +1053,7 @@ async def get_fund_reconciliation(token: str, params: dict) -> dict:
 async def reverse_fund_movement(token: str, je_id: str, body: dict) -> dict:
     """Reverse a movement between funds: {date, reason}; a repeat answers the same reversal."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/funds/movements/{quote(je_id, safe='')}/reverse", json=body)).json()
+        return _raise(await c.post(f"/accounting/funds/movements/{_segment(je_id)}/reverse", json=body)).json()
 
 
 async def get_recognition(token: str) -> dict:
@@ -1077,21 +1084,21 @@ async def set_recognition_setting(token: str, enabled: bool) -> dict:
 async def post_recognition_month(token: str, month: str, post_on: str | None) -> dict:
     """Post every outstanding run of ``month``; ``post_on`` is the first open day chosen for a locked month."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/recognition/{quote(month, safe='')}/post",
+        return _raise(await c.post(f"/accounting/recognition/{_segment(month)}/post",
                                    json={"post_on": post_on})).json()
 
 
 async def reverse_recognition_month(token: str, month: str, reverse_on: str | None) -> dict:
     """Reverse every posted run of ``month``; ``reverse_on`` is the first open day chosen for a locked month."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/recognition/{quote(month, safe='')}/reverse",
+        return _raise(await c.post(f"/accounting/recognition/{_segment(month)}/reverse",
                                    json={"reverse_on": reverse_on})).json()
 
 
 async def reverse_year_close(token: str, fiscal_year_end: str, reason: str) -> dict:
     """Reverse the latest close of the year ending ``fiscal_year_end``."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/close-year/{quote(fiscal_year_end, safe='')}/reverse",
+        return _raise(await c.post(f"/accounting/close-year/{_segment(fiscal_year_end)}/reverse",
                                    json={"reason": reason})).json()
 
 
@@ -1542,7 +1549,7 @@ async def help_search(token: str, q: str, module: str | None = None) -> dict:
 async def help_read(token: str, page_id: str) -> dict:
     """One help page with its steps in the reader's language."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/help/page/{quote(page_id, safe='')}")).json()
+        return _raise(await c.get(f"/help/page/{_segment(page_id)}")).json()
 
 
 async def help_browse(token: str, module: str | None = None) -> dict:
@@ -1554,7 +1561,7 @@ async def help_browse(token: str, module: str | None = None) -> dict:
 async def help_image(token: str, page_id: str, step: str) -> bytes:
     """The WebP screenshot of one step of a help page."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/help/img/{quote(page_id, safe='')}/{quote(step, safe='')}")).content
+        return _raise(await c.get(f"/help/img/{_segment(page_id)}/{_segment(step)}")).content
 
 
 async def help_for_route(token: str, path: str) -> dict:
@@ -1588,7 +1595,7 @@ async def list_items(token: str, params: dict | None = None) -> dict:
 
 async def get_item(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/items/{entity_id}")).json()
+        return _raise(await c.get(f"/items/{_segment(entity_id)}")).json()
 
 
 # The server caps a single /items/metadata request at MAX_ITEMS_METADATA (5000)
@@ -2455,7 +2462,7 @@ async def set_donor_wording(token: str, text: str) -> dict:
 
 async def donor_statement_pdf(token: str, contact_id: str, date_from: str, date_to: str) -> bytes:
     async with _api_client(token, timeout=30.0) as c:
-        return _raise(await c.get(f"/donors/{quote(contact_id, safe='')}/statement.pdf",
+        return _raise(await c.get(f"/donors/{_segment(contact_id)}/statement.pdf",
                                   params={"from": date_from, "to": date_to})).content
 
 
@@ -4033,7 +4040,7 @@ async def set_category_income_account(token: str, category_key: str, code: str |
     """PUT /companies/me/categories/{key}/income-account: the account the category's items
     sell on, or None to clear it."""
     async with _api_client(token) as c:
-        return _raise(await c.put(f"/companies/me/categories/{quote(category_key, safe='')}/income-account",
+        return _raise(await c.put(f"/companies/me/categories/{_segment(category_key)}/income-account",
                                   json={"income_account": code})).json()
 
 
@@ -4041,7 +4048,7 @@ async def set_category_gift(token: str, category_key: str, gift: bool) -> dict:
     """PUT /companies/me/categories/{key}/gift: whether the category's items are gifts (their
     sales never defer revenue)."""
     async with _api_client(token) as c:
-        return _raise(await c.put(f"/companies/me/categories/{quote(category_key, safe='')}/gift",
+        return _raise(await c.put(f"/companies/me/categories/{_segment(category_key)}/gift",
                                   json={"gift": gift})).json()
 
 
@@ -4060,7 +4067,7 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 async def journal_prefill(token: str, je_id: str) -> dict:
     """A new journal entry's fields copied from journal entry ``je_id``."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/accounting/journal-entries/{quote(je_id, safe='')}/prefill")).json()
+        return _raise(await c.get(f"/accounting/journal-entries/{_segment(je_id)}/prefill")).json()
 
 
 async def journals_from_accountant(token: str) -> list[dict]:
@@ -4070,7 +4077,7 @@ async def journals_from_accountant(token: str) -> list[dict]:
 
 async def reverse_from_accountant(token: str, je_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/journal-entries/{quote(je_id, safe='')}/reverse")).json()
+        return _raise(await c.post(f"/accounting/journal-entries/{_segment(je_id)}/reverse")).json()
 
 
 async def peer_holds(token: str) -> dict:
@@ -4081,18 +4088,18 @@ async def peer_holds(token: str) -> dict:
 
 async def fix_peer_hold(token: str, item_id: str, body: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/fix", json=body)).json()
+        return _raise(await c.post(f"/accounting/peer/holds/{_segment(item_id)}/fix", json=body)).json()
 
 
 async def post_peer_hold_funds(token: str, item_id: str, body: dict) -> dict:
     """Post a record held for funds with the choices: {revision, choices: {all, lines}, request_key}."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/funds", json=body)).json()
+        return _raise(await c.post(f"/accounting/peer/holds/{_segment(item_id)}/funds", json=body)).json()
 
 
 async def settle_added_account(token: str, item_id: str, action: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/peer/added/{quote(item_id, safe='')}",
+        return _raise(await c.post(f"/accounting/peer/added/{_segment(item_id)}",
                                    json={"action": action})).json()
 
 

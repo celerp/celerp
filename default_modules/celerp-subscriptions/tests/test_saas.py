@@ -132,6 +132,21 @@ async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, s
     assert (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"] == before
 
 
+async def test_new_subscriber_plan_id_is_one_item_id(owner_ui, monkeypatch):
+    """The chosen plan is read as one item id: a plan_id holding a path reads no other record
+    (here the company), so the refusal never names what such a path reaches, and no agreement is made."""
+    freeze_day(monkeypatch, "2026-03-01")
+    company = (await owner_ui.api.get("/companies/me")).json()["name"]
+    payer = await contact(owner_ui.api, {}, f"sub-{uuid.uuid4().hex[:6]}@test.test")
+    before = (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"]
+    for forged in ("../companies/me", "../../companies/me", "..", ".", "%2E%2E", "a?b#c"):
+        r = await owner_ui.post("/subscriptions/new", params={"direction": "sales", "kind": "subscription"},
+                                data={"contact_id": payer, "plan_id": forged, "seats": "3"})
+        said = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+        assert said["type"] == "error" and company not in said["message"], said
+    assert (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"] == before
+
+
 async def test_trial_first_bill_at_trial_end(owner_ui, session, monkeypatch):
     """A trial ending on 15 March starts the first period then: nothing is due before it, its
     first bill covers 15 March to 14 April, and once billed the trial end is fixed."""
