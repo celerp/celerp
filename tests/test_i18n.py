@@ -996,7 +996,7 @@ _KNOWN_FIXES = [
     ("pt", "inventory.core_details", "Detalhes principais"),
     ("ja", "inventory.core_details", "基本情報"),
     ("ar", "page.ship_to", "الشحن إلى"),
-    ("th", "th.doc", "เอกสาร #"),
+    ("th", "th.doc", "เลขที่เอกสาร"),
 ]
 
 

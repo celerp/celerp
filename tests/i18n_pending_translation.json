@@ -33,6 +33,157 @@
       "en": "Old value",
       "params": []
     },
+    "ai.err_plan_limit": {
+      "en": "Your plan doesn't include this. Choose a plan in Remote Access to use it.",
+      "params": []
+    },
+    "ai.free_not_eligible": {
+      "en": "Celerp AI is not included with this account. Choose a plan in Remote Access to use it.",
+      "params": []
+    },
+    "ai.service_unavailable": {
+      "en": "Celerp AI isn't available right now. Check that you are signed in to Celerp Connect in Remote Access, then try again.",
+      "params": []
+    },
+    "btn.connect_to_cloud": {
+      "en": "Connect remote access",
+      "params": []
+    },
+    "btn.create_credit_note": {
+      "en": "Create Credit Memo",
+      "params": []
+    },
+    "btn.create_shipping_doc": {
+      "en": "Create delivery note",
+      "params": []
+    },
+    "btn.create_supplier_credit_note": {
+      "en": "Create Vendor Credit Memo",
+      "params": []
+    },
+    "btn.new_credit_note": {
+      "en": "New Credit Memo",
+      "params": []
+    },
+    "btn.new_list": {
+      "en": "New Quotation",
+      "params": []
+    },
+    "btn.new_supplier_credit_note": {
+      "en": "New Vendor Credit Memo",
+      "params": []
+    },
+    "chart.deactivate_blocked_by_role": {
+      "en": "Account {code} is the posting account for {roles}. Choose another account in Settings > Accounting > Default Accounts first.",
+      "params": [
+        "code",
+        "roles"
+      ]
+    },
+    "cloud.hero_desc1": {
+      "en": "Check stock from home. Let your staff log in from the shop floor, each with the permissions you set. Celerp keeps running on your machine and your data stays there - Remote Access adds a secure URL (like yourname.celerp.com) you can reach from any browser.",
+      "params": []
+    },
+    "cloud.hero_desc2": {
+      "en": "Your database stays on your machine. Remote Access securely relays traffic between your browser and Celerp.",
+      "params": []
+    },
+    "company.err_download_refused": {
+      "en": "Celerp's online service didn't allow this download. Check that your plan includes this module in Remote Access.",
+      "params": []
+    },
+    "company_backup.integrations_disconnected": {
+      "en": "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Remote Access.",
+      "params": []
+    },
+    "connectors.ambiguous": {
+      "en": "This connector is linked to more than one company. Disconnect it in Remote Access in each company that has it, then connect it again from the company that should use it.",
+      "params": []
+    },
+    "connectors.err_xero_disconnected_unresolved": {
+      "en": "Xero was disconnected before Celerp knew whether this invoice reached Xero. Check Xero for the invoice; if it is missing, connect Xero again in Remote Access and sync again.",
+      "params": []
+    },
+    "connectors.fail_access": {
+      "en": "{service} refused Celerp's access. Use Disconnect above, then connect {service} again in Remote Access.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.fail_credentials": {
+      "en": "Celerp couldn't read its sign-in details for {service}. Use Disconnect above, then connect {service} again in Remote Access.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.fail_not_connected": {
+      "en": "{service} isn't connected through Celerp Connect. Connect it again in Remote Access, then use Sync now.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.sync_failed": {
+      "en": "Sync didn't finish. Try again; if it keeps failing, check the {service} connection in Remote Access.",
+      "params": [
+        "service"
+      ]
+    },
+    "connectors.unassigned": {
+      "en": "This connector was set up before each company had its own connectors, and no company is assigned to it. Use Reset connector here, then connect it again in Remote Access from the company that should use it.",
+      "params": []
+    },
+    "contacts.docs_empty": {
+      "en": "Invoices, quotes, receipts, bills and credit memos involving this contact appear here automatically as you create them. None yet.",
+      "params": []
+    },
+    "credit_note.currency_differs": {
+      "en": "A credit memo reverses its invoice's sale in the invoice's currency and rate: invoice {invoice} is in {currency}. Leave the currency and rate as the invoice's.",
+      "params": [
+        "currency",
+        "invoice"
+      ]
+    },
+    "credit_note.currency_differs_rate": {
+      "en": "A credit memo reverses its invoice's sale in the invoice's currency and rate: invoice {invoice} is in {currency} at rate {rate}. Leave the currency and rate as the invoice's.",
+      "params": [
+        "currency",
+        "invoice",
+        "rate"
+      ]
+    },
+    "credit_note.invoice_void": {
+      "en": "Credit memo {credit_note} credits invoice {invoice}, which is void. The sale no longer exists, so nothing is refunded, applied or restored against the credit memo.",
+      "params": [
+        "credit_note",
+        "invoice"
+      ]
+    },
+    "credit_note.original_missing": {
+      "en": "This credit memo names {invoice} as the invoice it credits, but no document {invoice} exists in this company. Create or import that invoice here first, then the credit memo.",
+      "params": [
+        "invoice"
+      ]
+    },
+    "credit_note.original_not_invoice": {
+      "en": "This credit memo names {document}, which is not an invoice. A credit memo credits an invoice: choose the invoice it credits. To reduce what a bill owes, return the goods on the bill.",
+      "params": [
+        "document"
+      ]
+    },
+    "credit_note.original_not_issued": {
+      "en": "This credit memo credits invoice {invoice}, which is still a draft. Finalize the invoice first, then the credit memo.",
+      "params": [
+        "invoice"
+      ]
+    },
+    "dashboard.older_stock_placed": {
+      "en": "Opening inventory was placed on an inventory account automatically.",
+      "params": []
+    },
+    "dashboard.older_stock_review": {
+      "en": "Review opening inventory",
+      "params": []
+    },
     "date.month_short_1": {
       "en": "Jan",
       "params": []
@@ -81,6 +232,376 @@
       "en": "Sep",
       "params": []
     },
+    "debit_note.original_mismatch": {
+      "en": "A vendor credit memo is issued against an issued bill or purchase order from the same supplier, in the same currency. {document} is not one: choose another bill, or leave the bill empty.",
+      "params": [
+        "document"
+      ]
+    },
+    "debit_note.return_missing": {
+      "en": "The return this vendor credit memo was raised for cannot be found, so voiding it cannot put the goods back. Void the goods with a stock adjustment instead.",
+      "params": []
+    },
+    "debit_note.revert_return": {
+      "en": "This vendor credit memo was raised by a return, so it cannot go back to draft. To undo the return, void the credit memo: the goods go back into stock and the bill owes them again.",
+      "params": []
+    },
+    "debit_note.stock_line": {
+      "en": "Goods on this line are in stock. Use Return items on the bill so they leave stock; a vendor credit memo adjusts a price or a charge only.",
+      "params": []
+    },
+    "debit_note.unvoid_return": {
+      "en": "This vendor credit memo was raised by a return, and voiding it took the return back: the goods are in stock again. To send them back, use Return items on the bill.",
+      "params": []
+    },
+    "doc.credit_note": {
+      "en": "Credit Memo",
+      "params": []
+    },
+    "doc.debit_note": {
+      "en": "Vendor Credit Memo",
+      "params": []
+    },
+    "doc.doc": {
+      "en": "Document Number:",
+      "params": []
+    },
+    "doc.goods_received": {
+      "en": "Goods Receipt",
+      "params": []
+    },
+    "doc.list_type": {
+      "en": "Document Type:",
+      "params": []
+    },
+    "doc.reference": {
+      "en": "Customer Reference:",
+      "params": []
+    },
+    "doc.send_relay_error_link": {
+      "en": "Open Remote Access",
+      "params": []
+    },
+    "doc.send_relay_error_notice": {
+      "en": "Remote Access refused this computer's sign-in, so documents can't be sent by email from Celerp. Connect again in Remote Access, then send.",
+      "params": []
+    },
+    "doc_import.paid_over_total": {
+      "en": "Invoice {number} says {paid} was paid on a total of {total}. The paid amount cannot exceed the invoice total: import any overpayment as a credit memo.",
+      "params": [
+        "number",
+        "paid",
+        "total"
+      ]
+    },
+    "doc_import.refunded_over_total": {
+      "en": "Credit memo {number} says {paid} was refunded on a total of {total}. The refunded amount cannot exceed the credit memo total.",
+      "params": [
+        "number",
+        "paid",
+        "total"
+      ]
+    },
+    "docs.contact_credit_fixed": {
+      "en": "This document has an issued or applied credit memo. Unapply its credits and void or revert the linked note before changing the contact.",
+      "params": []
+    },
+    "docs.list_issue_before_send": {
+      "en": "Issue the document before sending it.",
+      "params": []
+    },
+    "docs.reopen_memo_only": {
+      "en": "Only a closed memo can be reopened. {document} closed because its invoice is void and stays closed; to credit the customer, issue a new credit memo on a live invoice.",
+      "params": [
+        "document"
+      ]
+    },
+    "docs.return_lot_merged": {
+      "en": "Cannot return {sku}: it was merged into {into}, so its goods are no longer in it. Ask the supplier for a credit memo instead.",
+      "params": [
+        "into",
+        "sku"
+      ]
+    },
+    "docs.return_lot_split_before_receipt": {
+      "en": "{sku} was split off before this document's goods came in, so none of them are in it. Ask the supplier for a credit memo instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "docs.return_lot_transformed": {
+      "en": "{sku} was made by processing goods received on this document, so it cannot go back to the supplier at cost. Ask the supplier for a credit memo instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "docs.revert_lineage_folded": {
+      "en": "This bill cannot go back to its order: part of its freight has become part of the goods cost of stock, so it can no longer be taken off. {lots} Undo the merge or the transform on that item's page while it is still the item's last change, then try again. Otherwise record a vendor credit memo for what is no longer owed: the freight already in the stock's cost stays there.",
+      "params": [
+        "lots"
+      ]
+    },
+    "docs.revert_under_credit_note": {
+      "en": "This invoice cannot be reverted to draft: credit memos {numbers} are issued against it. Void those credit memos first, then try again.",
+      "params": [
+        "numbers"
+      ]
+    },
+    "docs.revert_under_supplier_credit_note": {
+      "en": "This document cannot be reverted to draft: vendor credit memos {numbers} are issued against it. Void those vendor credit memos first, then try again.",
+      "params": [
+        "numbers"
+      ]
+    },
+    "docs.undo_receipt_merged": {
+      "en": "SKU '{sku}' was merged into {into} since this document received it, so the receipt cannot be undone. Ask the supplier for a credit memo instead.",
+      "params": [
+        "into",
+        "sku"
+      ]
+    },
+    "docs.void_under_credit_note": {
+      "en": "This invoice cannot be voided: credit memos {numbers} are issued against it. Void those credit memos first, then try again.",
+      "params": [
+        "numbers"
+      ]
+    },
+    "docs.void_under_supplier_credit": {
+      "en": "This vendor credit memo is still applied to bills {bills} and refunded {refunds}. Unapply it from each bill and void each refund on it first, then void it.",
+      "params": [
+        "bills",
+        "refunds"
+      ]
+    },
+    "docs.void_under_supplier_credit_note": {
+      "en": "This document cannot be voided: vendor credit memos {numbers} are issued against it. Void those vendor credit memos first, then try again.",
+      "params": [
+        "numbers"
+      ]
+    },
+    "doctor.ask_admin": {
+      "en": "The record checks are for admins. Ask an admin to open System Health Check and run them.",
+      "params": []
+    },
+    "doctor.title": {
+      "en": "System Health Check",
+      "params": []
+    },
+    "documents.all_audits": {
+      "en": "All stock counts",
+      "params": []
+    },
+    "documents.audit_no_locations": {
+      "en": "Create a location first (Settings > Inventory > Locations) to count its stock.",
+      "params": []
+    },
+    "documents.audit_prepopulate_hint": {
+      "en": "The stock count is pre-populated with the stocked items at this location.",
+      "params": []
+    },
+    "documents.back_to_lists": {
+      "en": "Back to Quotations",
+      "params": []
+    },
+    "documents.confirm_undo_adjust": {
+      "en": "Reverse this stock count's adjustment?",
+      "params": []
+    },
+    "documents.confirm_undo_writeoff": {
+      "en": "Reverse this inventory adjustment? The disposed stock returns to available and its journal entry is voided.",
+      "params": []
+    },
+    "documents.doc_list": {
+      "en": "Quotation",
+      "params": []
+    },
+    "documents.err_apply_bill_currency_mismatch": {
+      "en": "The vendor credit memo and the bill are in different currencies. Choose a bill in the same currency.",
+      "params": []
+    },
+    "documents.err_apply_contact_mismatch": {
+      "en": "The credit memo and the invoice are for different contacts. Choose an invoice for the same contact.",
+      "params": []
+    },
+    "documents.err_apply_currency_mismatch": {
+      "en": "The credit memo and the invoice are in different currencies. Choose an invoice in the same currency.",
+      "params": []
+    },
+    "documents.err_apply_over_credit": {
+      "en": "The amount is more than what is left on the credit memo. Lower the amount.",
+      "params": []
+    },
+    "documents.err_apply_over_supplier_credit": {
+      "en": "The amount is more than what is left on the vendor credit memo. Lower the amount.",
+      "params": []
+    },
+    "documents.err_apply_supplier_mismatch": {
+      "en": "The vendor credit memo and the bill are for different suppliers. Choose a bill from the same supplier.",
+      "params": []
+    },
+    "documents.err_apply_target_bill": {
+      "en": "A vendor credit memo can only be applied to a bill or purchase order. Choose a bill.",
+      "params": []
+    },
+    "documents.err_apply_target_invoice": {
+      "en": "A credit memo can only be applied to an invoice. Choose an invoice.",
+      "params": []
+    },
+    "documents.err_asset_line_doc_type": {
+      "en": "Line {line} names a fixed asset. Only an invoice can sell an asset, or a credit memo credit its sale.",
+      "params": [
+        "line"
+      ]
+    },
+    "documents.err_audit_undo_changed": {
+      "en": "{sku} has changed since this count, so its adjustment can't be undone. Correct it with Adjust stock in Quotations instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "documents.err_audit_undo_cost": {
+      "en": "{sku}: the item's cost has changed since this count, so undoing it would make your stock value wrong. Correct it with Adjust stock in Quotations instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "documents.err_audit_undo_legacy": {
+      "en": "{sku}: this adjustment was made in an older version of Celerp, so it can't be undone here. Correct it with Adjust stock in Quotations instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "documents.err_audit_undo_stock": {
+      "en": "{sku}: stock has changed since this count, and undoing it would erase those changes. Correct it with Adjust stock in Quotations instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "documents.err_credit_note_finalize_apply": {
+      "en": "Finalize the credit memo before applying it to an invoice.",
+      "params": []
+    },
+    "documents.err_credit_note_finalize_refund": {
+      "en": "Finalize the credit memo before refunding it.",
+      "params": []
+    },
+    "documents.err_credit_over_invoice": {
+      "en": "A credit memo can't be larger than the invoice it credits. Lower the amounts on the credit memo.",
+      "params": []
+    },
+    "documents.err_legacy_delivery": {
+      "en": "This delivery was made in an older version of Celerp, so it can't be undone here. Correct the stock with Adjust stock in Quotations instead.",
+      "params": []
+    },
+    "documents.err_only_credit_note_apply": {
+      "en": "Only a credit memo can be applied to an invoice.",
+      "params": []
+    },
+    "documents.err_only_credit_note_refund": {
+      "en": "Only a credit memo can be refunded this way.",
+      "params": []
+    },
+    "documents.err_refund_credit_application": {
+      "en": "This payment is a credit memo applied to the invoice, so no money moved and there is nothing to refund. Void it instead.",
+      "params": []
+    },
+    "documents.err_refund_over_credit": {
+      "en": "The refund is more than what is left on the credit memo. Lower the amount.",
+      "params": []
+    },
+    "documents.err_return_cn_finalize": {
+      "en": "Finalize the credit memo before receiving the returned goods.",
+      "params": []
+    },
+    "documents.err_return_cn_only": {
+      "en": "Returned goods can only be received on a credit memo.",
+      "params": []
+    },
+    "documents.err_return_origin_unknown": {
+      "en": "Celerp can't receive {sku} back because it can't find where it was sold. Make the credit memo from the invoice with Create Credit Memo, then try again. If the item was sold outside Celerp, add it to stock with Adjust stock in Quotations instead.",
+      "params": [
+        "sku"
+      ]
+    },
+    "documents.err_ship_currencies": {
+      "en": "The selected documents are in different currencies, and one delivery note can show only one. Select documents in one currency.",
+      "params": []
+    },
+    "documents.err_supplier_credit_finalize_apply": {
+      "en": "Finalize the vendor credit memo before applying it to a bill.",
+      "params": []
+    },
+    "documents.err_undo_receive_blocked": {
+      "en": "The receipt can't be undone because some items have since been sold, moved or removed: {items}. Correct those items with Adjust stock in Quotations instead.",
+      "params": [
+        "items"
+      ]
+    },
+    "documents.err_undo_receive_legacy": {
+      "en": "Some of these goods were received in an older version of Celerp, so the receipt can't be undone here. Correct those quantities with Adjust stock in Quotations.",
+      "params": []
+    },
+    "documents.err_undo_return_blocked": {
+      "en": "The return can't be undone because some returned items have since been sold, moved or removed: {items}. Correct those items with Adjust stock in Quotations instead.",
+      "params": [
+        "items"
+      ]
+    },
+    "documents.err_undo_return_cn_only": {
+      "en": "Only a credit memo can undo received returns.",
+      "params": []
+    },
+    "documents.err_undo_return_none": {
+      "en": "No returned goods have been received on this credit memo, so there is nothing to undo.",
+      "params": []
+    },
+    "documents.err_woo_order_missing": {
+      "en": "WooCommerce order {order_id} hasn't been brought into Celerp yet. Run a sync from Remote Access, then try again.",
+      "params": [
+        "order_id"
+      ]
+    },
+    "documents.err_writeoff_account_type": {
+      "en": "Account {code} is a {type} account and can't take an inventory adjustment. Choose an expense, cost of goods sold or equity account.",
+      "params": [
+        "code",
+        "type"
+      ]
+    },
+    "documents.err_writeoff_item_gone": {
+      "en": "{name} has been sold, moved or deleted, so it can't be written off. Void this inventory adjustment and start a new one without it.",
+      "params": [
+        "name"
+      ]
+    },
+    "documents.err_writeoff_no_undo": {
+      "en": "This inventory adjustment hasn't removed any stock, so there is nothing to undo.",
+      "params": []
+    },
+    "documents.err_writeoff_not_draft": {
+      "en": "This inventory adjustment is no longer a draft, so its lines can't be changed. If it has been processed, undo it first, then use Revert to Draft.",
+      "params": []
+    },
+    "documents.err_writeoff_not_found": {
+      "en": "Celerp couldn't find this inventory adjustment. It may have been deleted. Go back to the list.",
+      "params": []
+    },
+    "documents.finalize_label_credit_note": {
+      "en": "Issue Credit Memo",
+      "params": []
+    },
+    "documents.finalize_label_debit_note": {
+      "en": "Issue Vendor Credit Memo",
+      "params": []
+    },
+    "documents.finalize_tip_credit_note": {
+      "en": "Finalize this credit memo so it can offset an invoice or refund the customer.",
+      "params": []
+    },
+    "documents.finalize_tip_debit_note": {
+      "en": "Finalize this vendor credit memo so it can offset a bill or be refunded by the supplier.",
+      "params": []
+    },
     "documents.gl_impact_balanced": {
       "en": "Balanced",
       "params": []
@@ -100,6 +621,245 @@
       "en": "Source document",
       "params": []
     },
+    "documents.intro_production_order": {
+      "en": "Production Orders are internal orders to make stock - demand you create yourself, not tied to a customer. Use them to plan production ahead of (or independent of) sales; once finalized, their items appear on the Manufacturing Production Planning page and can become work orders.",
+      "params": []
+    },
+    "documents.list_not_found": {
+      "en": "Celerp couldn't find this document. It may have been deleted. Go back to Quotations.",
+      "params": []
+    },
+    "documents.list_ref": {
+      "en": "Quotation {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "documents.new_audit": {
+      "en": "New stock count",
+      "params": []
+    },
+    "documents.new_audit_title": {
+      "en": "New Stock Count",
+      "params": []
+    },
+    "documents.new_shipping_doc_tooltip": {
+      "en": "Create a blank draft delivery note",
+      "params": []
+    },
+    "documents.page_receipts": {
+      "en": "Goods Receipts",
+      "params": []
+    },
+    "documents.page_stock_orders": {
+      "en": "Production Orders",
+      "params": []
+    },
+    "documents.return_raised_supplier_credit": {
+      "en": "Vendor credit memo {number} holds what was already paid for these goods.",
+      "params": [
+        "number"
+      ]
+    },
+    "documents.search_credit_note": {
+      "en": "Search credit memos",
+      "params": []
+    },
+    "documents.search_debit_note": {
+      "en": "Search vendor credit memos",
+      "params": []
+    },
+    "documents.search_lists": {
+      "en": "Search quotations",
+      "params": []
+    },
+    "documents.search_production_order": {
+      "en": "Search production orders",
+      "params": []
+    },
+    "documents.start_audit": {
+      "en": "Start stock count",
+      "params": []
+    },
+    "documents.tax_route_payments": {
+      "en": "First void its payments and any credit memo applied to it.",
+      "params": []
+    },
+    "documents.tip_create_credit_note": {
+      "en": "Create a credit memo from this invoice. The CN will be pre-populated with this invoice's line items.",
+      "params": []
+    },
+    "documents.tip_create_shipping_doc": {
+      "en": "Create a delivery note from this document's lines. Print it as a Delivery Note (no prices) or a Commercial Invoice for customs.",
+      "params": []
+    },
+    "documents.tip_duplicate_list": {
+      "en": "Start a new draft with this document's contact and lines. Notes, terms and other details are left for you to fill in.",
+      "params": []
+    },
+    "documents.tip_undo_adjust": {
+      "en": "Reverse the stock changes this stock count applied, restoring the previous quantities.",
+      "params": []
+    },
+    "documents.tip_undo_writeoff": {
+      "en": "Reverse this inventory adjustment: void its journal entry and restore the disposed stock to available.",
+      "params": []
+    },
+    "documents.tip_writeoff": {
+      "en": "Remove each line's quantity out from stock and post one journal entry. This closes the inventory adjustment.",
+      "params": []
+    },
+    "documents.undo_writeoff": {
+      "en": "Undo inventory adjustment",
+      "params": []
+    },
+    "documents.word_list": {
+      "en": "quotation",
+      "params": []
+    },
+    "email.err_no_transport": {
+      "en": "No email service is set up. Connect Remote Access, or set up SMTP in the server settings, then retry.",
+      "params": []
+    },
+    "email.err_relay_refused": {
+      "en": "Remote Access refused this email. Check the connection in Remote Access, then retry.",
+      "params": []
+    },
+    "enum.doc_type.credit_note": {
+      "en": "Credit Memo",
+      "params": []
+    },
+    "enum.doc_type.debit_note": {
+      "en": "Vendor Credit Memo",
+      "params": []
+    },
+    "enum.doc_type.list": {
+      "en": "Quotation",
+      "params": []
+    },
+    "error.ai_signed_out": {
+      "en": "Celerp AI isn't available because you aren't signed in to Celerp Connect. Sign in in Remote Access, then ask again.",
+      "params": []
+    },
+    "error.billing_portal_failed": {
+      "en": "Celerp couldn't open your subscription settings. Check that Celerp Connect is connected in Remote Access, then try again.",
+      "params": []
+    },
+    "error.cloud_backup_disconnected": {
+      "en": "Cloud backup is off because Celerp Connect is disconnected. Connect again in Remote Access to back up online.",
+      "params": []
+    },
+    "error.cloud_backup_no_account": {
+      "en": "Cloud backup needs a Celerp Connect account. Sign in in Remote Access, then try again.",
+      "params": []
+    },
+    "error.connect_account_first": {
+      "en": "You need to connect a Celerp account first. Open Remote Access, connect Celerp Connect, then try again.",
+      "params": []
+    },
+    "error.connector_company_invalid": {
+      "en": "Celerp couldn't find the company {service} is connected to. Disconnect {service} in Remote Access and connect it again.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_legacy_conflict": {
+      "en": "{service} was connected in an older version of Celerp and its settings conflict, so it can't be used. Disconnect it in Remote Access, then connect it again.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_multi_company": {
+      "en": "{service} is connected to more than one of your companies. Disconnect it from the other company in Remote Access, then try again.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_not_connected": {
+      "en": "{service} isn't connected. Connect it in Remote Access first.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_not_here": {
+      "en": "{service} isn't connected to the company you are using. Switch to the right company, or connect it in Remote Access.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_other_company": {
+      "en": "{service} is already connected to another of your companies. Disconnect it there first, in that company's Remote Access, then connect it here.",
+      "params": [
+        "service"
+      ]
+    },
+    "error.connector_sync_error": {
+      "en": "{service} didn't answer as expected: {detail}. Try again in a few minutes; if it keeps happening, disconnect {service} in Remote Access and connect it again.",
+      "params": [
+        "detail",
+        "service"
+      ]
+    },
+    "error.relay_sign_in_failed": {
+      "en": "Celerp couldn't sign in to its online service. Check your internet connection and try again; if it keeps happening, connect Celerp Connect again in Remote Access.",
+      "params": []
+    },
+    "error.relay_signed_out": {
+      "en": "Your Celerp Connect sign-in isn't available. Sign in again in Remote Access.",
+      "params": []
+    },
+    "event.doc.received": {
+      "en": "Goods receipt posted",
+      "params": []
+    },
+    "event.item.recipe.set": {
+      "en": "Bill of materials set",
+      "params": []
+    },
+    "event.list.closed": {
+      "en": "Document closed",
+      "params": []
+    },
+    "event.list.created": {
+      "en": "Document created",
+      "params": []
+    },
+    "event.list.finalized": {
+      "en": "Document finalized",
+      "params": []
+    },
+    "event.list.patched": {
+      "en": "Document corrected",
+      "params": []
+    },
+    "event.list.reopened": {
+      "en": "Document reopened",
+      "params": []
+    },
+    "event.list.updated": {
+      "en": "Document updated",
+      "params": []
+    },
+    "event.list.voided": {
+      "en": "Document voided",
+      "params": []
+    },
+    "event.received_doc.booked": {
+      "en": "Shared document booked",
+      "params": []
+    },
+    "event.received_doc.draft_updated": {
+      "en": "Shared document draft updated",
+      "params": []
+    },
+    "inventory.bad_recipe_field": {
+      "en": "Bad bill of materials field",
+      "params": []
+    },
+    "inventory.clear_recipe": {
+      "en": "Clear bill of materials",
+      "params": []
+    },
     "inventory.confirm_archive": {
       "en": "Archive this item?",
       "params": []
@@ -112,12 +872,26 @@
       "en": "Revert this item to draft?",
       "params": []
     },
+    "inventory.cost_rollup_note": {
+      "en": "Rolled up from the bill of materials and kept in sync automatically. Edit it on the Manufacturing tab.",
+      "params": []
+    },
     "inventory.description_help": {
       "en": "Full product description, including detailed specifications.",
       "params": []
     },
+    "inventory.err_cost_disposed_no_writeoff": {
+      "en": "{label} left stock without a closed inventory adjustment that names it, so its cost cannot be corrected automatically. Correct it with a journal entry instead.",
+      "params": [
+        "label"
+      ]
+    },
     "inventory.lifecycle_actions": {
       "en": "Lifecycle actions",
+      "params": []
+    },
+    "inventory.no_work_orders": {
+      "en": "No work orders to show. Create them from an order or on the Production Planning page.",
       "params": []
     },
     "inventory.packaging_type": {
@@ -134,6 +908,361 @@
     },
     "inventory.split_no_weight": {
       "en": "No net weight is recorded for this item.",
+      "params": []
+    },
+    "inventory.unit_cost_formula": {
+      "en": "Unit cost = total bill of materials cost ÷ this quantity.",
+      "params": []
+    },
+    "inventory.unknown_recipe_field": {
+      "en": "Unknown bill of materials field",
+      "params": []
+    },
+    "label.conversion_rate": {
+      "en": "Exchange Rate",
+      "params": []
+    },
+    "label.no_credit_notes_yet": {
+      "en": "No credit memos yet.",
+      "params": []
+    },
+    "label.no_lists_yet": {
+      "en": "No quotations yet.",
+      "params": []
+    },
+    "label.no_supplier_credit_notes_yet": {
+      "en": "No vendor credit memos yet.",
+      "params": []
+    },
+    "lists.empty_hint": {
+      "en": "Use this page to gather items for a quotation, a transfer order, a stock count, an inventory adjustment or a delivery note.",
+      "params": []
+    },
+    "lists.shipping_intro": {
+      "en": "Paperwork for outbound deliveries. Prepare one delivery note, then print it for the receiver, or print a Commercial Invoice for customs.",
+      "params": []
+    },
+    "lists_import.entity_lists": {
+      "en": "quotations",
+      "params": []
+    },
+    "lists_import.import_lists": {
+      "en": "Import Quotations",
+      "params": []
+    },
+    "manufacturing.go_to_demand_planning": {
+      "en": "Go to Production Planning",
+      "params": []
+    },
+    "manufacturing.search_demand_label": {
+      "en": "Search production planning",
+      "params": []
+    },
+    "manufacturing.search_wip_label": {
+      "en": "Search work orders",
+      "params": []
+    },
+    "manufacturing.wip_intro": {
+      "en": "Production runs on the floor. Tick runs and choose an action to advance them - issue components to start, receive finished goods to restock. Runs you start from Production Planning appear here. Double-click a due date or priority to edit; press Esc to cancel.",
+      "params": []
+    },
+    "mfg.component_merged": {
+      "en": "{sku} was merged into {merged_into}, so it holds no stock of its own. Name {merged_into} in the bill of materials instead.",
+      "params": [
+        "merged_into",
+        "sku"
+      ]
+    },
+    "mfg.output_quantity": {
+      "en": "The output quantity of a bill of materials must be greater than zero",
+      "params": []
+    },
+    "mfg.recipe_cycle": {
+      "en": "{product} is used in its own bill of materials, directly or through a sub-assembly",
+      "params": [
+        "product"
+      ]
+    },
+    "mfg.wip_account_missing": {
+      "en": "Production runs need a work in progress account that can take entries. Choose it in Settings > Accounting > Default Accounts.",
+      "params": []
+    },
+    "migration.err_export_doc_type": {
+      "en": "{file} lists a record of type \"{type}\", which is not an invoice, bill or credit memo.",
+      "params": [
+        "file",
+        "type"
+      ]
+    },
+    "migration.xero_attachments_hint": {
+      "en": "Celerp signs in to the client's Xero organisation, downloads the files attached to each imported invoice, bill and credit memo, and attaches them to the same document here. It only reads from Xero and never changes anything there.",
+      "params": []
+    },
+    "migration.xero_attachments_later": {
+      "en": "Files attached to invoices, bills and credit memos in Xero are not in the export. Once the import finishes, fetch them from Xero on the check results page.",
+      "params": []
+    },
+    "msg.relay_not_connected": {
+      "en": "Not connected to remote access",
+      "params": []
+    },
+    "nav.audits": {
+      "en": "Stock Counts",
+      "params": []
+    },
+    "nav.credit_notes": {
+      "en": "Credit Memos",
+      "params": []
+    },
+    "nav.lists": {
+      "en": "Quotations",
+      "params": []
+    },
+    "nav.lists_quotations": {
+      "en": "Quotations",
+      "params": []
+    },
+    "nav.received_documents": {
+      "en": "Shared Documents",
+      "params": []
+    },
+    "nav.supplier_credit_notes": {
+      "en": "Vendor Credit Memos",
+      "params": []
+    },
+    "notice.cogs_backfill.older_stock": {
+      "en": "{count} wait for opening inventory to be placed on an inventory account: the opening inventory notice says what holds it back.",
+      "params": [
+        "count"
+      ]
+    },
+    "notice.customs_freeze.body": {
+      "en": "For delivery notes issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
+      "params": []
+    },
+    "notice.customs_freeze.title": {
+      "en": "Issued delivery notes keep their item details",
+      "params": []
+    },
+    "notice.historical_lots_no_product.body": {
+      "en": "Invoice {number} came over with goods delivered before the move whose item names no product: {skus}. Production Planning counts what those lines still owe under each item's own SKU, not under a product.",
+      "params": [
+        "number",
+        "skus"
+      ]
+    },
+    "notice.legacy_credit_notes.body": {
+      "en": "Credit memos issued before this update reduced their invoices without recording the credit on the credit memo or posting it. Each is now settled as a credit memo issued today would be, with its entry posted on the day it was issued (or the first open day after a locked period). {outcomes}",
+      "params": [
+        "outcomes"
+      ]
+    },
+    "notice.legacy_credit_notes.double_credit": {
+      "en": "Credit memo {number} had already paid out {amount} of the same credit by refund or application, so that credit was given twice; its invoice owes {amount} again.",
+      "params": [
+        "amount",
+        "number"
+      ]
+    },
+    "notice.legacy_credit_notes.open_credit": {
+      "en": "Credit memo {number} keeps {amount} open as the customer's credit, to refund or apply: its invoice was paid in full after it was issued.",
+      "params": [
+        "amount",
+        "number"
+      ]
+    },
+    "notice.legacy_credit_notes.title": {
+      "en": "Earlier credit memos settled",
+      "params": []
+    },
+    "notice.older_stock_failed.body": {
+      "en": "Opening inventory that records no inventory account could not be placed on one because of an unexpected error. Nothing was recorded or booked. Celerp tries again when that stock is next sold or moved, and you can choose Retry on the Opening inventory tab. If it keeps failing, report the problem from there.",
+      "params": []
+    },
+    "notice.older_stock_failed.title": {
+      "en": "Opening inventory could not be placed",
+      "params": []
+    },
+    "notice.older_stock_locked.body": {
+      "en": "The books are locked through {day}, so opening inventory could not be placed on an inventory account: placing it is recorded today. Move the period lock before today and the stock is placed at once.",
+      "params": [
+        "day"
+      ]
+    },
+    "notice.older_stock_locked.title": {
+      "en": "Opening inventory waits for an open period",
+      "params": []
+    },
+    "notice.older_stock_moved.body": {
+      "en": "Older releases booked the cost of opening stock sold to {p}, so {p} and {ob} only matched your stock together. One entry dated {day} moved {amount} {currency} from {ob} to {p}, and your opening inventory now sits on {p}. Total inventory and retained earnings are unchanged.",
+      "params": [
+        "amount",
+        "currency",
+        "day",
+        "ob",
+        "p"
+      ]
+    },
+    "notice.older_stock_moved.title": {
+      "en": "Opening inventory moved to purchased inventory",
+      "params": []
+    },
+    "notice.older_stock_placed.body": {
+      "en": "Celerp assigned inventory accounts to {count} opening inventory items. Sales and shipments can continue normally.",
+      "params": [
+        "count"
+      ]
+    },
+    "notice.older_stock_unmapped.body_held": {
+      "en": "Opening inventory waits because an inventory account that cannot take entries still holds stock value, which placing must move onto the account the stock is placed on. {problems} Fix it under Settings > Accounting > Default Accounts and the stock is placed at once.",
+      "params": [
+        "problems"
+      ]
+    },
+    "notice.older_stock_unmapped.body_inventory": {
+      "en": "Opening inventory that records no inventory account waits: neither Inventory purchased nor Opening inventory can take entries. {problems} Fix one under Settings > Accounting > Default Accounts and the stock is placed at once.",
+      "params": [
+        "problems"
+      ]
+    },
+    "notice.older_stock_unmapped.body_retained": {
+      "en": "Placing opening inventory on an inventory account needs an adjustment against Retained earnings, which cannot take entries. {problems} Fix it under Settings > Accounting > Default Accounts and the stock is placed at once.",
+      "params": [
+        "problems"
+      ]
+    },
+    "notice.older_stock_unmapped.title": {
+      "en": "Opening inventory waits for a posting account",
+      "params": []
+    },
+    "notice.online_fee_failed.account": {
+      "en": "the account chosen for online payment fees cannot take postings. Choose a usable account in Settings > Accounting > Default Accounts; the fee is recorded when Celerp Cloud delivers it again.",
+      "params": []
+    },
+    "notice.online_fee_recorded.body": {
+      "en": "{amount} in online payment fees on {document} was recorded in {account}. You can choose another account in Settings > Accounting > Default Accounts.",
+      "params": [
+        "account",
+        "amount",
+        "document"
+      ]
+    },
+    "older_stock.empty": {
+      "en": "No opening inventory was placed automatically.",
+      "params": []
+    },
+    "older_stock.placed_msg": {
+      "en": "Opening inventory was placed.",
+      "params": []
+    },
+    "older_stock.state.action_hint": {
+      "en": "{n} opening inventory items have no inventory account yet. Sales and moves of this stock wait until this is fixed.",
+      "params": [
+        "n"
+      ]
+    },
+    "older_stock.state.reconciled_hint": {
+      "en": "All opening inventory is placed and matches the books.",
+      "params": []
+    },
+    "older_stock.state.review_hint": {
+      "en": "All opening inventory is placed and sales continue normally. An accountant should review the open items below.",
+      "params": []
+    },
+    "older_stock.still_failed": {
+      "en": "Opening inventory still could not be placed. Report the problem if it keeps failing.",
+      "params": []
+    },
+    "older_stock.tab": {
+      "en": "Opening inventory",
+      "params": []
+    },
+    "page.list_items": {
+      "en": "Line Items",
+      "params": []
+    },
+    "page.lists": {
+      "en": "Quotations",
+      "params": []
+    },
+    "page.new_list": {
+      "en": "New Quotation",
+      "params": []
+    },
+    "page.new_shipping_doc": {
+      "en": "New Delivery Note",
+      "params": []
+    },
+    "page.units": {
+      "en": "Units of Measure",
+      "params": []
+    },
+    "posting.needs_accounting": {
+      "en": "Default accounts need the accounting module.",
+      "params": []
+    },
+    "posting.older_stock.no_account": {
+      "en": "Stock {sku} has no inventory account yet, so its cost cannot move. Celerp places opening inventory on the Purchased inventory account set under Settings > Accounting > Default Accounts. When a setting holds it back, the bell notice says which, and someone who manages accounting must fix it.",
+      "params": [
+        "sku"
+      ]
+    },
+    "posting.section_title": {
+      "en": "Default Accounts",
+      "params": []
+    },
+    "posting.tab": {
+      "en": "Default Accounts",
+      "params": []
+    },
+    "received.title": {
+      "en": "Shared Documents",
+      "params": []
+    },
+    "settings.cloud_not_connected": {
+      "en": "Cloud backups need Celerp Connect. Connect it in Remote Access, then try again.",
+      "params": []
+    },
+    "settings.company_reactivated_reconnect": {
+      "en": "These connectors were disconnected when it was deactivated: {names}. Open the company, then connect them again in Remote Access.",
+      "params": [
+        "names"
+      ]
+    },
+    "settings.confirm_disconnect_web": {
+      "en": "Disconnect remote access? You can reconnect anytime.",
+      "params": []
+    },
+    "settings.doc_type_credit_note": {
+      "en": "Credit Memo",
+      "params": []
+    },
+    "settings.doc_type_debit_note": {
+      "en": "Vendor Credit Memo",
+      "params": []
+    },
+    "settings.doc_type_receipt": {
+      "en": "Goods Receipt",
+      "params": []
+    },
+    "settings_cloud.web_access": {
+      "en": "Remote Access",
+      "params": []
+    },
+    "settings_inventory.stock_cutting_method": {
+      "en": "Costing method",
+      "params": []
+    },
+    "settings_manufacturing.auto_create_info": {
+      "en": "When on, finalizing a customer order or stock order automatically creates a work order for each manufacturable line - the production task pops up with no extra step. Best for make-to-order shops (e.g. restaurants). Leave off to create work orders manually from the order or on Production Planning.",
+      "params": []
+    },
+    "setup.feature_web_title": {
+      "en": "Remote Access",
+      "params": []
+    },
+    "shipment.mixed_confirm": {
+      "en": "The selected documents belong to more than one customer. The delivery note will be created without customer details, and you will need to enter the consignee (for example your freight consolidator) on the document. Create it anyway?",
       "params": []
     }
   }

@@ -84,6 +84,6 @@ def test_every_module_sidebar_entry_is_keyed():
 def test_manufacturing_sidebar_reads_german():
     labels = {d["href"].value: t(d["label_key"].value, "de") if "label_key" in d else d["label"].value
               for module, d in _module_nav_entries() if module == "celerp-manufacturing"}
-    assert labels == {"/manufacturing": "Bedarfsplanung", "/manufacturing/production": "Ware in Arbeit",
+    assert labels == {"/manufacturing": "Produktionsplanung (MRP)", "/manufacturing/production": "Arbeitsaufträge",
                       "/docs?type=production_order": t("documents.page_stock_orders", "de")}
     assert "Stock Orders" not in labels.values()
