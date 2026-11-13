@@ -1,0 +1,112 @@
+{
+  "TH": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "b3ef8dd5a416e72fe22bd43bf5123adcce12f83e29d0fd24ad283603e4a769a2"
+  },
+  "SG": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "644ecea81a756dd9e40a2b5fc961a571ad6eb2fa54f098fd16ecab18311e9a76"
+  },
+  "MY": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "c7a1fa9dabf1bd8ffa1f8b95380fdeb128031d7ac3672fef3cedea37ec75abba"
+  },
+  "PH": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "dd8c0cf09146f22605f0e462f0302f47c5524990415d99461245ae59a6db2c8f"
+  },
+  "ID": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "0fd4ebc256b52912e7db83d79b142b464ca3d49b5747457240f609c03b5aa7b2"
+  },
+  "VN": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "c8a1372d88a00a6dc05ebfd9b5bdc23a41128187d9d2f897b8e4c97a1183f913"
+  },
+  "AU": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "c2944810de52d90ce245cedec5f05173f37896e57f8905ad1cf1d7b29b8a9480"
+  },
+  "NZ": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "37b72efb236533abbb5ff905cf2c017b2ed40456888f178d6bc5f1684a84d88d"
+  },
+  "GB": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "09c57ac1cb95dff4b438f39c1c29f3dba5abb8f8705b71b10c5f72f408dc4cde"
+  },
+  "DE": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "c01646942a35eb5ca789e4a3f9215cd19d8f7b8db74f3e4a2ce5f1d174450c8e"
+  },
+  "FR": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "42636cb8e696c1bc76d4ad0cc232013919b9bfaf20585a7b32f3fbd075929cb2"
+  },
+  "ES": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "8719f91439886e6424782726593f926f5000b4b193cc98ff8174a5d7605c7769"
+  },
+  "IT": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "3be5e617ccd00ee0ba10cceb70243644105a19e7e03e003c4c279d62ba7ed96c"
+  },
+  "PT": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "b90f7a4f07c704179b25e6fc1ea64e36e4e97e71ac5c17beceed412c4b063dc8"
+  },
+  "US": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "bbaa0f0ecd0b3dce122ae102810f9734392e5deb7586fafab408018b9e273df4"
+  },
+  "CA": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "0c8308e2f7574e04cda90b1ae9ba3eee089badbae5c2b19703ce5c25bcc5b4da"
+  },
+  "MX": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "446bfbce7c216c08f242687731602fe84787e562b2c3282223c788dca02ef49b"
+  },
+  "IN": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "5b41c6fe528e89aeca3323029ac646373f6747ab51332a4bafde1eee10208491"
+  },
+  "JP": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "1d0a90f8e9ea576db57ce9b99828cb89e60009a42353d655360b3173e3019705"
+  },
+  "AE": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "c02f3a031d88697f6a6e898cd7bb02b94488ae729b5a9c4f1f990b2c4bda4e76"
+  },
+  "SA": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "bcf7a9514418a969d54992b93c5115481bd472b714d1a9e30d37b25a6a1117e6"
+  },
+  "ET": {
+    "version": "2026.1",
+    "schema_version": 1,
+    "sha256": "d0adf7489c91e5dac10c8aa6bb71ccef7a090ee1bf366460e6f1ca84e9d15567"
+  }
+}
