@@ -1081,7 +1081,7 @@
   "fixed_assets.err_sale_module_off": "{numbers}: aktifkan modul Aset Tetap untuk menjual aset.",
   "fixed_assets.err_sale_not_here": "{number} tidak dijual melalui faktur ini. Mulai penjualan dari halaman aset untuk membuat draf faktur.",
   "fixed_assets.err_credit_not_sold_there": "{number} tidak dijual melalui faktur {invoice}.",
-  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}.",
-  "fixed_assets.err_change_fund_splits_asset": "{number} was bought on lines that would end up on different funds ({funds}). An asset keeps one fund, so choose the same fund for all of its lines.",
-  "fixed_assets.err_change_fund_class_move": "{number} moved with the account change of {cls} on {date}. Undo that account change, change the fund, then make the account change again."
+  "fixed_assets.err_line_other_fund": "Baris ini ada pada {line_fund}, sedangkan {number} ada pada {asset_fund}. Aset tetap menggunakan dana saat dibeli, jadi gunakan baris pada {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} dibeli melalui baris yang setelah perubahan akan berada pada dana berbeda ({funds}). Satu aset tetap berada pada satu dana, jadi pilih dana yang sama untuk semua barisnya.",
+  "fixed_assets.err_change_fund_class_move": "{number} dipindahkan melalui perubahan akun untuk {cls} pada {date}. Batalkan perubahan akun itu, ubah dana, lalu lakukan kembali perubahan akun."
 }

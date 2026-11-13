@@ -1081,7 +1081,7 @@
   "fixed_assets.err_sale_module_off": "{numbers}: hãy bật phân hệ Tài sản cố định để bán tài sản.",
   "fixed_assets.err_sale_not_here": "{number} không được bán trên hóa đơn này. Hãy bắt đầu bán trên trang tài sản để tạo hóa đơn nháp.",
   "fixed_assets.err_credit_not_sold_there": "{number} không được bán theo hóa đơn {invoice}.",
-  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}.",
-  "fixed_assets.err_change_fund_splits_asset": "{number} was bought on lines that would end up on different funds ({funds}). An asset keeps one fund, so choose the same fund for all of its lines.",
-  "fixed_assets.err_change_fund_class_move": "{number} moved with the account change of {cls} on {date}. Undo that account change, change the fund, then make the account change again."
+  "fixed_assets.err_line_other_fund": "Dòng này thuộc {line_fund} còn {number} thuộc {asset_fund}. Tài sản giữ nguyên quỹ được dùng khi mua, nên hãy dùng dòng thuộc {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} được mua bằng các dòng mà sau thay đổi sẽ thuộc những quỹ khác nhau ({funds}). Một tài sản chỉ thuộc một quỹ nên hãy chọn cùng quỹ cho mọi dòng.",
+  "fixed_assets.err_change_fund_class_move": "{number} đã được chuyển khi đổi tài khoản của {cls} vào {date}. Hãy hoàn tác việc đổi tài khoản, đổi quỹ, rồi đổi tài khoản lại."
 }

@@ -1081,7 +1081,7 @@
   "fixed_assets.err_sale_module_off": "{numbers}：資産を売却するには［固定資産］モジュールを有効にしてください。",
   "fixed_assets.err_sale_not_here": "{number} はこの請求書では売却されていません。資産のページから売却を開始すると、請求書の下書きが作成されます。",
   "fixed_assets.err_credit_not_sold_there": "{number} は請求書 {invoice} で売却されていません。",
-  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}.",
-  "fixed_assets.err_change_fund_splits_asset": "{number} was bought on lines that would end up on different funds ({funds}). An asset keeps one fund, so choose the same fund for all of its lines.",
-  "fixed_assets.err_change_fund_class_move": "{number} moved with the account change of {cls} on {date}. Undo that account change, change the fund, then make the account change again."
+  "fixed_assets.err_line_other_fund": "この明細は {line_fund} に、{number} は {asset_fund} に属しています。固定資産は取得時の基金を維持するため、{asset_fund} の明細を使用してください。",
+  "fixed_assets.err_change_fund_splits_asset": "{number} は変更後に別々の基金（{funds}）に分かれる明細から取得されています。1つの固定資産には1つの基金を設定する必要があるため、すべての明細で同じ基金を選択してください。",
+  "fixed_assets.err_change_fund_class_move": "{number} は {date} の {cls} の勘定科目変更に伴い移動されました。その変更を取り消し、基金を変更してから勘定科目変更をやり直してください。"
 }

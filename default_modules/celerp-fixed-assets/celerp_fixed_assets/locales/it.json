@@ -1081,7 +1081,7 @@
   "fixed_assets.err_sale_module_off": "{numbers}: attiva il modulo Cespiti per vendere un cespite.",
   "fixed_assets.err_sale_not_here": "{number} non viene venduto con questa fattura. Avvia la vendita dalla pagina del cespite per creare una bozza di fattura.",
   "fixed_assets.err_credit_not_sold_there": "{number} non è stato venduto con la fattura {invoice}.",
-  "fixed_assets.err_line_other_fund": "This line is on {line_fund} and {number} is on {asset_fund}. An asset keeps the fund it was bought on, so use a line on {asset_fund}.",
-  "fixed_assets.err_change_fund_splits_asset": "{number} was bought on lines that would end up on different funds ({funds}). An asset keeps one fund, so choose the same fund for all of its lines.",
-  "fixed_assets.err_change_fund_class_move": "{number} moved with the account change of {cls} on {date}. Undo that account change, change the fund, then make the account change again."
+  "fixed_assets.err_line_other_fund": "Questa riga è su {line_fund} e {number} è su {asset_fund}. Un cespite mantiene il fondo con cui è stato acquistato, quindi usa una riga su {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} è stato acquistato con righe che finirebbero su fondi diversi ({funds}). Un cespite mantiene un solo fondo, quindi scegli lo stesso fondo per tutte le sue righe.",
+  "fixed_assets.err_change_fund_class_move": "{number} è stato spostato con la modifica del conto di {cls} il {date}. Annulla quella modifica del conto, cambia il fondo e ripeti la modifica del conto."
 }
