@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from income_books import PERIOD, _account, _category, _donor, _set_category_account
+from income_books import PERIOD, _account, _category, _donor, _item, _set_category_account
 from test_fund_movements import _setup
 
 pytestmark = pytest.mark.asyncio
@@ -89,3 +89,18 @@ async def test_every_copy_of_a_named_line_carries_the_classification_it_posted_w
     named, other = copy_posted_lines("je:1", [line, bank], reverse=reverse)
     assert named["gift"] is (posted is True)
     assert "gift" not in other
+
+
+async def test_a_line_on_the_income_account_of_an_item_in_a_gift_category_posts_as_a_gift(client, auth):
+    """The gift category has no account of its own: its item's account is the gift account."""
+    funds = await _setup(client, auth)
+    await _account(client, auth, ACCOUNT)
+    category = await _category(client, auth, "Donations by transfer")
+    await _gift_setting(client, auth, category, True)
+    await _item(client, auth, "Transfer gift", category=category, income_account=ACCOUNT)
+    donor = await _donor(client, auth, "Transfer Donor")
+    r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": "2026-03-10", "memo": "Bank transfer", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{**line, "fund_id": funds["U1"]} for line in _lines(donor)]})
+    assert r.status_code == 200, r.text
+    assert await _history_total(client, auth, donor) == 100.0

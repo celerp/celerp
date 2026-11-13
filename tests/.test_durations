@@ -29632,5 +29632,6 @@
     "tests/test_gift_classification_kept.py::test_every_copy_of_a_named_line_carries_the_classification_it_posted_with[True-True]": 0.004942702944390476,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_races_pg.py]": 0.007774833124130964,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_settlement.py]": 0.007136653992347419,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_table.py]": 0.008031955105252564
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_table.py]": 0.008031955105252564,
+    "tests/test_gift_classification_kept.py::test_a_line_on_the_income_account_of_an_item_in_a_gift_category_posts_as_a_gift": 1.1602135919965804
 }
