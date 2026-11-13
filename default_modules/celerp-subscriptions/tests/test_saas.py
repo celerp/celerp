@@ -103,12 +103,14 @@ async def test_new_subscriber_plan_quantity_trial(owner_ui, monkeypatch):
 
 
 @pytest.mark.parametrize(("seats", "plan"), [("0", True), ("-1", True), ("2.5", True), ("\u00b2", True), ("", True),
-                                            (" ", True), ("3", False), ("3", None)])
+                                            (" ", True), ("0" * 5000, True), ("1000001", True), ("9" * 40, True),
+                                            ("1" * 5000, True), ("3", False), ("3", None)])
 async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, seats, plan):
     """Seats are a whole number of at least one and the plan a SaaS plan item: anything else is
     refused naming it (blank seats or no plan chosen asks for one, never naming "--"), and no
-    agreement is made."""
+    agreement is made. More seats than MOST_SEATS, however many digits, are refused as too many."""
     from ui.i18n import t
+    from ui.routes.subscriptions import MOST_SEATS
 
     freeze_day(monkeypatch, "2026-03-01")
     await _plan_category(owner_ui.api)
@@ -123,6 +125,7 @@ async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, s
     expected = (t("subscriptions.err_no_plan") if plan is None
                 else t("subscriptions.err_not_plan", name="Not a plan") if plan is False
                 else t("subscriptions.err_seats_blank") if not seats.strip()
+                else t("subscriptions.err_seats_too_many", most=f"{MOST_SEATS:,}") if seats.strip("0").isdecimal()
                 else t("subscriptions.err_seats", seats=seats))
     assert said["type"] == "error" and said["message"] == expected, said
     assert "--" not in said["message"], said

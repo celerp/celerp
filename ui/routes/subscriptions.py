@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import unicodedata
 from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
@@ -1178,6 +1179,9 @@ _LIST_TEXT = {"": {"new": "page.new_subscription", "empty": "label.no_subscripti
                                "title": "nav.subscribers", "form": "#new-subscriber"}}
 # A SaaS plan is a service item in this category; a subscriber's seats are its line's quantity.
 PLAN_CATEGORY = "saas_plan"
+# The most seats one subscriber can have: past it a seats count is a typing slip, and a long
+# enough one cannot be stored as a line quantity at all.
+MOST_SEATS = 1_000_000
 
 
 def _list_state(params, path: str = "/subscriptions") -> dict:
@@ -1250,13 +1254,18 @@ def _subscriber_form(plans: list[dict], state: dict) -> FT:
 async def _subscriber_draft(token: str, form) -> dict | str:
     """The draft New subscriber makes: the plan as its one line at the plan's price on the
     company's default list, the seats as its quantity, and the trial end as its first bill
-    date. Why not, worded for the reader, when the seats are blank or not a whole number of at
-    least one, or no plan is chosen or the item is not a SaaS plan."""
+    date. Why not, worded for the reader, when the seats are blank, not a whole number of at
+    least one or more than MOST_SEATS, or no plan is chosen or the item is not a SaaS plan."""
     seats = (form.get("seats") or "").strip()
     if not seats:
         return t("subscriptions.err_seats_blank")
-    if not seats.isdecimal() or int(seats) < 1:
+    # Any script's digits count; read as plain digits without leading zeros before the size check,
+    # so a long string is never handed to int().
+    digits = "".join(str(unicodedata.decimal(c)) for c in seats).lstrip("0") if seats.isdecimal() else ""
+    if not digits:
         return t("subscriptions.err_seats", seats=seats)
+    if len(digits) > len(str(MOST_SEATS)) or int(digits) > MOST_SEATS:
+        return t("subscriptions.err_seats_too_many", most=f"{MOST_SEATS:,}")
     plan_id = (form.get("plan_id") or "").strip()
     if not plan_id:
         return t("subscriptions.err_no_plan")
@@ -1266,7 +1275,7 @@ async def _subscriber_draft(token: str, form) -> dict | str:
     from celerp.services.pricing import resolve_price
 
     line = {"entity_id": plan_id, "sku": plan.get("sku"), "description": plan.get("name") or "",
-            "quantity": int(seats), "unit": plan.get("sell_by"),
+            "quantity": int(digits), "unit": plan.get("sell_by"),
             "unit_price": resolve_price(plan, await api.get_default_price_list(token))}
     trial = (form.get("trial_end") or "").strip()
     return {"contact_id": form.get("contact_id") or None, "line_items": [line],

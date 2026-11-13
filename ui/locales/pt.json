@@ -7810,6 +7810,7 @@
   "subscriptions.trial_end": "Trial end",
   "subscriptions.err_seats": "Seats must be a whole number of at least 1, not {seats}.",
   "subscriptions.err_seats_blank": "Informe o número de assentos, um número inteiro de pelo menos 1.",
+  "subscriptions.err_seats_too_many": "O número de lugares não pode passar de {most}.",
   "subscriptions.err_not_plan": "{name} is not a SaaS plan. Choose an item in the SaaS plan category.",
   "subscriptions.err_no_plan": "Escolha um plano para o novo assinante.",
   "subscriptions.err_amend_before_billed": "A change can take effect from {day} at the earliest, the start of the latest billed period. Choose {day} or a later date.",
