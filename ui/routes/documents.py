@@ -32,7 +32,7 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
 from celerp.services.peer_lines import UNRESTRICTED
-from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, saved as funds_saved, set_all as fund_set_all, shows_funds
+from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, save_answer as fund_save_answer, set_all as fund_set_all, shows_funds
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.payments import dispute_status_key
@@ -3431,14 +3431,14 @@ def setup_routes(app):
     @app.get("/docs/{entity_id}/funds/{target}")
     async def doc_fund_display(request: Request, entity_id: str, target: str):
         view = await _fund_view(request, entity_id)
-        return funds_saved(view, target)[0] if isinstance(view, FundView) else view
+        return fund_save_answer(view, target)[0] if isinstance(view, FundView) else view
 
     @app.get("/docs/{entity_id}/funds/{target}/edit")
     async def doc_fund_edit(request: Request, entity_id: str, target: str):
         view = await _fund_view(request, entity_id)
         if not isinstance(view, FundView):
             return view
-        return fund_editor(view, target) if view.editable or view.changes else funds_saved(view, target)[0]
+        return fund_editor(view, target) if view.editable or view.changes else fund_save_answer(view, target)[0]
 
     @app.post("/docs/{entity_id}/funds")
     async def doc_fund_save(request: Request, entity_id: str):
@@ -3459,7 +3459,7 @@ def setup_routes(app):
             if target == FUND_ALL:
                 return fund_set_all(view, value=value, error=error_message(e))
             return fund_editor(view, target, value=value, error=error_message(e))
-        return html_response(funds_saved(FundView(doc, view.funds, view.editable), target), headers={
+        return html_response(fund_save_answer(FundView(doc, view.funds, view.editable), target), headers={
             "HX-Trigger": _json.dumps({"celerpListVersion": {"version": result.get("version")}})})
 
     @app.post("/docs/{entity_id}/funds/change")
@@ -3482,7 +3482,7 @@ def setup_routes(app):
         except APIError as e:
             return fund_editor(view, target, value=value, error=error_message(e), reason=reason, key=key)
         # The entries posted again move the open balance by fund the payment form shows.
-        return html_response(funds_saved(FundView(doc, view.funds, view.editable, view.changes), target), headers={
+        return html_response(fund_save_answer(FundView(doc, view.funds, view.editable, view.changes), target), headers={
             "HX-Trigger": _json.dumps({"celerpListVersion": {"version": doc.get("version")}, **doc_money_redraw()})})
 
     async def doc_field_post(request: Request, entity_id: str, field: str):

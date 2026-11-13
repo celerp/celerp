@@ -164,7 +164,7 @@ async def test_item_recognize_flag_click_to_edit(owner_ui):
     assert f'hx-get="{_FLAG}/edit?kind=item&amp;key={item.replace(":", "%3A")}"' in page
 
     edit = (await owner_ui.get(f"{_FLAG}/edit", params={"kind": "item", "key": item})).text
-    assert f'hx-patch="{_FLAG}?kind=item&amp;key={item.replace(":", "%3A")}"' in edit and "Escape" in edit
+    assert f'hx-patch="{_FLAG}?kind=item&amp;key={item.replace(":", "%3A")}"' in edit and "celerpCellKey" in edit
 
     r = await owner_ui.patch(_FLAG, params={"kind": "item", "key": item}, data={"value": "true"})
     assert r.status_code == 200 and "Yes" in r.text and "cell--editing" not in r.text

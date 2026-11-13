@@ -13,66 +13,21 @@ item as it is now.
 """
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from income_books import _account, _category, _draft, _issued, _item, _line, _set_category_account
 from test_credit_note_settlement_owned import _post
 from test_set_aside_older_paths import _net
 
 pytestmark = pytest.mark.asyncio
 
 
-async def _account(client, auth, code: str, account_type: str = "revenue", parent: str | None = "4000") -> None:
-    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
-        "code": code, "name": f"Account {code}", "account_type": account_type, "parent_code": parent})
-    assert r.status_code == 200, r.text
-
-
-async def _category(client, auth, name: str) -> str:
-    r = await client.post("/companies/me/categories", headers=auth["headers"], json={"name": name})
-    assert r.status_code == 200, r.text
-    return r.json()["key"]
-
-
-async def _set_category_account(client, auth, key: str, code: str | None):
-    return await client.put(f"/companies/me/categories/{key}/income-account", headers=auth["headers"],
-                            json={"income_account": code})
-
-
-async def _item(client, auth, name: str, **fields) -> str:
-    r = await client.post("/items", headers=auth["headers"], json={
-        "name": name, "sell_by": "piece", "inventory_type": "service", "quantity": 0, "status": "available",
-        **fields})
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
-
-
 async def _patch_item(client, auth, item: str, **changes):
     return await client.patch(f"/items/{item}", headers=auth["headers"], json={
         "fields_changed": {k: {"new": v} for k, v in changes.items()}})
-
-
-def _line(item: str | None, name: str, amount: float, **extra) -> dict:
-    return {"item_id": item, "name": name, "quantity": 1, "unit_price": amount, "line_total": amount, **extra}
-
-
-async def _draft(client, auth, doc_type: str, lines: list[dict], **extra) -> str:
-    r = await client.post("/docs", headers=auth["headers"], json={
-        "doc_type": doc_type, "ref_id": f"{doc_type[:3].upper()}-{uuid.uuid4().hex[:6]}",
-        "line_items": lines, "total": round(sum(li["line_total"] for li in lines), 2), **extra})
-    assert r.status_code == 200, r.text
-    return r.json()["id"]
-
-
-async def _issued(client, auth, doc_type: str, lines: list[dict], **extra) -> str:
-    doc = await _draft(client, auth, doc_type, lines, **extra)
-    r = await _post(client, auth, f"/docs/{doc}/finalize")
-    assert r.status_code == 200, r.text
-    return doc
 
 
 async def _line_ids(client, auth, doc: str) -> list[str]:
@@ -283,7 +238,7 @@ async def test_income_account_picker_offers_only_usable_revenue_accounts(ui_clie
     with _ui_api(mapping={"Gems": "4300"}):
         r = await ui_client.get("/settings/accounting/income-account/edit", params={"kind": "category", "key": "Gems"})
     body = r.text
-    assert "combobox" in body and "Escape" in body
+    assert "combobox" in body and "celerpCellKey" in body
     assert 'hx-patch="/settings/accounting/income-account?kind=category&amp;key=Gems"' in body
     assert "4100 Sales Revenue" in body and "4300 Other Income" in body
     assert "4000 Revenue" not in body and "4900" not in body and "1120" not in body

@@ -249,7 +249,7 @@ async def _import(ui, session, monkeypatch, arm):
 
 
 async def _donor_statements(ui, session, monkeypatch, arm):
-    from test_donors import PERIOD, _mailbox, _statement_donors
+    from income_books import PERIOD, _mailbox, _statement_donors
 
     donors = await _statement_donors(ui.api, {"headers": {}})
     sent = _mailbox(monkeypatch)

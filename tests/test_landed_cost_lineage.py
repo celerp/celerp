@@ -184,6 +184,7 @@ _SPREADERS = {
     (_JA, "fund_open_shares"): "a settlement over each fund's open part of a document's balance",
     (_JA, "split_lines_by_fund"): "an entry's line amounts over the funds of its shares",
     (_JA, "fund_legs"): "a document entry's lines over the funds of the document lines behind them",
+    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "_pooled_offsets"): "a bank statement line's offset over the funds holding the pooled account it moves, in the bank's currency",
 }
 
 # Functions that put a rounding unit on one part, and why that is not a spread over parts.

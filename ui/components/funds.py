@@ -209,7 +209,7 @@ def editor(view: FundView, target: str, *, value: str | None = None, error: str 
         hx_trigger="submit" if view.changes else "change, submit", **_save_attrs(view, change=view.changes))
 
 
-def saved(view: FundView, target: str) -> tuple:
+def save_answer(view: FundView, target: str) -> tuple:
     """The answer to a save: the control that was saved, then every other one out of band."""
     lines = [li for li in view.doc.get("line_items") or [] if isinstance(li, dict) and li.get("line_id")]
     pieces = {DOCUMENT: lambda oob: document_field(view, oob=oob), ALL: lambda oob: set_all(view, oob=oob),

@@ -133,8 +133,7 @@ async def test_fixed_asset_account_move_keeps_each_fund(fa):
 async def _bill_asset_on(fa: FA, fund: str, name: str, amount: int) -> str:
     """An open bill from the document import whose one line buys ``name`` onto the vehicles
     account, its fund chosen on the import; it posts as it is imported."""
-    from test_income_accounts import _line
-    from test_outside_lines import _issued_import
+    from income_books import _issued_import, _line
 
     doc = f"doc:IMP-{uuid.uuid4().hex[:8]}"
     record = _issued_import(doc, [_line(None, name, amount, account_code="1210")])
@@ -337,8 +336,7 @@ async def test_change_fund_moves_assets_placed_from_a_moved_site(fa):
     funds = await _funds(fa)
     classes = await fa.classes()
     site_class = classes["Assets under construction"]
-    from test_income_accounts import _line
-    from test_outside_lines import _issued_import
+    from income_books import _issued_import, _line
 
     bill = f"doc:IMP-{uuid.uuid4().hex[:8]}"
     record = _issued_import(bill, [_line(None, "Workshop build", 12000, account_code=site_class["asset_account"])])
@@ -370,8 +368,7 @@ async def test_change_fund_then_undo_leaves_every_fund_zero_for_a_bought_asset(f
     bought a car depreciated once, changed from R to U, then voided at the source. The bill's own
     entries leave every fund at zero; the car's entries stay posted on U, as a source void leaves
     an asset's entries; unvoid restores the bill on U, not on R."""
-    from test_change_fund import _standing
-    from test_credit_note_settlement_owned import _post
+    from income_books import _standing
 
     await fa.ok(await fa.patch("/settings", {"first_managed_period": "2026-01-01"}))
     funds = await _funds(fa)
@@ -385,12 +382,12 @@ async def test_change_fund_then_undo_leaves_every_fund_zero_for_a_bought_asset(f
     assets = await _fa_standing(fa)
     assert assets and {fund for fund, _ in assets} == {funds["U"]}, assets
 
-    r = await _post(fa.client, fa.auth, f"/docs/{bill}/void", {"reason": "Raised in error"})
+    r = await fa.client.post(f"/docs/{bill}/void", headers=fa.h, json={"reason": "Raised in error"})
     assert r.status_code == 200, r.text
     assert await _standing(fa.session, fa.auth, prefix) == {}
     fa.session.expire_all()
     assert await _fa_standing(fa) == assets and (await fa.state(car))["fund_id"] == funds["U"]
-    assert (await _post(fa.client, fa.auth, f"/docs/{bill}/unvoid")).status_code == 200
+    assert (await fa.client.post(f"/docs/{bill}/unvoid", headers=fa.h, json={})).status_code == 200
     assert await _standing(fa.session, fa.auth, prefix) == own
     fa.session.expire_all()
     assert await _fa_standing(fa) == assets

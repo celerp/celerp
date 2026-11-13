@@ -939,6 +939,7 @@ _NOT_A_RECORD_NUMBER = {
         ("celerp-docs/celerp_docs/received.py", "apply_received_event"),
     },
     "a row, page, email or platform payload built to show or send a record": {
+        ("celerp-accounting/celerp_accounting/donors.py", "statement_pdf"),
         ("celerp-admin/celerp_admin/routes.py", "_check_missing_jes"),
         ("celerp-admin/celerp_admin/routes.py", "_check_inverted_doc_dates"),
         ("celerp-admin/celerp_admin/routes.py", "_check_fractional_piece_quantities"),

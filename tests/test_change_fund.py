@@ -20,10 +20,10 @@ from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from income_books import _issued_import, _item, _line, _standing
 from test_fund_movement_posting import _held, _set_role
 from test_fund_movements import _emit, _setup
-from test_income_accounts import _item, _line
-from test_outside_lines import _doc, _issued_import
+from test_outside_lines import _doc
 
 pytestmark = pytest.mark.asyncio
 
@@ -532,20 +532,6 @@ async def test_source_void_unchanged_in_every_company(client, session, auth, fun
 
 
 # ── what undoes a changed record ───────────────────────────────────────────────────────
-
-async def _standing(session, auth, prefix: str) -> dict:
-    """(fund, account) -> what the posted entries under ``prefix`` hold, zeros left out."""
-    session.expire_all()
-    out: dict = {}
-    for row in (await session.scalars(select(Projection).where(
-            Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry",
-            Projection.entity_id.startswith(prefix, autoescape=True)))).all():
-        if (row.state or {}).get("status") != "posted":
-            continue
-        for e in row.state.get("entries") or []:
-            key = (e.get("fund_id"), e["account"])
-            out[key] = out.get(key, Decimal(0)) + Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
-    return {k: v for k, v in out.items() if v}
 
 
 async def _outside_bill(client, auth, fund: str, amount=30) -> str:

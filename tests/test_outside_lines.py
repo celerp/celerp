@@ -20,8 +20,9 @@ import pytest
 from fasthtml.common import to_xml
 
 from celerp.models.projections import Projection
-from test_income_accounts import _finalize_entry, _issued, _item, _line, ui_client  # noqa: F401 (fixture)
+from income_books import _issued, _issued_import, _item, _line
 from test_credit_note_settlement_owned import _post
+from test_income_accounts import _finalize_entry, ui_client  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.asyncio
 
@@ -940,15 +941,6 @@ async def test_set_all_outside_lines_then_edit_one(client, auth, monkeypatch):
     funds = (await _get("tok", "/accounting/funds"))["items"]
     view = FundView.of(state, funds, {"funds_enabled": True}, "owner")
     assert f'hx-get="/docs/{rows[0]["id"]}/funds/' in to_xml(line_cell(view, state["line_items"][1]))
-
-
-def _issued_import(entity_id: str, lines: list[dict]) -> dict:
-    """An open invoice in an import file, booked now."""
-    total = round(sum(li["line_total"] for li in lines), 2)
-    return {"entity_id": entity_id, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
-            "data": {"doc_type": "invoice", "status": "awaiting_payment", "ref_id": entity_id.split(":")[1],
-                     "issue_date": "2026-01-20", "line_items": lines, "total": total, "subtotal": total,
-                     "amount_outstanding": total, "import_treatment": "record_now"}}
 
 
 def _income_funds(entry: dict) -> list[tuple]:

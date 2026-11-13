@@ -15,45 +15,9 @@ import uuid
 
 import pytest
 
-from celerp.services.email import EmailResult
-from test_income_accounts import _account, _category, _issued, _item, _line, _set_category_account
+from income_books import GIFT_ACCOUNT, PERIOD, _books, _donor, _invoice, _issued, _line, _mailbox, _pay, _statement_donors
 
 pytestmark = pytest.mark.asyncio
-
-GIFT_ACCOUNT = "4250"
-PERIOD = {"from": "2026-03-01", "to": "2026-03-31"}
-
-
-async def _books(client, auth) -> dict:
-    await _account(client, auth, GIFT_ACCOUNT)
-    donation = await _category(client, auth, "Donation")
-    assert (await _set_category_account(client, auth, donation, GIFT_ACCOUNT)).status_code == 200
-    r = await client.put(f"/companies/me/categories/{donation}/gift", headers=auth["headers"], json={"gift": True})
-    assert r.status_code == 200, r.text
-    dues, ticket = await _category(client, auth, "Dues"), await _category(client, auth, "Ticket")
-    return {"gift": await _item(client, auth, "Gift", category=donation),
-            "dues": await _item(client, auth, "Annual dues", category=dues),
-            "ticket": await _item(client, auth, "Dinner ticket", category=ticket)}
-
-
-async def _donor(client, auth, name: str, email: str | None = None) -> str:
-    r = await client.post("/crm/contacts", headers=auth["headers"], json={"name": name, **({"email": email} if email else {})})
-    assert r.status_code in (200, 201), r.text
-    return r.json()["id"]
-
-
-async def _invoice(client, auth, donor: str, *lines, doc_type: str = "invoice") -> str:
-    """A finalized document for ``donor`` at the line prices given: naming the price list keeps
-    those prices instead of repricing the lines from the contact's list."""
-    total = round(sum(li["line_total"] for li in lines), 2)
-    return await _issued(client, auth, doc_type, list(lines), contact_id=donor, issue_date="2026-03-01",
-                         price_list="Retail", subtotal=total, total=total)
-
-
-async def _pay(client, auth, doc: str, amount: float, day: str = "2026-03-05"):
-    r = await client.post(f"/docs/{doc}/payment", headers=auth["headers"], json={
-        "amount": amount, "payment_date": day, "bank_account": "1111", "idempotency_key": uuid.uuid4().hex})
-    assert r.status_code == 200, r.text
 
 
 async def _refund(client, auth, doc: str, amount: float, **extra):
@@ -112,27 +76,6 @@ async def test_donor_history_excludes_dues_tickets_credits_refunds_chargebacks(c
     history = await _history(client, auth, donor)
     assert float(history["total"]) == 70.0
     assert {g.get("doc_id") for g in history["gifts"] if float(g["amount"])} <= {refunded}
-
-
-async def _statement_donors(client, auth) -> dict:
-    items = await _books(client, auth)
-    with_email = await _donor(client, auth, "Cy Donor", "cy@test.test")
-    no_email = await _donor(client, auth, "Di Donor")
-    for donor, amount in ((with_email, 75), (no_email, 20)):
-        doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", amount))
-        await _pay(client, auth, doc, amount)
-    return {"email": with_email, "none": no_email}
-
-
-def _mailbox(monkeypatch) -> list[dict]:
-    sent: list[dict] = []
-
-    async def fake_send(to, subject, body_html, body_text="", **kw):
-        sent.append({"to": to, "subject": subject, "html": body_html, "operation_id": kw.get("operation_id")})
-        return EmailResult(ok=True, detail="accepted")
-
-    monkeypatch.setattr("celerp.services.email.send_email", fake_send)
-    return sent
 
 
 async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkeypatch):

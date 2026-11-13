@@ -18,7 +18,7 @@ import pytest
 from agreement_kit import agreement, billed_docs, contact, freeze_day, generate_due, member, schedule, template
 from test_helpers import ui_signed_in
 from ui.components.operation_key import FIELD
-from test_income_accounts import _account, _category, _item, _set_category_account
+from income_books import _account, _category, _item, _set_category_account
 
 pytestmark = pytest.mark.asyncio
 
