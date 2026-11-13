@@ -3,7 +3,7 @@
 """The getting-started card's Celerp AI line.
 
 People who manage the company and may use the AI assistant see one button-styled
-link to /ai with the line "Need help getting set up? Ask Celerp AI." and nothing
+link to /ai with the line "Need help getting set up? Ask Celerp AI for free." and nothing
 else: no question count and no eligibility terms.
 """
 
@@ -26,15 +26,15 @@ async def test_card_line_is_a_button_to_ai(ui):
     card = _card(await _dashboard(ui))
     line = _ai_line(card)
     assert re.search(r'<a [^>]*href="/ai"[^>]*class="btn btn--primary"[^>]*>'
-                     r'Need help getting set up\? Ask Celerp AI\.</a>', line), line
-    assert t("dashboard.getting_started_ai") == "Need help getting set up? Ask Celerp AI."
+                     r'Need help getting set up\? Ask Celerp AI for free\.</a>', line), line
+    assert t("dashboard.getting_started_ai") == "Need help getting set up? Ask Celerp AI for free."
     assert card.index("getting-started-links") < card.index("getting-started-ai") \
         < card.index("getting-started-note")
 
 
 async def test_card_line_names_no_count_or_terms(ui):
     text = re.sub(r"<[^>]+>", "", _ai_line(_card(await _dashboard(ui)))).strip()
-    assert text == "Need help getting set up? Ask Celerp AI."
+    assert text == "Need help getting set up? Ask Celerp AI for free."
     assert not re.search(r"\d", text)
     assert "eligible" not in _card(await _dashboard(ui)).lower()
 
