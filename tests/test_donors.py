@@ -57,6 +57,24 @@ async def test_donor_history_paid_gift_lines_plus_bank_gifts_no_double_count(cli
     assert sorted(float(g["amount"]) for g in history["gifts"]) == [25.0, 40.0, 60.0]
 
 
+async def test_donor_history_counts_a_credit_note_on_its_own_date(client, auth):
+    """A gift credit note against an open invoice counts on its issue date, both what it settled
+    of the invoice and what it takes back: a period ending before it shows only the cash."""
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Cy Donor", "cy@test.test")
+    doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100))
+    r = await client.get(f"/docs/{doc}", headers=auth["headers"])
+    line = {**_line(items["gift"], "Credit", 20), "source_line_id": r.json()["line_items"][0]["line_id"]}
+    note = await _issued(client, auth, "credit_note", [line], contact_id=donor, issue_date="2026-04-02",
+                         price_list="Retail", subtotal=20, total=20, original_doc_id=doc)
+    await _pay(client, auth, doc, 80)
+    march = await _history(client, auth, donor)
+    assert float(march["total"]) == 80.0 and note not in {g.get("doc_id") for g in march["gifts"]}
+    r = await client.get(f"/donors/{donor}/history", headers=auth["headers"], params={"from": "2026-04-01", "to": "2026-04-30"})
+    assert r.status_code == 200, r.text
+    assert float(r.json()["total"]) == 0.0
+
+
 async def test_donor_history_excludes_dues_tickets_credits_refunds_chargebacks(client, auth):
     items = await _books(client, auth)
     donor = await _donor(client, auth, "Ben Donor", "ben@test.test")

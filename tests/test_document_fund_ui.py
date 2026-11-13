@@ -273,6 +273,18 @@ async def test_fund_cell_read_only_without_edit_permission(ui_client):
     assert 'id="fund-cell-L1"' in r.text and "<form" not in r.text and "hx-get" not in r.text
 
 
+async def test_fund_cell_shown_again_after_its_editor_is_left(ui_client):
+    """Leaving a fund editor (Esc or Cancel) asks for the cell again: it comes back as the
+    click-to-edit control, never as an editor."""
+    company = {"id": "c1", "name": "Test Corp", "currency": "USD", "settings": {"funds_enabled": True}}
+    with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_bill(line_choice="fund:r"))), \
+         patch("ui.api_client.list_funds", new=AsyncMock(return_value=_FUNDS)), \
+         patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
+        r = await ui_client.get("/docs/doc:b1/funds/L1")
+    assert r.status_code == 200 and 'hx-get="/docs/doc:b1/funds/L1/edit"' in _tag(r.text, "fund-cell-L1"), r.text
+    assert "<form" not in r.text and "Building fund" in r.text
+
+
 async def test_a_line_fund_change_is_named_in_the_history():
     from ui.components.activity import _fields_changed_summary
     from ui.i18n import t

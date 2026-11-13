@@ -263,10 +263,9 @@ DEFAULT_CODES: dict[AccountRole, str] = {
     **SEEDED_TARGETS, **{role: account[0] for role, account in ADDED_WHEN_TURNED_ON.items()}}
 
 
-def chart_from_elsewhere(settings: dict | None) -> bool:
+def chart_from_elsewhere(settings: dict) -> bool:
     """Whether the company's chart came from outside Celerp (a migration's source books or a
     restored backup), so an account carrying a default number proves nothing about it."""
-    settings = settings or {}
     return SOURCE_CONTROLS_KEY in settings or bool(settings.get("restored_backup"))
 
 
