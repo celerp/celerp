@@ -1250,6 +1250,8 @@ input[type="number"] { text-align: right; }
 @media (max-width: 768px) { .charts-grid { grid-template-columns: minmax(0, 1fr); } }
 .chart-card { min-width: 0; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
 .chart-card--wide { margin-bottom: 20px; }
+/* A chart canvas never outgrows its card, even before the chart library has drawn it. */
+.chart-card canvas { max-width: 100%; }
 .chart-line-wrap { position: relative; height: 230px; }
 .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--c-text); }
 /* Empty-state shown inside a chart card when there is no data yet. */
