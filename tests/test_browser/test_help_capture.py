@@ -16,7 +16,6 @@ import os
 import random
 import threading
 import uuid
-from datetime import date
 from pathlib import Path
 
 import httpx
@@ -24,6 +23,7 @@ import pytest
 from playwright.sync_api import expect
 
 from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
+from celerp.services.business_time import business_today
 from celerp_labels.presets import PRESET_TEMPLATES
 from ui.i18n import t
 
@@ -73,14 +73,18 @@ def demo_token(api_server, api):
             for path, body in (("income-account", {"income_account": "4250"}), ("gift", {"gift": True})):
                 r = await client.put(f"/companies/me/categories/{donation}/{path}", headers=auth, json=body)
                 assert r.status_code == 200, r.text
+            # Dated the company's today, the day the Donors page's default period ends on.
+            r = await client.get("/companies/me", headers=auth)
+            assert r.status_code == 200, r.text
+            today = business_today(r.json()["settings"].get("timezone")).isoformat()
             r = await client.post("/accounting/journal-entries", headers=auth, json={
-                "ts": date.today().isoformat(), "memo": "Gift by bank transfer", "idempotency_token": uuid.uuid4().hex,
+                "ts": today, "memo": "Gift by bank transfer", "idempotency_token": uuid.uuid4().hex,
                 "entries": [{"account": "1111", "debit": 250.0, "credit": 0.0},
                             {"account": "4250", "debit": 0.0, "credit": 250.0, "contact": contacts[0]["id"]}]})
             assert r.status_code == 200, r.text
             r = await client.post("/docs", headers=auth, json={
                 "doc_type": "subscription_invoice", "contact_id": contacts[1]["id"], "frequency": "monthly",
-                "start_date": date.today().isoformat(),
+                "start_date": today,
                 "line_items": [{"description": "Seats", "quantity": 5, "unit_price": 20.0, "line_total": 100.0}]})
             assert r.status_code in (200, 201), r.text
             r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)

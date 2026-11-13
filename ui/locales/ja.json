@@ -5678,7 +5678,7 @@
   "module_journal.source": "モジュールの仕訳は、この会社にあるそのモジュール自身の記録を指します。",
   "module_journal.key": "仕訳キーに使えるのは英字、数字、: . _ - だけです",
   "module_journal.key_reused": "この操作は別の内容ですでに記録されています。",
-  "request.key_reused": "このリクエストは別の内容ですでに送信されているため、何も変更されていません。ページを再読み込みして保存内容を確認してから、もう一度お試しください。",
+  "request.key_reused": "このリクエストは別の内容ですでに送信されているため、何も変更されていません。「再試行」を選んでください。",
   "module_journal.key_voided": "この操作の仕訳は取り消されています。新しい仕訳を計上するには、操作をもう一度記録してください。",
   "module_journal.moves_more_than_recognized": "勘定 {code} から、モジュールがそこに計上した額を超えて振り替えようとしています。",
   "module_journal.accounting_off": "会計が動作していないため、仕訳を計上できません。",

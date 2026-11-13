@@ -5680,7 +5680,7 @@
   "module_journal.source": "Bút toán của mô-đun phải trỏ tới một bản ghi của chính mô-đun đó trong công ty này.",
   "module_journal.key": "Khóa bút toán chỉ được chứa chữ cái, chữ số và : . _ -",
   "module_journal.key_reused": "Thao tác này đã được ghi với thông tin khác.",
-  "request.key_reused": "Yêu cầu này đã được gửi với thông tin khác nên không có gì thay đổi. Hãy tải lại trang để xem nội dung đã lưu, rồi thử lại.",
+  "request.key_reused": "Yêu cầu này đã được gửi với thông tin khác nên không có gì thay đổi. Hãy chọn Thử lại.",
   "module_journal.key_voided": "Bút toán của thao tác này đã bị hủy. Hãy ghi lại thao tác để ghi sổ bút toán mới.",
   "module_journal.moves_more_than_recognized": "Thao tác này chuyển khỏi tài khoản {code} nhiều hơn số mô-đun đã ghi vào đó.",
   "module_journal.accounting_off": "Kế toán đang không chạy nên không thể ghi bút toán nào.",

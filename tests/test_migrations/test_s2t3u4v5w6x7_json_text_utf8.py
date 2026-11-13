@@ -233,6 +233,7 @@ _ASCII_DUMPS = {
     ("celerp/config_store.py", "merge_packaged_config"): _FILE,
     ("celerp/connectors/first_sync.py", "_version"): _DIGEST,
     ("celerp/events/engine.py", "connector_upsert"): _DIGEST,
+    ("celerp/events/engine.py", "request_fingerprint"): _DIGEST,
     ("celerp/gateway/client.py", "_send"): _WIRE,
     ("celerp/gateway/state.py", "_persist_commercial_context"): _FILE,
     ("celerp/help/checks.py", "<module>"): _WIRE,

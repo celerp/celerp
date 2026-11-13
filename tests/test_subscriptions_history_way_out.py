@@ -424,6 +424,7 @@ RAISING_HELPERS = {
     "locked_agreement": "test_billing_answers",
     "write_agreement": "test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers",
     "_refuse_unknown_member": "test_the_member_must_be_a_contact_of_the_company",
+    "_check_payer_change": "test_every_field_editable_after_draft_needs_its_permission",
 }
 GUARDS = ("guard_agreement_status", "write_agreement", "guard_bill_status")
 

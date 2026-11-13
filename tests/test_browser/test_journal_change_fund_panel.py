@@ -15,11 +15,12 @@ Proves:
 from __future__ import annotations
 
 import uuid
-from datetime import date
 from urllib.parse import quote
 
 import pytest
 from playwright.sync_api import expect
+
+from celerp.services.business_time import business_today
 
 from .conftest import css_class
 
@@ -39,11 +40,13 @@ def outside_fund(ui_server, api):
                                             "restricted": False, "purpose": None})
     assert r.status_code in (200, 201), r.text
     fund = r.json()["id"]
+    today = business_today(api.get("/companies/me").json()["settings"].get("timezone")).isoformat()
     entries = [{"account": "1111", "debit": 30.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 30.0}]
     r = api.post("/accounting/import/batch", json={
         "records": [{"entity_id": f"je:{uuid.uuid4()}", "event_type": "acc.journal_entry.created", "source": "csv",
                      "idempotency_key": uuid.uuid4().hex,
-                     "data": {"status": "posted", "ts": date.today().isoformat(), "memo": _MEMO,
+                     # the company's today, the day the journal list's default range ends on
+                     "data": {"status": "posted", "ts": today, "memo": _MEMO,
                               "entries": entries}}],
         "fund_choices": {"all": fund}})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text

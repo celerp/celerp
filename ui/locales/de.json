@@ -5680,7 +5680,7 @@
   "module_journal.source": "Eine Modulbuchung verweist auf einen eigenen Datensatz des Moduls in diesem Unternehmen.",
   "module_journal.key": "Ein Buchungsschlüssel darf nur Buchstaben, Ziffern und : . _ - enthalten",
   "module_journal.key_reused": "Dieser Vorgang wurde bereits mit anderen Angaben erfasst.",
-  "request.key_reused": "Diese Anfrage wurde bereits mit anderen Angaben gesendet, daher wurde nichts geändert. Laden Sie die Seite neu, um zu sehen, was gespeichert ist, und versuchen Sie es dann erneut.",
+  "request.key_reused": "Diese Anfrage wurde bereits mit anderen Angaben gesendet, daher wurde nichts geändert. Wählen Sie „Erneut versuchen“.",
   "module_journal.key_voided": "Die Buchung zu diesem Vorgang wurde storniert. Erfassen Sie den Vorgang erneut, um eine neue zu buchen.",
   "module_journal.moves_more_than_recognized": "Damit wird mehr von Konto {code} umgebucht, als das Modul dort erfasst hat.",
   "module_journal.accounting_off": "Die Buchhaltung läuft nicht, daher kann keine Buchung erfasst werden.",
