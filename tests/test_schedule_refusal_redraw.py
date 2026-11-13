@@ -24,7 +24,7 @@ _SUB = {"entity_id": "doc:sub-1", "doc_type": "subscription_invoice", "status": 
 _PERIODS = {"rows": []}
 _REFUSAL = "This agreement has billed periods, so its frequency cannot change."
 # A value each schedule field reads as its type, so every PATCH reaches the API.
-_VALUES = {"frequency": "custom", "anchor_date": "2026-12-01", "custom_interval_days": "10", "billing_timing": "arrears",
+_VALUES = {"frequency": "custom", "anchor_date": "2026-12-01", "trial_end": "2026-12-15", "custom_interval_days": "10", "billing_timing": "arrears",
            "term_start": "2026-12-01", "term_end": "2027-12-01", "cancel_at_period_end": "true",
            "generation_mode": "auto_invoice", "auto_send": "true", "catchup_periods": "3",
            "recognize_over_service_period": "true", "kind": "membership", "beneficiary_contact_id": "contact:member",

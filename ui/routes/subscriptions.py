@@ -1002,10 +1002,11 @@ def _quantity_text(value) -> str:
     return EMPTY if value is None else f"{value:g}" if isinstance(value, (int, float)) else str(value)
 
 
-def _quantities_section(entity_id: str, sub: dict, today) -> FT | str:
+def _quantities_section(entity_id: str, sub: dict, today, doc_refs: dict[str, str]) -> FT | str:
     """Each line's quantity in force today, a box for its new quantity and the date the change
     takes effect (today unless chosen), and the changes made so far, newest first, each with the
-    documents that settled the days already billed. The boxes post as the one ``quantities``
+    documents that settled the days already billed, each by its number (``doc_refs``, the
+    periods answer's ``amendment_refs``). The boxes post as the one ``quantities``
     field (a JSON object of line id to quantity), so a long agreement stays under the form's
     field limit. A change is undone by changing the quantity
     back from the same date."""
@@ -1023,7 +1024,7 @@ def _quantities_section(entity_id: str, sub: dict, today) -> FT | str:
     def _change_row(a: dict) -> FT:
         shown_lines = ", ".join(f"{by_id.get(li.get('line_id'), li.get('description') or EMPTY)}: "
                                 f"{_quantity_text(li.get('quantity'))}" for li in a.get("line_items") or [])
-        docs = [A(d.removeprefix("doc:"), href=f"/docs/{d}") for d in (a.get("credit_note_id"), a.get("invoice_id")) if d]
+        docs = [A(doc_refs.get(d) or d, href=f"/docs/{d}") for d in (a.get("credit_note_id"), a.get("invoice_id")) if d]
         return Tr(Td(sentence("subscriptions.amend_from", day=a.get("effective"))), Td(shown_lines or EMPTY),
                   _sentence_cell(*docs) if docs else Td(EMPTY))
 
@@ -1819,7 +1820,7 @@ def setup_routes(app) -> None:
                 suppress_pdf=True,
             ),
             _schedule_section(entity_id, doc) if status not in ENDED else "",
-            _quantities_section(entity_id, doc, business_today(tz)) if status in ("active", "paused") else "",
+            _quantities_section(entity_id, doc, business_today(tz), schedule.get("amendment_refs") or {}) if status in ("active", "paused") else "",
             _billing_section(entity_id, doc, _defers(co_settings, doc)),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule, historical_page=period_before is not None),

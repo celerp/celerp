@@ -264,6 +264,13 @@ async def test_seat_change_page_names_the_documents_numbers(owner_ui, session, m
     for doc in (credit, debit):
         assert doc["ref_id"] in message, message
     assert debit["entity_id"].removeprefix("doc:") not in message, message
+    page = (await owner_ui.get(f"/subscriptions/{eid}")).text
+    changes = page[page.index('id="sub-quantities"'):page.index('id="sub-billing"')]
+    for doc in (credit, debit):
+        assert f'>{doc["ref_id"]}</a>' in changes, changes[:3000]
+        key = doc["entity_id"].removeprefix("doc:")
+        assert key == doc["ref_id"] or f'>{key}</a>' not in changes
+    assert debit["entity_id"].removeprefix("doc:") != debit["ref_id"]
 
 
 async def test_arrears_period_splits_effective_segments(owner_ui, session, monkeypatch):

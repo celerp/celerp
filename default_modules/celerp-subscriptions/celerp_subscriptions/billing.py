@@ -1019,15 +1019,16 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
                       limit: int = 24, before: int | None = None) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
-    the earlier documents waiting for history review, each with its candidate periods; and the
-    ones set aside as billing no period of their own. An ENDED agreement has no next bill date
+    the earlier documents waiting for history review, each with its candidate periods; the
+    ones set aside as billing no period of their own; and the number of each document a quantity
+    change issued (read now, so a renumbered document shows its current number). An ENDED agreement has no next bill date
     and no oldest due row, and ``ended`` says why it bills nothing. A template not yet on a
     schedule has none of these, and ``not_moved`` says why; an agreement whose stored terms
     build no schedule is refused (409) with the schedule's reason."""
     ended = t(_UNBILLABLE[state["status"]]) if state.get("status") in ENDED else None
     if not state.get("anchor_date"):
         return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [], "ended": ended,
-                "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
+                "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state), "amendment_refs": {}}
     if (exc := unscheduled(state)) is not None:
         raise schedule_refusal(409, exc) from exc
     schedule = Schedule.from_state(state)
@@ -1058,9 +1059,12 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
+    amendment_refs = {d: await doc_ref(session, company_id, d) for a in amendments_of(state)
+                      for d in (a.get("credit_note_id"), a.get("invoice_id")) if d}
     return {"next_bill_date": nxt.isoformat() if nxt else None, "ended": ended,
             "oldest_open_index": oldest_open, "oldest_due_row": oldest_due_row,
-            "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside}
+            "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside,
+            "amendment_refs": amendment_refs}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
