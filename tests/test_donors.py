@@ -41,25 +41,25 @@ async def _history(client, auth, donor: str) -> dict:
     return r.json()
 
 
-async def test_donor_history_paid_gift_lines_plus_bank_gifts_no_double_count(client, auth):
-    """A gift line counts by the cash received for it (its share of each receipt), a direct
-    gift once, and neither again through the invoice's own revenue posting."""
+async def test_donor_history_gift_lines_as_posted_plus_bank_gifts_no_double_count(client, auth):
+    """A gift line counts as its invoice posted it to gift income, whatever has been paid, a
+    ticket line on the same invoice never, a direct gift once, and receipts add nothing again."""
     items = await _books(client, auth)
     donor = await _donor(client, auth, "Ada Donor", "ada@test.test")
     doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100), _line(items["ticket"], "Dinner ticket", 50))
-    await _pay(client, auth, doc, 90)  # 60 of it the gift's share
-    assert float((await _history(client, auth, donor))["total"]) == 60.0
+    assert float((await _history(client, auth, donor))["total"]) == 100.0
+    await _pay(client, auth, doc, 90)
     await _pay(client, auth, doc, 60)
     await _direct_gift(client, auth, donor, 25, "2026-03-12")
     await _direct_gift(client, auth, donor, 999, "2026-04-02")  # outside the period
     history = await _history(client, auth, donor)
     assert float(history["total"]) == 125.0
-    assert sorted(float(g["amount"]) for g in history["gifts"]) == [25.0, 40.0, 60.0]
+    assert sorted(float(g["amount"]) for g in history["gifts"]) == [25.0, 100.0]
 
 
 async def test_donor_history_counts_a_credit_note_on_its_own_date(client, auth):
-    """A gift credit note against an open invoice counts on its issue date, both what it settled
-    of the invoice and what it takes back: a period ending before it shows only the cash."""
+    """A gift credit note counts on its issue date, as its posting takes the gift income back: a
+    period ending before it shows the whole gift, the note's own period what it took back."""
     items = await _books(client, auth)
     donor = await _donor(client, auth, "Cy Donor", "cy@test.test")
     doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100))
@@ -69,13 +69,16 @@ async def test_donor_history_counts_a_credit_note_on_its_own_date(client, auth):
                          price_list="Retail", subtotal=20, total=20, original_doc_id=doc)
     await _pay(client, auth, doc, 80)
     march = await _history(client, auth, donor)
-    assert float(march["total"]) == 80.0 and note not in {g.get("doc_id") for g in march["gifts"]}
+    assert float(march["total"]) == 100.0 and note not in {g.get("doc_id") for g in march["gifts"]}
     r = await client.get(f"/donors/{donor}/history", headers=auth["headers"], params={"from": "2026-04-01", "to": "2026-04-30"})
     assert r.status_code == 200, r.text
-    assert float(r.json()["total"]) == 0.0
+    assert float(r.json()["total"]) == -20.0 and [g["doc_id"] for g in r.json()["gifts"]] == [note]
 
 
-async def test_donor_history_excludes_dues_tickets_credits_refunds_chargebacks(client, auth):
+async def test_donor_history_excludes_dues_tickets_and_gifts_credited_back(client, auth):
+    """Dues and tickets never count; a gift credited back by a credit note crediting no invoice
+    counts nothing; a cash refund or a chargeback with no credit note moves no gift income, so
+    the gift stays as the books keep it."""
     items = await _books(client, auth)
     donor = await _donor(client, auth, "Ben Donor", "ben@test.test")
     dues = await _invoice(client, auth, donor, _line(items["dues"], "Annual dues", 80), _line(items["ticket"], "Dinner ticket", 20))
@@ -92,8 +95,9 @@ async def test_donor_history_excludes_dues_tickets_credits_refunds_chargebacks(c
         "target_doc_id": credited, "amount": 40, "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
     history = await _history(client, auth, donor)
-    assert float(history["total"]) == 70.0
-    assert {g.get("doc_id") for g in history["gifts"] if float(g["amount"])} <= {refunded}
+    assert float(history["total"]) == 150.0
+    by_doc = {g["doc_id"]: float(g["amount"]) for g in history["gifts"]}
+    assert dues not in by_doc and by_doc == {refunded: 100.0, charged_back: 50.0, credited: 40.0, note: -40.0}
 
 
 async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkeypatch):
@@ -175,16 +179,17 @@ async def _cash_indexes(client, auth, doc: str) -> list[int]:
             if p.get("status", "active") == "active" and p.get("method") not in ("credit_note", "applied")]
 
 
-async def _note(client, auth, donor: str, item: str, amount: float, invoice: str | None = None, how: str = "line") -> str:
-    """A finalized credit note for ``donor``: against ``invoice``'s first line (how="line") or the
-    invoice as a whole (how="doc"), or free standing without one."""
+async def _note(client, auth, donor: str, item: str, amount: float, invoice: str | None = None, how: str = "line",
+                line_index: int = 0, **money) -> str:
+    """A finalized credit note for ``donor``: against line ``line_index`` of ``invoice`` (how="line")
+    or the invoice as a whole (how="doc"), or free standing without one."""
     line = _line(item, "Credit", amount)
     if invoice and how == "line":
         r = await client.get(f"/docs/{invoice}", headers=auth["headers"])
-        line["source_line_id"] = r.json()["line_items"][0]["line_id"]
+        line["source_line_id"] = r.json()["line_items"][line_index]["line_id"]
     return await _issued(client, auth, "credit_note", [line], contact_id=donor, issue_date="2026-03-01",
                          price_list="Retail", subtotal=amount, total=amount,
-                         **({"original_doc_id": invoice} if invoice else {}))
+                         **({"original_doc_id": invoice} if invoice else {}), **money)
 
 
 async def _ledger_kept(client, auth, donor: str, account: str = GIFT_ACCOUNT) -> float:
@@ -193,86 +198,101 @@ async def _ledger_kept(client, auth, donor: str, account: str = GIFT_ACCOUNT) ->
     return round(sum(line["credit"] - line["debit"] for line in r.json()["lines"]), 2)
 
 
-async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str, float]:
-    """One donor's generated mix ending with every invoice settled: a gift invoice (sometimes
-    with a ticket line), credit applied to it before cash, cash in one or two receipts, a
-    receipt refunded or voided and paid again, then a credit note against the gift line
-    refunded in cash, applied to a ticket invoice, held on account, or split. The third value
-    is what a ticket credit note crediting no invoice posted to sales revenue: such a note
-    posts every line there, whatever account its item sells on."""
+async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str]:
+    """One donor's generated mix: a gift invoice (sometimes with a ticket line) in the books'
+    currency or in EUR at one rate, credit applied before cash, receipts at the invoice's rate or
+    another, sometimes leaving part unpaid, a receipt refunded or voided and paid again, then a
+    credit note on the gift line, the ticket line, the invoice as a whole or none, refunded in
+    cash, applied to another invoice, held on account, or split."""
     donor = await _donor(client, auth, f"Oracle donor {n}")
+    rate = rng.choice([None, 1.1, 0.9])
+    money = {"currency": "EUR", "conversion_rate": rate} if rate else {}
     gift = float(rng.choice([40, 75, 100, 160]))
     lines = [_line(items["gift"], "Gift", gift)]
     if rng.random() < 0.5:
         lines.append(_line(items["ticket"], "Dinner ticket", float(rng.choice([20, 50]))))
-    doc = await _invoice(client, auth, donor, *lines)
-    due = round(sum(li["line_total"] for li in lines), 2)
-    story = [f"invoice {[li['line_total'] for li in lines]}"]
-    ticket_on_sales = 0.0
+    total = round(sum(li["line_total"] for li in lines), 2)
+    doc = await _issued(client, auth, "invoice", lines, contact_id=donor, issue_date="2026-03-01",
+                        price_list="Retail", subtotal=total, total=total, **money)
+    due = total
+    story = [f"invoice {[li['line_total'] for li in lines]} rate {rate}"]
+
+    async def pay(amount: float, day: str = "2026-03-05"):
+        paid_at = rng.choice([rate, 1.2, 0.95]) if rate else None
+        await _post_ok(client, auth, f"/docs/{doc}/payment", amount=amount, payment_date=day, bank_account="1111",
+                       **({"conversion_rate": paid_at} if paid_at else {}))
+        story.append(f"paid {amount} at {paid_at}")
+
     if rng.random() < 0.4:
         source = rng.choice(["gift", "ticket"])
         credit = float(rng.choice([10, 20]))
-        note = await _note(client, auth, donor, items[source], credit, doc if source == "gift" else None)
+        note = await _note(client, auth, donor, items[source], credit, doc if source == "gift" else None, **money)
         if source == "ticket":  # a gift note against the invoice settles its open balance itself
-            ticket_on_sales = credit
             await _post_ok(client, auth, f"/docs/{note}/apply-to-invoice", target_doc_id=doc, amount=credit,
                            date="2026-03-02")
         due = round(due - credit, 2)
         story.append(f"{source} note {credit} before cash")
     first = round(due / 2, 2) if rng.random() < 0.5 else due
-    for amount in (first, round(due - first, 2)):
+    second = round(due - first, 2) if rng.random() < 0.7 else 0.0  # sometimes part stays unpaid
+    for amount in (first, second):
         if amount:
-            await _pay(client, auth, doc, amount)
-    story.append(f"paid {first}+{round(due - first, 2)}")
+            await pay(amount)
     undo = rng.choice([None, "refund", "void"])
     if undo:
         index = (await _cash_indexes(client, auth, doc))[0]
         if undo == "refund":
             back = float(rng.choice([5, 15]))
             await _post_ok(client, auth, f"/docs/{doc}/refund", payment_index=index, amount=back, payment_date="2026-03-10")
-            await _pay(client, auth, doc, back, "2026-03-11")
+            await pay(back, "2026-03-11")
         else:
             r = await client.get(f"/docs/{doc}", headers=auth["headers"])
             amount = next(p["amount"] for p in r.json()["payments"] if p["index"] == index)
             await _post_ok(client, auth, f"/docs/{doc}/void-payment", payment_index=index, refund_date="2026-03-10")
-            await _pay(client, auth, doc, amount, "2026-03-11")
+            await pay(amount, "2026-03-11")
         story.append(undo)
     settle = rng.choice([None, "cash", "apply", "hold", "split"])
     if settle:
-        credit = float(rng.choice([gift, round(gift / 2, 2)]))
+        on = rng.choice(["gift", "ticket"]) if len(lines) > 1 else "gift"
+        credit = float(rng.choice([lines[0 if on == "gift" else 1]["line_total"],
+                                   round(lines[0 if on == "gift" else 1]["line_total"] / 2, 2)]))
         how = rng.choice(["line", "doc", "free"])
-        note = await _note(client, auth, donor, items["gift"], credit, None if how == "free" else doc, how)
+        note = await _note(client, auth, donor, items[on], credit, None if how == "free" else doc, how,
+                           0 if on == "gift" else 1, **money)
         if settle == "cash":
             await _post_ok(client, auth, f"/docs/{note}/cn-refund", amount=credit, date="2026-03-15", bank_account="1111")
         elif settle in ("apply", "split"):
             applied = credit if settle == "apply" else round(credit / 2, 2)
-            ticket = await _invoice(client, auth, donor, _line(items["ticket"], "Dinner ticket", applied + 10))
+            ticket = await _issued(client, auth, "invoice", [_line(items["ticket"], "Dinner ticket", applied + 10)],
+                                   contact_id=donor, issue_date="2026-03-01", price_list="Retail",
+                                   subtotal=applied + 10, total=applied + 10, **money)
             await _post_ok(client, auth, f"/docs/{note}/apply-to-invoice", target_doc_id=ticket, amount=applied,
                            date="2026-03-16")
-            await _pay(client, auth, ticket, 10, "2026-03-16")
-        story.append(f"gift note {credit} ({how}) {settle}")
-    return donor, "; ".join(story), ticket_on_sales
+        story.append(f"{on} note {credit} ({how}) {settle}")
+    return donor, "; ".join(story)
 
 
 @pytest.mark.parametrize("gift_mapped", [True, False], ids=["gift-account", "sales-revenue"])
 async def test_donor_history_equals_gift_income_the_books_keep(client, auth, gift_mapped):
-    """Per donor, over generated mixes of receipts, refunds, voided receipts and credit notes
-    settled every way (cash, applied to another invoice, held on account), the history total
-    equals what the ledger keeps on the gift income account for that donor, whether the gift
-    category has its own income account or gifts fall to sales revenue (there, less what a
-    ticket credit note crediting no invoice posted to sales revenue)."""
+    """Per donor, over generated mixes of currencies and rates, partial receipts, refunds, voided
+    receipts and credit notes on gift and other lines settled every way (cash, applied to another
+    invoice, held on account), the history total, the Donors page and the statement equal what
+    the ledger keeps on the gift income account for that donor, whether the gift category has its
+    own income account or gifts fall to sales revenue."""
     import random
 
     items = await _books(client, auth, gift_mapped)
     account = GIFT_ACCOUNT if gift_mapped else "4100"
     rng = random.Random(426)
     wrong = []
-    for n in range(14):
-        donor, story, ticket_on_sales = await _scenario(client, auth, items, rng, n)
+    for n in range(16):
+        donor, story = await _scenario(client, auth, items, rng, n)
         history = float((await _history(client, auth, donor))["total"])
         listed = next((float(row["total"]) for row in (await client.get(
             "/donors", headers=auth["headers"], params=PERIOD)).json()["items"] if row["contact_id"] == donor), 0.0)
-        kept = round(await _ledger_kept(client, auth, donor, account) + (0 if gift_mapped else ticket_on_sales), 2)
-        if not history == listed == kept:
-            wrong.append(f"{story}: history {history}, Donors page {listed}, books {kept}")
+        stated = next((float(row["total"]) for row in (await client.get(
+            "/donors/statements/preview", headers=auth["headers"], params=PERIOD)).json()["donors"]
+            if row["contact_id"] == donor), 0.0)
+        kept = await _ledger_kept(client, auth, donor, account)
+        if not history == listed == stated == kept:
+            wrong.append(f"{story}: history {history}, Donors page {listed}, statement {stated}, books {kept}")
     assert not wrong, "\n".join(wrong)

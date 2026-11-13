@@ -69,7 +69,8 @@ async def test_e2e1_renewal_receipts_mixed_invoice_and_refund(client, session, a
     Generate due bills it; a partial bank receipt leaves the rest open and a second receipt
     settles it; a mixed invoice of a restricted gift and a gala ticket posts each line to its own
     fund; a second gift refunded in full gives its money back from the restricted fund, and the
-    donor's history counts the kept gift only."""
+    donor's history, read from the books, counts it until a credit note takes its gift income
+    back."""
     h = auth["headers"]
     _freeze(monkeypatch, "2026-01-02")
     f = await _club(client, auth)
@@ -112,8 +113,15 @@ async def test_e2e1_renewal_receipts_mixed_invoice_and_refund(client, session, a
         "payment_index": 0, "amount": 50.0, "payment_date": "2026-03-03", "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
     assert await _held(session, auth, f["R"]) == 700 and await _held(session, auth, None) == 800
-    r = await client.get(f"/donors/{donor}/history", headers=h, params={"from": "2026-03-01", "to": "2026-03-31"})
+    period = {"from": "2026-03-01", "to": "2026-03-31"}
+    r = await client.get(f"/donors/{donor}/history", headers=h, params=period)
     assert r.status_code == 200, r.text
+    assert float(r.json()["total"]) == 350.0  # the refund reopened the gift; the books still hold its income
+    source = (await client.get(f"/docs/{gift}", headers=h)).json()["line_items"][0]["line_id"]
+    await _issued(client, auth, "credit_note", [_line(f["gift"], "Gift returned", 50.0, source_line_id=source)],
+                  contact_id=donor, issue_date="2026-03-03", price_list="Retail", subtotal=50.0, total=50.0,
+                  original_doc_id=gift)
+    r = await client.get(f"/donors/{donor}/history", headers=h, params=period)
     assert float(r.json()["total"]) == 300.0
 
 

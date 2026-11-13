@@ -1,16 +1,16 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Donors: the gifts each contact gave that were received and kept, and their statements.
+"""Donors: the gifts each contact gave as the books keep them, and their statements.
 
-A gift is what the books keep of a line whose item sits in a gift category: each receipt on
-the invoice (cash, net of what was refunded or charged back of it, or credit applied to it) at
-the gift lines' share of the document, so a ticket or dues line on the same invoice never
-counts, and what a credit note settled of that invoice's open balance the same way; less what
-each credit note's posting takes back of gift lines (_note_taken_back), however that credit is
-settled (refunded in cash, applied to another invoice or held on account) and whichever income
-account the gift lines are credited to; plus money posted by hand or by a bank line to a
-gift income account with the donor named on the line. No posting the books made for a document
-counts again, so an invoice settled by a bank line counts once. Amounts are in the books' currency at each receipt's own rate.
+A donor's gifts are read from the posted lines on the gift income accounts (the accounts the
+gift categories and items are credited to), attributed to the party each line belongs to
+(_line_party, as on the ledger), at the amount the books posted in their own currency. Where a
+posting records the document lines behind it (its line allocations), only the part its gift
+lines account for counts (_gift_shares), so a ticket or dues line on the same account never
+counts; sales revenue counts through such postings alone, since nothing else tells its gift
+lines apart. Rate differences on receipts land where the books put them (exchange gain or
+loss), refunds and voided receipts move no gift income, and a credit note takes back what its
+posting takes off gift income, however that credit is settled.
 
 A statement lists one donor's gifts in a period under the company's wording (``WORDING``,
 tax-neutral by default). Sending one records it on the contact (``STATEMENT_SENT``) under a key
@@ -45,12 +45,12 @@ from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.journal_accounts import income_account_of
-from celerp.services.ledger_rows import journal_rows
-from celerp.services.money import books_currency, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
+from celerp.services.money import books_currency, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.recognition import gift_categories
-from celerp_accounting.routes import _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range
-from celerp_docs.doc_projections import UNISSUED_STATUSES
+from celerp.services.auto_je import _posted_line_shares
+from celerp_accounting.routes import _id_chunks, _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range
 from ui.components.encode import to_markup
 from ui.i18n import t
 
@@ -58,10 +58,6 @@ router = APIRouter()
 
 WORDING = "donor_statement_wording"  # company setting {"text", "version"}
 STATEMENT_SENT = "crm.contact.statement_sent"
-
-
-def _gift(day: str, amount: Decimal, base: str, **source) -> dict:
-    return {"date": day, "amount": to_stored_float(round_money(amount, base)), **source}
 
 
 def _in_period(day: str, date_from: str | None, date_to: str | None) -> bool:
@@ -78,137 +74,108 @@ async def _gift_items(session: AsyncSession, company_id, gifts: frozenset[str]) 
     return {str(eid): state or {} for eid, state in rows}
 
 
-def _gift_share(doc: dict, items: dict[str, dict], base: str) -> Decimal:
-    """The part of each amount settling invoice ``doc`` that its gift lines account for: their
-    share of the document's net over its total, so tax and other lines take their own share."""
-    from celerp.services.auto_je import _line_allocations
+async def _posting_allocations(session: AsyncSession, company_id, je_ids: list[str]) -> dict[str, dict]:
+    """The line allocations each entry's creation recorded, by entry id; a reversal row reads
+    those of the entry it reverses."""
+    originals = {je_id: je_id.removesuffix(REVERSAL_SUFFIX) for je_id in je_ids}
+    found: dict[str, dict] = {}
+    for chunk in _id_chunks(sorted(set(originals.values()))):
+        for entity_id, meta in (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.event_type == "acc.journal_entry.created",
+                LedgerEntry.entity_id.in_(chunk)))).all():
+            if (meta or {}).get("line_allocations"):
+                found[entity_id] = meta["line_allocations"]
+    return {je_id: found[original] for je_id, original in originals.items() if original in found}
 
+
+def _is_gift(line, items: dict[str, dict]) -> bool:
+    return isinstance(line, dict) and str(line_item_id(line)) in items
+
+
+async def _gift_shares(session: AsyncSession, company_id, doc: dict, allocations: dict, items: dict[str, dict],
+                       moved: dict[str, Decimal]) -> dict[str, Decimal]:
+    """account -> the share of what a document's posting ``moved`` on it that gift lines account
+    for, from the posting's line ``allocations``. A line the posting named an account for counts
+    there, a credit note line linked to an invoice line as that invoice line; the rest of what a
+    credit note moved on an account is what it spread over the revenue of the invoice it credits,
+    and counts at the gift share of that invoice's revenue on the account, as its posting
+    allocated it."""
     lines = doc.get("line_items") or []
-    gift = sum((to_decimal(share["doc"]) for index, share in _line_allocations(doc, base, 0).items()
-                if isinstance(lines[int(index)], dict) and str(line_item_id(lines[int(index)])) in items),
-               Decimal(0))
-    total = to_decimal(round_money(doc.get("total") or 0, doc.get("currency", "USD")))
-    return gift / total if gift and total > 0 else Decimal(0)
+    original = str(doc.get("original_doc_id") or "")
+    invoice_lines: dict = {}
+    spread: dict[str, list[Decimal]] = {}
+    if original:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": original})
+        invoice_lines = {li.get("line_id"): li for li in ((row.state or {}) if row is not None else {}).get("line_items") or []
+                         if isinstance(li, dict)}
+        for line_id, share in (await _posted_line_shares(session, company_id, original)).items():
+            _add(spread, share["account"], to_decimal(share["base"]), _is_gift(invoice_lines.get(line_id), items))
+    named: dict[str, list[Decimal]] = {}
+    for index, share in allocations.items():
+        if share.get("account") and int(index) < len(lines):
+            line = lines[int(index)]
+            linked = invoice_lines.get(line.get("source_line_id")) if isinstance(line, dict) else None
+            _add(named, share["account"], to_decimal(share.get("base") or 0), _is_gift(linked or line, items))
+    shares = {}
+    for account, amount in moved.items():
+        gift, counted = named.get(account) or (Decimal(0), Decimal(0))
+        spread_gift, spread_all = spread.get(account) or (Decimal(0), Decimal(0))
+        if amount > counted and spread_all:
+            gift += (amount - counted) * spread_gift / spread_all
+        shares[account] = gift / amount if amount else Decimal(0)
+    return shares
 
 
-def _document_gifts(doc_id: str, doc: dict, share: Decimal, base: str,
-                    date_from: str | None, date_to: str | None) -> list[dict]:
-    """What each receipt kept on invoice ``doc`` (cash net of refunds, or credit applied) brought
-    its gift lines, at their ``share``."""
-    out = []
-    for payment in doc.get("payments") or []:
-        day = str(payment.get("payment_date") or "")[:10]
-        if payment.get("status", "active") != "active" or not _in_period(day, date_from, date_to):
-            continue
-        kept = to_decimal(payment.get("amount") or 0) - to_decimal(payment.get("refunded") or 0)
-        rate = ((payment.get("books") or {}).get("settlement_rate") or payment.get("conversion_rate")
-                or doc.get("conversion_rate") or 1)
-        if amount := to_decimal(to_base(kept * share, rate, base)):
-            out.append(_gift(day, amount, base, doc_id=doc_id, ref=doc.get("ref_id") or ""))
-    return out
-
-
-def _credited_gift(note_id: str, note: dict, invoice: dict, share: Decimal, base: str,
-                   date_from: str | None, date_to: str | None) -> list[dict]:
-    """What credit note ``note`` settled of the open balance of the invoice it credits
-    (``credited``), at that invoice's gift ``share``: it settles the invoice like credit applied
-    to it, so it counts as received there and the note's posting takes it back below."""
-    day = str(note.get("issue_date") or note.get("finalized_at") or "")[:10]
-    credited = to_decimal(note.get("credited") or 0)
-    if not credited or not share or not _in_period(day, date_from, date_to):
-        return []
-    rate = note.get("conversion_rate") or invoice.get("conversion_rate") or 1
-    amount = to_decimal(to_base(credited * share, rate, base))
-    return [_gift(day, amount, base, doc_id=note_id, ref=note.get("ref_id") or "")] if amount else []
-
-
-async def _note_taken_back(session: AsyncSession, company_id, note_id: str, note: dict, invoice: dict,
-                           items: dict[str, dict], settings: dict, base: str,
-                           date_from: str | None, date_to: str | None) -> list[dict]:
-    """What credit note ``note`` takes back of gifts, on its issue date, as its posting takes it
-    back (auto_je._credit_note_lines), whatever settles the credit: a line linked to a gift line
-    of the invoice it credits takes its whole share, its other lines take the invoice's gift
-    lines' share of what they spread over the invoice's revenue, and a note crediting no invoice
-    takes its gift lines' share where it posts them, on sales revenue, only when gifts post there."""
-    from celerp.services.auto_je import _line_allocations, _posted_line_shares, _sale_totals
-
-    day = str(note.get("issue_date") or note.get("finalized_at") or "")[:10]
-    if not items or not _in_period(day, date_from, date_to):
-        return []
-    lines = note.get("line_items") or []
-    allocations = _line_allocations(note, base, _sale_totals(note, base)[2])
-    gift = {int(index): to_decimal(share["base"]) for index, share in allocations.items()
-            if isinstance(lines[int(index)], dict) and str(line_item_id(lines[int(index)])) in items}
-    original = str(note.get("original_doc_id") or "")
-    if not original:
-        sales = role_map(settings).get(R.SALES_REVENUE)
-        amount = sum((amount for index, amount in gift.items()
-                      if (income_account_of(settings, items[str(line_item_id(lines[index]))]) or sales) == sales),
-                     Decimal(0))
-    else:
-        posted = await _posted_line_shares(session, company_id, original)
-        gift_lines = {li.get("line_id") for li in invoice.get("line_items") or []
-                      if isinstance(li, dict) and str(line_item_id(li)) in items}
-        linked = {int(index): (lines[int(index)].get("source_line_id"), to_decimal(share["base"]))
-                  for index, share in allocations.items()
-                  if isinstance(lines[int(index)], dict) and lines[int(index)].get("source_line_id") in posted}
-        sold = sum((to_decimal(share["base"]) for share in posted.values()), Decimal(0))
-        sold_gifts = sum((to_decimal(share["base"]) for line_id, share in posted.items() if line_id in gift_lines),
-                         Decimal(0))
-        rest = sum((to_decimal(share["base"]) for share in allocations.values()), Decimal(0)) - sum(
-            (amount for _, amount in linked.values()), Decimal(0))
-        amount = sum((amount for source, amount in linked.values() if source in gift_lines), Decimal(0))
-        amount += rest * sold_gifts / sold if sold else Decimal(0)
-    return [_gift(day, -amount, base, doc_id=note_id, ref=note.get("ref_id") or "")] if amount else []
+def _add(totals: dict[str, list[Decimal]], account: str, base: Decimal, gift: bool) -> None:
+    """Add ``base`` to the [gift, all] totals of ``account``."""
+    pair = totals.setdefault(account, [Decimal(0), Decimal(0)])
+    pair[1] += base
+    if gift:
+        pair[0] += base
 
 
 async def donor_history(session: AsyncSession, company_id, contact_id: str | None,
                         date_from: str | None, date_to: str | None) -> dict[str, dict]:
     """Each donor's gifts dated in the period, newest first, and their total, {contact: {"total", "gifts"}};
     ``contact_id`` narrows it to that donor. A contact merged into another gives as the one that
-    survives it."""
+    survives it. One gift per posting and party."""
     settings = await current_settings(session, company_id)
     base = books_currency(settings)
     gifts = gift_categories(settings)
     items = await _gift_items(session, company_id, gifts)
     survivors = await merge_survivors(session, company_id)
-    found: dict[str, list[dict]] = {}
-
-    docs = {str(doc_id): doc or {} for doc_id, doc in (await session.execute(select(
-        Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["doc_type"].as_string().in_(("invoice", "credit_note"))))).all()} if items else {}
-    issued = {doc_id: doc for doc_id, doc in docs.items() if doc.get("status", "draft") not in UNISSUED_STATUSES}
-    shares = {doc_id: _gift_share(doc, items, base) for doc_id, doc in issued.items() if doc.get("doc_type") == "invoice"}
-    for doc_id, doc in issued.items():
-        invoice_id = doc_id if doc.get("doc_type") == "invoice" else str(doc.get("original_doc_id") or "")
-        invoice = issued.get(invoice_id) or {}
-        holder = invoice.get("contact_id") or doc.get("contact_id")
-        party = survivors.get(holder, holder)
-        if not party or contact_id not in (None, party):
-            continue
-        share = shares.get(invoice_id) or Decimal(0)
-        rows = (_document_gifts(doc_id, doc, share, base, date_from, date_to) if doc_id == invoice_id
-                else _credited_gift(doc_id, doc, invoice, share, base, date_from, date_to)
-                + await _note_taken_back(session, company_id, doc_id, doc, invoice, items, settings, base,
-                                         date_from, date_to))
-        if rows:
-            found.setdefault(party, []).extend(rows)
-
-    accounts = {code for code in ((settings.get("category_income_accounts") or {}).get(key) for key in gifts) if code}
-    accounts |= {code for item in items.values() if (code := income_account_of(settings, item))}
+    mapped = {code for code in ((settings.get("category_income_accounts") or {}).get(key) for key in gifts) if code}
+    mapped |= {code for item in items.values() if (code := income_account_of(settings, item))}
+    accounts = mapped | {code for code in [role_map(settings).get(R.SALES_REVENUE)] if code and items}
     posted = [(je_id, state, day) for je_id, state, day in await journal_rows(session, company_id)
               if _in_period(day, date_from, date_to)
               and any(entry.get("account") in accounts for entry in state.get("entries") or [])]
-    refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
+    je_ids = [je_id for je_id, _, _ in posted]
+    refs = await _je_doc_refs(session, company_id, je_ids)
+    allocations = await _posting_allocations(session, company_id, je_ids)
+    found: dict[str, list[dict]] = {}
     for je_id, state, day in posted:
-        if (refs.get(je_id) or {}).get("doc_id"):
-            continue  # the books' posting for a document: its gifts count above
-        for entry in state.get("entries") or []:
-            amounts = _line_amounts(entry) if entry.get("account") in accounts else None
-            party = _line_party(refs, je_id, entry, survivors) if amounts else ""
-            if party and contact_id in (None, party) and (net := amounts[1] - amounts[0]):
-                found.setdefault(party, []).append(_gift(day, net, base, je_id=je_id, ref=state.get("memo") or ""))
+        ref = refs.get(je_id) or {}
+        lines = [(entry, amounts[1] - amounts[0]) for entry in state.get("entries") or []
+                 if entry.get("account") in accounts and (amounts := _line_amounts(entry))]
+        if ref.get("doc_id") and je_id in allocations:
+            moved: dict[str, Decimal] = {}
+            for entry, net in lines:
+                moved[entry["account"]] = moved.get(entry["account"], Decimal(0)) + net
+            shares = await _gift_shares(session, company_id, ref.get("doc") or {}, allocations[je_id], items,
+                                        {code: abs(net) for code, net in moved.items()})
+        else:
+            shares = dict.fromkeys(mapped, Decimal(1))
+        given: dict[str, Decimal] = {}
+        for entry, net in lines:
+            party = _line_party(refs, je_id, entry, survivors)
+            if party and contact_id in (None, party):
+                given[party] = given.get(party, Decimal(0)) + net * shares.get(entry["account"], Decimal(0))
+        source = {"doc_id": ref["doc_id"], "ref": ref.get("doc_ref") or ""} if ref.get("doc_id") \
+            else {"je_id": je_id, "ref": state.get("memo") or ""}
+        for party, amount in given.items():
+            if amount := round_money(amount, base):
+                found.setdefault(party, []).append({"date": day, "amount": to_stored_float(amount), **source})
 
     return {party: {"total": to_stored_float(round_money(sum(to_decimal(g["amount"]) for g in rows), base)),
                     "gifts": sorted(rows, key=lambda g: (g["date"], g.get("doc_id") or g.get("je_id") or ""),
