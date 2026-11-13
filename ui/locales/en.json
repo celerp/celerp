@@ -7933,5 +7933,6 @@
   "fund.change_hint": "This document has posted. Saving voids its entries and posts them again on the new fund.",
   "fund.change": "Change fund",
   "fund.change_journal_hint": "This entry has posted. Saving voids it and posts it again on the funds chosen below.",
-  "fund.changed": "Fund changed. The entry was voided and posted again on the new funds."
+  "fund.changed": "Fund changed. The entry was voided and posted again on the new funds.",
+  "collection.status_succeeded": "Charged automatically. If the payment is not on this invoice yet, find it under Payments not matched to an invoice in Settings, Online Payments."
 }

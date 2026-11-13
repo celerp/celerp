@@ -36,8 +36,10 @@ ATTEMPT_EVENT = "doc.collection"
 BINDING_STATES = frozenset({"active", "revoked", "requires_action", "access_removed"})
 # Cloud's states for an attempt (collection.attempt), and the app's own: "pending" (asked
 # for, Cloud has not answered), "paid" (its charge is recorded on the invoice), "stopped".
-CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "failed", "canceled", "unknown",
-                          "unverifiable"})
+# "succeeded": the card was charged and its payment is on the way, or was kept among the
+# unmatched payments because the invoice could not take it.
+CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeeded", "failed", "canceled",
+                          "unknown", "unverifiable"})
 # The attempt is with Cloud and may still charge the card.
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
 # The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
@@ -209,7 +211,7 @@ def outcome(answer: dict) -> dict | None:
         return None
     return {"state": state, "failure_code": answer.get("failure_code"), "retry_eligible_at": eligible,
             "action_url": answer.get("action_url"), "definitive": answer.get("definitive") is True
-            or state in ("failed", "canceled", "unverifiable")}
+            or state in ("succeeded", "failed", "canceled", "unverifiable")}
 
 
 def stamp(value) -> datetime | None:
@@ -257,5 +259,5 @@ async def receive_attempt(payload: dict) -> bool:
 async def charge_recorded(session, company_id, doc_row) -> None:
     """An online charge was recorded on the invoice: an attempt with Cloud that it settles is paid."""
     current = doc_row.state.get("collection") or {}
-    if current.get("state") in IN_FLIGHT and not is_open(doc_row.state):
+    if current.get("state") in IN_FLIGHT | {"succeeded"} and not is_open(doc_row.state):
         await set_attempt(session, company_id, doc_row, {"state": "paid"}, drop=("cancel",))

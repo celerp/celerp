@@ -2097,6 +2097,10 @@
     "fund.changed": {
       "en": "Fund changed. The entry was voided and posted again on the new funds.",
       "params": []
+    },
+    "collection.status_succeeded": {
+      "en": "Charged automatically. If the payment is not on this invoice yet, find it under Payments not matched to an invoice in Settings, Online Payments.",
+      "params": []
     }
   },
   "modules": {

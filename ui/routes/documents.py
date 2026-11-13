@@ -6496,6 +6496,8 @@ def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
         text = sentence("collection.status_failed_retry", date=business_date_of(at, tz)) if at else t("collection.status_failed")
     elif state == "paid":
         text = t("collection.status_paid")
+    elif state == "succeeded":
+        text = t("collection.status_succeeded")
     elif state == "stopped":
         reason = collection.get("reason") or ""
         why = t(f"collection.stopped_{reason}") if reason in STOP_REASONS else t("collection.stopped_cloud", reason=reason or EMPTY)

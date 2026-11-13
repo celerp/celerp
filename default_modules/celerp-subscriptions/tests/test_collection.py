@@ -563,6 +563,37 @@ async def test_offsession_success_through_apply_doc_payment(client, session, mon
     assert len(cloud.sent("attempt")) == 1 and cloud.sent("cancel") == []
 
 
+async def test_succeeded_attempt_is_taken_and_settles_with_its_payment(client, session, monkeypatch, cloud):
+    """Cloud reports a charge that went through before (or without) its payment reaching the
+    invoice: the report is taken, nothing is charged or canceled again, the invoice says where
+    the payment is when it could not take it, and the payment once recorded marks it paid."""
+    from celerp.services import payments
+    from ui.components.encode import to_markup
+    from ui.routes.documents import _collection_status
+    from ui.i18n import t
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    [sent] = cloud.sent("attempt")
+    assert await _attempt_outcome(cid, doc["entity_id"], 1, "succeeded") is True
+    [c] = await _collection(session, eid)
+    assert (c["state"], c["definitive"]) == ("succeeded", True)
+    assert t("collection.status_succeeded") in to_markup(_collection_status(c, "UTC"))
+    await tick(session, cid, "2026-07-02")
+    assert len(cloud.sent("attempt")) == 1 and cloud.sent("cancel") == []
+    assert await _attempt_outcome(cid, doc["entity_id"], 1, "processing") is True  # a late, lesser report
+    assert (await _collection(session, eid))[0]["state"] == "succeeded"
+    assert await payments.receive_payment({
+        "company_id": cid, "entity_id": doc["entity_id"], "reference": "pi_1", "amount_minor": sent["amount_minor"],
+        "currency": sent["currency"], "paid_at": "2026-07-01T13:00:00+00:00", "managed": True,
+        "context": sent["context"]})
+    [doc] = await billed_docs(session, eid)
+    assert doc["status"] == "paid"
+    assert (await _collection(session, eid))[0]["state"] == "paid"
+
+
 async def test_collection_deliveries_validated_at_app(client, session, monkeypatch, cloud):
     """Deliveries naming another company, a document that is not there, an attempt the document never
     asked for or a payer who is not a contact write nothing; one without its fields is not taken."""
