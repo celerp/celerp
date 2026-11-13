@@ -902,3 +902,51 @@ async def test_every_field_editable_after_draft_needs_its_permission(client, ses
     r = await _edit(client, hd, eid, "contact_id", other)
     assert r.status_code == 200, r.text
     assert (await template(client, hd, eid))["contact_id"] == other
+
+
+def _while_asking(monkeypatch, cloud, step):
+    """Cloud stand-in that runs ``step(payload)`` after Cloud answered an attempt and before the
+    app records the answer, as a delivery or another writer can between the two."""
+    from celerp.services import collection
+
+    async def ask(path, payload):
+        answer = await cloud(path, payload)
+        if path.endswith("/attempt"):
+            await step(payload)
+        return answer
+    monkeypatch.setattr(collection, "_ask", ask)
+
+
+async def test_an_outcome_delivered_while_asking_outranks_the_answer(client, session, monkeypatch, cloud):
+    """When Cloud's delivery of an attempt's outcome lands while the app still waits on the answer
+    to that attempt, the delivered outcome stands: a refusal answered after it ends nothing."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    cloud.answers["attempt"] = (409, {"detail": "no_card_on_file"})
+
+    async def delivered(p):
+        assert await _attempt_outcome(cid, p["entity_id"], p["attempt_number"], "succeeded")
+    _while_asking(monkeypatch, cloud, delivered)
+    await tick(session, cid, "2026-07-01")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "succeeded"
+
+
+async def test_an_invoice_gone_while_asking_records_nothing(client, session, monkeypatch, cloud):
+    """An invoice removed while its attempt was with Cloud leaves the answer unrecorded and the
+    pass unbroken."""
+    from sqlalchemy import delete
+    from celerp.services.company_lock import locked_company
+    from celerp_subscriptions import collect
+    cid, eid = await _unanswered(client, session, monkeypatch, cloud)
+    [doc] = await billed_docs(session, eid)
+
+    async def removed(p):
+        await locked_company(session, uuid.UUID(cid))  # the company first, as every writer locks
+        await session.execute(delete(Projection).where(
+            Projection.company_id == uuid.UUID(cid), Projection.entity_id == p["entity_id"]))
+    _while_asking(monkeypatch, cloud, removed)
+    await collect.advance(lambda: _same(session), uuid.UUID(cid), doc["entity_id"])
+    assert await billed_docs(session, eid) == []
+    assert len(cloud.sent("attempt")) == 2

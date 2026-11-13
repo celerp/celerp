@@ -119,3 +119,24 @@ async def test_every_keyed_fund_door_binds_its_key_to_the_whole_request(client, 
         assert other.status_code == 409, (path, changed, other.text)
         assert other.json()["detail"]["message_key"] == "request.key_reused", other.text
         assert await _journal_ids(client, auth) == books and await _fund_names(client, auth) == funds, path
+
+
+async def test_a_movement_key_names_its_kind(client, session, auth, ids):
+    """A movement's key sent again with the same body for another kind of movement is refused:
+    the key names one movement, its kind included, so a reallocation is never answered with the
+    transfer posted under its key."""
+    from datetime import date
+    from fastapi import HTTPException
+    from celerp_accounting.funds import post_fund_movement
+    a, b = await _funds(client, auth)
+    key, body = uuid.uuid4().hex, {"from_fund": a, "to_fund": b, "amount": 10}
+
+    def move(kind):
+        return post_fund_movement(session, ids["company_id"], ts=date(2026, 3, 1), reason="Move",
+                                  actor=ids["user_id"], request_key=key, request=body, kind=kind,
+                                  legs=[(a, b, "1111", 10)])
+    first = await move("fund_transfer")
+    assert await move("fund_transfer") == first
+    with pytest.raises(HTTPException) as refused:
+        await move("fund_reallocation")
+    assert refused.value.status_code == 409
