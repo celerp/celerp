@@ -214,3 +214,14 @@ async def test_fund_cell_read_only_without_edit_permission(ui_client):
          patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
         r = await ui_client.get("/docs/doc:b1/funds/L1/edit")
     assert 'id="fund-cell-L1"' in r.text and "<form" not in r.text and "hx-get" not in r.text
+
+
+async def test_a_line_fund_change_is_named_in_the_history():
+    from ui.components.activity import _fields_changed_summary
+    from ui.i18n import t
+
+    line = {"line_id": "L1", "name": "Library gift", "quantity": 1, "unit_price": 300.0}
+    picked = _fields_changed_summary({"line_items": {"old": [line], "new": [{**line, "fund_id": "fund:r"}]}}, "USD")
+    assert t("activity.changed", item=f"Library gift {t('th.fund')}") in picked, picked
+    unrestricted = {**line, "fund_id": None}
+    assert _fields_changed_summary({"line_items": {"old": [line], "new": [unrestricted]}}, "USD") == ""

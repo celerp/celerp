@@ -861,6 +861,8 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
                                     f"{name} {fmt_price(old_price, 'unit_price', currency)}"
                                     f"→{fmt_price(new_price, 'unit_price', currency)}"
                                 )
+                            elif (old_li.get("fund_id") or None) != (new_li.get("fund_id") or None):
+                                changed.append(f"{name} {t('th.fund')}")
                     parts = (
                         [t("activity.added", item=_li_added_label(li)) for li in added[:2]]
                         + [t("activity.changed", item=x) for x in changed[:2]]
