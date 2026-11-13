@@ -29348,5 +29348,12 @@
     "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep": 6.520817038952373,
     "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[own_3500]": 0.15810611692722887,
     "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_backup]": 0.17505086993332952,
-    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[seeded]": 0.08789508696645498
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[seeded]": 0.08789508696645498,
+    "tests/test_fund_pages_end_to_end.py::test_connection_fund_default_saved_from_connectors": 0.8788979968521744,
+    "tests/test_fund_pages_end_to_end.py::test_document_fund_chosen_and_changed_from_the_document": 0.5320179859409109,
+    "tests/test_fund_pages_end_to_end.py::test_funds_tab_turns_on_adds_renames_archives_and_restores": 0.3753335109213367,
+    "tests/test_fund_pages_end_to_end.py::test_income_account_saved_from_its_cell": 0.12897005688864738,
+    "tests/test_fund_pages_end_to_end.py::test_movement_forms_post_and_fund_activity_reverses": 0.5159122489858419,
+    "tests/test_fund_pages_end_to_end.py::test_recognition_setting_month_post_and_reverse": 0.44690112792886794,
+    "tests/test_fund_pages_end_to_end.py::test_year_close_reversed_from_period_lock_tab": 0.2549845090834424
 }
