@@ -27,7 +27,7 @@ from celerp.services.record_quantities import template_label
 from celerp.accounting_roles import RECOGNIZE_FIELD
 from celerp.services.business_time import business_today
 from celerp_subscriptions.billing import ENDED, amendments_of, bills, doc_kind, lines_on, send_written
-from celerp_subscriptions.periods import COLLECT_MODE, shown
+from celerp_subscriptions.periods import BILLED, COLLECT_MODE, UNRESOLVED, shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
@@ -491,10 +491,12 @@ async def _with_collection(token: str, entity_id: str, sub: dict) -> dict:
 
 
 def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
-    """Shows the first bill date until a period is billed, then the next bill date; for an
-    agreement that has ended, why it bills nothing, and on a void one a link to its document's
-    page, where Unvoid is (every refusal on a void agreement names it)."""
-    billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
+    """Shows the first bill date until the agreement has billed (a billed period, or earlier
+    documents still waiting in history review), then the next bill date; for an agreement that
+    has ended, why it bills nothing, and on a void one a link to its document's page, where
+    Unvoid is (every refusal on a void agreement names it)."""
+    billed = bool(sub.get("history_review")) or any(
+        (e or {}).get("state") in (BILLED, UNRESOLVED) for e in (sub.get("periods") or {}).values())
     attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em"}
     if sub.get("ended"):
         unvoid = (" ", A(t("doc.unvoid"), href=f"/docs/{entity_id}")) if sub.get("status") == "void" else ()
