@@ -935,6 +935,12 @@ async def test_set_all_outside_lines_then_edit_one(client, auth, monkeypatch):
     assert (state.get("fund_choice"), state.get("fund_choice_source")) == (fund, "user")
     assert _choices(state)[1] == [(None, None), (other, other)]
 
+    # The page's fund controls draw from the document as the API returns it.
+    from ui.components.funds import FundView, line_cell
+    funds = (await _get("tok", "/accounting/funds"))["items"]
+    view = FundView.of(state, funds, {"funds_enabled": True}, "owner")
+    assert f'hx-get="/docs/{rows[0]["id"]}/funds/' in to_xml(line_cell(view, state["line_items"][1]))
+
 
 def _issued_import(entity_id: str, lines: list[dict]) -> dict:
     """An open invoice in an import file, booked now."""

@@ -42,7 +42,7 @@ def _bill(*, status: str = "draft", choice: str | None = None, line_choice: str 
               "origin": "connected_company", **({"fund_choice": line_choice} if line_choice else {})}
     local = {"line_id": "L2", "description": "Delivery", "quantity": 1, "unit_price": 10.0, "line_total": 10.0,
              **({"fund_id": local_fund} if local_fund else {})}
-    return {"entity_id": "doc:b1", "doc_type": "bill", "status": status, "currency": "USD", "version": 7,
+    return {"id": "doc:b1", "doc_type": "bill", "status": status, "currency": "USD", "version": 7,
             "origin": "connected_company", **({"fund_choice": choice} if choice else {}),
             "line_items": [marked, local], "total": 50.0}
 
@@ -53,7 +53,7 @@ async def _page(ui_client, doc: dict, *, settings: dict | None = None) -> str:
     with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
          patch("ui.api_client.list_funds", new=AsyncMock(return_value=_FUNDS)), \
          patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
-        r = await ui_client.get(f"/docs/{doc['entity_id']}")
+        r = await ui_client.get(f"/docs/{doc['id']}")
     assert r.status_code == 200, r.text
     return r.text
 
@@ -105,7 +105,7 @@ def _picked(html: str, line_id: str) -> str | None:
 def _local(doc_type: str = "bill", *, status: str = "draft", **line) -> dict:
     """A document the company entered itself, of one line."""
     li = {"line_id": "L2", "description": "Delivery", "quantity": 1, "unit_price": 10.0, "line_total": 10.0, **line}
-    return {"entity_id": "doc:b1", "doc_type": doc_type, "status": status, "currency": "USD", "version": 7,
+    return {"id": "doc:b1", "doc_type": doc_type, "status": status, "currency": "USD", "version": 7,
             "line_items": [li], "total": 10.0}
 
 

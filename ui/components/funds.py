@@ -76,7 +76,7 @@ class FundView:
 
     @property
     def entity_id(self) -> str:
-        return self.doc["entity_id"]
+        return self.doc["id"]
 
     def name(self, value) -> str:
         if not value:
