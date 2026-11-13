@@ -53,15 +53,18 @@ AT = "2026-07-20T10:00:00+00:00"
 RELEASED_AT = "2026-07-10T00:00:00+00:00"  # before every refund here: none applies on an invoice after it
 
 
-def _random_seeds() -> list[int]:
-    count = int(os.environ.get("SPLIT_ORACLE_RANDOM", "4"))
+RANDOM_COUNT = int(os.environ.get("SPLIT_ORACLE_RANDOM", "4"))
+
+
+def _random_seed(i: int) -> int:
+    """The i-th random case's seed, drawn when the case runs so its test id stays random-<i>."""
     base = (os.environ.get("SPLIT_ORACLE_SEED") or os.environ.get("GITHUB_SHA")
             or os.environ.get("PYTEST_XDIST_TESTRUNUID"))
-    if base and base.isdigit() and count == 1:
-        return [int(base)]
+    if base and base.isdigit() and RANDOM_COUNT == 1:
+        return int(base)
     if base is None:
-        return [secrets.randbelow(10**9) for _ in range(count)]
-    return [int(hashlib.sha256(f"{base}:{i}".encode()).hexdigest()[:8], 16) for i in range(count)]
+        return secrets.randbelow(10**9)
+    return int(hashlib.sha256(f"{base}:{i}".encode()).hexdigest()[:8], 16)
 
 
 # ── Reference model ───────────────────────────────────────────────────────────
@@ -412,7 +415,6 @@ async def test_split_charge_follow_ups_agree_with_the_reference_model(seed, clie
     await _seed_case(seed, client, session, monkeypatch, cloud)
 
 
-@pytest.mark.parametrize("seed", _random_seeds(), ids=lambda s: f"random-{s}")
-async def test_random_split_charge_follow_ups_agree_with_the_reference_model(seed, client, session, monkeypatch,
-                                                                             cloud):
-    await _seed_case(seed, client, session, monkeypatch, cloud)
+@pytest.mark.parametrize("i", range(RANDOM_COUNT), ids=lambda i: f"random-{i}")
+async def test_random_split_charge_follow_ups_agree_with_the_reference_model(i, client, session, monkeypatch, cloud):
+    await _seed_case(_random_seed(i), client, session, monkeypatch, cloud)
