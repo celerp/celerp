@@ -29341,5 +29341,12 @@
     "tests/test_migrations/test_lookup_index_failures.py::test_an_index_whose_validity_cannot_be_read_is_never_dropped[invalid-True]": 0.0029003910603933036,
     "tests/test_migrations/test_lookup_index_failures.py::test_an_index_whose_validity_cannot_be_read_is_never_dropped[valid-True]": 0.002608810958918184,
     "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_json_rewrites_read_and_write_in_bounded_batches[SQL_ASCII]": 0.36002759693656117,
-    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_json_rewrites_read_and_write_in_bounded_batches[UTF8]": 0.28390503593254834
+    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_json_rewrites_read_and_write_in_bounded_batches[UTF8]": 0.28390503593254834,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[ -True]": 0.90560900606215,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[-True]": 0.23393699107691646,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[3-None]": 0.16753908898681402,
+    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep": 6.520817038952373,
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[own_3500]": 0.15810611692722887,
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_backup]": 0.17505086993332952,
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[seeded]": 0.08789508696645498
 }
