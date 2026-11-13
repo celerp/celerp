@@ -72,13 +72,23 @@ def _issued_import(entity_id: str, lines: list[dict]) -> dict:
                      "amount_outstanding": total, "import_treatment": "record_now"}}
 
 
-async def _books(client, auth) -> dict:
-    await _account(client, auth, GIFT_ACCOUNT)
+OTHER_INCOME_ACCOUNT = "4260"
+
+
+async def _books(client, auth, gift_mapped: bool = True) -> dict:
+    """Gift, dues and ticket items. With ``gift_mapped`` the Donation category is credited to
+    GIFT_ACCOUNT; without it gifts fall to the sales revenue account and dues and tickets go to
+    OTHER_INCOME_ACCOUNT, so sales revenue holds only gifts."""
+    await _account(client, auth, GIFT_ACCOUNT if gift_mapped else OTHER_INCOME_ACCOUNT)
     donation = await _category(client, auth, "Donation")
-    assert (await _set_category_account(client, auth, donation, GIFT_ACCOUNT)).status_code == 200
+    if gift_mapped:
+        assert (await _set_category_account(client, auth, donation, GIFT_ACCOUNT)).status_code == 200
     r = await client.put(f"/companies/me/categories/{donation}/gift", headers=auth["headers"], json={"gift": True})
     assert r.status_code == 200, r.text
     dues, ticket = await _category(client, auth, "Dues"), await _category(client, auth, "Ticket")
+    if not gift_mapped:
+        for key in (dues, ticket):
+            assert (await _set_category_account(client, auth, key, OTHER_INCOME_ACCOUNT)).status_code == 200
     return {"gift": await _item(client, auth, "Gift", category=donation),
             "dues": await _item(client, auth, "Annual dues", category=dues),
             "ticket": await _item(client, auth, "Dinner ticket", category=ticket)}

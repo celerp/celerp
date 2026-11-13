@@ -169,17 +169,19 @@ async def _note(client, auth, donor: str, item: str, amount: float, invoice: str
                          **({"original_doc_id": invoice} if invoice else {}))
 
 
-async def _ledger_kept(client, auth, donor: str) -> float:
-    r = await client.get(f"/accounting/ledger/{GIFT_ACCOUNT}", headers=auth["headers"], params={"contact_id": donor})
+async def _ledger_kept(client, auth, donor: str, account: str = GIFT_ACCOUNT) -> float:
+    r = await client.get(f"/accounting/ledger/{account}", headers=auth["headers"], params={"contact_id": donor})
     assert r.status_code == 200, r.text
     return round(sum(line["credit"] - line["debit"] for line in r.json()["lines"]), 2)
 
 
-async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str]:
+async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str, float]:
     """One donor's generated mix ending with every invoice settled: a gift invoice (sometimes
     with a ticket line), credit applied to it before cash, cash in one or two receipts, a
     receipt refunded or voided and paid again, then a credit note against the gift line
-    refunded in cash, applied to a ticket invoice, held on account, or split."""
+    refunded in cash, applied to a ticket invoice, held on account, or split. The third value
+    is what a ticket credit note crediting no invoice posted to sales revenue: such a note
+    posts every line there, whatever account its item sells on."""
     donor = await _donor(client, auth, f"Oracle donor {n}")
     gift = float(rng.choice([40, 75, 100, 160]))
     lines = [_line(items["gift"], "Gift", gift)]
@@ -188,11 +190,13 @@ async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str]:
     doc = await _invoice(client, auth, donor, *lines)
     due = round(sum(li["line_total"] for li in lines), 2)
     story = [f"invoice {[li['line_total'] for li in lines]}"]
+    ticket_on_sales = 0.0
     if rng.random() < 0.4:
         source = rng.choice(["gift", "ticket"])
         credit = float(rng.choice([10, 20]))
         note = await _note(client, auth, donor, items[source], credit, doc if source == "gift" else None)
         if source == "ticket":  # a gift note against the invoice settles its open balance itself
+            ticket_on_sales = credit
             await _post_ok(client, auth, f"/docs/{note}/apply-to-invoice", target_doc_id=doc, amount=credit,
                            date="2026-03-02")
         due = round(due - credit, 2)
@@ -229,24 +233,28 @@ async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str]:
                            date="2026-03-16")
             await _pay(client, auth, ticket, 10, "2026-03-16")
         story.append(f"gift note {credit} ({how}) {settle}")
-    return donor, "; ".join(story)
+    return donor, "; ".join(story), ticket_on_sales
 
 
-async def test_donor_history_equals_gift_income_the_books_keep(client, auth):
+@pytest.mark.parametrize("gift_mapped", [True, False], ids=["gift-account", "sales-revenue"])
+async def test_donor_history_equals_gift_income_the_books_keep(client, auth, gift_mapped):
     """Per donor, over generated mixes of receipts, refunds, voided receipts and credit notes
     settled every way (cash, applied to another invoice, held on account), the history total
-    equals what the ledger keeps on the gift income account for that donor."""
+    equals what the ledger keeps on the gift income account for that donor, whether the gift
+    category has its own income account or gifts fall to sales revenue (there, less what a
+    ticket credit note crediting no invoice posted to sales revenue)."""
     import random
 
-    items = await _books(client, auth)
+    items = await _books(client, auth, gift_mapped)
+    account = GIFT_ACCOUNT if gift_mapped else "4100"
     rng = random.Random(426)
     wrong = []
     for n in range(14):
-        donor, story = await _scenario(client, auth, items, rng, n)
+        donor, story, ticket_on_sales = await _scenario(client, auth, items, rng, n)
         history = float((await _history(client, auth, donor))["total"])
         listed = next((float(row["total"]) for row in (await client.get(
             "/donors", headers=auth["headers"], params=PERIOD)).json()["items"] if row["contact_id"] == donor), 0.0)
-        kept = await _ledger_kept(client, auth, donor)
+        kept = round(await _ledger_kept(client, auth, donor, account) + (0 if gift_mapped else ticket_on_sales), 2)
         if not history == listed == kept:
             wrong.append(f"{story}: history {history}, Donors page {listed}, books {kept}")
     assert not wrong, "\n".join(wrong)

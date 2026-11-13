@@ -6,11 +6,11 @@ A gift is what the books keep of a line whose item sits in a gift category: each
 the invoice (cash, net of what was refunded or charged back of it, or credit applied to it) at
 the gift lines' share of the document, so a ticket or dues line on the same invoice never
 counts, and what a credit note settled of that invoice's open balance the same way; less what
-each credit note's own posting took back off a gift income account, however that credit is
-settled (refunded in cash, applied to another invoice or held on account); plus
-money posted by hand or by a bank line to a gift income account with the donor named on the
-line. No other posting the books made for a document counts again, so an invoice settled by a
-bank line counts once. Amounts are in the books' currency at each receipt's own rate.
+each credit note's posting takes back of gift lines (_note_taken_back), however that credit is
+settled (refunded in cash, applied to another invoice or held on account) and whichever income
+account the gift lines are credited to; plus money posted by hand or by a bank line to a
+gift income account with the donor named on the line. No posting the books made for a document
+counts again, so an invoice settled by a bank line counts once. Amounts are in the books' currency at each receipt's own rate.
 
 A statement lists one donor's gifts in a period under the company's wording (``WORDING``,
 tax-neutral by default). Sending one records it on the contact (``STATEMENT_SENT``) under a key
@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import R, catalog_refusal
 from celerp.db import get_session
 from celerp.downloads import content_disposition
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -39,7 +39,7 @@ from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import email as email_service
-from celerp.services.account_roles import current_settings, merge_survivors
+from celerp.services.account_roles import current_settings, merge_survivors, role_map
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_company, locked_company
@@ -122,6 +122,46 @@ def _credited_gift(note_id: str, note: dict, invoice: dict, share: Decimal, base
     return [_gift(day, amount, base, doc_id=note_id, ref=note.get("ref_id") or "")] if amount else []
 
 
+async def _note_taken_back(session: AsyncSession, company_id, note_id: str, note: dict, invoice: dict,
+                           items: dict[str, dict], settings: dict, base: str,
+                           date_from: str | None, date_to: str | None) -> list[dict]:
+    """What credit note ``note`` takes back of gifts, on its issue date, as its posting takes it
+    back (auto_je._credit_note_lines), whatever settles the credit: a line linked to a gift line
+    of the invoice it credits takes its whole share, its other lines take the invoice's gift
+    lines' share of what they spread over the invoice's revenue, and a note crediting no invoice
+    takes its gift lines' share where it posts them, on sales revenue, only when gifts post there."""
+    from celerp.services.auto_je import _line_allocations, _posted_line_shares, _sale_totals
+
+    day = str(note.get("issue_date") or note.get("finalized_at") or "")[:10]
+    if not items or not _in_period(day, date_from, date_to):
+        return []
+    lines = note.get("line_items") or []
+    allocations = _line_allocations(note, base, _sale_totals(note, base)[2])
+    gift = {int(index): to_decimal(share["base"]) for index, share in allocations.items()
+            if isinstance(lines[int(index)], dict) and str(line_item_id(lines[int(index)])) in items}
+    original = str(note.get("original_doc_id") or "")
+    if not original:
+        sales = role_map(settings).get(R.SALES_REVENUE)
+        amount = sum((amount for index, amount in gift.items()
+                      if (income_account_of(settings, items[str(line_item_id(lines[index]))]) or sales) == sales),
+                     Decimal(0))
+    else:
+        posted = await _posted_line_shares(session, company_id, original)
+        gift_lines = {li.get("line_id") for li in invoice.get("line_items") or []
+                      if isinstance(li, dict) and str(line_item_id(li)) in items}
+        linked = {int(index): (lines[int(index)].get("source_line_id"), to_decimal(share["base"]))
+                  for index, share in allocations.items()
+                  if isinstance(lines[int(index)], dict) and lines[int(index)].get("source_line_id") in posted}
+        sold = sum((to_decimal(share["base"]) for share in posted.values()), Decimal(0))
+        sold_gifts = sum((to_decimal(share["base"]) for line_id, share in posted.items() if line_id in gift_lines),
+                         Decimal(0))
+        rest = sum((to_decimal(share["base"]) for share in allocations.values()), Decimal(0)) - sum(
+            (amount for _, amount in linked.values()), Decimal(0))
+        amount = sum((amount for source, amount in linked.values() if source in gift_lines), Decimal(0))
+        amount += rest * sold_gifts / sold if sold else Decimal(0)
+    return [_gift(day, -amount, base, doc_id=note_id, ref=note.get("ref_id") or "")] if amount else []
+
+
 async def donor_history(session: AsyncSession, company_id, contact_id: str | None,
                         date_from: str | None, date_to: str | None) -> dict[str, dict]:
     """Each donor's gifts dated in the period, newest first, and their total, {contact: {"total", "gifts"}};
@@ -143,13 +183,17 @@ async def donor_history(session: AsyncSession, company_id, contact_id: str | Non
     for doc_id, doc in issued.items():
         invoice_id = doc_id if doc.get("doc_type") == "invoice" else str(doc.get("original_doc_id") or "")
         invoice = issued.get(invoice_id) or {}
-        party = survivors.get(invoice.get("contact_id"), invoice.get("contact_id"))
-        if not party or not shares.get(invoice_id) or contact_id not in (None, party):
+        holder = invoice.get("contact_id") or doc.get("contact_id")
+        party = survivors.get(holder, holder)
+        if not party or contact_id not in (None, party):
             continue
-        found.setdefault(party, []).extend(
-            _document_gifts(doc_id, doc, shares[doc_id], base, date_from, date_to) if doc_id == invoice_id
-            else _credited_gift(doc_id, doc, invoice, shares[invoice_id], base, date_from, date_to))
-    notes = {doc_id for doc_id, doc in docs.items() if doc.get("doc_type") == "credit_note"}
+        share = shares.get(invoice_id) or Decimal(0)
+        rows = (_document_gifts(doc_id, doc, share, base, date_from, date_to) if doc_id == invoice_id
+                else _credited_gift(doc_id, doc, invoice, share, base, date_from, date_to)
+                + await _note_taken_back(session, company_id, doc_id, doc, invoice, items, settings, base,
+                                         date_from, date_to))
+        if rows:
+            found.setdefault(party, []).extend(rows)
 
     accounts = {code for code in ((settings.get("category_income_accounts") or {}).get(key) for key in gifts) if code}
     accounts |= {code for item in items.values() if (code := income_account_of(settings, item))}
@@ -158,8 +202,8 @@ async def donor_history(session: AsyncSession, company_id, contact_id: str | Non
               and any(entry.get("account") in accounts for entry in state.get("entries") or [])]
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
     for je_id, state, day in posted:
-        if (refs.get(je_id) or {}).get("doc_id") not in (None, "", *notes):
-            continue  # the books' posting for an invoice: its receipts count above
+        if (refs.get(je_id) or {}).get("doc_id"):
+            continue  # the books' posting for a document: its gifts count above
         for entry in state.get("entries") or []:
             amounts = _line_amounts(entry) if entry.get("account") in accounts else None
             party = _line_party(refs, je_id, entry, survivors) if amounts else ""
