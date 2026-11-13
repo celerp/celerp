@@ -29345,7 +29345,6 @@
     "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[ -True]": 0.90560900606215,
     "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[-True]": 0.23393699107691646,
     "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[3-None]": 0.16753908898681402,
-    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep": 6.520817038952373,
     "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[own_3500]": 0.15810611692722887,
     "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_backup]": 0.17505086993332952,
     "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[seeded]": 0.08789508696645498,
@@ -29356,5 +29355,7 @@
     "tests/test_fund_pages_end_to_end.py::test_movement_forms_post_and_fund_activity_reverses": 0.5159122489858419,
     "tests/test_fund_pages_end_to_end.py::test_recognition_setting_month_post_and_reverse": 0.44690112792886794,
     "tests/test_fund_pages_end_to_end.py::test_year_close_reversed_from_period_lock_tab": 0.2549845090834424,
-    "tests/test_fund_pages_end_to_end.py::test_record_held_for_funds_posted_from_sync_accounts": 10.536230214987881
+    "tests/test_fund_pages_end_to_end.py::test_record_held_for_funds_posted_from_sync_accounts": 10.536230214987881,
+    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep[gift-account]": 7.535337462904863,
+    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep[sales-revenue]": 6.579645408084616
 }
