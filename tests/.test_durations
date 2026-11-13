@@ -29459,5 +29459,12 @@
     "tests/test_request_keys.py::test_every_keyed_fund_door_binds_its_key_to_the_whole_request[0]": 0.5055677089840174,
     "tests/test_request_keys.py::test_every_keyed_fund_door_binds_its_key_to_the_whole_request[1]": 0.516909915022552,
     "tests/test_request_keys.py::test_every_keyed_fund_door_binds_its_key_to_the_whole_request[2]": 0.49237405601888895,
-    "tests/test_request_keys.py::test_every_keyed_fund_door_binds_its_key_to_the_whole_request[3]": 0.5009397729299963
+    "tests/test_request_keys.py::test_every_keyed_fund_door_binds_its_key_to_the_whole_request[3]": 0.5009397729299963,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.import]": 15.365881572011858,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.members]": 1.0764567829901353,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.overview]": 1.242025118903257,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.plans]": 0.8678121368866414,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.retainers]": 1.3098063400248066,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.revenue]": 1.3333473200909793,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.subscribers]": 2.440073225996457
 }
