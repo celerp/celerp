@@ -28840,5 +28840,10 @@
     "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[50% + tax]": 0.031452063063625246,
     "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[Line?2]": 0.0063579409616068006,
     "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[R&D #1]": 0.005092239007353783,
-    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[a=b&current=x]": 0.006603768968489021
+    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[a=b&current=x]": 0.006603768968489021,
+    "tests/test_migrations/test_lookup_index_failures.py::test_an_index_whose_validity_cannot_be_read_is_never_dropped[None-after build]": 0.16845300898421556,
+    "tests/test_migrations/test_lookup_index_failures.py::test_an_index_whose_validity_cannot_be_read_is_never_dropped[invalid-True]": 0.0029003910603933036,
+    "tests/test_migrations/test_lookup_index_failures.py::test_an_index_whose_validity_cannot_be_read_is_never_dropped[valid-True]": 0.002608810958918184,
+    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_json_rewrites_read_and_write_in_bounded_batches[SQL_ASCII]": 0.36002759693656117,
+    "tests/test_migrations/test_u4v5w6x7y8z9_json_text_all_encodings.py::test_json_rewrites_read_and_write_in_bounded_batches[UTF8]": 0.28390503593254834
 }

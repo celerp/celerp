@@ -6,8 +6,9 @@ concurrently (found by reading the revisions, so the next one is covered) is run
 stand-in ``op`` that fails at each point of the build in turn: the drop of an invalid leftover,
 each create, the validity read, an index left invalid, and each of those again with the
 clean-up drop failing too. In every case the upgrade returns, a warning names each index that
-failed, the drop of what its build left was tried, and every other index of the revision is
-built and kept. The app is correct without the index: lookups read through the old plan until
+failed, the drop of what its build left was tried only where the build failed or the index was
+read back invalid (an index whose state could not be read is never dropped), and every other
+index of the revision is built and kept. The app is correct without the index: lookups read through the old plan until
 the next start builds it again."""
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ class _Op:
         class _Bind:
             def execute(self, statement, params=None):
                 if "indisvalid" in str(statement):
-                    if op.fail_read:
+                    if op.fail_read is True or (op.fail_read == "after build" and op.created):
                         op._fail()
                     name = (params or {}).get("name")
                     if name in op.created and op.state.get(name) is False:
@@ -153,7 +154,9 @@ def test_a_failed_lookup_index_build_never_stops_the_upgrade(path, names, failur
     assert all(n in warned for n in failed), (path.name, warned)
     # Each failed index is dropped if present, and nothing else: the other indexes of the revision
     # stay built, and an index the revision would have replaced on success stays, so lookups keep it.
-    assert set(op.drops_after_failure) == failed, (path.name, op.drops_after_failure)
+    # A failed validity read establishes nothing about the index, so nothing is dropped for it.
+    dropped = set() if failure.get("fail_read") else failed
+    assert set(op.drops_after_failure) == dropped, (path.name, op.drops_after_failure)
     assert {n for n in names if op.state[n] is True} == set(names) - failed, (path.name, op.state)
 
 
@@ -164,3 +167,19 @@ def test_build_lookup_index_answers_whether_the_index_is_valid(failure, answer, 
     op = _Op(["ix_probe"], **failure)
     monkeypatch.setattr("celerp.migrations._lookup_index.op", op)
     assert build_lookup_index("ix_probe", "projections", lambda: op.create_index("ix_probe")) is answer
+
+
+@pytest.mark.parametrize(("leftover", "fail_read"), [("valid", True), ("invalid", True), (None, "after build")])
+def test_an_index_whose_validity_cannot_be_read_is_never_dropped(leftover, fail_read, caplog, monkeypatch):
+    """A validity read that raises says nothing about the index: a valid one, an invalid leftover and
+    one the build just made all stay as they are. The failure is logged and the answer is False."""
+    from celerp.migrations._lookup_index import build_lookup_index
+    op = _Op(["ix_probe"], fail_read=fail_read)
+    op.state["ix_probe"] = {"valid": True, "invalid": False, None: None}[leftover]
+    monkeypatch.setattr("celerp.migrations._lookup_index.op", op)
+    before = op.state["ix_probe"]
+    with caplog.at_level(logging.WARNING):
+        assert build_lookup_index("ix_probe", "projections", lambda: op.create_index("ix_probe")) is False
+    assert op.drops_after_failure == []
+    assert op.state["ix_probe"] == (True if fail_read == "after build" else before)
+    assert "ix_probe" in caplog.text

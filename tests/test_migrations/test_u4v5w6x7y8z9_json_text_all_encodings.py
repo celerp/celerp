@@ -282,3 +282,47 @@ async def test_get_docs_reads_every_row_after_u4v5w6x7y8z9(encoded_db, real_engi
     assert (after["nul"], after["lone"]) == (before["nul"], before["lone"])
     assert {k: arrow[k] for k in ("nul", "lone")} == {k: _arrow(sync_url)[k] for k in ("nul", "lone")}
     assert _arrow(sync_url)["thai"] == ("ok", THAI)
+
+
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_json_rewrites_read_and_write_in_bounded_batches(encoding, monkeypatch):
+    """Both json rewrites (unescape_json_text, and _update_json_column under every update_* helper)
+    hold at most BATCH rows at a time, so a large install's upgrade runs in memory flat in its row
+    count: with a batch of 7 over 50 escaped rows no statement returns or writes more than 7 rows,
+    every row is rewritten exactly once and the helper's mutate sees each row once."""
+    from sqlalchemy import event
+
+    from celerp.json_text import MIGRATION_TEXT
+    from celerp.migrations import _json_compat
+
+    monkeypatch.setattr(_json_compat, "BATCH", 7)
+    with throwaway_db("jsonbatch", encoding) as (_async_url, sync_url):
+        upgrade_to(sync_url, "t3u4v5w6x7y8")
+        _sql(sync_url, "INSERT INTO companies (id, name, slug, settings, created_at) SELECT gen_random_uuid(), "
+                       "'c' || g, 'c' || g, CAST(replace(:s, '@', g::text) AS json), now() "
+                       "FROM generate_series(1, 50) g", {"s": json.dumps({"title": f"{THAI} @"})})
+        engine = create_engine(sync_url, **MIGRATION_TEXT)
+        taken: list[tuple[str, int]] = []
+        # Every statement but the read of which columns are json, with the rows it returned or wrote.
+        event.listen(engine, "after_cursor_execute", lambda _c, cursor, statement, *_a: taken.append(
+            (statement.split()[0].upper(), cursor.rowcount)) if "information_schema" not in statement else None)
+        seen: list[str] = []
+        phases = []
+        try:
+            with engine.begin() as conn:
+                assert _json_compat.unescape_json_text(conn) == 50
+            phases.append(list(taken))
+            taken.clear()
+            with engine.begin() as conn:
+                assert _json_compat.update_company_settings(
+                    conn, lambda settings, row: seen.append(row["slug"]) or settings.update(seen=True) or True,
+                    extra_cols=("slug",)) == 50
+            phases.append(list(taken))
+        finally:
+            engine.dispose()
+        for phase in phases:
+            assert max(rows for _verb, rows in phase) <= 7, phase
+            assert sum(rows for verb, rows in phase if verb == "UPDATE") == 50, phase
+        assert sorted(seen) == sorted(f"c{g}" for g in range(1, 51))
+        assert dict(_sql(sync_url, "SELECT slug, CAST(settings AS text) FROM companies")) == {
+            f"c{g}": dump_json({"title": f"{THAI} {g}", "seen": True}) for g in range(1, 51)}
