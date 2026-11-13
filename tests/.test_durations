@@ -29355,5 +29355,6 @@
     "tests/test_fund_pages_end_to_end.py::test_income_account_saved_from_its_cell": 0.12897005688864738,
     "tests/test_fund_pages_end_to_end.py::test_movement_forms_post_and_fund_activity_reverses": 0.5159122489858419,
     "tests/test_fund_pages_end_to_end.py::test_recognition_setting_month_post_and_reverse": 0.44690112792886794,
-    "tests/test_fund_pages_end_to_end.py::test_year_close_reversed_from_period_lock_tab": 0.2549845090834424
+    "tests/test_fund_pages_end_to_end.py::test_year_close_reversed_from_period_lock_tab": 0.2549845090834424,
+    "tests/test_fund_pages_end_to_end.py::test_record_held_for_funds_posted_from_sync_accounts": 10.536230214987881
 }
