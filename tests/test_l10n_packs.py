@@ -221,6 +221,103 @@ async def test_lock_unreadable_gives_default_only(l10n_dir, how, client, auth, s
     assert notice.body == t("l10n.pack_lock_missing.body", "en")
 
 
+def _hostile_json(rng, depth: int = 0):
+    """A random JSON value: scalars, lists and objects, with lock-like objects common."""
+    kinds = ["null", "bool", "int", "str", "list", "obj", "entry"] if depth < 3 else ["null", "bool", "int", "str"]
+    kind = rng.choice(kinds)
+    if kind == "null":
+        return None
+    if kind == "bool":
+        return rng.random() < 0.5
+    if kind == "int":
+        return rng.randint(-5, 5)
+    if kind == "str":
+        return rng.choice(["", "TH", "2026.1", "a" * 64])
+    if kind == "list":
+        return [_hostile_json(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+    if kind == "entry":
+        return {"version": "1", "sha256": rng.choice(["0" * 64, _hostile_json(rng, depth + 1)])}
+    return {rng.choice(["TH", "MY", "AU", "IN", "sha256", "x"]): _hostile_json(rng, depth + 1)
+            for _ in range(rng.randint(0, 4))}
+
+
+def _lock_is_valid(lock) -> bool:
+    """The reference: a lock is an object of code to an object carrying a string sha256."""
+    return isinstance(lock, dict) and all(
+        isinstance(entry, dict) and isinstance(entry.get("sha256"), str) for entry in lock.values())
+
+
+def test_any_lock_shape_is_read_or_unreadable_never_raises(l10n_dir, caplog):
+    """Seeded oracle over lock contents: a lock is accepted exactly when it has the lock's shape;
+    any other JSON is the unreadable-lock state, and no reader raises."""
+    import random
+
+    from celerp.localization import lock_codes, missing, packs
+    from celerp.tax_regimes import pack_missing, tax_countries
+
+    real = json.loads((FIXTURE / "packs.lock.json").read_text(encoding="utf-8"))
+    rng = random.Random(20261114)
+    cases = [real, [], "TH", 3, None, {"TH": "2026.1"}, {**real, "TH": "2026.1"}, {**real, "MY": {"version": "1"}}]
+    for _ in range(300):
+        lock = _hostile_json(rng)
+        if rng.random() < 0.4:
+            lock = {**real, rng.choice(list(real)): _hostile_json(rng)}
+        cases.append(lock)
+    accepted = 0
+    for lock in cases:
+        (l10n_dir / "packs.lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        _reset()
+        with caplog.at_level(logging.ERROR):
+            loaded, codes, gone, offered = packs(), lock_codes(), missing(), tax_countries()
+        if _lock_is_valid(lock):
+            accepted += 1
+            assert codes == tuple(lock), lock
+            assert set(loaded) <= set(lock) and set(offered) == set(loaded), lock
+            assert gone == tuple(c for c in lock if c not in loaded), lock
+        else:
+            assert codes is None and loaded == {} and gone == () and not offered, lock
+            assert pack_missing("TH") and not pack_missing(""), lock
+    assert accepted and accepted < len(cases)
+    (l10n_dir / "packs.lock.json").write_text(json.dumps(real), encoding="utf-8")
+    _reset()
+    assert set(packs()) == set(real)
+
+
+async def test_lock_entry_not_an_object_is_unreadable_through_the_app(l10n_dir, client, auth, session):
+    """A lock still JSON but with an entry that is not an object: the locations page answers, the
+    company's taxes stay, and the bell says the lock is unreadable."""
+    from ui.i18n import t
+
+    company_id = auth["company_id"]
+    await _set_settings(session, company_id, _pin_shaped("TH"))
+    before = await _stored(session, company_id)
+    lock = json.loads((l10n_dir / "packs.lock.json").read_text(encoding="utf-8"))
+    (l10n_dir / "packs.lock.json").write_text(json.dumps({**lock, "TH": "2026.1"}), encoding="utf-8")
+    _reset()
+
+    r = await client.get("/companies/me/locations", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    loc = await _default_location(client, auth)
+    await _patch_address(client, auth, loc["id"], {"country": "MY"})
+    assert await _stored(session, company_id) == before
+    text, patch_location = await _location_cell_refusal("MY")
+    assert str(t("l10n.pack_lock_missing.body")) in text.replace("&#x27;", "'")
+    patch_location.assert_not_awaited()
+
+    await _sync_notice(session)
+    [notice] = await _pack_notices(session, company_id)
+    assert notice.i18n["body"] == "l10n.pack_lock_missing.body"
+
+
+async def test_other_country_is_accepted_when_the_lock_is_unreadable(l10n_dir):
+    from ui.routes.setup import company_setup_error
+
+    _break_lock(l10n_dir)
+    text, patch_location = await _location_cell_refusal("")
+    patch_location.assert_awaited_once()
+    assert company_setup_error("USD", "blank", "") is None
+
+
 # ── Writers and refusals ─────────────────────────────────────────────────────
 
 async def test_missing_pack_keeps_company_taxes_and_notifies(l10n_dir, client, auth, session):
@@ -237,8 +334,8 @@ async def test_missing_pack_keeps_company_taxes_and_notifies(l10n_dir, client, a
 
     await _sync_notice(session)
     [notice] = await _pack_notices(session, company_id)
-    assert notice.i18n["params"] == {"countries": "TH"}
-    assert "TH" in notice.body
+    assert notice.i18n["params"] == {"countries": ["TH"]}
+    assert "Thailand" in notice.body and "TH" not in notice.body.split()
 
 
 async def test_missing_pack_refusal_names_pack(l10n_dir):
@@ -256,6 +353,56 @@ async def test_missing_pack_refusal_names_pack(l10n_dir):
     patch_location.assert_not_awaited()
     assert company_setup_error("THB", "blank", "TH") == ("country", refusal)
     assert "Thailand" in to_xml(_location_display_cell("loc1", "country", {"text": "1 Silom Road", "country": "TH"}))
+
+
+async def test_country_editor_names_a_stored_country_whose_pack_is_missing(l10n_dir):
+    """The editor reads as the cell does: the country by name, never its raw code."""
+    from ui.i18n import t
+
+    _drop(l10n_dir, "TH")
+    loc = {**_LOC, "address": {"text": "1 Silom Road", "country": "TH"}}
+    with ExitStack() as stack:
+        _stub(stack, "get_locations", return_value={"items": [loc]})
+        async with _ui_client() as ui:
+            r = await ui.get("/settings/locations/loc1/country/edit")
+    assert r.status_code == 200, r.text
+    assert 'value="Thailand"' in r.text and 'value="TH"' in r.text
+    assert ">TH<" not in r.text and str(t("setup.country_other")) in r.text
+
+
+@pytest.mark.parametrize("address", ["1 Silom Road", None, ["TH"]])
+async def test_country_editor_takes_an_address_that_is_not_a_record(l10n_dir, address):
+    from ui.i18n import t
+
+    with ExitStack() as stack:
+        _stub(stack, "get_locations", return_value={"items": [{**_LOC, "address": address}]})
+        async with _ui_client() as ui:
+            r = await ui.get("/settings/locations/loc1/country/edit")
+    assert r.status_code == 200, r.text
+    assert f'value="{t("setup.country_other")}"' in r.text
+
+
+async def test_pack_notice_names_countries_in_the_readers_language(l10n_dir, session):
+    """The notice keeps the codes and is read with each country's name, in the reader's language."""
+    from ui import i18n
+    from ui.routes.notifications import _in_reader_language
+
+    company_id = await _company(session)
+    _drop(l10n_dir, "TH", "MY")
+    await _sync_notice(session)
+    [notice] = await _pack_notices(session, company_id)
+    assert notice.i18n["params"] == {"countries": ["TH", "MY"]}
+    assert notice.body == i18n.t("l10n.pack_missing.body", "en", countries="Thailand, Malaysia")
+    listed = {"items": [{"id": str(notice.id), "title": notice.title, "body": notice.body, "i18n": notice.i18n}]}
+    for lang in ("en", "ja"):
+        i18n.set_lang(lang)
+        try:
+            [shown] = json.loads(_in_reader_language(json.dumps(listed).encode()))["items"]
+            names = ", ".join(i18n.t(f"country.{c}") for c in ("TH", "MY"))
+            assert shown["body"] == i18n.t("l10n.pack_missing.body", countries=names)
+            assert "TH" not in shown["body"].replace(",", " ").split()
+        finally:
+            i18n.set_lang("en")
 
 
 async def test_source_checkout_without_packs_offers_other_only(tmp_path, client, auth, session):
@@ -371,7 +518,7 @@ async def test_pack_notice_follows_pack_state(l10n_dir, session):
     company_id = await _company(session)
     await _sync_notice(session)
     [first] = await _pack_notices(session)
-    assert first.company_id == company_id and first.i18n["params"] == {"countries": "TH"}
+    assert first.company_id == company_id and first.i18n["params"] == {"countries": ["TH"]}
     assert first.category == "settings" and first.title == t(TITLE_KEY, "en")
 
     await _sync_notice(session)
@@ -381,7 +528,7 @@ async def test_pack_notice_follows_pack_state(l10n_dir, session):
     _drop(l10n_dir, "MY")
     await _sync_notice(session)
     [both] = await _pack_notices(session)
-    assert both.id == first.id and both.i18n["params"] == {"countries": "TH, MY"}
+    assert both.id == first.id and both.i18n["params"] == {"countries": ["TH", "MY"]}
 
     _break_lock(l10n_dir)
     await _sync_notice(session)

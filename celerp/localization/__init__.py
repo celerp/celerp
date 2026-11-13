@@ -24,11 +24,16 @@ def _root() -> Path:
 
 
 def _lock() -> dict | None:
+    """The lock as ``{code: {"sha256": str, ...}}``, or None when it is missing or has any
+    other shape; every reader of the lock goes through here."""
     path = _root() / "packs.lock.json"
     try:
         lock = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(lock, dict):
             raise ValueError("not an object")
+        for code, entry in lock.items():
+            if not (isinstance(entry, dict) and isinstance(entry.get("sha256"), str)):
+                raise ValueError(f"entry {code!r} has no sha256")
         return lock
     except (OSError, ValueError) as exc:
         log.error("Country pack lock %s is unreadable: %s", path, exc)
