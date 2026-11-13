@@ -220,8 +220,8 @@ async def _decide(session, company_id, doc_id: str) -> tuple[str, dict, bool] | 
         return None
     current = row.state.get("collection") or {}
     phase = phase_of(current)
-    if phase == "settled":
-        return None  # every event of the row waits: nothing is read
+    if phase == "settled":  # every event of the row waits: nothing is read
+        return None
     event, why = await _event(session, company_id, row, current, phase)
     return await _ACTIONS[TABLE[phase, event]](session, company_id, row, current, event, why)
 
