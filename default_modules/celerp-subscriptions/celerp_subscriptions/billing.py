@@ -876,8 +876,9 @@ async def amend(session: AsyncSession, company_id, tid: str, *, effective: date,
     if billed is not None and effective <= schedule.service_end(billed):
         settled = await settle_amendment(session, company, tid, state, schedule, billed, effective, current, new,
                                          actor, key)
-        result.update(settled)
         entry.update(period_index=billed, **settled)
+        result.update(settled, credit_note_ref=await doc_ref(session, company_id, settled["credit_note_id"]),
+                      invoice_ref=await doc_ref(session, company_id, settled["invoice_id"]))
     amendments = sorted([*amendments_of(state), entry], key=lambda a: str(a.get("effective")))
     await write_agreement(session, company_id, tid, {"amendments": amendments}, actor.id, key=key,
                           metadata={"request": request, "result": result})

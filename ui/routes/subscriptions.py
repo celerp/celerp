@@ -1851,8 +1851,7 @@ def setup_routes(app) -> None:
         except APIError as e:
             return _refused(e)
         said = (sentence("subscriptions.done_amended_settled", day=done["effective"],
-                         credit_note=done["credit_note_id"].removeprefix("doc:"),
-                         document=done["invoice_id"].removeprefix("doc:"))
+                         credit_note=done["credit_note_ref"], document=done["invoice_ref"])
                 if done.get("credit_note_id") else sentence("subscriptions.done_amended", day=done["effective"]))
         return _done(f"/subscriptions/{entity_id}", said)
 

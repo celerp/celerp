@@ -17,6 +17,7 @@ import pytest
 
 from agreement_kit import agreement, billed_docs, contact, freeze_day, generate_due, member, schedule, template
 from test_helpers import ui_signed_in
+from ui.components.operation_key import FIELD
 from test_income_accounts import _account, _category, _item, _set_category_account
 
 pytestmark = pytest.mark.asyncio
@@ -243,6 +244,26 @@ async def test_seat_change_prorates_advance_via_credit_and_debit(owner_ui, sessi
     assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
     [april] = [d for d in await billed_docs(session, eid) if d.get("period_index") == 1]
     assert [(li["quantity"], li["line_total"]) for li in april["line_items"]] == [(3, 30.0)]
+
+
+async def test_seat_change_page_names_the_documents_numbers(owner_ui, session, monkeypatch):
+    """The Quantities form's answer names the credit note and the invoice by the numbers the
+    documents show, as every list and document page does, never by their storage keys."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    line = await _line_id(owner_ui.api, eid)
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    freeze_day(monkeypatch, "2026-03-15")
+    r = await owner_ui.post(f"/subscriptions/{eid}/amend", data={
+        "effective": "2026-03-15", "quantities": json.dumps({line: 5}), FIELD: str(uuid.uuid4())})
+    assert r.status_code == 204, r.text
+    message = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+    docs = await billed_docs(session, eid)
+    [credit] = _of(docs, "credit_note")
+    [debit] = [d for d in _of(docs, "invoice") if d.get("service_start") == "2026-03-15"]
+    for doc in (credit, debit):
+        assert doc["ref_id"] in message, message
+    assert debit["entity_id"].removeprefix("doc:") not in message, message
 
 
 async def test_arrears_period_splits_effective_segments(owner_ui, session, monkeypatch):

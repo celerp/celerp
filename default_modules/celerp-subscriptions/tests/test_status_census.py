@@ -37,10 +37,15 @@ def _answer_text(r) -> str:
 
 
 async def _fresh(api, *eids: str) -> str:
-    """The agreements as stored: their records and their period lists, documents named."""
+    """The agreements as stored: their records, their period lists and the numbers of the
+    documents their quantity changes issued, documents named."""
     parts = []
     for eid in eids:
-        parts.append(json.dumps((await api.get(f"/docs/{eid}")).json()))
+        record = (await api.get(f"/docs/{eid}")).json()
+        parts.append(json.dumps(record))
+        for change in record.get("amendments") or []:
+            for doc_id in filter(None, (change.get("credit_note_id"), change.get("invoice_id"))):
+                parts.append(str((await api.get(f"/docs/{doc_id}")).json().get("ref_id")))
         parts.append(json.dumps((await api.get(f"/subscriptions/{eid}/periods")).json()))
     return " ".join(parts)
 
