@@ -57,6 +57,38 @@ async def test_donor_history_gift_lines_as_posted_plus_bank_gifts_no_double_coun
     assert sorted(float(g["amount"]) for g in history["gifts"]) == [25.0, 100.0]
 
 
+async def test_gifts_stay_as_posted_when_their_item_category_or_settings_change(client, auth):
+    """A gift counts as it was posted: moving its item to a category that is not a gift, turning
+    the gift setting off and mapping the category to another account afterwards change neither the
+    history nor the statement, and a ticket posted before never becomes a gift."""
+    from income_books import _category, _set_category_account
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Ada Donor", "ada@test.test")
+    await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100), _line(items["ticket"], "Dinner ticket", 50))
+    before = await _history(client, auth, donor)
+    stated = await _preview(client, auth)
+    assert float(before["total"]) == 100.0
+    item = (await client.get(f"/items/{items['gift']}", headers=auth["headers"])).json()
+    donation = item["category"]
+    r = await client.patch(f"/items/{items['gift']}", headers=auth["headers"], json={"category": await _category(
+        client, auth, "Merchandise")})
+    assert r.status_code == 200, r.text
+    r = await client.put(f"/companies/me/categories/{donation}/gift", headers=auth["headers"], json={"gift": False})
+    assert r.status_code == 200, r.text
+    assert (await _set_category_account(client, auth, donation, "4100")).status_code == 200
+    ticket = (await client.get(f"/items/{items['ticket']}", headers=auth["headers"])).json()["category"]
+    r = await client.put(f"/companies/me/categories/{ticket}/gift", headers=auth["headers"], json={"gift": True})
+    assert r.status_code == 200, r.text
+    assert await _history(client, auth, donor) == before
+    assert await _preview(client, auth) == stated
+
+
+async def _preview(client, auth) -> dict:
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 async def test_donor_history_counts_a_credit_note_on_its_own_date(client, auth):
     """A gift credit note counts on its issue date, as its posting takes the gift income back: a
     period ending before it shows the whole gift, the note's own period what it took back."""

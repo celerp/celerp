@@ -736,3 +736,94 @@ async def test_every_reason_collection_stops_for_is_one_the_invoice_page_names()
     assert written == collection.STOP_REASONS
     words = json.loads((root / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
     assert [r for r in collection.STOP_REASONS if f"collection.stopped_{r}" not in words] == []
+
+
+# ── a request key names one request ──────────────────────────────────────────
+
+async def _unanswered(client, session, monkeypatch, cloud) -> tuple[str, str]:
+    """An agreement whose first attempt was asked for and never answered: (company id, agreement id)."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    cloud.answers["attempt"] = None
+    await tick(session, cid, "2026-07-01")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "pending" and c["asked"]
+    return cid, eid
+
+
+async def test_retry_after_a_lost_answer_sends_the_request_first_sent(client, session, monkeypatch, cloud):
+    """An attempt whose answer was lost is asked for again with exactly the request first sent,
+    whatever changed in the company's settings or payment generation since."""
+    from celerp.services import payments
+    from celerp.services.company_lock import locked_company
+    cid, eid = await _unanswered(client, session, monkeypatch, cloud)
+    company = await locked_company(session, uuid.UUID(cid))
+    company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok"}
+    await session.flush()
+    generation = await payments.checkout_generation()
+
+    async def _next_generation():
+        return generation + 1
+    monkeypatch.setattr(payments, "checkout_generation", _next_generation)
+    cloud.answers["attempt"] = lambda p: (200, {"state": "submitted", "attempt_number": p["attempt_number"]})
+    await tick(session, cid, "2026-07-02")
+    first, again = cloud.sent("attempt")
+    assert again == first
+    [c] = await _collection(session, eid)
+    assert c["state"] == "submitted"
+
+
+async def test_a_refused_retry_of_an_unanswered_attempt_is_reconciled_before_it_ends(client, session, monkeypatch,
+                                                                                   cloud):
+    """Cloud refusing the retry of an attempt whose first answer was lost does not stop collection
+    while that first outcome is unknown: the attempt is cancelled at Cloud, and ends only on its answer."""
+    cid, eid = await _unanswered(client, session, monkeypatch, cloud)
+    cloud.answers["attempt"] = (409, {"detail": "attempt_number_used"})
+    cloud.answers["cancel"] = None
+    await tick(session, cid, "2026-07-02")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "pending" and c["cancel"] == "queued"
+    assert len(cloud.sent("cancel")) == 1
+    cloud.answers["cancel"] = (409, {"detail": "attempt_settled"})
+    await tick(session, cid, "2026-07-03")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "pending" and c["cancel"] == "refused"
+    [doc] = await billed_docs(session, eid)
+    assert await _attempt_outcome(cid, doc["entity_id"], 1, "succeeded")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "succeeded"
+    assert len(cloud.sent("attempt")) == 2
+
+
+async def test_an_amendment_invoice_is_collected_as_a_period_invoice_is(client, session, monkeypatch, cloud):
+    """An invoice an amendment issues on an agreement that collects automatically opens its own
+    attempt and is charged after the amendment commits, as each period's invoice is."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, payer = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    line = (await template(client, hd, eid))["line_items"][0]["line_id"]
+    freeze_day(monkeypatch, "2026-07-15")
+    r = await client.post(f"/subscriptions/{eid}/amend", headers=hd, json={
+        "effective": "2026-07-15", "quantities": {line: 3}, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    invoice = r.json()["invoice_id"]
+    [doc] = [d for d in await billed_docs(session, eid) if d["entity_id"] == invoice]
+    assert doc["collection"]["attempt_number"] == 1 and doc["collection"]["state"] == "submitted"
+    assert [p["entity_id"] for p in cloud.sent("attempt")][-1] == invoice
+
+
+async def test_payer_change_needs_the_collection_permission(client, session, monkeypatch, cloud):
+    """Changing who pays an agreement that collects automatically, through the document's own
+    edit, needs automate_collection: a member who may only edit documents is refused and the
+    payer stays."""
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    cid, eid, payer = await _collecting(client, hd)
+    other = await _payer(client, hd, "other@example.test")
+    assert await _bind(cid, other)
+    manager, _ = await member(client, session, hd, "manager")
+    r = await client.patch(f"/docs/{eid}", headers=manager, json={"contact_id": other})
+    assert r.status_code == 403, r.text
+    assert (await template(client, hd, eid))["contact_id"] == payer
