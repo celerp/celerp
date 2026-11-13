@@ -928,10 +928,11 @@ function initCombobox(wrap) {
 document.addEventListener('DOMContentLoaded', function() {
   document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
-/* Re-init after HTMX swaps — search from document to handle outerHTML swaps */
-document.addEventListener('htmx:afterSettle', function(e) {
-  var root = (e.detail.elt && e.detail.elt.isConnected) ? e.detail.elt : document;
-  root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+/* Re-init after HTMX swaps. The whole document is searched: an outerHTML swap replaces the
+   element the request came from, and an afterend or beforebegin swap inserts beside it, so new
+   comboboxes are not always inside it. initCombobox skips one already set up. */
+document.addEventListener('htmx:afterSettle', function() {
+  document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
 /* Elements marked data-quiet-error surface their failure state themselves
