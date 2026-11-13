@@ -2064,10 +2064,9 @@ def setup_routes(app):
         item, company, category_names = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
         # The item's whole history: the filters and their choices cover all of it, paged here.
-        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": 1000})
+        activities = await api.entity_history(token, entity_id)
 
         currency = company.get("currency")
-        activities = resp.get("items", [])
         name = item.get("name") or item.get("sku") or entity_id
 
         from urllib.parse import urlencode

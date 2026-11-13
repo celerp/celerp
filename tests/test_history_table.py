@@ -117,3 +117,58 @@ async def test_the_document_card_reads_filters_from_the_page_url_and_pushes_chan
     assert changed.headers["HX-Push-Url"] == "/docs/doc:INV-1?tab=x&hist_field=Due+date"
     assert '<td class="col-field">Due date</td>' in changed.text
     assert '<td class="col-field">Customer note</td>' not in changed.text
+
+
+@pytest.mark.asyncio
+async def test_a_list_card_reads_and_pushes_the_list_page_url(ui_client):
+    """A List page loads History from its own door; a filter change pushes the List URL, which reopens it."""
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": _LEDGER, "total": 3})), \
+         patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})):
+        first = await ui_client.get("/lists/list:QUO-1/history?page=1",
+                                    headers={"HX-Current-URL": "http://ui/lists/list:QUO-1?hist_who=Ana"})
+        changed = await ui_client.get("/lists/list:QUO-1/history?hist_event=x",
+                                      headers={"HX-Current-URL": "http://ui/lists/list:QUO-1"})
+
+    assert '<td class="col-user">Ana</td>' in first.text
+    assert '<td class="col-user">Noah</td>' not in first.text
+    assert 'hx-get="/lists/list:QUO-1/history' in first.text
+    assert 'hx-get="/docs/' not in first.text
+    assert changed.headers["HX-Push-Url"] == "/lists/list:QUO-1?hist_event=x"
+
+
+def _paged_ledger(entries):
+    async def list_ledger(token, params):
+        offset, limit = int(params.get("offset", 0)), int(params.get("limit", 100))
+        return {"items": entries[offset:offset + limit], "total": len(entries)}
+    return list_ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["/docs/doc:INV-1/history?hist_event={ev}",
+                                 "/inventory/doc:INV-1/history?hist_event={ev}"])
+async def test_history_covers_every_ledger_entry_of_a_long_record(ui_client, url):
+    """The oldest event of a record with more entries than one ledger read is still listed and filterable."""
+    long_ledger = [_e(i, "doc.updated", {"fields_changed": {"due_date": {"old": "a", "new": "b"}}})
+                   for i in range(1300, 1, -1)] + [_e(1, "doc.created")]
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.list_ledger", new=_paged_ledger(long_ledger)), \
+         patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "doc:INV-1", "name": "N"})), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})), \
+         patch("ui.routes.inventory.deleted_items", new=AsyncMock(return_value=set())):
+        r = await ui_client.get(url.format(ev=EVENT_CREATED.replace(" ", "+")))
+    assert r.status_code == 200
+    assert 'id="evt-1"' in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page", ["abc", "0", "-3", "1%20", "99999"])
+@pytest.mark.parametrize("door", ["/lists/list:QUO-1", "/docs/doc:INV-1"])
+async def test_the_files_section_reads_any_page_value(ui_client, door, page):
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    doc = {"id": door.rsplit("/", 1)[1], "attachments": []}
+    with patch("ui.api_client.get_list", new=AsyncMock(return_value=doc)), \
+         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+        r = await ui_client.get(f"{door}/files/_section?page={page}", headers={"HX-Request": "true"})
+    assert r.status_code == 200

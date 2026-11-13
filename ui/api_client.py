@@ -2149,6 +2149,21 @@ async def list_ledger(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/ledger", params=p)).json()
 
 
+_HISTORY_BATCH = 500
+
+
+async def entity_history(token: str, entity_id: str) -> list[dict]:
+    """Every ledger entry of one record, newest first: walks the ledger by offset until its total,
+    so a history page and its filters cover the whole record however long it is."""
+    entries: list[dict] = []
+    while True:
+        resp = await list_ledger(token, {"entity_id": entity_id, "limit": _HISTORY_BATCH, "offset": len(entries)})
+        batch = resp.get("items", [])
+        entries.extend(batch)
+        if not batch or len(entries) >= resp.get("total", 0):
+            return entries
+
+
 async def create_subscription(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/docs", json=data)).json()

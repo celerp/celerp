@@ -2742,7 +2742,7 @@ def setup_routes(app):
             except Exception:
                 chart_accounts = []
 
-        # History loaded lazily via HTMX GET /docs/{entity_id}/history
+        # History loaded lazily via HTMX GET {_base}/history
         ledger: list[dict] = []
 
         doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("external_id") or t("th.document")
@@ -4719,8 +4719,6 @@ def setup_routes(app):
 
     async def doc_gl_impact(request: Request, entity_id: str):
         from starlette.responses import Response as _R
-        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
-        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return _R("", status_code=401)
@@ -4742,11 +4740,10 @@ def setup_routes(app):
     app.get("/docs/{entity_id}/gl-impact")(doc_gl_impact)
     app.get("/lists/{entity_id}/gl-impact")(doc_gl_impact)
 
-    @app.get("/docs/{entity_id}/history")
     async def doc_history_paginated(request: Request, entity_id: str):
         from starlette.responses import Response as _R
-        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
-        file_args = {"resource": resource} if resource == "lists" else {}
+        # Docs and Lists share this handler; each page's own door gives the page path to push.
+        page_path = f"/{'lists' if request.url.path.startswith('/lists/') else 'docs'}/{entity_id}"
         token = _token(request)
         if not token:
             return _R("", status_code=401)
@@ -4763,18 +4760,14 @@ def setup_routes(app):
         # The filters ride in the document page's URL. The card's first load reads them from it
         # (HX-Current-URL); a filter or page change sends them along and pushes them back.
         current = urlsplit(request.headers.get("HX-Current-URL") or "")
-        page_params = dict(parse_qsl(current.query)) if current.path == f"/docs/{entity_id}" else {}
+        page_params = dict(parse_qsl(current.query)) if current.path == page_path else {}
         filters = {k: (qp.get(k) if k in qp else page_params.get(k, "")) for k in HISTORY_FILTERS}
         filters = {k: v for k, v in filters.items() if v}
-        try:
-            page = _page_number(request)
-        except ValueError:
-            page = 1
+        page = _page_number(request)
         per_page = per_page_value(qp.get("per_page"), _DEFAULT_PER_PAGE)
         offset = (page - 1) * per_page
         # A document's whole history (filters and their choices cover all of it), paged here.
-        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": 500, "resolve": "true"})
-        entries = resp.get("items", []) if isinstance(resp, dict) else []
+        entries = await api.entity_history(token, entity_id)
         category_names = await api.get_category_labels(token)
         # A Documents page: it opens only while the company can open Documents.
         rows = history_rows(entries, category_names=category_names, docs_on=True)
@@ -4783,22 +4776,24 @@ def setup_routes(app):
         filter_qs = urlencode(filters)
         footer = server_pager(
             offset, per_page, len(shown),
-            lambda o, l: f"/docs/{entity_id}/history?page={o // l + 1}&per_page={l}" + (f"&{filter_qs}" if filter_qs else ""),
+            lambda o, l: f"{page_path}/history?page={o // l + 1}&per_page={l}" + (f"&{filter_qs}" if filter_qs else ""),
             page_sizes=(10, 20, 50, 100), hx_target=f"#{dom_id}",
         )
         card = history_table([], rows=rows, page_rows=shown[offset:offset + per_page], filters=filters,
-                             filter_url=f"/docs/{entity_id}/history", filter_target=f"#{dom_id}",
+                             filter_url=f"{page_path}/history", filter_target=f"#{dom_id}",
                              footer=footer, section_id=dom_id)
         headers = {}
         if "hist_event" in qp or "hist_field" in qp or "hist_who" in qp:
             kept = {k: v for k, v in page_params.items() if k not in HISTORY_FILTERS}
             query = urlencode({**kept, **filters})
-            headers["HX-Push-Url"] = f"/docs/{entity_id}" + (f"?{query}" if query else "")
+            headers["HX-Push-Url"] = page_path + (f"?{query}" if query else "")
         return _R(to_xml(card), media_type="text/html", headers=headers)
+
+    app.get("/docs/{entity_id}/history")(doc_history_paginated)
+    app.get("/lists/{entity_id}/history")(doc_history_paginated)
 
     async def doc_files_section(request: Request, entity_id: str):
         resource = "lists" if request.url.path.startswith("/lists/") else "docs"
-        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return files_session_expired()
@@ -4808,7 +4803,7 @@ def setup_routes(app):
         except APIError as e:
             return files_error(error_message(e), e.status)
         return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc),
-            page=int(qp.get("page", "1") or "1"),
+            page=_page_number(request),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),
             date_from=qp.get("date_from", ""),
@@ -11608,7 +11603,7 @@ async function celerpCsvImport(input, entityId) {
          if role_has_permission(settings or {}, role, "view_financial_reports") else ""),
         # --- History / Activity section ---
         Div(id=f"doc-history-{entity_id.replace(':', '-').replace('/', '-')}",
-            hx_get=f"/docs/{entity_id}/history?page=1",
+            hx_get=f"{_base}/history?page=1",
             hx_trigger="load",
             hx_swap="outerHTML"),
         cls="doc-detail doc-detail--gc",
