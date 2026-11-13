@@ -49,7 +49,9 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAXES_SEEDED_FOR, configured, get_regime, purchasing_taxes, sales_taxes, tax_country, with_taxes
+from celerp.tax_regimes import (
+    TAXES_SEEDED_FOR, configured, get_regime, pack_missing, purchasing_taxes, sales_taxes, tax_country, with_taxes,
+)
 from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -79,7 +81,7 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     if not address:
         return None
     country = str(address.get("country") or "").strip()
-    if not country:
+    if not country or pack_missing(country):
         return None
 
     company = await locked_company(session, company_id)

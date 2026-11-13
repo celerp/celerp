@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
-from celerp.tax_regimes import country_name, tax_country
+from celerp.tax_regimes import country_name, missing_pack_refusal, pack_missing, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -1724,6 +1724,8 @@ def setup_routes(app):
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
         elif field in ("address", "country"):
+            if field == "country" and (refusal := missing_pack_refusal(value)):
+                return P(refusal, cls="cell-error")
             if field == "country" and value and not tax_country(value):
                 return P(t("setup.invalid_country", value=repr(value)), cls="cell-error")
             try:
@@ -3068,7 +3070,11 @@ def location_address(address, **changes) -> dict:
 
 
 def _location_country(address) -> str:
-    return tax_country(address.get("country")) if isinstance(address, dict) else ""
+    """The location's tax country code; a stored country whose pack is missing stays as stored."""
+    if not isinstance(address, dict):
+        return ""
+    value = address.get("country")
+    return str(value).strip().upper() if pack_missing(value) else tax_country(value)
 
 
 def _location_address_text(address) -> str:

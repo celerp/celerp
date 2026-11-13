@@ -91,7 +91,8 @@ async def _company(session, settings: dict | None = None):
 
 
 async def _set_settings(session, company_id, settings: dict) -> None:
-    company = await session.get(Company, company_id)
+    from celerp.services.company_lock import locked_company
+    company = await locked_company(session, company_id)
     company.settings = settings
     await session.commit()
 
@@ -324,7 +325,7 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
     company_id = auth["company_id"]
     await _set_settings(session, company_id, _pin_shaped("TH"))
     before = await _stored(session, company_id)
-    await _real_boot(monkeypatch)
+    await _start(monkeypatch)
     for path in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):
         r = await client.get(path, headers=auth["headers"])
         assert r.status_code == 200, r.text
@@ -405,40 +406,33 @@ async def test_pack_notice_clears_when_packs_return(l10n_dir, session):
         assert await _pack_notices(session, cid) == []
 
 
-async def _real_boot(monkeypatch, during=None):
-    """The real API start with no modules enabled, then ``during(app)`` while it runs."""
-    import celerp.main as main_mod
-    from celerp.config import settings
+async def _start(monkeypatch) -> None:
+    """The start's data steps on the test database with no module enabled (needs the ``client``
+    fixture, which routes the start's own sessions to the test's)."""
+    from celerp.main import _bring_data_current
 
-    monkeypatch.setattr(main_mod, "_MODULE_DIR", None)
-    monkeypatch.delenv("ENABLED_MODULES", raising=False)
-    monkeypatch.setattr(settings, "gateway_token", "")
-    monkeypatch.setattr(settings, "celerp_public_url", None)
-    async with main_mod.lifespan(main_mod.app):
-        if during is not None:
-            await during(main_mod.app)
+    monkeypatch.setattr("celerp.services.dev_release_guard.run_upgrade_guard",
+                        AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+    app = type("App", (), {"state": type("State", (), {})()})()
+    assert await _bring_data_current(app, modules_ready=False) is True
 
 
-async def test_pack_notice_runs_without_enabled_modules(l10n_dir, session, monkeypatch):
+async def test_pack_notice_runs_without_enabled_modules(l10n_dir, client, session, monkeypatch):
     company_id = await _company(session)
     _drop(l10n_dir, "TH")
-    await _real_boot(monkeypatch)
+    await _start(monkeypatch)
     [notice] = await _pack_notices(session, company_id)
     assert notice.i18n["params"] == {"countries": "TH"}
 
 
-async def test_pack_notice_failure_is_logged_and_boot_continues(l10n_dir, session, monkeypatch, caplog):
-    await _company(session)
+async def test_pack_notice_failure_is_logged_and_boot_continues(monkeypatch, caplog):
+    from test_main_lifespan import _boot_in_order
+
     monkeypatch.setattr("celerp.localization.notice.sync_pack_notice",
                         AsyncMock(side_effect=RuntimeError("notice table unreadable")))
-    answered = {}
-
-    async def _health(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as c:
-            answered["status"] = (await c.get("/health")).status_code
-
     with caplog.at_level(logging.ERROR, logger="celerp.main"):
-        await _real_boot(monkeypatch, _health)
-    assert answered["status"] == 200
+        order, _notify, app = await _boot_in_order(
+            monkeypatch, AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+    assert app.state.data_current is True
     failed = [r for r in caplog.records if "Country pack notice failed" in r.getMessage()]
     assert len(failed) == 1 and "notice table unreadable" in caplog.text
