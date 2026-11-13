@@ -724,6 +724,46 @@ def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, s
                     else _revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
 
 
+async def _gift_lines(session, company_id, doc: dict, settings: dict) -> set[int]:
+    """The document lines (1-based) selling an item of a gift category (recognition.gift_categories)
+    as the company classifies it at posting; asset lines are never gifts."""
+    lines = [li if isinstance(li, dict) and not li.get("asset_id") else {} for li in doc.get("line_items") or []]
+    gifts = recognition.gift_categories(settings)
+    ids = {line_item_id(li) for li in lines} - {None}
+    if not gifts or not ids:
+        return set()
+    categories = {eid: (state or {}).get("category") for eid, state in (await session.execute(
+        _select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            Projection.entity_id.in_(sorted(ids))))).all()}
+    return {n for n, li in enumerate(lines, 1) if categories.get(line_item_id(li)) in gifts}
+
+
+def _stamp_gifts(entries: list[dict], bases: list, gifted: list, currency: str) -> tuple[list[dict], list]:
+    """Each revenue line split by the document lines behind it (``bases``, line -> weight): the
+    part its gift lines account for (``gifted``, the same shape, None for none) is stamped
+    ``gift`` on the line, where the books keep it from then on, and the rest stays unstamped.
+    Donor history reads gifts by that stamp alone, so a later change of an item's category, the
+    gift setting or a category's account never moves a gift already posted."""
+    out, out_bases = [], []
+    for entry, behind, gift in zip(entries, bases, gifted):
+        weight = sum((to_decimal(w) for w in (gift or {}).values()), _Dec(0))
+        whole = sum((to_decimal(w) for w in behind.values()), _Dec(0)) if isinstance(behind, dict) else _Dec(0)
+        if not weight or not whole:
+            out.append(entry)
+            out_bases.append(behind)
+            continue
+        side = "credit" if entry.get("credit") else "debit"
+        part, rest = allocate_pro_rata(to_decimal(entry[side]), [min(weight, whole), max(whole - weight, _Dec(0))],
+                                       currency)
+        rest_behind = {n: left for n, w in behind.items() if (left := to_decimal(w) - to_decimal(gift.get(n, 0))) > 0}
+        for amount, line_bases, stamp in ((part, gift, True), (rest, rest_behind, False)):
+            if amount:
+                out.append({**entry, side: to_stored_float(amount), **({"gift": True} if stamp else {})})
+                out_bases.append(line_bases or HEADER)
+    return out, out_bases
+
+
 async def _emit_schedules(session, *, company_id, user_id, cycle: str, records: list[dict]) -> None:
     """Write each deferred line's schedule (recognition.schedule_records), once per finalize."""
     for record in records:
@@ -779,12 +819,18 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
     revenue_accounts = {index: incomes.get(index, acc[R.SALES_REVENUE]) for index in periods}
     incomes = {**incomes, **{index: acc[R.DEFERRED_REVENUE] for index in periods}}
+    gifts = await _gift_lines(session, company_id, doc, settings) - {int(i) + 1 for i in periods}
+    for index, share in (allocations or {}).items():
+        if int(index) + 1 in gifts:
+            share["gift"] = True
     income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue,
                            deferred=acc.get(R.DEFERRED_REVENUE))
+    behind = [{int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
+              if allocations else HEADER for e in income]
+    income, behind = _stamp_gifts(income, behind, [{n: w for n, w in b.items() if n in gifts}
+                                                   if isinstance(b, dict) else None for b in behind], base_currency)
     entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
-    bases = [CONTROL, *_clearing_bases(doc, allocations, clearing),
-             *({int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
-               if allocations else HEADER for e in income)]
+    bases = [CONTROL, *_clearing_bases(doc, allocations, clearing), *behind]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
         bases.append(_line_tax_basis(doc))
@@ -820,11 +866,13 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
                                  change="finalize")
 
 
-async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> list[tuple[str, _Dec]]:
+async def _revenue_sold_on(session, company_id, doc_id: str,
+                           settings: dict) -> tuple[list[tuple[str, _Dec]], dict[str, _Dec]]:
     """Each account a document's live finalize entry moved revenue on, with its net credit
-    (below zero on a discount account the sale was debited to), in code order. A line names
-    its revenue by its role, or one that carries no role (an imported document's own lines)
-    by its account being a revenue account in the chart (_revenue_line). Empty when it moved none."""
+    (below zero on a discount account the sale was debited to), in code order, and the part of
+    that net its lines stamped as gifts (_stamp_gifts) by account. A line names its revenue by
+    its role, or one that carries no role (an imported document's own lines) by its account
+    being a revenue account in the chart (_revenue_line). Empty when it moved none."""
     lines = [e for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
              if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
              and (row.state or {}).get("status") == "posted"
@@ -832,11 +880,15 @@ async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> 
     roleless = {e["account"] for e in lines if not e.get("account_roles")}
     chart = (await lock_accounts(session, company_id, roleless) if roleless else None) or {}
     net: dict[str, _Dec] = {}
+    gift: dict[str, _Dec] = {}
     for e in lines:
         typed = not e.get("account_roles") and chart.get(e["account"], {}).get("account_type") in ROLE_TYPES[R.SALES_REVENUE]
         if typed or line_has_role(settings, e, R.SALES_REVENUE):
-            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
-    return sorted((code, amount) for code, amount in net.items() if amount)
+            moved = to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
+            net[e["account"]] = net.get(e["account"], _Dec(0)) + moved
+            if e.get("gift"):
+                gift[e["account"]] = gift.get(e["account"], _Dec(0)) + moved
+    return sorted((code, amount) for code, amount in net.items() if amount), gift
 
 
 def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> list[tuple[str, _Dec]]:
@@ -915,7 +967,7 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     settings = await current_settings(session, company_id)
     original = str(doc.get("original_doc_id") or "")
     ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
-    sold_on = await _revenue_sold_on(session, company_id, original, settings) if original else []
+    sold_on, gift_on = await _revenue_sold_on(session, company_id, original, settings) if original else ([], {})
     roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sold_on)) if not have]
     acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
 
@@ -932,6 +984,7 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     sold_codes = {code for code, _ in sold_on}
     linked: dict[str, _Dec] = {}
     on_code: dict[int, str] = {}
+    gift_linked: set[int] = set()
     for index, share in (allocations or {}).items():
         line = doc["line_items"][int(index)]
         source = line.get("source_line_id") if isinstance(line, dict) and not line.get("asset_id") else None
@@ -940,6 +993,8 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
             share["account"] = schedules[code]["account"] if code in schedules else code
             linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
             on_code[int(index) + 1] = code
+            if (posted.get(source) or {}).get("gift"):
+                gift_linked.add(int(index) + 1)
     # The document lines behind each revenue line: a linked line on its own account, every
     # other line (not an asset's) on each account in the proportion that account takes of them.
     spread = {int(i) + 1: to_decimal(share["base"]) for i, share in (allocations or {}).items()
@@ -951,15 +1006,21 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         for code, share in (_revenue_shares(rest, [*sold_on, *weights], base_currency) if rest else []):
             shares[code] = shares.get(code, _Dec(0)) + share
         shares = {code: share for code, share in shares.items() if share}
-        entries, bases = [], []
+        entries, bases, gifted = [], [], []
         ledger = await recognition.run_ledger(session, company_id) if schedules else None
+        sold_net = dict(sold_on)
         for code, share in shares.items():
-            behind = ({**{n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code},
-                       **({n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {})}
-                      or HEADER)
+            own = {n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code}
+            spread_on = {n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {}
+            behind = {**own, **spread_on} or HEADER
             if code not in schedules:
+                # What the invoice posted as gifts comes back as gifts: a linked line as its
+                # invoice line, the rest at the gift part of the invoice's revenue on the account.
+                ratio = gift_on.get(code, _Dec(0)) / sold_net[code] if sold_net.get(code) else _Dec(0)
                 entries.append(_revenue_line(settings, code, **side(to_stored_float(share), True)))
                 bases.append(behind)
+                gifted.append({**{n: w for n, w in own.items() if n in gift_linked},
+                               **{n: w * ratio for n, w in spread_on.items()}})
                 continue
             schedule = schedules[code]
             deferred, segments = recognition.credited_segments(code, schedule, ledger, share, day)
@@ -971,12 +1032,17 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
                 if part:
                     entries.append(line)
                     bases.append({n: b * part / share for n, b in behind.items()} if behind is not HEADER else HEADER)
+                    gifted.append(None)
+        entries, bases = _stamp_gifts(entries, bases, gifted, base_currency)
     elif revenue or not clearing:
         incomes = await _line_income_accounts(session, company_id, doc, settings)
+        gifts = await _gift_lines(session, company_id, doc, settings)
         entries = [{**e, **side(e["credit"], True)}
                    for e in _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)]
         bases = [{n: base for n, base in spread.items() if allocations[str(n - 1)]["account"] == e["account"]} or HEADER
                  for e in entries]
+        entries, bases = _stamp_gifts(entries, bases, [{n: w for n, w in b.items() if n in gifts}
+                                                       if isinstance(b, dict) else None for b in bases], base_currency)
     else:
         entries, bases = [], []
     entries += clearing

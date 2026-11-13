@@ -1248,6 +1248,9 @@ class JELine(BaseModel):
     source_lines: list[int] | None = None
     # The posted entry this line copies, with its fund (peer_lines.copy_posted_lines).
     posted_from: str | None = None
+    # A gift, classified once when the line was posted (auto_je._stamp_gifts, or a manual line
+    # naming its donor on a gift income account); donor history reads gifts by this alone.
+    gift: bool | None = None
 
 
 class AccJournalEntryFx(BaseModel):

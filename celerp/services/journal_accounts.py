@@ -238,8 +238,32 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
                         f"Account {code} has never been the {label} account.",
                         code=code, role=label),
                 )
+    if not restored and not data.get("record_id"):
+        await _stamp_named_gifts(session, company_id, settings, entries)
     await check_fund_rules(session, company_id, data, entries, accounts,
                            restored=restored, actor_id=actor_id, entity_id=entity_id)
+
+
+async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:
+    """A gift taken straight into the books (a bank transfer posted by hand): a line of an entry
+    no record posts that names its donor (``contact``) on a gift income account at posting, the
+    account a gift category or an item in one is credited to, is stamped ``gift`` once, as
+    auto_je stamps a document's gift lines."""
+    from celerp.models.projections import Projection
+    from celerp.services.recognition import gift_categories
+
+    named = [e for e in entries if e.get("contact") and "gift" not in e and not e.get("posted_from")]
+    gifts = gift_categories(settings)
+    if not named or not gifts:
+        return
+    accounts = {code for key in gifts if (code := (settings.get("category_income_accounts") or {}).get(key))}
+    items = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.state["category"].as_string().in_(sorted(gifts))))).scalars().all()
+    accounts |= {code for item in items if (code := income_account_of(settings, item or {}))}
+    for entry in named:
+        if entry["account"] in accounts:
+            entry["gift"] = True
 
 
 FUNDS_ENABLED = "funds_enabled"  # company setting: whether journal lines carry funds
