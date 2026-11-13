@@ -1,13 +1,15 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """The funds, fund report, revenue recognition, year close, document fund and connection
-default pages, each submitted through the UI app to the real API in process: every save
-leaves the stored effect its page reports.
+default pages, and a record held for funds on the Sync accounts page, each submitted through
+the UI app to the real API in process: every save leaves the stored effect its page reports.
 
 Initial conditions per test: a fresh company with the seeded chart (1111 the default bank,
 4100 sales revenue, 6200 rent), signed in to the UI as its admin (``_ui``). Fund tests turn
 funds on with ``test_fund_movements._setup`` (restricted fund R for scholarships,
-board-designated funds U1 and U2) unless they turn funds on through the page itself."""
+board-designated funds U1 and U2) unless they turn funds on through the page itself. The held
+record test pairs a client and its accountant on the real engine
+(``test_peer_fund_holds._held_firm_journal``)."""
 
 from __future__ import annotations
 
@@ -17,6 +19,9 @@ from contextlib import asynccontextmanager
 import pytest
 
 from income_books import _item, _line
+from migration_support import real_client, real_engine  # noqa: F401
+from test_company_backup_lifecycle import _data_dir  # noqa: F401
+from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_change_fund import _outside_invoice
 from test_fund_movement_posting import DATE, _bill, _close, _gift, _held
 from test_fund_movements import _setup
@@ -215,3 +220,22 @@ async def test_connection_fund_default_saved_from_connectors(client, session, au
     items = (await client.get("/accounting/funds/connection-defaults", headers=auth["headers"])).json()["items"]
     [saved] = [i for i in items if (i["origin"], i["source_key"]) == ("accounting_system", "quickbooks")]
     assert saved["fund_choice"] == f["R"]
+
+
+async def test_record_held_for_funds_posted_from_sync_accounts(real_client, real_engine, monkeypatch):
+    """A journal from the accountant held for a fund on each line, posted from the Sync accounts
+    page with every line unrestricted: the hold clears and one journal posts, unrestricted."""
+    from test_peer_fund_holds import BANK, EXPENSE, _held, _held_firm_journal
+    from test_peer_two_way_sync import _from_firm, _journals
+
+    tok, _, client_company, _, _, item, _ = await _held_firm_journal(
+        real_client, real_engine, monkeypatch, [(BANK, 100.0, 0.0), (EXPENSE, 0.0, 100.0)])
+    from test_helpers import ui_signed_in
+
+    async with ui_signed_in(tok) as ui:
+        r = await ui.post(f"/accounting/sync-accounts/holds/{item['id']}/funds", headers=HX, data={
+            "revision": str(item["fix"]["revision"]), "request_key": uuid.uuid4().hex, "all": "unrestricted"})
+        assert r.status_code == 200, r.text
+    assert await _held(real_client, tok) == []
+    [state] = _from_firm(await _journals(real_engine, client_company)).values()
+    assert state["fund_choice"] == "unrestricted" and state["status"] == "posted"
