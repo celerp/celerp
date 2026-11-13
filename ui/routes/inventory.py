@@ -1003,7 +1003,7 @@ def _inventory_toolbar(p: dict, settings: dict, role: str, lang: str = "en", *, 
         if can_write and can_exchange else None,
         A(t("inv.customize_fields", lang), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm")
         if can_write and can_exchange else None,
-        id="inventory-toolbar-actions", cls="flex-row gap-sm",
+        id="inventory-toolbar-actions", cls="flex-row flex-wrap gap-sm",
         **({"hx_swap_oob": "outerHTML"} if oob else {}),
     )
 

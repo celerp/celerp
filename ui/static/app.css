@@ -3772,7 +3772,7 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
    flush with the card, cells padded like the card's own rows. */
 .doc-section .doc-card-table, .doc-section .history-table { width: 100%; border: 0; border-radius: 0; }
 .doc-section .doc-card-table td, .doc-section .history-table td { padding: 6px 14px; font-size: 12px; }
-.doc-section .doc-card-table th, .doc-section .history-table th { padding: 6px 14px; text-align: left; }
+.doc-section .doc-card-table th, .doc-section .history-table th { padding: 6px 14px; text-align: center; }
 .doc-section .doc-card-table th.cell--number { text-align: right; }
 .doc-section .doc-card-subtitle { font-size: 12px; font-weight: 600; color: var(--c-text2); margin: 0; padding: 8px 14px 4px; }
 .doc-section .doc-card-group + .doc-card-group { border-top: 1px solid var(--c-border); }
