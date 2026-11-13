@@ -28848,10 +28848,6 @@
     "tests/test_batch05_attachment_controls.py::test_image_with_camera_mime_is_stored_and_listed[alpha.png-image/x-png-RGBA]": 0.7569312071427703,
     "tests/test_batch05_attachment_controls.py::test_image_with_camera_mime_is_stored_and_listed[camera.jpg-image/jpeg-RGB]": 0.16564177605323493,
     "tests/test_batch05_attachment_controls.py::test_image_with_camera_mime_is_stored_and_listed[photo.png-image/png-RGBA]": 0.1796022270573303,
-    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_one_picker_for_files_and_camera[contact]": 0.08366288803517818,
-    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_one_picker_for_files_and_camera[doc]": 0.0054732480784878135,
-    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_one_picker_for_files_and_camera[item]": 0.004856798914261162,
-    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_one_picker_for_files_and_camera[list]": 0.0052106339717283845,
     "tests/test_batch05_attachment_controls.py::test_unsupported_executable_has_a_clear_type_error": 0.14450150588527322,
     "tests/test_batch05_payments.py::test_payment_card_has_standard_dates_shared_icon_and_action_container[0-bill]": 0.004969546920619905,
     "tests/test_batch05_payments.py::test_payment_card_has_standard_dates_shared_icon_and_action_container[0-credit_note]": 0.005264458013698459,
@@ -29182,5 +29178,9 @@
     "tests/test_browser/test_history_filters.py::test_item_history_field_filter_searches_and_keeps_the_choice_in_the_url[chromium]": 2.027216844027862,
     "tests/test_browser/test_mobile_reflow.py::test_the_inventory_toolbar_wraps_inside_a_phone_screen_in_german[chromium]": 1.5169524300144985,
     "tests/test_browser/test_batch05_uploads.py::test_file_picker_and_camera_input_accept_jpeg[chromium-False]": 6.326242674025707,
-    "tests/test_browser/test_batch05_uploads.py::test_file_picker_and_camera_input_accept_jpeg[chromium-True]": 1.9229631120106205
+    "tests/test_browser/test_batch05_uploads.py::test_file_picker_and_camera_input_accept_jpeg[chromium-True]": 1.9229631120106205,
+    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[contact]": 0.1221781859640032,
+    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[doc]": 0.006065909052267671,
+    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[item]": 0.005411377060227096,
+    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[list]": 0.005768292001448572
 }
