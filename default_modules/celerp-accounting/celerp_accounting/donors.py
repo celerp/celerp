@@ -261,8 +261,6 @@ def _send_key(statement: str, n: int) -> str:
 async def _taken(session: AsyncSession, company_id, statements: list[str]) -> dict[str, list[int]]:
     """The send numbers recorded for each statement key, in order: 0 its first send, n resend n."""
     taken: dict[str, list[int]] = {key: [] for key in statements}
-    if not statements:
-        return taken
     for key in (await session.execute(select(LedgerEntry.idempotency_key).where(
             LedgerEntry.company_id == company_id,
             or_(LedgerEntry.idempotency_key.in_(statements),

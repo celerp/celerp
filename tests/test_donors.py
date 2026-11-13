@@ -106,6 +106,9 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     only to the donors resend names, or to all once the wording changed."""
     donors = await _statement_donors(client, auth)
     sent = _mailbox(monkeypatch)
+    quiet = {"from": "2001-01-01", "to": "2001-01-31"}
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=quiet)
+    assert r.status_code == 200 and r.json()["donors"] == [], r.text
     r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
     assert r.status_code == 200, r.text
     preview = {row["contact_id"]: row for row in r.json()["donors"]}
