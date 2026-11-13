@@ -128,7 +128,7 @@ def _mailbox(monkeypatch) -> list[dict]:
     sent: list[dict] = []
 
     async def fake_send(to, subject, body_html, body_text="", **kw):
-        sent.append({"to": to, "subject": subject, "html": body_html})
+        sent.append({"to": to, "subject": subject, "html": body_html, "operation_id": kw.get("operation_id")})
         return EmailResult(ok=True, detail="accepted")
 
     monkeypatch.setattr("celerp.services.email.send_email", fake_send)
@@ -164,6 +164,8 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     assert r.status_code == 200, r.text
     corrected = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})
     assert corrected.status_code == 200 and len(sent) == 3 and "Thank you, Cy Donor." in sent[-1]["html"]
+    # the relay takes a UUID operation id; each send carries its own
+    assert len({str(uuid.UUID(m["operation_id"])) for m in sent}) == 3
     pdf = await client.get(f"/donors/{donors['email']}/statement.pdf", headers=auth["headers"], params=PERIOD)
     assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
 

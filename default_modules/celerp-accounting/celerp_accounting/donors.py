@@ -274,7 +274,8 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
         sent = await email_service.send_email(
             to=row["email"], subject=t("donors.statement_subject", company=company, start=date_from, end=date_to),
             body_html=_statement_html(company, row, words["text"], date_from, date_to, currency),
-            body_text=_worded(words["text"], row["name"]), from_name=company, operation_id=key,
+            body_text=_worded(words["text"], row["name"]), from_name=company,
+            operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-donor-statement:{company_id}:{key}")),
             fail_closed_on_uncertain=True)
         if not sent.ok:
             await session.rollback()
