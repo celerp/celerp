@@ -442,10 +442,13 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Change line quantities from an effective date (billing.amend)."""
+        """Change line quantities from an effective date (billing.amend); the invoice an
+        amendment issues on an agreement that collects automatically is charged once it commits."""
         result = await billing.amend(session, company_id, entity_id, effective=body.effective,
                                      quantities=body.quantities, request_key=body.request_key, actor=user)
         await session.commit()
+        if result["invoice_id"]:
+            await collect.ask_after_bill(session, company_id, [result["invoice_id"]])
         return result
 
     @router.post("/{entity_id}/bill-early")

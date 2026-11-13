@@ -664,8 +664,10 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
 
 
 async def issue_document(session, company: Company, tid: str, state: dict, doc: dict, actor, key: str) -> str:
-    """Create ``doc`` for the agreement under the idempotency ``key``, numbered and finalized.
-    Caller holds the locks and commits."""
+    """Create ``doc`` for the agreement under the idempotency ``key``, numbered and finalized,
+    with attempt 1 of its collection opened when it is an invoice of an agreement that collects
+    automatically: every invoice an agreement issues comes through here, so none skips its
+    collection. Caller holds the locks and commits."""
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import claim_number, draft_counter
 
@@ -683,6 +685,9 @@ async def issue_document(session, company: Company, tid: str, state: dict, doc: 
     await session.flush()
     await finalize_document(doc_id, company.id, actor, session, commit=False)
     await session.flush()
+    if kind == "invoice" and state.get("generation_mode") == COLLECT_MODE:
+        from celerp.services.collection import open_attempt
+        await open_attempt(session, company.id, (await lock_projections(session, company.id, [doc_id]))[doc_id], 1)
     return doc_id
 
 
@@ -749,9 +754,6 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         doc_id = await issue_document(session, company, tid, state, doc, actor, claim_key)
     except (HTTPException, KeyedRefusal) as exc:
         raise BillRefused(state, tid, exc) from exc
-    if state.get("generation_mode") == COLLECT_MODE:
-        from celerp.services.collection import open_attempt
-        await open_attempt(session, company.id, (await lock_projections(session, company.id, [doc_id]))[doc_id], 1)
     periods = periods_of(state)
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto}

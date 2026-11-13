@@ -827,3 +827,26 @@ async def test_payer_change_needs_the_collection_permission(client, session, mon
     r = await client.patch(f"/docs/{eid}", headers=manager, json={"contact_id": other})
     assert r.status_code == 403, r.text
     assert (await template(client, hd, eid))["contact_id"] == payer
+
+
+async def test_every_invoice_an_automatic_agreement_issues_opens_its_collection(client, session, monkeypatch, cloud):
+    """Guard over every path that issues an agreement's invoice (a period billed by the
+    dispatcher, a period billed early by hand, an amendment's invoice): each invoice opens
+    attempt 1 for what it owes and is asked for; the amendment's credit note collects nothing."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    r = await client.post(f"/subscriptions/{eid}/bill-early", headers=hd, json={"request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    line = (await template(client, hd, eid))["line_items"][0]["line_id"]
+    freeze_day(monkeypatch, "2026-08-10")
+    r = await client.post(f"/subscriptions/{eid}/amend", headers=hd, json={
+        "effective": "2026-08-10", "quantities": {line: 4}, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    docs = await billed_docs(session, eid)
+    invoices = [d for d in docs if d["doc_type"] == "invoice"]
+    assert len(invoices) == 3
+    assert all(d["collection"]["attempt_number"] == 1 and d["collection"]["asked"] for d in invoices), invoices
+    assert [d.get("collection") for d in docs if d["doc_type"] == "credit_note"] == [None]
+    assert sorted(p["entity_id"] for p in cloud.sent("attempt")) == sorted(d["entity_id"] for d in invoices)
