@@ -147,7 +147,7 @@ async def test_connection_default_saves_in_place_and_keeps_a_refused_choice(ui_c
 
 
 async def test_document_filled_from_default_is_tagged(ui_client):
-    doc = {"entity_id": "doc:b1", "doc_type": "bill", "status": "draft", "currency": "USD", "version": 7,
+    doc = {"id": "doc:b1", "doc_type": "bill", "status": "draft", "currency": "USD", "version": 7,
            "origin": "connected_company", "fund_choice": "fund:r",
            "fund_choice_source": f"default:connected_company:{_PEER}",
            "line_items": [{"line_id": "L1", "description": "Paper", "quantity": 1, "unit_price": 40.0,

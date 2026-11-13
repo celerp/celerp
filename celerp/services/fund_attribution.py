@@ -247,7 +247,7 @@ OWN_CHOICE = "the record's own fund choice: Change fund rewrites it through requ
 STANDING = "a standing default: a setting, not a copy; each record stores its own choice"
 SETTLED = "a payment's split by fund: Change fund refuses a document a payment or note settles"
 NOTE_LINES = "a linked note's lines, copied when the note is made: the note keeps its own funds"
-READ = "reads the posted lines to show or choose from them; stores nothing"
+READ = "reads the posted lines, or a record's history, to show or choose from them; stores nothing"
 DRAFT = "a draft line's starting fund, the user's to change; finalizing checks it against its source (rule P)"
 FUND_COPY_REASONS = frozenset({JOURNAL_LINE, OWN_CHOICE, STANDING, SETTLED, NOTE_LINES, READ, DRAFT})
 _ASSETS = DEPENDENT + "celerp_fixed_assets.fundchange:dependents"
@@ -290,6 +290,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_fixed_assets.sales:_draft_invoice": DRAFT,
     "celerp_fixed_assets.sources:_bill_lines": READ,
     "celerp_fixed_assets.sources:_manual_lines": READ,
+    "ui.components.activity:<module>": READ,
     "ui.routes.accounting:setup_routes.journal_new_submit": JOURNAL_LINE,
     "ui.routes.documents:_local_fund": DRAFT,
     "ui.routes.documents:_submitted_fund_allocation": SETTLED,
