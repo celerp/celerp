@@ -29357,5 +29357,9 @@
     "tests/test_fund_pages_end_to_end.py::test_year_close_reversed_from_period_lock_tab": 0.2549845090834424,
     "tests/test_fund_pages_end_to_end.py::test_record_held_for_funds_posted_from_sync_accounts": 10.536230214987881,
     "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep[gift-account]": 7.535337462904863,
-    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep[sales-revenue]": 6.579645408084616
+    "tests/test_donors.py::test_donor_history_equals_gift_income_the_books_keep[sales-revenue]": 6.579645408084616,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[\\xb2-True]": 0.9290603448171169,
+    "tests/test_document_fund_ui.py::test_fund_cell_shown_again_after_its_editor_is_left": 0.008335291058756411,
+    "tests/test_donors.py::test_donor_history_counts_a_credit_note_on_its_own_date": 0.48368000297341496,
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_no_3500]": 0.15711416897829622
 }
