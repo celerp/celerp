@@ -3259,6 +3259,7 @@
   "enum.vertical_preset.gemstones": "Edelsteine & Schmuck",
   "enum.vertical_preset.hardware": "Eisenwaren & Werkzeuge",
   "enum.vertical_preset.retail": "Einzelhandel / Laden",
+  "enum.vertical_preset.saas": "SaaS / Software",
   "enum.vertical_preset.watches": "Uhren & Accessoires",
   "enum.vertical_preset.wine_spirits": "Wein & Spirituosen",
   "enum.vertical_tag.agricultural": "Landwirtschaft",

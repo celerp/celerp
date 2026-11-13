@@ -3600,6 +3600,7 @@
   "enum.vertical_preset.gemstones": "Gems & Jewelry",
   "enum.vertical_preset.hardware": "Hardware & Tools",
   "enum.vertical_preset.retail": "Retail / Shop",
+  "enum.vertical_preset.saas": "SaaS / Software",
   "enum.vertical_preset.watches": "Watches & Accessories",
   "enum.vertical_preset.wine_spirits": "Wine & Spirits",
   "enum.vertical_tag.agricultural": "Agricultural",

@@ -3259,6 +3259,7 @@
   "enum.vertical_preset.gemstones": "Pierres précieuses et bijoux",
   "enum.vertical_preset.hardware": "Quincaillerie et outillage",
   "enum.vertical_preset.retail": "Commerce de détail / Boutique",
+  "enum.vertical_preset.saas": "SaaS / Logiciels",
   "enum.vertical_preset.watches": "Montres et accessoires",
   "enum.vertical_preset.wine_spirits": "Vins et spiritueux",
   "enum.vertical_tag.agricultural": "Agriculture",

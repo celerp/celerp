@@ -3258,6 +3258,7 @@
   "enum.vertical_preset.gemstones": "อัญมณีและเครื่องประดับ",
   "enum.vertical_preset.hardware": "ฮาร์ดแวร์และเครื่องมือ",
   "enum.vertical_preset.retail": "ร้านค้าปลีก",
+  "enum.vertical_preset.saas": "SaaS / ซอฟต์แวร์",
   "enum.vertical_preset.watches": "นาฬิกาและเครื่องประดับ",
   "enum.vertical_preset.wine_spirits": "ไวน์และสุรา",
   "enum.vertical_tag.agricultural": "เกษตรกรรม",

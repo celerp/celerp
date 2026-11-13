@@ -96,13 +96,8 @@ async def test_consulting_demo_has_retainers(client):
     assert retainers and "celerp-subscriptions" in load_preset("consulting")["modules"]
 
 
-async def test_saas_demo_has_subscriptions_with_seats(client, monkeypatch):
-    """A SaaS demo company has subscriptions, one billing several seats and one in a trial.
-    The SaaS preset stays hidden until collection is live, so this test shows it."""
-    from celerp.services import vertical_presets
-
-    shown = vertical_presets.list_presets
-    monkeypatch.setattr(vertical_presets, "list_presets", lambda include_hidden=False: shown(True))
+async def test_saas_demo_has_subscriptions_with_seats(client):
+    """A SaaS demo company has subscriptions, one billing several seats and one in a trial."""
     h = await _admin(client)
     assert (await client.post("/companies/me/business-type", headers=h, json={"vertical": "saas"})).status_code == 200
     assert (await client.post("/companies/me/demo/reseed", headers=h)).status_code == 200
@@ -111,7 +106,7 @@ async def test_saas_demo_has_subscriptions_with_seats(client, monkeypatch):
     assert any(li["quantity"] > 1 for s in subs for li in s["line_items"]), subs
     trials = [s for s in subs if s.get("trial_end")]
     assert len(trials) == 1 and trials[0]["next_bill_date"] == trials[0]["trial_end"], subs
-    assert "celerp-subscriptions" in load_preset("saas", allow_hidden=True)["modules"]
+    assert "celerp-subscriptions" in load_preset("saas")["modules"]
 
 
 async def test_preset_switch_additive_idempotent(client):

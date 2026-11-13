@@ -3258,6 +3258,7 @@
   "enum.vertical_preset.gemstones": "الأحجار الكريمة والمجوهرات",
   "enum.vertical_preset.hardware": "الأدوات والمعدات",
   "enum.vertical_preset.retail": "تجزئة / متجر",
+  "enum.vertical_preset.saas": "SaaS / البرمجيات",
   "enum.vertical_preset.watches": "الساعات والإكسسوارات",
   "enum.vertical_preset.wine_spirits": "النبيذ والمشروبات الروحية",
   "enum.vertical_tag.agricultural": "الزراعة",

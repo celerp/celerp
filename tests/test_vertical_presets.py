@@ -44,9 +44,14 @@ def test_missing_package_gives_empty_catalog():
 
 
 def test_hidden_presets_only_on_request():
-    assert vp.load_preset("saas") is None
-    assert vp.load_preset("saas", allow_hidden=True) is not None
-    assert "saas" not in {p["name"] for p in vp.list_presets()}
+    assert vp.load_preset("property_rental") is None
+    assert vp.load_preset("property_rental", allow_hidden=True) is not None
+    assert "property_rental" not in {p["name"] for p in vp.list_presets()}
+
+
+def test_saas_is_offered():
+    assert "saas" in {p["name"] for p in vp.list_presets()}
+    assert "celerp-subscriptions" in vp.load_preset("saas")["modules"]
 
 
 def test_unreadable_and_nameless_files_skipped(tmp_path):

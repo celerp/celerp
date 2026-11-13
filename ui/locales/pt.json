@@ -3258,6 +3258,7 @@
   "enum.vertical_preset.gemstones": "Pedras preciosas e joias",
   "enum.vertical_preset.hardware": "Ferragens e ferramentas",
   "enum.vertical_preset.retail": "Varejo / Loja",
+  "enum.vertical_preset.saas": "SaaS / Software",
   "enum.vertical_preset.watches": "Relógios e acessórios",
   "enum.vertical_preset.wine_spirits": "Vinhos e bebidas alcoólicas",
   "enum.vertical_tag.agricultural": "Agrícola",

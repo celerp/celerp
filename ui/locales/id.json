@@ -3258,6 +3258,7 @@
   "enum.vertical_preset.gemstones": "Permata & Perhiasan",
   "enum.vertical_preset.hardware": "Perkakas & Alat",
   "enum.vertical_preset.retail": "Ritel / Toko",
+  "enum.vertical_preset.saas": "SaaS / Perangkat Lunak",
   "enum.vertical_preset.watches": "Jam Tangan & Aksesori",
   "enum.vertical_preset.wine_spirits": "Anggur & Minuman Keras",
   "enum.vertical_tag.agricultural": "Pertanian",

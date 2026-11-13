@@ -3258,6 +3258,7 @@
   "enum.vertical_preset.gemstones": "Đá quý & Trang sức",
   "enum.vertical_preset.hardware": "Dụng cụ & Đồ kim khí",
   "enum.vertical_preset.retail": "Bán lẻ / Cửa hàng",
+  "enum.vertical_preset.saas": "SaaS / Phần mềm",
   "enum.vertical_preset.watches": "Đồng hồ & Phụ kiện",
   "enum.vertical_preset.wine_spirits": "Rượu vang & Rượu mạnh",
   "enum.vertical_tag.agricultural": "Nông nghiệp",
