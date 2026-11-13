@@ -24,7 +24,7 @@ from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
 from celerp.tax_regimes import tax_entries
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
-from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate
+from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate, searchable_select
 from ui.components.deleted_items import deleted_label
 from ui.components.encode import safe_url
 
@@ -1440,23 +1440,25 @@ def filter_history(rows: list[dict], filters: dict | None) -> list[dict]:
 
 
 def _history_filters(rows: list[dict], filters: dict, filter_url: str, target: str | None) -> FT:
-    """Event, Field and Who selects; choosing one reloads the History with the choice in the URL."""
+    """Event, Field and Who boxes, searchable since a record's history can name any number of
+    each; picking one reloads the History with the choice in the URL. Only a pick (the box's
+    hidden value) reloads, never the typed search text."""
     def select(name: str, key: str, label_key: str) -> FT:
         values = sorted({r[key] for r in rows if r[key] and r[key] != EMPTY})
-        current = filters.get(name) or ""
         return Label(
             Span(t(label_key), cls="form-label"),
-            Select(Option(t("activity.filter_any"), value=""),
-                   *[Option(v, value=v, selected=v == current) for v in values],
-                   name=name, cls="form-input form-input--sm"),
+            searchable_select(name, [("", t("activity.filter_any")), *values],
+                              value=filters.get(name) or "", aria_label=t(label_key),
+                              cls_extra="form-input--sm"),
             cls="history-filter")
-    htmx = {"hx_get": filter_url, "hx_target": target, "hx_swap": "outerHTML", "hx_trigger": "change"} if target else {}
+    htmx = {"hx_get": filter_url, "hx_target": target, "hx_swap": "outerHTML",
+            "hx_trigger": "change[target.type === 'hidden']"} if target else {}
     return Form(
         select("hist_event", "event", "th.event"),
         select("hist_field", "field", "activity.th_field"),
         select("hist_who", "who", "documents.th_who"),
         method="get", action=filter_url, cls="history-filters",
-        **({"onchange": "this.submit()"} if not target else {}), **htmx)
+        **({"onchange": "event.target.type === 'hidden' && this.submit()"} if not target else {}), **htmx)
 
 
 def history_table(ledger: list[dict], *, title: str | None = None, section_cls: str = "doc-section",

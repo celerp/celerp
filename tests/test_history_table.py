@@ -87,6 +87,13 @@ def test_the_table_has_the_six_columns_and_offers_the_filters():
     assert ">Ana<" in html and ">none<" not in html
 
 
+def test_each_filter_is_a_searchable_box_keeping_the_current_choice():
+    html = to_xml(history_table(_LEDGER, filters={"hist_who": "Ana"}, filter_url="/x", filter_target="#h"))
+    assert html.count('role="combobox"') == 3 and "<select" not in html
+    assert 'name="hist_who" data-name="hist_who" value="Ana"' in html
+    assert 'data-value="Ana"' in html
+
+
 def test_a_filter_with_no_match_says_so():
     html = to_xml(history_table(_LEDGER, filters={"hist_who": "Nobody"}, filter_url="/x"))
     assert "No history matches these filters." in html
