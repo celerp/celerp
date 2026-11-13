@@ -327,6 +327,7 @@ def _build_router() -> APIRouter:
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": False, "error": detail})
         await session.commit()
         answered = [r for r in results if r["ok"]]
+        await collect.ask_after_bill(session, company_id, [r["doc_id"] for r in answered])
         already = sum(1 for r in answered if r["already_billed"])
         return {"results": results, "billed": len(answered) - already, "already_billed": already,
                 "refused": len(results) - len(answered)}
@@ -384,6 +385,7 @@ def _build_router() -> APIRouter:
                 results.append({**row, "ok": False, "error": exc.detail,
                                 **await refused_period(session, company_id, item.entity_id, item.period_index)})
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [r["doc_id"] for r in results if r["ok"]])
         return {"results": results}
 
     @router.get("/summary", description=(
@@ -427,6 +429,7 @@ def _build_router() -> APIRouter:
         result = await billing.claim_period(session, company_id, entity_id, actor=user,
                                             request_key=body.request_key, period_index=body.period_index)
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [result["doc_id"]])
         return result
 
     @router.post("/{entity_id}/amend")
@@ -458,6 +461,7 @@ def _build_router() -> APIRouter:
         result = await billing.claim_period(session, company_id, entity_id, actor=user, early=True,
                                             period_index=body.period_index, request_key=body.request_key)
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [result["doc_id"]])
         return result
 
     @router.get("/{entity_id}/periods")

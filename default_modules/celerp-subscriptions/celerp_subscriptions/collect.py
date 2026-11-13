@@ -94,6 +94,14 @@ async def advance_all(factory, company_id) -> None:
             log.exception("Advancing the collection of %s failed", doc_id)
 
 
+async def ask_after_bill(session, company_id, doc_ids) -> None:
+    """Ask for the charge of each invoice a bill by hand just committed, as the dispatcher's
+    pass does after an unattended bill; an invoice with no collection waiting asks nothing."""
+    from celerp_subscriptions.billing import same_session
+    for doc_id in doc_ids:
+        await advance(lambda: same_session(session), company_id, doc_id)
+
+
 async def advance(factory, company_id, doc_id: str) -> None:
     """Decide the invoice's next step under its row lock and commit it, ask Cloud with no lock
     held, then record the answer under the lock again."""

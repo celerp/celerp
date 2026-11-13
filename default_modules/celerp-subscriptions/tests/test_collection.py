@@ -367,6 +367,41 @@ async def test_collection_request_after_commit_only(client, session, monkeypatch
     assert doc["collection"]["state"] == "submitted"
 
 
+@pytest.mark.parametrize("route", ["generate-due", "bulk", "bill-early"])
+async def test_collection_requested_when_a_period_is_billed_by_hand(client, session, monkeypatch, cloud, route):
+    """A period billed from the page or the API is charged as soon as the bill commits, as an
+    unattended bill is, not at the dispatcher's next pass."""
+    freeze_day(monkeypatch, "2026-07-01" if route != "bill-early" else "2026-06-20")
+    hd = await register(client)
+    cid, eid, payer = await _collecting(client, hd)
+    key = uuid.uuid4().hex
+    if route == "bulk":
+        r = await client.post("/subscriptions/generate-due", headers=hd,
+                              json={"items": [{"entity_id": eid, "period_index": 0, "request_key": key}]})
+    else:
+        r = await client.post(f"/subscriptions/{eid}/{route}", headers=hd, json={"request_key": key})
+    assert r.status_code == 200, r.text
+    [doc] = await billed_docs(session, eid)
+    [sent] = cloud.sent("attempt")
+    assert (sent["entity_id"], sent["attempt_number"], sent["payer_contact_id"]) == (doc["entity_id"], 1, payer)
+    assert sent["amount_minor"] == await _outstanding_minor(session, doc)
+    assert doc["collection"]["state"] == "submitted"
+
+
+async def test_every_route_that_bills_a_period_asks_for_its_collection():
+    """Each route that claims a period by hand asks for the charge after it commits."""
+    import ast
+    import inspect
+    from celerp_subscriptions import routes
+    tree = ast.parse(inspect.getsource(routes))
+    claimers = {fn.name: {f"{c.func.value.id}.{c.func.attr}" for c in ast.walk(fn) if isinstance(c, ast.Call)
+                          and isinstance(c.func, ast.Attribute) and isinstance(c.func.value, ast.Name)}
+                for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)}
+    billing = sorted(name for name, called in claimers.items() if "billing.claim_period" in called)
+    assert billing == ["bill_early", "catch_up_run", "generate_all_due", "generate_due"]
+    assert [name for name in billing if "collect.ask_after_bill" not in claimers[name]] == []
+
+
 def _same(session):
     from contextlib import asynccontextmanager
 
