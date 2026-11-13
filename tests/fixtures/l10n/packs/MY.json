@@ -1,0 +1,38 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 1,
+  "country": "MY",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "MYR"
+  },
+  "taxes": [
+    {
+      "name": "Sales Tax 10%",
+      "rate": 10.0,
+      "tax_type": "sales",
+      "is_default": true,
+      "description": "Fixture sales tax",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "Service Tax 6%",
+      "rate": 6.0,
+      "tax_type": "sales",
+      "is_default": false,
+      "description": "Fixture service tax",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "Exempt",
+      "rate": 0.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture exempt",
+      "is_compound": false,
+      "default_order": 0
+    }
+  ]
+}

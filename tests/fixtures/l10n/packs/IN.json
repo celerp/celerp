@@ -1,0 +1,56 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 1,
+  "country": "IN",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "INR"
+  },
+  "taxes": [
+    {
+      "name": "CGST 9%",
+      "rate": 9.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture central GST",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "SGST 9%",
+      "rate": 9.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture state GST",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "IGST 18%",
+      "rate": 18.0,
+      "tax_type": "both",
+      "is_default": true,
+      "description": "Fixture integrated GST",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "Exempt",
+      "rate": 0.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture exempt",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "TDS 2%",
+      "rate": -2.0,
+      "tax_type": "purchase",
+      "is_default": false,
+      "description": "Fixture deduction at source",
+      "is_compound": false,
+      "default_order": 1
+    }
+  ]
+}

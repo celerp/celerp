@@ -1,0 +1,47 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 1,
+  "country": "TH",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "THB"
+  },
+  "taxes": [
+    {
+      "name": "VAT 7%",
+      "rate": 7.0,
+      "tax_type": "both",
+      "is_default": true,
+      "description": "Fixture VAT",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "Exempt",
+      "rate": 0.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture exempt",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "WHT 3%",
+      "rate": -3.0,
+      "tax_type": "purchase",
+      "is_default": false,
+      "description": "Fixture withholding on services",
+      "is_compound": false,
+      "default_order": 1
+    },
+    {
+      "name": "WHT 5%",
+      "rate": -5.0,
+      "tax_type": "purchase",
+      "is_default": false,
+      "description": "Fixture withholding on rentals",
+      "is_compound": false,
+      "default_order": 1
+    }
+  ]
+}

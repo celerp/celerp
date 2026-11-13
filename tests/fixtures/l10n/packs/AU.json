@@ -1,0 +1,29 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 1,
+  "country": "AU",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "AUD"
+  },
+  "taxes": [
+    {
+      "name": "GST 10%",
+      "rate": 10.0,
+      "tax_type": "both",
+      "is_default": true,
+      "description": "Fixture GST",
+      "is_compound": false,
+      "default_order": 0
+    },
+    {
+      "name": "GST-free",
+      "rate": 0.0,
+      "tax_type": "both",
+      "is_default": false,
+      "description": "Fixture GST-free",
+      "is_compound": false,
+      "default_order": 0
+    }
+  ]
+}
