@@ -3,14 +3,17 @@
 """Bill and collect automatically: the app's side of each invoice's card collection.
 
 An agreement on ``COLLECT_MODE`` bills as automatic invoicing does, and each invoice it
-bills opens attempt 1 for what the invoice owes (billing._bill). Nothing leaves inside
+issues, a period's or an amendment's, opens attempt 1 for what the invoice owes
+(billing.issue_document). Nothing leaves inside
 the billing transaction: every pass of the dispatcher, after billing commits, advances
 each invoice's collection here, one invoice at a time, never holding a lock while it
 waits on Celerp Cloud:
 
-- an attempt asked for and not answered is asked for again under the same request key and
-  amount, unless collection may no longer go on (``stop_reason``), when one Cloud may hold
-  is cancelled and one it never saw stops;
+- an attempt asked for and not answered is asked for again with exactly the request first
+  sent (stored on the invoice's collection as ``request``), unless collection may no longer go
+  on (``stop_reason``), when one Cloud may hold is cancelled and one it never saw stops; Cloud
+  refusing such a retry ends nothing while the first outcome is unknown: the attempt is
+  cancelled at Cloud and ends on Cloud's answer or delivery;
 - an attempt with Cloud on an invoice paid another way, or whose agreement stopped
   collecting, is cancelled; a cancel is asked for every pass until Cloud answers;
 - a failed attempt whose retry time has passed is followed by the next attempt for what the
@@ -110,13 +113,20 @@ async def advance(factory, company_id, doc_id: str) -> None:
         await session.commit()
     if step is None:
         return
-    kind, payload = step
+    kind, payload, retry = step
     answer = await collection.ask(kind, payload)
     async with factory() as session:
         row = await _locked(session, company_id, doc_id)
-        if row is not None:
-            await (_attempted if kind == "attempt" else _cancelled)(session, company_id, row, payload, answer)
-            await session.commit()
+        if row is None:
+            return
+        if kind == "attempt":
+            reconcile = await _attempted(session, company_id, row, payload, answer, retry=retry)
+        else:
+            reconcile = False
+            await _cancelled(session, company_id, row, payload, answer)
+        await session.commit()
+    if reconcile:
+        await advance(factory, company_id, doc_id)  # the cancel it queued leaves in this same pass
 
 
 async def _locked(session, company_id, doc_id: str):
@@ -127,7 +137,9 @@ async def _locked(session, company_id, doc_id: str):
         return None
 
 
-async def _decide(session, company_id, doc_id: str) -> tuple[str, dict] | None:
+async def _decide(session, company_id, doc_id: str) -> tuple[str, dict, bool] | None:
+    """The next request to Cloud for the invoice's collection: (endpoint, request, whether it
+    retries an attempt already asked for), or None when there is none to make."""
     from celerp_subscriptions import billing
     row = await _locked(session, company_id, doc_id)
     current = (row.state.get("collection") or {}) if row is not None else {}
@@ -138,7 +150,7 @@ async def _decide(session, company_id, doc_id: str) -> tuple[str, dict] | None:
         if state == "pending" and not current.get("asked"):
             await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": "collection_off"})
         return None
-    cancel = ("cancel", {"company_id": str(company_id), "entity_id": doc_id})
+    cancel = ("cancel", {"company_id": str(company_id), "entity_id": doc_id}, False)
     if current.get("cancel") == "queued":
         return cancel
     if state == "failed":
@@ -169,9 +181,10 @@ async def _decide(session, company_id, doc_id: str) -> tuple[str, dict] | None:
     return await _attempt_request(session, company_id, row, current)
 
 
-async def _attempt_request(session, company_id, row, current: dict) -> tuple[str, dict] | None:
-    """The attempt request for the pending attempt, marked asked before it leaves; None while
-    payments are paused, or with the reason collection stopped when the invoice has no books."""
+async def _attempt_request(session, company_id, row, current: dict) -> tuple[str, dict, bool] | None:
+    """The attempt request for the pending attempt: the one first sent when it was asked for
+    before, else a new one stored on the collection before it leaves; None while payments are
+    paused, or with the reason collection stopped when the invoice has no books."""
     from celerp.services.payments import CheckoutPaused, checkout_generation
     from celerp_docs.routes_payments import payment_books
     from celerp_subscriptions import billing
@@ -179,34 +192,45 @@ async def _attempt_request(session, company_id, row, current: dict) -> tuple[str
         generation = await checkout_generation()
     except CheckoutPaused:
         return None
+    if current.get("request") is not None:
+        return "attempt", current["request"], True
     try:
         books = await payment_books(session, company_id, row.state)
     except ValueError:
         await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": "no_books"})
         return None
     agreement = await billing.doc_state(session, company_id, row.state.get("source_agreement")) or {}
-    await collection.set_attempt(session, company_id, row, {"asked": True})
-    return "attempt", {
+    request = {
         "protocol": collection.PROTOCOL, "company_id": str(company_id), "entity_id": row.entity_id,
         "attempt_number": current["attempt_number"], "request_key": current["request_key"],
         "amount_minor": current["amount_minor"], "currency": current["currency"],
         "payer_contact_id": agreement.get("contact_id"), "generation": generation, "context": books}
+    await collection.set_attempt(session, company_id, row, {"asked": True, "request": request})
+    return "attempt", request, False
 
 
-async def _attempted(session, company_id, row, payload: dict, answer) -> None:
+async def _attempted(session, company_id, row, payload: dict, answer, *, retry: bool) -> bool:
+    """Record Cloud's answer to an attempt request; True when it queued a cancel to reconcile:
+    a refused first request stops collection, a refused retry of one whose first answer was lost
+    never does (that first request may have charged), it is cancelled at Cloud instead."""
     current = row.state.get("collection") or {}
     if current.get("attempt_number") != payload["attempt_number"] or current.get("state") != "pending":
-        return  # a delivery recorded the attempt's outcome first
+        return False  # a delivery recorded the attempt's outcome first
     if answer is None:
-        return
+        return False
     status, body = answer
     if status == 200:
         if (found := collection.outcome(body)) is not None:
             await collection.apply_outcome(session, company_id, row, found)
-        return
+        return False
     refusal = collection.refusal_of(answer)
-    if status == 409 and refusal and refusal not in WAIT:
-        await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": refusal})
+    if status != 409 or not refusal or refusal in WAIT:
+        return False
+    if retry:
+        await collection.set_attempt(session, company_id, row, {"cancel": "queued", "reason": refusal})
+        return True
+    await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": refusal})
+    return False
 
 
 async def _cancelled(session, company_id, row, payload: dict, answer) -> None:

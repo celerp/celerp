@@ -189,7 +189,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
     return await set_attempt(session, company_id, doc_row, {
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
-        drop=("failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive"))
+        drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive"))
 
 
 def _instant(value) -> str | None | bool:

@@ -753,6 +753,7 @@ class DocCollection(BaseModel):
     asked: bool | None = None
     attempt_number: int | None = None
     request_key: str | None = None
+    request: dict | None = None  # the attempt request as first sent; every retry sends it again
     amount_minor: int | None = None
     currency: str | None = None
     failure_code: str | None = None
