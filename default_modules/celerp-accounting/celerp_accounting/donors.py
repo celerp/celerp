@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: MIT
 """Donors: the gifts each contact gave that were received and kept, and their statements.
 
-A gift is cash received for a line whose item sits in a gift category (each receipt's share
-of the document, so a ticket or dues line on the same invoice never counts), net of what was
-refunded or charged back of that receipt, plus money posted by hand or by a bank line to a gift
-income account with the donor named on the line. A posting the books made for a document never
-counts again, so an invoice settled by a bank line counts once. Credit applied to an invoice is
-not cash and counts nothing. Amounts are in the books' currency at each receipt's own rate.
+A gift is what the books keep of a line whose item sits in a gift category: each receipt on
+the invoice (cash, net of what was refunded or charged back of it, or credit applied to it) at
+the gift lines' share of the document, so a ticket or dues line on the same invoice never
+counts, and what a credit note settled of that invoice's open balance the same way; less what
+each credit note's own posting took back off a gift income account, however that credit is
+settled (refunded in cash, applied to another invoice or held on account); plus
+money posted by hand or by a bank line to a gift income account with the donor named on the
+line. No other posting the books made for a document counts again, so an invoice settled by a
+bank line counts once. Amounts are in the books' currency at each receipt's own rate.
 
 A statement lists one donor's gifts in a period under the company's wording (``WORDING``,
 tax-neutral by default). Sending one records it on the contact (``STATEMENT_SENT``) under a key
@@ -47,7 +50,6 @@ from celerp.services.money import books_currency, round_money, to_base, to_decim
 from celerp.services.permissions import require_permission
 from celerp.services.recognition import gift_categories
 from celerp_accounting.routes import _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range
-from celerp_docs.doc_constants import CREDIT_APPLICATION_METHODS
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from ui.components.encode import to_markup
 from ui.i18n import t
@@ -56,7 +58,6 @@ router = APIRouter()
 
 WORDING = "donor_statement_wording"  # company setting {"text", "version"}
 STATEMENT_SENT = "crm.contact.statement_sent"
-_SIGN = {"invoice": 1, "credit_note": -1}
 
 
 def _gift(day: str, amount: Decimal, base: str, **source) -> dict:
@@ -77,33 +78,48 @@ async def _gift_items(session: AsyncSession, company_id, gifts: frozenset[str]) 
     return {str(eid): state or {} for eid, state in rows}
 
 
-def _document_gifts(doc_id: str, doc: dict, items: dict[str, dict], base: str,
-                    date_from: str | None, date_to: str | None) -> list[dict]:
-    """The cash kept of each receipt on ``doc`` that its gift lines account for: the gift lines'
+def _gift_share(doc: dict, items: dict[str, dict], base: str) -> Decimal:
+    """The part of each amount settling invoice ``doc`` that its gift lines account for: their
     share of the document's net over its total, so tax and other lines take their own share."""
     from celerp.services.auto_je import _line_allocations
 
     lines = doc.get("line_items") or []
-    shares = _line_allocations(doc, base, 0)
-    gift = sum((to_decimal(share["doc"]) for index, share in shares.items()
+    gift = sum((to_decimal(share["doc"]) for index, share in _line_allocations(doc, base, 0).items()
                 if isinstance(lines[int(index)], dict) and str(line_item_id(lines[int(index)])) in items),
                Decimal(0))
     total = to_decimal(round_money(doc.get("total") or 0, doc.get("currency", "USD")))
-    if not gift or total <= 0:
-        return []
+    return gift / total if gift and total > 0 else Decimal(0)
+
+
+def _document_gifts(doc_id: str, doc: dict, share: Decimal, base: str,
+                    date_from: str | None, date_to: str | None) -> list[dict]:
+    """What each receipt kept on invoice ``doc`` (cash net of refunds, or credit applied) brought
+    its gift lines, at their ``share``."""
     out = []
     for payment in doc.get("payments") or []:
         day = str(payment.get("payment_date") or "")[:10]
-        if (payment.get("status", "active") != "active" or payment.get("method") in CREDIT_APPLICATION_METHODS
-                or not _in_period(day, date_from, date_to)):
+        if payment.get("status", "active") != "active" or not _in_period(day, date_from, date_to):
             continue
         kept = to_decimal(payment.get("amount") or 0) - to_decimal(payment.get("refunded") or 0)
         rate = ((payment.get("books") or {}).get("settlement_rate") or payment.get("conversion_rate")
                 or doc.get("conversion_rate") or 1)
-        amount = to_decimal(to_base(kept * gift / total, rate, base)) * _SIGN[doc["doc_type"]]
-        if amount:
+        if amount := to_decimal(to_base(kept * share, rate, base)):
             out.append(_gift(day, amount, base, doc_id=doc_id, ref=doc.get("ref_id") or ""))
     return out
+
+
+def _credited_gift(note_id: str, note: dict, invoice: dict, share: Decimal, base: str,
+                   date_from: str | None, date_to: str | None) -> list[dict]:
+    """What credit note ``note`` settled of the open balance of the invoice it credits
+    (``credited``), at that invoice's gift ``share``: it settles the invoice like credit applied
+    to it, so it counts as received there and the note's posting takes it back below."""
+    day = str(note.get("issue_date") or note.get("finalized_at") or "")[:10]
+    credited = to_decimal(note.get("credited") or 0)
+    if not credited or not share or not _in_period(day, date_from, date_to):
+        return []
+    rate = note.get("conversion_rate") or invoice.get("conversion_rate") or 1
+    amount = to_decimal(to_base(credited * share, rate, base))
+    return [_gift(day, amount, base, doc_id=note_id, ref=note.get("ref_id") or "")] if amount else []
 
 
 async def donor_history(session: AsyncSession, company_id, contact_id: str | None,
@@ -118,15 +134,22 @@ async def donor_history(session: AsyncSession, company_id, contact_id: str | Non
     survivors = await merge_survivors(session, company_id)
     found: dict[str, list[dict]] = {}
 
-    docs = (await session.execute(select(Projection.entity_id, Projection.state).where(
+    docs = {str(doc_id): doc or {} for doc_id, doc in (await session.execute(select(
+        Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["doc_type"].as_string().in_(sorted(_SIGN))))).all() if items else []
-    for doc_id, doc in docs:
-        party = (doc or {}).get("contact_id")
-        party = survivors.get(party, party)
-        if not party or doc.get("status", "draft") in UNISSUED_STATUSES or contact_id not in (None, party):
+        Projection.state["doc_type"].as_string().in_(("invoice", "credit_note"))))).all()} if items else {}
+    issued = {doc_id: doc for doc_id, doc in docs.items() if doc.get("status", "draft") not in UNISSUED_STATUSES}
+    shares = {doc_id: _gift_share(doc, items, base) for doc_id, doc in issued.items() if doc.get("doc_type") == "invoice"}
+    for doc_id, doc in issued.items():
+        invoice_id = doc_id if doc.get("doc_type") == "invoice" else str(doc.get("original_doc_id") or "")
+        invoice = issued.get(invoice_id) or {}
+        party = survivors.get(invoice.get("contact_id"), invoice.get("contact_id"))
+        if not party or not shares.get(invoice_id) or contact_id not in (None, party):
             continue
-        found.setdefault(party, []).extend(_document_gifts(doc_id, doc, items, base, date_from, date_to))
+        found.setdefault(party, []).extend(
+            _document_gifts(doc_id, doc, shares[doc_id], base, date_from, date_to) if doc_id == invoice_id
+            else _credited_gift(doc_id, doc, invoice, shares[invoice_id], base, date_from, date_to))
+    notes = {doc_id for doc_id, doc in docs.items() if doc.get("doc_type") == "credit_note"}
 
     accounts = {code for code in ((settings.get("category_income_accounts") or {}).get(key) for key in gifts) if code}
     accounts |= {code for item in items.values() if (code := income_account_of(settings, item))}
@@ -135,8 +158,8 @@ async def donor_history(session: AsyncSession, company_id, contact_id: str | Non
               and any(entry.get("account") in accounts for entry in state.get("entries") or [])]
     refs = await _je_doc_refs(session, company_id, [je_id for je_id, _, _ in posted])
     for je_id, state, day in posted:
-        if (refs.get(je_id) or {}).get("doc_id"):
-            continue  # the books' posting for a document: its receipts count above
+        if (refs.get(je_id) or {}).get("doc_id") not in (None, "", *notes):
+            continue  # the books' posting for an invoice: its receipts count above
         for entry in state.get("entries") or []:
             amounts = _line_amounts(entry) if entry.get("account") in accounts else None
             party = _line_party(refs, je_id, entry, survivors) if amounts else ""
