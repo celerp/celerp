@@ -65,9 +65,9 @@ def _element(html: str, dom_id: str) -> str | None:
 
 async def test_document_fund_cell_starts_unset_for_outside_lines(ui_client):
     html = await _page(ui_client, _bill())
-    marked, local = _element(html, "fund-cell-L1"), _element(html, "fund-cell-L2")
+    marked = _element(html, "fund-cell-L1")
     assert marked is not None and "--" in marked and _FROM in marked, marked
-    assert local == "Unrestricted", local
+    assert _picked(html, "L2") == "unrestricted"
     assert 'class="badge badge--origin"' in html
     header = _element(html, "doc-fund")
     assert header is not None and "--" in header and _FROM in header, header
@@ -90,17 +90,74 @@ async def test_document_fund_cell_starts_unset_for_outside_lines(ui_client):
     assert not _element(covered, "fund-set-all")
 
     # A local line shows the fund it carries.
-    assert _element(await _page(ui_client, _bill(local_fund="fund:r")), "fund-cell-L2") == "Building fund"
+    assert _picked(await _page(ui_client, _bill(local_fund="fund:r")), "L2") == "fund:r"
 
 
-async def test_fund_controls_absent_without_funds_or_outside_lines(ui_client):
+def _picked(html: str, line_id: str) -> str | None:
+    """The value of the fund picker in a line's Fund cell, or None when the cell only reads."""
+    cell = re.search(rf'id="fund-cell-{line_id}".*?</td>', html, re.S)
+    assert cell, f"no Fund cell on {line_id}"
+    found = re.search(r'<input[^>]*data-name="fund_id"[^>]*>', cell.group(0))
+    return re.search(r'value="([^"]*)"', found.group(0)).group(1) if found else None
+
+
+def _local(doc_type: str = "bill", *, status: str = "draft", **line) -> dict:
+    """A document the company entered itself, of one line."""
+    li = {"line_id": "L2", "description": "Delivery", "quantity": 1, "unit_price": 10.0, "line_total": 10.0, **line}
+    return {"entity_id": "doc:b1", "doc_type": doc_type, "status": status, "currency": "USD", "version": 7,
+            "line_items": [li], "total": 10.0}
+
+
+async def test_fund_controls_absent_without_funds(ui_client):
     off = await _page(ui_client, _bill(), settings={})
     assert _element(off, "fund-cell-L1") is None and _element(off, "doc-fund") is None
-    local_only = _bill()
-    local_only.pop("origin")
-    local_only["line_items"] = [local_only["line_items"][1]]
-    html = await _page(ui_client, local_only)
-    assert _element(html, "doc-fund") is None and _element(html, "fund-cell-L2") is None
+    assert 'class="col-fund"' not in await _page(ui_client, _local(), settings={})
+
+
+@pytest.mark.parametrize("doc_type", ["invoice", "bill", "credit_note", "debit_note", "purchase_order"])
+async def test_a_local_draft_line_picks_its_fund_in_the_row(ui_client, doc_type):
+    """A document the company entered itself has a Fund column on each line, Unrestricted
+    until a fund is picked; the pick is a searchable select of the line editor's row, saved
+    with the lines. A local document has no "Fund for this document" or Set all."""
+    html = await _page(ui_client, _local(doc_type))
+    assert _picked(html, "L2") == "unrestricted"
+    assert re.search(r'<th[^>]*class="col-fund"', html), "Fund header missing"
+    assert _element(html, "doc-fund") is None and not _element(html, "fund-set-all")
+    # The empty row a new line starts from offers the same picker.
+    assert len(re.findall(r'<input[^>]*data-name="fund_id"', html)) == 2
+    assert "Building fund" in html and "Old appeal" not in html
+    # The row editor sends the pick with the line.
+    assert "fund_id: fundEl.value || null" in html
+    # A fund the line carries reads by name, an archived one too.
+    assert _picked(await _page(ui_client, _local(doc_type, fund_id="fund:r")), "L2") == "fund:r"
+    archived = await _page(ui_client, _local(doc_type, fund_id="fund:old"))
+    assert _picked(archived, "L2") == "fund:old" and "Old appeal" in archived
+
+
+async def test_a_local_line_fund_only_reads_where_it_cannot_change(ui_client):
+    # Issued: the fund it posted with, as text.
+    html = await _page(ui_client, _local(status="final", fund_id="fund:r"))
+    assert _picked(html, "L2") is None and _element(html, "fund-cell-L2") == "Building fund"
+    # A credit note line takes the fund of the invoice line it credits.
+    note = await _page(ui_client, _local("credit_note", source_line_id="X1", fund_id="fund:r"))
+    assert _picked(note, "L2") is None and _element(note, "fund-cell-L2") == "Building fund"
+    # A document whose lines post to no fund has no Fund column.
+    assert 'class="col-fund"' not in await _page(ui_client, _local("quotation"))
+
+
+async def test_a_line_save_stores_unrestricted_as_no_fund(ui_client):
+    """The row's Unrestricted is a local line with no fund; a picked fund goes as picked, and a
+    line the row sends no pick for (a line from outside) keeps what it holds."""
+    patch_doc = AsyncMock(return_value={"version": 8})
+    lines = [{"line_id": "L1", "description": "Paper", "quantity": 1, "unit_price": 40.0},
+             {"line_id": "L2", "description": "Delivery", "quantity": 1, "unit_price": 10.0, "fund_id": "unrestricted"},
+             {"line_id": "L3", "description": "Hall", "quantity": 1, "unit_price": 5.0, "fund_id": "fund:r"}]
+    with patch("ui.api_client.patch_doc", new=patch_doc), \
+         patch("ui.api_client.get_doc", new=AsyncMock(return_value=_bill())):
+        r = await ui_client.post("/docs/doc:b1/lines", json={"line_items": lines, "expected_version": 7})
+    assert r.status_code == 200, r.text
+    sent = patch_doc.await_args.args[2]["line_items"]
+    assert "fund_id" not in sent[0] and sent[1]["fund_id"] is None and sent[2]["fund_id"] == "fund:r"
 
 
 async def test_posted_document_fund_cells_read_only(ui_client):

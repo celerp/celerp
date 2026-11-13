@@ -150,6 +150,10 @@ NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purcha
 # the next issue (routes.assert_finalized_edit).
 TOTAL_POSTED_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill", "credit_note", "debit_note"})
 
+# Documents whose lines post to a fund where funds are in use: those that post their total,
+# and a purchase order, whose receipts post by its lines.
+FUND_DOC_TYPES: frozenset[str] = TOTAL_POSTED_DOC_TYPES | {"purchase_order"}
+
 # Internal demand documents: not a sale/purchase, so excluded from revenue/AR/AP/sales accounting.
 # A production order is "invoice-to-self" demand that feeds the manufacturing queue.
 NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})

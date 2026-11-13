@@ -110,13 +110,27 @@ def document_meta(view: FundView) -> FT:
     return Div(Div(t("fund.document_label"), cls="meta-label"), document_field(view), cls="meta-cell")
 
 
+def _local_select(view: FundView, li: dict) -> FT:
+    """A local draft line's fund, picked in the line editor's row and saved with its lines.
+    An archived fund the line still carries stays offered, so it reads by name."""
+    value = li.get("fund_id") or UNRESTRICTED
+    options = fund_options(view.funds)
+    if value not in dict(options):
+        options.append((value, view.name(value)))
+    return searchable_select("fund_id", options, value=value, placeholder=EMPTY, aria_label=t("th.fund"),
+                             cls_extra="cell-input cell-input--xs", onchange="celerpAutoSave()")
+
+
 def line_cell(view: FundView, li: dict, *, oob: bool = False) -> FT:
     """A line's Fund cell: on a line from outside its own choice, -- until one is made (and,
-    muted, the document's fund it uses meanwhile); on a local line the fund it carries."""
+    muted, the document's fund it uses meanwhile); on a local line the fund it carries, picked
+    in the row while the document is a draft. A credit note line takes the fund of the line it
+    credits, so it only reads."""
     line_id = li.get("line_id") or ""
     if not li.get("origin"):  # a line not saved yet has no id to be found by
-        return Div(view.name(li.get("fund_id") or UNRESTRICTED), **({"id": f"fund-cell-{line_id}"} if line_id else {}),
-                   **({"hx_swap_oob": "true"} if oob else {}))
+        picks = view.editable and view.doc.get("status") == "draft" and not li.get("source_line_id")
+        return Div(_local_select(view, li) if picks else view.name(li.get("fund_id") or UNRESTRICTED),
+                   **({"id": f"fund-cell-{line_id}"} if line_id else {}), **({"hx_swap_oob": "true"} if oob else {}))
     own, document = li.get("fund_choice"), view.doc.get("fund_choice")
     uses = Span(t("fund.uses", fund=view.name(document)), cls="text-muted") if document and not own else None
     return _field(view, line_id, f"fund-cell-{line_id}", Span(view.name(own)), " ", origin_badge(li.get("origin")),

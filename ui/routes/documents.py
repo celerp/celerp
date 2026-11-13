@@ -31,6 +31,7 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
+from celerp.services.peer_lines import UNRESTRICTED
 from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, saved as funds_saved, set_all as fund_set_all, shows_funds
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
@@ -3651,7 +3652,7 @@ celerpUpdateBulkAlloc();
             return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
         # The lines, the header discount and the document taxes are inputs; the API computes the
         # document's subtotal, discount amount, taxes and total from them.
-        patch_data = {"line_items": body.get("line_items", [])}
+        patch_data = {"line_items": [_local_fund(li) for li in body.get("line_items", [])]}
         # Always sent (0 clears it) so removing a discount sticks.
         if "discount" in body:
             patch_data["discount"] = float(body.get("discount") or 0)
@@ -7651,11 +7652,13 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
 
 
 async def _doc_funds(token: str, doc: dict, settings: dict) -> list | None:
-    """The company's funds, for the fund controls of a document from outside; None with funds
-    off, on a local document, or when they can't be read (the controls are left out then)."""
+    """The company's funds, for the fund controls of a document whose lines post to a fund or
+    that came from outside; None with funds off, on any other document, or when they can't be
+    read (the controls are left out then)."""
     from celerp.services.journal_accounts import funds_enabled
+    from celerp_docs.doc_constants import FUND_DOC_TYPES
 
-    if not funds_enabled(settings) or not shows_funds(doc):
+    if not funds_enabled(settings) or not (shows_funds(doc) or doc.get("doc_type") in FUND_DOC_TYPES):
         return None
     try:
         return (await api.list_funds(token)).get("items") or []
@@ -7679,6 +7682,13 @@ async def _doc_fund_open(token: str, doc: dict, settings: dict) -> dict | None:
         if e.status == 401:
             raise
         return None
+
+
+def _local_fund(line):
+    """A line as the editor sent it, a local line's Unrestricted stored as no fund."""
+    if isinstance(line, dict) and line.get("fund_id") == UNRESTRICTED:
+        return {**line, "fund_id": None}
+    return line
 
 
 def _fund_notice(cleared: dict | None) -> str:
@@ -10316,6 +10326,7 @@ function _celerpCollectLines() {{
         const receiveAsEl = row.querySelector('[data-name="receive_as"]');
         const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
+        const fundEl = row.querySelector('[data-name="fund_id"]');
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
         // A row drawn from a memo shows its lot's measures but never sends them: the draw owns them.
@@ -10348,6 +10359,7 @@ function _celerpCollectLines() {{
                          ...(category ? {{category}} : {{}}),
                          ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
                          ...(accountCode ? {{account_code: accountCode}} : {{}}),
+                         ...(fundEl ? {{fund_id: fundEl.value || null}} : {{}}),
                          ...(pieces !== null ? {{pieces}} : {{}}),
                          ...(weight !== null ? {{weight}} : {{}}),
                          ...carried,

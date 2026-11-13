@@ -651,11 +651,11 @@ async def outside_waiting(session, company_id) -> dict:
     held = sum(1 for fix in fixes if waits_for_funds(fix))
     if not is_running("celerp-docs"):  # documents wait only where Documents can open them
         return {"count": held, "held": held, "documents": []}
-    from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
+    from celerp_docs.doc_constants import FUND_DOC_TYPES
 
     rows = await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["doc_type"].as_string().in_((*TOTAL_POSTED_DOC_TYPES, "purchase_order")),
+        Projection.state["doc_type"].as_string().in_(sorted(FUND_DOC_TYPES)),
         Projection.state["status"].as_string().notin_(("void", "converted"))))
     needing = {entity_id: state for entity_id, state in rows
                if (state or {}).get(IMPORT_TREATMENT) != "opening_balances" and outside_fund_needs(state or {})}

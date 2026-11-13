@@ -126,6 +126,19 @@ async def test_an_issued_document_keeps_every_stored_field_of_every_line(client,
     assert await _posted(session, doc) == posted, doc_type
 
 
+@pytest.mark.parametrize("doc_type", sorted(_ISSUED))
+async def test_an_issued_document_refuses_a_fund_put_on_a_local_line(client, session, auth, doc_type):
+    """The Fund cell of a local line picks while the document is a draft; once issued, a fund
+    given to a line that had none is refused like any other line change."""
+    doc = await _ISSUED[doc_type](client, auth, doc_type)
+    st = {**await _state(client, auth, doc), "id": doc}
+    assert "fund_id" not in st["line_items"][0], st["line_items"][0]
+    r = await _save(client, auth, st, [{**st["line_items"][0], "fund_id": "fund:any"}, *st["line_items"][1:]])
+    detail = r.json()["detail"]
+    assert (r.status_code, detail["message_key"], detail["params"]) == (
+        409, "documents.err_line_field_finalized", {"field": "fund_id", "line": 1}), r.text
+
+
 async def test_revert_to_draft_is_the_way_to_remove_a_line(client, session, auth):
     doc = await _invoice(client, auth, (await _stones(client, auth))[:2])
     await _ok(client, auth, f"/docs/{doc}/revert-to-draft")
