@@ -28836,5 +28836,9 @@
     "tests/test_woocommerce_held_number.py::test_undo_after_mark_reconciled_never_revives_an_earlier_import_as": 0.9329875000403263,
     "tests/test_browser/test_call_hostile_values.py::test_call_is_one_call_of_its_values_in_a_script_and_in_a_handler[chromium]": 1.9487571240169927,
     "tests/test_browser/test_call_hostile_values.py::test_every_dynamic_attribute_keeps_its_value_and_stays_one_attribute[chromium]": 0.3137318679364398,
-    "default_modules/celerp-labels/tests/test_label_numbers.py::test_printing_reads_a_template_without_changing_it": 0.14828876196406782
+    "default_modules/celerp-labels/tests/test_label_numbers.py::test_printing_reads_a_template_without_changing_it": 0.14828876196406782,
+    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[50% + tax]": 0.031452063063625246,
+    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[Line?2]": 0.0063579409616068006,
+    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[R&D #1]": 0.005092239007353783,
+    "tests/test_manufacturing_cell_current.py::test_work_centre_name_editor_prefills_the_whole_name[a=b&current=x]": 0.006603768968489021
 }

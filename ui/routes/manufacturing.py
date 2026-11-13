@@ -13,6 +13,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError, error_message
 import uuid
+from urllib.parse import urlencode
 
 from ui.components.operation_key import (
     kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
@@ -127,14 +128,14 @@ def _order_row(order: dict, deleted: dict[str, dict], today: str = "") -> FT:
     # so the edit fragment can prefill without a second fetch.
     due_cell = Td(
         Div(due or EMPTY, cls="editable-cell" + (" cell--alert" if overdue else ""),
-            hx_get=f"/manufacturing/runs/{rid}/edit/due_date?current={due or ''}",
+            hx_get=f"/manufacturing/runs/{rid}/edit/due_date?{urlencode({'current': due or ''})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("manufacturing.set_due_date_hint")),
         cls="cell--center",
     )
     prio_cell = Td(
         Div(_priority_badge(order.get("priority")), cls="editable-cell",
-            hx_get=f"/manufacturing/runs/{rid}/edit/priority?current={order.get('priority') or ''}",
+            hx_get=f"/manufacturing/runs/{rid}/edit/priority?{urlencode({'current': order.get('priority') or ''})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("manufacturing.set_priority_hint")),
         cls="cell--center",
@@ -313,7 +314,7 @@ def _wc_cell(wc_id: str, field: str, value, *, align: str = "left") -> FT:
     disp = value if value not in (None, "") else EMPTY
     return Td(
         Div(disp, cls="editable-cell",
-            hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?current={'' if value is None else value}",
+            hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?{urlencode({'current': '' if value is None else value})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("label.dblclick_to_edit")),
         cls=f"cell--{align}",
@@ -905,7 +906,7 @@ def setup_routes(app):
         # ESC cancels the edit: restore the cell's display chip (innerHTML of the editable-cell)
         # without persisting. Mirrors the inventory inline-edit escape pattern.
         escape_js = call("celerpCellKey", THIS, EVENT, {
-            "url": f"/manufacturing/runs/{run_id}/cell/{field}?current={current}",
+            "url": f"/manufacturing/runs/{run_id}/cell/{field}?{urlencode({'current': current})}",
             "target": ".editable-cell", "swap": "innerHTML", "stop": True})
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
                   "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}
