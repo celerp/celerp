@@ -102,13 +102,16 @@ async def test_new_subscriber_plan_quantity_trial(owner_ui, monkeypatch):
     assert f"/subscriptions/{eid}" in listed.text
 
 
-@pytest.mark.parametrize(("seats", "plan"), [("0", True), ("-1", True), ("2.5", True), ("3", False)])
+@pytest.mark.parametrize(("seats", "plan"), [("0", True), ("-1", True), ("2.5", True), ("", True), (" ", True),
+                                            ("3", False), ("3", None)])
 async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, seats, plan):
     """Seats are a whole number of at least one and the plan a SaaS plan item: anything else is
-    refused naming it, and no agreement is made."""
+    refused naming it (blank seats or no plan chosen asks for one, never naming "--"), and no
+    agreement is made."""
     freeze_day(monkeypatch, "2026-03-01")
     await _plan_category(owner_ui.api)
-    chosen = await (_plan(owner_ui.api, "Team plan", 20.0) if plan else _item(owner_ui.api, _AUTH, "Not a plan"))
+    chosen = "" if plan is None else await (
+        _plan(owner_ui.api, "Team plan", 20.0) if plan else _item(owner_ui.api, _AUTH, "Not a plan"))
     payer = await contact(owner_ui.api, {}, f"sub-{uuid.uuid4().hex[:6]}@test.test")
     before = (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"]
     r = await owner_ui.post("/subscriptions/new", params={"direction": "sales", "kind": "subscription"},
@@ -116,6 +119,7 @@ async def test_new_subscriber_refuses_bad_seats_or_plan(owner_ui, monkeypatch, s
     assert r.status_code != 204 and "HX-Redirect" not in r.headers, r.text[:300]
     said = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert said["type"] == "error" and (("seat" if plan else "plan") in said["message"].lower()), said
+    assert "--" not in said["message"], said
     assert (await owner_ui.api.get("/subscriptions", params={"limit": 500})).json()["total"] == before
 
 

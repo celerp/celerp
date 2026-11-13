@@ -25,7 +25,6 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_timezone
 from celerp.services.journal_accounts import (
     FUND_MOVEMENT_TYPES, YEAR_CLOSE, fund_account_balances, fund_day_changes, funds_by_id, line_change, line_fund,
-    unrestricted_label,
 )
 from celerp.services.ledger_rows import journal_rows
 from celerp.services.money import to_stored_float
@@ -59,7 +58,7 @@ def _columns(funds: dict[str, dict], seen) -> list[dict]:
     shown = sorted((f for f, s in funds.items() if not s.get("archived") or f in seen),
                    key=lambda f: str(funds[f]["name"]).casefold())
     return [*({"id": f, "name": funds[f]["name"], "restricted": bool(funds[f].get("restricted"))} for f in shown),
-            {"id": UNRESTRICTED, "name": unrestricted_label(), "restricted": False}]
+            {"id": UNRESTRICTED, "name": t("label.unrestricted"), "restricted": False}]
 
 
 def _net_assets(held: dict[str, Decimal], accounts: dict[str, Account]) -> Decimal:

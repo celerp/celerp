@@ -49,6 +49,8 @@ async def test_funds_empty_state_and_reports_unrestricted_only(client, auth):
     activity = await _get(client, auth, "activity")
     assert [f["id"] for f in sheet["funds"]] == [UNRESTRICTED]
     assert [f["id"] for f in activity["funds"]] == [UNRESTRICTED]
+    # The group is named as on the Funds tab, a column label, not the phrase refusals use.
+    assert sheet["funds"][0]["name"] == activity["funds"][0]["name"] == "Unrestricted"
     assert activity["movements"] == [] and activity["fund_changes"] == []
 
 
@@ -261,6 +263,8 @@ async def test_funds_tab_empty_state_add_and_archive(ui_client):
     with _ui_api(list_funds=AsyncMock(return_value={"items": [fund]})):
         editor = (await ui_client.get("/settings/accounting/funds/fund%3A1/edit")).text
     assert 'type="date" name="opening_date" value="2026-01-05"' in editor
+    # Esc on keydown, through the handler every inline editor uses (the shell blurs before keyup).
+    assert "onkeydown='celerpCellKey(this,event," in editor and "keyup[key" not in editor
     update = AsyncMock(return_value={**fund, "opening_date": None})
     with _ui_api(update_fund=update):
         r = await ui_client.patch("/settings/accounting/funds/fund%3A1", data={

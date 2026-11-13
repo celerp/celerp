@@ -1250,15 +1250,19 @@ def _subscriber_form(plans: list[dict], state: dict) -> FT:
 async def _subscriber_draft(token: str, form) -> dict | str:
     """The draft New subscriber makes: the plan as its one line at the plan's price on the
     company's default list, the seats as its quantity, and the trial end as its first bill
-    date. Why not, worded for the reader, when the seats are not a whole number of at least one
-    or the item is not a SaaS plan."""
+    date. Why not, worded for the reader, when the seats are blank or not a whole number of at
+    least one, or no plan is chosen or the item is not a SaaS plan."""
     seats = (form.get("seats") or "").strip()
+    if not seats:
+        return t("subscriptions.err_seats_blank")
     if not seats.isdigit() or int(seats) < 1:
-        return t("subscriptions.err_seats", seats=seats or EMPTY)
+        return t("subscriptions.err_seats", seats=seats)
     plan_id = form.get("plan_id") or ""
-    plan = await api.get_item(token, plan_id) if plan_id else {}
+    if not plan_id:
+        return t("subscriptions.err_no_plan")
+    plan = await api.get_item(token, plan_id)
     if plan.get("category") != PLAN_CATEGORY:
-        return t("subscriptions.err_not_plan", name=plan.get("name") or plan_id or EMPTY)
+        return t("subscriptions.err_not_plan", name=plan.get("name") or plan_id)
     from celerp.services.pricing import resolve_price
 
     line = {"entity_id": plan_id, "sku": plan.get("sku"), "description": plan.get("name") or "",

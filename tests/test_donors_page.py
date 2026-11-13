@@ -93,9 +93,13 @@ async def test_statement_wording_saved_on_the_page(owner_ui):
     assert r.status_code == 200 and "Thank you, {name}, for every gift." in r.text, r.text[:300]
     stored = (await owner_ui.api.get("/donors/statements/wording")).json()
     assert stored == {"text": "Thank you, {name}, for every gift.", "version": 1}
-    refused = await owner_ui.put("/donors/statements/wording", data={"text": "  "})
-    assert _toast(refused)["type"] == "error"
-    assert (await owner_ui.api.get("/donors/statements/wording")).json() == stored
+    for blank in ("", "  ", "\u200b", "\x00\n"):
+        refused = await owner_ui.put("/donors/statements/wording", data={"text": blank})
+        said = _toast(refused)
+        # The refusal says what to do, and the box shows the wording still stored.
+        assert said["type"] == "error" and said["message"] == "Write the statement wording before saving it.", said
+        assert "Thank you, {name}, for every gift." in refused.text, refused.text[:300]
+        assert (await owner_ui.api.get("/donors/statements/wording")).json() == stored
 
 
 @pytest.mark.parametrize(("vertical", "shown"), [("nonprofit", True), ("consulting", False), (None, False)])

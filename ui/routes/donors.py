@@ -25,7 +25,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, doc_href, empty_state_cta, fmt_money
 from ui.config import get_token as _token
 from ui.i18n import get_lang, sentence, t
-from ui.routes.action_answers import _done, _redrawn, _refused
+from ui.routes.action_answers import _done, _redrawn, _refused, _refused_redrawn
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates
 from ui.routes.settings import _check_permission
 
@@ -193,12 +193,12 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         text = str((await request.form()).get("text") or "")
+
+        async def stored(saved: bool = True):
+            return wording_card(await api.get_donor_wording(token), saved=saved)
+
         try:
             saved = await api.set_donor_wording(token, text)
         except APIError as e:
-            return _refused(e)
-
-        async def stored():
-            return wording_card(await api.get_donor_wording(token), saved=True)
-
+            return await _refused_redrawn(e, lambda: stored(saved=False))
         return await _redrawn(stored, lambda: wording_card(saved, saved=True), t("donors.wording_saved"))

@@ -27,7 +27,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from fasthtml.common import H2, Div, P, Table, Tbody, Td, Th, Thead, Tr
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -185,14 +185,15 @@ def _worded(text: str, name: str) -> str:
 
 
 class WordingIn(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+    text: str = Field(max_length=2000)
 
-    @field_validator("text")
-    @classmethod
-    def _not_blank(cls, text: str) -> str:
-        if not text.strip():
-            raise ValueError("blank")
-        return text.strip()
+
+def _wording_text(raw: str) -> str:
+    """The wording as stored, trimmed; refused when nothing in it would show on a statement
+    (empty, spaces, or only invisible characters such as a zero-width space)."""
+    if not any(ch.isprintable() and not ch.isspace() for ch in raw):
+        raise HTTPException(status_code=422, detail=catalog_refusal("donors.wording_required"))
+    return raw.strip()
 
 
 # --- Donors and statements ---
@@ -382,11 +383,12 @@ async def put_wording(
 ) -> dict:
     """Set the statement wording ("{name}" is the donor's name); each change is a new version,
     so statements already sent under the old wording can be sent again corrected."""
+    text = _wording_text(payload.text)
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     current = wording(settings)
-    if payload.text != current["text"]:
-        settings[WORDING] = {"text": payload.text, "version": current["version"] + 1}
+    if text != current["text"]:
+        settings[WORDING] = {"text": text, "version": current["version"] + 1}
         company.settings = settings
         session.add(company)
     await session.commit()

@@ -21,6 +21,7 @@ from celerp.services.business_time import business_today
 from celerp.services.journal_accounts import funds_enabled
 from celerp.services.peer_lines import UNRESTRICTED
 from ui.api_client import APIError, error_message
+from ui.components.encode import call, EVENT, THIS
 from ui.components.funds import fund_options
 from ui.components.operation_key import operation_key_input, required_operation_key
 from ui.components.table import EMPTY, fmt_money, searchable_select
@@ -108,7 +109,7 @@ def fund_row_editor(fund: dict, error: str = "") -> FT:
                   hx_swap="outerHTML"),
            Button(t("btn.cancel"), type="button", cls="btn btn--sm btn--secondary ml-sm", **cancel)),
         id=_row_id(fund["id"]),
-        hx_trigger="keyup[key=='Escape']", **cancel,
+        onkeydown=call("celerpCellKey", THIS, EVENT, {"url": cancel["hx_get"], "target": cancel["hx_target"]}),
     )
 
 
