@@ -388,17 +388,17 @@ async def test_share_import_bundle_invalid_json_body(client):
 
 def test_tax_regimes_get_regime_known_and_fallback():
     """get_regime returns known country regime and falls back for unknown (line 217)."""
-    from celerp.tax_regimes import TAX_REGIMES, get_regime
+    from celerp.tax_regimes import DEFAULT_REGIME, get_regime
 
     th = get_regime("TH")
     assert th["currency"] == "THB"
     assert len(th["taxes"]) > 0
 
     default = get_regime("XX")
-    assert default == TAX_REGIMES["_default"]
+    assert default == DEFAULT_REGIME
 
     none_result = get_regime(None)
-    assert none_result == TAX_REGIMES["_default"]
+    assert none_result == DEFAULT_REGIME
 
 
 # ---------------------------------------------------------------------------

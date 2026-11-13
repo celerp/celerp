@@ -141,7 +141,7 @@ def _download(repo: str, tag: str, token: str) -> bytes:
         "Accept": "application/vnd.github.raw+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "celerp-l10n-packs",
+        "User-Agent": "celerp-pack-fetch",
     })
     with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()

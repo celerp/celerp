@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from celerp.tax_regimes import TAX_COUNTRIES, TAX_REGIMES
+from celerp.localization import lock_codes
+from celerp.tax_regimes import get_regime
 from test_helpers import make_test_token
 
 pytestmark = pytest.mark.asyncio
@@ -48,7 +49,7 @@ async def test_naming_a_country_on_the_default_location_seeds_its_taxes_and_says
                            json={"address": {"text": "12 MG Road, Bengaluru", "country": "IN"}})
     assert r.status_code == 200, r.text
     assert r.json()["taxes_from"] == "IN"
-    assert _names(await _taxes(client, auth)) == _names(TAX_REGIMES["IN"]["taxes"])
+    assert _names(await _taxes(client, auth)) == _names(get_regime("IN")["taxes"])
 
 
 async def test_another_country_before_any_change_replaces_the_first_countrys_taxes(client, auth):
@@ -57,11 +58,11 @@ async def test_another_country_before_any_change_replaces_the_first_countrys_tax
         r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
                                json={"address": {"country": country}})
         assert r.json()["taxes_from"] == country
-    assert _names(await _taxes(client, auth)) == _names(TAX_REGIMES["IN"]["taxes"])
+    assert _names(await _taxes(client, auth)) == _names(get_regime("IN")["taxes"])
 
 
 async def test_a_company_with_its_own_taxes_keeps_them_and_hears_nothing(client, auth):
-    own = copy.deepcopy(TAX_REGIMES["TH"]["taxes"])
+    own = copy.deepcopy(get_regime("TH")["taxes"])
     own[0]["rate"] = 8.0
     r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": own})
     assert r.status_code == 200, r.text
@@ -97,7 +98,7 @@ async def test_setup_offers_every_tax_country_and_other(ui_client):
     html = to_xml(Div(*company_choice_fields("", "", "")))
     country_box = html[html.index('name="country"'):]
     offered = re.findall(r'data-value="([^"]*)" role="option"', country_box.split('name="timezone"')[0])
-    assert {code for code in offered if code} >= set(TAX_COUNTRIES)
+    assert {code for code in offered if code} >= set(lock_codes())
     assert "" in offered  # Other country
 
 

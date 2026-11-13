@@ -655,19 +655,20 @@ async def test_caller_provided_amount_not_overridden(client):
 @pytest.mark.asyncio
 async def test_default_location_with_country_seeds_taxes(client):
     """Creating a default location with a known country seeds correct tax regime."""
-    token = await _register(client, email="regime_sg@test.example")
+    from celerp.tax_regimes import get_regime
+    regime = get_regime("AU")
+    token = await _register(client, email="regime_au_new@test.example")
     r = await client.post("/companies/me/locations", headers=_auth(token), json={
         "name": "HQ", "type": "warehouse", "is_default": True,
-        "address": {"country": "SG", "city": "Singapore"},
+        "address": {"country": "AU", "city": "Sydney"},
     })
     assert r.status_code == 200
 
     taxes = (await client.get("/companies/me/taxes", headers=_auth(token))).json()
-    names = {t["name"] for t in taxes}
-    assert "GST 9%" in names
+    assert [t["name"] for t in taxes] == [t["name"] for t in regime["taxes"]]
 
     me = (await client.get("/companies/me", headers=_auth(token))).json()
-    assert me["settings"]["currency"] == "SGD"
+    assert me["settings"]["currency"] == regime["currency"]
 
 
 @pytest.mark.asyncio

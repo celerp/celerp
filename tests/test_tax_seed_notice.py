@@ -52,10 +52,10 @@ async def _notices(session, company_id) -> dict[str, Notification]:
 
 
 async def test_tax_seed_notice_one_per_entry_and_idempotent(session):
-    from celerp.tax_regimes import TAX_REGIMES
+    from celerp.tax_regimes import get_regime
 
     old = await _company(session, sales=_OLD_ET)
-    fresh = await _company(session, sales=TAX_REGIMES["TH"]["taxes"], currency=TAX_REGIMES["TH"]["currency"])
+    fresh = await _company(session, sales=get_regime("TH")["taxes"], currency=get_regime("TH")["currency"])
 
     await _run(session)
     notices = await _notices(session, old)
