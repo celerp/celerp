@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "Ogni fattura viene inviata automaticamente al cliente via e-mail, con l'autorizzazione di {name}.",
   "subscriptions.runs_generation_lapsed": "La fatturazione automatica è abilitata ma non viene eseguita: {name}, che l'aveva autorizzata, non dispone più del permesso necessario. Una persona autorizzata può disattivarla e riattivarla per fornire una nuova autorizzazione.",
   "subscriptions.runs_sending_lapsed": "L'invio automatico è abilitato ma non viene eseguito: {name}, che l'aveva autorizzato, non dispone più del permesso necessario. Una persona autorizzata può disattivarlo e riattivarlo per fornire una nuova autorizzazione.",
+  "subscriptions.runs_collection": "Ogni fattura viene incassata automaticamente dalla carta registrata del cliente, con l'autorizzazione di {name}.",
+  "subscriptions.runs_collection_lapsed": "L'incasso automatico è abilitato ma non viene eseguito: {name}, che l'aveva autorizzato, non dispone più del permesso necessario. Una persona autorizzata può disattivarlo e riattivarlo per fornire una nuova autorizzazione.",
   "subscriptions.runs_by_hand": "Non viene eseguita alcuna operazione automatica: fatturi ogni periodo da questa pagina.",
   "subscriptions.runs_former_member": "un ex membro",
   "subscriptions.summary_sent_by_hand": "{ref} inviato manualmente",

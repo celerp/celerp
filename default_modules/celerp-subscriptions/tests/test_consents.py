@@ -15,7 +15,7 @@ from agreement_kit import (
     agreement, billed_docs, company_id, freeze_day, member, register, revoke, schedule, template, tick,
 )
 from celerp_subscriptions.periods import shown
-from ui.routes.subscriptions import _billing_section
+from ui.routes.subscriptions import _billing_section, _with_schedule
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,7 +23,7 @@ AUTHORIZED = {"generation": "Automatic billing authorized", "sending": "Automati
 
 
 def _shown(eid: str, sub: dict) -> set[str]:
-    html = to_xml(_billing_section(eid, sub, defers=False))
+    html = to_xml(_billing_section(eid, _with_schedule(sub, {}), defers=False))
     return {mode for mode, text in AUTHORIZED.items() if text in html}
 
 

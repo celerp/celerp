@@ -468,12 +468,14 @@ def _build_router() -> APIRouter:
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """The agreement's periods, newest first, and its next bill date."""
+        """The agreement's periods, newest first, its next bill date and, as ``automation``,
+        what runs on its own now (summary.modes_answer)."""
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if proj is None or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
-        return await billing.period_list(session, company_id, proj.state, await company_today(session, company_id),
-                                         before=before)
+        return {**await billing.period_list(session, company_id, proj.state, await company_today(session, company_id),
+                                            before=before),
+                "automation": await summary.modes_answer(session, company_id, entity_id)}
 
     @router.post("/{entity_id}/periods/{k}/skip")
     async def skip_period(

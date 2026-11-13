@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "Jede Rechnung wird automatisch per E-Mail an den Kunden gesendet. Dies wurde von {name} autorisiert.",
   "subscriptions.runs_generation_lapsed": "Die automatische Abrechnung ist eingeschaltet, wird aber nicht ausgeführt: {name}, der sie autorisiert hat, besitzt die dafür erforderliche Berechtigung nicht mehr. Eine berechtigte Person kann sie aus- und wieder einschalten, um sie erneut zu autorisieren.",
   "subscriptions.runs_sending_lapsed": "Der automatische Versand ist eingeschaltet, wird aber nicht ausgeführt: {name}, der ihn autorisiert hat, besitzt die dafür erforderliche Berechtigung nicht mehr. Eine berechtigte Person kann ihn aus- und wieder einschalten, um ihn erneut zu autorisieren.",
+  "subscriptions.runs_collection": "Jede Rechnung wird automatisch von der hinterlegten Karte des Kunden eingezogen. Dies wurde von {name} autorisiert.",
+  "subscriptions.runs_collection_lapsed": "Der automatische Zahlungseinzug ist eingeschaltet, wird aber nicht ausgeführt: {name}, der ihn autorisiert hat, besitzt die dafür erforderliche Berechtigung nicht mehr. Eine berechtigte Person kann ihn aus- und wieder einschalten, um ihn erneut zu autorisieren.",
   "subscriptions.runs_by_hand": "Es erfolgt nichts automatisch. Rechnen Sie jeden Zeitraum auf dieser Seite einzeln ab.",
   "subscriptions.runs_former_member": "ein ehemaliges Mitglied",
   "subscriptions.summary_sent_by_hand": "{ref} manuell gesendet",

@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "Cada factura se envía automáticamente por correo electrónico al cliente, con autorización de {name}.",
   "subscriptions.runs_generation_lapsed": "La facturación automática está habilitada, pero no se ejecuta: {name}, quien la autorizó, ya no tiene permiso para hacerlo. Una persona con ese permiso puede desactivarla y volver a activarla para autorizarla de nuevo.",
   "subscriptions.runs_sending_lapsed": "El envío automático está habilitado, pero no se ejecuta: {name}, quien lo autorizó, ya no tiene permiso para hacerlo. Una persona con ese permiso puede desactivarlo y volver a activarlo para autorizarlo de nuevo.",
+  "subscriptions.runs_collection": "Cada factura se cobra automáticamente de la tarjeta registrada del cliente, con autorización de {name}.",
+  "subscriptions.runs_collection_lapsed": "El cobro automático está habilitado, pero no se ejecuta: {name}, quien lo autorizó, ya no tiene permiso para hacerlo. Una persona con ese permiso puede desactivarlo y volver a activarlo para autorizarlo de nuevo.",
   "subscriptions.runs_by_hand": "No se ejecuta nada automáticamente: facture cada período desde esta página.",
   "subscriptions.runs_former_member": "un antiguo miembro",
   "subscriptions.summary_sent_by_hand": "{ref} enviado manualmente",

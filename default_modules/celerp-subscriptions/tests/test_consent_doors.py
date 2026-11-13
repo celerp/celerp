@@ -315,6 +315,56 @@ async def test_resume_says_when_the_authorization_has_lapsed(client, session, mo
     assert len(await billed_docs(session, eid)) == 1
 
 
+async def _lapsed_page_agreement(ui, session, monkeypatch) -> str:
+    """An active agreement a manager set to bill automatically, after the manager lost the
+    permission: its mode stays chosen and in force but does not run."""
+    freeze_day(monkeypatch, "2026-01-01")
+    eid = await agreement(ui.api, {}, start="2026-01-01")
+    manager, _ = await member(ui.api, session, {}, "manager")
+    assert (await schedule(ui.api, manager, eid, generation_mode="auto_invoice")).status_code == 200
+    await revoke(ui.api, {}, "automate_billing", "manager")
+    return eid
+
+
+async def test_the_periods_answer_says_what_runs_on_its_own(owner_ui, session, monkeypatch):
+    """The agreement's periods answer carries the same account of what runs on its own as
+    Resume and Activate do (summary.modes_answer), so its page reads the lapse from one source."""
+    eid = await _lapsed_page_agreement(owner_ui, session, monkeypatch)
+    automation = (await owner_ui.api.get(f"/subscriptions/{eid}/periods")).json()["automation"]
+    assert automation["runs"] == [] and automation["lapsed"] == ["generation"], automation
+
+
+async def test_an_agreement_page_says_when_automatic_billing_does_not_run(owner_ui, session, monkeypatch):
+    """The page of an agreement whose automatic billing lapsed never says it bills automatically:
+    the badge says billing stopped and the Billing section says whose authorization lapsed and
+    how to authorize it again, in place of when it was authorized."""
+    from bs4 import BeautifulSoup
+    from ui.i18n import t
+
+    eid = await _lapsed_page_agreement(owner_ui, session, monkeypatch)
+    soup = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
+    badge = soup.select_one("#sub-auto-badge")
+    assert badge.get_text(strip=True) == t("subscriptions.summary_billing_lapsed", "en"), badge
+    assert "badge--paused" in badge["class"]
+    billing = soup.select_one("#sub-billing").get_text(" ", strip=True)
+    assert t("subscriptions.runs_generation_lapsed", "en", name="").split(":")[0] in billing, billing
+    assert t("subscriptions.consent_generation", "en", date="").strip() not in billing, billing
+
+
+def test_every_unattended_mode_says_when_it_runs_and_when_it_lapsed():
+    """Each mode an agreement can run on its own has both sentences the account of what runs
+    reads (summary.modes_answer), so none answers with a bare key."""
+    import json
+    from pathlib import Path
+
+    from celerp_subscriptions.billing import MODE_PERMISSION
+
+    en = json.loads((Path(__file__).resolve().parents[3] / "ui" / "locales" / "en.json").read_text())
+    missing = [k for mode in MODE_PERMISSION for k in (f"subscriptions.runs_{mode}", f"subscriptions.runs_{mode}_lapsed")
+               if k not in en]
+    assert missing == []
+
+
 async def test_resume_of_a_manual_agreement_says_it_is_billed_by_hand(client, session, monkeypatch):
     freeze_day(monkeypatch, "2026-01-01")
     hd = await register(client)

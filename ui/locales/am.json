@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "እያንዳንዱ የክፍያ መጠየቂያ በራስ-ሰር ለደንበኛው በኢሜይል ይላካል፤ ፈቃዱን የሰጠው {name} ነው።",
   "subscriptions.runs_generation_lapsed": "በራስ-ሰር የክፍያ መጠየቂያ ማዘጋጀት በርቷል፣ ግን አይሠራም፤ ፈቃዱን የሰጠው {name} ከአሁን በኋላ ይህን ለማድረግ ፈቃድ የለውም። ፈቃድ ያለው ሰው አጥፍቶ እንደገና በማብራት አዲስ ፈቃድ ሊሰጥ ይችላል።",
   "subscriptions.runs_sending_lapsed": "በራስ-ሰር መላክ በርቷል፣ ግን አይሠራም፤ ፈቃዱን የሰጠው {name} ከአሁን በኋላ ይህን ለማድረግ ፈቃድ የለውም። ፈቃድ ያለው ሰው አጥፍቶ እንደገና በማብራት አዲስ ፈቃድ ሊሰጥ ይችላል።",
+  "subscriptions.runs_collection": "እያንዳንዱ የክፍያ መጠየቂያ በፋይል ላይ ካለው የደንበኛው ካርድ በራስ-ሰር ይሰበሰባል፤ ፈቃዱን የሰጠው {name} ነው።",
+  "subscriptions.runs_collection_lapsed": "በራስ-ሰር መሰብሰብ በርቷል፣ ግን አይሠራም፤ ፈቃዱን የሰጠው {name} ከአሁን በኋላ ይህን ለማድረግ ፈቃድ የለውም። ፈቃድ ያለው ሰው አጥፍቶ እንደገና በማብራት አዲስ ፈቃድ ሊሰጥ ይችላል።",
   "subscriptions.runs_by_hand": "ምንም በራስ-ሰር አይከናወንም፤ ለእያንዳንዱ የክፍያ ጊዜ ከዚህ ገጽ የክፍያ መጠየቂያ ያዘጋጁ።",
   "subscriptions.runs_former_member": "የቀድሞ አባል",
   "subscriptions.summary_sent_by_hand": "{ref} በእጅ ተልኳል",

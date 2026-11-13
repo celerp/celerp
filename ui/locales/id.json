@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "Setiap tagihan dikirim secara otomatis melalui email kepada pelanggan dengan otorisasi dari {name}.",
   "subscriptions.runs_generation_lapsed": "Penagihan otomatis diaktifkan tetapi tidak berjalan: {name}, yang sebelumnya memberikan otorisasi, tidak lagi memiliki izin untuk itu. Pengguna yang memiliki izin dapat mematikan dan mengaktifkannya kembali untuk memberikan otorisasi baru.",
   "subscriptions.runs_sending_lapsed": "Pengiriman otomatis diaktifkan tetapi tidak berjalan: {name}, yang sebelumnya memberikan otorisasi, tidak lagi memiliki izin untuk itu. Pengguna yang memiliki izin dapat mematikan dan mengaktifkannya kembali untuk memberikan otorisasi baru.",
+  "subscriptions.runs_collection": "Setiap tagihan ditarik secara otomatis dari kartu tersimpan milik pelanggan dengan otorisasi dari {name}.",
+  "subscriptions.runs_collection_lapsed": "Penarikan pembayaran otomatis diaktifkan tetapi tidak berjalan: {name}, yang sebelumnya memberikan otorisasi, tidak lagi memiliki izin untuk itu. Pengguna yang memiliki izin dapat mematikan dan mengaktifkannya kembali untuk memberikan otorisasi baru.",
   "subscriptions.runs_by_hand": "Tidak ada proses otomatis: tagihkan setiap periode dari halaman ini.",
   "subscriptions.runs_former_member": "mantan anggota",
   "subscriptions.summary_sent_by_hand": "{ref} dikirim secara manual",

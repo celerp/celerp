@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "{name} の承認により、各請求書が顧客へ自動的にメール送信されます。",
   "subscriptions.runs_generation_lapsed": "自動請求はオンですが、実行されていません。承認者の {name} は、現在この操作に必要な権限を持っていません。権限のあるユーザーが一度オフにしてから再びオンにすると、改めて承認できます。",
   "subscriptions.runs_sending_lapsed": "自動送信はオンですが、実行されていません。承認者の {name} は、現在この操作に必要な権限を持っていません。権限のあるユーザーが一度オフにしてから再びオンにすると、改めて承認できます。",
+  "subscriptions.runs_collection": "{name} の承認により、各請求書の代金が顧客の登録済みカードから自動的に集金されます。",
+  "subscriptions.runs_collection_lapsed": "自動集金はオンですが、実行されていません。承認者の {name} は、現在この操作に必要な権限を持っていません。権限のあるユーザーが一度オフにしてから再びオンにすると、改めて承認できます。",
   "subscriptions.runs_by_hand": "自動処理は行われません。このページから各期間の請求を行ってください。",
   "subscriptions.runs_former_member": "以前のメンバー",
   "subscriptions.summary_sent_by_hand": "{ref} を手動で送信しました",

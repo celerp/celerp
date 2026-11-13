@@ -507,10 +507,10 @@ def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
 
 
 def _with_schedule(sub: dict, schedule: dict) -> dict:
-    """The agreement as its page shows it: its own fields, its periods' next bill date, and why
-    it bills nothing once it has ended."""
+    """The agreement as its page shows it: its own fields, its periods' next bill date, why
+    it bills nothing once it has ended, and the modes whose authorization lapsed."""
     return {**sub, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved"),
-            "ended": schedule.get("ended")}
+            "ended": schedule.get("ended"), "automation": schedule.get("automation") or {}}
 
 
 def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
@@ -914,10 +914,18 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
 
 
 def _auto_badge(sub: dict) -> FT:
-    """The header badge naming an agreement that bills on its own; empty otherwise."""
-    key = _MODE_BADGE.get(sub.get("generation_mode") or "")
+    """The header badge naming an agreement that bills on its own, or that its automatic
+    billing stopped when the authorization lapsed; empty otherwise. One whose collection
+    alone lapsed still bills on its own, so it reads as billing automatically."""
+    mode = sub.get("generation_mode") or ""
     attrs = {"id": "sub-auto-badge"}
-    return Span(t(key), cls="badge badge--active", **attrs) if key else Span(**attrs)
+    if mode not in _MODE_BADGE:
+        return Span(**attrs)
+    lapsed = sub["automation"].get("lapsed") or []
+    if "generation" in lapsed:
+        return Span(t("subscriptions.summary_billing_lapsed"), cls="badge badge--paused", **attrs)
+    key = _MODE_BADGE["auto_invoice" if "collection" in lapsed else mode]
+    return Span(t(key), cls="badge badge--active", **attrs)
 
 
 def _yes_no_control(base: str, field: str, on: bool, attrs: dict) -> FT:
@@ -931,11 +939,13 @@ def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
     """How the agreement bills: by hand or on its own, whether it sends what it bills, how
     many past periods automatic billing may still bill after a gap and, when its bills can
     defer revenue (_defers), whether they recognize over their service period. Each
-    automatic mode names when it was authorized; setting it back to manual undoes it."""
+    automatic mode names when it was authorized, or in its place that it does not run because
+    the authorization lapsed and how to authorize it again; setting it back to manual undoes it."""
     base = f"/subscriptions/{entity_id}/schedule"
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     mode = shown("generation_mode", sub.get("generation_mode"))
     consents = sub.get("consents") or {}
+    automation = sub["automation"]
     offered = bool((sub.get("collection_view") or {}).get("offered"))
     # Collect is offered while Cloud offers it, and stays shown on an agreement using it so it can be set back.
     modes = (*_MODES, COLLECT_MODE) if offered or mode == COLLECT_MODE else _MODES
@@ -953,7 +963,8 @@ def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
             _yes_no_control(base, RECOGNIZE_FIELD, bool(sub.get(RECOGNIZE_FIELD)), attrs) if defers else "",
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
-        *[P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
+        *[P(automation["said"][c], cls="flash flash--warning") if c in (automation.get("lapsed") or ()) else
+          P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
           for c in _CONSENTS if (consents.get(c) or {}).get("at")],
         _collection_card(entity_id, sub["collection_view"]) if offered else "",
         id="sub-billing", cls="mt-lg",

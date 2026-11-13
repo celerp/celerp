@@ -7286,6 +7286,8 @@
   "subscriptions.runs_sending": "Mỗi hóa đơn được tự động gửi qua email cho khách hàng, theo sự cho phép của {name}.",
   "subscriptions.runs_generation_lapsed": "Tính năng lập hóa đơn tự động đã bật nhưng không chạy: {name}, người đã cấp quyền trước đây, không còn quyền thực hiện nữa. Người có quyền phù hợp có thể tắt rồi bật lại để cấp phép mới.",
   "subscriptions.runs_sending_lapsed": "Tính năng gửi tự động đã bật nhưng không chạy: {name}, người đã cấp quyền trước đây, không còn quyền thực hiện nữa. Người có quyền phù hợp có thể tắt rồi bật lại để cấp phép mới.",
+  "subscriptions.runs_collection": "Mỗi hóa đơn được tự động thu tiền từ thẻ đã lưu của khách hàng, theo sự cho phép của {name}.",
+  "subscriptions.runs_collection_lapsed": "Tính năng thu tiền tự động đã bật nhưng không chạy: {name}, người đã cấp quyền trước đây, không còn quyền thực hiện nữa. Người có quyền phù hợp có thể tắt rồi bật lại để cấp phép mới.",
   "subscriptions.runs_by_hand": "Không có gì chạy tự động: hãy lập hóa đơn cho từng kỳ trên trang này.",
   "subscriptions.runs_former_member": "thành viên cũ",
   "subscriptions.summary_sent_by_hand": "Đã gửi {ref} thủ công",
