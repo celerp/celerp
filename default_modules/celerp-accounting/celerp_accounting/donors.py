@@ -38,7 +38,6 @@ from celerp.models.projections import Projection
 from celerp.services import email as email_service
 from celerp.services.account_roles import current_settings, merge_survivors
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.auto_je import _line_allocations
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.document_lines import line_item_id
@@ -82,6 +81,8 @@ def _document_gifts(doc_id: str, doc: dict, items: dict[str, dict], base: str,
                     date_from: str | None, date_to: str | None) -> list[dict]:
     """The cash kept of each receipt on ``doc`` that its gift lines account for: the gift lines'
     share of the document's net over its total, so tax and other lines take their own share."""
+    from celerp.services.auto_je import _line_allocations
+
     lines = doc.get("line_items") or []
     shares = _line_allocations(doc, base, 0)
     gift = sum((to_decimal(share["doc"]) for index, share in shares.items()
