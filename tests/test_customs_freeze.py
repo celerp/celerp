@@ -248,7 +248,7 @@ async def _freeze_notices(session, company_id) -> list[Notification]:
 
 
 _FREEZE_BODY = (
-    "For shipping documents issued before this update, Celerp has saved the item details currently "
+    "For delivery notes issued before this update, Celerp has saved the item details currently "
     "shown on those documents. Future item changes will no longer change their issued copies. These "
     "details may differ from what the items showed when the documents were originally issued.")
 
