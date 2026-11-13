@@ -181,7 +181,8 @@ async def fund_activity(session: AsyncSession, company_id, *, date_from: str | N
 def _mirrors(rows: list[tuple[str, dict, str]], funds: dict) -> list[dict]:
     """Pairs of entries, one of them manual, whose lines are each other's with debit and credit
     swapped, same accounts and amounts, on different funds: each is valid alone, together they
-    move value between funds, so the pair is listed for review."""
+    move value between funds, so the pair is listed for review. An entry posted for a record
+    (a document's payment or refund) is never the manual one."""
     def lines(state, swap):
         return tuple(sorted((str(line.get("account")), line_change(line) * (-1 if swap else 1))
                             for line in state.get("entries") or () if isinstance(line, dict)))
@@ -194,7 +195,7 @@ def _mirrors(rows: list[tuple[str, dict, str]], funds: dict) -> list[dict]:
         by_lines.setdefault(lines(state, False), []).append((row_id, state))
     pairs: dict[frozenset, dict] = {}
     for row_id, state, _ in rows:
-        if state.get("je_type") not in (None, "manual"):
+        if state.get("record_id") or state.get("je_type") not in (None, "manual"):
             continue
         for other_id, other in by_lines.get(lines(state, True), ()):
             if (other_id != row_id and fund_set(other) != fund_set(state)

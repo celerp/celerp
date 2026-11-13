@@ -163,6 +163,24 @@ async def test_two_entry_cross_fund_mirror_flagged(client, session, auth):
     assert len((await _get(client, auth, "reconciliation"))["mirrors"]) == 1
 
 
+async def test_document_entries_never_flagged_as_mirror(client, session, auth):
+    """A payment received on one fund and an unrelated refund paid from another, both posted
+    for their documents and carrying no entry type, swap each other's lines: neither is a
+    manual entry, so the reconciliation lists no mirror."""
+    f = await _setup(client, auth)
+    await _gift(session, auth, f["R"], 100, "2026-02-01")
+    for n, lines in enumerate(([("1111", 50, 0, None), ("1120", 0, 50, None)],
+                               [("1120", 50, 0, f["R"]), ("1111", 0, 50, f["R"])])):
+        await emit_event(session, company_id=auth["company_id"], entity_id=f"je:auto:doc:INV-{n}:pay:0",
+                         entity_type="journal_entry", event_type="acc.journal_entry.created",
+                         data={"memo": "Payment", "ts": "2026-03-01", "status": "posted", "record_id": f"doc:INV-{n}",
+                               "entries": [{"account": a, "debit": d, "credit": c, **({"fund_id": fd} if fd else {})}
+                                           for a, d, c, fd in lines]},
+                         actor_id=auth["user_id"], location_id=None, source="test",
+                         idempotency_key=f"test:mirror-doc:{n}:{uuid.uuid4().hex}")
+    assert (await _get(client, auth, "reconciliation"))["mirrors"] == []
+
+
 async def test_attribution_check_lists_document_entry_without_line_fund(client, session, auth):
     """An entry posted for a document is compared with the funds its lines carry: the
     document's own entry is clean; an entry that posts its income unrestricted while the line
