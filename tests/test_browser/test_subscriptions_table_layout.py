@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -43,8 +44,19 @@ def _drawn() -> dict:
     subs = {eid: {"id": eid, "name": "Annual membership", "contact_name": "Member", "frequency": "annually",
                   "status": "active", "total": 120, "currency": "USD", "next_bill_date": "2026-07-01"}}
     items = [{"entity_id": eid, "periods": [period, {**period, "period_index": 1}]}]
+    big = 12345.67
+    months = [{"month": f"2026-{m:02d}", "active": 1234, "logo_churn": 0.1234, "revenue_churn": 0.1234,
+               **{f: big for f in ("mrr", "arr", "new_mrr", "expansion_mrr", "contraction_mrr", "churned_mrr")}}
+              for m in range(1, 13)]
+    # The default range: a longer one widens the cohort matrix by a column a month, and it scrolls.
+    cohorts = [{"month": f"2026-{m:02d}", "size": 1234, "active": [1234] * (13 - m), "mrr": [big] * (13 - m)}
+               for m in range(1, 13)]
+    revenue = {"currency": "USD", "months": months, "cohorts": cohorts}
+    line = {"line_id": "l1", "description": "Annual membership", "quantity": 1234}
+    agreement = {**subs[eid], "line_items": [line], "amendments": [
+        {"effective": "2026-07-01", "line_items": [line], "credit_note_id": "doc:cn", "invoice_id": "doc:bill"}]}
     return {
-        "_sub_table": lambda: page._sub_table([{**subs[eid], "schedule_error": long}], page._list_state({})),
+        "_sub_table": lambda: page._sub_table([{**subs[eid], "schedule_error": long}], page._list_state({}), True),
         "_periods_table": lambda: page._periods_table(eid, {"rows": [
             {**period, "status": "due", "reason": long}, {**period, "status": "billed", "state": "billed",
                                                           "doc_id": "doc:bill", "ref_id": _REF, "send": "failed",
@@ -63,6 +75,15 @@ def _drawn() -> dict:
             eid, [{"doc_id": "doc:old", "ref_id": _REF, "candidates": [period, {**period, "period_index": 1}]},
                   {"doc_id": "doc:none", "ref_id": _REF, "candidates": []}],
             [{"doc_id": "doc:aside", "ref_id": _REF}]),
+        "_months_table": lambda: page._months_table(revenue),
+        "_cohorts_table": lambda: page._cohorts_table(revenue),
+        "_quantities_section": lambda: page._quantities_section(
+            eid, agreement, date(2026, 8, 1), {"doc:cn": _REF, "doc:bill": _REF}),
+        "_members_table": lambda: page._members_table([
+            {"member_name": "Member", "contact_name": "Payer", "standing": "lapsed", "due_date": "2026-07-01",
+             "entity_id": eid, "ref": _REF}]),
+        "_plans_table": lambda: page._plans_table(
+            [{"id": "item:plan", "name": "Annual membership", "retail_price": big}], {"item:plan": 1234}, "Retail", "USD"),
     }
 
 

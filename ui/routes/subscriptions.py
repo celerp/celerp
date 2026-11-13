@@ -292,10 +292,12 @@ def _sub_status_cards(items: list[dict], state: dict) -> FT:
     return Div(status_cards(cards, base, active_status or None, currency=None, show_all_card=False), id="sub-status-cards")
 
 
-def _data_table(*parts) -> FT:
+def _data_table(*parts, compact: bool = False) -> FT:
     """A data table in the scroll box every data table has, so a wide row scrolls inside it
-    instead of pushing the page wider than the screen."""
-    return Div(Table(*parts, cls="data-table"), cls="table-scroll-wrap")
+    instead of pushing the page wider than the screen. ``compact`` tightens the cell padding
+    for a matrix with a column per month."""
+    cls = "data-table data-table--compact" if compact else "data-table"
+    return Div(Table(*parts, cls=cls), cls="table-scroll-wrap")
 
 
 def _doc_links(docs) -> list:
@@ -1363,19 +1365,21 @@ def _months_table(data: dict) -> FT:
 
 
 def _cohorts_table(data: dict) -> FT:
-    """Each start month, newest first, with the share still active and their MRR at each month end."""
+    """Each start month, newest first, with its size beneath it, and the share still active and
+    their MRR at each month end. Size sits under the month, as MRR sits under the share, so the
+    default twelve months fit the page; a longer range scrolls inside the table."""
     cohorts, cur = data["cohorts"], data["currency"]
     width = max(len(c["active"]) for c in cohorts)
-    head = Tr(Th(t("subscriptions.th_cohort")), Th(t("subscriptions.th_cohort_size"), cls="cell--number"),
+    head = Tr(Th(Div(t("subscriptions.th_cohort")), Div(t("subscriptions.th_cohort_size"), cls="text-muted")),
               *[Th(t("subscriptions.th_month_n", n=i + 1), cls="cell--number") for i in range(width)])
 
     def _row(c: dict) -> FT:
         cells = [Td(Div(_percent(n / c["size"])), Div(fmt_money(mrr, cur), cls="text-muted"), cls="cell--number")
                  for n, mrr in zip(c["active"], c["mrr"])]
         cells += [Td("", cls="cell--number")] * (width - len(cells))
-        return Tr(Td(c["month"]), Td(str(c["size"]), cls="cell--number"), *cells, cls="data-row")
+        return Tr(Td(Div(c["month"]), Div(str(c["size"]), cls="text-muted")), *cells, cls="data-row")
 
-    return _data_table(Thead(head), Tbody(*[_row(c) for c in reversed(cohorts)]))
+    return _data_table(Thead(head), Tbody(*[_row(c) for c in reversed(cohorts)]), compact=True)
 
 
 def _not_converted(data: dict) -> list[FT]:
