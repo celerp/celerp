@@ -57,8 +57,9 @@ async def _migrated_club(real_engine, monkeypatch, tmp_path) -> tuple[dict, str]
 
 
 async def test_club_migrated_then_funds_turned_on(real_client, real_engine, monkeypatch, tmp_path):
-    """After the move every migrated line is marked as migrated and no fund was asked. With funds
-    turned on and a restricted fund added, the migrated draft's Finalize is refused naming both
+    """After the move every migrated line is marked as migrated and no fund was asked. Funds are
+    refused until the Restricted net assets account is chosen (the chart came from elsewhere). With
+    funds turned on and a restricted fund added, the migrated draft's Finalize is refused naming both
     lines; with the hall hire line Unrestricted and the donation on the restricted fund it posts
     each line on its choice. With the migrated history locked, a migrated invoice voided
     afterwards is reversed after the lock date on the fund it posted with, Unrestricted, with no
@@ -67,7 +68,7 @@ async def test_club_migrated_then_funds_turned_on(real_client, real_engine, monk
     from celerp.models.projections import Projection
     from celerp.services.journal_accounts import fund_account_balances
     from celerp.services.ledger_rows import reversal_state
-    from test_funds import _fund, _funds_on
+    from test_funds import _fund, _funds_on, _map_restricted_net_assets
     from test_outside_lines import _choices, _choose, _doc, _entry_ids, _entry_state, _needs_choice
 
     auth, doc = await _migrated_club(real_engine, monkeypatch, tmp_path)
@@ -81,6 +82,9 @@ async def test_club_migrated_then_funds_turned_on(real_client, real_engine, monk
     assert migrated and all(e.get("origin") == "migration" and not e.get("fund_id")
                             for st in migrated.values() for e in st["entries"])
 
+    r = await _funds_on(real_client, auth)
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "fund.turn_on_role_unmapped", r.text
+    await _map_restricted_net_assets(real_client, auth)
     assert (await _funds_on(real_client, auth)).status_code == 200
     gift = await _fund(real_client, auth, "Building fund")
     async with maker(real_engine)() as session:
