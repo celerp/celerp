@@ -21,7 +21,7 @@ def test_attachment_files_card_matrix(page, ui_server, api, resource, kind, post
     section.locator('summary').click()
     for name,mime,body in FILES:
         try:
-            section.locator('input[type=file]').set_input_files({'name':name,'mimeType':mime,'buffer':body})
+            section.locator('[id^="file-drop-input-"]').set_input_files({'name':name,'mimeType':mime,'buffer':body})
             expect(section.locator('a.file-link',has_text=name)).to_be_visible(timeout=15000)
             expect(section.locator('.files-notice')).to_be_empty()
             assert "Celerp couldn't find this document" not in page.locator('main').inner_text()

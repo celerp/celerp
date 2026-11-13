@@ -29123,8 +29123,6 @@
     "tests/test_browser/test_batch05_upload_matrix.py::test_attachment_files_card_matrix[chromium-lists-shipping_doc-False]": 1.8213058169931173,
     "tests/test_browser/test_batch05_upload_matrix.py::test_attachment_files_card_matrix[chromium-lists-transfer-False]": 1.9029428370995447,
     "tests/test_browser/test_batch05_upload_matrix.py::test_attachment_files_card_matrix[chromium-lists-writeoff-False]": 1.769933581002988,
-    "tests/test_browser/test_batch05_uploads.py::test_file_and_camera_share_one_picker_and_accept_jpeg[chromium-False]": 0.9148817792301998,
-    "tests/test_browser/test_batch05_uploads.py::test_file_and_camera_share_one_picker_and_accept_jpeg[chromium-True]": 0.9702233279822394,
     "tests/test_browser/test_batch05_uploads.py::test_pdf_upload_reaches_document_attachment_list[chromium-invoice copy.pdf-False-docs-invoice]": 0.8970816440414637,
     "tests/test_browser/test_batch05_uploads.py::test_pdf_upload_reaches_document_attachment_list[chromium-invoice copy.pdf-False-lists-quotation]": 0.9644476089160889,
     "tests/test_browser/test_batch05_uploads.py::test_pdf_upload_reaches_document_attachment_list[chromium-invoice copy.pdf-True-docs-invoice]": 0.9249142970656976,
@@ -29182,5 +29180,7 @@
     "tests/test_numbering_gen016.py::test_subscription_numbering_leads_back_to_the_list_it_was_opened_from[sales]": 0.15543100493960083,
     "tests/test_browser/test_history_filters.py::test_document_history_field_filter_reloads_the_card_in_place[chromium]": 8.15409498498775,
     "tests/test_browser/test_history_filters.py::test_item_history_field_filter_searches_and_keeps_the_choice_in_the_url[chromium]": 2.027216844027862,
-    "tests/test_browser/test_mobile_reflow.py::test_the_inventory_toolbar_wraps_inside_a_phone_screen_in_german[chromium]": 1.5169524300144985
+    "tests/test_browser/test_mobile_reflow.py::test_the_inventory_toolbar_wraps_inside_a_phone_screen_in_german[chromium]": 1.5169524300144985,
+    "tests/test_browser/test_batch05_uploads.py::test_file_picker_and_camera_input_accept_jpeg[chromium-False]": 6.326242674025707,
+    "tests/test_browser/test_batch05_uploads.py::test_file_picker_and_camera_input_accept_jpeg[chromium-True]": 1.9229631120106205
 }

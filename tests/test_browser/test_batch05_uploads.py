@@ -27,7 +27,7 @@ def test_pdf_upload_reaches_document_attachment_list(page, ui_server, api, poste
 
 
 @pytest.mark.parametrize("camera", [False, True])
-def test_file_and_camera_share_one_picker_and_accept_jpeg(page, ui_server, api, camera):
+def test_file_picker_and_camera_input_accept_jpeg(page, ui_server, api, camera):
     import io
     from PIL import Image
     image=io.BytesIO(); Image.new("RGB", (16,16)).save(image, format="JPEG")
@@ -35,7 +35,10 @@ def test_file_and_camera_share_one_picker_and_accept_jpeg(page, ui_server, api, 
     page.goto(f'{ui_server}/docs/{eid}')
     section=page.locator('.doc-internal').filter(has=page.locator('[id^="files-section-"]'))
     section.locator('summary').click()
-    expect(section.locator('input[type=file]')).to_have_count(1)
+    expect(section.locator('[id^="file-drop-input-"]')).to_have_count(1)
+    camera_input=section.locator('[id^="file-camera-input-"]')
+    expect(camera_input).to_have_attribute('capture','environment')
+    expect(camera_input).to_have_attribute('accept','image/*')
     trigger=section.locator('.file-camera-btn' if camera else '.file-drop-text')
     with page.expect_file_chooser() as chooser:
         trigger.click()
