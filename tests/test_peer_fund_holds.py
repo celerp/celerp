@@ -555,6 +555,46 @@ async def test_peer_document_held_for_fund_choices(real_client, real_engine, mon
     assert await _copy_of(real_engine, firm_company, invoice) is None
 
 
+async def test_peer_bill_with_goods_received_posts_from_hold(real_client, real_engine, monkeypatch):
+    """A client's bill whose goods of a shared item were received is held at the firm for funds.
+    The goods are refused a restricted fund; posted from the hold Unrestricted, the copy receives
+    them into the firm's location paired with the client's."""
+    from celerp.models.company_peer import CompanyPeerIdentity
+    from test_peer_accounts import _bill
+    from test_peer_sync_end_to_end import _location
+
+    tok, firm_tok, client_company, credential, _ = await _pair_journals(real_client, real_engine)
+    firm_company = _company_of(firm_tok)
+    fund = await _funds_client(real_client, firm_tok)
+    stock = await real_client.post("/items", headers=auth(tok), json={
+        "name": "Hymn books", "sku": "HB-1", "sell_by": "piece", "quantity": 0, "status": "available"})
+    assert stock.status_code in (200, 201), stock.text
+    _route_to_app(monkeypatch, [])
+    assert (await _two_way(client_company, credential))["products_out"].ok
+    bill = await _bill(real_client, tok, [{"item_id": stock.json()["id"], "name": "Hymn books", "quantity": 2,
+                                           "unit_price": 10.0, "line_total": 20.0, "receive_as": "stock"}], "goods-bill")
+    source_location = await _location(real_engine, client_company)
+    r = await real_client.post(f"/docs/{bill}/receive", headers=auth(tok), json={
+        "location_id": source_location, "idempotency_key": uuid.uuid4().hex,
+        "received_items": [{"po_line_index": 0, "quantity_received": 2}]})
+    assert r.status_code == 200, r.text
+    assert not (await _two_way(client_company, credential))["documents_out"].ok
+    [item] = await _held(real_client, firm_tok, "doc_funds")
+
+    r = await _post_held(real_client, firm_tok, item, every=fund)
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "posting.fund.stock_unrestricted", r.text
+    r = await _post_held(real_client, firm_tok, item, every="unrestricted")
+    assert r.status_code == 200, r.text
+    doc_id = await _copy_of(real_engine, firm_company, bill)
+    copy = await _state(real_client, firm_tok, doc_id)
+    assert sum(float(li.get("quantity_received") or 0) for li in copy.get("received_items") or []) == 2, copy
+    async with maker(real_engine)() as s:
+        paired = await s.scalar(select(CompanyPeerIdentity.target_entity_id).where(
+            CompanyPeerIdentity.company_id == uuid.UUID(firm_company),
+            CompanyPeerIdentity.entity_type == "location", CompanyPeerIdentity.source_entity_id == source_location))
+    assert paired == await _location(real_engine, firm_company)
+
+
 async def _state(real_client, tok: str, doc: str) -> dict:
     r = await real_client.get(f"/docs/{doc}", headers=auth(tok))
     assert r.status_code == 200, r.text
