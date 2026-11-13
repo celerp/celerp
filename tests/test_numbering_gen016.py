@@ -289,3 +289,17 @@ async def test_a_next_number_below_one_is_refused_in_words_the_user_reads(client
     assert r.status_code == 422, r.text
     assert "must be 1 or more" in r.text and "(next)" not in r.text
     assert await _settings(session, auth) == before
+
+
+@pytest.mark.parametrize('side', ['sales', 'purchasing'])
+async def test_subscription_numbering_leads_back_to_the_list_it_was_opened_from(ui, monkeypatch, side):
+    from unittest.mock import AsyncMock
+    import ui.api_client as api
+    monkeypatch.setattr(api, 'list_subscriptions', AsyncMock(return_value={'items': []}))
+    listing = (await ui.get(f'/subscriptions?direction={side}')).text
+    assert f'href="/subscriptions?tab=numbering&amp;direction={side}"' in listing
+    page = await ui.get(f'/subscriptions?tab=numbering&direction={side}')
+    assert page.status_code == 200
+    assert re.search(rf'<a href="/subscriptions\?direction={side}" class="breadcrumb-link">', page.text)
+    # One "Document Numbering" heading: the card's; the page is titled by its list.
+    assert len(re.findall(r'<h[13][^>]*>Document Numbering</h[13]>', page.text)) == 1
