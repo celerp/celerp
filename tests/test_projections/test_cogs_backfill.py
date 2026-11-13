@@ -942,7 +942,7 @@ async def test_backfill_notice_is_keyed_and_shown_in_the_readers_language(sessio
         ("notice.cogs_backfill.older_stock", {"count": 1})]
     es = _shown_in("es", notice)
     assert es["title"] == "Costo de ventas contabilizado para facturas anteriores"
-    assert es["body"].startswith("1 factura, total 20.00. 1 esperan a que las existencias antiguas"), es["body"]
+    assert es["body"].startswith("1 factura, total 20.00. 1 esperan a que el inventario inicial"), es["body"]
     assert es["body"].endswith("indica qué lo impide."), es["body"]
 
 

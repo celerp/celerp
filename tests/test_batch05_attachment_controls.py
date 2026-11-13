@@ -1,4 +1,4 @@
-"""One attachment picker and interoperable camera MIME types."""
+"""The attachment file picker, its own camera input, and interoperable camera MIME types."""
 import io
 import pytest
 from PIL import Image
@@ -8,14 +8,16 @@ from ui.components.files import files_section
 from celerp.services.attachments import upload_mime
 
 @pytest.mark.parametrize('owner', ['doc', 'list', 'contact', 'item'])
-def test_shared_files_section_renders_one_picker_for_files_and_camera(owner):
+def test_shared_files_section_renders_file_picker_and_camera_input(owner):
     from bs4 import BeautifulSoup
     section=BeautifulSoup(to_xml(files_section(owner, 'test-1', [])), 'html.parser')
-    pickers=section.select('input[type=file]')
-    assert len(pickers)==1
-    assert 'image/*' in pickers[0]['accept'] and '.pdf' in pickers[0]['accept']
+    picker=section.select_one('input[id^=file-drop-input-]')
+    camera=section.select_one('input[id^=file-camera-input-]')
+    assert len(section.select('input[type=file]'))==2
+    assert 'image/*' in picker['accept'] and '.pdf' in picker['accept']
+    assert not picker.has_attr('capture')
+    assert camera['accept']=='image/*' and camera['capture']=='environment'
     assert section.select_one('.file-camera-btn')
-    assert not pickers[0].has_attr('capture')
 
 @pytest.mark.parametrize('sent,expected', [('image/x-png','image/png'),('IMAGE/PNG; charset=binary','image/png'),('image/jpg','image/jpeg'),('image/pjpeg','image/jpeg'),('application/octet-stream','image/png')])
 def test_camera_mime_aliases_are_normalized(sent, expected):

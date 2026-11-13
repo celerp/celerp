@@ -104,12 +104,6 @@
       "en": "Xero was disconnected before Celerp knew whether this invoice reached Xero. Check Xero for the invoice; if it is missing, connect Xero again in Remote Access and sync again.",
       "params": []
     },
-    "connectors.fail_access": {
-      "en": "{service} refused Celerp's access. Use Disconnect above, then connect {service} again in Remote Access.",
-      "params": [
-        "service"
-      ]
-    },
     "connectors.fail_credentials": {
       "en": "Celerp couldn't read its sign-in details for {service}. Use Disconnect above, then connect {service} again in Remote Access.",
       "params": [
@@ -669,10 +663,6 @@
       "en": "Search vendor credit memos",
       "params": []
     },
-    "documents.search_lists": {
-      "en": "Search quotations",
-      "params": []
-    },
     "documents.search_production_order": {
       "en": "Search production orders",
       "params": []
@@ -1018,12 +1008,6 @@
       "en": "Vendor Credit Memos",
       "params": []
     },
-    "notice.cogs_backfill.older_stock": {
-      "en": "{count} wait for opening inventory to be placed on an inventory account: the opening inventory notice says what holds it back.",
-      "params": [
-        "count"
-      ]
-    },
     "notice.customs_freeze.body": {
       "en": "For delivery notes issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
       "params": []
@@ -1070,12 +1054,6 @@
     "notice.older_stock_failed.title": {
       "en": "Opening inventory could not be placed",
       "params": []
-    },
-    "notice.older_stock_locked.body": {
-      "en": "The books are locked through {day}, so opening inventory could not be placed on an inventory account: placing it is recorded today. Move the period lock before today and the stock is placed at once.",
-      "params": [
-        "day"
-      ]
     },
     "notice.older_stock_locked.title": {
       "en": "Opening inventory waits for an open period",
