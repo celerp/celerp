@@ -893,7 +893,9 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     on the accounts the invoice sold on, in the proportions it credited them (an imported
     invoice can split its sale over several), except a line linked to an invoice line
     (source_line_id): its share goes back on the revenue account that invoice line was
-    credited on (_posted_line_shares), and its allocation names it. A line crediting an asset's
+    credited on (_posted_line_shares), and its allocation names it. A note crediting no invoice
+    takes each line back on the account an invoice line of its item credits (_income_lines),
+    and every allocation names its account. A line crediting an asset's
     sale goes on sale clearing (_asset_split). Where funds are on, each line is carried by
     the funds of the note lines behind it, a linked line in the fund its invoice line posted
     with (_note_with_posted_funds). None when it carries no amount.
@@ -970,8 +972,11 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
                     entries.append(line)
                     bases.append({n: b * part / share for n, b in behind.items()} if behind is not HEADER else HEADER)
     elif revenue or not clearing:
-        entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
-        bases = [spread or HEADER]
+        incomes = await _line_income_accounts(session, company_id, doc, settings)
+        entries = [{**e, **side(e["credit"], True)}
+                   for e in _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)]
+        bases = [{n: base for n, base in spread.items() if allocations[str(n - 1)]["account"] == e["account"]} or HEADER
+                 for e in entries]
     else:
         entries, bases = [], []
     entries += clearing

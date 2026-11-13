@@ -168,6 +168,16 @@ async def test_credit_note_unlinked_keeps_pro_rata(client, session, auth):
     assert await _revenue(session, auth) == {"4100": 13.34, "4200": 80.0, "4300": 26.66, "4250": 0.0}
 
 
+async def test_credit_note_crediting_no_invoice_takes_each_line_back_on_its_income_account(client, session, auth):
+    """A credit note with no invoice to follow takes each line back on the account an invoice
+    line of the same item credits, so a credited item's income account goes back down instead
+    of sales revenue going negative."""
+    doc, a, b, _ = await _mixed_invoice(client, auth)
+    await _issued(client, auth, "credit_note", [_line(a, "Workshop", 40.0), _line(b, "Room hire", 13.33),
+                                                _line(None, "Notes", 6.67)])
+    assert await _revenue(session, auth) == {"4100": 10.0, "4200": 60.0, "4300": 20.0, "4250": 0.0}
+
+
 async def test_reversal_reads_posted_not_current_setting(client, session, auth):
     doc, a, _, line_ids = await _mixed_invoice(client, auth)
     assert (await _patch_item(client, auth, a, income_account="4300")).status_code == 200
