@@ -333,5 +333,8 @@ class Schedule:
         return (today - self.anchor).days // stride
 
     def ended(self, today: date) -> bool:
-        """The term is over and no existing period is left open."""
-        return self.term_end is not None and today > self.term_end and self.oldest_open() is None
+        """The schedule is over (its term ended, or the period it stops at has ended) and no
+        existing period is left open."""
+        over = ((self.term_end is not None and today > self.term_end)
+                or (self.last is not None and today > self.end(self.last)))
+        return over and self.oldest_open() is None

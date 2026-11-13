@@ -1021,8 +1021,10 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; the
     ones set aside as billing no period of their own; and the number of each document a quantity
-    change issued (read now, so a renumbered document shows its current number). An ENDED agreement has no next bill date
-    and no oldest due row, and ``ended`` says why it bills nothing. A template not yet on a
+    change issued (read now, so a renumbered document shows its current number). An ENDED
+    agreement, or one whose schedule is over (its term or the period it stops at has passed
+    with every period billed or skipped), has no next bill date and no oldest due row, and
+    ``ended`` says why it bills nothing. A template not yet on a
     schedule has none of these, and ``not_moved`` says why; an agreement whose stored terms
     build no schedule is refused (409) with the schedule's reason."""
     ended = t(_UNBILLABLE[state["status"]]) if state.get("status") in ENDED else None
@@ -1032,6 +1034,8 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     if (exc := unscheduled(state)) is not None:
         raise schedule_refusal(409, exc) from exc
     schedule = Schedule.from_state(state)
+    if ended is None and schedule.ended(today):
+        ended = t("subscriptions.err_bill_ended")
     nxt = None if ended else schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
     replayable = await replayable_operations(session, company_id)

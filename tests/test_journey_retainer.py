@@ -79,7 +79,8 @@ async def test_e2e2_retainer_without_card_payments(client, session, auth, monkey
     assert r.status_code == 200, r.text
 
     _freeze(monkeypatch, "2026-03-05")
-    assert (await _generate(client, auth, eid))["period_index"] == 1  # nothing after February
+    r = await _post(client, auth, f"/subscriptions/{eid}/generate-due", {"request_key": str(uuid.uuid4())})
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_ended", r.text
     items = (await client.get("/subscriptions", headers=h, params={"kind": "retainer"})).json()["items"]
     assert items[0]["next_bill_date"] is None
     assert (await _post_month(client, auth, "2026-02")).status_code == 200

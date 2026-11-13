@@ -175,10 +175,15 @@ async def test_cancel_at_period_end_stops_after_current_period(client, session, 
     for _ in range(3):
         await generate_due(client, hd, eid)
     assert (await schedule(client, hd, eid, cancel_at_period_end=True)).status_code == 200
+    freeze_day(monkeypatch, "2026-03-31")  # its last day: still running, nothing new to bill
+    assert (await generate_due(client, hd, eid)).json()["period_index"] == 2
+    assert (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()["ended"] is None
     freeze_day(monkeypatch, "2026-05-15")
-    assert (await generate_due(client, hd, eid)).json()["period_index"] == 2  # nothing after the current period
+    r = await generate_due(client, hd, eid)  # nothing after the current period, and it says it has ended
+    assert r.status_code == 409 and r.json()["detail"]["message"] == t("subscriptions.err_bill_ended"), r.text
     assert len(await billed_docs(session, eid)) == 3
     assert await next_bill_date(client, hd, eid) is None
+    assert (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()["ended"] == t("subscriptions.err_bill_ended")
     assert (await schedule(client, hd, eid, cancel_at_period_end=False)).status_code == 200  # undone
     assert (await generate_due(client, hd, eid)).json()["period_index"] == 3
 
