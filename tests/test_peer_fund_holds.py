@@ -30,10 +30,13 @@ WAITING = "Waiting for a fund on each line"
 
 
 async def _funds_client(real_client, tok: str) -> str:
-    """Funds on in the client's books, with a restricted fund; returns its id."""
-    from test_funds import _fund, _funds_on
+    """Funds on in the books ``tok`` opens, with a restricted fund; returns its id. The firm's
+    copy is a restored backup, a chart from elsewhere, so the Restricted net assets account is
+    chosen first, as its user would."""
+    from test_funds import _fund, _funds_on, _map_restricted_net_assets
 
     headers = {"headers": auth(tok)}
+    await _map_restricted_net_assets(real_client, headers)
     assert (await _funds_on(real_client, headers)).status_code == 200
     return await _fund(real_client, headers, "Building fund")
 

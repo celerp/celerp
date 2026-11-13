@@ -24,6 +24,16 @@ async def _funds_on(client, auth, enabled: bool = True):
     return await client.put("/accounting/funds/setting", headers=auth["headers"], json={"enabled": enabled})
 
 
+async def _map_restricted_net_assets(client, auth) -> None:
+    """Choose the Restricted net assets account in Posting accounts, as a user does before
+    turning funds on in books whose chart came from elsewhere (a migration or a restored copy)."""
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "3510", "name": "Net assets with donor restrictions", "account_type": "equity", "parent_code": "3000"})
+    assert r.status_code == 200, r.text
+    r = await client.put("/accounting/posting-accounts/restricted_net_assets", headers=auth["headers"], json={"code": "3510"})
+    assert r.status_code == 200, r.text
+
+
 async def _create(client, auth, name: str, *, restricted: bool = True, purpose: str | None = "Scholarships"):
     return await client.post("/accounting/funds", headers=auth["headers"], json={
         "request_key": uuid.uuid4().hex, "name": name, "restricted": restricted, "purpose": purpose})
@@ -239,11 +249,7 @@ async def test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_i
     assert "Posting accounts" in refusal_text(r.json()["detail"]) and "Restricted net assets" in refusal_text(r.json()["detail"])
     assert role is None and accounts["3500"]["name"] == "Owner Drawings"
     assert not ((await session.get(Company, auth["company_id"], populate_existing=True)).settings or {}).get("funds_enabled")
-    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
-        "code": "3510", "name": "Net assets with donor restrictions", "account_type": "equity", "parent_code": "3000"})
-    assert r.status_code == 200, r.text
-    r = await client.put("/accounting/posting-accounts/restricted_net_assets", headers=auth["headers"], json={"code": "3510"})
-    assert r.status_code == 200, r.text
+    await _map_restricted_net_assets(client, auth)
     assert (await _funds_on(client, auth)).status_code == 200
     assert (await _roles_and_chart(client, auth))[0] == "3510"
 
