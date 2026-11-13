@@ -3296,10 +3296,12 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(e)
-        # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
+        # Contact, price_list, terms_template, or currency changes affect multiple sections - full page
+        # refresh, on the page the record is edited on (an agreement's own page holds its schedule).
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+            page = "subscriptions" if doc.get("doc_type") in TEMPLATE_DOC_TYPES else "docs"
+            return _R("", status_code=204, headers={"HX-Redirect": f"/{page}/{entity_id}"})
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
