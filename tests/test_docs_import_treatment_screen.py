@@ -154,3 +154,47 @@ async def test_a_date_that_cannot_be_read_leaves_every_document_to_be_chosen(mon
     assert _choice(html, "credit_note", "C-OLD") == ""
     assert _choice(html, "bill", "B-OLD") == ""
     assert _choice(html, "invoice", "I-NEW") == "record_now"
+
+
+async def test_an_imported_document_keeps_its_date_and_posts_on_it(client, session, auth, monkeypatch):
+    """The file's date column is the document's Issue date: an invoice recorded now is dated
+    it and its entry posts on it, and one dated inside a locked period is refused naming the
+    lock date instead of posting undated."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    from ui.routes import docs_import
+
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
+        return (await client.post(path, headers=auth["headers"], json={"records": records,
+                                                                       "upsert": upsert})).json()
+
+    routes = _screen(monkeypatch, {"id": str(auth["company_id"])})
+    monkeypatch.setattr(docs_import.api, "batch_import", _batch)
+    monkeypatch.setattr(docs_import.api, "numbered_ids", _numbered_via(client, auth["headers"]))
+
+    async def _import(number: str, day: str) -> str:
+        csv_text = f"doc_type,doc_number,date,status,total\ninvoice,{number},{day},sent,100\n"
+        form = await _staged_form("tok", csv_text, **{f"treatment:invoice:{number}": "record_now"})
+        return to_xml(await routes["/docs/import/confirm"](form))
+
+    number = f"TD-{uuid.uuid4().hex[:6]}"
+    await _import(number, "2026-02-03")
+    rows = (await client.get("/docs", headers=auth["headers"], params={"q": number})).json()["items"]
+    assert len(rows) == 1, rows
+    doc = (await client.get(f"/docs/{rows[0]['id']}", headers=auth["headers"])).json()
+    assert doc.get("issue_date") == "2026-02-03", doc
+    entries = (await session.execute(select(Projection.state).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars().all()
+    issued = [e for e in entries if e.get("record_id") == doc["id"]]
+    assert issued and all(str(e.get("ts") or "")[:10] == "2026-02-03" for e in issued), issued
+
+    lock = await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": "2026-01-31"})
+    assert lock.status_code == 200, lock.text
+    try:
+        locked = f"TD-{uuid.uuid4().hex[:6]}"
+        html = await _import(locked, "2026-01-20")
+        assert "locked up to 31 Jan 2026" in html, html
+        assert not (await client.get("/docs", headers=auth["headers"], params={"q": locked})).json()["items"]
+    finally:
+        await client.post("/accounting/period-lock", headers=auth["headers"], json={"lock_date": None})

@@ -94,7 +94,7 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
             doc_map[key] = {
                 "doc_type": doc_type,
                 "doc_number": doc_number,
-                "date": str(r.get("date", "")).strip() or None,
+                "issue_date": str(r.get("date", "")).strip() or None,
                 "due_date": str(r.get("due_date", "")).strip() or None,
                 "contact_name": str(r.get("contact_name", "")).strip() or None,
                 "total": _number(r, "total") or 0.0,
@@ -202,7 +202,7 @@ def _prefilled(data: dict, opening: date | None) -> str:
     any document to be chosen. With no date to compare, none for a bill (the import refuses
     it until one is chosen) and Record it now for an invoice or credit note, as the import
     does when it is not told."""
-    given = data.get("date")
+    given = data.get("issue_date")
     dated = _iso_date(given)
     if given and dated is None:
         return ""
@@ -212,7 +212,7 @@ def _prefilled(data: dict, opening: date | None) -> str:
 
 
 def _newest_first(docs: list[dict]) -> list[dict]:
-    return sorted(docs, key=lambda d: (_iso_date(d.get("date")) is not None, _iso_date(d.get("date")) or date.min),
+    return sorted(docs, key=lambda d: (_iso_date(d.get("issue_date")) is not None, _iso_date(d.get("issue_date")) or date.min),
                   reverse=True)
 
 
@@ -233,7 +233,7 @@ def _treatment_choice(docs: list[dict], opening: date | None, submitted) -> FT |
         return Tr(
             Td(display_enum(d["doc_type"])),
             Td(d["doc_number"]),
-            Td(d.get("date") or EMPTY),
+            Td(d.get("issue_date") or EMPTY),
             Td(Select(
                 Option(EMPTY, value="", selected=chosen == ""),
                 *[Option(t(key), value=value, selected=chosen == value) for value, key in _TREATMENTS],
