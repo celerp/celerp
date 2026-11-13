@@ -245,25 +245,26 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
 
 
 async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:
-    """A gift taken straight into the books (a bank transfer posted by hand): a line of an entry
-    no record posts that names its donor (``contact``) on a gift income account at posting, the
-    account a gift category or an item in one is credited to, is stamped ``gift`` once, as
-    auto_je stamps a document's gift lines."""
+    """A gift taken straight into the books (a bank transfer posted by hand): every line of an entry
+    no record posts that names a contact is classified once, at posting, ``gift`` True when its
+    account is a gift income account then (the account a gift category or an item in one is
+    credited to) and False otherwise, as auto_je classifies a document's revenue lines. A copy of
+    a posted line carries its answer (copy_posted_lines), so later settings never reclassify it."""
     from celerp.models.projections import Projection
     from celerp.services.recognition import gift_categories
 
     named = [e for e in entries if e.get("contact") and "gift" not in e and not e.get("posted_from")]
-    gifts = gift_categories(settings)
-    if not named or not gifts:
+    if not named:
         return
+    gifts = gift_categories(settings)
     accounts = {code for key in gifts if (code := (settings.get("category_income_accounts") or {}).get(key))}
-    items = (await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "item",
-        Projection.state["category"].as_string().in_(sorted(gifts))))).scalars().all()
-    accounts |= {code for item in items if (code := income_account_of(settings, item or {}))}
+    if gifts:
+        items = (await session.execute(select(Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            Projection.state["category"].as_string().in_(sorted(gifts))))).scalars().all()
+        accounts |= {code for item in items if (code := income_account_of(settings, item or {}))}
     for entry in named:
-        if entry["account"] in accounts:
-            entry["gift"] = True
+        entry["gift"] = entry["account"] in accounts
 
 
 FUNDS_ENABLED = "funds_enabled"  # company setting: whether journal lines carry funds

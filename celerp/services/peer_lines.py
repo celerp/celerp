@@ -303,12 +303,15 @@ def _posted_keys(line: Mapping) -> dict:
 def copy_posted_lines(entry_id: str, entries: list, *, reverse: bool) -> list[dict]:
     """The lines of posted entry ``entry_id`` written again (``reverse`` swaps debit and
     credit), each keeping its fund keys (_posted_keys) and naming the entry it copies in
-    ``posted_from``, so rule R lets it through without a new choice (check_outside_record)."""
+    ``posted_from``, so rule R lets it through without a new choice (check_outside_record). A line
+    naming a contact carries the gift classification it posted with (journal_accounts.
+    _stamp_named_gifts), False when it posted without one, so no copy is classified again."""
     out = []
     for line in entries or []:
         if isinstance(line, dict):
             copied = {(_SWAPPED.get(k, k) if reverse else k): v for k, v in line.items()}
-            out.append({**copied, **_posted_keys(line), "posted_from": entry_id})
+            gift = {"gift": line.get("gift") is True} if line.get("contact") else {}
+            out.append({**copied, **gift, **_posted_keys(line), "posted_from": entry_id})
     return out
 
 

@@ -162,6 +162,7 @@ _SPREADERS = {
     (_AJE, "_shares"): "a cost of sales over its lots and accounts, and a cost claim over its lots",
     (_AJE, "_revenue_shares"): "a credit note's revenue over the accounts its invoice sold on, discounts included",
     (_AJE, "_line_allocations"): "a sale's net and revenue over its lines",
+    (_AJE, "_stamp_gifts"): "a revenue line over its gift part and the rest",
     (_FA_DISPOSAL, "_split"): "an asset's balances over the part disposed of and the rest",
     (_FA_OPS, "register"): "a bill line's cost over the separate assets it registers",
     (_FA_OPS, "plan"): "register's split of that cost, worked out before anything is written",

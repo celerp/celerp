@@ -742,15 +742,15 @@ async def _gift_lines(session, company_id, doc: dict, settings: dict) -> set[int
 def _stamp_gifts(entries: list[dict], bases: list, gifted: list, currency: str) -> tuple[list[dict], list]:
     """Each revenue line split by the document lines behind it (``bases``, line -> weight): the
     part its gift lines account for (``gifted``, the same shape, None for none) is stamped
-    ``gift`` on the line, where the books keep it from then on, and the rest stays unstamped.
-    Donor history reads gifts by that stamp alone, so a later change of an item's category, the
-    gift setting or a category's account never moves a gift already posted."""
+    ``gift`` True on the line, where the books keep it from then on, and every other line or part
+    ``gift`` False. Donor history reads gifts by that classification alone, so a later change of
+    an item's category, the gift setting or a category's account never moves one already posted."""
     out, out_bases = [], []
     for entry, behind, gift in zip(entries, bases, gifted):
         weight = sum((to_decimal(w) for w in (gift or {}).values()), _Dec(0))
         whole = sum((to_decimal(w) for w in behind.values()), _Dec(0)) if isinstance(behind, dict) else _Dec(0)
         if not weight or not whole:
-            out.append(entry)
+            out.append({**entry, "gift": False})
             out_bases.append(behind)
             continue
         side = "credit" if entry.get("credit") else "debit"
@@ -759,7 +759,7 @@ def _stamp_gifts(entries: list[dict], bases: list, gifted: list, currency: str) 
         rest_behind = {n: left for n, w in behind.items() if (left := to_decimal(w) - to_decimal(gift.get(n, 0))) > 0}
         for amount, line_bases, stamp in ((part, gift, True), (rest, rest_behind, False)):
             if amount:
-                out.append({**entry, side: to_stored_float(amount), **({"gift": True} if stamp else {})})
+                out.append({**entry, side: to_stored_float(amount), "gift": stamp})
                 out_bases.append(line_bases or HEADER)
     return out, out_bases
 
