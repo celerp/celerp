@@ -773,8 +773,8 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
     choice of the entry and every line ``change.lines`` does not name, lines by number).
 
     Checked in order, each refusal writing nothing: funds in use, the actor's
-    manage_accounting under the lock, the repeat (a change already stored under the request
-    key answers with its first result), the reason, the version, the values, a record
+    manage_accounting under the lock, the repeat (the same change again under its request key
+    answers with its first result, any other change under it is refused: keyed_event), the reason, the version, the values, a record
     carrying ``origin``, posted, not settled by a payment or note, not held by the opening
     balances, every entry it voids in an open period; and, after the work below, that it
     moves some amount to another fund (a document's own choice does not move a line that has
@@ -786,9 +786,8 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
     it; ``doc.fund_changed`` (``acc.journal_entry.fund_changed``) records the change last."""
     from sqlalchemy import func, select
 
-    from celerp.events.engine import _check_period_lock, emit_event
+    from celerp.events.engine import _check_period_lock, emit_event, keyed_event, request_fingerprint
     from celerp.models.company import Company
-    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp.services import auto_je, doc_posting_dependents
     from celerp.services.company_lock import lock_fund_ledger, lock_projections
@@ -802,9 +801,9 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
         raise _refused(422, "fund.not_enabled")
     await locked_authority(session, company_id, actor, ("manage_accounting",))
     key = f"fundchange:{record_id}:{change.request_key}"
-    stored = await session.scalar(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).limit(1))
-    if stored is not None:
+    request = {**change.model_dump(mode="json"), "journal": journal,
+               "document": None if document is _ABSENT else ["chosen", document]}
+    if (stored := await keyed_event(session, company_id, key, request)) is not None:
         return dict(stored.data.get("result") or {})
     reason = change.reason.strip()
     if not reason:
@@ -901,5 +900,6 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
         event_type="acc.journal_entry.fund_changed" if journal else "doc.fund_changed",
         data={"reason": reason, "from": before, "to": _choices_of(after.state or {}, journal),
               "authorized_by": action.authorized_by, "result": result},
-        actor_id=actor, location_id=None, source="fund_change", idempotency_key=key)
+        actor_id=actor, location_id=None, source="fund_change", idempotency_key=key,
+        metadata_={"request": request_fingerprint(request)})
     return result

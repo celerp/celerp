@@ -24,7 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole, catalog_refusal, chart_from_elsewhere
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import (
+    emit_event, find_event_by_idempotency, keyed_event, refuse_other_request, request_fingerprint,
+)
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.account_roles import role_map, set_role
@@ -133,10 +135,11 @@ def _opening_date(raw: str | None) -> str | None:
     return day
 
 
-async def _emit(session: AsyncSession, company_id, fund_id: str, event_type: str, data: dict, user, key: str):
+async def _emit(session: AsyncSession, company_id, fund_id: str, event_type: str, data: dict, user, key: str,
+                metadata: dict | None = None):
     return await emit_event(session, company_id=company_id, entity_id=fund_id, entity_type="fund",
                             event_type=event_type, data=data, actor_id=user.id, location_id=None,
-                            source="api", idempotency_key=key, metadata_={})
+                            source="api", idempotency_key=key, metadata_=metadata or {})
 
 
 async def _fund(session: AsyncSession, company_id, fund_id: str) -> dict:
@@ -300,14 +303,18 @@ async def set_connection_default(
 ) -> dict:
     """Set, change or clear (``value`` null) the fund records from one connection take at
     their first arrival. Refused from a stale copy (``expected_version``); a repeat of
-    ``request_key`` answers with what it wrote."""
+    ``request_key`` with the same request answers with what it wrote; with any other it is
+    refused (refuse_other_request)."""
     await lock_fund_ledger(session, company_id, shared=False)
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     key = default_key(payload.origin, payload.source_key)
     stored = dict(settings.get(CONNECTION_DEFAULTS) or {})
     entry = stored.get(key) or {}
-    if entry.get("request_key") != payload.request_key:
+    request = payload.model_dump(mode="json")
+    if entry.get("request_key") == payload.request_key:
+        refuse_other_request(entry.get("request"), request)
+    else:
         if not funds_enabled(settings):
             raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
         if (payload.origin, payload.source_key) not in await _connections(session, company_id):
@@ -319,7 +326,7 @@ async def set_connection_default(
             checked(await funds_by_id(session, company_id), payload.value, "posting.fund.document_choice_missing")
         entry = {"fund_choice": payload.value, "set_by": str(user.id),
                  "set_at": datetime.now(timezone.utc).isoformat(), "version": entry.get("version", 0) + 1,
-                 "request_key": payload.request_key}
+                 "request_key": payload.request_key, "request": request_fingerprint(request)}
         company.settings = {**settings, CONNECTION_DEFAULTS: {**stored, key: entry}}
         await session.commit()
     return {k: entry.get(k) for k in ("fund_choice", "set_by", "set_at", "version")}
@@ -333,12 +340,13 @@ async def create_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a fund. Repeat-safe on ``request_key``: a repeat answers with the fund it made."""
+    """Create a fund. Repeat-safe on ``request_key``: the same request again answers with the
+    fund it made, any other request under the key is refused (keyed_event)."""
     await lock_fund_ledger(session, company_id, shared=False)
     fund_id = f"fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{payload.request_key}')}"
-    existing = (await funds_by_id(session, company_id, {fund_id})).get(fund_id)
-    if existing is not None:
-        return _view(fund_id, existing)
+    request = payload.model_dump(mode="json")
+    if await keyed_event(session, company_id, f"fund:{fund_id}:created", request) is not None:
+        return _view(fund_id, (await funds_by_id(session, company_id, {fund_id}))[fund_id])
     company = await locked_company(session, company_id)
     if not funds_enabled(company.settings or {}):
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
@@ -346,7 +354,8 @@ async def create_fund(
     await _refuse_taken(session, company_id, name)
     data = {"name": name, "restricted": payload.restricted, "purpose": _purpose(payload.restricted, payload.purpose),
             "opening_date": _opening_date(payload.opening_date)}
-    await _emit(session, company_id, fund_id, "fund.created", data, user, f"fund:{fund_id}:created")
+    await _emit(session, company_id, fund_id, "fund.created", data, user, f"fund:{fund_id}:created",
+                {"request": request_fingerprint(request)})
     await session.commit()
     return _view(fund_id, {**data, "archived": False})
 
@@ -497,7 +506,8 @@ async def _leg_lines(session: AsyncSession, company_id, settings: dict, legs) ->
 
 
 async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, reason: str, actor,
-                             request_key: str | None = None, je_id: str | None = None, kind: str | None = None,
+                             request_key: str | None = None, request: dict | None = None,
+                             je_id: str | None = None, kind: str | None = None,
                              legs=(), entries: list[dict] | None = None, reverses: str | None = None,
                              details: dict | None = None) -> dict:
     """Post one movement between funds: ``kind`` built from ``legs`` (giver, receiver,
@@ -505,11 +515,17 @@ async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, rea
     ``reverses`` (of type ``kind`` when given, else any fund movement type). It holds the
     fund ledger exclusively and opens the movement grant for this entry and ``actor``
     only; the journal boundary judges the rest (journal_accounts.check_fund_rules). The
-    entry is ``je_id``, else minted from ``request_key``; a repeat answers with the entry
-    it posted. The caller commits, so the movement can share its transaction."""
+    entry is ``je_id``, else minted from ``request_key``, which binds to the caller's whole
+    ``request``: the same request again answers with the entry it posted, any other is refused
+    (refuse_other_request). The caller commits, so the movement can share its transaction."""
     await lock_fund_ledger(session, company_id, shared=False)
+    request = {"kind": kind, "reverses": reverses, **(request or {})}
     je_id = je_id or f"je:fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{request_key}')}"
-    if await session.get(Projection, (company_id, je_id)) is not None:
+    if (posted := await session.get(Projection, (company_id, je_id))) is not None:
+        if request_key is not None:
+            created = await find_event_by_idempotency(
+                session, company_id, je_idempotency_key(je_id, (posted.state or {}).get("je_type"), "c"))
+            refuse_other_request(((created.metadata_ if created else None) or {}).get("request"), request)
         return {"je_id": je_id}
     company = await locked_company(session, company_id)
     if reverses is not None:
@@ -528,7 +544,8 @@ async def post_fund_movement(session: AsyncSession, company_id, *, ts: date, rea
     async with fund_movement_grant(company_id, je_id, actor):
         await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                          event_type="acc.journal_entry.created", data=data, actor_id=actor, location_id=None,
-                         source="api", idempotency_key=je_idempotency_key(je_id, kind, "c"), metadata_={})
+                         source="api", idempotency_key=je_idempotency_key(je_id, kind, "c"),
+                         metadata_={"request": request_fingerprint(request)} if request_key is not None else {})
     return {"je_id": je_id}
 
 
@@ -559,7 +576,8 @@ async def transfer_between_funds(
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
     return await _posted(session, post_fund_movement(
-        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        session, company_id, request_key=payload.request_key, request=payload.model_dump(mode="json"),
+        ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_transfer", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)]))
 
 
@@ -612,7 +630,8 @@ async def release_from_restriction(
     account = await _account(session, company_id, payload.account)
     amount = sum((to_decimal(b.amount) for b in payload.backing), Decimal(0))
     return await _posted(session, post_fund_movement(
-        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        session, company_id, request_key=payload.request_key, request=payload.model_dump(mode="json"),
+        ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_release", legs=[(payload.fund, payload.to_fund, account, amount)],
         details={"backing": [b.model_dump() for b in payload.backing]}))
 
@@ -629,7 +648,8 @@ async def reallocate_restricted_funds(
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
     return await _posted(session, post_fund_movement(
-        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        session, company_id, request_key=payload.request_key, request=payload.model_dump(mode="json"),
+        ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_reallocation", legs=[(payload.from_fund, payload.to_fund, account, payload.amount)],
         details={"donor_authorization": payload.donor_authorization}))
 
@@ -646,7 +666,8 @@ async def opening_balances_by_fund(
     for assignment in payload.assignments:
         _distinct(None, assignment.fund)
     return await _posted(session, post_fund_movement(
-        session, company_id, request_key=payload.request_key, ts=payload.date, reason=payload.reason, actor=user.id,
+        session, company_id, request_key=payload.request_key, request=payload.model_dump(mode="json"),
+        ts=payload.date, reason=payload.reason, actor=user.id,
         kind="fund_opening", legs=[(None, a.fund, a.account, a.amount) for a in payload.assignments]))
 
 
@@ -659,11 +680,11 @@ async def reverse_fund_movement(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo a movement between funds by its reversal. Repeat-safe: reversing it again
-    answers with the same reversal."""
+    """Undo a movement between funds by its reversal. Repeat-safe: the same reversal sent again
+    answers with the reversal it posted; one with another date or reason is refused."""
     return await _posted(session, post_fund_movement(
-        session, company_id, request_key=f"reverse:{je_id}", ts=payload.date, reason=payload.reason, actor=user.id,
-        reverses=je_id))
+        session, company_id, request_key=f"reverse:{je_id}", request=payload.model_dump(mode="json"), ts=payload.date,
+        reason=payload.reason, actor=user.id, reverses=je_id))
 
 
 @router.get("/journal/{entity_id}/funds")

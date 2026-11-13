@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
@@ -158,6 +160,29 @@ async def find_event_by_idempotency(session, company_id, idempotency_key: str | 
             LedgerEntry.idempotency_key == idempotency_key,
         ).limit(1)
     )).scalars().first()
+
+
+def request_fingerprint(request) -> str:
+    """The digest a request key is bound to: the whole request, canonical JSON."""
+    return hashlib.sha256(json.dumps(request, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+def refuse_other_request(bound: str | None, request) -> None:
+    """409 (request.key_reused) unless ``request`` is the one its key was bound to (``bound``,
+    the fingerprint stored at the key's first use)."""
+    if bound != request_fingerprint(request):
+        raise HTTPException(status_code=409, detail=catalog_refusal("request.key_reused"))
+
+
+async def keyed_event(session, company_id, idempotency_key: str, request) -> LedgerEntry | None:
+    """The event committed under ``idempotency_key``, when it was written for this same
+    ``request`` (its metadata ``request`` the fingerprint); None when the key is unused. One
+    rule for every request key: the same key with the same request answers what the first did,
+    with any other request it is refused (refuse_other_request)."""
+    stored = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if stored is not None:
+        refuse_other_request((stored.metadata_ or {}).get("request"), request)
+    return stored
 
 
 def write_period_lock(company, lock_date: str | None, user_id) -> None:

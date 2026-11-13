@@ -5678,6 +5678,7 @@
   "module_journal.source": "የሞጁል መዝገብ በዚህ ኩባንያ ውስጥ ካሉ የሞጁሉ የራሱ መዛግብት አንዱን ያመለክታል።",
   "module_journal.key": "የመዝገብ ቁልፍ ፊደላትን፣ አሃዞችን እና : . _ - ብቻ ሊይዝ ይችላል",
   "module_journal.key_reused": "ይህ ተግባር ቀደም ሲል በተለየ ዝርዝር ተመዝግቧል።",
+  "request.key_reused": "ይህ ጥያቄ ቀደም ሲል በሌሎች ዝርዝሮች ተልኳል፣ ስለዚህ ምንም አልተለወጠም። የተቀመጠውን ለማየት ገጹን እንደገና ይጫኑ፣ ከዚያ እንደገና ይሞክሩ።",
   "module_journal.key_voided": "የዚህ ተግባር መዝገብ ተሰርዟል። አዲስ ለመለጠፍ ተግባሩን እንደገና ይመዝግቡ።",
   "module_journal.moves_more_than_recognized": "ይህ ሞጁሉ በሂሳብ {code} ላይ ከመዘገበው በላይ ያንቀሳቅሳል።",
   "module_journal.accounting_off": "ሂሳብ አያያዝ እየሰራ ስላልሆነ ምንም መዝገብ ሊመዘገብ አይችልም።",

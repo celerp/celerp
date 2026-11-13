@@ -2310,10 +2310,10 @@ async def change_doc_fund(entity_id: str, payload: DocChangeFundIn, company_id: 
 
 
 async def write_fund_choices(session: AsyncSession, company_id, entity_id: str, state: dict, *, actor_id,
-                             idempotency_key: str, **choices):
+                             idempotency_key: str, request: str | None = None, **choices):
     """Write a local user's fund choices (require_fund_choices: ``lines`` by line id,
-    ``document``, ``every``) on document ``entity_id`` as ``actor_id``; the event, or None
-    when every choice is already stored. The Fund control and posting a held document both write here."""
+    ``document``, ``every``) on document ``entity_id`` as ``actor_id``, the key bound to the
+    ``request`` fingerprint when one is given; the event, or None when every choice is already stored. The Fund control and posting a held document both write here."""
     grant = await require_fund_choices(session, company_id, state, **choices)
     changes = {key: {"old": state.get(key), "new": value} for key, value in grant.header.items()
                if state.get(key) != value}
@@ -2325,7 +2325,8 @@ async def write_fund_choices(session: AsyncSession, company_id, entity_id: str, 
     return await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": changes, "idempotency_key": idempotency_key}, actor_id=actor_id,
-        location_id=None, source="api", idempotency_key=idempotency_key, metadata_={}, fund_grant=grant)
+        location_id=None, source="api", idempotency_key=idempotency_key,
+        metadata_={"request": request} if request else {}, fund_grant=grant)
 
 
 async def _refuse_fixed_consignor(session: AsyncSession, company_id, entity_id: str, state: dict) -> None:

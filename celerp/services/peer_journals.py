@@ -733,30 +733,35 @@ async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, re
     (peer_documents.post_held_document). ``every`` is the entry's choice, and so of each line
     ``lines`` (line number -> choice) does not choose for; a line choice of none is no
     choice. The posting boundary judges it as ``actor_id`` posting it (a line nothing covers,
-    money moved between funds) and the hold stays while it refuses. A repeat of
-    ``request_key`` answers with the entry it posted. The caller holds the company lock and
+    money moved between funds) and the hold stays while it refuses. ``request_key`` binds to
+    the whole request: the same request again answers with the entry it posted, any other is
+    refused (refuse_other_request). The caller holds the company lock and
     commits."""
     from sqlalchemy import or_
 
-    from celerp.events.engine import find_event_by_idempotency
+    from celerp.events.engine import keyed_event, refuse_other_request, request_fingerprint
     from celerp.services import peer_documents
     from celerp.services.peer_identity import claim_peer_revision
 
-    chosen_doc = await find_event_by_idempotency(session, company_id, peer_documents.held_choice_key(request_key))
+    request = {"item_id": str(item_id), "revision": revision, "every": every, "lines": lines}
+    chosen_doc = await keyed_event(session, company_id, peer_documents.held_choice_key(request_key), request)
     if chosen_doc is not None:
         return {"id": chosen_doc.entity_id}
-    posted = await session.scalar(select(Projection.entity_id).where(
+    posted = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         or_(Projection.state["peer_origin"]["request_key"].as_string() == request_key,
-            Projection.state["peer_source"]["request_key"].as_string() == request_key)).limit(1))
+            Projection.state["peer_source"]["request_key"].as_string() == request_key)).limit(1))).first()
     if posted is not None:
-        return {"id": posted}
+        origin = posted.state.get("peer_origin") or posted.state.get("peer_source") or {}
+        refuse_other_request(origin.get("request"), request)
+        return {"id": posted.entity_id}
+    bound = request_fingerprint(request)
     item = await peer_accounts.held_item(session, company_id, item_id)
     fix = item.fix
     if fix.get("kind") == peer_documents.DOC_FUNDS:
         return await peer_documents.post_held_document(
             session, company_id, item, revision=revision, every=every, lines=lines,
-            request_key=request_key, actor_id=actor_id)
+            request_key=request_key, request=bound, actor_id=actor_id)
     if fix.get("kind") != "funds":
         raise HTTPException(422, "This item is not fixed here.")
     if revision != fix.get("revision"):
@@ -773,14 +778,14 @@ async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, re
             raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
         je_id = claim.target_id
         data["peer_source"] = {"journal": item.source_entity_id, "company": str(item.source_company_id),
-                               "request_key": request_key}
+                               "request_key": request_key, "request": bound}
         await _post_client_journal(session, peer, claim, data, source_entity_id=item.source_entity_id,
                                    source_revision=revision, actor_id=actor_id, fund_grant=grant)
     else:
         je_id = local_id(item.source_company_id, item.source_entity_id)
         data["peer_origin"] = {"journal": item.source_entity_id, "firm": fix.get("firm"),
                                "firm_company": str(item.source_company_id), "revision": revision,
-                               "request_key": request_key}
+                               "request_key": request_key, "request": bound}
         await _post(session, company_id, je_id, data, actor_id=actor_id, grant=grant)
     await peer_attention.clear(session, company_id=company_id, source_company_id=item.source_company_id,
                                entity_type=item.entity_type, source_entity_id=item.source_entity_id)

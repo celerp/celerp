@@ -70,13 +70,15 @@ class HeldPosting:
     """A local user posting a document held for funds (post_held_document), or the user who
     set the connection's standing default at its first arrival: who posts it, with which
     role, and the fund choices (``every`` the document's, ``lines`` by line number), written
-    under ``request_key`` and tagged with ``source``."""
+    under ``request_key`` (bound to the user's ``request`` fingerprint, request_fingerprint)
+    and tagged with ``source``."""
     user_id: uuid.UUID
     role: str
     every: str | None
     lines: dict[str, str | None]
     request_key: str
     source: str = "user"
+    request: str | None = None
 
 
 def held_choice_key(request_key: str) -> str:
@@ -426,12 +428,13 @@ async def _choose_funds(session: AsyncSession, company_id: uuid.UUID, doc_id: st
     every = {"document": posting.every, "every": posting.every} if posting.every is not None else {}
     await write_fund_choices(session, company_id, doc_id, state, actor_id=posting.user_id,
                              idempotency_key=held_choice_key(posting.request_key), source=posting.source,
+                             request=posting.request,
                              lines={ids.get(n) or n: v for n, v in posting.lines.items() if v is not None}, **every)
 
 
 async def post_held_document(session: AsyncSession, company_id: uuid.UUID, item, *, revision: int,
                              every: str | None, lines: dict[str, str | None], request_key: str,
-                             actor_id) -> dict:
+                             request: str, actor_id) -> dict:
     """Post a connected company's document held for funds (``item``, its doc_funds fix
     holding the document as sent) with a local user's choices, claimed again under the live
     grant and finalized by that user, so the posting boundary judges it as theirs; nothing
@@ -442,7 +445,8 @@ async def post_held_document(session: AsyncSession, company_id: uuid.UUID, item,
         UserCompany.company_id == company_id, UserCompany.user_id == actor_id, UserCompany.is_active.is_(True)))
     peer = await peer_access.live_grant(session, company_id, item.source_company_id, "documents")
     await receive_document(session, grant=peer, source_entity_id=item.source_entity_id, source_revision=revision,
-                           data=item.fix["sent"], posting=HeldPosting(actor_id, role, every, lines, request_key))
+                           data=item.fix["sent"], posting=HeldPosting(actor_id, role, every, lines, request_key,
+                                                                     request=request))
     doc_id = await peer_identity(session, target_company=company_id, source_company=item.source_company_id,
                                  entity_type="doc", source_entity_id=item.source_entity_id)
     await peer_attention.clear(session, company_id=company_id, source_company_id=item.source_company_id,

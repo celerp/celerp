@@ -5604,13 +5604,14 @@ async def reverse_year_close(
 ) -> dict:
     """Undo the latest close of ``year_end`` by its reversal on the year end, so every fund's
     income and expense balances return. The year must be open again (unlocked) first.
-    Repeat-safe: reversing again answers with the same reversal."""
+    Repeat-safe: the same reversal sent again answers with the reversal it posted; one with
+    another reason is refused."""
     await locked_company(session, company_id)
     closes = await _year_closes(session, company_id, year_end)
     if not closes:
         raise HTTPException(status_code=404, detail=catalog_refusal("accounting.close_not_found", year_end=year_end))
     posted = await post_fund_movement(
-        session, company_id, request_key=f"reverse:{closes[-1]}", kind=YEAR_CLOSE, reverses=closes[-1],
-        ts=date.fromisoformat(year_end), reason=payload.reason, actor=user.id)
+        session, company_id, request_key=f"reverse:{closes[-1]}", request=payload.model_dump(mode="json"),
+        kind=YEAR_CLOSE, reverses=closes[-1], ts=date.fromisoformat(year_end), reason=payload.reason, actor=user.id)
     await session.commit()
     return posted
