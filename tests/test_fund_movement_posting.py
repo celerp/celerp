@@ -268,13 +268,17 @@ async def test_release_backing_stays_posted_while_the_release_stands(client, ses
 
 
 async def test_release_requires_purpose_spending_and_reverse_undoes(client, session, auth):
-    """A release above the purpose spending it names is refused naming the shortfall rule; a
+    """A release naming no purpose spending is refused with the rule that it must name some; a
+    release above the purpose spending it names is refused naming the shortfall rule; a
     release from an unrestricted fund, or to a restricted one, is refused by the template; a
     release within its spending posts and reversing it puts every fund back as it was."""
     f = await _setup(client, auth)
     await _gift(session, auth, f["R"])
     await _gift(session, auth, None)
     spending = await _bill(session, auth, None)
+    r = await _post(client, auth, "release", fund=f["R"], to_fund=None, backing=[])
+    assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_missing", r.text
+    assert r.json()["detail"]["params"]["fund"] == "Library gift", r.text
     r = await _post(client, auth, "release", fund=f["R"], to_fund=None,
                     backing=[{"je_id": spending, "line_index": 0, "amount": "80"}])
     assert r.status_code == 422 and _key(r) == "posting.fund.release_backing_used", r.text

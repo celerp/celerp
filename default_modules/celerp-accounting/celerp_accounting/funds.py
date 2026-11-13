@@ -34,8 +34,8 @@ from celerp.services.company_settings import record_change
 from celerp.schemas.numbers import PositiveFloat
 from celerp.services.je_keys import je_idempotency_key
 from celerp.services.journal_accounts import (
-    FUND_MOVEMENT_TYPES, FUNDS_ENABLED, fund_account_balances, fund_movement_grant, funds_by_id, funds_enabled,
-    line_change, lock_accounts, released_by_line,
+    FUND_MOVEMENT_TYPES, FUNDS_ENABLED, RestrictedFundMovement, fund_account_balances, fund_movement_grant,
+    fund_name, funds_by_id, funds_enabled, line_change, lock_accounts, released_by_line,
 )
 from celerp.services.journal_reversals import standing_reversal_ids
 from celerp.services.ledger_rows import journal_rows
@@ -440,7 +440,7 @@ class BackingIn(BaseModel):
 class ReleaseIn(_Movement):
     fund: str
     to_fund: str | None
-    backing: list[BackingIn] = Field(min_length=1)
+    backing: list[BackingIn]
     account: str | None = None
 
 
@@ -603,8 +603,12 @@ async def release_from_restriction(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Release restricted money to an unrestricted fund for the purpose spending it paid for."""
+    """Release restricted money to an unrestricted fund for the purpose spending it paid for.
+    Naming no spending is refused with the rule a release answers to, not as a bad field."""
     _distinct(payload.fund, payload.to_fund)
+    if not payload.backing:
+        funds = await funds_by_id(session, company_id, {payload.fund})
+        raise RestrictedFundMovement("posting.fund.release_backing_missing", fund=fund_name(funds, payload.fund))
     account = await _account(session, company_id, payload.account)
     amount = sum((to_decimal(b.amount) for b in payload.backing), Decimal(0))
     return await _posted(session, post_fund_movement(
