@@ -298,6 +298,16 @@ def _data_table(*parts) -> FT:
     return Div(Table(*parts, cls="data-table"), cls="table-scroll-wrap")
 
 
+def _doc_links(docs) -> list:
+    """Links to documents, each named by its number, separated by commas: ``docs`` is
+    (document id, number) pairs."""
+    out: list = []
+    for doc_id, ref in docs:
+        out += [", "] if out else []
+        out.append(A(ref, href=f"/docs/{doc_id}"))
+    return out
+
+
 def _sentence_cell(*content, cls: str = "") -> FT:
     """A cell that can hold a sentence (what happened, why, what to do): it wraps in the room
     its table has (app.css cell--note) instead of pushing the columns after it out of view."""
@@ -653,10 +663,7 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
             label = Span(label, " ", Span(t(key), cls=f"badge {badge}"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
         if r.get("released"):
-            earlier: list = []
-            for d in r["released"]:
-                earlier += [", "] if earlier else []
-                earlier.append(A(d["ref_id"], href=f"/docs/{d['doc_id']}"))
+            earlier = _doc_links((d["doc_id"], d["ref_id"]) for d in r["released"])
             doc = Div(doc, Div(t("subscriptions.period_earlier_bills"), " ", *earlier, cls="text-muted"))
         return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), _sentence_cell(doc),
                   Td(_period_actions(entity_id, r)))
@@ -1024,7 +1031,7 @@ def _quantities_section(entity_id: str, sub: dict, today, doc_refs: dict[str, st
     def _change_row(a: dict) -> FT:
         shown_lines = ", ".join(f"{by_id.get(li.get('line_id'), li.get('description') or EMPTY)}: "
                                 f"{_quantity_text(li.get('quantity'))}" for li in a.get("line_items") or [])
-        docs = [A(doc_refs.get(d) or d, href=f"/docs/{d}") for d in (a.get("credit_note_id"), a.get("invoice_id")) if d]
+        docs = _doc_links((d, doc_refs.get(d) or d) for d in (a.get("credit_note_id"), a.get("invoice_id")) if d)
         return Tr(Td(sentence("subscriptions.amend_from", day=a.get("effective"))), Td(shown_lines or EMPTY),
                   _sentence_cell(*docs) if docs else Td(EMPTY))
 

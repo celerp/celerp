@@ -270,6 +270,7 @@ async def test_seat_change_page_names_the_documents_numbers(owner_ui, session, m
         assert f'>{doc["ref_id"]}</a>' in changes, changes[:3000]
         key = doc["entity_id"].removeprefix("doc:")
         assert key == doc["ref_id"] or f'>{key}</a>' not in changes
+    assert f'>{credit["ref_id"]}</a>, <a' in changes, changes[:3000]
     assert debit["entity_id"].removeprefix("doc:") != debit["ref_id"]
 
 
