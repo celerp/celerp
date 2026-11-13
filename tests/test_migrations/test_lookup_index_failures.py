@@ -152,6 +152,8 @@ def test_a_failed_lookup_index_build_never_stops_the_upgrade(path, names, failur
     warned = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
     failed = {failure["fail_create"]} if "fail_create" in failure else set(names)
     assert all(n in warned for n in failed), (path.name, warned)
+    if "fail_create" in failure or "fail_drop" in failure:
+        assert "injected" in warned, (path.name, warned)  # the warning names the build's own error
     # Each failed index is dropped if present, and nothing else: the other indexes of the revision
     # stay built, and an index the revision would have replaced on success stays, so lookups keep it.
     # A failed validity read establishes nothing about the index, so nothing is dropped for it.
