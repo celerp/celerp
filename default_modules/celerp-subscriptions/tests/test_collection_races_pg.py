@@ -265,3 +265,88 @@ async def test_a_late_success_spilling_onto_the_held_invoice_while_it_is_paid_by
             parked = (await s.execute(select(UnmatchedPayment.reference))).scalars().all()
     assert parked == []
     assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 0.97)
+
+
+async def _amended_with_refused_cancel(client, hd, cid, eid, factory, cloud, monkeypatch) -> str:
+    """The amendment credits 16.45 against July while its 30.00 is with Cloud and the cancel is
+    refused: the amendment's invoice id."""
+    cloud.answers["cancel"] = (409, {"detail": "attempt_submitted"})
+    line = (await template(client, hd, eid))["line_items"][0]["line_id"]
+    freeze_day(monkeypatch, "2026-07-15")
+    amended = await client.post(f"/subscriptions/{eid}/amend", headers=hd,
+                                json=_amend_body(line, 1.6667, uuid.uuid4().hex))
+    assert amended.status_code == 200, amended.text
+    await _pass(factory, cid, "2026-07-15")
+    return amended.json()["invoice_id"]
+
+
+def _stripe_refund(cid: str, july: str, ref: str, rid: str, amount: int, context) -> dict:
+    return {"company_id": cid, "entity_id": july, "reference": ref, "refund_id": rid, "transition": "applied",
+            "amount_minor": amount, "cycle": 1, "currency": "USD", "occurred_at": "2026-07-20T10:00:00+00:00",
+            "context": context}
+
+
+async def _kept(factory) -> tuple[list, list]:
+    from celerp.models.payment_closure import UnmatchedPayment, UnmatchedRefund
+    async with factory() as s:
+        return ((await s.execute(select(UnmatchedPayment.reference))).scalars().all(),
+                (await s.execute(select(UnmatchedRefund.refund_id))).scalars().all())
+
+
+@pytest.mark.parametrize("first", ["success", "refund"])
+async def test_a_refund_crossing_the_late_success_that_splits_its_charge(committed_engine, monkeypatch, first):
+    """The 30.00 is refunded in Stripe while its late success, which splits it 13.55 July and
+    16.45 the amendment's invoice, is being delivered. Whichever commits first, both parts give
+    their money back: July owes 13.55, the amendment's invoice 27.42, and nothing is kept."""
+    from celerp.services import payments
+    async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
+                                                                sessions, cloud):
+        [sent] = cloud.sent("attempt")
+        new = await _amended_with_refused_cancel(client, hd, cid, eid, factory, cloud, monkeypatch)
+
+        async def _succeeded(held):
+            sessions.held = held
+            return await payments.receive_payment({
+                "company_id": cid, "entity_id": july, "reference": "pi_x", "amount_minor": 3000, "currency": "USD",
+                "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"]})
+
+        async def _refunded(held):
+            sessions.held = held
+            return await payments.receive_refund(_stripe_refund(cid, july, "pi_x", "re_x", 3000, sent["context"]))
+
+        doors = {"success": _succeeded, "refund": _refunded}
+        one, two = await _race(committed_engine, doors[first], doors[{"success": "refund", "refund": "success"}[first]])
+        assert (one, two) == (True, True)
+        docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
+        kept = await _kept(factory)
+    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
+    assert kept == ([], [])
+
+
+@pytest.mark.parametrize("same", [False, True])
+async def test_two_refunds_of_a_split_charge_at_once(committed_engine, monkeypatch, same):
+    """The split charge (13.55 July, 16.45 the amendment's invoice) gets two refund deliveries at
+    once. Two refunds of 20.00 and 10.00 give back all of it whichever commits first; the same
+    20.00 refund delivered twice gives back 20.00 once (16.45 then 3.55 of July's part)."""
+    from celerp.services import payments
+    async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
+                                                                sessions, cloud):
+        [sent] = cloud.sent("attempt")
+        new = await _amended_with_refused_cancel(client, hd, cid, eid, factory, cloud, monkeypatch)
+        assert await payments.receive_payment({
+            "company_id": cid, "entity_id": july, "reference": "pi_y", "amount_minor": 3000, "currency": "USD",
+            "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"]})
+
+        def _refunded(rid, amount):
+            async def door(held):
+                sessions.held = held
+                return await payments.receive_refund(_stripe_refund(cid, july, "pi_y", rid, amount, sent["context"]))
+            return door
+
+        second = _refunded("re_a", 2000) if same else _refunded("re_b", 1000)
+        assert await _race(committed_engine, _refunded("re_a", 2000), second) == (True, True)
+        docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
+        kept = await _kept(factory)
+    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == ((3.55, 27.42) if same
+                                                                                   else (13.55, 27.42))
+    assert kept == ([], [])
