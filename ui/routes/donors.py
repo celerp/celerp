@@ -51,11 +51,13 @@ def _gift_line(gift: dict, currency: str | None) -> FT:
 
 
 def _statement_cell(row: dict, period: tuple[str, str]) -> FT:
-    if not row.get("statement_sent"):
+    """Sent or not; Send again names the sends it saw, so the same press arriving twice sends once."""
+    if not row["sends"]:
         return Td(t("donors.statement_not_sent"))
     return Td(Span(t("donors.statement_sent"), cls="badge badge--paid"), " ",
               Button(t("btn.send_again"), hx_post=SEND_URL, hx_swap="none",
-                     hx_vals={**_period_vals(*period), "confirm": "on", "resend": row["contact_id"]},
+                     hx_vals={**_period_vals(*period), "confirm": "on", "resend": row["contact_id"],
+                              "seen": row["sends"]},
                      hx_confirm=t("donors.confirm_resend", name=row["name"]), cls="btn btn--secondary btn--sm"))
 
 
@@ -115,8 +117,8 @@ def _sent_message(results: list[dict], resend: list[str]) -> tuple[str, str]:
         parts = [sentence("donors.done_resent", name=r["name"]) for r in fresh]
     else:
         parts = [sentence("donors.done_sent", sent=len(fresh), skipped=len(by_state["no_email"]))]
-        if already := len(by_state["sent"]) - len(fresh):
-            parts.append(sentence("donors.done_already", already=already))
+    if already := len(by_state["sent"]) - len(fresh):
+        parts.append(sentence("donors.done_already", already=already))
     if by_state["failed"]:
         parts.append(sentence("donors.done_failed", names=", ".join(r["name"] for r in by_state["failed"])))
     return " ".join(parts), "warning" if by_state["failed"] else "success"
@@ -179,7 +181,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         d_from, d_to = str(form.get("from") or ""), str(form.get("to") or "")
-        resend = [str(form.get("resend"))] if form.get("resend") else []
+        resend = {str(form.get("resend")): str(form.get("seen") or "")} if form.get("resend") else {}
         try:
             answer = await api.send_donor_statements(token, d_from, d_to, form.get("confirm") == "on", resend)
         except APIError as e:

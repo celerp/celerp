@@ -2435,8 +2435,9 @@ async def donor_statements_preview(token: str, date_from: str, date_to: str) -> 
 
 
 async def send_donor_statements(token: str, date_from: str, date_to: str, confirm: bool,
-                                resend: list[str]) -> dict:
-    """Returns {results}: each donor's statement sent, skipped without an email, or failed."""
+                                resend: dict[str, str]) -> dict:
+    """Returns {results}: each donor's statement sent, skipped without an email, or failed;
+    *resend* maps each donor to send again to the number of sends the asker saw."""
     async with _api_client(token, timeout=60.0) as c:
         return _raise(await c.post("/donors/statements/send", json={
             "from": date_from, "to": date_to, "confirm": confirm, "resend": resend})).json()

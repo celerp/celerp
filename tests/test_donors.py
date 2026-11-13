@@ -122,7 +122,7 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     assert {row["contact_id"]: row for row in again.json()["results"]}[donors["email"]] == {**results[donors["email"]], "repeat": True}
     assert len(sent) == 1
     resend = await client.post("/donors/statements/send", headers=auth["headers"],
-                               json={**body, "confirm": True, "resend": [donors["email"]]})
+                               json={**body, "confirm": True, "resend": {donors["email"]: 1}})
     assert resend.status_code == 200 and len(sent) == 2
     assert [row["contact_id"] for row in resend.json()["results"]] == [donors["email"]]
     r = await client.put("/donors/statements/wording", headers=auth["headers"], json={"text": "Thank you, {name}."})
@@ -133,6 +133,32 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
     assert len({str(uuid.UUID(m["operation_id"])) for m in sent}) == 3
     pdf = await client.get(f"/donors/{donors['email']}/statement.pdf", headers=auth["headers"], params=PERIOD)
     assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
+
+
+async def test_send_again_names_the_sends_it_saw_so_one_press_sends_once(client, auth, monkeypatch):
+    """Send again names how many sends of the statement it saw: the same press arriving twice (a
+    double click, a second tab, a colleague) emails the donor once and the second is answered with
+    that send as stored; a press naming every send so far sends again."""
+    donors = await _statement_donors(client, auth)
+    sent = _mailbox(monkeypatch)
+
+    async def send(**extra):
+        r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True, **extra})
+        assert r.status_code == 200, r.text
+        return {row["contact_id"]: row for row in r.json()["results"]}
+
+    async def sends() -> int:
+        r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+        return {row["contact_id"]: row for row in r.json()["donors"]}[donors["email"]]["sends"]
+
+    assert await sends() == 0
+    await send()
+    assert await sends() == 1 and len(sent) == 1
+    first, second = await send(resend={donors["email"]: 1}), await send(resend={donors["email"]: 1})
+    mine = donors["email"]
+    assert len(sent) == 2 and first[mine]["state"] == "sent" and "repeat" not in first[mine]
+    assert second[mine] == {**first[mine], "repeat": True} and await sends() == 2
+    assert (await send(resend={mine: 2}))[mine]["state"] == "sent" and len(sent) == 3 and await sends() == 3
 
 
 async def test_donor_gifts_newest_first_and_statement_amounts_right_aligned(client, auth, monkeypatch):

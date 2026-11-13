@@ -61,9 +61,13 @@ async def test_donor_statements_send_from_the_page_confirmed_once_and_again_expl
     page = await owner_ui.get(PAGE)
     assert t("donors.statement_sent") in page.text and t("btn.send_again") in page.text
     assert _toast(await _send(owner_ui, confirm="on"))["type"] == "success" and len(sent) == 1
-    again = await _send(owner_ui, confirm="on", resend=donors["email"])
+    again = await _send(owner_ui, confirm="on", resend=donors["email"], seen="1")
     assert _toast(again)["type"] == "success" and len(sent) == 2
     assert sentence("donors.done_resent", name="Cy Donor") in _toast(again)["message"]
+    # the same press arriving twice sends once and says so; the page's button names the two sends
+    twice = await _send(owner_ui, confirm="on", resend=donors["email"], seen="1")
+    assert len(sent) == 2 and sentence("donors.done_already", already=1) in _toast(twice)["message"]
+    assert '"seen": 2}' in (await owner_ui.get(PAGE)).text
 
 
 async def test_a_failed_statement_names_the_donor_and_sending_again_retries(owner_ui, monkeypatch):
