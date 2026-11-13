@@ -28926,9 +28926,6 @@
     "tests/test_entity_files.py::test_shared_document_file_lifecycle_uses_the_owning_resource[lists-writeoff]": 0.2415953759336844,
     "tests/test_file_activity.py::test_deleted_file_event_has_no_live_link[list]": 0.004706648993305862,
     "tests/test_file_activity.py::test_file_event_activity_render_labels_and_links[list]": 0.004259516019374132,
-    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_uses_a_name_then_a_code_fallback[extra0-Steel rod]": 0.0023162190336734056,
-    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_uses_a_name_then_a_code_fallback[extra1-Polished rod]": 0.002245838986709714,
-    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_uses_a_name_then_a_code_fallback[extra2-000001]": 0.0022691460326313972,
     "tests/test_history_cost_redaction.py::test_cost_fields_stay_hidden_in_history": 0.004004785907454789,
     "tests/test_history_table.py::test_a_filter_with_no_match_says_so": 0.0028725401498377323,
     "tests/test_history_table.py::test_a_list_card_reads_and_pushes_the_list_page_url": 0.007898701936937869,
@@ -29164,5 +29161,12 @@
     "tests/test_browser/test_inventory_split_batch06.py::test_invalid_enter_has_no_split_request[chromium--1]": 0.6447499168571085,
     "tests/test_browser/test_inventory_split_batch06.py::test_invalid_enter_has_no_split_request[chromium-0]": 0.6313749860273674,
     "tests/test_browser/test_inventory_split_batch06.py::test_invalid_enter_has_no_split_request[chromium-]": 0.6204774549696594,
-    "tests/test_browser/test_inventory_split_batch06.py::test_valid_confirm_splits_and_preserves_total[chromium]": 1.1342384970048442
+    "tests/test_browser/test_inventory_split_batch06.py::test_valid_confirm_splits_and_preserves_total[chromium]": 1.1342384970048442,
+    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_is_named_by_line_label_and_keeps_its_unit[extra0]": 0.024239014950580895,
+    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_is_named_by_line_label_and_keeps_its_unit[extra1]": 0.0022315290989354253,
+    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_is_named_by_line_label_and_keeps_its_unit[extra2]": 0.0020066109718754888,
+    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_is_named_by_line_label_and_keeps_its_unit[extra3]": 0.0020022490061819553,
+    "tests/test_gl_item_names_batch05.py::test_accounting_item_row_is_named_by_line_label_and_keeps_its_unit[extra4]": 0.0024356591748073697,
+    "tests/test_numbering_gen016.py::test_a_next_number_below_one_is_refused_in_words_the_user_reads[-3]": 0.5032084670383483,
+    "tests/test_numbering_gen016.py::test_a_next_number_below_one_is_refused_in_words_the_user_reads[0]": 0.08051019592676312
 }
