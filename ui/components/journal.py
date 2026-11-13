@@ -167,6 +167,7 @@ def journal_rows(data: dict, *, items: bool, newest_first: bool = True) -> list[
             "memo": entry.get("memo", ""),
             "status": entry.get("status"),
             "items_status": entry.get("items_status"),
+            "origin": entry.get("origin"),
         }
         if not items:
             out.append({
@@ -310,13 +311,22 @@ def journal_void_toast(result: dict) -> dict:
                         action=[dict(f) for f in dict.fromkeys(tuple(f.items()) for f in links)] or None)
 
 
-def _entry_cells(row: dict, has_fx: bool) -> list:
-    """The heading row of an entry: what it is, with the figures left to its lines."""
+FUND_CHANGE_PATH = "/accounting/journal/fund-change"
+
+
+def _entry_cells(row: dict, has_fx: bool, change_fund: dict | None = None) -> list:
+    """The heading row of an entry: what it is, with the figures left to its lines.
+    ``change_fund`` (the view's params) offers Change fund on a posted entry from outside,
+    opening its panel under the row."""
     memo_bits: list = [Span(row.get("memo", ""))] if row.get("memo") else []
     if _voided(row):
         reason = row.get("void_reason") or ""
         memo_bits.append(Span(f"{t('doc.voided')}: {reason}" if reason else t("doc.voided"),
                               cls="badge badge--void"))
+    elif change_fund is not None and row.get("origin") and row.get("status") == "posted":
+        memo_bits.append(Button(t("fund.change"), type="button", cls="btn btn--ghost btn--xs",
+                                hx_get=href(FUND_CHANGE_PATH, {"je": row["je_id"], **change_fund}),
+                                hx_target="closest tr", hx_swap="afterend"))
     cells = [
         Td(row["ts"], cls="cell--mono"),
         Td(_source_cell(row)),
@@ -459,7 +469,7 @@ def _headers(*, items: bool, has_fx: bool, select: bool) -> list:
 def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
                   params: dict | None = None,
                   filtered: bool = False, select: bool = False,
-                  period: tuple[str, str, str] | None = None) -> FT:
+                  period: tuple[str, str, str] | None = None, change_fund: bool = False) -> FT:
     """The journal as a table, in whichever of its two shapes the caller asked for.
 
     `params` is the view the reader is looking at, carried into the selection
@@ -469,7 +479,8 @@ def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
     payload said about itself, so an empty answer says which kind of empty it is: a
     period with no entries in it, or filters that matched none of the entries there
     are. `period` is the (from, to, All time url) window on screen, so an empty
-    period names itself and offers All time.
+    period names itself and offers All time. `change_fund` offers Change fund on each
+    posted entry from outside.
     """
     if not rows:
         if filtered:
@@ -495,7 +506,7 @@ def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
             body.append(_row(cells, row, data_row=select and first_of_entry))
             continue
         if row["kind"] == "entry":
-            cells = _entry_cells(row, has_fx)
+            cells = _entry_cells(row, has_fx, params if change_fund else None)
             if select:
                 cells.insert(0, _select_cell(row, True))
             body.append(_row(cells, row, data_row=select))

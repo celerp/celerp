@@ -18,7 +18,7 @@ import ui.api_client as api
 from celerp.services.money import document_line_amount
 from celerp.services.peer_lines import UNRESTRICTED, waits_for_funds
 from ui.components.attrs import hx_vals
-from ui.components.funds import fund_options
+from ui.components.funds import fund_options, journal_fund_table
 from ui.components.shell import flash, toast_header
 from ui.components.table import EMPTY, fmt_money, searchable_select
 from ui.config import get_token as _token
@@ -109,29 +109,29 @@ def _fund_hold(item: dict, chart: list[dict], funds: list[dict], lang: str, kept
     def choice(name: str, label: str) -> FT:
         return searchable_select(name, options, value=kept.get(name) or "", placeholder=EMPTY, aria_label=label)
 
-    def money(value) -> FT:
-        return Td(fmt_money(value) if value else "", cls="cell--money")
-
-    rows = []
-    for n, line in enumerate(lines, 1):
-        fund = Td(choice(f"line_{n}", t("th.fund", lang)),
+    def fund(n: int, _line=None) -> FT:
+        return Td(choice(f"line_{n}", t("th.fund", lang)),
                   _fund_balances(held[n - 1] if n <= len(held) else {}, accounts, fund_names, lang))
-        if journal:
-            rows.append(Tr(Td(accounts.get(line.get("account"), line.get("account") or EMPTY)),
-                           money(line.get("debit")), money(line.get("credit")), fund))
-        else:
+
+    if journal:
+        table = journal_fund_table(lines, lambda line: accounts.get(line.get("account"), line.get("account") or EMPTY),
+                                   fund, lang)
+    else:
+        rows = []
+        for n, line in enumerate(lines, 1):
             code = held[n - 1].get("account") if n <= len(held) else None
+            amount = document_line_amount(line, (fix.get("sent") or {}).get("currency"))
             rows.append(Tr(Td(line.get("name") or line.get("description") or EMPTY),
                            Td(accounts.get(code, code) if code else EMPTY),
-                           money(document_line_amount(line, (fix.get("sent") or {}).get("currency"))), fund))
-    head = ((Th(t("th.account", lang)), Th(t("th.debit", lang), cls="cell--number"),
-             Th(t("th.credit", lang), cls="cell--number")) if journal
-            else (Th(t("th.description", lang)), Th(t("th.account", lang)), Th(t("th.total", lang), cls="cell--number")))
+                           Td(fmt_money(amount) if amount else "", cls="cell--money"), fund(n)))
+        table = Table(Thead(Tr(Th(t("th.description", lang)), Th(t("th.account", lang)),
+                               Th(t("th.total", lang), cls="cell--number"), Th(t("th.fund", lang)))),
+                      Tbody(*rows), cls="data-table")
     return Form(
         P(t("sync_accounts.funds_hint", lang), cls="settings-hint"),
         Div(Label(t("fund.set_all_outside", lang), cls="form-label"),
             choice("all", t("fund.set_all_outside", lang)), cls="fund-set-all gap-sm"),
-        Table(Thead(Tr(*head, Th(t("th.fund", lang)))), Tbody(*rows), cls="data-table"),
+        table,
         Hidden(name="revision", value=str(fix.get("revision") or 0)),
         Hidden(name="request_key", value=kept.get("request_key") or uuid.uuid4().hex),
         Button(t("btn.post", lang), type="submit", cls="btn btn--primary btn--sm"),

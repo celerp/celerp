@@ -7930,5 +7930,8 @@
   "subscriptions.err_collection_sales_only": "Only a sales agreement can collect from a card. A purchasing agreement records what you owe a supplier.",
   "posting.fund.change_moves_nothing": "Nothing would move: each line already has its own fund. Change the fund on the lines instead.",
   "fund.change_reason": "Reason for the change",
-  "fund.change_hint": "This document has posted. Saving voids its entries and posts them again on the new fund."
+  "fund.change_hint": "This document has posted. Saving voids its entries and posts them again on the new fund.",
+  "fund.change": "Change fund",
+  "fund.change_journal_hint": "This entry has posted. Saving voids it and posts it again on the funds chosen below.",
+  "fund.changed": "Fund changed. The entry was voided and posted again on the new funds."
 }

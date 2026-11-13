@@ -22,9 +22,10 @@ from starlette.responses import RedirectResponse, PlainTextResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.currency import currency_options
-from ui.components.funds import chosen_fund, fund_options, funds_in_use
+from ui.components.funds import chosen_fund, fund_options, funds_in_use, journal_change_panel
 from celerp.services.peer_lines import UNRESTRICTED
-from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title
+from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
+from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title, toast_header
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
@@ -34,7 +35,7 @@ from ui.components.report_kit import (
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
     journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
-    journal_rows, journal_table, journal_void_toast,
+    FUND_CHANGE_PATH, JOURNAL_TABLE_ID, journal_rows, journal_table, journal_void_toast,
 )
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
@@ -43,6 +44,7 @@ from ui.components.table import (
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
+from ui.routes.action_answers import _redrawn
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
 from ui.routes.recognition import PAGE as RECOGNITION_PAGE
@@ -152,7 +154,8 @@ def setup_routes(app):
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
                               params=params, select=True,
                               filtered=bool(data.get("filtered")),
-                              period=(d_from, d_to, "/accounting?preset=all")),
+                              period=(d_from, d_to, "/accounting?preset=all"),
+                              change_fund=await _changes_fund(request, token, company, data)),
             )
         except APIError as e:
             if e.status == 401:
@@ -359,8 +362,19 @@ def setup_routes(app):
                                           idem_token=idem_token, error=error,
                                           date_from=d_from, date_to=d_to)
 
+    async def _changes_fund(request: Request, token: str, company: dict, data: dict) -> bool:
+        """Whether the journal offers Change fund on its posted entries from outside: to a user
+        who manages accounting, in a company with funds in use."""
+        settings = company.get("settings") or {}
+        return (any(e.get("origin") and e.get("status") == "posted" for e in data.get("entries") or [])
+                and role_has_permission(settings, _get_role(request), "manage_accounting")
+                and await funds_in_use(token, settings) is not None)
+
     async def _journal_void_answer(request: Request, token: str, result: dict):
-        """The answer to a void: the table it changed, its totals, and what happened.
+        return await _journal_answer(request, token, journal_void_toast(result))
+
+    async def _journal_answer(request: Request, token: str, headers: dict):
+        """The answer to a void or a fund change: the table it changed, its totals, and what happened.
 
         The figures are re-read from the API rather than adjusted here, so the totals
         over the rows cannot drift from the rows under them. They travel out of band
@@ -389,12 +403,64 @@ def setup_routes(app):
         table = journal_table(journal_rows(data, items=items), items=items,
                               currency=currency, params=params,
                               select=True, filtered=bool(data.get("filtered")),
-                              period=(d_from, d_to, f"{base}?preset=all"))
+                              period=(d_from, d_to, f"{base}?preset=all"),
+                              change_fund=not items and await _changes_fund(request, token, company, data))
         totals = _journal_totals(
             data, currency, oob=True,
             filter_words=journal_filter_words(filters, get_lang(request)),
             clear_href=_href(base, carried))
-        return html_response((table, totals), headers=journal_void_toast(result))
+        return html_response((table, totals), headers=headers)
+
+    async def _fund_change_panel(request: Request, token: str, je_id: str, *, kept=None, error: str | None = None):
+        """Change fund's panel for ``je_id``, posting back to the journal view it opened from."""
+        settings = (await api.get_company(token)).get("settings") or {}
+        funds = await funds_in_use(token, settings)
+        if funds is None:
+            return _action_error(t("fund.not_enabled"))
+        data = await api.get_journal_funds(token, je_id)
+        view = {k: v for k, v in request.query_params.items() if k != "je"}
+        return html_response(journal_change_panel(data, funds, _href(FUND_CHANGE_PATH, view), kept=kept, error=error))
+
+    @app.get(FUND_CHANGE_PATH)
+    async def journal_fund_change_panel(request: Request):
+        """Open Change fund under a posted journal from outside."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            return await _fund_change_panel(request, token, request.query_params.get("je", ""))
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return _action_error(e)
+
+    @app.post(FUND_CHANGE_PATH)
+    async def journal_fund_change(request: Request):
+        """Change fund on a posted journal from outside: the lines whose fund was changed (and
+        Set all, when picked), with the reason and the form's key. It is voided and posted again
+        on the new funds, and the journal is drawn again; a refusal keeps the panel's choices."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        je_id = str(form.get("je") or "")
+        try:
+            posted = await api.get_journal_funds(token, je_id)
+            changed = {str(line["n"]): str(form.get(f"line_{line['n']}"))
+                       for line in posted.get("lines") or []
+                       if form.get(f"line_{line['n']}") and form.get(f"line_{line['n']}") != line.get("fund")}
+            body = {"expected_version": int(form.get("expected_version") or 0),
+                    "request_key": str(form.get(OPERATION_KEY_FIELD) or ""), "reason": str(form.get("reason") or ""),
+                    **({"all": str(form["all"])} if form.get("all") else {}), "lines": changed}
+            await api.change_journal_fund(token, je_id, body)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            try:
+                return await _fund_change_panel(request, token, je_id, kept=form, error=api.error_message(e))
+            except APIError:
+                return _action_error(e)
+        return await _redrawn(lambda: _journal_answer(request, token, {
+            "HX-Retarget": f"#{JOURNAL_TABLE_ID}", "HX-Reswap": "outerHTML",
+            **toast_header(t("fund.changed"), "success")}), said=t("fund.changed"))
 
     @app.post("/accounting/journal/bulk-void")
     async def journal_bulk_void(request: Request):

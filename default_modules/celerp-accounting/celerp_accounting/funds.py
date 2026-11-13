@@ -41,8 +41,8 @@ from celerp.services.journal_reversals import standing_reversal_ids
 from celerp.services.ledger_rows import journal_rows
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.peer_lines import (
-    CONNECTION_DEFAULTS, ChangeFundIn, change_posted_fund, checked, default_active, default_key, outside_waiting,
-    records_carrying,
+    CONNECTION_DEFAULTS, UNRESTRICTED, ChangeFundIn, change_posted_fund, checked, default_active, default_key,
+    outside_waiting, records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
 from celerp_accounting.models import Account
@@ -664,6 +664,29 @@ async def reverse_fund_movement(
     return await _posted(session, post_fund_movement(
         session, company_id, request_key=f"reverse:{je_id}", ts=payload.date, reason=payload.reason, actor=user.id,
         reverses=je_id))
+
+
+@router.get("/journal/{entity_id}/funds")
+async def journal_funds(
+    entity_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What Change fund on a journal starts from: its version and each line by number from 1
+    (the numbers the change names lines by), with its account and the fund it posted on."""
+    row = await session.get(Projection, (company_id, entity_id))
+    if row is None or row.entity_type != "journal_entry":
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_je_not_found"))
+    state = dict(row.state or {})
+    entries = [line for line in state.get("entries") or [] if isinstance(line, dict)]
+    names = dict((await session.execute(select(Account.code, Account.name).where(
+        Account.company_id == company_id, Account.code.in_({line.get("account") for line in entries})))).all())
+    return {"je_id": entity_id, "version": row.version, "ts": str(state.get("ts") or "")[:10],
+            "memo": state.get("memo") or "", "lines": [
+                {"n": n, "account": line.get("account"), "name": names.get(line.get("account"), line.get("account")),
+                 "debit": float(line.get("debit") or 0), "credit": float(line.get("credit") or 0),
+                 "fund": line.get("fund_id") or UNRESTRICTED} for n, line in enumerate(entries, 1)]}
 
 
 class JournalChangeFundIn(ChangeFundIn):

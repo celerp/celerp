@@ -2085,6 +2085,18 @@
     "fund.change_hint": {
       "en": "This document has posted. Saving voids its entries and posts them again on the new fund.",
       "params": []
+    },
+    "fund.change": {
+      "en": "Change fund",
+      "params": []
+    },
+    "fund.change_journal_hint": {
+      "en": "This entry has posted. Saving voids it and posts it again on the funds chosen below.",
+      "params": []
+    },
+    "fund.changed": {
+      "en": "Fund changed. The entry was voided and posted again on the new funds.",
+      "params": []
     }
   },
   "modules": {

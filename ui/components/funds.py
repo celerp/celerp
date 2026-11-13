@@ -23,7 +23,7 @@ from ui.components.attrs import hx_vals
 from ui.components.encode import js
 from ui.components.icons import icon
 from ui.components.operation_key import FIELD as OPERATION_KEY
-from ui.components.table import EMPTY, searchable_select
+from ui.components.table import EMPTY, fmt_money, searchable_select
 from ui.i18n import t
 
 DOCUMENT = "document"  # the target naming the document's own choice
@@ -219,6 +219,55 @@ def saved(view: FundView, target: str) -> tuple:
         pieces.pop(DOCUMENT)
     main = pieces.pop(target)(False) if target in pieces else ""
     return (main, *(piece(True) for piece in pieces.values()))
+
+
+def journal_fund_table(lines: list[dict], account, fund_cell, lang: str | None = None) -> FT:
+    """A journal's lines as a fund panel lists them: account (``account(line)``), debit, credit
+    and the line's Fund cell (``fund_cell(n, line)``, n the line's number from 1)."""
+    def money(value) -> FT:
+        return Td(fmt_money(value) if value else "", cls="cell--money")
+
+    return Table(
+        Thead(Tr(Th(t("th.account", lang)), Th(t("th.debit", lang), cls="cell--number"),
+                 Th(t("th.credit", lang), cls="cell--number"), Th(t("th.fund", lang)))),
+        Tbody(*[Tr(Td(account(line)), money(line.get("debit")), money(line.get("credit")), fund_cell(n, line))
+                for n, line in enumerate(lines, 1)]),
+        cls="data-table")
+
+
+def journal_change_panel(data: dict, funds: list[dict], post_url: str, *, kept=None, error: str | None = None) -> FT:
+    """Change fund on a posted journal from outside, as a row under its journal row: each line's
+    Fund select prefilled with the fund it posted on, "Set all outside lines to" above them, a
+    required reason and the form's key. Escape or Cancel closes it. After a refusal it keeps the
+    choices, the reason and the key, with the reason it was refused and Try again."""
+    kept = kept or {}
+    options = fund_options(funds)
+
+    def choice(name: str, value: str, label: str) -> FT:
+        return searchable_select(name, options, value=str(kept.get(name, value) or ""), placeholder=EMPTY,
+                                 aria_label=label)
+
+    close = js("this.closest('tr').remove()")
+    form = Form(
+        P(t("fund.change_journal_hint"), cls="settings-hint"),
+        Div(Label(t("fund.set_all_outside"), cls="form-label"), choice("all", "", t("fund.set_all_outside")),
+            cls="fund-set-all gap-sm"),
+        journal_fund_table(data.get("lines") or [], lambda line: f"{line.get('account') or ''} {line.get('name') or ''}".strip(),
+                           lambda n, line: Td(choice(f"line_{n}", line.get("fund") or "", t("th.fund")))),
+        Input(type="text", name="reason", value=str(kept.get("reason") or ""), required=True,
+              placeholder=t("fund.change_reason"), aria_label=t("fund.change_reason"), cls="form-input form-input--sm"),
+        Input(type="hidden", name="je", value=data.get("je_id") or ""),
+        Input(type="hidden", name="expected_version", value=str(data.get("version") or 0)),
+        Input(type="hidden", name=OPERATION_KEY, value=str(kept.get(OPERATION_KEY) or uuid.uuid4())),
+        Div(*((Span(error, cls="field-error", role="alert"),
+               Button(t("btn.try_again"), type="submit", cls="btn btn--primary btn--sm")) if error
+              else (Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),)),
+            Button(t("btn.cancel"), type="button", cls="btn btn--ghost btn--sm", onclick=close),
+            cls="flex-row gap-sm"),
+        hx_post=post_url, hx_target="closest tr", hx_swap="outerHTML", cls="flex-col gap-sm",
+        onkeydown=js("if(event.key==='Escape'){{this.closest('tr').remove();}}"),
+    )
+    return Tr(Td(form, colspan="9"), cls="fund-change-row")
 
 
 # The origins a connection's page in Settings > Connectors holds a default for: the Celerp

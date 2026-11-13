@@ -431,8 +431,17 @@ async def test_change_fund_outside_journal(client, session, auth):
     keeping origin; a manual journal is refused with the void-or-reverse message."""
     f = await _setup(client, auth)
     je = await _outside_journal(client, auth, [("1111", 50, 0), ("4100", 0, 50)], "unrestricted")
+    journal = (await client.get("/accounting/journal", headers=auth["headers"])).json()["entries"]
+    assert next(e for e in journal if e["je_id"] == je)["origin"] == "file_import"
+    lines = await client.get(f"/accounting/journal/{je}/funds", headers=auth["headers"])
+    assert lines.status_code == 200, lines.text
+    assert lines.json()["version"] == await _version(session, auth, je)
+    assert [(n["n"], n["account"], n["debit"], n["credit"], n["fund"]) for n in lines.json()["lines"]] == [
+        (1, "1111", 50.0, 0.0, "unrestricted"), (2, "4100", 0.0, 50.0, "unrestricted")]
     r = await _change_journal(client, session, auth, je, all=f["U1"])
     assert r.status_code == 200, r.text
+    moved = (await client.get(f"/accounting/journal/{je}:fund:1/funds", headers=auth["headers"])).json()
+    assert {n["fund"] for n in moved["lines"]} == {f["U1"]}
     voided = await _state(session, auth, je)
     copy = await _state(session, auth, f"{je}:fund:1")
     assert voided["status"] == "void" and copy["status"] == "posted"

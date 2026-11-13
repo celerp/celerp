@@ -964,6 +964,19 @@ async def change_doc_fund(token: str, entity_id: str, body: dict) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/change-fund", json=body)).json()
 
 
+async def get_journal_funds(token: str, je_id: str) -> dict:
+    """A journal's version and its lines by number, each with the fund it posted on."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal/{quote(je_id, safe='')}/funds")).json()
+
+
+async def change_journal_fund(token: str, je_id: str, body: dict) -> dict:
+    """Change fund on a posted journal from outside: {expected_version, request_key, reason,
+    all, lines (line number from 1 -> fund)}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal/{quote(je_id, safe='')}/change-fund", json=body)).json()
+
+
 async def list_funds(token: str) -> dict:
     """The company's funds, archived ones included, by name."""
     async with _api_client(token) as c:

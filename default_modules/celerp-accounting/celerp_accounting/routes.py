@@ -1441,6 +1441,9 @@ async def _journal_payload(
             "memo": _je_memo(state.get("memo", ""), ref),
             "status": state.get("status"),
             "je_type": state.get("je_type"),
+            # Set on an entry that came from outside (an import, the accountant): once
+            # posted, its funds are changed with Change fund.
+            "origin": state.get("origin"),
             "void_reason": state.get("void_reason"),
             # Set on an entry voided out of a locked period and on its reversal row.
             "reversed_on": state.get("reversed_on"),
