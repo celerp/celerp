@@ -359,6 +359,15 @@ def change_text(label: str, old: str | None, new: str | None) -> str | None:
     return None if old == new else f"{label}: {old} → {new}"
 
 
+# A document's own fund choice is named, never by its raw fund id; who set it and why are the
+# choice's own record, not changed fields of their own.
+register_fields({
+    "fund_choice": lambda change: t("activity.changed", item=t("fund.document_label")),
+    "fund_choice_source": lambda change: None,
+    "fund_choice_reason": lambda change: None,
+})
+
+
 # ID fields that carry a raw entity-ID value; suppressed when a companion
 # human-readable field is present in the same changeset.
 _ID_FIELD_COMPANIONS: dict[str, str] = {

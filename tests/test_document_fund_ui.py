@@ -282,3 +282,15 @@ async def test_a_line_fund_change_is_named_in_the_history():
     assert t("activity.changed", item=f"Library gift {t('th.fund')}") in picked, picked
     unrestricted = {**line, "fund_id": None}
     assert _fields_changed_summary({"line_items": {"old": [line], "new": [unrestricted]}}, "USD") == ""
+
+
+async def test_a_document_fund_change_is_named_in_the_history():
+    """The document's own fund choice is named in its history, never by its raw fund id; who set
+    it and why are not shown as changed fields."""
+    from ui.components.activity import _fields_changed_summary
+    from ui.i18n import t
+
+    picked = _fields_changed_summary({"fund_choice": {"old": None, "new": "fund:r"},
+                                      "fund_choice_source": {"old": None, "new": "user"},
+                                      "fund_choice_reason": {"old": None, "new": "Board minute"}}, "USD")
+    assert picked == t("activity.changed", item=t("fund.document_label")), picked

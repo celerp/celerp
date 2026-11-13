@@ -2075,7 +2075,7 @@
       "params": []
     },
     "posting.fund.change_moves_nothing": {
-      "en": "Nothing would move: each line already has its own fund. Change the fund on the lines instead.",
+      "en": "Nothing would move: every line is already on that fund or has a fund of its own. To move a line that has its own fund, change the fund on that line.",
       "params": []
     },
     "fund.change_reason": {
