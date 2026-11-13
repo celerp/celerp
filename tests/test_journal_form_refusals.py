@@ -55,3 +55,38 @@ async def test_replayed_token_with_different_amounts_reads_as_already_posted(own
     assert "already posted with different amounts" in body
     fresh = re.search(r'name="idempotency_token"[^>]*value="([^"]+)"|value="([^"]+)"[^>]*name="idempotency_token"', page.text)
     assert fresh and token not in fresh.groups()
+
+
+async def test_with_funds_on_each_journal_line_names_its_fund(owner_ui):
+    """With funds in use the journal form has a Fund column, each line Unrestricted until a fund
+    is picked; a picked fund goes with the line, Unrestricted sends none."""
+    from unittest.mock import AsyncMock, patch
+
+    import ui.api_client as ui_api
+
+    api = owner_ui.api
+    assert (await api.put("/accounting/funds/setting", json={"enabled": True})).status_code == 200
+    r = await api.post("/accounting/funds", json={"request_key": uuid.uuid4().hex, "name": "Board reserve",
+                                                  "restricted": False, "purpose": None})
+    assert r.status_code == 200, r.text
+    fund = r.json()["id"]
+    page = (await owner_ui.get("/accounting/journal/new")).text
+    assert re.search(r"<th[^>]*>Fund</th>", page), "Fund header missing"
+    picks = re.findall(r'<input[^>]*name="fund_(\d+|__IDX__)"[^>]*value="([^"]*)"', page)
+    assert sorted(picks) == [("0", "unrestricted"), ("1", "unrestricted"), ("__IDX__", "unrestricted")], picks
+    assert "Board reserve" in page
+
+    bank = await _bank(api)
+    for picked, sent in ((fund, fund), ("unrestricted", None)):
+        create = AsyncMock(side_effect=ui_api.create_journal_entry)
+        with patch("ui.api_client.create_journal_entry", new=create):
+            posted = await owner_ui.post("/accounting/journal/new", data={
+                **_form("2026-10-05", bank["chart_account_code"], "10", uuid.uuid4().hex),
+                "fund_0": picked, "fund_1": picked})
+        assert posted.status_code == 303, posted.text
+        assert [e.get("fund_id") for e in create.await_args.args[1]["entries"]] == [sent, sent]
+
+
+async def test_without_funds_the_journal_form_has_no_fund_column(owner_ui):
+    page = (await owner_ui.get("/accounting/journal/new")).text
+    assert 'name="fund_0"' not in page and not re.search(r"<th[^>]*>Fund</th>", page)

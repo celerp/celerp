@@ -22,6 +22,9 @@ from starlette.responses import RedirectResponse, PlainTextResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.currency import currency_options
+from ui.components.funds import fund_options
+from celerp.services.journal_accounts import funds_enabled
+from celerp.services.peer_lines import UNRESTRICTED
 from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
@@ -196,8 +199,12 @@ def setup_routes(app):
         base_currency = ""
         contacts: list[dict] = []
         contacts_total = 0
+        funds: list[dict] | None = None
         try:
             accounts = (await api.get_chart(token)).get("items", [])
+            # With funds in use each line names its fund, Unrestricted until one is picked.
+            if funds_enabled(_settings):
+                funds = (await api.list_funds(token)).get("items") or []
             base_currency = (await api.get_company(token)).get("currency") or ""
             # One page of parties to open on; typing searches the whole list
             # server-side, the same way the statement picker works.
@@ -221,7 +228,7 @@ def setup_routes(app):
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
                                 date_from=date_from, date_to=date_to,
                                 base_currency=base_currency,
-                                contacts=contacts, contacts_total=contacts_total,
+                                contacts=contacts, contacts_total=contacts_total, funds=funds,
                                 date_hint=date_hint),
             title=page_title("page.accounting"),
             nav_active="accounting",
@@ -288,10 +295,11 @@ def setup_routes(app):
             contact = str(form.get(f"contact_{i}") or "").strip()
             currency = str(form.get(f"currency_{i}") or "").strip().upper()
             rate = str(form.get(f"rate_{i}") or "").strip()
+            fund = str(form.get(f"fund_{i}") or "").strip()
             if not (account or debit or credit or contact):
                 continue  # an untouched blank row carries no intent
             lines.append({"account": account, "debit": debit, "credit": credit,
-                          "contact": contact, "currency": currency, "rate": rate})
+                          "contact": contact, "currency": currency, "rate": rate, "fund": fund})
 
         error: str | None = None
         entries: list[dict] = []
@@ -303,7 +311,8 @@ def setup_routes(app):
                 {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0),
                  **({"contact": l["contact"]} if l["contact"] else {}),
                  **({"currency": l["currency"]} if l["currency"] else {}),
-                 **({"rate": float(l["rate"])} if l["rate"] else {})}
+                 **({"rate": float(l["rate"])} if l["rate"] else {}),
+                 **({"fund_id": l["fund"]} if l["fund"] not in ("", UNRESTRICTED) else {})}
                 for l in lines
             ]
             if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):
@@ -475,14 +484,18 @@ def _base_col(label: str, base_currency: str) -> str:
 
 
 def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
-                 contact_opts: list[tuple[str, str]]) -> FT:
+                 contact_opts: list[tuple[str, str]], fund_opts: list[tuple[str, str]] | None = None) -> FT:
     esc = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+    fund_cell = (Td(searchable_select(f"fund_{idx}", fund_opts, value=line.get("fund") or UNRESTRICTED,
+                                      placeholder=EMPTY, aria_label=t("th.fund"), cls_extra="cell-input")),
+                 ) if fund_opts is not None else ()
     return Tr(
         Td(searchable_select(f"account_{idx}", acct_opts, value=line.get("account", ""),
                              placeholder=t("th.account"), cls_extra="cell-input")),
         Td(searchable_select(f"contact_{idx}", contact_opts, value=line.get("contact", ""),
                              placeholder=t("acct.je_line_party"), cls_extra="cell-input",
                              search_url=PARTY_SEARCH_URL)),
+        *fund_cell,
         Td(Input(type="number", name=f"debit_{idx}", value=line.get("debit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown=esc), cls="cell--number"),
@@ -510,7 +523,8 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
                         date_from: str = "", date_to: str = "",
                         base_currency: str = "",
                         contacts: list[dict] | None = None,
-                        contacts_total: int = 0, date_hint: str | None = None) -> FT:
+                        contacts_total: int = 0, date_hint: str | None = None,
+                        funds: list[dict] | None = None) -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -519,7 +533,8 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
     contact_opts = party_options(contacts or [])
     if not lines:
         lines = [{}, {}]  # double-entry needs two sides, so start with two rows
-    rows = [_je_line_row(str(i), line, acct_opts, contact_opts) for i, line in enumerate(lines)]
+    fund_opts = fund_options(funds) if funds is not None else None
+    rows = [_je_line_row(str(i), line, acct_opts, contact_opts, fund_opts) for i, line in enumerate(lines)]
 
     any_fx = any(l.get("currency") for l in lines)
     form_js = js("""
@@ -723,11 +738,12 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
                 open=any_fx,
             ),
             Div("", id="je-imbalance-note", cls="report-section"),
-            Template(_je_line_row("__IDX__", {}, acct_opts, contact_opts), id="je-line-tpl"),
+            Template(_je_line_row("__IDX__", {}, acct_opts, contact_opts, fund_opts), id="je-line-tpl"),
             Table(
                 Thead(Tr(
                     Th(t("th.account")),
                     Th(t("acct.je_line_party")),
+                    Th(t("th.fund")) if fund_opts is not None else None,
                     Th(t("th.debit"), cls="cell--number"),
                     Th(t("th.credit"), cls="cell--number"),
                     Th(t("th.currency"), cls="je-fx-col"),

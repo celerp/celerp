@@ -65,7 +65,7 @@ from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import (
-    YEAR_CLOSE, fund_account_balances, funds_by_id, pooled_split, require_destinations, split_lines_by_fund,
+    YEAR_CLOSE, fund_account_balances, funds_by_id, hold_fund_ledger, pooled_split, require_destinations, split_lines_by_fund,
 )
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
@@ -1829,7 +1829,7 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
-    await lock_company(session, company_id)
+    await hold_fund_ledger(session, company_id)  # before any row lock: a line may name a fund
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
@@ -2927,7 +2927,7 @@ async def create_bank_account(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await lock_company(session, company_id)
+    await hold_fund_ledger(session, company_id)  # before any row lock: its opening balance posts
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
