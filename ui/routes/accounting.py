@@ -411,13 +411,17 @@ def setup_routes(app):
             clear_href=_href(base, carried))
         return html_response((table, totals), headers=headers)
 
-    async def _fund_change_panel(request: Request, token: str, je_id: str, *, kept=None, error: str | None = None):
-        """Change fund's panel for ``je_id``, posting back to the journal view it opened from."""
+    async def _fund_change_panel(request: Request, token: str, je_id: str, *, kept=None, error: str | None = None,
+                                 fill: str = ""):
+        """Change fund's panel for ``je_id``, posting back to the journal view it opened from;
+        ``fill`` (a Set all pick) puts every line's select on that fund."""
         settings = (await api.get_company(token)).get("settings") or {}
         funds = await funds_in_use(token, settings)
         if funds is None:
             return _action_error(t("fund.not_enabled"))
         data = await api.get_journal_funds(token, je_id)
+        if fill:
+            kept = {**dict(kept or {}), **{f"line_{line['n']}": fill for line in data.get("lines") or []}}
         view = {k: v for k, v in request.query_params.items() if k != "je"}
         return html_response(journal_change_panel(data, funds, _href(FUND_CHANGE_PATH, view), kept=kept, error=error))
 
@@ -435,19 +439,27 @@ def setup_routes(app):
 
     @app.post(FUND_CHANGE_PATH)
     async def journal_fund_change(request: Request):
-        """Change fund on a posted journal from outside: the lines whose fund was changed (and
-        Set all, when picked), with the reason and the form's key. It is voided and posted again
-        on the new funds, and the journal is drawn again; a refusal keeps the panel's choices."""
+        """Change fund on a posted journal from outside: the lines whose fund was changed, or with
+        Set all picked every line as the panel shows it, with the reason and the form's key. It
+        is voided and posted again on the new funds, and the journal is drawn again; a refusal
+        keeps the panel's choices. A Set all pick (``redraw``) only draws the panel again."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         je_id = str(form.get("je") or "")
+        if form.get("redraw"):
+            try:
+                return await _fund_change_panel(request, token, je_id, kept=form, fill=str(form.get("all") or ""))
+            except APIError as e:
+                api.raise_if_signed_out(e)
+                return _action_error(e)
         try:
             posted = await api.get_journal_funds(token, je_id)
             changed = {str(line["n"]): str(form.get(f"line_{line['n']}"))
                        for line in posted.get("lines") or []
-                       if form.get(f"line_{line['n']}") and form.get(f"line_{line['n']}") != line.get("fund")}
+                       if form.get(f"line_{line['n']}")
+                       and (form.get("all") or form.get(f"line_{line['n']}") != line.get("fund"))}
             body = {"expected_version": int(form.get("expected_version") or 0),
                     "request_key": str(form.get(OPERATION_KEY_FIELD) or ""), "reason": str(form.get("reason") or ""),
                     **({"all": str(form["all"])} if form.get("all") else {}), "lines": changed}

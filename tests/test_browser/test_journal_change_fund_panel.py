@@ -9,7 +9,7 @@ once the page's script has set them up, so only a browser shows they can be used
 Proves:
 1. A posted journal imported with a fund offers Change fund on its journal row.
 2. The panel's pickers open their list and take a choice (Set all outside lines to
-   Unrestricted).
+   Unrestricted), and that pick puts every line's picker on Unrestricted.
 3. Saving with a reason moves every line of the entry off the fund.
 """
 from __future__ import annotations
@@ -64,6 +64,9 @@ def test_change_fund_panel_pickers_open_and_save(page, ui_server, api, outside_f
     set_all.fill("Unrestr")
     panel.locator(".fund-set-all .combobox-option", has_text="Unrestricted").first.click()
     expect(panel.locator("input[name=all]")).to_have_value("unrestricted")
+    # The pick draws the panel again with every line's picker on that fund.
+    expect(panel.locator("input[name=line_1]")).to_have_value("unrestricted")
+    expect(panel.locator("input[name=line_2]")).to_have_value("unrestricted")
 
     panel.locator("input[name=reason]").fill("Not for this fund after all")
     panel.get_by_role("button", name="Save").click()

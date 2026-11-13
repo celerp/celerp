@@ -112,12 +112,14 @@ async def test_change_fund_panel_saves_the_changed_lines_with_a_reason(ui_client
     assert r.headers["HX-Retarget"] == "#journal-table" and 'id="journal-table"' in r.text
     assert "Fund changed" in r.headers["HX-Trigger"]
 
+    # With Set all picked, every line goes as the panel shows it: a line put back on the fund it
+    # posted on stays there rather than following Set all unseen.
     change = AsyncMock(return_value={"copies": {}})
     await _call(ui_client, "POST", "/accounting/journal/fund-change", change=change, data={
         "je": "je:out", "expected_version": "3", "reason": "Grant", "idempotency_key": "k2",
         "all": "fund:r", "line_1": "fund:r", "line_2": "unrestricted"})
     assert change.await_args.args[2] == {"expected_version": 3, "request_key": "k2", "reason": "Grant",
-                                         "all": "fund:r", "lines": {}}
+                                         "all": "fund:r", "lines": {"1": "fund:r", "2": "unrestricted"}}
 
     refused = AsyncMock(side_effect=APIError(422, "This period is locked."))
     r = await _call(ui_client, "POST", "/accounting/journal/fund-change", change=refused, data={
@@ -126,3 +128,24 @@ async def test_change_fund_panel_saves_the_changed_lines_with_a_reason(ui_client
     assert "HX-Retarget" not in r.headers and r.text.lstrip().startswith("<tr")
     assert "This period is locked." in r.text and "Try again" in r.text
     assert 'value="Wrong grant"' in r.text and 'value="k3"' in r.text and _picked(r.text, "line_1") == "unrestricted"
+
+
+async def test_set_all_puts_every_line_picker_on_its_fund(ui_client):
+    """Picking Set all draws the panel again with every line's Fund picker on that fund, keeping
+    the reason and the key, so what Save posts is what the panel shows; nothing is changed yet."""
+    r = await _call(ui_client, "GET", "/accounting/journal/fund-change?je=je%3Aout&date_from=2026-01-01")
+    set_all = re.search(r'<div[^>]*class="fund-set-all[^"]*"[^>]*>', r.text).group(0)
+    assert 'hx-trigger="change"' in set_all and "redraw" in set_all, set_all
+    assert re.search(r'hx-post="/accounting/journal/fund-change\?[^"]*date_from=2026-01-01', set_all)
+
+    change = AsyncMock()
+    r = await _call(ui_client, "POST", "/accounting/journal/fund-change?date_from=2026-01-01", change=change, data={
+        "je": "je:out", "expected_version": "3", "reason": "Grant", "idempotency_key": "k4", "redraw": "1",
+        "all": "unrestricted", "line_1": "fund:r", "line_2": "unrestricted"})
+    assert r.status_code == 200, r.text
+    change.assert_not_awaited()
+    assert r.text.lstrip().startswith("<tr") and "HX-Retarget" not in r.headers
+    assert _picked(r.text, "all") == "unrestricted"
+    assert _picked(r.text, "line_1") == "unrestricted" and _picked(r.text, "line_2") == "unrestricted"
+    assert 'value="Grant"' in r.text and 'value="k4"' in r.text
+    assert re.search(r'hx-post="/accounting/journal/fund-change\?date_from=2026-01-01"', r.text)

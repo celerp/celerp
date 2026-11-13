@@ -237,8 +237,8 @@ def journal_fund_table(lines: list[dict], account, fund_cell, lang: str | None =
 
 def journal_change_panel(data: dict, funds: list[dict], post_url: str, *, kept=None, error: str | None = None) -> FT:
     """Change fund on a posted journal from outside, as a row under its journal row: each line's
-    Fund select prefilled with the fund it posted on, "Set all outside lines to" above them, a
-    required reason and the form's key. Escape or Cancel closes it. After a refusal it keeps the
+    Fund select prefilled with the fund it posted on, "Set all outside lines to" above them (a
+    pick puts every line's select on that fund), a required reason and the form's key. Escape or Cancel closes it. After a refusal it keeps the
     choices, the reason and the key, with the reason it was refused and Try again."""
     kept = kept or {}
     options = fund_options(funds)
@@ -250,8 +250,10 @@ def journal_change_panel(data: dict, funds: list[dict], post_url: str, *, kept=N
     close = js("this.closest('tr').remove()")
     form = Form(
         P(t("fund.change_journal_hint"), cls="settings-hint"),
+        # Picking Set all draws the panel again with every line's picker on that fund.
         Div(Label(t("fund.set_all_outside"), cls="form-label"), choice("all", "", t("fund.set_all_outside")),
-            cls="fund-set-all gap-sm"),
+            cls="fund-set-all gap-sm", hx_post=post_url, hx_vals=hx_vals({"redraw": "1"}), hx_trigger="change",
+            hx_include="closest form", hx_target="closest tr", hx_swap="outerHTML"),
         journal_fund_table(data.get("lines") or [], lambda line: f"{line.get('account') or ''} {line.get('name') or ''}".strip(),
                            lambda n, line: Td(choice(f"line_{n}", line.get("fund") or "", t("th.fund")))),
         Input(type="text", name="reason", value=str(kept.get("reason") or ""), required=True,
