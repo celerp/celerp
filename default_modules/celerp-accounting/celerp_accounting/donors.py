@@ -41,6 +41,7 @@ from celerp.models.projections import Projection
 from celerp.services import email as email_service
 from celerp.services.account_roles import current_settings, merge_survivors, role_map
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auto_je import _posted_line_shares
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.document_lines import line_item_id
@@ -49,7 +50,7 @@ from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.money import books_currency, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.recognition import gift_categories
-from celerp.services.auto_je import _posted_line_shares
+from celerp.services.visible_text import visible_text
 from celerp_accounting.routes import _id_chunks, _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range
 from ui.components.encode import to_markup
 from ui.i18n import t
@@ -200,11 +201,10 @@ class WordingIn(BaseModel):
 
 
 def _wording_text(raw: str) -> str:
-    """The wording as stored, trimmed; refused when nothing in it would show on a statement
-    (empty, spaces, or only invisible characters such as a zero-width space)."""
-    if not any(ch.isprintable() and not ch.isspace() for ch in raw):
+    """The wording as stored, trimmed; refused when nothing in it would show on a statement."""
+    if not (text := visible_text(raw)):
         raise HTTPException(status_code=422, detail=catalog_refusal("donors.wording_required"))
-    return raw.strip()
+    return text
 
 
 # --- Donors and statements ---

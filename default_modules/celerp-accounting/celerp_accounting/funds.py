@@ -45,6 +45,7 @@ from celerp.services.peer_lines import (
     outside_waiting, records_carrying,
 )
 from celerp.services.permissions import read_authority, require_permission
+from celerp.services.visible_text import visible_text
 from celerp_accounting.models import Account
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -100,7 +101,7 @@ async def _has_postings(session: AsyncSession, company_id, fund_id: str) -> bool
 
 
 def _name(raw: str | None) -> str:
-    name = (raw or "").strip()
+    name = visible_text(raw)
     if not name:
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.name_required"))
     return name
@@ -113,7 +114,7 @@ async def _refuse_taken(session: AsyncSession, company_id, name: str, *, other_t
 
 
 def _purpose(restricted: bool, raw: str | None) -> str | None:
-    purpose = (raw or "").strip() or None
+    purpose = visible_text(raw) or None
     if restricted and purpose is None:
         raise HTTPException(status_code=422, detail=catalog_refusal("fund.purpose_required"))
     return purpose

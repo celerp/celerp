@@ -119,11 +119,15 @@ async def test_fund_create_update_archive_validation(client, auth):
     # No fund exists until funds are on.
     _refusal(await _create(client, auth, "Early"), "fund.not_enabled")
     assert (await _funds_on(client, auth)).status_code == 200
-    assert _refusal(await _create(client, auth, "  "), "fund.name_required") == {}
+    # A name or purpose of only spaces or invisible characters would show nothing on a page.
+    for blank in ("  ", "　 ​", "​⁠"):
+        assert _refusal(await _create(client, auth, blank), "fund.name_required") == {}
+        _refusal(await _create(client, auth, "No purpose", purpose=blank), "fund.purpose_required")
     gift = await _fund(client, auth, "Music fund")
     assert _refusal(await _create(client, auth, "music FUND"), "fund.name_taken")["name"] == "music FUND"
-    _refusal(await _create(client, auth, "No purpose", purpose=" "), "fund.purpose_required")
     board = await _fund(client, auth, "Board reserve", restricted=False, purpose=None)
+    r = await client.patch(f"/accounting/funds/{board}", headers=auth["headers"], json={"name": "​"})
+    _refusal(r, "fund.name_required")
 
     r = await client.patch(f"/accounting/funds/{board}", headers=auth["headers"], json={"name": "Music Fund"})
     assert _refusal(r, "fund.name_taken")["name"] == "Music Fund"
