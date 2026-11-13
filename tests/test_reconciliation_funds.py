@@ -6,6 +6,7 @@ Unrestricted until a fund is picked. The bank side of each fund's part moves wit
 every fund balances on its own; Unrestricted sends no fund."""
 from __future__ import annotations
 
+import html
 import re
 import uuid
 
@@ -13,6 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -66,6 +68,9 @@ async def test_with_funds_on_a_statement_line_entry_names_its_fund(owner_ui, ses
     assert "Library" in form and "Board reserve" in form
     split = (await owner_ui.get(f"/accounting/reconcile/{sid}/lines/{supplies}/split-form")).text
     assert re.findall(r'<input[^>]*name="fund_0"[^>]*value="([^"]*)"', split) == ["unrestricted"], split
+    # Left at Unrestricted, money moved off a balance the funds share is split among them (rule B): both forms say so.
+    hint = t("recon.fund_hint")
+    assert html.escape(hint, quote=False) in form and html.escape(hint, quote=False) in split
 
     r = await owner_ui.post(f"/accounting/reconcile/{sid}/lines/{gift}/create-confirm",
                             data={"account_code": "4100", "memo": "Gift", "amount": "300", "fund": library})
@@ -89,7 +94,8 @@ async def test_without_funds_the_statement_line_forms_have_no_fund_choice(owner_
     sid, _, lines = await _statement(api)
     gift, supplies = lines["Library gift"]["id"], lines["Supplies"]["id"]
     assert 'name="fund"' not in (await owner_ui.get(f"/accounting/reconcile/{sid}/lines/{gift}/create-form")).text
-    assert 'name="fund_0"' not in (await owner_ui.get(f"/accounting/reconcile/{sid}/lines/{supplies}/split-form")).text
+    split = (await owner_ui.get(f"/accounting/reconcile/{sid}/lines/{supplies}/split-form")).text
+    assert 'name="fund_0"' not in split and html.escape(t("recon.fund_hint"), quote=False) not in split
     r = await api.post(f"/accounting/reconciliation/{sid}/lines/{gift}/create",
                        json={"account_code": "4100", "fund_id": str(uuid.uuid4())})
     assert r.status_code == 422 and "fund" in r.text.lower(), r.text

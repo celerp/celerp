@@ -228,6 +228,12 @@ def _fund_pick(name: str, funds: list[dict] | None) -> FT | None:
                              aria_label=t("th.fund"), cls_extra="form-input")
 
 
+def _fund_hint(funds: list[dict] | None) -> FT | None:
+    """What leaving the Fund choice at Unrestricted does to money moved off a balance the
+    funds share (rule B): it is split among the funds holding it, not put on one."""
+    return P(t("recon.fund_hint"), cls="form-hint") if funds is not None else None
+
+
 def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
                  contacts: list[dict] | None = None, funds: list[dict] | None = None) -> FT:
     currency = bank["currency"]
@@ -254,7 +260,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
                                   cls_extra="form-input", search_url=PARTY_SEARCH_URL),
                 cls="form-field",
             ),
-            Div(Label(t("th.fund"), cls="form-label"), _fund_pick("fund", funds),
+            Div(Label(t("th.fund"), cls="form-label"), _fund_pick("fund", funds), _fund_hint(funds),
                 cls="form-field") if funds is not None else None,
             Div(
                 Label(t("th.memo"), cls="form-label"),
@@ -318,6 +324,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
                     )
                 ],
             ),
+            _fund_hint(funds),
             _rate_field(bank),
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),

@@ -3058,6 +3058,7 @@
   "enum.recon_session_status.open": "قيد التنفيذ",
   "enum.recon_session_status.completed": "مكتملة",
   "recon.add_new_account": "+ إضافة حساب جديد",
+  "recon.fund_hint": "Left at Unrestricted, money moved off an asset or a liability (a clearing account, a receivable, tax payable) is shared among the funds that hold it. Pick a fund to take it all from that fund.",
   "recon.add_new_bank_account": "+ إضافة حساب مصرفي جديد",
   "recon.progress_resolved": "تم حل {done}/{total}",
   "recon.progress_skipped": "(تم تخطي {n})",

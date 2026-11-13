@@ -3058,6 +3058,7 @@
   "enum.recon_session_status.open": "Đang thực hiện",
   "enum.recon_session_status.completed": "Đã hoàn tất",
   "recon.add_new_account": "+ Thêm tài khoản mới",
+  "recon.fund_hint": "Left at Unrestricted, money moved off an asset or a liability (a clearing account, a receivable, tax payable) is shared among the funds that hold it. Pick a fund to take it all from that fund.",
   "recon.add_new_bank_account": "+ Thêm tài khoản ngân hàng mới",
   "recon.progress_resolved": "{done}/{total} đã được giải quyết",
   "recon.progress_skipped": "({n} bị bỏ qua)",

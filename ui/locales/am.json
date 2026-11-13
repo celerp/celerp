@@ -3288,6 +3288,7 @@
   "enum.recon_session_status.open": "በሂደት ላይ",
   "enum.recon_session_status.completed": "ተጠናቋል",
   "recon.add_new_account": "+ አዲስ መለያ ያክሉ",
+  "recon.fund_hint": "Left at Unrestricted, money moved off an asset or a liability (a clearing account, a receivable, tax payable) is shared among the funds that hold it. Pick a fund to take it all from that fund.",
   "recon.add_new_bank_account": "+ አዲስ የባንክ ሂሳብ ያክሉ",
   "recon.progress_resolved": "{done}/{total} ተፈቷል",
   "recon.progress_skipped": "({n} ተዘሏል)",

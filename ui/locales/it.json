@@ -3059,6 +3059,7 @@
   "enum.recon_session_status.open": "In corso",
   "enum.recon_session_status.completed": "Completata",
   "recon.add_new_account": "+ Aggiungi nuovo conto",
+  "recon.fund_hint": "Left at Unrestricted, money moved off an asset or a liability (a clearing account, a receivable, tax payable) is shared among the funds that hold it. Pick a fund to take it all from that fund.",
   "recon.add_new_bank_account": "+ Aggiungi nuovo conto bancario",
   "recon.progress_resolved": "{done}/{total} risolto",
   "recon.progress_skipped": "({n} saltato)",

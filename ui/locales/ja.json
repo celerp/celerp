@@ -3058,6 +3058,7 @@
   "enum.recon_session_status.open": "処理中",
   "enum.recon_session_status.completed": "完了",
   "recon.add_new_account": "+ 新しい勘定科目を追加",
+  "recon.fund_hint": "Left at Unrestricted, money moved off an asset or a liability (a clearing account, a receivable, tax payable) is shared among the funds that hold it. Pick a fund to take it all from that fund.",
   "recon.add_new_bank_account": "+ 新しい銀行口座を追加",
   "recon.progress_resolved": "{done}/{total} 解決済み",
   "recon.progress_skipped": "({n} スキップ)",
