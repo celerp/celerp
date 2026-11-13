@@ -29235,7 +29235,6 @@
     "tests/test_revenue_recognition.py::test_schedule_reconciles_to_liability[True]": 0.39456076896749437,
     "tests/test_revenue_recognition.py::test_unlinked_credit_note_takes_its_share_of_a_scheduled_line": 0.30731190100777894,
     "tests/test_setup_business_type.py::TestSetupSubmit::test_missing_unknown_or_hidden_rejected_before_mutation[property_rental-Unknown business type]": 0.013418007991276681,
-    "tests/test_shard_durations.py::test_refresh_times_each_job_s_new_tests_in_a_run_of_their_own": 0.003261998004745692,
     "tests/test_sync_accounts_ui.py::test_held_funds_post_sends_choices_and_names_the_record": 0.005709605058655143,
     "tests/test_sync_accounts_ui.py::test_held_line_shows_balance_per_fund_and_no_preselected_choice": 0.005678548011928797,
     "tests/test_sync_accounts_ui.py::test_refused_held_funds_post_keeps_the_choices": 0.005614503927063197,
