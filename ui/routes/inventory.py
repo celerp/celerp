@@ -27,7 +27,7 @@ from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import icon, import_icon
 from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.cards import section_card, section_header
-from ui.components.item_fields import item_detail_schema, item_display_values
+from ui.components.item_fields import item_detail_schema
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
@@ -2944,13 +2944,7 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                         return refused
                 else:
                     old_val = old_item.get(field)
-                    changes = {field: {"old": old_val, "new": value}}
-                    if (old_item.get("_legacy_core_fields") or {}).get("weight") == "weight_g":
-                        if field == "weight":
-                            changes["weight_unit"] = {"old": old_item.get("_legacy_weight_unit"), "new": "gram"}
-                        elif field == "weight_unit":
-                            changes["weight"] = {"old": None, "new": old_item["weight"]}
-                    await api.patch_item(token, entity_id, changes)
+                    await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
@@ -7797,7 +7791,6 @@ function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
 def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str | None = None, currency: str | None = None, cell_renderers: dict | None = None) -> FT:
     if not fields:
         return ""
-    item = item_display_values(item)
     if title is None:
         title = t("th.details")
     from ui.components.table import display_cell

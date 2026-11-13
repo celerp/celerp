@@ -104,6 +104,34 @@ def _normalize_attributes(current: dict) -> None:
     current["attributes"] = attrs
 
 
+# Category presets in earlier releases kept a lot's weight (in grams) and origin under their own
+# attribute keys; the core fields own both now. The one mapping every reader goes through.
+LEGACY_CATEGORY_FIELDS: dict[str, str] = {"weight_g": "weight", "origin_country": "country_of_origin"}
+
+
+def _fold_legacy_category_fields(current: dict) -> None:
+    """Move old preset values onto their core fields (in place); a value the core field already
+    holds wins. Applied on every event, so a rebuild folds existing lots and a client still
+    writing an old key lands on the core field. A weight that is not a number stays where it is."""
+    attrs = current.get("attributes")
+    if not attrs or not LEGACY_CATEGORY_FIELDS.keys() & attrs.keys():
+        return
+    attrs = dict(attrs)
+    for old, core in LEGACY_CATEGORY_FIELDS.items():
+        value = attrs.get(old)
+        if core == "weight":
+            if value not in (None, "") and current.get("weight") in (None, ""):
+                try:
+                    weight = float(value)
+                except (TypeError, ValueError):
+                    continue
+                current["weight"], current["weight_unit"] = weight, "gram"
+        elif value not in (None, "") and attrs.get(core) in (None, ""):
+            attrs[core] = value
+        attrs.pop(old, None)
+    current["attributes"] = attrs
+
+
 def is_item_available(state: dict) -> bool:
     """Derive availability from status. Single authoritative check — no stored flag."""
     return str(state.get("status") or DEFAULT_ITEM_STATUS).lower() in _ACTIVE_STATUSES
@@ -411,6 +439,7 @@ def _stamp_status_doc(current: dict, data: dict) -> None:
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = _apply_item_event(state, event_type, data)
+    _fold_legacy_category_fields(current)
     _keep_on_books(state, current, event_type, data)
     return current
 

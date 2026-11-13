@@ -4,7 +4,7 @@ from ui.routes.inventory import _split_table_form
 from test_entity_files import _headers
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('sell_by,weight,attrs,expected',[('piece',None,{},None),('piece',None,{'weight_g':12},None),('piece',None,{'weight':12},None),('piece',12,{},12),('gram',None,{},10)])
+@pytest.mark.parametrize('sell_by,weight,attrs,expected',[('piece',None,{},None),('piece',None,{'weight_g':12},12),('piece',None,{'weight':12},None),('piece',12,{},12),('gram',None,{},10)])
 async def test_split_weight_source_is_net_weight_or_weight_quantity(client,sell_by,weight,attrs,expected):
     h=await _headers(client)
     data={'sku':'TRACE-WEIGHT','name':'Weight trace','status':'available','sell_by':sell_by,'quantity':10,'gross_weight':10,'attributes':attrs}
