@@ -1,0 +1,63 @@
+{
+  "id": "subscriptions.members",
+  "title": "Members and their standing",
+  "summary": "See each member's standing, from their latest bill.",
+  "keywords": [
+    "member",
+    "membership",
+    "standing",
+    "grace",
+    "lapsed",
+    "dues"
+  ],
+  "routes": [
+    "/members"
+  ],
+  "permission": "view_subscriptions",
+  "order": 4,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see every member and their standing.",
+      "labels": {
+        "nav": "nav.members"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A member is {cur} until their latest bill falls due, {grace} for the agreement's {days} after that, then {lapsed}. Paying or fully crediting the bill makes them {cur} again.",
+      "labels": {
+        "cur": "enum.member_standing.current",
+        "grace": "enum.member_standing.in_grace",
+        "days": "subscriptions.grace_days",
+        "lapsed": "enum.member_standing.lapsed"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {new} to add a member.",
+      "labels": {
+        "new": "page.new_membership"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.overview",
+    "accounting.donors"
+  ]
+}

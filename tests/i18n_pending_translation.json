@@ -1574,7 +1574,7 @@
       "params": []
     },
     "subscriptions.err_amend_line": {
-      "en": "This subscription has no such line. Reload the page and try again.",
+      "en": "One of these lines is not on the subscription on that date. Choose a date on or after the day the line was added.",
       "params": []
     },
     "subscriptions.err_amend_unchanged": {

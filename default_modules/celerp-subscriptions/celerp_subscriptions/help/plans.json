@@ -1,0 +1,45 @@
+{
+  "id": "subscriptions.plans",
+  "title": "SaaS plans and their prices",
+  "summary": "See each plan's price and how many subscribers it has.",
+  "keywords": [
+    "plan",
+    "saas",
+    "price",
+    "pricing"
+  ],
+  "routes": [
+    "/plans"
+  ],
+  "permission": "view_subscriptions",
+  "order": 6,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see each plan with its price and its active or paused subscribers.",
+      "labels": {
+        "nav": "nav.plans"
+      },
+      "image": null,
+      "capture": {
+        "route": "/plans",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {new} to add a plan. Open a plan to change its name or price.",
+      "labels": {
+        "new": "page.new_plan"
+      },
+      "image": null,
+      "capture": {
+        "route": "/plans",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.subscribers"
+  ]
+}

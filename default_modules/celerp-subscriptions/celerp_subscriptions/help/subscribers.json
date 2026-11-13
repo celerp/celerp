@@ -1,0 +1,63 @@
+{
+  "id": "subscriptions.subscribers",
+  "title": "Subscribers, plans and seats",
+  "summary": "Bill each subscriber for their plan, once per seat.",
+  "keywords": [
+    "subscriber",
+    "saas",
+    "seats",
+    "trial",
+    "plan"
+  ],
+  "routes": [
+    "/subscribers"
+  ],
+  "permission": "view_subscriptions",
+  "order": 5,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see every subscriber.",
+      "labels": {
+        "nav": "nav.subscribers"
+      },
+      "image": null,
+      "capture": {
+        "route": "/subscribers",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {new}, pick the {plan} and enter the {seats}. If you set a {trial}, the first bill goes out on that date.",
+      "labels": {
+        "new": "page.new_subscriber",
+        "plan": "subscriptions.plan",
+        "seats": "subscriptions.seats",
+        "trial": "subscriptions.trial_end"
+      },
+      "image": null,
+      "capture": {
+        "route": "/subscribers",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "To change the number of seats later, open the subscriber and use {chg} under {qty}. Periods from the date you choose bill the new quantity.",
+      "labels": {
+        "chg": "btn.change_quantities",
+        "qty": "subscriptions.quantities_heading"
+      },
+      "image": null,
+      "capture": {
+        "route": "/subscribers",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.plans",
+    "subscriptions.revenue"
+  ]
+}
