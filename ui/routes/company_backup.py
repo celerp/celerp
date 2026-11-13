@@ -77,7 +77,7 @@ from ui.routes.migrations import (
     wizard_table,
 )
 from ui.streaming import ClosingStreamingResponse
-from ui.components.encode import html_response, js, safe_url
+from ui.components.encode import html_response, js_value, safe_url
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -605,24 +605,24 @@ async def _opening_page(request: Request, mode: WizardMode):
         Noscript(A(t("company_backup.check_again"), href=safe_url(f"{mode.base}/opening"), cls="btn btn--secondary btn--full")),
         Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary btn--full"),
              method="post", action=safe_url(f"{mode.base}/opening/cancel")),
-        Script(js("""
-        (function () {{
+        Script("""
+        (function () {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
           var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
-          setTimeout(function poll() {{
-            fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.status === 404) {{ celerpGo({1}); return null; }}
+          setTimeout(function poll() {
+            fetch(CFG.status, {cache: 'no-store'}).then(function (r) {
+              if (r.status === 404) { celerpGo(CFG.opened); return null; }
               return r.ok ? r.json() : null;
-            }}).then(function (s) {{
-              if (!s) {{ setTimeout(poll, 2000); return; }}
-              if (s.state !== 'running') {{ celerpGo({1}); return; }}
+            }).then(function (s) {
+              if (!s) { setTimeout(poll, 2000); return; }
+              if (s.state !== 'running') { celerpGo(CFG.opened); return; }
               stage.textContent = s.text;
               bar.style.width = (s.percent || 0) + '%';
               setTimeout(poll, 1000);
-            }}).catch(function () {{ setTimeout(poll, 2000); }});
-          }}, 1000);
-        }})();
-        """,
-            str(status), str(opened))),
+            }).catch(function () { setTimeout(poll, 2000); });
+          }, 1000);
+        })();
+        """, data_cfg=js_value({'status': str(status), 'opened': str(opened)})),
         status_code=200,
         title=_TITLE,
     )
@@ -777,19 +777,19 @@ async def _restarting_page(request: Request, mode: WizardMode, message: str | No
         P(message or t("company_backup.restarting"), cls="form-hint"),
         P(t("company_backup.restart_slow"), cls="flash flash--warning", id="restart-timeout", style="display:none;"),
         A(t("company_backup.check_again"), href=safe_url(staged), cls="btn btn--secondary btn--full"),
-        Script(js("""
-        (function () {{
+        Script("""
+        (function () {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
           var tries = 0, MAX = 40;
-          setTimeout(function poll() {{
-            if (tries++ >= MAX) {{ document.getElementById('restart-timeout').style.display = ''; return; }}
-            fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ celerpGo({0}); }}
-              else {{ setTimeout(poll, 1500); }}
-            }}).catch(function () {{ setTimeout(poll, 1500); }});
-          }}, 2500);
-        }})();
-        """,
-            str(staged))),
+          setTimeout(function poll() {
+            if (tries++ >= MAX) { document.getElementById('restart-timeout').style.display = ''; return; }
+            fetch(CFG.staged, {cache: 'no-store'}).then(function (r) {
+              if (r.ok && r.headers.get('X-Celerp-Staged')) { celerpGo(CFG.staged); }
+              else { setTimeout(poll, 1500); }
+            }).catch(function () { setTimeout(poll, 1500); });
+          }, 2500);
+        })();
+        """, data_cfg=js_value({'staged': str(staged)})),
         _cancel(mode),
         status_code=status_code,
         title=_TITLE,

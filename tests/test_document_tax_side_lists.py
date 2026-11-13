@@ -4,13 +4,12 @@
 sales taxes. Scanning onto a document and opening it in the editor read the same list."""
 from __future__ import annotations
 
-import json
-import re
 import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from test_helpers import script_cfg
 from test_ui import _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
 
 _SALES = [{"name": "Output VAT", "rate": 7.0, "tax_type": "both", "is_default": True}]
@@ -69,7 +68,7 @@ async def test_purchasing_taxes_never_saved_read_as_the_sales_list(client):
 
 
 def _offered(html: str) -> list[dict]:
-    return json.loads(re.search(r"window\._CELERP_TAXES = (\[.*?\]);", html).group(1))
+    return script_cfg(html, "window._CELERP_TAXES = _CELERP_CFG.taxes")["taxes"]
 
 
 async def _editor(ui_client, doc_type: str, sales: list[dict] = _SALES, purchasing: list[dict] = _PURCHASING) -> str:

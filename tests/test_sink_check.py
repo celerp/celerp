@@ -118,3 +118,4 @@ def test_sink_check_module_root_reads_app_names(tmp_path):
     })
     hits = _hits(_run(repo).stdout)
     assert hits == Counter({"PY-JSHOLE | acme_tool/ui_routes.py:5": 1}), hits
+

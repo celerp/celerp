@@ -12,8 +12,8 @@ named in the comment above it, copied unchanged from lucide v1.8.0; "file-spread
 revision of that icon this file has always drawn. To add an icon, copy its elements from
 lucide's ``icons/<name>.js`` the same way, in alphabetical order."""
 
-from fasthtml.common import Span
-from ui.components.encode import Admitted, raw_html
+from fasthtml.common import Span, Svg
+from ui.components.encode import Admitted, raw_html, to_markup
 
 # Our name -> the Lucide icon it draws, where they differ:
 #   alert-triangle = triangle-alert     building = building-2
@@ -78,10 +78,9 @@ _ICONS: dict[str, Admitted] = {
 }
 
 
-_SVG_OPEN = ('<svg xmlns="http://www.w3.org/2000/svg" width="{length}" height="{length}" viewBox="0 0 24 24" '
-             'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"')
-_SVG = _SVG_OPEN + '>{shapes}</svg>'
-_SVG_HIDDEN = _SVG_OPEN + ' aria-hidden="true">{shapes}</svg>'
+_SVG_ATTRS = {"xmlns": "http://www.w3.org/2000/svg", "fill": "none",
+              "stroke": "currentColor", "stroke_width": "2", "stroke_linecap": "round",
+              "stroke_linejoin": "round"}
 
 
 def icon(name: str, size: float | str = 1, *, hidden: bool = True) -> Admitted:
@@ -95,7 +94,11 @@ def icon(name: str, size: float | str = 1, *, hidden: bool = True) -> Admitted:
     except KeyError:
         raise ValueError(f"Unknown icon {name!r}; the icons are: {', '.join(_ICONS)}") from None
     length = f"{size}em" if isinstance(size, (int, float)) else size
-    return raw_html(_SVG_HIDDEN if hidden else _SVG, length=length, shapes=shapes)
+    svg = Svg(shapes, width=length, height=length, **_SVG_ATTRS, **({"aria_hidden": "true"} if hidden else {}))
+    # FastHTML lowercases keyword attribute names, and viewBox is case-sensitive wherever the
+    # markup is read as XML, so it is set on the element as written.
+    svg.attrs["viewBox"] = "0 0 24 24"
+    return to_markup(svg)
 
 
 def icon_names() -> tuple[str, ...]:

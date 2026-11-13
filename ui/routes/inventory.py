@@ -29,7 +29,17 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import as_js, html_response, inert_media_type, js, raw_html, safe_url
+from ui.components.encode import (
+    as_js,
+    call,
+    EVENT,
+    html_response,
+    inert_media_type,
+    js_value,
+    raw_html,
+    safe_url,
+    THIS,
+)
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -722,7 +732,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             cls="sp-confirm-row",
         ),
         *(
-            [Script(js('_updateSplitDelta(document.getElementById({0}));', str(form_id)))]
+            [Script("_updateSplitDelta(document.currentScript.closest('form'));")]
             if _show_delta_badge else []
         ),
         hx_post=action,
@@ -1988,10 +1998,7 @@ def setup_routes(app):
         _make_available_btn = (
             Button(
                 t("inventory.make_available"),
-                onclick=js(
-                    "event.preventDefault();htmx.ajax('POST','/api/items/' + {0} + '/make-available',"
-                    "{{target:'#item-header-error',swap:'outerHTML'}});",
-                    entity_id),
+                onclick=call("celerpPost", EVENT, f"/api/items/{entity_id}/make-available", "#item-header-error"),
                 cls="btn btn--primary",
             )
             if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
@@ -2085,7 +2092,9 @@ def setup_routes(app):
                 A(t("inv.create_template"), href="/settings/labels", cls="dropdown-link"),
             )
         print_js = """
-function celerpPrintLabel(entityId, templateId) {
+function celerpPrintLabel(link, ev, entityId, templateId) {
+    ev.preventDefault();
+    link.closest('.print-label-dropdown').classList.remove('open');
     // UI-layer GET route: no API auth needed, auto-triggers window.print()
     celerpOpen('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
 }
@@ -2094,10 +2103,7 @@ function celerpPrintLabel(entityId, templateId) {
             A(
                 tpl.get("name", "Template"),
                 href="#",
-                onclick=js(
-                    "celerpPrintLabel({0},{1});this.closest('.print-label-dropdown').classList.remove('open');"
-                    'return false;',
-                    str(entity_id), str(tpl['id'])),
+                onclick=call("celerpPrintLabel", THIS, EVENT, str(entity_id), str(tpl["id"])),
                 cls="dropdown-item",
             )
             for tpl in templates
@@ -2564,19 +2570,8 @@ function celerpPrintLabel(entityId, templateId) {
             restore_url = f"/api/items/{entity_id}/field/{field}/display"
             patch_url = f"/api/items/{entity_id}/field/{field}"
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
-            escape_js = (
-                js(
-                    "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-                    "swap:'outerHTML'}});event.preventDefault();}}",
-                    str(restore_url))
-            )
-            add_new_url = "/settings/inventory?tab=locations"
-            onchange_js = (
-                js(
-                    "if(this.value==='__add_new__'){{celerpOpen({0},'_blank');this.value={1};"
-                    '}}',
-                    str(add_new_url), current_val)
-            )
+            escape_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
+            onchange_js = call("celerpAddNew", THIS, "__add_new__", "/settings/inventory?tab=locations", True, current_val)
             return Td(
                 Select(
                     *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
@@ -5641,9 +5636,7 @@ def _pricing_cost_stale(item: dict, currency: str | None, detail: str) -> tuple:
     both cost inputs and their opening texts set to the cost as it is now."""
     unit, total = (_cost_door_text(item, currency, per_unit) for per_unit in (True, False))
     return (Div(t("inventory.not_saved_detail", detail=detail),
-                Script(js(
-                    "document.getElementById('unit_cost_price').value={0};document.getElementById('total_cost_price').value={1};",
-                    unit, total)),
+                Script(call("celerpSetValues", {"unit_cost_price": unit, "total_cost_price": total})),
                 id="pricing-save-status", cls="recipe-save-status hint error", hx_swap_oob="true"),
             *_pricing_cost_opened(item, currency, oob=True))
 
@@ -6055,65 +6048,66 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
     paired_secondaries = list(_PAIRED_TABLE.values())
 
-    col_mgr_js = js("""
-(function() {{
+    col_mgr_js = """
+(function() {var CFG=JSON.parse(document.currentScript.dataset.cfg);
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = {0};
-  var ALL_COLS = {1};
+  var CAT_PREF = CFG.catPref;
+  var SELECTED_KEYS = CFG.selected;
+  var ALL_COLS = CFG.allCols;
   // Keys that are now merged into their primary column - strip from saved prefs
-  var MERGED_SECONDARIES = {2};
+  var MERGED_SECONDARIES = CFG.merged;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {3};
+  var VIRTUAL_FOLLOWERS = CFG.followers;
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
 
   // Load visibility from localStorage
-  function loadVis() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveVis(prefs) {{
+  function loadVis() {
+    try { return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveVis(prefs) {
     localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
-  }}
+  }
 
   // Load order from localStorage
-  function loadOrder() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveOrder(order) {{
+  function loadOrder() {
+    try { return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveOrder(order) {
     localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
-  }}
+  }
 
   // Apply column visibility to the data table
-  function applyVisToTable(prefs) {{
+  function applyVisToTable(prefs) {
     var table = document.getElementById('data-table');
     if (!table) return;
     var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
     var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
+    ths.forEach(function(th) {
       var key = th.dataset.key;
       var colIdx = Array.from(th.parentNode.children).indexOf(th);
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
+      rows.forEach(function(tr) {
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(table);
-  }}
+  }
 
   // Sync checkboxes in menu to match localStorage
-  function syncCheckboxes() {{
-    var prefs = loadVis() || {{}};
-    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
+  function syncCheckboxes() {
+    var prefs = loadVis() || {};
+    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
       cb.checked = prefs[cb.value] !== false;
-    }});
-  }}
+    });
+  }
 
   // Apply column order to table (move TH and TD columns)
-  function applyOrderToTable(order) {{
+  function applyOrderToTable(order) {
     if (!order || !order.length) return;
     var table = document.getElementById('data-table');
     if (!table) return;
@@ -6121,117 +6115,117 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     if (!thead_tr) return;
     var actionsTh = thead_tr.querySelector('.col-actions');
     // Move TH elements into order (before actions column); each primary drags its virtual followers
-    order.forEach(function(key) {{
+    order.forEach(function(key) {
       var th = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
       // Place virtual followers immediately after their primary
-      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
-      }});
-    }});
+      });
+    });
     // Re-order tbody cells to match header using data-col attribute
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
       var matchTd = tr.querySelector('.col-match');
       var actionsTd = tr.querySelector('.col-actions');
-      var dataCells = allThs.map(function(th) {{
-        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
-      }}).filter(Boolean);
-      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
+      var dataCells = allThs.map(function(th) {
+        return cells.find(function(td) { return td.dataset.col === th.dataset.key; });
+      }).filter(Boolean);
+      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {
         if (td) tr.appendChild(td);
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(table);
-  }}
+  }
 
   // Mirror the picker label order to match a given key array (picker is source of truth)
-  function applyOrderToPicker(order) {{
+  function applyOrderToPicker(order) {
     if (!order || !order.length) return;
     var labels = menu.querySelectorAll('label[data-col]');
     if (!labels.length) return;
     var parent = labels[0].parentNode;
     // Move labels into the declared order; unmentioned keys stay at end
-    order.forEach(function(key) {{
+    order.forEach(function(key) {
       var lbl = menu.querySelector('label[data-col="' + key + '"]');
       if (lbl) parent.appendChild(lbl);
-    }});
+    });
     // Always keep reset button and custom-col link at the bottom
     var resetBtn = menu.querySelector('#col-mgr-reset');
     if (resetBtn) parent.appendChild(resetBtn);
     var customLink = menu.querySelector('#col-mgr-custom-link');
     if (customLink) parent.appendChild(customLink);
-  }}
+  }
 
   // Get current picker order (label DOM order = source of truth)
-  function pickerOrder() {{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
-  }}
+  function pickerOrder() {
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) { return l.dataset.col; });
+  }
 
   // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {{
+  function saveToServer(visibleKeys) {
     var form = new FormData();
-    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({4}).forEach(function(kv) {{
+    visibleKeys.forEach(function(k) { form.append('cols', k); });
+    Object.entries(CFG.hidden).forEach(function(kv) {
       form.append(kv[0], kv[1]);
-    }});
-    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
-  }}
+    });
+    fetch('/inventory/columns', {method:'POST', body:form}).catch(function(){});
+  }
 
   // Toggle open/close
-  btn.addEventListener('click', function(e) {{
+  btn.addEventListener('click', function(e) {
     e.stopPropagation();
     var isOpen = menu.style.display !== 'none';
     menu.style.display = isOpen ? 'none' : '';
     if (!isOpen) syncCheckboxes();
-  }});
+  });
 
   // Close on outside click
-  document.addEventListener('click', function(e) {{
-    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
+  document.addEventListener('click', function(e) {
+    if (!btn.contains(e.target) && !menu.contains(e.target)) {
       menu.style.display = 'none';
-    }}
-  }});
+    }
+  });
 
   // Checkbox change: immediate column toggle + re-apply order so new column
   // appears at its picker position rather than at the DOM end of the table.
-  menu.addEventListener('change', function(e) {{
+  menu.addEventListener('change', function(e) {
     if (e.target.type !== 'checkbox') return;
     var key = e.target.value;
-    var prefs = Object.assign({{}}, loadVis());
+    var prefs = Object.assign({}, loadVis());
     // Init prefs from current state if empty
-    if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {5}.indexOf(c.key) !== -1; }});
-    }}
+    if (!Object.keys(prefs).length) {
+      ALL_COLS.forEach(function(c) { prefs[c.key] = SELECTED_KEYS.indexOf(c.key) !== -1; });
+    }
     prefs[key] = e.target.checked;
     saveVis(prefs);
     applyVisToTable(prefs);
     // Re-apply picker order so the newly-visible column lands in the right slot
     applyOrderToTable(pickerOrder());
     // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
+    var visibleKeys = ALL_COLS.filter(function(c) { return prefs[c.key] !== false; }).map(function(c){return c.key;});
     saveToServer(visibleKeys);
-  }});
+  });
 
   // Drag-and-drop reordering within column manager menu
   var dragSrc = null;
-  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
-    lbl.addEventListener('dragstart', function(e) {{
+  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {
+    lbl.addEventListener('dragstart', function(e) {
       dragSrc = lbl;
       e.dataTransfer.effectAllowed = 'move';
       lbl.style.opacity = '0.5';
-    }});
-    lbl.addEventListener('dragend', function() {{
+    });
+    lbl.addEventListener('dragend', function() {
       lbl.style.opacity = '';
       dragSrc = null;
-    }});
-    lbl.addEventListener('dragover', function(e) {{
+    });
+    lbl.addEventListener('dragover', function(e) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-    }});
-    lbl.addEventListener('drop', function(e) {{
+    });
+    lbl.addEventListener('drop', function(e) {
       e.preventDefault();
       if (!dragSrc || dragSrc === lbl) return;
       // Swap in picker DOM
@@ -6244,34 +6238,33 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var newOrder = pickerOrder();
       saveOrder(newOrder);
       applyOrderToTable(newOrder);
-    }});
-  }});
+    });
+  });
 
   // Listen for table-header drag reorder (fired by data_table.py drag handler)
-  document.addEventListener('celerp:col-reorder', function(e) {{
+  document.addEventListener('celerp:col-reorder', function(e) {
     if (!e.detail || !e.detail.order) return;
     applyOrderToPicker(e.detail.order);
-  }});
+  });
 
   // Init: apply localStorage state on page load
   // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
   var storedVis = loadVis();
-  if (storedVis) {{
-    MERGED_SECONDARIES.forEach(function(k) {{ delete storedVis[k]; }});
+  if (storedVis) {
+    MERGED_SECONDARIES.forEach(function(k) { delete storedVis[k]; });
     applyVisToTable(storedVis);
-  }}
+  }
   var storedOrder = loadOrder();
-  if (storedOrder) {{
-    storedOrder = storedOrder.filter(function(k) {{ return MERGED_SECONDARIES.indexOf(k) === -1; }});
+  if (storedOrder) {
+    storedOrder = storedOrder.filter(function(k) { return MERGED_SECONDARIES.indexOf(k) === -1; });
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
-  }}
+  }
 
   // Keep menu closed unless keep_open is set
-  menu.style.display = {6};
-}})();
-""",
-        cat_pref, col_data, paired_secondaries, virtual_followers, hidden_state, selected_keys, '' if keep_open else 'none')
+  menu.style.display = CFG.menuDisplay;
+})();
+"""
 
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
@@ -6310,7 +6303,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
             id="col-mgr-menu",
             style="display:none" if not keep_open else "",
         ),
-        Script(col_mgr_js),
+        Script(col_mgr_js, data_cfg=js_value({'catPref': cat_pref, 'allCols': col_data, 'merged': paired_secondaries, 'followers': virtual_followers, 'hidden': hidden_state, 'selected': selected_keys, 'menuDisplay': '' if keep_open else 'none'})),
         cls="column-manager",
         id="col-mgr-details",
     )
@@ -6435,7 +6428,7 @@ def _print_label_dropdown(entity_id: str) -> FT:
         Button("🖨",
             cls="btn btn--secondary btn--icon",
             title=t("btn._print_labels"),
-            onclick=js("var dd=document.getElementById({0});dd.classList.toggle('open');", str(dropdown_id)),
+            onclick=call("celerpToggleOpen", dropdown_id),
         ),
         Div(
             Div(
@@ -7657,7 +7650,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                 Td(_cur(unit_span), cls="cell--right"),
                 Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"),
             ), actions
-        unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
+        unit_id = f"unit_{conventional_key}"
+        total_id = f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
         # rest of the system where Enter always commits an inline edit.
         enter_commits = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
@@ -7667,9 +7661,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         is_cost = conventional_key == "cost_price"
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
                            step="any", min="0", placeholder="--", cls="form-input",
-                           oninput=js(
-                               'syncPricingTotal({0},{1},{2},{3})',
-                               str(unit_id), str(total_id), qty, cdp),
+                           oninput=call('syncPricingTotal', str(unit_id), str(total_id), qty, cdp),
                            onkeydown=enter_commits,
                            **{**_save, **({"hx_include": f"this, #{_PRICING_OPENED[True]}, #{_PRICING_OPENED_VERSION}"}
                                           if is_cost else {})})
@@ -7688,9 +7680,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             carried = ()
         total_input = Input(type="number", id=total_id, value=total_val, step="any", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
-                            oninput=js(
-                                'syncPricingUnit({0},{1},{2},{3},{4})',
-                                str(unit_id), str(total_id), qty, cdp, rdp),
+                            oninput=call('syncPricingUnit', str(unit_id), str(total_id), qty, cdp, rdp),
                             onkeydown=enter_commits, **total_save)
         return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input), cls="cell--right"), Td(_cur(total_input), *carried, cls="cell--right")), actions
 

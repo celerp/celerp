@@ -844,7 +844,8 @@ def test_chat_view_has_no_gif_and_an_upload_error_slot():
     html = to_xml(_chat_view(lang="en"))
     assert "image/gif" not in html
     assert 'id="ai-upload-error"' in html
-    assert t("ai.upload_failed", "en") in html
+    from test_helpers import script_cfg
+    assert script_cfg(html, "var CELERP_AI_TEXT")["upload_failed"] == t("ai.upload_failed", "en")
 
 
 # ── AI settings: per-user usage ─────────────────────────────────────────────

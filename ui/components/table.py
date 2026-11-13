@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import as_js, html_response, js, safe_url
+from ui.components.encode import call, EVENT, html_response, js_value, safe_url, THIS
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -1093,17 +1093,9 @@ def editable_cell(
     # Enter: trigger blur to save.
     # ESC: the restore request targets the cell, so the global htmx handler snapshots
     # the table's scroll position before it and restores it when it settles.
-    escape_js = (
-        js(
-            "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}else if(event.key==='Enter'){{"
-            "event.preventDefault();htmx.trigger(this,'blur');}}",
-            str(restore_url))
-    )
-    blur_restore_js = js(
-        "if(!this._escaping){{htmx.ajax('GET',{0},{{target:this.closest('td'),swap:'outerHTML'}}"
-        ')}}',
-        str(restore_url))
+    cell = {"url": str(restore_url)}
+    escape_js = call("celerpCellKey", THIS, EVENT, {**cell, "enter": "trigger"})
+    blur_restore_js = call("celerpCellBlur", THIS, cell)
     # Typed editors save on blur only a value changed from the one they opened with; leaving
     # an untouched editor restores the cell, so opening one and moving on never writes.
     # The opening value is read from the box on its first focus, not from the HTML value:
@@ -1111,18 +1103,10 @@ def editable_cell(
     blur_save = dict(
         onfocus="if(this._v===undefined)this._v=this.value",
         hx_trigger="blur[this.value!==this._v] delay:200ms",
-        onblur=(js(
-            "if(!this._escaping&&this.value===this._v){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}})}}",
-            str(restore_url))),
+        onblur=call("celerpCellBlur", THIS, {**cell, "when": "unchanged"}),
     )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
-    combobox_escape_js = (
-        js(
-            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});event.preventDefault();}}",
-            str(restore_url))
-    )
+    combobox_escape_js = call("celerpCellKey", THIS, EVENT, cell)
 
     if cell_type in ("select", "status") and options is not None:
         options = _options_with_mixed(options, display_val)
@@ -1188,12 +1172,7 @@ def editable_cell(
         )
     elif cell_type == "textarea":
         # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
-        textarea_escape_js = (
-            js(
-                "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
-                "swap:'outerHTML'}});event.preventDefault();}}",
-                str(restore_url))
-        )
+        textarea_escape_js = call("celerpCellKey", THIS, EVENT, cell)
         input_el = Textarea(
             display_val, name="value", **swap, **_aria, **blur_save,
             cls="cell-input cell-textarea-input", rows="5",
@@ -1461,7 +1440,7 @@ def row_menu(safe_id: str, *items: FT) -> FT:
     ``A`` or ``Button`` carrying ``row-menu-item``; ``safe_id`` is unique on the page."""
     return Td(
         Div(
-            Button("⋮", cls="row-menu-btn", onclick=js('toggleRowMenu({0})', str(safe_id))),
+            Button("⋮", cls="row-menu-btn", onclick=call('toggleRowMenu', str(safe_id))),
             Div(*items, cls="row-menu-dropdown", id=f"menu-{safe_id}"),
             cls="row-menu",
         ),
@@ -1498,10 +1477,8 @@ def data_row(
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=js(
-                          "celerpConfirm({0}).then(function(yes){{if(yes)htmx.ajax('DELETE',{1},{{"
-                          "target:'#row-' + {2},swap:'outerHTML'}});}})",
-                          _confirm_delete_row, str(_delete_url), safe_id))]
+                      onclick=call("celerpConfirmDelete", _confirm_delete_row, str(_delete_url),
+                                   f"#row-{safe_id}"))]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
@@ -1688,130 +1665,131 @@ def data_table(
             paired = f["paired_with"]
             key = f["key"]
             _virtual_followers.setdefault(paired, []).append(key)
-    _js = js("""
-(function(){{
-  var PAGE_KEY = {0};
-  var ORDER_KEY = 'celerp_col_order_' + {1};
-  var SCHEMA_DEFAULTS = {2};
+    _js = """
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var PAGE_KEY = CFG.pageKey;
+  var ORDER_KEY = 'celerp_col_order_' + CFG.entityType;
+  var SCHEMA_DEFAULTS = CFG.schemaDefaults;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {3};
+  var VIRTUAL_FOLLOWERS = CFG.virtualFollowers;
   var table = document.getElementById('data-table');
   if (!table) return;
   var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
   var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
 
-  var AUTO_HIDE = {4};
+  var AUTO_HIDE = CFG.autoHide;
 
   // Detect empty columns (>80% null/dash cells in tbody)
-  var colEmpty = {{}};
-  if (AUTO_HIDE) {{
-    ths.forEach(function(th, idx) {{
+  var colEmpty = {};
+  if (AUTO_HIDE) {
+    ths.forEach(function(th, idx) {
       var key = th.dataset.key;
       var total = rows.length;
       if (total === 0) return;
       var col_idx = Array.from(th.parentNode.children).indexOf(th);
-      var empty = rows.filter(function(tr) {{
+      var empty = rows.filter(function(tr) {
         var td = tr.cells[col_idx];
         if (!td) return true;
         var txt = td.textContent.trim();
         return !txt || txt === '--';
-      }}).length;
+      }).length;
       colEmpty[key] = total > 0 && (empty / total > 0.8);
-    }});
-  }}
+    });
+  }
 
   // Load persisted prefs or compute smart defaults
   var prefs;
-  try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null'); }} catch(e) {{ prefs = null; }}
-  if (!prefs) {{
-    prefs = {{}};
-    ths.forEach(function(th) {{
+  try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null'); } catch(e) { prefs = null; }
+  if (!prefs) {
+    prefs = {};
+    ths.forEach(function(th) {
       prefs[th.dataset.key] = AUTO_HIDE ? !colEmpty[th.dataset.key] : (SCHEMA_DEFAULTS[th.dataset.key] !== false);
-    }});
-  }} else {{
+    });
+  } else {
     // Merge: columns not in stored prefs get their schema default
-    ths.forEach(function(th) {{
-      if (!(th.dataset.key in prefs)) {{
+    ths.forEach(function(th) {
+      if (!(th.dataset.key in prefs)) {
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
-      }}
-    }});
-  }}
+      }
+    });
+  }
 
   // One source for the export link's column list: the columns the table shows, in order.
-  window.celerpSyncExportCols = function(t) {{
+  window.celerpSyncExportCols = function(t) {
     var keys = Array.from(t.querySelectorAll('thead th[data-key]'))
-      .filter(function(th) {{ return th.style.display !== 'none'; }})
-      .map(function(th) {{ return th.dataset.key; }});
-    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {{
+      .filter(function(th) { return th.style.display !== 'none'; })
+      .map(function(th) { return th.dataset.key; });
+    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {
       var url = new URL(a.getAttribute('href'), window.location.origin);
       url.searchParams.set('cols', keys.join(','));
       celerpSetUrl(a, 'href', url.pathname + url.search);
-    }});
-  }};
+    });
+  };
 
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
-  function applyVis(liveTable) {{
+  function applyVis(liveTable) {
     liveTable = liveTable || table;
     // Re-read prefs from localStorage so post-swap calls reflect changes made in
     // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
     // share the in-memory `prefs` variable from this IIFE closure).
-    try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; }} catch(e) {{}}
+    try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; } catch(e) {}
     var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
     var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
-    liveThs.forEach(function(th) {{
+    liveThs.forEach(function(th) {
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      liveRows.forEach(function(tr) {{
+      liveRows.forEach(function(tr) {
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(liveTable);
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
-  }}
+  }
   applyVis();
   // Re-apply after HTMX settles so rows added during the swap phase are also covered.
   // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
   // accumulate duplicate listeners on document.body.
   window.__celerpVisSettle = window.__celerpVisSettle || new Set();
-  if (!window.__celerpVisSettle.has({1})) {{
-    window.__celerpVisSettle.add({1});
-    document.body.addEventListener('htmx:afterSettle', function(e) {{
+  if (!window.__celerpVisSettle.has(CFG.entityType)) {
+    window.__celerpVisSettle.add(CFG.entityType);
+    document.body.addEventListener('htmx:afterSettle', function(e) {
       var tid = e.detail && e.detail.target ? e.detail.target.id || '' : '';
       // The whole content, or one row re-rendered in place (data_row draws every column).
-      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {{
+      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {
         // Re-query the live table after each settle - the old `table` ref may be detached
         var liveTable = document.getElementById('data-table');
         if (liveTable) applyVis(liveTable);
-      }}
-    }});
-  }}
+      }
+    });
+  }
 
   // Drag-to-resize column headers — persist widths to localStorage
-  var WIDTH_KEY = 'celerp_col_widths_' + {1};
-  function loadWidths() {{
-    try {{ return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveWidths() {{
-    var w = {{}};
-    ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
-    try {{ localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); }} catch(e) {{}}
-  }}
+  var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType;
+  function loadWidths() {
+    try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveWidths() {
+    var w = {};
+    ths.forEach(function(th) { if (th.style.width) w[th.dataset.key] = th.style.width; });
+    try { localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); } catch(e) {}
+  }
   // Restore persisted widths synchronously. A saved width is an explicit px value that needs no
   // committed layout, and applying it before the sticky controller can pin the header is what keeps
   // the frozen header's captured geometry in step with the body for a custom column layout.
-  (function() {{
+  (function() {
     var saved = loadWidths();
-    if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }})();
-  ths.forEach(function(th) {{
+    if (saved) ths.forEach(function(th) { if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; });
+  })();
+  ths.forEach(function(th) {
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
     th.style.position = 'relative';
     th.appendChild(handle);
     var startX, startW;
-    handle.addEventListener('mousedown', function(e) {{
+    handle.addEventListener('mousedown', function(e) {
       startX = e.pageX;
       startW = th.offsetWidth;
       e.preventDefault();
@@ -1821,24 +1799,24 @@ def data_table(
       document.body.classList.add('col-resizing');
       var scrollWrap = table.closest('.table-scroll-wrap');
       var autoScrollRaf = null;
-      function onMove(e2) {{
+      function onMove(e2) {
         e2.preventDefault();
         th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px';
         // Auto-scroll the container when dragging near the right edge
-        if (scrollWrap) {{
+        if (scrollWrap) {
           var rect = scrollWrap.getBoundingClientRect();
           var ZONE = 48; // px from edge to trigger auto-scroll
           if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
-          if (e2.clientX > rect.right - ZONE) {{
+          if (e2.clientX > rect.right - ZONE) {
             var speed = Math.round((e2.clientX - (rect.right - ZONE)) / ZONE * 12) + 2;
-            (function scroll() {{
+            (function scroll() {
               scrollWrap.scrollLeft += speed;
               autoScrollRaf = requestAnimationFrame(scroll);
-            }})();
-          }}
-        }}
-      }}
-      function onUp() {{
+            })();
+          }
+        }
+      }
+      function onUp() {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
         if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
@@ -1847,330 +1825,330 @@ def data_table(
         // Let the sticky controller recapture the new width once, now the drag is over, so a pinned
         // header re-aligns its body to the dragged column instead of staying at the old geometry.
         window.dispatchEvent(new Event('resize'));
-      }}
+      }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
-    }});
-  }});
+    });
+  });
 
   // Drag-and-drop column reorder via HTML5 drag on <th>
   var dragKey = null;
-  ths.forEach(function(th) {{
-    th.addEventListener('dragstart', function(e) {{
+  ths.forEach(function(th) {
+    th.addEventListener('dragstart', function(e) {
       dragKey = th.dataset.key;
       e.dataTransfer.effectAllowed = 'move';
       th.classList.add('col-dragging');
-    }});
-    th.addEventListener('dragend', function() {{
+    });
+    th.addEventListener('dragend', function() {
       th.classList.remove('col-dragging');
       dragKey = null;
-      table.querySelectorAll('th[data-key]').forEach(function(t) {{ t.classList.remove('col-drag-over'); }});
-    }});
-    th.addEventListener('dragover', function(e) {{
+      table.querySelectorAll('th[data-key]').forEach(function(t) { t.classList.remove('col-drag-over'); });
+    });
+    th.addEventListener('dragover', function(e) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      table.querySelectorAll('th[data-key]').forEach(function(t) {{ t.classList.remove('col-drag-over'); }});
+      table.querySelectorAll('th[data-key]').forEach(function(t) { t.classList.remove('col-drag-over'); });
       th.classList.add('col-drag-over');
-    }});
-    th.addEventListener('drop', function(e) {{
+    });
+    th.addEventListener('drop', function(e) {
       e.preventDefault();
       th.classList.remove('col-drag-over');
       if (!dragKey || dragKey === th.dataset.key) return;
       // Resolve the canonical group: if dragging a virtual, treat its primary as the drag source
       var effectiveDragKey = dragKey;
-      for (var pk in VIRTUAL_FOLLOWERS) {{
-        if (VIRTUAL_FOLLOWERS[pk].indexOf(dragKey) !== -1) {{ effectiveDragKey = pk; break; }}
-      }}
+      for (var pk in VIRTUAL_FOLLOWERS) {
+        if (VIRTUAL_FOLLOWERS[pk].indexOf(dragKey) !== -1) { effectiveDragKey = pk; break; }
+      }
       // Move TH (and any virtual followers) before the drop target
       var thead_tr = table.querySelector('thead tr');
       var srcTh = thead_tr.querySelector('th[data-key="' + effectiveDragKey + '"]');
       if (!srcTh) return;
       thead_tr.insertBefore(srcTh, th);
       // Place virtual followers immediately after the primary
-      (VIRTUAL_FOLLOWERS[effectiveDragKey] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[effectiveDragKey] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth) srcTh.insertAdjacentElement('afterend', vth);
-      }});
+      });
       // Re-order body cells to match header
       var allThs = Array.from(thead_tr.children);
-      table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+      table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
         var cells = Array.from(tr.children);
-        var newOrder = allThs.map(function(h) {{
+        var newOrder = allThs.map(function(h) {
           var k = h.dataset.key;
           if (!k) return null;
-          return cells.find(function(td) {{ return td.dataset.col === k; }});
-        }}).filter(Boolean);
+          return cells.find(function(td) { return td.dataset.col === k; });
+        }).filter(Boolean);
         // Preserve fixed columns (checkbox, search match, actions) by class
         var checkboxTd = tr.querySelector('.col-checkbox');
         var matchTd = tr.querySelector('.col-match');
         var actionsTd = tr.querySelector('.col-actions');
-        var dataTds = newOrder.filter(function(td) {{
+        var dataTds = newOrder.filter(function(td) {
           return td && td !== checkboxTd && td !== actionsTd;
-        }});
+        });
         var ordered = [];
         if (checkboxTd) ordered.push(checkboxTd);
         if (matchTd) ordered.push(matchTd);
         ordered = ordered.concat(dataTds);
         if (actionsTd) ordered.push(actionsTd);
-        ordered.forEach(function(td) {{ tr.appendChild(td); }});
-      }});
+        ordered.forEach(function(td) { tr.appendChild(td); });
+      });
       // Persist new order and notify picker
-      var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
-      try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
-      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
+      var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){return h.dataset.key;});
+      try { localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); } catch(e) {}
+      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {detail: {order: newOrder}}));
       window.celerpSyncExportCols(table);
       dragKey = null;
-    }});
-  }});
+    });
+  });
 
   // Apply persisted column order on page load
   var storedOrder;
-  try {{ storedOrder = JSON.parse(localStorage.getItem(ORDER_KEY) || 'null'); }} catch(e) {{ storedOrder = null; }}
-  if (storedOrder && storedOrder.length) {{
+  try { storedOrder = JSON.parse(localStorage.getItem(ORDER_KEY) || 'null'); } catch(e) { storedOrder = null; }
+  if (storedOrder && storedOrder.length) {
     var thead_tr = table.querySelector('thead tr');
     var actionsTh = thead_tr.querySelector('.col-actions');
-    storedOrder.forEach(function(key) {{
+    storedOrder.forEach(function(key) {
       var th2 = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th2 && actionsTh) thead_tr.insertBefore(th2, actionsTh);
       // Place virtual followers immediately after their primary
-      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
-      }});
-    }});
+      });
+    });
     // Re-order tbody to match new header order
     var allThs2 = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
       var matchTd = tr.querySelector('.col-match');
       var actionsTd = tr.querySelector('.col-actions');
-      var dataCells = allThs2.map(function(th2) {{
-        return cells.find(function(td) {{ return td.dataset.col === th2.dataset.key; }});
-      }}).filter(Boolean);
+      var dataCells = allThs2.map(function(th2) {
+        return cells.find(function(td) { return td.dataset.col === th2.dataset.key; });
+      }).filter(Boolean);
       var ordered = [];
       if (checkboxTd) ordered.push(checkboxTd);
       if (matchTd) ordered.push(matchTd);
       ordered = ordered.concat(dataCells);
       if (actionsTd) ordered.push(actionsTd);
-      ordered.forEach(function(td) {{ tr.appendChild(td); }});
-    }});
-  }}
-}})();
-""",
-        str(page_key), entity_type, _schema_defaults, _virtual_followers, bool(auto_hide_empty))
-    _bulk_js = js(r"""var I18N_CONFIRM_MERGE={0};
-var I18N_A_NEW_SKU={1};
-var I18N_NEW_DOC_TYPE={2};
-var I18N_N_SELECTED={3};
+      ordered.forEach(function(td) { tr.appendChild(td); });
+    });
+  }
+})();
+"""
+    _bulk_js = r"""var _CELERP_BULK_CFG=JSON.parse(document.currentScript.dataset.cfg);
+var I18N_CONFIRM_MERGE=_CELERP_BULK_CFG.confirmMerge;
+var I18N_A_NEW_SKU=_CELERP_BULK_CFG.aNewSku;
+var I18N_NEW_DOC_TYPE=_CELERP_BULK_CFG.newDocType;
+var I18N_N_SELECTED=_CELERP_BULK_CFG.nSelected;
 
-var CelerpSelection=(function(){{
-  var KEY={4},_map={{}};
-  function _save(){{try{{sessionStorage.setItem(KEY,JSON.stringify(_map))}}catch(e){{}}}}
-  function _load(){{try{{_map=JSON.parse(sessionStorage.getItem(KEY)||'{{}}')}}catch(e){{_map={{}}}}}}
+var CelerpSelection=(function(){
+  var KEY=_CELERP_BULK_CFG.selectionKey,_map={};
+  function _save(){try{sessionStorage.setItem(KEY,JSON.stringify(_map))}catch(e){}}
+  function _load(){try{_map=JSON.parse(sessionStorage.getItem(KEY)||'{}')}catch(e){_map={}}}
   _load();
-  return {{
-    add:function(id,meta){{_map[id]=meta;_save()}},
-    remove:function(id){{delete _map[id];_save()}},
-    has:function(id){{return id in _map}},
-    clear:function(){{_map={{}};_save()}},
-    count:function(){{return Object.keys(_map).length}},
-    ids:function(){{return Object.keys(_map)}},
-    all:function(){{return Object.assign({{}},_map)}},
-    syncCheckboxes:function(){{
-      document.querySelectorAll('.row-select').forEach(function(cb){{cb.checked=!!_map[cb.value]}});
-    }}
-  }};
-}})();
-function submitBulkAction(formEl){{
-  formEl.querySelectorAll('input[name="selected"]').forEach(function(el){{el.remove()}});
-  CelerpSelection.ids().forEach(function(id){{
+  return {
+    add:function(id,meta){_map[id]=meta;_save()},
+    remove:function(id){delete _map[id];_save()},
+    has:function(id){return id in _map},
+    clear:function(){_map={};_save()},
+    count:function(){return Object.keys(_map).length},
+    ids:function(){return Object.keys(_map)},
+    all:function(){return Object.assign({},_map)},
+    syncCheckboxes:function(){
+      document.querySelectorAll('.row-select').forEach(function(cb){cb.checked=!!_map[cb.value]});
+    }
+  };
+})();
+function submitBulkAction(formEl){
+  formEl.querySelectorAll('input[name="selected"]').forEach(function(el){el.remove()});
+  CelerpSelection.ids().forEach(function(id){
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     formEl.appendChild(inp);
-  }});
+  });
   return true;
-}}
-function _clearBulkResult(){{
+}
+function _clearBulkResult(){
   var r=document.getElementById('bulk-action-result');
   if(r) r.replaceChildren();
-}}
-function _resetBulkActions(){{
+}
+function _resetBulkActions(){
   var sel=document.getElementById('bulk-action-select');
   if(sel) sel.value='';
   var ctx=document.getElementById('bulk-context');
   if(ctx) ctx.replaceChildren();
   _clearBulkResult();
-}}
-function bulkActionChanged(action){{
+}
+function bulkActionChanged(action){
   var ctx=document.getElementById('bulk-context');
   if(!ctx) return;
   ctx.replaceChildren();
   _clearBulkResult();
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
-  if(action==='archive'){{
+  if(action==='archive'){
     // Archiving retires the product but leaves any remaining stock on the books. When stock is
     // still held the user must choose (keep on books vs write off) - never a silent ledger move.
-    if(_selectedStockedIds().length){{_stockGuardChoice(function(){{_bulkImmediate('/api/items/bulk/status','bulk_status','archived');}});return;}}
-    celerpConfirm({5}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');}});return;
-  }}
-  if(action==='restore'){{
-    celerpConfirm({6}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');}});return;
-  }}
-  if(action==='expire'){{
+    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
+    celerpConfirm(_CELERP_BULK_CFG.confirmArchive).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
+  }
+  if(action==='restore'){
+    celerpConfirm(_CELERP_BULK_CFG.confirmRestore).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
+  }
+  if(action==='expire'){
     // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
-    if(_selectedStockedIds().length){{_stockGuardChoice(function(){{_bulkImmediate('/api/items/bulk/expire',null,null);}});return;}}
+    if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/expire',null,null);});return;}
     _bulkImmediate('/api/items/bulk/expire',null,null);return;
-  }}
-  if(action==='write_off'){{
+  }
+  if(action==='write_off'){
     _bulkWriteOff();return;
-  }}
-  if(action==='make_available'){{
-    celerpConfirm({7}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);}});return;
-  }}
-  if(action==='revert_to_draft'){{
-    celerpConfirm({8}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);}});return;
-  }}
-  if(action==='delete'){{
+  }
+  if(action==='make_available'){
+    celerpConfirm(_CELERP_BULK_CFG.confirmMakeAvailable).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
+  }
+  if(action==='revert_to_draft'){
+    celerpConfirm(_CELERP_BULK_CFG.confirmRevertToDraft).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
+  }
+  if(action==='delete'){
     // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
     var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
-    celerpConfirm(samples?{10}:{9}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);}});return;
-  }}
-  if(action==='restore_deleted'){{
+    celerpConfirm(samples?_CELERP_BULK_CFG.confirmDelete:_CELERP_BULK_CFG.confirmDeleteDrafts).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
+  }
+  if(action==='restore_deleted'){
     _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
-  }}
-  if(action==='duplicate'){{
-    celerpConfirm({11}).then(function(yes){{if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);}});return;
-  }}
+  }
+  if(action==='duplicate'){
+    celerpConfirm(_CELERP_BULK_CFG.confirmDuplicate).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
+  }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
-  // mod: actions use tpl-mod-{{action_id}} where action_id strips the mod: prefix.
+  // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
   // The option value and template id must be derived the same way to stay in sync.
   var tplId=action.startsWith('mod:')?'tpl-mod-'+action.slice(4):'tpl-'+action;
   if(action==='send_to') tplId='tpl-send-to';
   var tpl=document.getElementById(tplId);
   if(!tpl) return;
   // Validate selection count constraints
-  if(action==='split'&&n!==1){{alert({12});return;}}
-  if(action==='transform'&&n!==1){{alert({13});return;}}
-  if(action==='merge'&&n<2){{alert({14});return;}}
+  if(action==='split'&&n!==1){alert(_CELERP_BULK_CFG.splitNeedsOne);return;}
+  if(action==='transform'&&n!==1){alert(_CELERP_BULK_CFG.transformNeedsOne);return;}
+  if(action==='merge'&&n<2){alert(_CELERP_BULK_CFG.mergeNeedsTwo);return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
   // Split: auto-load preview immediately; no qty input needed
-  if(action==='split'){{
+  if(action==='split'){
     if(window.htmx) htmx.process(ctx);
     if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
     return;
-  }}
+  }
   // Transform: auto-load preview immediately
-  if(action==='transform'){{
+  if(action==='transform'){
     var ids = CelerpSelection.ids();
     if(!ids.length) return;
     var entityId = ids[0];
     var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
-    htmx.ajax('GET', url, {{ target: '#bulk-transform-preview', swap: 'innerHTML' }})
-      .then(function() {{
+    htmx.ajax('GET', url, { target: '#bulk-transform-preview', swap: 'innerHTML' })
+      .then(function() {
         if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview'));
         if (typeof transformPreviewInit === 'function') transformPreviewInit('bulk-transform-preview-form');
-      }});
+      });
     return;
-  }}
+  }
   // Merge: populate target dropdown with selected items
   if(action==='merge') _populateMergeTargets();
   // Re-process htmx on new content
   if(window.htmx) htmx.process(ctx);
-}}
-function _bulkImmediate(url,extraName,extraValue){{
+}
+function _bulkImmediate(url,extraName,extraValue){
   var form=document.createElement('form');
-  CelerpSelection.ids().forEach(function(id){{
+  CelerpSelection.ids().forEach(function(id){
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     form.appendChild(inp);
-  }});
-  if(extraName){{
+  });
+  if(extraName){
     var ex=document.createElement('input');ex.type='hidden';ex.name=extraName;ex.value=extraValue;
     form.appendChild(ex);
-  }}
+  }
   document.body.appendChild(form);
   // Remove the form only after the request completes (see merge handler note) so HX-Trigger
   // events fired on the source element still reach the document-level listeners.
-  htmx.ajax('POST',url,{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
-    .then(function(){{form.remove();}},function(){{form.remove();}});
-}}
-function _selectedStockedIds(){{
+  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+    .then(function(){form.remove();},function(){form.remove();});
+}
+function _selectedStockedIds(){
   // Selected items that still hold stock (quantity > 0). Prefer the live rendered qty - an inline
   // edit re-renders the row's checkbox - and fall back to the selection snapshot for rows not on
   // the current page, so the guard is never skipped on stale zero data.
   var all=CelerpSelection.all();
-  return Object.keys(all).filter(function(id){{
+  return Object.keys(all).filter(function(id){
     var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
     var q=(cb&&cb.dataset.qty!=null&&cb.dataset.qty!=='')?cb.dataset.qty:(all[id].qty||'0');
     return parseFloat(q)>0;
-  }});
-}}
-function _stockGuardChoice(keepFn){{
+  });
+}
+function _stockGuardChoice(keepFn){
   // The unmissable two-way choice for archiving/expiring still-stocked items (GDR 2d): keep the
   // stock on the books, or write it off. Cancel and Esc are the way back; no action fires until
   // the user picks, so nothing moves on the ledger automatically.
   var existing=document.getElementById('stock-guard-choice');
-  if(existing){{existing.close();existing.remove();}}
+  if(existing){existing.close();existing.remove();}
   var dlg=document.createElement('dialog');
   dlg.className='modal-dialog';dlg.id='stock-guard-choice';
   var body=document.createElement('div');body.className='modal-body';
   var msg=document.createElement('p');
-  msg.textContent={15};
+  msg.textContent=_CELERP_BULK_CFG.stockGuardPrompt;
   body.appendChild(msg);
   var acts=document.createElement('div');acts.className='modal-actions';
-  function mkBtn(label,cls,fn){{var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){{dlg.close();dlg.remove();if(fn)fn();}});return b;}}
-  acts.appendChild(mkBtn({16},'btn--secondary',keepFn));
-  acts.appendChild(mkBtn({17},'btn--primary',_bulkWriteOff));
-  acts.appendChild(mkBtn({18},'btn--ghost',null));
+  function mkBtn(label,cls,fn){var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){dlg.close();dlg.remove();if(fn)fn();});return b;}
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.keepStock,'btn--secondary',keepFn));
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.writeOff,'btn--primary',_bulkWriteOff));
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.cancel,'btn--ghost',null));
   body.appendChild(acts);dlg.appendChild(body);
   document.body.appendChild(dlg);
-  dlg.addEventListener('cancel',function(){{dlg.remove();}});
+  dlg.addEventListener('cancel',function(){dlg.remove();});
   dlg.showModal();
-}}
-function _bulkWriteOff(){{
+}
+function _bulkWriteOff(){
   // Seed a draft write-off list from the current selection and navigate to it (the server proxy
   // replies with HX-Redirect to the new list). Data entry happens on-page in that list.
   var form=document.createElement('form');
-  CelerpSelection.ids().forEach(function(id){{
+  CelerpSelection.ids().forEach(function(id){
     var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
     form.appendChild(inp);
-  }});
+  });
   document.body.appendChild(form);
-  htmx.ajax('POST','/api/items/bulk/write-off',{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
-    .then(function(){{form.remove();}},function(){{form.remove();}});
-}}
-function _liveMergeMeta(id){{
+  htmx.ajax('POST','/api/items/bulk/write-off',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+    .then(function(){form.remove();},function(){form.remove();});
+}
+function _liveMergeMeta(id){
   // The SKU/name shown here must reflect the CURRENT value: an inline edit changes the
   // cell without re-selecting the row, so the meta snapshotted at select time (and kept
   // in sessionStorage) goes stale. Read the live row when it is on the page; fall back to
   // the stored snapshot only for selected rows not currently rendered (other pages).
   var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
-  if(cb){{
+  if(cb){
     var tr=cb.closest('tr');
     var skuCell=tr&&tr.querySelector('[data-col="sku"]');
     var nameCell=tr&&tr.querySelector('[data-col="name"]');
-    return {{sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
-            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()}};
-  }}
-  var m=CelerpSelection.all()[id]||{{}};
-  return {{sku:m.sku||'',name:m.name||''}};
-}}
-function _populateMergeTargets(){{
+    return {sku:((skuCell?skuCell.textContent:cb.dataset.sku)||'').trim(),
+            name:((nameCell?nameCell.textContent:cb.dataset.name)||'').trim()};
+  }
+  var m=CelerpSelection.all()[id]||{};
+  return {sku:m.sku||'',name:m.name||''};
+}
+function _populateMergeTargets(){
   var sel=document.getElementById('merge-target-select');
   if(!sel) return;
   var all=CelerpSelection.all();
-  Object.keys(all).forEach(function(id){{
+  Object.keys(all).forEach(function(id){
     var meta=_liveMergeMeta(id);
     var opt=document.createElement('option');
     opt.value=id;
     opt.textContent=(meta.sku||id)+' - '+(meta.name||'');
     sel.appendChild(opt);
-  }});
+  });
   // Keep "New SKU" as the last choice, below the item options.
   var newSkuOpt=document.getElementById('merge-new-sku-opt');
   if(newSkuOpt) sel.appendChild(newSkuOpt);
-  sel.addEventListener('change',function(){{
+  sel.addEventListener('change',function(){
     var confirmDiv=document.getElementById('merge-confirm');
     if(!confirmDiv) return;
     var n=CelerpSelection.count();
@@ -2182,15 +2160,15 @@ function _populateMergeTargets(){{
     confirmDiv.style.gap='0.5rem';
     confirmDiv.style.marginTop='0.5rem';
     var msg=document.createElement('span');
-    msg.textContent=I18N_CONFIRM_MERGE.replace('{{n}}',n).replace('{{target}}',isNewSku?I18N_A_NEW_SKU:targetText);
+    msg.textContent=I18N_CONFIRM_MERGE.replace('{n}',n).replace('{target}',isNewSku?I18N_A_NEW_SKU:targetText);
     msg.style.fontSize='0.85rem';
     // "New SKU" reveals [dropdown] -> [enter SKU]; picking an item hides it
     // (that item's SKU wins, so there is nothing extra to show).
     var skuInput=document.getElementById('merge-resulting-sku');
     var skuArrow=document.getElementById('merge-sku-arrow');
-    if(skuInput){{skuInput.style.display=isNewSku?'':'none';skuInput.value='';}}
-    if(skuArrow){{skuArrow.style.display=isNewSku?'':'none';}}
-    if(isNewSku&&skuInput){{skuInput.focus();}}
+    if(skuInput){skuInput.style.display=isNewSku?'':'none';skuInput.value='';}
+    if(skuArrow){skuArrow.style.display=isNewSku?'':'none';}
+    if(isNewSku&&skuInput){skuInput.focus();}
     // Items held in different inventory accounts: say how much value the merge moves
     // between them before the user confirms.
     var survivor=isNewSku?CelerpSelection.ids()[0]:sel.value;
@@ -2200,17 +2178,17 @@ function _populateMergeTargets(){{
     note.style.display='none';
     // The confirmation carries the fingerprint of a preview of exactly what it asks
     // for, so the merge refuses if the items change after the user saw this.
-    function preview(resultingSku){{
+    function preview(resultingSku){
       var pf=new FormData();
-      CelerpSelection.ids().forEach(function(id){{pf.append('selected',id);}});
+      CelerpSelection.ids().forEach(function(id){pf.append('selected',id);});
       pf.append('target_sku_from',survivor);
       if(resultingSku) pf.append('resulting_sku',resultingSku);
-      return fetch('/api/items/merge/preview',{{method:'POST',body:pf}})
-        .then(function(r){{return r.json();}})
-        .then(function(d){{return {{message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''}};}})
-        .catch(function(){{return {{message:'',fingerprint:''}};}});
-    }}
-    function show(p){{note.textContent=p.message;note.style.display=p.message?'':'none';}}
+      return fetch('/api/items/merge/preview',{method:'POST',body:pf})
+        .then(function(r){return r.json();})
+        .then(function(d){return {message:(d&&(d.message||d.error))||'',fingerprint:(d&&d.plan_fingerprint)||''};})
+        .catch(function(){return {message:'',fingerprint:''};});
+    }
+    function show(p){note.textContent=p.message;note.style.display=p.message?'':'none';}
     var planned=preview('');
     planned.then(show);
     // One key per confirmation, so a repeated click merges once.
@@ -2219,148 +2197,148 @@ function _populateMergeTargets(){{
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
     var btn=document.createElement('button');
-    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent={19};
-    btn.addEventListener('click',function(){{
+    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent=_CELERP_BULK_CFG.confirm;
+    btn.addEventListener('click',function(){
       var skuEl=document.getElementById('merge-resulting-sku');
       // "New SKU" mode needs a typed SKU; the merge bases on the first selected
       // item (deterministic - the pick only decides the SKU, not the survivor).
-      if(isNewSku && (!skuEl || !skuEl.value.trim())){{
+      if(isNewSku && (!skuEl || !skuEl.value.trim())){
         if(skuEl) skuEl.focus();
         return;
-      }}
+      }
       var resultingSku=isNewSku?skuEl.value.trim():'';
       // The typed SKU is part of the merge, so it is previewed with it. If what the
       // merge moves changed since the user read it, show the new note and wait for
       // another click.
       var reviewed=planned;
-      if(resultingSku){{
-        reviewed=preview(resultingSku).then(function(p){{
-          if(p.message!==note.textContent){{show(p);return null;}}
+      if(resultingSku){
+        reviewed=preview(resultingSku).then(function(p){
+          if(p.message!==note.textContent){show(p);return null;}
           return p;
-        }});
-      }}
-      reviewed.then(function(p){{
+        });
+      }
+      reviewed.then(function(p){
         if(!p) return;
         var fingerprint=p.fingerprint;
         var form=document.createElement('form');
-        CelerpSelection.ids().forEach(function(id){{
+        CelerpSelection.ids().forEach(function(id){
           var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
           form.appendChild(inp);
-        }});
-        var fields={{target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint}};
-        Object.keys(fields).forEach(function(name){{
+        });
+        var fields={target_sku_from:survivor,idempotency_key:mergeKey,resulting_sku:resultingSku,plan_fingerprint:fingerprint};
+        Object.keys(fields).forEach(function(name){
           if(!fields[name]) return;
           var inp=document.createElement('input');inp.type='hidden';inp.name=name;inp.value=fields[name];
           form.appendChild(inp);
-        }});
+        });
         document.body.appendChild(form);
         // Keep the form attached until the request finishes - removing it early detaches the htmx
         // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
-        htmx.ajax('POST','/api/items/bulk/merge',{{source:form,target:'#bulk-action-result',swap:'outerHTML'}})
-          .then(function(){{form.remove();}},function(){{form.remove();}});
-      }});
-    }});
+        htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+          .then(function(){form.remove();},function(){form.remove();});
+      });
+    });
     var cancel=document.createElement('button');
-    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent={18};
-    cancel.addEventListener('click',function(){{
+    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent=_CELERP_BULK_CFG.cancel;
+    cancel.addEventListener('click',function(){
       confirmDiv.style.display='none';
       sel.value='';
-      if(skuInput){{skuInput.style.display='none';skuInput.value='';}}
-      if(skuArrow){{skuArrow.style.display='none';}}
+      if(skuInput){skuInput.style.display='none';skuInput.value='';}
+      if(skuArrow){skuArrow.style.display='none';}
       _clearBulkResult();
-    }});
+    });
     confirmDiv.appendChild(msg);
     confirmDiv.appendChild(note);
     btnRow.appendChild(btn);
     btnRow.appendChild(cancel);
     confirmDiv.appendChild(btnRow);
-  }});
-}}
-function sendToTypeChanged(docType, docLabel){{
+  });
+}
+function sendToTypeChanged(docType, docLabel){
   var targetSel=document.getElementById('send-to-target-select');
   if(!targetSel) return;
   // Reset to just "New <type>", using the type's display label not its raw key
   targetSel.replaceChildren();
   var newOpt=document.createElement('option');
-  newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{{type}}',(docLabel||docType));
+  newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{type}',(docLabel||docType));
   targetSel.appendChild(newOpt);
   if(!docType) return;
   // Fetch matching docs
   fetch('/api/items/send-to/search?doc_type='+encodeURIComponent(docType))
-    .then(function(r){{return r.json()}})
-    .then(function(docs){{
-      docs.forEach(function(d){{
+    .then(function(r){return r.json()})
+    .then(function(docs){
+      docs.forEach(function(d){
         var opt=document.createElement('option');
         opt.value=d.id||d.entity_id||'';
         opt.textContent=(d.label||d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
         targetSel.appendChild(opt);
-      }});
-    }}).catch(function(){{}});
-}}
-(function(){{
-  function _meta(cb){{return {{sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||'',status:cb.dataset.status||''}};}}
-  function updateBulkToolbar(){{
+      });
+    }).catch(function(){});
+}
+(function(){
+  function _meta(cb){return {sku:cb.dataset.sku||'',name:cb.dataset.name||'',qty:cb.dataset.qty||'0',weight:cb.dataset.weight||'',weight_unit:cb.dataset.weightUnit||'',sell_by:cb.dataset.sellBy||'',status:cb.dataset.status||''};}
+  function updateBulkToolbar(){
     var n=CelerpSelection.count();
     var toolbar=document.getElementById('bulk-toolbar');
     var countEl=document.getElementById('bulk-count');
     var clearBtn=document.getElementById('bulk-clear-btn');
-    if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{{n}}',n);
-    if(toolbar){{if(n>0){{toolbar.classList.add('is-active')}}else{{toolbar.classList.remove('is-active')}}}}
-    if(clearBtn){{clearBtn.style.display=n>0?'':'none'}}
+    if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{n}',n);
+    if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
+    if(clearBtn){clearBtn.style.display=n>0?'':'none'}
     var all=CelerpSelection.all();
     // A deleted row is still a draft mistake: Delete erases it once nothing names it.
     var hasDraft=false,hasDeleted=false,hasNonDraft=false;
-    Object.keys(all).forEach(function(id){{
+    Object.keys(all).forEach(function(id){
       var s=all[id].status||'';
-      if(s==='draft'){{hasDraft=true}}else if(s==='deleted'){{hasDeleted=true}}else{{hasNonDraft=true}}
-    }});
+      if(s==='draft'){hasDraft=true}else if(s==='deleted'){hasDeleted=true}else{hasNonDraft=true}
+    });
     var makeAvailOpt=document.querySelector('#bulk-action-select option[value="make_available"]');
     var revertOpt=document.querySelector('#bulk-action-select option[value="revert_to_draft"]');
     if(makeAvailOpt) makeAvailOpt.hidden=!hasDraft;
     if(revertOpt) revertOpt.hidden=!hasNonDraft;
     var deleteOpt=document.querySelector('#bulk-action-select option[value="delete"]');
     if(deleteOpt) deleteOpt.hidden=!(deleteOpt.hasAttribute('data-samples')||((hasDraft||hasDeleted)&&!hasNonDraft));
-  }}
+  }
   var table=document.getElementById('data-table');
   if(!table) return;
   var selectAll=table.querySelector('thead .col-checkbox input');
-  if(selectAll){{
+  if(selectAll){
     selectAll.type='checkbox';
-    selectAll.addEventListener('change',function(){{
-      table.querySelectorAll('tbody .row-select').forEach(function(cb){{
-        if(selectAll.checked){{CelerpSelection.add(cb.value,_meta(cb));cb.checked=true}}
-        else{{CelerpSelection.remove(cb.value);cb.checked=false}}
-      }});
+    selectAll.addEventListener('change',function(){
+      table.querySelectorAll('tbody .row-select').forEach(function(cb){
+        if(selectAll.checked){CelerpSelection.add(cb.value,_meta(cb));cb.checked=true}
+        else{CelerpSelection.remove(cb.value);cb.checked=false}
+      });
       _resetBulkActions();
       updateBulkToolbar();
-    }});
-  }}
-  table.addEventListener('change',function(e){{
-    if(e.target&&e.target.classList.contains('row-select')){{
-      if(e.target.checked){{CelerpSelection.add(e.target.value,_meta(e.target))}}
-      else{{CelerpSelection.remove(e.target.value)}}
+    });
+  }
+  table.addEventListener('change',function(e){
+    if(e.target&&e.target.classList.contains('row-select')){
+      if(e.target.checked){CelerpSelection.add(e.target.value,_meta(e.target))}
+      else{CelerpSelection.remove(e.target.value)}
       _resetBulkActions();
       updateBulkToolbar();
-    }}
-  }});
-  document.body.addEventListener('celerpSelectionClear',function(){{
+    }
+  });
+  document.body.addEventListener('celerpSelectionClear',function(){
     CelerpSelection.clear();
-    document.querySelectorAll('.row-select').forEach(function(cb){{cb.checked=false}});
+    document.querySelectorAll('.row-select').forEach(function(cb){cb.checked=false});
     var selectAll=document.querySelector('#data-table thead .col-checkbox input');
     if(selectAll) selectAll.checked=false;
     updateBulkToolbar();
     _resetBulkActions();
-  }});
-  document.body.addEventListener('htmx:afterSwap',function(e){{
-    if(e.detail&&e.detail.target){{
+  });
+  document.body.addEventListener('htmx:afterSwap',function(e){
+    if(e.detail&&e.detail.target){
       var tid=e.detail.target.id;
-      if(tid==='inventory-content'||tid==='data-table'){{
+      if(tid==='inventory-content'||tid==='data-table'){
         CelerpSelection.syncCheckboxes();updateBulkToolbar();
-      }}
-    }}
-  }});
+      }
+    }
+  });
   // Guard: register body-level htmx handlers only once per page load
-  if(!window.__celerpHtmxHandlers){{
+  if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
   // Preserve horizontal scroll position across an HTMX request that may replace
   // the table or its scroll container (cell edits, sort, search, pagination, etc.):
@@ -2369,87 +2347,66 @@ function sendToTypeChanged(docType, docLabel){{
   // user scrolled. Saved on htmx:beforeRequest for that request and restored when
   // that same request settles, using requestAnimationFrame to run after browser reflow.
   window.__celerpScrollSnap=null;
-  document.body.addEventListener('htmx:beforeRequest',function(e){{
+  document.body.addEventListener('htmx:beforeRequest',function(e){
     var sw=document.querySelector('.table-scroll-wrap'),t=e.detail.target;
-    if(sw&&t&&(t.contains(sw)||sw.contains(t))){{window.__celerpScrollSnap={{xhr:e.detail.xhr,left:sw.scrollLeft}};}}
-  }});
-  document.body.addEventListener('htmx:afterSettle',function(e){{
+    if(sw&&t&&(t.contains(sw)||sw.contains(t))){window.__celerpScrollSnap={xhr:e.detail.xhr,left:sw.scrollLeft};}
+  });
+  document.body.addEventListener('htmx:afterSettle',function(e){
     var snap=window.__celerpScrollSnap;
-    if(snap&&snap.xhr===e.detail.xhr){{
+    if(snap&&snap.xhr===e.detail.xhr){
       window.__celerpScrollSnap=null;
-      requestAnimationFrame(function(){{
+      requestAnimationFrame(function(){
         var sw=document.querySelector('.table-scroll-wrap');
         if(sw)sw.scrollLeft=snap.left;
-      }});
-    }}
-  }});
+      });
+    }
+  });
   // Sync derived cells (weight/pieces) after a quantity PATCH.
   // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
   // then re-query the live DOM after the swap completes via htmx:afterSettle.
-  document.body.addEventListener('htmx:afterSettle',function(e){{
+  document.body.addEventListener('htmx:afterSettle',function(e){
     var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
              (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
-    if(!path){{return;}}
+    if(!path){return;}
     var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
-    if(!m){{return;}}
+    if(!m){return;}
     var eid=m[1];
     var safeId=eid.replace(/:/g,'-');
     var tr=document.getElementById('row-'+safeId);
-    if(!tr){{return;}}
+    if(!tr){return;}
     var qtyTd=tr.querySelector('[data-col="quantity"]');
-    if(!qtyTd){{return;}}
+    if(!qtyTd){return;}
     var primSpan=qtyTd.querySelector('.paired-primary');
     var secSpan=qtyTd.querySelector('.paired-secondary');
     // Use the raw numeric value from the paired-primary span for precise formatting
     var rawQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
     var newUnit=secSpan?secSpan.textContent.trim():'';
-    function fmtNum(val, decimals) {{
+    function fmtNum(val, decimals) {
       var n=parseFloat(val);
-      if(isNaN(n)){{return val||'--';}}
-      if(decimals===''||decimals===null||decimals===undefined){{return String(n);}}
+      if(isNaN(n)){return val||'--';}
+      if(decimals===''||decimals===null||decimals===undefined){return String(n);}
       return n.toFixed(parseInt(decimals,10));
-    }}
-    tr.querySelectorAll('.cell-derived').forEach(function(span){{
+    }
+    tr.querySelectorAll('.cell-derived').forEach(function(span){
       var derivedTd=span.closest('td');
-      if(!derivedTd){{return;}}
+      if(!derivedTd){return;}
       var col=derivedTd.dataset.col;
       var decimals=derivedTd.dataset.decimals;
       var fmt=fmtNum(rawQty, decimals);
-      if(col==='weight'){{
+      if(col==='weight'){
         span.textContent=(rawQty&&rawQty!=='--'&&newUnit&&newUnit!=='--')
           ?fmt+' '+newUnit:(fmt||'--');
-      }} else if(col==='pieces'){{
+      } else if(col==='pieces'){
         span.textContent=fmt||'--';
-      }}
+      }
       span.classList.toggle('cell-empty',span.textContent==='--');
-    }});
-  }});
-  }} // end if(!window.__celerpHtmxHandlers)
+    });
+  });
+  } // end if(!window.__celerpHtmxHandlers)
   CelerpSelection.syncCheckboxes();
   updateBulkToolbar();
-}})();
-""",
-        t("table.confirm_merge"),
-        t("table.a_new_sku"),
-        t("table.new_doc_type"),
-        t("label.n_selected"),
-        selection_key,
-        t("table.confirm_archive_selected"),
-        t("table.confirm_restore_selected"),
-        t("table.confirm_make_available_selected"),
-        t("table.confirm_revert_to_draft_selected"),
-        t("table.confirm_delete_drafts_selected"),
-        t("table.confirm_delete_selected"),
-        t("table.confirm_duplicate_selected"),
-        t("inv.select_exactly_1_item_to_split"),
-        t("table.select_exactly_1_to_transform"),
-        t("inv.select_at_least_2_items_to_merge"),
-        t("table.stock_guard_prompt"),
-        t("table.keep_stock_on_books"),
-        t("table.write_off_remaining_stock"),
-        t("btn.cancel"),
-        t("btn.confirm"),
-    )
+})();
+"""
     # Phantom top-scrollbar: a zero-height scrollable div that mirrors .table-scroll-wrap.
     # Only injected when the table has more than 10 rows, otherwise not needed.
     _top_scroll_js = Script("""
@@ -2480,9 +2437,32 @@ function sendToTypeChanged(docType, docLabel){{
 })();
 """)
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
-    scripts = [Script(_js)]
+    scripts = [Script(_js, data_cfg=js_value({
+        "pageKey": str(page_key), "entityType": entity_type, "schemaDefaults": _schema_defaults,
+        "virtualFollowers": _virtual_followers, "autoHide": bool(auto_hide_empty)}))]
     if show_checkboxes:
-        scripts.append(Script(_bulk_js))
+        scripts.append(Script(_bulk_js, data_cfg=js_value({
+            "confirmMerge": t("table.confirm_merge"),
+            "aNewSku": t("table.a_new_sku"),
+            "newDocType": t("table.new_doc_type"),
+            "nSelected": t("label.n_selected"),
+            "selectionKey": selection_key,
+            "confirmArchive": t("table.confirm_archive_selected"),
+            "confirmRestore": t("table.confirm_restore_selected"),
+            "confirmMakeAvailable": t("table.confirm_make_available_selected"),
+            "confirmRevertToDraft": t("table.confirm_revert_to_draft_selected"),
+            "confirmDeleteDrafts": t("table.confirm_delete_drafts_selected"),
+            "confirmDelete": t("table.confirm_delete_selected"),
+            "confirmDuplicate": t("table.confirm_duplicate_selected"),
+            "splitNeedsOne": t("inv.select_exactly_1_item_to_split"),
+            "transformNeedsOne": t("table.select_exactly_1_to_transform"),
+            "mergeNeedsTwo": t("inv.select_at_least_2_items_to_merge"),
+            "stockGuardPrompt": t("table.stock_guard_prompt"),
+            "keepStock": t("table.keep_stock_on_books"),
+            "writeOff": t("table.write_off_remaining_stock"),
+            "cancel": t("btn.cancel"),
+            "confirm": t("btn.confirm"),
+        })))
     if top_scroll:
         scripts.append(_top_scroll_js)
     return Div(
@@ -2524,91 +2504,87 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
         for f in schema
     ]
 
-    _mgr_js = js("""
-(function(){{
-  var VIS_KEY='celerp_cols_' + {0},ORDER_KEY='celerp_col_order_' + {0},WIDTH_KEY='celerp_col_widths_' + {0};
-  var ALL={1};
-  var DEFAULTS={2};
+    _mgr_js = """
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var VIS_KEY=CFG.visKey,ORDER_KEY=CFG.orderKey,WIDTH_KEY=CFG.widthKey;
+  var ALL=CFG.all;
+  var DEFAULTS=CFG.defaults;
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
-  function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
-  function saveVis(p){{localStorage.setItem(VIS_KEY,JSON.stringify(p))}}
-  function loadOrder(){{try{{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}}catch(e){{return null}}}}
-  function saveOrder(o){{localStorage.setItem(ORDER_KEY,JSON.stringify(o))}}
-  function applyVis(prefs){{
+  function loadVis(){try{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}catch(e){return null}}
+  function saveVis(p){localStorage.setItem(VIS_KEY,JSON.stringify(p))}
+  function loadOrder(){try{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}catch(e){return null}}
+  function saveOrder(o){localStorage.setItem(ORDER_KEY,JSON.stringify(o))}
+  function applyVis(prefs){
     var t=document.getElementById('data-table');if(!t)return;
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
     var rows=Array.from(t.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th){{
+    ths.forEach(function(th){
       var k=th.dataset.key,show=prefs[k]!==false;
       th.style.display=show?'':'none';
-      rows.forEach(function(tr){{var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';}});
-    }});
-  }}
-  function applyOrderToTable(order){{
+      rows.forEach(function(tr){var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';});
+    });
+  }
+  function applyOrderToTable(order){
     if(!order||!order.length)return;
     var t=document.getElementById('data-table');if(!t)return;
     var htr=t.querySelector('thead tr');if(!htr)return;
     var actTh=htr.querySelector('.col-actions');
-    order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
+    order.forEach(function(k){var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
-    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
+    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){
       var cbTd=tr.querySelector('.col-checkbox'),mTd=tr.querySelector('.col-match'),aTd=tr.querySelector('.col-actions');
-      var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
+      var data=allThs.map(function(h){return tr.querySelector('[data-col="'+h.dataset.key+'"]');}).filter(Boolean);
       var out=[];if(cbTd)out.push(cbTd);if(mTd)out.push(mTd);out=out.concat(data);if(aTd)out.push(aTd);
-      out.forEach(function(td){{tr.appendChild(td);}});
-    }});
-  }}
-  function applyOrderToPicker(order){{
+      out.forEach(function(td){tr.appendChild(td);});
+    });
+  }
+  function applyOrderToPicker(order){
     if(!order||!order.length)return;
     var labels=menu.querySelectorAll('label[data-col]');if(!labels.length)return;
     var parent=labels[0].parentNode;
-    order.forEach(function(key){{var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);}});
-  }}
-  function pickerOrder(){{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
-  }}
-  function syncCB(){{var p=loadVis()||{{}};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){{c.checked=p[c.value]!==false;}});}}
-  btn.addEventListener('click',function(e){{e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();}});
-  document.addEventListener('click',function(e){{if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';}});
-  menu.addEventListener('change',function(e){{
+    order.forEach(function(key){var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);});
+  }
+  function pickerOrder(){
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){return l.dataset.col;});
+  }
+  function syncCB(){var p=loadVis()||{};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=p[c.value]!==false;});}
+  btn.addEventListener('click',function(e){e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();});
+  document.addEventListener('click',function(e){if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';});
+  menu.addEventListener('change',function(e){
     if(e.target.type!=='checkbox')return;
-    var k=e.target.value,p=Object.assign({{}},loadVis());
-    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
+    var k=e.target.value,p=Object.assign({},loadVis());
+    if(!Object.keys(p).length)ALL.forEach(function(c){p[c.key]=DEFAULTS.indexOf(c.key)!==-1;});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
     applyOrderToTable(pickerOrder());
-  }});
+  });
   var ds=null;
-  menu.querySelectorAll('label[draggable]').forEach(function(l){{
-    l.addEventListener('dragstart',function(e){{ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';}});
-    l.addEventListener('dragend',function(){{l.style.opacity='';ds=null;}});
-    l.addEventListener('dragover',function(e){{e.preventDefault();e.dataTransfer.dropEffect='move';}});
-    l.addEventListener('drop',function(e){{
+  menu.querySelectorAll('label[draggable]').forEach(function(l){
+    l.addEventListener('dragstart',function(e){ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';});
+    l.addEventListener('dragend',function(){l.style.opacity='';ds=null;});
+    l.addEventListener('dragover',function(e){e.preventDefault();e.dataTransfer.dropEffect='move';});
+    l.addEventListener('drop',function(e){
       e.preventDefault();if(!ds||ds===l)return;
       var par=l.parentNode,sn=ds.nextSibling;par.insertBefore(ds,l);if(sn)par.insertBefore(l,sn);else par.appendChild(l);
       ds.style.opacity='';
       var no=pickerOrder();saveOrder(no);applyOrderToTable(no);
-    }});
-  }});
+    });
+  });
   // Sync picker when table header is dragged (data_table fires this event)
-  document.addEventListener('celerp:col-reorder',function(e){{
+  document.addEventListener('celerp:col-reorder',function(e){
     if(!e.detail||!e.detail.order)return;
     applyOrderToPicker(e.detail.order);
     saveOrder(e.detail.order);
-  }});
+  });
   var sv=loadVis();if(sv)applyVis(sv);
   var so=loadOrder();
-  if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
+  if(so){applyOrderToPicker(so);applyOrderToTable(so);}
   menu.style.display='none';
-}})();
-""",
-        entity_type, col_data, default_keys)
-    reset_onclick = (
-        js(
-            "localStorage.removeItem('celerp_cols_' + {0});localStorage.removeItem('celerp_col_order_' + {0});"
-            "localStorage.removeItem('celerp_col_widths_' + {0});location.reload();",
-            entity_type)
-    )
+})();
+"""
+    reset_onclick = call("celerpResetColumns", [
+        f"celerp_cols_{entity_type}", f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}"])
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
@@ -2625,7 +2601,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
             id="col-mgr-menu",
             style="display:none",
         ),
-        Script(_mgr_js),
+        Script(_mgr_js, data_cfg=js_value({'visKey': f"celerp_cols_{entity_type}", 'all': col_data, 'defaults': default_keys, 'orderKey': f"celerp_col_order_{entity_type}", 'widthKey': f"celerp_col_widths_{entity_type}"})),
         cls="column-manager",
     )
 
@@ -2677,7 +2653,7 @@ def server_pager(offset: int, limit: int, total: int, href, *,
 
     def _nav_attrs(url: str) -> dict:
         if nav_js:
-            return {"onclick": js("event.preventDefault();window[{0}](this.getAttribute('href'))", nav_js)}
+            return {"onclick": call("celerpPageLink", THIS, EVENT, nav_js)}
         if hx_target:
             return {"hx_get": url, "hx_target": hx_target, "hx_select": hx_target, "hx_swap": "outerHTML"}
         return {}
@@ -2703,16 +2679,10 @@ def server_pager(offset: int, limit: int, total: int, href, *,
                   total=f"{total:,}")
     else:
         label = t("table.page_range_none", total=f"{total:,}")
-    if nav_js:
-        onchange = js("window[{0}](this.value)", nav_js)
-    elif hx_target:
-        onchange = js("htmx.ajax('GET',this.value,{{target:{0},select:{0},swap:'outerHTML'}})", hx_target)
-    else:
-        onchange = js("celerpGo(this.value)")
     sizes = sorted(set(page_sizes) | {limit})
     size_select = Select(
         *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],
-        onchange=as_js(onchange), cls="filter-select per-page-select",
+        onchange=call("celerpPageSize", THIS, nav_js or "", hx_target or ""), cls="filter-select per-page-select",
     )
     return Nav(*controls,
                Span(label, cls="page-count"),
@@ -2833,10 +2803,10 @@ def bank_account_options(bank_accounts: list[dict] | None, default_code: str | N
 
 
 def add_new_option(label: str = "", redirect_url: str = "#") -> tuple:
-    """Return (Option element, onchange script built with js()) for 'add new' in dynamic selects."""
+    """Return (Option element, onchange handler) for 'add new' in dynamic selects."""
     label = label or t("label._add_new")
     option = Option(label, value="__new__")
-    return option, js("if(this.value==='__new__')celerpGo({0})", redirect_url)
+    return option, call("celerpAddNew", THIS, "__new__", redirect_url)
 
 
 def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: str = "") -> FT:
@@ -2882,28 +2852,27 @@ def col_resize_script(table_selector: str, storage_key: str):
     """
     # MIN = floor width per column, in %
     resize_js = (
-        js(
-            "(function(){{var SEL={0},KEY={1},MIN=3;function ck(h){{var m=(h.className||'').match(/col-[a-z-]+/);"
-            "return m?m[0]:'';}}document.querySelectorAll(SEL).forEach(function(t){{"
-            "if(t.dataset.colResize)return;t.dataset.colResize='1';var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){{"
-            "return getComputedStyle(h).display!=='none';}});if(!ths.length)return;function tw(){{"
-            'return t.offsetWidth||1;}}function pct(h){{return h.offsetWidth/tw()*100;'
-            '}}function save(){{var w={{}};ths.forEach(function(h){{var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);'
-            '}});try{{localStorage.setItem(KEY,JSON.stringify(w));}}catch(e){{}}}}requestAnimationFrame(function(){{'
-            "var sv=null;try{{sv=JSON.parse(localStorage.getItem(KEY)||'null');}}catch(e){{"
-            '}}var ws=ths.map(function(h){{var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
-            '}});var s=ws.reduce(function(a,b){{return a+b;}},0)||1;ths.forEach(function(h,'
-            "i){{h.style.width=(ws[i]/s*100)+'%';}});}});ths.forEach(function(h,idx){{"
+        "(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);"
+        "var SEL=CFG.sel,KEY=CFG.key,MIN=3;function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);"
+            "return m?m[0]:'';}document.querySelectorAll(SEL).forEach(function(t){"
+            "if(t.dataset.colResize)return;t.dataset.colResize='1';var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){"
+            "return getComputedStyle(h).display!=='none';});if(!ths.length)return;function tw(){"
+            'return t.offsetWidth||1;}function pct(h){return h.offsetWidth/tw()*100;'
+            '}function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);'
+            '});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}requestAnimationFrame(function(){'
+            "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){"
+            '}var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
+            '});var s=ws.reduce(function(a,b){return a+b;},0)||1;ths.forEach(function(h,'
+            "i){h.style.width=(ws[i]/s*100)+'%';});});ths.forEach(function(h,idx){"
             "if(idx>=ths.length-1)return;if(h.querySelector('.col-resize-handle'))return;"
             "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';"
-            "h.appendChild(d);d.addEventListener('mousedown',function(e){{var nx=ths[idx+1],"
+            "h.appendChild(d);d.addEventListener('mousedown',function(e){var nx=ths[idx+1],"
             'W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;'
-            "document.body.style.cursor='col-resize';function mv(ev){{var dp=(ev.pageX-sx)/W*100,"
-            'a=a0+dp,b=b0-dp;if(a<MIN){{a=MIN;b=sum-MIN;}}if(b<MIN){{b=MIN;a=sum-MIN;'
-            "}}h.style.width=a+'%';nx.style.width=b+'%';}}function up(){{document.removeEventListener('mousemove',"
+            "document.body.style.cursor='col-resize';function mv(ev){var dp=(ev.pageX-sx)/W*100,"
+            'a=a0+dp,b=b0-dp;if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;'
+            "}h.style.width=a+'%';nx.style.width=b+'%';}function up(){document.removeEventListener('mousemove',"
             "mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';"
-            "save();}}document.addEventListener('mousemove',mv);document.addEventListener('mouseup',"
-            'up);e.preventDefault();e.stopPropagation();}});}});}});}})();',
-            table_selector, storage_key)
+            "save();}document.addEventListener('mousemove',mv);document.addEventListener('mouseup',"
+            'up);e.preventDefault();e.stopPropagation();});});});})();'
     )
-    return Script(resize_js)
+    return Script(resize_js, data_cfg=js_value({"sel": table_selector, "key": storage_key}))

@@ -24,7 +24,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictFloat, StrictStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +33,6 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import lock_company
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
-from celerp.schemas.numbers import FiniteFloat
 from celerp_labels.models import LabelTemplate
 
 log = logging.getLogger(__name__)
@@ -49,8 +48,8 @@ class TemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     format: str = Field("40x30mm")
     orientation: str = Field("portrait")
-    width_mm: FiniteFloat | None = None
-    height_mm: FiniteFloat | None = None
+    width_mm: StrictFloat | StrictStr | None = None
+    height_mm: StrictFloat | StrictStr | None = None
     fields: list[dict] = Field(default_factory=lambda: [
         {"key": "name", "label": "Name", "type": "text"},
         {"key": "sku", "label": "SKU", "type": "text"},
@@ -64,8 +63,8 @@ class TemplateUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     format: str | None = None
     orientation: str | None = None
-    width_mm: FiniteFloat | None = None
-    height_mm: FiniteFloat | None = None
+    width_mm: StrictFloat | StrictStr | None = None
+    height_mm: StrictFloat | StrictStr | None = None
     fields: list[dict] | None = None
     copies: int | None = Field(None, ge=1, le=100)
     notes: str | None = None
@@ -101,11 +100,12 @@ async def create_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    values = _checked_numbers(body.model_dump())
     await lock_company(session, company_id)
     t = LabelTemplate(
         id=uuid.uuid4(),
         company_id=company_id,
-        **body.model_dump(),
+        **values,
     )
     session.add(t)
     await session.commit()
@@ -131,8 +131,9 @@ async def update_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    values = _checked_numbers(body.model_dump(exclude_none=True))
     t = await _get_or_404(session, company_id, template_id, for_update=True)
-    for k, v in body.model_dump(exclude_none=True).items():
+    for k, v in values.items():
         setattr(t, k, v)
     await session.commit()
     return t.as_dict()
@@ -161,12 +162,10 @@ async def print_single(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Generate a PDF label for a single item."""
-    from celerp_labels.service import render_label_pdf
-
     template_id_str = request.query_params.get("template_id")
     template = await _resolve_template(session, company_id, template_id_str)
     item = await _fetch_item(session, company_id, entity_id, role, settings)
-    pdf = render_label_pdf([item], template, await _unit_map(session, company_id))
+    pdf = _pdf([item], template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -184,11 +183,9 @@ async def bulk_print(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Generate a PDF label sheet for multiple items."""
-    from celerp_labels.service import render_label_pdf
-
     template = await _resolve_template(session, company_id, body.template_id)
     items = [await _fetch_item(session, company_id, eid, role, settings) for eid in body.entity_ids]
-    pdf = render_label_pdf(items, template, await _unit_map(session, company_id))
+    pdf = _pdf(items, template, await _unit_map(session, company_id))
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -237,15 +234,44 @@ async def print_source(
 ) -> Response:
     """A PDF label sheet for records of a registered kind, on the chosen template, else the
     first of the company's that the rows can fill."""
-    from celerp_labels.service import render_label_pdf
-
     entry = _label_source(body.source, role, settings)
     rows = await _rows(session, company_id, entry, body.ids)
     templates = await _source_templates(session, company_id, entry)
     template = next((tpl for tpl in templates if tpl["id"] == body.template_id), None) or templates[0]
-    pdf = render_label_pdf(rows, template, await _unit_map(session, company_id))
+    pdf = _pdf(rows, template, await _unit_map(session, company_id))
     return Response(content=pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{body.source}-labels.pdf"'})
+
+
+def _checked_numbers(values: dict) -> dict:
+    """A template's sent values with its sizes and positions in canonical form, refused
+    with a plain reason naming the first that is not a number inside its range."""
+    from celerp_labels.service import LabelNumberError, label_fields, label_number, label_size
+
+    try:
+        if "fields" in values:
+            values["fields"] = label_fields(values["fields"])
+        for name in ("width_mm", "height_mm"):
+            if values.get(name) not in (None, ""):
+                values[name] = label_number(name, values[name])
+            else:
+                values.pop(name, None)
+        label_size({"format": values.get("format")})
+    except LabelNumberError as e:
+        raise HTTPException(status_code=422, detail=e.text) from None
+    return values
+
+
+def _pdf(items: list[dict], template: dict, unit_map: dict[str, dict]) -> bytes:
+    """The PDF label sheet, refused with a plain reason when the template holds a size that
+    is not a number inside its range."""
+    from celerp_labels.service import LabelNumberError, render_label_pdf
+    from ui.i18n import t as translate
+
+    try:
+        return render_label_pdf(items, template, unit_map)
+    except LabelNumberError as e:
+        raise HTTPException(status_code=422, detail=translate("labels.cannot_print", reason=e.text)) from None
 
 
 def _label_source(source: str, role: str, settings: dict) -> dict:

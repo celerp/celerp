@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl
 
 from fasthtml.common import A, Button, Div, Form, Input, Label, Option, Select, Span
 
-from ui.components.encode import as_js, js, safe_url
+from ui.components.encode import as_js, call, safe_url
 from ui.components.shell import page_header
 from ui.i18n import t
 
@@ -55,11 +55,11 @@ def filter_field(label: str, control, *, field_id: str, wide: bool = False) -> o
 
 def select_field(name: str, label: str, options: list[tuple[str, str]], value: str, *,
                  lang: str | None = None, locked: bool = False,
-                 on_change: str = js("this.form.submit()")) -> object:
+                 on_change: str = call('this.form.submit')) -> object:
     """A labelled select that submits its form on change. options: [(value, label)], labels
     already translated. locked=True means the page fixes the value (a menu entry chose it), so
     only a hidden field carries it. on_change replaces the plain submit, e.g. to drop fields
-    that the new value makes stale first; it is built with js()."""
+    that the new value makes stale first; it is built with call()."""
     if locked:
         return Input(type="hidden", name=name, value=value)
     field_id = f"filter-{name}"

@@ -20,7 +20,7 @@ from celerp.services.peer_lines import UNRESTRICTED, origin_key, outside_fund_ne
 from celerp.services.permissions import role_has_permission
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.encode import js
+from ui.components.encode import call, EVENT, THIS
 from ui.components.icons import icon
 from ui.components.operation_key import FIELD as OPERATION_KEY
 from ui.components.table import EMPTY, fmt_money, searchable_select
@@ -189,8 +189,7 @@ def editor(view: FundView, target: str, *, value: str | None = None, error: str 
     was refused and Try again."""
     dom_id = "doc-fund" if target == DOCUMENT else f"fund-cell-{target}"
     current = view.chosen(target) if value is None else value
-    restore = js("if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:'#'+{1},swap:'outerHTML'}});}}",
-                 view.url(target), dom_id)
+    restore = call("celerpCellKey", THIS, EVENT, {"url": view.url(target), "target": f"#{dom_id}"})
     change = ()
     if view.changes:
         change = (Input(type="text", name="reason", value=reason, required=True, placeholder=t("fund.change_reason"),
@@ -247,7 +246,7 @@ def journal_change_panel(data: dict, funds: list[dict], post_url: str, *, kept=N
         return searchable_select(name, options, value=str(kept.get(name, value) or ""), placeholder=EMPTY,
                                  aria_label=label)
 
-    close = js("this.closest('tr').remove()")
+    close = call("celerpRemoveClosest", THIS, "tr")
     form = Form(
         P(t("fund.change_journal_hint"), cls="settings-hint"),
         # Picking Set all draws the panel again with every line's picker on that fund.
@@ -267,7 +266,7 @@ def journal_change_panel(data: dict, funds: list[dict], post_url: str, *, kept=N
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost btn--sm", onclick=close),
             cls="flex-row gap-sm"),
         hx_post=post_url, hx_target="closest tr", hx_swap="outerHTML", cls="flex-col gap-sm",
-        onkeydown=js("if(event.key==='Escape'){{this.closest('tr').remove();}}"),
+        onkeydown=call("celerpRemoveClosest", THIS, "tr", EVENT),
     )
     return Tr(Td(form, colspan="9"), cls="fund-change-row")
 
@@ -324,8 +323,7 @@ def connection_default(view: DefaultsView, item: dict, *, saving: dict | None = 
     dom_id = _default_id(item)
     label = Div(t("fund.default_label", source=item.get("label") or item["source_key"]), cls="meta-label")
     if saving is not None:
-        restore = js("if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:'#'+{1},swap:'outerHTML'}});}}",
-                     view.url(item), dom_id)
+        restore = call("celerpCellKey", THIS, EVENT, {"url": view.url(item), "target": f"#{dom_id}"})
         return Div(label, Form(
             searchable_select("value", fund_options(view.funds), value=saving.get("value") or item.get("fund_choice") or "",
                               placeholder=EMPTY, aria_label=t("fund.default_label", source=item.get("label") or ""),

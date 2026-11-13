@@ -4439,11 +4439,13 @@ async def set_woocommerce_order_reconciled(
         return _raise(await c.post(path, json={"signature": signature})).json()
 
 
-async def import_woocommerce_order_next(token: str, order_id: str) -> dict:
+async def import_woocommerce_order_next(token: str, order_id: str, signature: str) -> dict:
     """Import a WooCommerce order whose number another record holds under the next free
-    number. Returns {"number", "doc_id"}; refused (409) with the reason it still waits on."""
+    number, for the order state the person reviewed (``signature``). Returns
+    {"number", "doc_id"}; refused (409) with the reason it still waits on."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/connectors/woocommerce/orders/{order_id}/import-next")).json()
+        return _raise(await c.post(f"/connectors/woocommerce/orders/{order_id}/import-next",
+                                   json={"signature": signature})).json()
 
 
 async def set_connector_direction(token: str, platform: str, entity: str, direction: str) -> dict:

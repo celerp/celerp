@@ -8,12 +8,12 @@ Pure render — no server.
 """
 from __future__ import annotations
 
-import json
 import re
 
 import pytest
 from fasthtml.common import to_xml
 
+from test_helpers import script_cfg
 from ui.components.activity import activity_table
 from ui.routes.dashboard import _charts_section
 
@@ -63,6 +63,11 @@ def _ar_chart_js(xml: str) -> str:
     return xml[start:xml.index("chart-inventory-cat", start)]
 
 
+def _chart_cfg(html: str) -> dict:
+    """The values the dashboard chart script reads from its data-cfg."""
+    return script_cfg(html, "initDashboardCharts")
+
+
 def test_ar_has_data_with_net_negative_bucket():
     # Open credits make a bucket negative; the chart still shows, as bars from zero.
     xml = to_xml(_charts_section(
@@ -74,7 +79,7 @@ def test_ar_has_data_with_net_negative_bucket():
     js = _ar_chart_js(xml)
     assert "type: 'bar'" in js and "doughnut" not in xml
     assert "beginAtZero: true" in js
-    assert "-40.0" in js
+    assert _chart_cfg(xml)["arData"][0] == -40.0
 
 
 def test_ar_chart_legend_is_translated():
@@ -82,13 +87,13 @@ def test_ar_chart_legend_is_translated():
 
     buckets = {"current": 10.0, "1-30": 5.0, "31-60": 0.0, "61-90": 0.0, "90+": 0.0}
     xml = to_xml(_charts_section({"charts": ["ar_aging"]}, {}, {"buckets": buckets}, revenue_trend=[], currency="USD"))
-    assert '["Current", "1-30", "31-60", "61-90", "90+"]' in _ar_chart_js(xml)
+    assert _chart_cfg(xml)["arLabels"] == ["Current", "1-30", "31-60", "61-90", "90+"]
     tok = _current_lang.set("de")
     try:
         de = to_xml(_charts_section({"charts": ["ar_aging"]}, {}, {"buckets": buckets}, revenue_trend=[], currency="USD"))
     finally:
         _current_lang.reset(tok)
-    assert '["Aktuell", "1-30"' in _ar_chart_js(de)
+    assert _chart_cfg(de)["arLabels"][:2] == ["Aktuell", "1-30"]
 
 
 def test_ar_chart_card_is_omitted_without_aging():
@@ -158,13 +163,14 @@ async def test_inventory_by_category_chart_uses_the_inventory_tab_labels(owner_u
     assert "Colored Stone" in tabs, tabs
     dash = await owner_ui.get("/dashboard")
     assert dash.status_code == 200
-    m = re.search(r"labels: (\[[^\]]*\]), datasets: \[\{ label: \"Items\", data: \[[^\]]*\], backgroundColor: colors\[0\]", dash.text)
-    assert m, "the category chart is on the dashboard"
-    labels = json.loads(m.group(1))
+    assert 'id="chart-inventory-cat"' in dash.text, "the category chart is on the dashboard"
+    chart = _chart_cfg(dash.text)
+    assert chart["catLabel"] == "Items"
+    labels = chart["catLabels"]
     assert set(tabs) <= set(labels), (tabs, labels)
     assert not set(names) & set(labels), labels
     de = await owner_ui.get("/dashboard", headers={"Accept-Language": "de"})
-    assert 'datasets: [{ label: "Artikel", data:' in de.text, "the bar tooltip label is translated"
+    assert _chart_cfg(de.text)["catLabel"] == "Artikel", "the bar tooltip label is translated"
 
 
 def test_inventory_by_category_counts_whole_items():

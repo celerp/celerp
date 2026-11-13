@@ -50,8 +50,8 @@ def _posts(doc: dict, role: str = "owner") -> list[tuple[str, object]]:
     for node in _nodes([_doc_detail(doc, role=role, **_FEATURES_ON)]):
         url = node.attrs.get("hx-post") or node.attrs.get("hx_post")
         js = node.attrs.get("onclick") or node.attrs.get("onsubmit") or ""
-        if not url and "_celerpPostOnLines(" in js:
-            url = json.JSONDecoder().raw_decode(js.split("_celerpPostOnLines(", 1)[1])[0]
+        if not url and "_celerpPostOnLines(event," in js:
+            url = json.JSONDecoder().raw_decode(js.split("_celerpPostOnLines(event,", 1)[1])[0]
         if url:
             out.append((url, node))
     return out
@@ -96,10 +96,10 @@ _DOCS = _ROOT / "ui" / "routes" / "documents.py"
 
 
 def _function(source: str, head: str) -> str:
-    """The text of the function opening with *head*: a page script function up to its closing brace,
-    a module-level def up to the next line at module level."""
+    """The text of the function opening with *head*: a page script function up to its closing brace
+    at the start of a line, a module-level def up to the next line at module level."""
     start = source.index(head)
-    end = re.compile(r"\n\}\}\n" if "function" in head else r"\n\S").search(source, start + len(head))
+    end = re.compile(r"\n\}\n" if "function" in head else r"\n\S").search(source, start + len(head))
     return source[start:end.end()]
 
 

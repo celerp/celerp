@@ -19,7 +19,7 @@ import httpx
 
 import json
 
-from celerp.accounting_roles import refusal_detail
+from celerp.accounting_roles import catalog_refusal, refusal_detail
 from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.connectors.util import money
@@ -795,7 +795,9 @@ class WooCommerceConnector(ConnectorBase):
         still the state they reviewed; once it changes the mark goes and the
         order is imported again as any other. An entry whose number another
         record holds is imported under the next free number once a person asks
-        (``import_next``). The daily ``reconcile`` pass
+        (``import_next``, the signature of the order state they reviewed): only while the
+        order still has that state; once it changes the choice goes and the entry asks them
+        to confirm again. The daily ``reconcile`` pass
         also checks that every imported order still exists in the store."""
         result = SyncResult(entity=SyncEntity.ORDERS)
         carried = {
@@ -808,18 +810,16 @@ class WooCommerceConnector(ConnectorBase):
             order_id = str(order.get("id"))
             processed.add(order_id)
             entry = carried.get(order_id)
-            if (
-                entry and entry.get("reconciled")
-                and entry.get("signature") == _upsert.woocommerce_reconciliation_signature(order)
-            ):
+            signature = _upsert.woocommerce_reconciliation_signature(order)
+            chosen = (entry or {}).get("import_next")
+            if entry and entry.get("reconciled") and entry.get("signature") == signature:
                 pending[order_id] = entry
                 if entry.get("number_held"):
                     # Never imported: the person found the record holding its number is this order.
                     return
             try:
                 result.record(await _upsert.upsert_order_from_woocommerce(
-                    ctx.company_id, order, first_sync,
-                    take_next_number=bool(entry and entry.get("import_next"))))
+                    ctx.company_id, order, first_sync, take_next_number=chosen == signature))
             except Exception as exc:
                 log.warning("woocommerce.sync_orders order %s needs attention: %s", order_id, exc)
                 pending[order_id] = {
@@ -834,6 +834,10 @@ class WooCommerceConnector(ConnectorBase):
                 # A number another record holds names it and the next free number.
                 if getattr(exc, "number_held", None):
                     pending[order_id]["number_held"] = exc.number_held
+                    # Import as was chosen for a state the order no longer has: ask again.
+                    if chosen and chosen != signature:
+                        pending[order_id]["reason"] = catalog_refusal(
+                            "connectors.import_as_order_changed", next=exc.number_held["next_number"])
 
         carried_ids = list(carried)
         for start in range(0, len(carried_ids), _PER_PAGE):

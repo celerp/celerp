@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import httpx
 import logging
-import math
 from ui.api_client import error_text
 from ui.i18n import t, get_lang, category_label
 
@@ -31,42 +30,6 @@ except ImportError:  # pragma: no cover
     RedirectResponse = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
-
-# Named format → (width_mm, height_mm)
-_FORMAT_MM: dict[str, tuple[float, float]] = {
-    "24x24mm": (24.0, 24.0),
-    "29x29mm": (29.0, 29.0),
-    "34x34mm": (34.0, 34.0),
-    "40x30mm": (40.0, 30.0),
-    "62x29mm": (62.0, 29.0),
-    "100x50mm": (100.0, 50.0),
-    "A4": (210.0, 297.0),
-    "A5": (148.0, 210.0),
-    "letter": (216.0, 279.0),
-}
-_FORMAT_MM_DEFAULT = (40.0, 30.0)
-
-
-def _format_to_mm(
-    fmt: str | None,
-    width_mm: float | None,
-    height_mm: float | None,
-) -> tuple[float, float]:
-    """Return (width_mm, height_mm) for a template format string.
-
-    Priority: named format table > custom width_mm/height_mm > default 40x30.
-    """
-    if fmt and fmt != "custom":
-        if fmt in _FORMAT_MM:
-            return _FORMAT_MM[fmt]
-        # Try parsing "WxHmm" dynamically
-        import re
-        m = re.match(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm$", fmt)
-        if m:
-            return (float(m.group(1)), float(m.group(2)))
-    if width_mm and height_mm:
-        return (float(width_mm), float(height_mm))
-    return _FORMAT_MM_DEFAULT
 
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
@@ -124,9 +87,9 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
-from .service import BARCODE_HEIGHT_DEFAULT
+from .service import _SIZES, BARCODE_HEIGHT_DEFAULT, FIELD_NUMBERS, LABEL_NUMBERS, LabelNumberError, label_number, label_size, printable_template
 from .service import display_label as _svc_display_label
-from ui.components.encode import html_response, js, safe_url
+from ui.components.encode import html_response, js_value, safe_url
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
 # defaults small and leaves the label's vertical space for actual content. A size set
@@ -138,66 +101,67 @@ BARCODE_TEXT_DEFAULT_PT = 6.0
 # preset text sizes; the user changes it in place.
 FIELD_DEFAULT_PT = 6
 
-# The editor script: holes {0}-{4} are the sample data, the field list, the key to
-# render type map, the format sizes and the add-field option groups.
+# The editor script. Its script element's data-cfg attribute holds the sample data, the field
+# list, the key to render type map, the format sizes and the add-field option groups.
 _EDITOR_JS = """
-(function() {{
+(function() {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
   var MAX_CANVAS_PX = 400;
-  var sampleData = {0};
-  var allFields = {1};
-  var typeMap = {2};
-  var formatSizes = {3};
-  var addFieldGroups = {4};
+  var sampleData = CFG.sampleData;
+  var allFields = CFG.allFields;
+  var typeMap = CFG.typeMap;
+  var formatSizes = CFG.formatSizes;
+  var addFieldGroups = CFG.addFieldGroups;
 
-  function fieldType(key) {{ return typeMap[key] || 'text'; }}
+  function fieldType(key) { return typeMap[key] || 'text'; }
 
-  function getCanvasDims() {{
+  function getCanvasDims() {
     var fmtEl = document.getElementById('fmt-sel');
     var fmt = fmtEl ? fmtEl.value : '40x30mm';
     var wMm, hMm;
-    if (fmt === 'custom') {{
-      wMm = parseFloat((document.getElementById('custom-w') || {{}}).value) || 50;
-      hMm = parseFloat((document.getElementById('custom-h') || {{}}).value) || 30;
-    }} else {{
+    if (fmt === 'custom') {
+      wMm = parseFloat((document.getElementById('custom-w') || {}).value) || 50;
+      hMm = parseFloat((document.getElementById('custom-h') || {}).value) || 30;
+    } else {
       var s = formatSizes[fmt];
-      if (s) {{ wMm = s[0]; hMm = s[1]; }} else {{
+      if (s) { wMm = s[0]; hMm = s[1]; } else {
         var m = fmt.toLowerCase().replace('mm','').split('x');
         wMm = parseFloat(m[0]) || 40; hMm = parseFloat(m[1]) || 30;
-      }}
-    }}
+      }
+    }
     var scale = Math.min(MAX_CANVAS_PX / wMm, MAX_CANVAS_PX / hMm, 5);
-    return {{ wMm: wMm, hMm: hMm, scale: scale,
-              wPx: Math.round(wMm * scale), hPx: Math.round(hMm * scale) }};
-  }}
+    return { wMm: wMm, hMm: hMm, scale: scale,
+              wPx: Math.round(wMm * scale), hPx: Math.round(hMm * scale) };
+  }
 
   var fmtSel = document.getElementById('fmt-sel');
   var customDims = document.getElementById('custom-dims');
-  if (fmtSel && customDims) {{
-    fmtSel.addEventListener('change', function() {{
+  if (fmtSel && customDims) {
+    fmtSel.addEventListener('change', function() {
       customDims.style.display = this.value === 'custom' ? 'block' : 'none';
       labelEditorUpdatePreview();
-    }});
-  }}
+    });
+  }
 
-  function reindexFields() {{
+  function reindexFields() {
     var list = document.getElementById('field-list');
     if (!list) return;
-    list.querySelectorAll('.field-row-compact').forEach(function(row, i) {{
+    list.querySelectorAll('.field-row-compact').forEach(function(row, i) {
       row.setAttribute('data-idx', i);
-      row.querySelectorAll('[name]').forEach(function(el) {{
+      row.querySelectorAll('[name]').forEach(function(el) {
         el.name = el.name.replace(/fields\\[(\\d+)\\]/, 'fields[' + i + ']');
-      }});
+      });
       // Update searchable-select data-name
       var ss = row.querySelector('.searchable-select');
       if (ss) ss.setAttribute('data-name', 'fields[' + i + '][key]');
-    }});
-  }}
+    });
+  }
   window.reindexFields = reindexFields;
 
   // ── Searchable select component ──────────────────────────────────────────
   // initSearchableSelect(wrapperEl, groups)
-  // groups: [{{label: str|null, options: [{{k,v}}]}}]
-  function initSearchableSelect(wrapper, groups) {{
+  // groups: [{label: str|null, options: [{k,v}]}]
+  function initSearchableSelect(wrapper, groups) {
     if (!wrapper || wrapper._ssInit) return;
     wrapper._ssInit = true;
     var display = wrapper.querySelector('.searchable-select__display');
@@ -207,42 +171,42 @@ _EDITOR_JS = """
     var hiddenIn = wrapper.querySelector('input[type=hidden]');
     var currentVal = wrapper.getAttribute('data-value') || '';
 
-    function renderOptions(filter) {{
+    function renderOptions(filter) {
       listEl.replaceChildren();
       var f = filter ? filter.toLowerCase() : '';
-      groups.forEach(function(grp) {{
-        var visOpts = grp.options.filter(function(o) {{
+      groups.forEach(function(grp) {
+        var visOpts = grp.options.filter(function(o) {
           return !f || o.v.toLowerCase().includes(f) || o.k.toLowerCase().includes(f);
-        }});
+        });
         if (!visOpts.length) return;
-        if (grp.label) {{
+        if (grp.label) {
           var gl = document.createElement('div');
           gl.className = 'searchable-select__group-label';
           gl.textContent = grp.label;
           listEl.appendChild(gl);
-        }}
-        visOpts.forEach(function(o) {{
+        }
+        visOpts.forEach(function(o) {
           var opt = document.createElement('div');
           opt.className = 'searchable-select__option';
           opt.textContent = o.v;
           opt.setAttribute('data-key', o.k);
           if (o.k === currentVal) opt.setAttribute('aria-selected', 'true');
-          opt.addEventListener('mousedown', function(e) {{
+          opt.addEventListener('mousedown', function(e) {
             e.preventDefault();
             selectOption(o.k, o.v);
-          }});
+          });
           listEl.appendChild(opt);
-        }});
-      }});
-    }}
+        });
+      });
+    }
 
-    function selectOption(k, v) {{
+    function selectOption(k, v) {
       currentVal = k;
       display.value = v || '';
       if (hiddenIn) hiddenIn.value = k;
       // Sync fld-type, fld-label, and the fld-fs / fld-bh control visibility in the parent row
       var row = wrapper.closest('.field-row-compact');
-      if (row) {{
+      if (row) {
         var typeIn = row.querySelector('.fld-type');
         var ft = fieldType(k);
         if (typeIn) typeIn.value = ft;
@@ -255,57 +219,57 @@ _EDITOR_JS = """
         if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
         var boldIn = row.querySelector('.fld-bold-wrap');
         if (boldIn) boldIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';
-      }}
+      }
       closeDropdown();
       labelEditorUpdatePreview();
-    }}
+    }
 
-    function openDropdown() {{
+    function openDropdown() {
       renderOptions('');
       dropdown.classList.add('open');
       searchIn.value = '';
       searchIn.focus();
-    }}
-    function closeDropdown() {{
+    }
+    function closeDropdown() {
       dropdown.classList.remove('open');
-    }}
+    }
 
-    display.addEventListener('click', function(e) {{
+    display.addEventListener('click', function(e) {
       e.stopPropagation();
-      if (dropdown.classList.contains('open')) {{ closeDropdown(); }} else {{ openDropdown(); }}
-    }});
-    searchIn.addEventListener('input', function() {{
+      if (dropdown.classList.contains('open')) { closeDropdown(); } else { openDropdown(); }
+    });
+    searchIn.addEventListener('input', function() {
       renderOptions(this.value);
-    }});
-    searchIn.addEventListener('keydown', function(e) {{
+    });
+    searchIn.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') closeDropdown();
-    }});
-    document.addEventListener('click', function(e) {{
+    });
+    document.addEventListener('click', function(e) {
       if (!wrapper.contains(e.target)) closeDropdown();
-    }}, true);
+    }, true);
 
     // Init display with current value label
-    if (currentVal) {{
+    if (currentVal) {
       var found = null;
-      groups.forEach(function(grp) {{
-        grp.options.forEach(function(o) {{ if (o.k === currentVal) found = o.v; }});
-      }});
+      groups.forEach(function(grp) {
+        grp.options.forEach(function(o) { if (o.k === currentVal) found = o.v; });
+      });
       display.value = found || currentVal;
-    }}
-  }}
+    }
+  }
   window.initSearchableSelect = initSearchableSelect;
 
   // Init all existing searchable-selects (options stored in data-options attribute)
-  document.querySelectorAll('.field-row-compact .searchable-select').forEach(function(w) {{
+  document.querySelectorAll('.field-row-compact .searchable-select').forEach(function(w) {
     var opts = w.getAttribute('data-options');
-    if (opts) {{
-      try {{ initSearchableSelect(w, JSON.parse(opts)); }} catch(e) {{}}
-    }}
-  }});
+    if (opts) {
+      try { initSearchableSelect(w, JSON.parse(opts)); } catch(e) {}
+    }
+  });
 
   var addBtn = document.getElementById('add-field-btn');
-  if (addBtn) {{
-    addBtn.addEventListener('click', function() {{
+  if (addBtn) {
+    addBtn.addEventListener('click', function() {
       var list = document.getElementById('field-list');
       var idx = list.querySelectorAll('.field-row-compact').length;
       // A copy of the server's empty row, so a new field starts from the same markup and defaults.
@@ -315,26 +279,26 @@ _EDITOR_JS = """
       reindexFields();
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
-    }});
-  }}
+    });
+  }
 
   // ── Drag to reposition ───────────────────────────────────────────────────
   var _drag = null;
-  function setupBlockDrag(block, idx, scale) {{
-    block.addEventListener('mousedown', function(e) {{
+  function setupBlockDrag(block, idx, scale) {
+    block.addEventListener('mousedown', function(e) {
       e.preventDefault();
       var canvas = document.getElementById('preview-canvas');
-      _drag = {{
+      _drag = {
         block: block, idx: idx, scale: scale,
         startX: e.clientX, startY: e.clientY,
         origLeft: parseInt(block.style.left) || 0,
         origTop: parseInt(block.style.top) || 0,
         canvasW: canvas ? canvas.offsetWidth : 400,
         canvasH: canvas ? canvas.offsetHeight : 300,
-      }};
-    }});
-  }}
-  document.addEventListener('mousemove', function(e) {{
+      };
+    });
+  }
+  document.addEventListener('mousemove', function(e) {
     if (!_drag) return;
     var dx = e.clientX - _drag.startX;
     var dy = e.clientY - _drag.startY;
@@ -343,24 +307,24 @@ _EDITOR_JS = """
     var maxTop = (canvas ? canvas.offsetHeight : _drag.canvasH) - (_drag.block.offsetHeight || 12);
     _drag.block.style.left = Math.max(0, Math.min(_drag.origLeft + dx, maxLeft)) + 'px';
     _drag.block.style.top = Math.max(0, Math.min(_drag.origTop + dy, maxTop)) + 'px';
-  }});
-  document.addEventListener('mouseup', function() {{
+  });
+  document.addEventListener('mouseup', function() {
     if (!_drag) return;
     var xMm = (parseInt(_drag.block.style.left) || 0) / _drag.scale;
     var yMm = (parseInt(_drag.block.style.top) || 0) / _drag.scale;
     var list = document.getElementById('field-list');
-    if (list) {{
+    if (list) {
       var rows = list.querySelectorAll('.field-row-compact');
-      if (_drag.idx < rows.length) {{
+      if (_drag.idx < rows.length) {
         var row = rows[_drag.idx];
         var xIn = row.querySelector('.fld-x');
         var yIn = row.querySelector('.fld-y');
         if (xIn) xIn.value = xMm.toFixed(2);
         if (yIn) yIn.value = yMm.toFixed(2);
-      }}
-    }}
+      }
+    }
     _drag = null;
-  }});
+  });
 
   // ── Preview renderer (uses server-generated barcode/QR SVGs) ─────────
   // Fixed QR size: always 10mm. Barcode: natural width (from the SVG's
@@ -369,7 +333,7 @@ _EDITOR_JS = """
   var BC_MIN_W_MM = 20;
   var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
 
-  window.labelEditorUpdatePreview = function() {{
+  window.labelEditorUpdatePreview = function() {
     var canvas = document.getElementById('preview-canvas');
     if (!canvas) return;
     var dims = getCanvasDims();
@@ -380,7 +344,7 @@ _EDITOR_JS = """
     if (!list) return;
     var rows = list.querySelectorAll('.field-row-compact');
     var autoY = 2;
-    rows.forEach(function(row, i) {{
+    rows.forEach(function(row, i) {
       var hiddenKey = row.querySelector('.fld-key') || row.querySelector('[name*="[key]"]');
       var typeIn = row.querySelector('.fld-type');
       var labelIn = row.querySelector('.fld-label');
@@ -396,12 +360,12 @@ _EDITOR_JS = """
       var fs = (fsEl && fsEl.value !== '') ? parseFloat(fsEl.value) : 7;
       var lineHMm = fs * 0.35 * 1.4;
       var xPos, yPos;
-      if (xMm !== null && !isNaN(xMm) && yMm !== null && !isNaN(yMm)) {{
+      if (xMm !== null && !isNaN(xMm) && yMm !== null && !isNaN(yMm)) {
         xPos = xMm; yPos = yMm;
-      }} else {{
+      } else {
         xPos = 2; yPos = autoY;
         autoY += lineHMm + 1;
-      }}
+      }
 
       var sample = sampleData[key] || key;
       var block = document.createElement('div');
@@ -410,7 +374,7 @@ _EDITOR_JS = """
       var scaledFs = Math.max(6, fs * dims.scale * 0.35);
       block.style.fontSize = scaledFs + 'px';
 
-      if (ftype === 'barcode') {{
+      if (ftype === 'barcode') {
         block.className = 'label-field-block label-field-block--barcode';
         var bcMaxWMm = dims.wMm - xPos - 2;
         var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, 30)) * dims.scale);
@@ -423,22 +387,22 @@ _EDITOR_JS = """
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
-        img.onload = function() {{
+        img.onload = function() {
           // Match the print sheet: natural width (SVG intrinsic size, 96 CSS
           // px per inch), squeezed only when the label edge is closer.
           var naturalMm = img.naturalWidth * 25.4 / 96;
           var wPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, naturalMm)) * dims.scale) + 'px';
           img.style.width = wPx;
           block.style.width = wPx;
-        }};
+        };
         block.appendChild(img);
-      }} else if (ftype === 'barcode_text') {{
+      } else if (ftype === 'barcode_text') {
         block.className = 'label-field-block label-field-block--barcode-text';
         block.style.fontFamily = 'monospace';
         // Honor a chosen font size; keep the 11px default when none is set.
         block.style.fontSize = (fsEl && fsEl.value !== '') ? (scaledFs + 'px') : '11px';
         block.textContent = sample;
-      }} else if (ftype === 'qr') {{
+      } else if (ftype === 'qr') {
         block.className = 'label-field-block label-field-block--qr';
         // QR is always exactly 10mm
         var qrPx = Math.round(QR_SIZE_MM * dims.scale);
@@ -448,47 +412,47 @@ _EDITOR_JS = """
         celerpSetUrl(img, 'src', '/api/labels/preview/qr?value=' + encodeURIComponent(sample));
         img.alt = 'qr';
         block.appendChild(img);
-      }} else {{
+      } else {
         block.className = 'label-field-block';
         // Show "label: value" for text fields so fields are distinguishable
         block.textContent = fieldLabel ? (fieldLabel + ': ' + sample) : sample;
-      }}
+      }
 
       // Bold applies to text and the barcode number, and must show in the preview
       // so what the designer shows is what the printer produces.
       var boldEl = row.querySelector('.fld-bold');
-      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {{
+      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {
         block.style.fontWeight = boldEl.checked ? '700' : '';
-      }}
+      }
 
       setupBlockDrag(block, i, dims.scale);
       canvas.appendChild(block);
-    }});
-  }};
+    });
+  };
 
   // Render preview after DOM is fully settled.
   // On initial page load: immediate call is fine since DOM is complete.
   // After HTMX outerHTML swap: the inline script runs during swap processing,
   // but HTMX may clear/reset styles afterward. We listen for htmx:afterSettle
   // which fires once the swap is fully committed.
-  if (typeof htmx !== 'undefined') {{
+  if (typeof htmx !== 'undefined') {
     // HTMX is loaded: might be a swap. Listen once for afterSettle.
     var settled = false;
-    document.addEventListener('htmx:afterSettle', function onSettle() {{
+    document.addEventListener('htmx:afterSettle', function onSettle() {
       document.removeEventListener('htmx:afterSettle', onSettle);
       settled = true;
       labelEditorUpdatePreview();
-    }});
+    });
     // Fallback: if afterSettle doesn't fire within 200ms (full page load),
     // render immediately.
-    setTimeout(function() {{
+    setTimeout(function() {
       if (!settled) labelEditorUpdatePreview();
-    }}, 200);
-  }} else {{
+    }, 200);
+  } else {
     // No HTMX: plain page load.
     labelEditorUpdatePreview();
-  }}
-}})();
+  }
+})();
 """
 
 _LABELS_CSS = """
@@ -776,12 +740,12 @@ def _field_row_compact(
         Input(type="hidden", name=f"fields[{idx}][y]", value=field.get("y", ""), cls="fld-y"),
         Input(type="number", name=f"fields[{idx}][fontSize]", value=field.get("fontSize", ""),
               cls="form-input form-input--sm fld-fs",
-              min="4", max="72", placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
+              **_limits("fontSize"), placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
               style="width:60px;" if is_text else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         Input(type="number", name=f"fields[{idx}][barcode_height]", value=field.get("barcode_height", ""),
               cls="form-input form-input--sm fld-bh",
-              min="1", max="30", placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
+              **_limits("barcode_height"), placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
               style="width:60px;" if ftype == "barcode" else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         # Bold has always been stored on the field and honoured by the renderers;
@@ -797,6 +761,12 @@ def _field_row_compact(
         cls="field-row-compact",
         data_idx=str(idx),
     )
+
+
+def _limits(name: str) -> dict[str, str]:
+    """The min and max a number input of the label number ``name`` offers (LABEL_NUMBERS)."""
+    _, lo, hi = LABEL_NUMBERS[name]
+    return {"min": f"{lo:g}", "max": f"{hi:g}"}
 
 
 def _editor_panel(
@@ -851,9 +821,11 @@ def _editor_panel(
 
     # Type map: key -> render type (barcode/qr/text)
     type_map = {k: rtype for k, _v, rtype in _COMMON_FIELDS}
-    format_sizes = {name: list(mm) for name, mm in _FORMAT_MM.items()}
+    format_sizes = {name: list(mm) for name, mm in _SIZES.items()}
 
-    init_js = Script(js(_EDITOR_JS, dict(_SAMPLE_DATA), all_fields, type_map, format_sizes, add_field_groups))
+    init_js = Script(_EDITOR_JS, data_cfg=js_value({
+        "sampleData": dict(_SAMPLE_DATA), "allFields": all_fields, "typeMap": type_map,
+        "formatSizes": format_sizes, "addFieldGroups": add_field_groups}))
     new_row = _field_row_compact(0, {"key": "", "label": "", "type": "text", "fontSize": FIELD_DEFAULT_PT,
                                      "barcode_height": BARCODE_HEIGHT_DEFAULT}, global_extra, category_attrs)
 
@@ -878,7 +850,7 @@ def _editor_panel(
             Div(
                 Div(
                     Label(t("label.width_mm")),
-                    Input(name="width_mm", type="number", step="0.5", min="5",
+                    Input(name="width_mm", type="number", step="0.5", **_limits("width_mm"),
                           id="custom-w", value=str(w_mm) if w_mm else "",
                           placeholder=t("labels.width_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -886,7 +858,7 @@ def _editor_panel(
                 ),
                 Div(
                     Label(t("label.height_mm")),
-                    Input(name="height_mm", type="number", step="0.5", min="5",
+                    Input(name="height_mm", type="number", step="0.5", **_limits("height_mm"),
                           id="custom-h", value=str(h_mm) if h_mm else "",
                           placeholder=t("labels.height_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -1048,21 +1020,18 @@ def _printable_label_sheet(
 ) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print(); Back returns to
     ``back_url``, an in-app path."""
-    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Script, Span, Style, Title
+    from fasthtml.common import Div, P, Script, Span
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
     unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
-    if not template:
-        fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _FORMAT_MM_DEFAULT
-    else:
-        fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _format_to_mm(
-            template.get("format"),
-            template.get("width_mm"),
-            template.get("height_mm"),
-        )
+    try:
+        template = printable_template(template or {})
+        w_mm, h_mm = label_size(template)
+    except LabelNumberError as e:
+        return _print_page(back_url, P(t("labels.cannot_print", reason=e.text), cls="flash flash--error"),
+                           status_code=422)
+    fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
 
     from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
                                        display_label, resolve_field_value)
@@ -1157,6 +1126,16 @@ def _printable_label_sheet(
                 field_lines.append(Div(str(display), cls="label-field", style=pos + fs_style + bold_style))
         label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {float(w_mm)}mm; height: {float(h_mm)}mm;"))
 
+    return _print_page(back_url, Div(*label_rows, cls="label-sheet"),
+                       Script("window.onload = function() { window.print(); };"),
+                       print_button=True)
+
+
+def _print_page(back_url: str, *content, print_button: bool = False, status_code: int = 200):
+    """The minimal print page: Print (when there is a sheet) and Back to ``back_url``, an
+    in-app path, above ``content``."""
+    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Style, Title
+
     page = Html(
         Head(
             Meta(charset="utf-8"),
@@ -1166,15 +1145,15 @@ def _printable_label_sheet(
         ),
         Body(
             Div(
-                Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
+                *([Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()")]
+                  if print_button else []),
                 A(t("label.back"), href=safe_url(back_url), cls="btn btn--secondary"),
                 cls="no-print",
             ),
-            Div(*label_rows, cls="label-sheet"),
-            Script("window.onload = function() { window.print(); };"),
+            *content,
         ),
     )
-    return html_response(page)
+    return html_response(page, status_code=status_code)
 
 
 def setup_ui_routes(app) -> None:
@@ -1300,7 +1279,10 @@ def setup_ui_routes(app) -> None:
     async def barcode_preview(request: Request):
         from celerp_labels.service import _make_barcode_svg
         value = request.query_params.get("value", "0000000")
-        height = int(request.query_params.get("height", "8"))
+        try:
+            height = int(label_number("barcode_height", request.query_params.get("height", BARCODE_HEIGHT_DEFAULT)))
+        except LabelNumberError as e:
+            return StarletteResponse(content=e.text, status_code=422, media_type="text/plain")
         res = _make_barcode_svg(value, module_height=height)
         if res:
             return StarletteResponse(content=res[0], media_type="image/svg+xml",
@@ -1422,8 +1404,8 @@ def setup_ui_routes(app) -> None:
         name = (form.get("name") or "").strip() or "Untitled"
         fmt = form.get("format") or "40x30mm"
 
-        width_mm = _parse_float(form.get("width_mm"))
-        height_mm = _parse_float(form.get("height_mm"))
+        width_mm = str(form.get("width_mm") or "").strip() or None
+        height_mm = str(form.get("height_mm") or "").strip() or None
         fields = _extract_fields_from_form(form)
 
         payload: dict = {"name": name, "format": fmt, "fields": fields}
@@ -1724,18 +1706,6 @@ def setup_ui_routes(app) -> None:
     log.info("celerp-labels: UI routes registered")
 
 
-def _parse_float(val) -> float | None:
-    """A number the form sent, or None for text that is not a finite number (inf and nan
-    included: the API cannot store them)."""
-    if val is None or str(val).strip() == "":
-        return None
-    try:
-        f = float(val)
-    except ValueError:
-        return None
-    return f if math.isfinite(f) else None
-
-
 def _extract_fields_from_form(form) -> list[dict]:
     """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height] from multidict into ordered list."""
     import re
@@ -1757,9 +1727,10 @@ def _extract_fields_from_form(form) -> list[dict]:
             "label": (row.get("label") or k).strip(),
             "type": row.get("type", "text"),
         }
-        for num_attr in ("x", "y", "fontSize", "barcode_height"):
-            v = _parse_float(row.get(num_attr))
-            if v is not None:
+        # Numbers go as typed: the API's label number parser canonicalises or refuses them.
+        for num_attr in FIELD_NUMBERS:
+            v = str(row.get(num_attr) or "").strip()
+            if v:
                 field[num_attr] = v
         if row.get("bold") in ("true", "1", "on"):
             field["bold"] = True

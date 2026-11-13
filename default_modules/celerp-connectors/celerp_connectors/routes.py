@@ -773,6 +773,16 @@ class ReconciledRequest(BaseModel):
     signature: str
 
 
+def _set_held_order_decision(entry: dict, *, reconciled: bool = False, import_next: str | None = None) -> None:
+    """The one writer of a person's decision on an attention entry (Mark reconciled, Undo,
+    Import as). Each decision replaces every earlier one, so the sync acts only on the last
+    thing the person chose: an Undo or a mark never leaves an older Import as waiting."""
+    entry["reconciled"] = reconciled
+    entry.pop("import_next", None)
+    if import_next is not None:
+        entry["import_next"] = import_next
+
+
 async def _set_order_reconciled(
     session: AsyncSession, company_id, order_id: str, signature: str | None, actor_id,
 ) -> dict:
@@ -798,7 +808,7 @@ async def _set_order_reconciled(
             )
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(status_code=409, detail=_order_changed())
-        entry["reconciled"] = signature is not None
+        _set_held_order_decision(entry, reconciled=signature is not None)
 
     entry = await update_attention_entry(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
@@ -840,13 +850,16 @@ async def mark_order_reconciled(
 @router.post("/woocommerce/orders/{order_id}/import-next")
 async def import_order_under_next_number(
     order_id: str,
+    payload: ReconciledRequest,
     company_id: Annotated[str, Depends(get_current_company_id)],
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Import an order whose number another record holds under the next free WOO-<n>-<k>,
     now, answering the number it took and its document; the order's own reason when it still
-    waits on a person."""
+    waits on a person. ``payload.signature`` is the order state the person reviewed: the choice
+    is stored with it, and the sync imports under the next number only while the order in
+    WooCommerce still has that state."""
     from celerp import connectors
     from celerp.connectors.sync_runner import attention_entries, update_attention_entry
     from celerp.models.projections import Projection
@@ -862,8 +875,9 @@ async def import_order_under_next_number(
     def _apply(entry: dict) -> None:
         if not entry.get("number_held"):
             raise HTTPException(status_code=409, detail=t("error.order_number_not_held"))
-        entry["import_next"] = True
-        entry["reconciled"] = False
+        if entry.get("signature") != payload.signature:
+            raise HTTPException(status_code=409, detail=_order_changed())
+        _set_held_order_decision(entry, import_next=payload.signature)
 
     if await update_attention_entry(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply

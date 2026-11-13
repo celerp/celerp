@@ -6580,6 +6580,7 @@
   "modules.turn_on": "Bật",
   "nav.my_assets": "Tài sản của tôi",
   "connectors.order_changed_in_woocommerce": "Đơn hàng này đã thay đổi trong WooCommerce. Hãy chọn Thử lại để xem xét thay đổi.",
+  "connectors.import_as_order_changed": "Đơn hàng này đã thay đổi trong WooCommerce sau khi bạn chọn nhập với số tiếp theo, nên Celerp không nhập nó. Hãy kiểm tra lại đơn hàng, rồi chọn Nhập với số {next} nếu đó vẫn là một bản ghi khác.",
   "connectors.flow_products": "Sản phẩm",
   "connectors.flow_stock": "Tồn kho",
   "connectors.flow_orders": "Đơn hàng",

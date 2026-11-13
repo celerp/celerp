@@ -30,7 +30,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
-from ui.components.encode import html_response, js, safe_url
+from ui.components.encode import call, html_response, safe_url
 from ui.components.funds import DefaultsView, connection_default, connection_defaults_card, connection_defaults_of
 
 log = logging.getLogger(__name__)
@@ -638,7 +638,8 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
             ), *((" ", Button(
                 t("connectors.attention_import_as", lang, number=held["next_number"]),
                 cls="btn btn--xs btn--outline",
-                hx_post=f"/settings/connectors/{platform}/attention/{record_id}/import-next", **common,
+                hx_post=f"/settings/connectors/{platform}/attention/{record_id}/import-next",
+                hx_vals=hx_vals({"signature": entry["signature"]}), **common,
             )) if held else ()))
     if entry.get("kind") == "conflict":
         url = f"/settings/connectors/{platform}/attention/{record_id}/resolve"
@@ -1713,7 +1714,7 @@ def setup_routes(app):
         # link, so nothing is silently lost if the popup is blocked (GDR: users must
         # always know what comes next and have a visible way forward).
         return Div(
-            Script(js("celerpOpen({0}, '_blank', 'noopener');", str(url))),
+            Script(call("celerpOpen", str(url), "_blank", "noopener")),
             Span(t("connectors.authorize_opened", lang,
                    default="Opening authorization in a new tab, complete it there, then return here."),
                  cls="flash flash--info"),
@@ -2039,8 +2040,8 @@ def setup_routes(app):
     @app.post("/settings/connectors/{platform}/attention/{record_id}/import-next")
     async def connector_import_next(request: Request, platform: str, record_id: str):
         """HTMX: import a WooCommerce order whose number another record holds under the next
-        free number, then show the number it took in the entry's place, linked to the order.
-        Only WooCommerce orders carry this action."""
+        free number, for the order state the person reviewed, then show the number it took in
+        the entry's place, linked to the order. Only WooCommerce orders carry this action."""
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
@@ -2049,8 +2050,9 @@ def setup_routes(app):
         from ui.api_client import APIError, import_woocommerce_order_next
 
         lang = get_lang(request)
+        signature = str((await request.form()).get("signature", ""))
         try:
-            result = await import_woocommerce_order_next(token, record_id)
+            result = await import_woocommerce_order_next(token, record_id, signature)
         except APIError as exc:
             entries = await _attention(_request_company_id(request), platform)
             entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})

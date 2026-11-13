@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 from ui.components.attrs import hx_vals
-from ui.components.encode import esc_attr
 
 
 def test_hx_vals_escapes_json_breakout():
@@ -23,10 +22,3 @@ def test_hx_vals_escapes_json_breakout():
     parsed = json.loads(out)
     assert parsed == {"search": evil, "page": "1"}
     assert "evil" not in {k for k in parsed if k != "search"}
-
-
-def test_esc_attr_escapes_quotes_and_brackets():
-    out = esc_attr('"><script>alert(1)</script>')
-    assert "<script>" not in out
-    assert '"' not in out  # quote is escaped (&quot;)
-

@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
-from ui.components.encode import css_color, html_response, inert_media_type, js, safe_url
+from ui.components.encode import call, css_color, EVENT, html_response, inert_media_type, js_value, safe_url, THIS
 
 logger = logging.getLogger(__name__)
 
@@ -588,14 +588,13 @@ def _contacts_bulk_toolbar() -> FT:
     return Div(
         Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
         Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
-               style="display:none",
+               style="display:none", data_zero=t("doc.0_selected"),
                onclick=(
-                   js(
-                       "CelerpSelection.clear();CelerpSelection.syncCheckboxes();document.getElementById('contact-bulk-count').textContent={0};"
-                       "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
-                       "document.getElementById('contact-bulk-clear-btn').style.display='none';"
-                       '_resetBulkActions();',
-                       t('doc.0_selected'))
+                   "CelerpSelection.clear();CelerpSelection.syncCheckboxes();"
+                   "document.getElementById('contact-bulk-count').textContent=this.dataset.zero;"
+                   "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
+                   "this.style.display='none';"
+                   "_resetBulkActions();"
                )),
         Select(
             Option(t("inv.action"), value="", disabled=True, selected=True),
@@ -768,74 +767,75 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
-        Script(js("""
-(function(){{
-  var CFG = {0};
-  function updateContactBulkToolbar(){{
+        Script("""
+(function(){
+  var PAGE = JSON.parse(document.currentScript.dataset.cfg);
+  var CFG = PAGE.bulk;
+  var CONTACT_TYPE = PAGE.contactType;
+  function updateContactBulkToolbar(){
     var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
     var toolbar = document.getElementById('contact-bulk-toolbar');
     var countEl = document.getElementById('contact-bulk-count');
     var clearBtn = document.getElementById('contact-bulk-clear-btn');
-    if (countEl) countEl.textContent = CFG.selectedTpl.replace('{{n}}', n);
+    if (countEl) countEl.textContent = CFG.selectedTpl.replace('{n}', n);
     if (toolbar) toolbar.classList.toggle('is-active', n > 0);
     if (clearBtn) clearBtn.style.display = n > 0 ? '' : 'none';
-  }}
-  window.contactBulkChanged = function(action){{
+  }
+  window.contactBulkChanged = function(action){
     var ctx = document.getElementById('contact-bulk-context');
     if (ctx) ctx.replaceChildren();
     document.getElementById('bulk-action-result').replaceChildren();
-    if (action === 'contact-export'){{
+    if (action === 'contact-export'){
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
-      var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
-      celerpGo('/contacts/' + {1} + 's/export/csv?' + qs);
+      var qs = ids.map(function(id){return 'selected=' + encodeURIComponent(id);}).join('&');
+      celerpGo('/contacts/' + CONTACT_TYPE + 's/export/csv?' + qs);
       return;
-    }}
-    if (action === 'delete'){{
-      celerpConfirm(CFG.confirmDelete).then(function(yes){{ if (!yes) return;
+    }
+    if (action === 'delete'){
+      celerpConfirm(CFG.confirmDelete).then(function(yes){ if (!yes) return;
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
-      fetch('/crm/contacts/bulk/delete', {{
+      fetch('/crm/contacts/bulk/delete', {
         method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{contact_ids: ids}})
-      }}).then(function(r){{ return r.json(); }}).then(function(d){{
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({contact_ids: ids})
+      }).then(function(r){ return r.json(); }).then(function(d){
         var res = document.getElementById('bulk-action-result');
-        if (d.deleted !== undefined){{
-          res.replaceChildren(celerpNode('p', {{'class': 'flash flash--success'}}, [CFG.deletedTpl.replace('{{n}}', d.deleted)]));
-          setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
-        }} else {{
-          res.replaceChildren(celerpNode('p', {{'class': 'flash flash--error'}}, [d.detail || CFG.deleteFailed]));
-        }}
-      }}).catch(function(err){{
-        document.getElementById('bulk-action-result').replaceChildren(celerpNode('p', {{'class': 'flash flash--error'}}, [CFG.deleteFailed]));
-      }});
-      }});
+        if (d.deleted !== undefined){
+          res.replaceChildren(celerpNode('p', {'class': 'flash flash--success'}, [CFG.deletedTpl.replace('{n}', d.deleted)]));
+          setTimeout(function(){ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }, 800);
+        } else {
+          res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [d.detail || CFG.deleteFailed]));
+        }
+      }).catch(function(err){
+        document.getElementById('bulk-action-result').replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [CFG.deleteFailed]));
+      });
+      });
       return;
-    }}
-    if (action === 'contact-merge'){{
+    }
+    if (action === 'contact-merge'){
       var tpl = document.getElementById('tpl-contact-merge');
       if (!tpl || !ctx) return;
       var clone = tpl.content.cloneNode(true);
       ctx.appendChild(clone);
       if (window.htmx) htmx.process(ctx);
       return;
-    }}
-  }};
+    }
+  };
   // Hook into CelerpSelection updates
-  document.body.addEventListener('htmx:afterSwap', function(e){{
-    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){{
+  document.body.addEventListener('htmx:afterSwap', function(e){
+    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){
       if (typeof CelerpSelection !== 'undefined') CelerpSelection.syncCheckboxes();
       updateContactBulkToolbar();
-    }}
-  }});
-  document.addEventListener('change', function(e){{
+    }
+  });
+  document.addEventListener('change', function(e){
     if (e.target && e.target.classList.contains('row-select')) updateContactBulkToolbar();
-  }});
+  });
   document.body.addEventListener('celerpSelectionClear', updateContactBulkToolbar);
   updateContactBulkToolbar();
-}})();
-""",
-            _bulk_cfg, contact_type)),
+})();
+""", data_cfg=js_value({'bulk': _bulk_cfg, 'contactType': contact_type})),
         title=page_title(f"nav.{nav_key}"),
         nav_active=nav_key,
         request=request,
@@ -891,29 +891,30 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         if contact_name in {_placeholder_name(kind) for kind in _PLACEHOLDER_KEYS} else ""
     )
 
-    delete_btn = "" if (is_deleted or not show_delete) else Script(js("""
-(function(){{
+    delete_btn = "" if (is_deleted or not show_delete) else Script("""
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var FAILED = CFG.failed;
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
-  btn.addEventListener('click', function(){{
-    celerpConfirm({0}).then(function(yes){{ if (!yes) return;
-    fetch('/crm/contacts/bulk/delete', {{
+  btn.addEventListener('click', function(){
+    celerpConfirm(CFG.confirm).then(function(yes){ if (!yes) return;
+    fetch('/crm/contacts/bulk/delete', {
       method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: [{1}]}})
-    }}).then(function(r){{ return r.json(); }}).then(function(d){{
-      if (d.deleted !== undefined) {{
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({contact_ids: [CFG.cid]})
+    }).then(function(r){ return r.json(); }).then(function(d){
+      if (d.deleted !== undefined) {
         sessionStorage.removeItem('celerp_contact_selection');
-        celerpGo({2});
-      }} else {{
-        celerpToast(d.detail || {3}, 'error');
-      }}
-    }}).catch(function(err){{ celerpToast({3}, 'error'); }});
-    }});
-  }});
-}})();
-""",
-        t('contacts.confirm_delete_contact'), cid, back_href, t('contacts.delete_failed')))
+        celerpGo(CFG.backHref);
+      } else {
+        celerpToast(d.detail || FAILED, 'error');
+      }
+    }).catch(function(err){ celerpToast(FAILED, 'error'); });
+    });
+  });
+})();
+""", data_cfg=js_value({'confirm': t('contacts.confirm_delete_contact'), 'cid': cid, 'backHref': back_href, 'failed': t('contacts.delete_failed')}))
 
     action_bar = Div(
         Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
@@ -1597,9 +1598,7 @@ def setup_routes(app):
                     cls="form-group form-group--inline"),
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=js(
-                        "document.getElementById({0}).replaceChildren()",
-                        str(target_div))),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=call("celerpClear", target_div)),
                     cls="form-row",
                 ),
                 hx_post=f"/contacts/{contact_id}/addresses",
@@ -1657,9 +1656,8 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm",
-                           onclick=js(
-                               "htmx.ajax('GET',{0},'#addresses-section',{{swap:'outerHTML'}})",
-                               f'/contacts/{contact_id}/addresses/section')),
+                           onclick=call("celerpLoad", f"/contacts/{contact_id}/addresses/section",
+                                        "#addresses-section")),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/addresses/{address_id}",
@@ -1864,12 +1862,8 @@ def setup_routes(app):
             return P(t("label.not_editable"), cls="cell-error")
 
         val = str(contact.get(field, "") or "")
-        _esc_js = (
-            js(
-                "if(event.key==='Escape'){{htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
-                "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}",
-                contact_id, field)
-        )
+        restore = {"url": f"/contacts/{contact_id}/field/{field}/display"}
+        _esc_js = call("celerpCellKey", THIS, EVENT, restore)
 
         if field == "contact_type":
             input_el = Select(
@@ -1936,23 +1930,9 @@ def setup_routes(app):
                 name="value", value=val,
                 id=f"edit-{field}",
                 cls="cell-input", autofocus=True,
-                onkeydown=(
-                    js(
-                        "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
-                        "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}"
-                        "else if(event.key==='Enter'){{event.preventDefault();this.blur()}}",
-                        contact_id, field)
-                ),
+                onkeydown=call("celerpCellKey", THIS, EVENT, {**restore, "enter": "blur"}),
             )
-            blur_guard_js = Script(
-                js(
-                    "requestAnimationFrame(()=>{{var el=document.getElementById('edit-' + {0});"
-                    'if(!el)return;el._ready=false;setTimeout(()=>{{el._ready=true;el.focus()}}'
-                    ",350);el.addEventListener('blur',function(e){{if(!el._ready||el._escaping)return;"
-                    "htmx.ajax('PATCH','/contacts/' + {1} + '/field/' + {0},{{target:el.closest('td'),"
-                    "swap:'outerHTML',values:{{value:el.value}}}})}},{{once:true}})}})",
-                    field, contact_id)
-            )
+            blur_guard_js = Script(call("celerpCellSaveOnBlur", f"edit-{field}", f"/contacts/{contact_id}/field/{field}"))
             return Td(input_el, blur_guard_js, cls="cell cell--editing")
         return Td(input_el, cls="cell cell--editing")
 

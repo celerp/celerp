@@ -32,13 +32,13 @@ PY-HTMLRESP | ui/seed.py:30
 PY-HTMLRESP | ui/seed.py:31
 PY-JSHOLE | ui/seed.py:10
 PY-JSHOLE | ui/seed.py:12
+PY-JSHOLE | ui/seed.py:26
 PY-POSITION | ui/seed.py:28
 PY-POSITION | ui/seed.py:29
 PY-RAW | ui/seed.py:18
 PY-RAW | ui/seed.py:24
 PY-RAW | ui/seed.py:24
 PY-RAW | ui/seed.py:25
-PY-RAW | ui/seed.py:26
 PY-RAW | ui/seed.py:27
 PY-RAW | ui/seed.py:5
 PY-RAW | ui/seed.py:6

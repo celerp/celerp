@@ -3,19 +3,16 @@
 """The encoder module: the one place a value may become raw markup, script or a URL.
 
 FastHTML components encode element text and attribute values. A value reaches a page
-unencoded only through a raw door: markup admitted as already safe, a script or style
-position, a URL attribute, or a browser sink. Every function that opens such a door lives
-here, and each one encodes its holes for the position they sit in or refuses the position.
-``scripts/sink_check.py`` refuses the raw primitives everywhere else and loads
-``hole_positions`` from this file, so the run-time refusal and the static check share one
-parser.
+unencoded only through a raw door: constant markup admitted as it is, a script, a style, a
+URL attribute, or a browser sink. Every function that opens such a door lives here, and none
+of them writes a value into markup or script source by template: a script with values is one
+``call`` of a constant function name with JSON arguments, and markup with values is built as
+FastHTML elements. ``scripts/sink_check.py`` refuses the raw primitives everywhere else.
 """
 from __future__ import annotations
 
-import html
 import json
 import re
-import string
 from urllib.parse import urlsplit
 
 from fastcore.xml import to_xml
@@ -23,129 +20,48 @@ from starlette.responses import HTMLResponse
 
 from celerp.services.app_paths import is_app_local_path
 
-# ---------------------------------------------------------------- template positions
-HOLE = "\u0000HOLE\u0000"
-EVENT_ATTR_RE = re.compile(r"^(on[a-z]+|hx_on\w*|hx-on\S*)$")
-URL_ATTRS = {"href", "src", "action", "formaction", "srcset", "poster", "data", "xlink:href", "xlink_href"}
-HTMX_JS_ATTRS = {"hx-vals", "hx-headers", "hx-trigger", "hx_vals", "hx_headers", "hx_trigger"}
-REFUSED_ATTR = URL_ATTRS | HTMX_JS_ATTRS | {"srcdoc", "style"}
-TAG_RE = re.compile(r"<(/?)([A-Za-z][\w:-]*)")
-ATTR_RE = re.compile(r"""\s*([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?""")
-TOKEN_RE = re.compile(
-    r"""(?P<ws>\s+)|(?P<lc>//[^\n]*)|(?P<bc>/\*.*?\*/)|"""
-    r"""(?P<str>'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)|"""
-    r"""(?P<id>[A-Za-z_$\u0000][\w$\u0000A-Z]*)|(?P<num>\d[\w.]*)|"""
-    r"""(?P<op>===|!==|==|!=|=>|\+=|-=|\|\|=|&&=|\?\?=|[=(){}\[\];,.:+\-*/%<>!?&|^~])|(?P<other>.)""",
-    re.S)
-
-
-def _holes(template: str) -> str:
-    """The template with every str.format field replaced by HOLE ({{ and }} stay literal)."""
-    out = []
-    for lit, field, _spec, _conv in string.Formatter().parse(template):
-        out.append(lit)
-        if field is not None:
-            out.append(HOLE)
-    return "".join(out)
-
-
-def hole_positions(template: str, kind: str) -> list[str]:
-    """Refused hole positions in a raw_html ("html") or js ("js") template; [] = every hole is allowed.
-
-    html: a hole may sit in element text or a quoted value of an ordinary attribute.
-    js: a hole may sit only where a whole JavaScript expression goes (js_value output).
-    A template ``str.format`` cannot parse (a lone brace) is refused as malformed.
-    """
-    try:
-        s = _holes(template)
-    except ValueError:
-        return ["malformed template"]
-    bad: list[str] = []
-    if kind == "js":
-        for m in TOKEN_RE.finditer(s):
-            if HOLE in m.group() and m.lastgroup in ("str", "lc", "bc"):
-                bad.append("JS string, template or comment")
-        return bad
-    i = 0
-    while i < len(s):
-        if s.startswith("<!--", i):
-            j = s.find("-->", i)
-            j = len(s) if j < 0 else j + 3
-            if HOLE in s[i:j]:
-                bad.append("comment")
-            i = j
-            continue
-        m = TAG_RE.match(s, i)
-        if not m:
-            i += 1
-            continue
-        name = m.group(2).lower()
-        if HOLE in m.group(2):
-            bad.append("tag name")
-        i = m.end()
-        while i < len(s) and s[i] != ">":
-            a = ATTR_RE.match(s, i)
-            if not a or a.end() == i:
-                if HOLE in s[i:i + len(HOLE)]:
-                    bad.append("attribute name")
-                    i += len(HOLE)
-                else:
-                    i += 1
-                continue
-            attr = a.group(1).lower()
-            quoted = a.group(2) if a.group(2) is not None else a.group(3)
-            if HOLE in a.group(1):
-                bad.append("attribute name")
-            elif a.group(4) and HOLE in a.group(4):
-                bad.append(f"unquoted {attr} value")
-            elif quoted and HOLE in quoted and (attr in REFUSED_ATTR or EVENT_ATTR_RE.match(attr)):
-                bad.append(f"{attr} attribute")
-            i = a.end()
-        i += 1
-        if name in ("script", "style") and not m.group(1):
-            j = s.lower().find(f"</{name}", i)
-            j = len(s) if j < 0 else j
-            if HOLE in s[i:j]:
-                bad.append(f"<{name}> text")
-            i = j
-    return bad
-
-
-def _refuse(template: str, kind: str) -> None:
-    bad = hole_positions(template, kind)
-    if bad:
-        raise ValueError(f"refused {kind} template hole: {', '.join(bad)}")
-
-
 # ---------------------------------------------------------------- script
-class Js(str):
-    """Script text built by ``js``: every hole in it is one ``js_value`` literal."""
+# A script never holds a value written into its source by a template. A handler or a one-line
+# script is ``call(name, *values)``: one call of a constant function name with each value as one
+# JSON literal, so its shape is fixed by construction and there is nothing to scan. A longer
+# script is a constant; it reads its values from its own ``data-cfg`` attribute.
+_JS_NAME = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")
+_JS_ESCAPES = {"<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "\u2028": "\\u2028", "\u2029": "\\u2029"}
 
-    def __add__(self, other):
-        """Two scripts joined stay script; anything else joined is a plain string."""
-        joined = str.__add__(self, other)
-        return Js(joined) if isinstance(other, Js) else joined
+
+class Js(str):
+    """Script built by ``call``."""
+
+
+class JsRef(str):
+    """A name ``call`` writes as itself: only ``THIS`` and ``EVENT``, the handler's element and event."""
+
+
+THIS = JsRef("this")
+EVENT = JsRef("event")
 
 
 def js_value(value) -> str:
-    """*value* as one JavaScript literal that is safe inside a <script> element or a handler."""
-    return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
+    """*value* as one JSON literal with no character that can end a script element, an HTML
+    comment or a JavaScript line: ``<``, ``>``, ``&``, U+2028 and U+2029 are written as escapes
+    (JSON already escapes every other control character)."""
+    return "".join(_JS_ESCAPES.get(c, c) for c in json.dumps(value, ensure_ascii=False))
 
 
-def js(template: str, *values) -> Js:
-    """Script from a constant ``str.format`` template whose holes are whole expressions.
-
-    Each hole becomes ``js_value(value)``; a hole inside a JavaScript string, template
-    literal or comment raises ``ValueError``, since a literal there could close it.
-    """
-    _refuse(template, "js")
-    return Js(template.format(*(js_value(v) for v in values)))
+def call(name: str, *values) -> Js:
+    """``name(v1, v2, ...)``: *name* is a constant dotted identifier and each value one
+    ``js_value`` literal (``THIS`` and ``EVENT`` are written as themselves). Any other name
+    raises ``ValueError``."""
+    if not isinstance(name, str) or not _JS_NAME.fullmatch(name):
+        raise ValueError(f"call() needs a function name, not {name!r}")
+    args = ",".join(v if v is THIS or v is EVENT else js_value(v) for v in values)
+    return Js(f"{name}({args})")
 
 
 def as_js(x) -> Js:
-    """*x* when it was built by ``js``; a plain string raises ``TypeError``."""
+    """*x* when it was built by ``call``; a plain string raises ``TypeError``."""
     if not isinstance(x, Js):
-        raise TypeError("script must be built with js()")
+        raise TypeError("script must be built with call()")
     return x
 
 
@@ -184,7 +100,7 @@ def css_color(v) -> str | None:
 
 # ---------------------------------------------------------------- markup
 class Admitted(str):
-    """Markup built by this module: every hole in it was encoded for its position.
+    """Markup built by this module: a constant, a rendered FastHTML node or library markup.
 
     FastHTML writes a child with ``__html__`` unescaped. Joining an ``Admitted`` with
     another string gives a plain ``str``, which FastHTML escapes again, so admission
@@ -195,22 +111,15 @@ class Admitted(str):
         return str.__str__(self)
 
 
-def esc_attr(value: object) -> str:
-    """HTML-escape a value for element text or a quoted attribute (quotes too)."""
-    return html.escape(str(value), quote=True)
+def raw_html(markup: str) -> Admitted:
+    """A constant piece of markup (an icon's shapes, a fixed comment) admitted as it is.
 
-
-def raw_html(template: str, **holes) -> Admitted:
-    """Markup from a constant ``str.format`` template with named holes.
-
-    Each hole is escaped once with ``esc_attr`` unless it is already ``Admitted``. A hole
-    that HTML escaping does not make safe (a URL, event, style, srcdoc or htmx-evaluated
-    attribute, an attribute name, an unquoted value, a comment, script or style text)
-    raises ``ValueError``.
+    It takes no values: markup with a value in it is built as FastHTML elements, which encode
+    their text and attributes. ``scripts/sink_check.py`` accepts only a plain string constant here.
     """
-    _refuse(template, "html")
-    return Admitted(template.format(**{k: v if isinstance(v, Admitted) else esc_attr(v)
-                                       for k, v in holes.items()}))
+    if not isinstance(markup, str):
+        raise TypeError("raw_html takes a constant string")
+    return Admitted(markup)
 
 
 def to_markup(node) -> Admitted:

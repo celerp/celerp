@@ -55,7 +55,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     validate_cell,
     validate_column_mapping,
 )
-from ui.components.encode import js, safe_url
+from ui.components.encode import call, js_value, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -428,16 +428,18 @@ def column_mapping_form(
             method="post",
             action=safe_url(confirm_action),
         ),
-        Script(js('var _MAPPING_OPTIONS = {0};', option_defs)),
-        Script(js('var _MUTEX_GROUPS = {0};', _mutex_groups)),
-        Script(js('var _MAP_I18N = {0};', _mapping_js_labels())),
-        Script(_MAPPING_JS),
+        Script(_MAPPING_JS, data_cfg=js_value({"options": option_defs, "mutex": _mutex_groups,
+                                               "labels": _mapping_js_labels()})),
         id="import-preview",
         cls="import-panel",
     )
 
 
 _MAPPING_JS = """
+var _MAP_CFG = JSON.parse(document.currentScript.dataset.cfg);
+var _MAPPING_OPTIONS = _MAP_CFG.options;
+var _MUTEX_GROUPS = _MAP_CFG.mutex;
+var _MAP_I18N = _MAP_CFG.labels;
 (function() {
   var ATTR = '__attr__', SKIP = '__skip__';
   var allDropdowns = [];  // track all instances for cross-column awareness
@@ -1056,7 +1058,7 @@ def _fix_errors_panel(
                 fill_widget,
                 Button(t("btn.apply"),
                     type="button",
-                    onclick=js('csvFillColumn({0})', col),
+                    onclick=call('csvFillColumn', col),
                     cls="btn btn--secondary btn--xs",
                 ),
                 cls="csv-fill-bar",

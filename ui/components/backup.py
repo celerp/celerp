@@ -9,8 +9,8 @@ Used on System Recovery (settings.py _system_recovery_content).
 from __future__ import annotations
 
 from fasthtml.common import A, Button, Div, Input
+from ui.components.encode import call
 from ui.i18n import t, get_lang
-from ui.components.encode import js
 
 
 # Tooltip i18n keys, resolved at render time (see cloud_backup_buttons /
@@ -63,7 +63,7 @@ def local_backup_buttons(
         Button(t("btn.import_backup"),
             # The picker opens straight from the click: the browser stops a click
             # from opening it once the user has spent a few seconds on a dialog.
-            onclick=js('document.getElementById({0}).click()', str(import_input_id)),
+            onclick=call("celerpClick", import_input_id),
             cls=f"btn btn--secondary{size_cls}",
             title=t(_TOOLTIP_KEYS["import"]),
             id="backup-import-btn",

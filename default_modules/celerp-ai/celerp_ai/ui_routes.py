@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
-from ui.components.encode import as_js, html_response, js, safe_url
+from ui.components.encode import call, html_response, js_value, safe_url
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -1856,7 +1856,7 @@ def _empty_state(lang: str = "en") -> FT:
                 cls="ai-empty-state__card-body",
             ),
             type="button", cls="ai-empty-state__card",
-            onclick=js('celerpAiFillQuery({0},{1})', q['query'], bool(q.get('needs_files'))),
+            onclick=call('celerpAiFillQuery', q['query'], bool(q.get('needs_files'))),
         )
         for q in _get_example_queries(lang)
     ]
@@ -2138,7 +2138,8 @@ def _chat_view(
                 cls="ai-input",
                 id="ai-chat-form",
             ),
-            Script(as_js(_chat_text(lang))),
+            Script("var CELERP_AI_TEXT = JSON.parse(document.currentScript.dataset.cfg);",
+                   data_cfg=js_value(_chat_text(lang))),
             Script(_CHAT_JS),
             cls="ai-chat__main",
         ),
@@ -2146,16 +2147,16 @@ def _chat_view(
     )
 
 
-def _chat_text(lang: str = "en") -> str:
-    """The chat page's translated strings, as the global the chat script reads."""
-    return js("var CELERP_AI_TEXT = {0};", {
+def _chat_text(lang: str = "en") -> dict:
+    """The chat page's translated strings, which the chat script reads as CELERP_AI_TEXT."""
+    return {
         "upload_failed": t("ai.upload_failed", lang),
         "upload_network": t("ai.upload_network_error", lang),
         "uploading": t("ai.uploading", lang),
         "remove_file": t("ai.remove_file", lang),
         "credits_remaining": t("ai.credits_remaining", lang),
         "quota_unavailable": t("ai.quota_unavailable", lang),
-    })
+    }
 
 
 _CHAT_JS = r"""

@@ -194,21 +194,21 @@ class TestLabelService:
         assert isinstance(pdf, bytes)
         assert b"%PDF" in pdf
 
-    def test_parse_size_known_formats(self):
+    def test_label_size_known_formats(self):
         svc = self._svc()
-        assert svc._parse_size("A4") == (210, 297)
-        assert svc._parse_size("40x30mm") == (40, 30)
-        assert svc._parse_size("letter") == (216, 279)
+        assert svc.label_size({"format": "A4"}) == (210, 297)
+        assert svc.label_size({"format": "40x30mm"}) == (40, 30)
+        assert svc.label_size({"format": "letter"}) == (216, 279)
 
-    def test_parse_size_custom_wh(self):
+    def test_label_size_custom_wh(self):
         svc = self._svc()
-        w, h = svc._parse_size("60x40mm")
+        w, h = svc.label_size({"format": "60x40mm"})
         assert w == 60.0
         assert h == 40.0
 
-    def test_parse_size_unknown_falls_back(self):
+    def test_label_size_unknown_falls_back(self):
         svc = self._svc()
-        w, h = svc._parse_size("garbage")
+        w, h = svc.label_size({"format": "garbage"})
         assert (w, h) == (40, 30)  # default fallback
 
     def test_render_all_standard_formats(self):

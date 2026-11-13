@@ -1070,7 +1070,10 @@ async def test_copy_send_resumes_the_same_form_after_sign_in():
     from ui.routes import account
     assert account._next_from("copy-send") == "copy-send"
     script = to_xml(account._resume_parts("copy-send")[0])
-    assert "copy-send-form" in script and "requestSubmit" in script
+    assert '"submit","copy-send-form")' in script and "celerpResume(" in script
+    # The page script's "submit" step calls requestSubmit() on the form it names.
+    page_js = (Path(__file__).resolve().parent.parent / "ui/static/celerp-page.js").read_text()
+    assert "submit: function (id) { var f = byId(id); if (f) f.requestSubmit(); }" in page_js
 
 
 async def test_company_handoff_activity_revoke_and_navigation(ui, real_engine, monkeypatch):

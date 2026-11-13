@@ -121,7 +121,7 @@ def stale() -> list[str]:
 
 
 def _time(ids: list[str]) -> dict[str, float]:
-    """Run the given tests once, in one process, and return what pytest-split measured for each."""
+    """Run the given tests once and return what pytest-split measured for each."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "durations.json"
         path.write_text("{}")
@@ -150,12 +150,10 @@ def main(argv: list[str]) -> int:
         print("tests/.test_durations is out of date: run python scripts/shard_durations.py and commit it")
         return 1
     kept = {k: v for k, v in durations().items() if k not in gone}
-    # Each job's tests are timed in a process of their own, as CI runs them: a browser test's
-    # Playwright loop and the unit jobs' async tests never share one there.
+    # One run per job: a browser job's event loop must not share a process with async unit tests.
     for job in split_jobs():
-        ids = sorted(set(unmeasured(job)) - kept.keys())
-        if ids:
-            kept.update(_time(ids))
+        ids = [t for t in unmeasured(job) if t not in kept]
+        kept.update(_time(ids) if ids else {})
     DURATIONS.write_text(json.dumps(kept, indent=4) + "\n")
     print(f"tests/.test_durations: {len(new)} timed, {len(gone)} dropped; commit it")
     return 0

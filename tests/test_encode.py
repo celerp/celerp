@@ -3,25 +3,28 @@
 """The encoder module: every value placed in a page position is encoded for that position.
 
 `ui.components.encode` is the one module that turns values into raw markup or script.
-These tests hold each encoder to its position: JavaScript literals stay one literal, raw
-markup holes are escaped exactly once and refused where HTML escaping is not enough, URLs
-pass only the safe schemes, stored file types are never served as markup, and library
-markup is admitted only from the listed producers.
+These tests hold each encoder to its position: a script is one call of a constant name with
+one JSON literal per value, raw markup takes no values at all, URLs pass only the safe
+schemes, stored file types are never served as markup, and library markup is admitted only
+from the listed producers.
 """
 from __future__ import annotations
 
 import json
+import random
 import re
 
 import pytest
 
+from encode_values import hostile_values
 from ui.components.encode import (
+    EVENT,
+    THIS,
     Admitted,
     as_js,
+    call,
     css_color,
-    hole_positions,
     inert_media_type,
-    js,
     js_value,
     library_markup,
     raw_html,
@@ -55,15 +58,15 @@ URL_VECTORS = {
 
 
 def test_encoders_encode_hostile_values():
-    hostile = "</script><script>alert('x')</script>\"  "
+    hostile = "</script><script>alert('x')</script>\"\u2028\u2029"
     literal = js_value(hostile)
-    assert "</" not in literal and "<" not in literal
+    assert not set(literal) & set("<>&\u2028\u2029")
     assert json.loads(literal) == hostile, "one JavaScript literal holding the whole value"
     assert js_value({"a": hostile}).startswith("{")
 
     with pytest.raises(TypeError):
         as_js("alert(1)")
-    assert as_js(js("go({});", 1)) == "go(1);"
+    assert as_js(call("go", 1)) == "go(1)"
 
     for value, expected in URL_VECTORS.items():
         assert safe_url(value) == expected, value
@@ -88,71 +91,51 @@ def test_css_color_keeps_only_a_hex_colour():
         assert css_color(value) is None, value
 
 
-def test_raw_html_escapes_holes_once():
-    out = raw_html('<b title="{t}">{x}</b>', t='a"b', x="<i>&amp;</i>")
-    assert isinstance(out, Admitted)
-    assert str(out) == '<b title="a&quot;b">&lt;i&gt;&amp;amp;&lt;/i&gt;</b>'
-    nested = raw_html("<p>{inner}</p>", inner=raw_html("<i>{v}</i>", v="<x>"))
-    assert str(nested) == "<p><i>&lt;x&gt;</i></p>", "a nested raw_html is kept, encoded once"
-
-
-@pytest.mark.parametrize("template", [
-    '<a href="{v}">x</a>',
-    '<img src="{v}">',
-    '<form action="{v}"></form>',
-    '<button formaction="{v}">x</button>',
-    '<img srcset="{v}">',
-    '<video poster="{v}"></video>',
-    '<object data="{v}"></object>',
-    '<use xlink:href="{v}"></use>',
-    '<button onclick="go(\'{v}\')">x</button>',
-    '<div hx-on:click="f(\'{v}\')"></div>',
-    '<iframe srcdoc="{v}"></iframe>',
-    '<div style="{v}"></div>',
-    "<style>a{{color:{v}}}</style>",
-    '<script>var n = "{v}";</script>',
-    '<div hx-vals=\'{v}\'></div>',
-    "<div {v}></div>",
-    "<div title={v}></div>",
-    "<!-- {v} -->",
-])
-def test_raw_html_refuses_holes_by_position(template):
+@pytest.mark.parametrize("name", [
+    "", "1f", "f()", "f(1);g", "a..b", "a.", ".a", "a b", "a-b", "a[0]", "f\n", "f;", "a.1",
+    "</script>", "f//", "f/*", "`f`", "a\u2028b", None, 1, b"f"])
+def test_call_refuses_anything_but_a_dotted_identifier(name):
     with pytest.raises(ValueError):
-        raw_html(template, v="x")
+        call(name, 1)
 
 
-@pytest.mark.parametrize("template", ['<p title="{v}">t</p>', '<p class="{v}">t</p>', "<p>{v}</p>"])
-def test_raw_html_text_and_quoted_attribute_holes_render_escaped(template):
-    assert "&lt;s&gt;&quot;" in str(raw_html(template, v='<s>"'))
+def test_call_writes_one_call_with_one_literal_per_value():
+    assert call("celerpGo") == "celerpGo()"
+    assert call("htmx.ajax", "GET", "/x", {"swap": "outerHTML"}) == 'htmx.ajax("GET","/x",{"swap": "outerHTML"})'
+    assert call("$_.a$", THIS, EVENT, None, True, 1.5) == "$_.a$(this,event,null,true,1.5)"
+    assert call("f", "this", "event") == 'f("this","event")', "only the THIS and EVENT objects are references"
 
 
-@pytest.mark.parametrize("template", [
-    "go('{}');",
-    'go("{}");',
-    "var s = `{}`;",
-    "var s = `${{}}{}`;",
-    "go(1); // {}",
-    "go(1); /* {} */",
-])
-def test_js_refuses_holes_in_literals(template):
-    with pytest.raises(ValueError):
-        js(template, "x")
+def _split_args(out: str, name: str) -> list:
+    """The call's arguments, read by a JSON decoder: each must be exactly one literal."""
+    assert out.startswith(name + "(") and out.endswith(")")
+    inner, args, dec, i = out[len(name) + 1:-1], [], json.JSONDecoder(), 0
+    while i < len(inner):
+        value, i = dec.raw_decode(inner, i)
+        args.append(value)
+        assert i == len(inner) or inner[i] == ",", inner[i:]
+        i += 1
+    return args
 
 
-@pytest.mark.parametrize("template", ["x { y", "}", ".a { color: red } }"])
-def test_malformed_templates_are_refused(template):
-    assert hole_positions(template, "html") == ["malformed template"]
-    with pytest.raises(ValueError):
-        raw_html(template)
-    with pytest.raises(ValueError):
-        js(template)
+def test_call_output_is_one_call_of_literals_for_any_value():
+    """Seeded generative oracle: every output reads back as the name and exactly the values
+    given, and holds no character that ends a script element, an HTML comment or a JS line."""
+    rng = random.Random(4250)
+    for _ in range(3000):
+        values = [rng.choice(hostile_values(rng)) for _ in range(rng.randint(0, 4))]
+        out = call("rec.call", *values)
+        assert _split_args(out, "rec.call") == values, out
+        assert not set(out) & set("<>&\r\n\u2028\u2029"), out
 
 
-def test_js_whole_expression_hole_is_one_literal():
-    value = "');alert(1);//</script>"
-    out = js("go({});", value)
-    assert out == f"go({js_value(value)});"
-    assert "</script>" not in out
+def test_raw_html_takes_one_constant_and_no_values():
+    out = raw_html('<path d="M0 0"/>')
+    assert isinstance(out, Admitted) and out == '<path d="M0 0"/>'
+    with pytest.raises(TypeError):
+        raw_html('<b title="{t}">x</b>', t="v")
+    with pytest.raises(TypeError):
+        raw_html(None)
 
 
 def test_library_markup_admits_only_listed_producers():

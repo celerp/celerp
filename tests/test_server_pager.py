@@ -57,9 +57,9 @@ def test_navigation_modes():
     swap = _html(0, 100, 250, hx_target="#sec")
     assert 'hx-target="#sec"' in swap and 'hx-select="#sec"' in swap and "onclick" not in swap
     js = _html(0, 100, 250, nav_js="goTo")
-    assert 'window["goTo"](this.getAttribute(' in js and "hx-get" not in js
+    assert 'celerpPageLink(this,event,"goTo")' in js and "hx-get" not in js
     plain = _html(0, 100, 250)
-    assert "hx-get" not in plain and "celerpGo(this.value)" in plain
+    assert "hx-get" not in plain and 'celerpPageSize(this,"","")' in plain
 
 
 def test_past_the_end_marks_no_page_and_counts_no_rows():

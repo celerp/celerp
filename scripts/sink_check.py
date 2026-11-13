@@ -21,8 +21,8 @@ browser sink list.
 THE INVARIANT: the raw primitives are named only in the encoder module.
   PY-RAW       an import or reference of NotStr, Safe, Markup, __html__, to_xml, to_html,
                HTMLResponse or Js (raw and Markup when imported from a framework), any
-               do_escape other than the constant True, a def __html__; raw_html(...) or
-               js(...) whose template is not a constant; a lowercase tag builder (ft, ft_hx,
+               do_escape other than the constant True, a def __html__; raw_html(...) with
+               anything but one string constant; a lowercase tag builder (ft, ft_hx,
                ft_html) with a computed tag; a computed attribute NAME (**{k: v}, a mapping
                child with a computed key, el.attrs[k] = v, a mapping an in-repo helper
                returns into **helper(...), which is checked attribute by attribute like
@@ -30,11 +30,12 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
                bytes(), bytearray()); a mapping child read from a mapping parameter; a
                non-constant srcdoc; a returned string that builds markup (a "<tag" literal
                with a hole), which FastHTML would send as an HTML response
-  PY-POSITION  a raw_html template hole in a URL attribute (href, src, action, formaction,
-               srcset, poster, data, xlink:href), an on* or hx-on* attribute, srcdoc, style,
-               an htmx-evaluated attribute (hx-vals, hx-headers, hx-trigger), an attribute
-               name, an unquoted value, a comment, or <script>/<style> text; a js template
-               hole inside a JS string, template literal or comment token
+  PY-POSITION  a non-constant value for an attribute of an HTML or SVG element whose name is not
+               on DYNAMIC_ATTRS (or a data-*/aria-* name): on*, srcdoc, style and the SVG
+               animation attributes never take a value from it; id, and name on an element
+               the document names (NAMED_TAGS), take one only behind a constant prefix;
+               a function parameter there passes when every call in the repo passes a
+               prefixed value (or a parameter that does) or leaves a prefixed default
   PY-COMPUTED  getattr/setattr/vars/__dict__/import_module with a computed name on a
                module from fasthtml, fastcore, starlette or fastapi
   PY-HTMLRESP  Response/StreamingResponse/FileResponse whose media type is html or not a
@@ -47,7 +48,8 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
   PY-JSHOLE    a non-constant value in a script position (Script(...) or ft("script"),
                on*/hx_on* keyword or "on*"/"hx-on*" key, set before or after construction,
                hx_vals/hx_headers starting "js:", a hole inside an hx_trigger filter) that
-               is not js_value(...), js(constant_template, ...) or as_js(...)
+               is not a string constant, call(...) or as_js(...); call(...) whose name
+               is not a constant dotted identifier
   PY-CSSHOLE   a non-constant value in Style(...), ft("style") or a style attribute, other
                than a numeric expression or css_color(...)
   PY-URLHOLE   a non-constant URL attribute value, before or after construction, that
@@ -71,30 +73,56 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
   JS-SCHEME    a javascript:, vbscript: or data:text/html URL literal
 
 There is no allowlist. The exemption is the encoder module, one file per language:
-ui/components/encode.py (raw_html, js, js_value, safe_url, inert_media_type, to_markup,
+ui/components/encode.py (raw_html, call, js_value, safe_url, inert_media_type, to_markup,
 html_response, library_markup; nothing in it is reported) and ui/static/celerp-dom.js
 (celerpNode, celerpSetUrl, celerpGo, celerpOpen; its JS-HTML, JS-NAV and JS-COMPUTED hits are not
-reported). hole_positions() and the JavaScript token pattern are loaded from encode.py, so
-raw_html and js at run time and this check share one position parser.
+reported). No template with a value in it reaches a script or markup sink, so there is no
+template to parse: a script sink takes a constant or one call(), a markup sink a constant.
+A string constant is a literal, or literals joined by + or an f-string whose holes are
+themselves string constants: no call, parameter or condition.
 """
 from __future__ import annotations
 
 import ast
 import copy
-import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import fasthtml.components as _fh_components
+import fasthtml.svg as _fh_svg
+
 _APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_APP))
-_spec = importlib.util.spec_from_file_location("_celerp_encode", _APP / "ui" / "components" / "encode.py")
-_encode = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_encode)
-HOLE, EVENT_ATTR_RE, URL_ATTRS, HTMX_JS_ATTRS, TOKEN_RE, hole_positions = (
-    _encode.HOLE, _encode.EVENT_ATTR_RE, _encode.URL_ATTRS, _encode.HTMX_JS_ATTRS,
-    _encode.TOKEN_RE, _encode.hole_positions)
+HOLE = "\u0000HOLE\u0000"  # an f-string's value, inside its joined literal text
+EVENT_ATTR_RE = re.compile(r"^(on[a-z]+|hx_on\w*|hx-on\S*)$")
+URL_ATTRS = {"href", "src", "action", "formaction", "srcset", "poster", "data", "xlink:href", "xlink_href"}
+HTMX_JS_ATTRS = {"hx-vals", "hx-headers", "hx-trigger", "hx_vals", "hx_headers", "hx_trigger"}
+TOKEN_RE = re.compile(
+    r"""(?P<ws>\s+)|(?P<lc>//[^\n]*)|(?P<bc>/\*.*?\*/)|"""
+    r"""(?P<str>'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)|"""
+    r"""(?P<id>[A-Za-z_$\u0000][\w$\u0000A-Z]*)|(?P<num>\d[\w.]*)|"""
+    r"""(?P<op>===|!==|==|!=|=>|\+=|-=|\|\|=|&&=|\?\?=|[=(){}\[\];,.:+\-*/%<>!?&|^~])|(?P<other>.)""",
+    re.S)
+JS_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*")  # call()'s rule in encode.py
+# Elements: every HTML and SVG builder FastHTML exports. Their keyword values become attributes.
+ELEMENT_TAGS = {n.lower() for n in [*_fh_components.__all__, *_fh_svg.__all__] if n[:1].isupper()}
+# Attribute names that may take a computed value: text, form state, layout, references to other
+# elements and htmx request targets (same-origin by htmx's own rule). Anything else, above all
+# on* handlers, srcdoc, style and the SVG animation attributes (values, to, from, by,
+# attributeName), is refused unless a branch below encodes it (URL, script, style, htmx JSON).
+DYNAMIC_ATTRS = {
+    "class", "title", "value", "placeholder", "selected", "checked", "disabled", "hidden", "required",
+    "readonly", "multiple", "autofocus", "open", "type", "step", "min", "max", "maxlength", "minlength",
+    "size", "rows", "cols", "colspan", "rowspan", "for", "form", "list", "alt", "target", "accept",
+    "autocomplete", "pattern", "lang", "dir", "tabindex", "role", "scope", "width", "height", "label",
+    "method", "enctype", "rel", "download", "inputmode", "spellcheck", "draggable", "datetime",
+    "hx-get", "hx-post", "hx-put", "hx-patch", "hx-delete", "hx-target", "hx-swap", "hx-select",
+    "hx-confirm", "hx-include", "hx-sync", "hx-push-url", "hx-indicator", "hx-encoding", "hx-params",
+    "hx-disabled-elt", "id", "name"}
+DYNAMIC_ATTR_PREFIXES = ("data-", "aria-")
+NAMED_TAGS = {"form", "img", "embed", "object", "iframe"}  # name= is a document property on these
 
 FRAMEWORK_PREFIXES = ("fasthtml", "fastcore", "starlette", "fastapi")
 ENCODER_PATH = "ui/components/encode.py"
@@ -104,7 +132,7 @@ RAW_FRAMEWORK_ONLY = {"raw"}  # an ordinary word: refused only when imported fro
 # A name as a string feeds getattr laundering. Compared against or listed in a set literal
 # it cannot reach the object (a set only reaches it through a computed lookup, reported).
 RAW_STRINGS = {"NotStr", "Safe", "Markup", "__html__"}
-ENCODERS_JS = {"js_value", "js", "as_js"}
+ENCODERS_JS = {"call", "as_js"}  # what a script position takes besides a string constant
 ENCODERS_URL = {"safe_url"}
 ENCODERS_CSS = {"css_color"}
 LOWER_BUILDERS = {"ft", "ft_hx", "ft_html", "ft_datastar"}
@@ -166,6 +194,9 @@ SCHEME_RE = re.compile(r"^\s*(javascript|vbscript)\s*:|^\s*data\s*:\s*text/html"
 SAFE_PATH_RE = re.compile(r"^(/[^/\\]|\?|#)")
 
 hits: list[tuple[str, str, int, str]] = []
+# A parameter used as an id is judged by its callers, after every file is read.
+PARAM_IDS: list[tuple[str, int, str, tuple]] = []  # (path, line, snippet, param)
+CALL_ARGS: dict[tuple, list[tuple[list, dict, bool]]] = {}  # (module or None, callee) -> (positional, keyword, splat)
 
 
 def hit(code, path, line, snippet):
@@ -368,6 +399,7 @@ class PyScan(ast.NodeVisitor):
         self.nested: list[dict[str, ast.AST]] = []  # defs nested in each enclosing function
         self.mapping_params: list[set[str]] = []
         self.classes: set[str] = set()  # value classes (_value_class): calls build values, not elements
+        self.fstack: list[ast.AST] = []  # enclosing function definitions
 
     def snip(self, node):
         return (ast.get_source_segment(self.src, node) or "")[:140]
@@ -471,7 +503,9 @@ class PyScan(ast.NodeVisitor):
             (isinstance(a.annotation, ast.Name) and a.annotation.id in MAPPING_ANN) or
             (isinstance(a.annotation, ast.Subscript) and isinstance(a.annotation.value, ast.Name)
              and a.annotation.value.id in MAPPING_ANN))})
+        self.fstack.append(node)
         self.generic_visit(node)
+        self.fstack.pop()
         self.locals.pop()
         self.nested.pop()
         self.mapping_params.pop()
@@ -590,6 +624,12 @@ class PyScan(ast.NodeVisitor):
     # ------------------------------------------------ calls
     def visit_Call(self, node):
         name = self.leaf(node.func)
+        callee = self._callee_key(node.func)
+        if callee:
+            CALL_ARGS.setdefault(callee, []).append((
+                [False if isinstance(a, ast.Starred) else self._id_status(a) for a in node.args],
+                {k.arg: self._id_status(k.value) for k in node.keywords if k.arg},
+                any(k.arg is None for k in node.keywords) or any(isinstance(a, ast.Starred) for a in node.args)))
         if name in ("getattr", "setattr", "hasattr", "vars", "import_module", "__import__"):
             target = node.args[0] if node.args else None
             computed = len(node.args) > 1 and not isinstance(node.args[1], ast.Constant)
@@ -606,13 +646,13 @@ class PyScan(ast.NodeVisitor):
             self._check_response(node, name)
         if isinstance(node.func, ast.Attribute):
             self._check_method_write(node)
-        if name in ("raw_html", "js") and node.args:
-            tmpl = self._resolve(node.args[0])
-            if not self._is_const(tmpl):
-                hit("PY-RAW", self.path, node.lineno, self.snip(node))
-            elif _key(tmpl) is not None:
-                for pos in hole_positions(_key(tmpl), "html" if name == "raw_html" else "js"):
-                    hit("PY-POSITION", self.path, node.lineno, f"{pos}: {self.snip(node)}")
+        if name == "raw_html" and not (len(node.args) == 1 and not node.keywords
+                                       and self._const_str(node.args[0]) is not None):
+            hit("PY-RAW", self.path, node.lineno, self.snip(node))
+        if self._encoder(node, "call") and not (
+                node.args and not node.keywords
+                and JS_NAME_RE.fullmatch(self._const_str(node.args[0]) or "")):
+            hit("PY-JSHOLE", self.path, node.lineno, self.snip(node))
         tag = self._tag_of(node, name)
         if tag is not None:
             self._check_tag(node, tag)
@@ -660,10 +700,11 @@ class PyScan(ast.NodeVisitor):
 
     def _check_tag(self, node, tag):
         lower = self.leaf(node.func) in LOWER_BUILDERS
+        element = lower or (tag in ELEMENT_TAGS and self._callee(node) is None)
         children = node.args[1:] if lower else node.args
         if tag == "script":
             for c in children:
-                self._check_hole(c, "PY-JSHOLE", ENCODERS_JS)
+                self._check_script(c)
         elif tag == "style":
             for c in children:
                 self._check_css(c)
@@ -671,28 +712,32 @@ class PyScan(ast.NodeVisitor):
         for idx, c in enumerate(children):
             c_res = self._resolve(c)
             if isinstance(c_res, ast.Dict):
-                self._check_attr_dict(c_res)
+                self._check_attr_dict(c_res, tag, element)
             elif (isinstance(c_res, ast.Call) and isinstance(c_res.func, ast.Name) and c_res.func.id in
                   ("bytes", "bytearray", "memoryview")) or (_call_name(c_res) == "encode" and not c_res.args):
                 hit("PY-RAW", self.path, c.lineno, self.snip(c))
             elif idx > 0 and isinstance(c, (ast.Subscript, ast.Call)) and self._from_mapping_param(c, mapping_params):
                 hit("PY-RAW", self.path, c.lineno, self.snip(c))
+        refresh = None
         if tag == "meta":
             kws = {k.arg: k.value for k in node.keywords if k.arg}
             if (_key(kws.get("http_equiv")) or "").lower() == "refresh" and "content" in kws:
-                self._check_hole(kws["content"], "PY-URLHOLE", set())
+                refresh = kws["content"]
+                self._check_hole(refresh, "PY-URLHOLE")
         for kw in node.keywords:
+            if kw.value is refresh:
+                continue  # a refresh's content is a URL, checked as one above
             if kw.arg is None:
                 value = self._resolve(kw.value)
                 if isinstance(value, ast.Dict):
-                    self._check_attr_dict(value)
+                    self._check_attr_dict(value, tag, element)
                 elif _call_name(value) == "dict" and not value.args:
                     for k in value.keywords:
-                        self._check_attr(k.arg, k.value, tag)
+                        self._check_attr(k.arg, k.value, tag, element)
                 elif (fn := self._callee(value)) is not None:
                     self._check_returned_attrs(fn)
             else:
-                self._check_attr(kw.arg, kw.value, tag)
+                self._check_attr(kw.arg, kw.value, tag, element)
 
     def _callee(self, node):
         """The in-repo function a plain-name call resolves to: nested in an enclosing def, module, or imported."""
@@ -723,29 +768,30 @@ class PyScan(ast.NodeVisitor):
             node.func.value if _call_name(node) == "get" and isinstance(node.func, ast.Attribute) else None)
         return isinstance(base, ast.Name) and base.id in params
 
-    def _check_attr_dict(self, node):
+    def _check_attr_dict(self, node, tag="?", element=False):
         for k, v in zip(node.keys, node.values):
             if k is None:  # {**other}
                 continue
             if isinstance(k, ast.IfExp) and _key(k.body) is not None and _key(k.orelse) is not None:
-                self._check_attr(_key(k.body), v)
-                self._check_attr(_key(k.orelse), v)
+                self._check_attr(_key(k.body), v, tag, element)
+                self._check_attr(_key(k.orelse), v, tag, element)
                 continue
             key = _key(k)
             if key is None:
                 hit("PY-RAW", self.path, k.lineno, self.snip(k))
             else:
-                self._check_attr(key, v)
+                self._check_attr(key, v, tag, element)
 
-    def _check_attr(self, key, value, tag="?"):
-        """One attribute position, wherever it is set (keyword, mapping, after construction)."""
+    def _check_attr(self, key, value, tag="?", element=False):
+        """One attribute position, wherever it is set (keyword, mapping, after construction).
+        *element*: the call builds an HTML or SVG element, so every keyword is an attribute."""
         if not key or value is None:
             return
         k = key.lower()
         if k in URL_ATTR_TAG and tag not in (URL_ATTR_TAG[k], "?"):
             return
         if EVENT_ATTR_RE.match(k):
-            self._check_hole(value, "PY-JSHOLE", ENCODERS_JS)
+            self._check_script(value)
         elif k in URL_ATTRS:
             self._check_url(value)
         elif k == "srcdoc":
@@ -755,6 +801,24 @@ class PyScan(ast.NodeVisitor):
             self._check_css(value)
         elif k in HTMX_JS_ATTRS:
             self._check_htmx(k, value)
+        elif element and not self._is_const(value):
+            self._check_dynamic_attr(k, value, tag)
+
+    def _check_dynamic_attr(self, k, value, tag):
+        """A computed value for any other attribute: only a DYNAMIC_ATTRS name takes one, and an
+        id (or a NAMED_TAGS name) only behind a constant prefix, so it never names a global."""
+        name = {"cls": "class", "klass": "class", "_class": "class", "fr": "for", "_for": "for"}.get(
+            k, k.lstrip("_").replace("_", "-"))
+        allowed = (name in DYNAMIC_ATTRS or name.startswith(DYNAMIC_ATTR_PREFIXES)) \
+            and not name.startswith("data-hx-")
+        if name == "id" or (name == "name" and tag in NAMED_TAGS):
+            status = self._id_status(value)
+            if isinstance(status, tuple):
+                PARAM_IDS.append((self.path, getattr(value, "lineno", 0), f"{name}: {self.snip(value)}", status))
+                return
+            allowed = status
+        if not allowed:
+            hit("PY-POSITION", self.path, getattr(value, "lineno", 0), f"{name}: {self.snip(value)}")
 
     def _check_htmx(self, k, value):
         value = self._resolve(value)
@@ -776,7 +840,7 @@ class PyScan(ast.NodeVisitor):
         if isinstance(node, ast.IfExp):
             return all(self._is_const(b) or self._json_value(b, depth + 1) for b in (node.body, node.orelse))
         name = _call_name(node)
-        if name in ENCODERS_JS | {"hx_vals", "dumps"}:
+        if name in {"js_value", "hx_vals", "dumps"}:
             return True
         fn = self.funcs.get(name) if isinstance(getattr(node, "func", None), ast.Name) else None
         if fn is None and name in self.imported:
@@ -896,9 +960,9 @@ class PyScan(ast.NodeVisitor):
             return True
         return False
 
-    def _check_hole(self, value, code, encoders, depth=0, at=None):
-        """Hit every non-constant, unencoded part of *value*; *at* is the use site when the
-        value is a constant imported from another module (its nodes carry that module's lines)."""
+    def _check_hole(self, value, code, depth=0, at=None):
+        """Hit every non-constant part of *value*; *at* is the use site when the value is a
+        constant imported from another module (its nodes carry that module's lines)."""
         if at is None and isinstance(value, ast.Name) and value.id in self.imported \
                 and value.id not in self.consts and not any(value.id in sc for sc in self.locals):
             at = value
@@ -907,20 +971,138 @@ class PyScan(ast.NodeVisitor):
             return
         if isinstance(value, ast.JoinedStr):
             for v in value.values:
-                if isinstance(v, ast.FormattedValue) and not self._is_const(v.value) \
-                        and _call_name(v.value) not in encoders:
+                if isinstance(v, ast.FormattedValue) and not self._is_const(v.value):
                     hit(code, self.path, (at or value).lineno, self.snip(at or v.value))
             return
         if isinstance(value, (ast.BinOp, ast.IfExp)):
             for part in (value.left, value.right) if isinstance(value, ast.BinOp) else (value.body, value.orelse):
-                self._check_hole(part, code, encoders, depth + 1, at)
-            return
-        if _call_name(value) in encoders:
+                self._check_hole(part, code, depth + 1, at)
             return
         hit(code, self.path, getattr(at or value, "lineno", 0), self.snip(at or value))
 
-    def _lead(self, node, depth=0):
-        """The literal text a URL expression starts with, when it is known."""
+    def _const_str(self, node, depth=0):
+        """The text of a string constant, after name resolution: a literal, or literals joined by
+        ``+`` or an f-string whose every hole is itself a string constant. No call, parameter or
+        condition, so nothing known only at run time is in it. None for anything else."""
+        node = self._resolve(node)
+        if depth > 8:
+            return None
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = self._const_str(node.left, depth + 1), self._const_str(node.right, depth + 1)
+            return None if left is None or right is None else left + right
+        if isinstance(node, ast.JoinedStr):
+            parts = []
+            for v in node.values:
+                if isinstance(v, ast.FormattedValue):
+                    if v.conversion != -1 or v.format_spec is not None:
+                        return None
+                    v = v.value
+                parts.append(self._const_str(v, depth + 1))
+            return None if None in parts else "".join(parts)
+        return None
+
+    def _const_valued(self, node, depth=0):
+        """Every value *node* can take is a string constant: a _const_str, or such constants
+        joined by ``+`` and chosen between by a condition. The condition picks a constant; it
+        never puts its own value in."""
+        node = self._resolve(node)
+        if node is None or depth > 8:
+            return False
+        if self._const_str(node) is not None:
+            return True
+        if isinstance(node, ast.IfExp):
+            return self._const_valued(node.body, depth + 1) and self._const_valued(node.orelse, depth + 1)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return self._const_valued(node.left, depth + 1) and self._const_valued(node.right, depth + 1)
+        return False
+
+    def _encoder(self, node, name):
+        """A call of the encoder module's *name* (imported under any alias)."""
+        return isinstance(node, ast.Call) and (self.qual(node.func) or "").endswith("encode." + name)
+
+    def _check_script(self, value, depth=0):
+        """A script position: a string constant (_const_valued), call(...) or as_js(...); a condition
+        is checked branch by branch. Anything else built here is a template and is refused."""
+        node = self._resolve(value)
+        if node is None or depth > 8 or (isinstance(node, ast.Constant) and node.value is None) \
+                or self._const_valued(node):
+            return
+        if isinstance(node, ast.IfExp):
+            self._check_script(node.body, depth + 1)
+            self._check_script(node.orelse, depth + 1)
+            return
+        if any(self._encoder(node, n) for n in ENCODERS_JS):
+            return
+        hit("PY-JSHOLE", self.path, getattr(value, "lineno", 0) or getattr(node, "lineno", 0), self.snip(value))
+
+    def _prefixed(self, node):
+        """A computed id with a constant prefix: its literal start, through names and in-repo helpers."""
+        return bool(self._lead(node, ok=bool))
+
+    def _callee_key(self, func):
+        """(defining module, name) for a call by plain name or through a repo module; (None, name)
+        for a method call."""
+        if isinstance(func, ast.Attribute):
+            mod = self.qual(func.value)
+            return (mod, func.attr) if mod and mod in MODULE_FUNCS else (None, func.attr)
+        if not isinstance(func, ast.Name):
+            return None
+        if func.id in self.imported:
+            return self.imported[func.id]
+        return (module_name(self.path), func.id)  # a plain name can only mean something here
+
+    def _loop_constant(self, name):
+        """*name* is bound in its function only as a loop target over a constant sequence."""
+        scope = self.fstack[-1] if self.fstack else None
+        if scope is None:
+            return False
+        stores = sum(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id == name
+                     for n in ast.walk(scope))
+        loops = [sub for sub in ast.walk(scope) if isinstance(sub, (ast.For, ast.comprehension))
+                 and any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(sub.target))]
+        return bool(loops) and stores == len(loops) and all(self._is_const(sub.iter) for sub in loops)
+
+    def _id_status(self, node):
+        """True for a prefixed id, a ``(function, parameter, position, default)`` tuple when it
+        starts with a parameter of an enclosing function (judged by the callers), else False."""
+        if self._prefixed(node):
+            return True
+        node = self._resolve(node)
+        for _ in range(9):  # a name rebound to itself (p = p + "-") resolves to itself again
+            if not isinstance(node, (ast.JoinedStr, ast.BinOp, ast.FormattedValue)):
+                break
+            if isinstance(node, ast.JoinedStr):
+                if not node.values or not isinstance(node.values[0], ast.FormattedValue):
+                    return False
+                node = node.values[0]
+            node = self._resolve(node.value if isinstance(node, ast.FormattedValue) else node.left)
+        if not isinstance(node, ast.Name):
+            return False
+        if self._loop_constant(node.id):
+            return True
+        for fn in reversed(self.fstack):
+            a = fn.args
+            positional = [x.arg for x in a.posonlyargs + a.args]
+            if node.id in positional:
+                defaults = dict(zip(positional[len(positional) - len(a.defaults):], a.defaults))
+                method = positional[:1] in (["self"], ["cls"])
+                index = positional.index(node.id) - method
+            elif node.id in [x.arg for x in a.kwonlyargs]:
+                defaults = {x.arg: d for x, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None}
+                index = None
+                method = positional[:1] in (["self"], ["cls"])
+            else:
+                continue
+            default = defaults.get(node.id)
+            key = (module_name(self.path), fn.name)
+            return (key, node.id, index, default is not None and self._prefixed(default), method)
+        return False
+
+    def _lead(self, node, depth=0, ok=SAFE_PATH_RE.match):
+        """The literal text an expression starts with, when it is known; through an in-repo
+        helper only when every return's start passes *ok* (a same-origin path by default)."""
         node = self._resolve(node)
         if depth > 8:
             return None
@@ -928,20 +1110,36 @@ class PyScan(ast.NodeVisitor):
             return str(node.value)
         if isinstance(node, ast.JoinedStr) and node.values:
             head = node.values[0]
-            return str(head.value) if isinstance(head, ast.Constant) else self._lead(head.value, depth + 1)
+            return str(head.value) if isinstance(head, ast.Constant) else self._lead(head.value, depth + 1, ok)
         if isinstance(node, ast.BinOp):
-            return self._lead(node.left, depth + 1)
+            return self._lead(node.left, depth + 1, ok)
+        if isinstance(node, ast.Subscript) and isinstance(self._resolve(node.value), ast.Dict):
+            return self._lead_all(self._resolve(node.value).values, depth, ok)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return self._lead_all(node.elts, depth, ok)
+        if isinstance(node, ast.IfExp):
+            body, test = node.body, node.test
+            if isinstance(body, ast.Name) and isinstance(test, ast.Compare) and len(test.ops) == 1 \
+                    and isinstance(test.ops[0], ast.In) and isinstance(test.left, ast.Name) \
+                    and test.left.id == body.id:
+                body = test.comparators[0]  # x if x in ALLOWED else y: one of ALLOWED
+            return self._lead_all((body, node.orelse), depth, ok)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             fn = self.funcs.get(node.func.id)
             if fn is None and node.func.id in self.imported:
                 fn = MODULE_FUNCS.get(self.imported[node.func.id][0], {}).get(self.imported[node.func.id][1])
             if fn is not None:
-                leads = {self._lead(r.value, depth + 1) if r.value is not None else None
+                leads = {self._lead(r.value, depth + 1, ok) if r.value is not None else None
                          for r in ast.walk(fn) if isinstance(r, ast.Return)}
-                safe = [ld for ld in leads if ld is not None and SAFE_PATH_RE.match(ld)]
+                safe = [ld for ld in leads if ld is not None and ok(ld)]
                 if leads and len(safe) == len(leads):
                     return safe[0]
         return None
+
+    def _lead_all(self, nodes, depth, ok):
+        """A lead of the first of *nodes* when every one of them has a lead that passes *ok*."""
+        leads = [self._lead(n, depth + 1, ok) for n in nodes]
+        return leads[0] if leads and all(ld is not None and ok(ld) for ld in leads) else None
 
     def _check_url(self, value):
         value = self._resolve(value)
@@ -1003,6 +1201,28 @@ def _index(root: Path, files: list[str]) -> None:
             st.name: st for st in tree.body if isinstance(st, ast.FunctionDef)}
 
 
+def _param_ok(key, param, index, default_ok, method, depth=0):
+    """Every call of *func* in the repo gives *param* a prefixed id: a prefixed value, a parameter
+    of its own caller that passes this test, or nothing over a prefixed default. A function with
+    no call seen (handed on as a value) fails. A method is also judged by every method call of
+    its name, so a clash can only refuse."""
+    calls = CALL_ARGS.get(key, []) + (CALL_ARGS.get((None, key[1]), []) if method else [])
+    if not calls or depth > 6:
+        return False
+    for positional, keyword, splat in calls:
+        if param in keyword:
+            status = keyword[param]
+        elif index is not None and index < len(positional):
+            status = positional[index]
+        elif splat:
+            return False
+        else:
+            status = default_ok
+        if not (status is True or (isinstance(status, tuple) and _param_ok(*status, depth=depth + 1))):
+            return False
+    return True
+
+
 def main(argv):
     root = Path(argv[1])
     try:
@@ -1032,6 +1252,9 @@ def main(argv):
             hit("PARSE", f, e.lineno or 0, str(e))
             continue
         PyScan(f, src).visit(tree)
+    for path, line, snip, param in PARAM_IDS:
+        if not _param_ok(*param):
+            hit("PY-POSITION", path, line, snip)
     seen = set()
     for code, path, line, snip in sorted(hits, key=lambda h: (h[1], h[2], h[0])):
         if (code, path, line, snip) in seen:

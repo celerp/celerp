@@ -6580,6 +6580,7 @@
   "modules.turn_on": "オンにする",
   "nav.my_assets": "自分の資産",
   "connectors.order_changed_in_woocommerce": "この注文はWooCommerceで変更されました。「再試行」を選んで変更内容を確認してください。",
+  "connectors.import_as_order_changed": "次の番号での取り込みを選んだ後に WooCommerce でこの注文が変更されたため、Celerp は取り込みませんでした。注文をもう一度確認し、別の記録のままであれば「{next} として取り込む」を選択してください。",
   "connectors.flow_products": "商品",
   "connectors.flow_stock": "在庫",
   "connectors.flow_orders": "注文",

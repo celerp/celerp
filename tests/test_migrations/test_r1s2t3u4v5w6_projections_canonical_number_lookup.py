@@ -247,6 +247,7 @@ def test_every_numbering_statement_and_index_definition_is_ascii_without_chr(mon
     for kind in ("doc", "list"):
         asyncio.run(_ids_numbered(session, "c", kind, candidate, doc_type="invoice"))
     monkeypatch.setattr(revision, "op", op)
+    monkeypatch.setattr("celerp.migrations._lookup_index.op", op)
     monkeypatch.setattr(revision, "update_projection_state", lambda *_, **__: None)
     revision.upgrade()
 

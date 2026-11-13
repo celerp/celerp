@@ -34,7 +34,7 @@ from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
-from ui.components.encode import html_response, inert_media_type, js, safe_url
+from ui.components.encode import call, EVENT, html_response, inert_media_type, safe_url, THIS
 
 
 def _refusal_message(e: APIError) -> str:
@@ -255,10 +255,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             if not isinstance(tax, dict):
                 return tax
             restore_url = f"/settings/{pfx}/{idx}/{field}/display"
-            esc_js = (js(
-                "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-                "swap:'outerHTML'}});event.preventDefault();}}",
-                str(restore_url)))
+            esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
             if field in _TAX_SELECT_FIELDS:
                 if field in _TAX_BOOL_FIELDS:
                     val = str(bool(tax.get(field))).lower()
@@ -1513,10 +1510,7 @@ def setup_routes(app):
         enc = quote(category, safe="")
         patch_url = f"/settings/cat-schema/{enc}/{idx}/{field}"
         display_url = f"/settings/cat-schema/{enc}/{idx}/{field}/display"
-        esc_js = js(
-            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
-            "swap:'outerHTML'}});}}",
-            str(display_url))
+        esc_js = call("celerpCellKey", THIS, EVENT, {"url": display_url})
         if field in ("required", "editable", "show_in_table"):
             return Td(
                 Select(
@@ -1813,7 +1807,7 @@ def setup_routes(app):
                 type="button",
                 cls=f"flash {flash_cls} bulk-filter-btn{' is-active' if active else ''}",
                 data_filter=value,
-                onclick=js('celerpBulkFilter({0}, this)', str(value)),
+                onclick=call('celerpBulkFilter', str(value), THIS),
             )
 
         return Div(

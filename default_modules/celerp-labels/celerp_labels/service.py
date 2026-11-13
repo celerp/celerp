@@ -20,6 +20,8 @@ resolve_field_value(item, key, unit_map) -> str
 from __future__ import annotations
 
 import io
+import math
+import re
 from typing import Any
 
 from celerp.services.units import (
@@ -30,6 +32,7 @@ from celerp.services.units import (
     is_weight_unit,
 )
 from ui.components.encode import Admitted, library_markup, svg_bars, svg_cells
+from ui.i18n import t
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
@@ -89,27 +92,91 @@ def display_label(label: str) -> str:
     return str(label).split("›")[-1].strip()
 
 
-def _parse_size(fmt: str) -> tuple[float, float]:
-    """Return (width_mm, height_mm) for a format string. Public alias kept for compatibility."""
+# ── Label numbers: one parser for every size and position a template stores ──
+
+# Each number a template stores: the key of its name as the person reads it, and the range
+# a label can use.
+LABEL_NUMBERS: dict[str, tuple[str, float, float]] = {
+    "width_mm": ("label.width_mm", 5.0, 1000.0),
+    "height_mm": ("label.height_mm", 5.0, 1000.0),
+    "x": ("labels.num_x", 0.0, 1000.0),
+    "y": ("labels.num_y", 0.0, 1000.0),
+    "fontSize": ("labels.num_font_size", 4.0, 72.0),
+    "barcode_height": ("labels.num_bar_height", 1.0, 30.0),
+}
+FIELD_NUMBERS = ("x", "y", "fontSize", "barcode_height")
+_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_FORMAT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)x([0-9]+(?:\.[0-9]+)?)mm")
+
+
+class LabelNumberError(ValueError):
+    """A template number that is not a number inside its range; ``text`` (a translated
+    Text) says which one."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
+
+
+def label_number(name: str, value: Any) -> int | float:
+    """``value`` (a number, or its decimal text) as the label number ``name``, inside its range;
+    a whole number comes back as an int, so a saved 22 reads back as 22, not 22.0."""
+    what_key, lo, hi = LABEL_NUMBERS[name]
+    number = None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            number = float(value)
+        except OverflowError:  # an integer past the float range
+            pass
+    elif isinstance(value, str) and _NUMBER_RE.fullmatch(value.strip()):
+        number = float(value.strip())
+    if number is None or not math.isfinite(number) or not lo <= number <= hi:
+        raise LabelNumberError(t("labels.err_number", what=t(what_key), lo=f"{lo:g}", hi=f"{hi:g}"))
+    return int(number) if number.is_integer() else number
+
+
+def label_size(template: dict[str, Any]) -> tuple[float, float]:
+    """(width_mm, height_mm): a named format, a "WxHmm" format, the custom width and height,
+    else 40x30."""
+    fmt = template.get("format")
     if fmt in _SIZES:
         return _SIZES[fmt]
-    if "x" in fmt:
-        parts = fmt.lower().replace("mm", "").split("x")
-        try:
-            return float(parts[0]), float(parts[1])
-        except (ValueError, IndexError):
-            pass
+    m = _FORMAT_RE.fullmatch(fmt) if isinstance(fmt, str) else None
+    if m:
+        return label_number("width_mm", m.group(1)), label_number("height_mm", m.group(2))
+    w, h = template.get("width_mm"), template.get("height_mm")
+    if w not in (None, "") and h not in (None, ""):
+        return label_number("width_mm", w), label_number("height_mm", h)
     return _SIZES["40x30mm"]
 
 
-def _resolve_size(template: dict[str, Any]) -> tuple[float, float]:
-    """Return (width_mm, height_mm) respecting custom dimensions."""
-    fmt = template.get("format", "40x30mm")
-    if fmt == "custom":
-        w = template.get("width_mm") or 50.0
-        h = template.get("height_mm") or 30.0
-        return float(w), float(h)
-    return _parse_size(fmt)
+def label_fields(fields: Any) -> Any:
+    """``fields`` with every number in canonical form (a blank one dropped), refused by the
+    first that is not a number inside its range."""
+    if not isinstance(fields, list):
+        return fields
+    out = []
+    for i, field in enumerate(fields, 1):
+        if isinstance(field, dict):
+            field = dict(field)
+            for name in FIELD_NUMBERS:
+                if field.get(name) in (None, ""):
+                    field.pop(name, None)
+                    continue
+                try:
+                    field[name] = label_number(name, field[name])
+                except LabelNumberError as e:
+                    raise LabelNumberError(t("labels.err_field", n=i, field=field.get("key", ""), reason=e.text)) from None
+        out.append(field)
+    return out
+
+
+def printable_template(template: dict[str, Any]) -> dict[str, Any]:
+    """``template`` with its numbers in canonical form, ready for a renderer; refused with a
+    plain reason when one is not a number inside its range (a template stored before the
+    numbers were checked)."""
+    label_size(template)
+    return {**template, "fields": label_fields(template.get("fields"))}
 
 
 def _item_val(item: dict[str, Any], key: str) -> str:
@@ -299,12 +366,13 @@ def render_label_pdf(
     fields are stacked vertically from the top of the label.
     """
     unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
+    template = printable_template(template)
     if not _REPORTLAB:
         return _stub_pdf(items, template, unit_map)
 
     fields = template.get("fields") or [{"key": "name", "label": "Name", "type": "text"}]
     copies = int(template.get("copies", 1))
-    w_mm, h_mm = _resolve_size(template)
+    w_mm, h_mm = label_size(template)
 
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=(w_mm * mm, h_mm * mm))

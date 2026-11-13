@@ -6580,6 +6580,7 @@
   "modules.turn_on": "Attiva",
   "nav.my_assets": "I miei cespiti",
   "connectors.order_changed_in_woocommerce": "Questo ordine è cambiato in WooCommerce. Seleziona Riprova per esaminare la modifica.",
+  "connectors.import_as_order_changed": "Questo ordine è cambiato in WooCommerce dopo che hai scelto Importa come, quindi Celerp non l'ha importato. Controlla di nuovo l'ordine, poi seleziona Importa come {next} se si tratta ancora di un altro record.",
   "connectors.flow_products": "Prodotti",
   "connectors.flow_stock": "Giacenze",
   "connectors.flow_orders": "Ordini",
