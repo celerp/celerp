@@ -98,6 +98,10 @@
   "DELETE /lists/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
+  "DELETE /lists/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
   "DELETE /lists/{entity_id}/notes/{note_id}": {
     "path:entity_id": "Identifier of the requested Celerp record.",
     "path:note_id": "Identifier of the note."
@@ -601,6 +605,10 @@
   "GET /lists/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
+  "GET /lists/{entity_id}/files/{file_id}": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
   "GET /lists/{entity_id}/notes": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
@@ -817,6 +825,14 @@
   },
   "PATCH /lists/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /lists/{entity_id}/files/{file_id}/description": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
+  },
+  "PATCH /lists/{entity_id}/files/{file_id}/tag": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:file_id": "Identifier of the uploaded or stored file."
   },
   "PATCH /lists/{entity_id}/line-page": {
     "path:entity_id": "Identifier of the requested Celerp record."
@@ -1327,6 +1343,9 @@
     "path:entity_id": "Identifier of the requested Celerp record."
   },
   "POST /lists/{entity_id}/duplicate": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/files": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
   "POST /lists/{entity_id}/finalize": {

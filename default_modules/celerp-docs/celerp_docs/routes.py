@@ -13663,6 +13663,7 @@ async def download_doc_file(
     entity_id: str,
     file_id: str,
     company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("view_documents"),
     session: AsyncSession = Depends(get_session),
 ):
     """Download a file attached to a doc (invoice, bill, etc.)."""

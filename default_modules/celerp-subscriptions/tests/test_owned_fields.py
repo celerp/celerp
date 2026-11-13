@@ -50,6 +50,10 @@ SERVER_BUILT = {
     "default_modules/celerp-docs/celerp_docs/routes.py::record_historical_delivery": "writes the delivery it computes",
     "default_modules/celerp-docs/celerp_docs/routes.py::_supplier_credit_for_return":
         "builds the supplier credit from the return",
+    "default_modules/celerp-docs/celerp_docs/routes.py::tag_doc_file": "writes only the tag of the file it names",
+    "default_modules/celerp-docs/celerp_docs/routes.py::update_doc_file_description":
+        "writes only the description of the file it names",
+    "default_modules/celerp-docs/celerp_docs/routes.py::delete_doc_file": "removes only the file it names",
     "default_modules/celerp-docs/celerp_docs/routes.py::reprice_doc": "writes the line prices it computes",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
