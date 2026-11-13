@@ -835,7 +835,7 @@ async def _kept_net(session, reference: str) -> int:
     """What the refunds kept for the payment *reference* give back, net of their kept reversals."""
     kept = (await session.execute(select(UnmatchedRefund.transition, func.sum(UnmatchedRefund.amount_minor)).where(
         UnmatchedRefund.reference == reference).group_by(UnmatchedRefund.transition))).all()
-    return sum(total if transition == "applied" else -total for transition, total in kept)
+    return int(sum(total if transition == "applied" else -total for transition, total in kept))  # SUM is numeric
 
 
 async def _refund_shares(session, parts: list[ChargePart], rows: dict, refund: dict) -> list[tuple[ChargePart, int]]:
