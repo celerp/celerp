@@ -101,3 +101,15 @@ def test_refresh_times_new_tests_and_drops_stale_entries(file_with):
     assert sd.main([]) == 0
     assert json.loads(file_with.read_text()) == {"t.py::kept": 1.0, "t.py::new": 2.0}
     assert sd.main(["--check"]) == 0
+
+
+def test_refresh_times_each_job_s_new_tests_in_a_run_of_their_own(file_with, monkeypatch):
+    # A browser test's Playwright loop breaks the async tests run after it in the same process;
+    # CI never runs the two jobs in one process, so neither does the timing.
+    runs = {"shard": frozenset({"t.py::kept", "t.py::new"}), "browser": frozenset({"b.py::page"})}
+    monkeypatch.setattr(sd, "split_jobs", lambda: {job: ("", []) for job in runs})
+    monkeypatch.setattr(sd, "ids_the_job_runs", runs.__getitem__)
+    timed = []
+    monkeypatch.setattr(sd, "_time", lambda ids: timed.append(ids) or {i: 2.0 for i in ids})
+    assert sd.main([]) == 0
+    assert timed == [["t.py::new"], ["b.py::page"]]

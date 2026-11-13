@@ -52,7 +52,14 @@
       "capture": {
         "route": "/subscribers",
         "selector": "main",
-        "actions": []
+        "actions": [
+          {
+            "click": "main table a[href^='/subscriptions/']"
+          },
+          {
+            "wait": "main h3"
+          }
+        ]
       }
     }
   ],

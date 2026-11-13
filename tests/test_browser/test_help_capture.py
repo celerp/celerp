@@ -16,6 +16,7 @@ import os
 import random
 import threading
 import uuid
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -49,6 +50,7 @@ def demo_token(api_server, api):
     token = r.json()["access_token"]
 
     async def seed():
+        auth = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(base_url=api_server, timeout=30.0) as client:
             await seed_demo.seed_items(client, token)
             contacts = await seed_demo.seed_contacts(client, token)
@@ -59,6 +61,30 @@ def demo_token(api_server, api):
             # already-started state.
             r = await client.post("/fixed-assets/api/start", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code in (200, 201), r.text
+            # Donors and Subscribers show a donor's statement and a subscriber's quantities only
+            # once there is one: a gift by bank transfer from a contact to a gift category's income
+            # account, and an active agreement.
+            r = await client.post("/accounting/accounts", headers=auth, json={
+                "code": "4250", "name": "Donations", "account_type": "revenue", "parent_code": "4000"})
+            assert r.status_code == 200, r.text
+            r = await client.post("/companies/me/categories", headers=auth, json={"name": "Donation"})
+            assert r.status_code == 200, r.text
+            donation = r.json()["key"]
+            for path, body in (("income-account", {"income_account": "4250"}), ("gift", {"gift": True})):
+                r = await client.put(f"/companies/me/categories/{donation}/{path}", headers=auth, json=body)
+                assert r.status_code == 200, r.text
+            r = await client.post("/accounting/journal-entries", headers=auth, json={
+                "ts": date.today().isoformat(), "memo": "Gift by bank transfer", "idempotency_token": uuid.uuid4().hex,
+                "entries": [{"account": "1111", "debit": 250.0, "credit": 0.0},
+                            {"account": "4250", "debit": 0.0, "credit": 250.0, "contact": contacts[0]["id"]}]})
+            assert r.status_code == 200, r.text
+            r = await client.post("/docs", headers=auth, json={
+                "doc_type": "subscription_invoice", "contact_id": contacts[1]["id"], "frequency": "monthly",
+                "start_date": date.today().isoformat(),
+                "line_items": [{"description": "Seats", "quantity": 5, "unit_price": 20.0, "line_total": 100.0}]})
+            assert r.status_code in (200, 201), r.text
+            r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
+            assert r.status_code == 200, r.text
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
