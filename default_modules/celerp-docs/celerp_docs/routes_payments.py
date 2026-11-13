@@ -143,8 +143,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 paid_at: datetime.datetime | None, context, managed: bool,
                                 idempotency_key: str | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``payments.receive_payment`` calls it, and ``payments.record_unmatched_payment``
-    for one a person records on an invoice from the unmatched payments, under an
+    ``record_stripe_charge`` calls it, for each invoice a delivered charge pays, and
+    ``payments.record_unmatched_payment`` for one a person records on an invoice from the unmatched payments, under an
     *idempotency_key* of its own (each recording is one; the charge is *reference*).
 
     A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
@@ -202,6 +202,74 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     from celerp.services.collection import charge_recorded
     await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
     return entry
+
+
+async def record_stripe_charge(session, company_id, entity_id, doc_state, parts, *,
+                               reference: str, amount_minor: int, currency: str,
+                               paid_at: datetime.datetime | None, context, managed: bool) -> None:
+    """Record a confirmed online charge Celerp Cloud delivered for its invoice
+    (``payments.receive_payment``, which holds the company lock), split as *parts*
+    (``charge_parts``). A charge the invoice takes whole, or one on an invoice of no
+    agreement, is ``record_stripe_payment``; so is one no invoice can take any of (its
+    409). Otherwise each invoice of *parts* gets its part as a payment under the same
+    charge *reference*, in the caller's transaction, and the charge settles its own
+    invoice's attempt even when that invoice took none of it. *parts* empty: the charge
+    is already recorded, nothing is."""
+    if parts is None:
+        await record_stripe_payment(session, company_id, entity_id, doc_state, reference=reference,
+                                    amount_minor=amount_minor, currency=currency, paid_at=paid_at,
+                                    context=context, managed=managed)
+        return
+    for row, part in parts:
+        await record_stripe_payment(session, company_id, row.entity_id, dict(row.state), reference=reference,
+                                    amount_minor=part, currency=currency, paid_at=paid_at, context=context,
+                                    managed=managed, idempotency_key=f"{reference}:{row.entity_id}")
+    if parts:
+        from celerp.services.collection import charge_recorded
+        from celerp_docs.routes import _get_doc
+        await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
+
+
+async def charge_parts(session, company_id, entity_id, doc_state, reference: str, amount_minor: int,
+                       currency: str) -> list[tuple[Projection, int]] | None:
+    """How a charge of *amount_minor* on the invoice *entity_id* splits when the invoice owes
+    less than it now (what it owes shrank after the charge was asked for: an amendment's
+    credit, a payment by hand): what the invoice owes, then the rest over its agreement's
+    other open invoices, oldest first. (document row, part) for each invoice that takes
+    some; what is left after them all no invoice owes. None when the invoice takes the
+    charge whole or belongs to no agreement, or when no invoice takes any of it; [] when
+    the charge is already recorded on one of them. Plain reads, no row locks: the caller
+    holds the company lock, which every writer of a document takes first."""
+    from celerp.services.collection import outstanding_minor
+    from celerp_docs.routes import PAYABLE_STATUSES
+    agreement = doc_state.get("source_agreement")
+    if not agreement:
+        return None
+
+    def owed(state: dict) -> int:
+        payable = (state.get("doc_type") in _PAYABLE_TYPES and state.get("status") in PAYABLE_STATUSES
+                   and str(state.get("currency") or "USD").upper() == currency.upper())
+        return (outstanding_minor(state) or 0) if payable else 0
+
+    if owed(doc_state) >= amount_minor:
+        return None
+    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["source_agreement"].as_string() == agreement).execution_options(
+            populate_existing=True))).scalars()}
+    if entity_id not in rows:
+        return None
+    if any(p.get("reference") == reference and p.get("status") != "deleted"
+           for row in rows.values() for p in row.state.get("payments", [])):
+        return []
+    others = sorted((r for i, r in rows.items() if i != entity_id),
+                    key=lambda r: (str(r.state.get("issue_date") or ""), r.state.get("ref_id") or r.entity_id))
+    parts, rest = [], amount_minor
+    for row in [rows[entity_id], *others]:
+        if part := min(rest, owed(row.state)):
+            parts.append((row, part))
+            rest -= part
+    return parts or None
 
 
 async def recorded_payment_books(session, company_id, row: Projection, reference: str) -> dict | None:

@@ -245,9 +245,12 @@ async def receive_payment(payload: dict) -> bool:
     books its payment page opened with and the day it was paid (``managed``: Stripe
     manages it; one paid on a page opened before pages carried their books is the
     company's, see ``record_stripe_payment``), when the invoice can
-    take the whole charge, otherwise among the unmatched payments, whole (the company
-    or the invoice no longer exists, the invoice is already paid, it owes less than
-    the charge, or it refuses it, as it does a delivery without usable books). True once recorded
+    take the whole charge. A charge larger than what an agreement's invoice owes now
+    pays it what it owes and the rest the agreement's other open invoices, oldest first;
+    only what none of them owes is kept among the unmatched payments, as a payment of
+    its own (``record_stripe_charge``). Otherwise the charge is kept among the unmatched
+    payments, whole (the company or the invoice no longer exists, no invoice owes any of
+    it, or the invoice refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
     payment, or no whole positive amount in a named currency (``_counted``). Raises when nothing could be recorded, so Cloud delivers it again.
     Recording the same payment twice changes nothing.
@@ -261,7 +264,7 @@ async def receive_payment(payload: dict) -> bool:
     (``record_unmatched_payment``) stays there."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
-    from celerp_docs.routes_payments import record_stripe_payment
+    from celerp_docs.routes_payments import charge_parts, record_stripe_charge
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
     amount_minor, currency = payload.get("amount_minor"), payload.get("currency")
     if not (company_id and entity_id and reference and _counted(amount_minor)
@@ -291,12 +294,16 @@ async def receive_payment(payload: dict) -> bool:
                     UnmatchedPayment.released_at, UnmatchedPayment.recorded_company))).first()
             if kept is not None and kept.recorded_company is not None:
                 raise _Moved(reference)
+            parts = await charge_parts(session, cid, entity_id, dict(row.state), reference, amount_minor, currency)
+            if rest := amount_minor - sum(part for _row, part in parts) if parts else 0:
+                # The part of the charge no invoice owes, kept as a payment of its own.
+                await _keep_unmatched(session, f"{reference}:rest", rest, currency, company_id, entity_id, paid_at)
             await _lock_kept_refunds(session, reference)
             released_at = kept.released_at if kept is not None else None
             try:
-                await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
-                                            amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                            context=payload.get("context"), managed=managed)
+                await record_stripe_charge(session, cid, entity_id, dict(row.state), parts, reference=reference,
+                                           amount_minor=amount_minor, currency=currency, paid_at=paid_at,
+                                           context=payload.get("context"), managed=managed)
                 if released_at is None:
                     await _apply_parked_refunds(session, cid, entity_id, reference)
                 else:
@@ -308,12 +315,17 @@ async def receive_payment(payload: dict) -> bool:
                     raise
                 await session.rollback()
                 log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
-        from sqlalchemy.dialects.postgresql import insert
-        await session.execute(insert(UnmatchedPayment).values(
-            reference=reference, amount_minor=amount_minor, currency=currency,
-            former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
+        await _keep_unmatched(session, reference, amount_minor, currency, company_id, entity_id, paid_at)
         await session.commit()
     return True
+
+
+async def _keep_unmatched(session, reference: str, amount_minor: int, currency: str, company_id: str,
+                          entity_id: str, paid_at: datetime | None) -> None:
+    from sqlalchemy.dialects.postgresql import insert
+    await session.execute(insert(UnmatchedPayment).values(
+        reference=reference, amount_minor=amount_minor, currency=currency,
+        former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
 
 
 @_on_invoices

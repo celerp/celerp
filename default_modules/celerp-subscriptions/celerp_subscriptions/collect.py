@@ -57,7 +57,10 @@ WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 #   cancel_refused  Cloud said the attempt runs to its outcome
 #   failed          the attempt failed; the next one is due at its retry time (next_when_due)
 #   replace         Cloud cancelled an attempt because its invoice came to owe less
-#   settled         nothing left to do (succeeded, canceled, unverifiable, paid, stopped)
+#   succeeded       Cloud charged the card and the payment is not on the invoice yet: its delivery
+#                   pays the invoice what it owes and the rest the agreement's other open invoices
+#                   (routes_payments.record_stripe_charge), so every event waits for it
+#   settled         nothing left to do (canceled, unverifiable, paid, stopped)
 # Events: stop (stop_reason: the invoice is paid, credited or voided, the agreement left
 # collection, the card or the consenting member is gone), reduced / raised (the invoice owes
 # less / more than the attempt asks), off (Cloud no longer offers collection: only new charge
@@ -65,7 +68,7 @@ WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 # (another invoice of the agreement has an attempt asking more than that invoice owes now, and
 # it may still charge: its outcome is reconciled first), none.
 PHASES = ("new", "asked", "submitted", "processing", "requires_action", "unknown", "cancel_queued",
-          "cancel_refused", "failed", "replace", "settled")
+          "cancel_refused", "failed", "replace", "succeeded", "settled")
 EVENTS = ("stop", "reduced", "raised", "off", "held", "none")
 _WITH_CLOUD = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "held": "wait",
                "none": "wait"}
@@ -79,6 +82,7 @@ TABLE: dict[tuple[str, str], str] = {
     **{("cancel_refused", e): "wait" for e in EVENTS},
     **{("failed", e): "wait" if e == "off" else "next_when_due" for e in EVENTS},
     **{("replace", e): "wait" if e == "off" else "next" for e in EVENTS},
+    **{("succeeded", e): "wait" for e in EVENTS},
     **{("settled", e): "wait" for e in EVENTS},
 }
 
@@ -94,8 +98,8 @@ def phase_of(current: dict) -> str:
         return "asked" if current.get("asked") else "new"
     if state in collection.IN_FLIGHT:
         return state
-    if state == "failed":
-        return "failed"
+    if state in ("failed", "succeeded"):
+        return state
     return "replace" if state == "canceled" and current.get("replace") is True else "settled"
 
 

@@ -28,6 +28,7 @@ EXPECTED = {
     "cancel_refused": dict.fromkeys(collect.EVENTS, "wait"),
     "failed": {**dict.fromkeys(collect.EVENTS, "next_when_due"), "off": "wait"},
     "replace": {**dict.fromkeys(collect.EVENTS, "next"), "off": "wait"},
+    "succeeded": dict.fromkeys(collect.EVENTS, "wait"),
     "settled": dict.fromkeys(collect.EVENTS, "wait"),
 }
 
@@ -39,7 +40,8 @@ COLLECTION = {
     "cancel_refused": {"state": "processing", "cancel": "refused"},
     "failed": {"state": "failed", "retry_eligible_at": "2026-07-01T00:00:00+00:00"},
     "replace": {"state": "canceled", "replace": True},
-    "settled": {"state": "succeeded"},
+    "succeeded": {"state": "succeeded"},
+    "settled": {"state": "paid"},
 }
 WHY = {"stop": "invoice_settled", "reduced": "amount_changed", "raised": None, "off": "collection_off",
        "held": "PF-2607-0001", "none": None}
@@ -140,7 +142,7 @@ def test_every_stored_collection_reads_as_one_phase(state, cancel, flag):
         expected = "cancel_refused"
     elif state == "pending":
         expected = "asked" if flag else "new"
-    elif state in collection.IN_FLIGHT or state == "failed":
+    elif state in collection.IN_FLIGHT or state in ("failed", "succeeded"):
         expected = state
     elif state == "canceled" and flag:
         expected = "replace"

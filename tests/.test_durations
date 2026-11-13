@@ -29468,7 +29468,6 @@
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.revenue]": 1.3333473200909793,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.subscribers]": 2.440073225996457,
     "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_cancelled_charge_is_followed_by_what_the_invoice_owes_and_the_held_invoice_is_charged": 1.6195101268822327,
-    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_charge_that_could_not_be_cancelled_keeps_the_new_invoice_held": 0.8919501400087029,
     "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_late_success_after_the_charge_was_cancelled_for_a_smaller_balance_is_taken": 0.7277120321523398,
     "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_partial_payment_by_hand_while_the_charge_is_submitted_cancels_it": 0.5985332798445597,
     "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_an_amendment_after_a_successful_charge_charges_only_what_its_credit_leaves": 0.7812963550677523,
@@ -29633,5 +29632,13 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_races_pg.py]": 0.007774833124130964,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_settlement.py]": 0.007136653992347419,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_table.py]": 0.008031955105252564,
-    "tests/test_gift_classification_kept.py::test_a_line_on_the_income_account_of_an_item_in_a_gift_category_posts_as_a_gift": 1.1602135919965804
+    "tests/test_gift_classification_kept.py::test_a_line_on_the_income_account_of_an_item_in_a_gift_category_posts_as_a_gift": 1.1602135919965804,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_charge_that_could_not_be_cancelled_pays_its_invoice_and_the_rest_goes_to_the_held_invoice": 1.8924353058682755,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_late_charge_beyond_everything_the_agreement_owes_leaves_only_the_rest_unmatched": 0.6850617758464068,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[held-succeeded]": 0.00508567807264626,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[none-succeeded]": 0.004581952118314803,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[off-succeeded]": 0.0038827339885756373,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[raised-succeeded]": 0.0034730160841718316,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[reduced-succeeded]": 0.0027999310987070203,
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[stop-succeeded]": 0.0033026220044121146
 }
