@@ -13,8 +13,9 @@ What is stored here:
 - each invoice's collection, on the document (``ATTEMPT_EVENT``, written only by
   ``set_attempt`` under the document's row lock): the attempt number and its request
   key, the amount and currency asked for, Cloud's state for it, when a retry may be
-  asked for, the bank's action link, a cancel waiting for Cloud's answer, and why
-  collection stopped.
+  asked for, the bank's action link, a cancel waiting for Cloud's answer, whether a
+  cancelled attempt is followed by one for what the invoice owes then (``replace``), the
+  invoice of the same agreement it waits on (``held_by``), and why collection stopped.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeed
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
 # The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
 STOP_REASONS = frozenset({"invoice_settled", "mode_manual", "no_card_on_file", "authorizer_lapsed", "collection_off",
-                          "nothing_to_charge", "no_books", "amount_changed"})
+                          "nothing_to_charge", "no_books"})
 CONSENT_TEXT_VERSION = "1"
 
 
@@ -189,7 +190,8 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
     return await set_attempt(session, company_id, doc_row, {
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
-        drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive"))
+        drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
+              "held_by"))
 
 
 def _instant(value) -> str | None | bool:
@@ -222,11 +224,13 @@ def stamp(value) -> datetime | None:
 async def apply_outcome(session, company_id, doc_row, found: dict) -> None:
     """Record Cloud's ``found`` outcome of the invoice's current attempt, from its answer or its
     delivery, whichever comes first. A definitive outcome is not replaced by a later one that is
-    not, and an attempt the app already settled (paid, stopped) stays so."""
+    not, and an attempt the app already settled (paid, stopped) stays so. A definitive outcome
+    ends a cancel waiting for Cloud's answer: there is nothing left to cancel."""
     current = doc_row.state.get("collection") or {}
     if (current.get("definitive") and not found["definitive"]) or current.get("state") in ("paid", "stopped"):
         return
-    await set_attempt(session, company_id, doc_row, {**found, "asked": True})
+    await set_attempt(session, company_id, doc_row, {**found, "asked": True},
+                      drop=("cancel",) if found["definitive"] else ())
 
 
 @_on_invoices

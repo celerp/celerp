@@ -947,9 +947,23 @@ async def settle_amendment(session, company: Company, tid: str, state: dict, sch
         doc = await agreement_document(session, company, tid, state, kind, prorated(new, effective, last, days, currency),
                                        service)
         doc_id = await issue_document(session, company, tid, state, doc, actor, f"{key}:dn")
+        await _apply_left_over(session, company, note_id, doc_id, actor, f"{key}:apply")
     except (HTTPException, KeyedRefusal) as exc:
         raise BillRefused(state, tid, exc) from exc
     return {"credit_note_id": note_id, "invoice_id": doc_id}
+
+
+async def _apply_left_over(session, company: Company, note_id: str, doc_id: str, actor, key: str) -> None:
+    """What the amendment's note has left once it settled its own document (all of it when that
+    was already paid) is applied to the amendment's new document, before anything is collected
+    on it: the same paired application a user makes by hand."""
+    from celerp_docs.routes import _payable_balance, apply_credit_note
+    note, doc = await doc_state(session, company.id, note_id) or {}, await doc_state(session, company.id, doc_id) or {}
+    amount = min(_payable_balance(note), _payable_balance(doc))
+    if amount > 0:
+        await apply_credit_note(session, company.id, note_id, doc_id, to_stored_float(amount),
+                                payment_date=note.get("issue_date"), actor_id=actor.id, source="subscription",
+                                idempotency_key=key)
 
 
 async def agreements(session: AsyncSession, company_id) -> list[Projection]:

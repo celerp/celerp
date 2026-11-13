@@ -762,6 +762,8 @@ class DocCollection(BaseModel):
     definitive: bool | None = None
     cancel: str | None = None
     reason: str | None = None
+    replace: bool | None = None  # cancelled for a smaller balance: the next attempt asks what is owed then
+    held_by: str | None = None  # the agreement's invoice whose charge is reconciled before this one is asked
 
 
 class PaymentBooks(BaseModel):

@@ -191,6 +191,20 @@ async def test_e2e4_saas_subscriber_collected_from_a_card_on_file(owner_ui, sess
     credit, debit = docs[r.json()["credit_note_id"]], docs[r.json()["invoice_id"]]
     assert (credit["total"], debit["total"]) == (16.0, 26.67)
     assert credit["original_doc_id"] == september["entity_id"]
+    # September is paid, so the 16.00 credit is applied to the new invoice, which leaves 10.67; that
+    # is not charged while September's card charge is not reconciled: the operator voids the payment
+    # by hand and records the parked charge on September instead, and the 10.67 is charged.
+    assert debit["amount_outstanding"] == 10.67
+    assert debit["collection"]["held_by"] == september["ref_id"]
+    [by_hand] = [p for p in september["payments"] if p.get("method") == "bank_transfer"]
+    r = await api.post(f"/docs/{september['entity_id']}/void-payment", json={"payment_index": by_hand["index"]})
+    assert r.status_code == 200, r.text
+    r = await api.post("/payments/unmatched/record", json={"reference": "pi_sep_late",
+                                                           "entity_id": september["entity_id"]})
+    assert r.status_code == 200, r.text
+    assert _period(await _invoices(session, eid), 2)["collection"]["state"] == "paid"
+    await tick(session, cid, "2026-09-15")
+    assert [p["amount_minor"] for p in cloud.sent("attempt") if p["entity_id"] == debit["entity_id"]] == [1067]
 
     # October bills 5 seats and is collected; the July payment is disputed, its money moves to
     # Disputed payments, and comes back when the dispute is won.

@@ -70,6 +70,15 @@ async def test_an_amendment_credit_against_a_charge_in_flight_cancels_it_and_hol
     assert [p["entity_id"] for p in cloud.sent("cancel")][:1] == [july]
     assert docs[july]["collection"]["cancel"] == "queued"
     assert _asked(cloud, new) == []
+    assert docs[new]["collection"]["held_by"] == docs[july]["ref_id"]
+
+
+async def test_the_invoice_page_names_the_invoice_a_held_charge_waits_on():
+    from ui.i18n import t
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _collection_status
+    assert t("collection.status_held", ref="PF-2607-0001") in to_xml(
+        _collection_status({"state": "pending", "asked": False, "held_by": "PF-2607-0001"}, None))
 
 
 async def test_a_cancelled_charge_is_followed_by_what_the_invoice_owes_and_the_held_invoice_is_charged(
