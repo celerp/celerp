@@ -29640,5 +29640,6 @@
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[off-succeeded]": 0.0038827339885756373,
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[raised-succeeded]": 0.0034730160841718316,
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[reduced-succeeded]": 0.0027999310987070203,
-    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[stop-succeeded]": 0.0033026220044121146
+    "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_each_cell_does_what_its_action_says[stop-succeeded]": 0.0033026220044121146,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_late_charge_on_an_invoice_paid_by_hand_pays_the_agreements_next_invoice": 1.6218857531202957
 }

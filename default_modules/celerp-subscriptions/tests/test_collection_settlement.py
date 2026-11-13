@@ -148,6 +148,29 @@ async def test_a_late_charge_beyond_everything_the_agreement_owes_leaves_only_th
     assert await _unmatched(session) == [("pi_over:rest", 1000)]
 
 
+async def test_a_late_charge_on_an_invoice_paid_by_hand_pays_the_agreements_next_invoice(
+        client, session, monkeypatch, cloud):
+    """July is paid 30.00 by hand while its charge is with Cloud, the cancel refused, then the
+    amendment's 16.45 credit leaves its 27.42 invoice owing 10.97. The 30.00 succeeds: July takes
+    none of it, the amendment's invoice takes 10.97, the 19.03 nothing owes is unmatched, and
+    July's charge reads as paid."""
+    from celerp.services import payments
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    [sent] = cloud.sent("attempt")
+    cloud.answers["cancel"] = (409, {"detail": "attempt_submitted"})
+    await _pay(client, hd, july, 30.0)
+    await tick(session, cid, "2026-07-02")
+    new = (await _amend(client, monkeypatch, hd, eid)).json()["invoice_id"]
+    assert await _attempt_outcome(cid, july, 1, "succeeded") is True
+    assert await payments.receive_payment({
+        "company_id": cid, "entity_id": july, "reference": "pi_next", "amount_minor": 3000, "currency": "USD",
+        "paid_at": "2026-07-15T13:00:00+00:00", "managed": True, "context": sent["context"]})
+    docs = await _docs(session, eid)
+    assert docs[new]["amount_outstanding"] == 0
+    assert await _unmatched(session) == [("pi_next:rest", 1903)]
+    assert docs[july]["collection"]["state"] == "paid"
+
+
 async def test_an_amendment_after_a_successful_charge_charges_only_what_its_credit_leaves(
         client, session, monkeypatch, cloud):
     """July's 30.00 is paid before the amendment, so its 16.45 credit cannot settle July: it is applied
