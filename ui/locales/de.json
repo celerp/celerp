@@ -7742,6 +7742,7 @@
   "page.new_retainer": "New retainer",
   "page.new_membership": "New membership",
   "subscriptions.retainers_empty": "No retainers yet.",
+  "subscriptions.none_in_view": "Keine Vereinbarungen entsprechen dieser Ansicht. Wählen Sie einen anderen Status oder leeren Sie die Suche.",
   "subscriptions.members_empty": "No members yet. Add a membership tier, then New membership.",
   "subscriptions.members_intro": "Each member's standing comes from their latest bill: current until it falls due, in grace for the agreement's grace days after that, then lapsed. A paid or fully credited bill reads current again.",
   "subscriptions.paid_by": "Paid by",

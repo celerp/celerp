@@ -56,6 +56,21 @@ async def test_retainers_page_lists_retainer_kind_only(owner_ui, monkeypatch):
     assert f"/subscriptions/{retainer}" in page.text and f"/subscriptions/{plain}" not in page.text
 
 
+async def test_an_empty_view_with_agreements_says_nothing_matches(owner_ui, monkeypatch):
+    """A list view whose status or search leaves nothing out of the agreements that exist says
+    nothing matches and how to widen it, never that there are none yet: All issued leaves the
+    only draft out."""
+    from ui.i18n import t
+    freeze_day(monkeypatch, "2026-03-01")
+    page = (await owner_ui.get("/retainers")).text
+    assert t("subscriptions.retainers_empty") in page
+    await agreement(owner_ui.api, {}, start="2026-03-01", kind="retainer", activate=False)
+    page = (await owner_ui.get("/retainers")).text
+    assert t("subscriptions.none_in_view") in page and t("subscriptions.retainers_empty") not in page
+    page = (await owner_ui.get("/retainers?status=draft")).text
+    assert t("subscriptions.none_in_view") not in page
+
+
 async def test_new_retainer_without_stripe(owner_ui, session, monkeypatch):
     """New retainer on the Retainers page makes a retainer agreement; it bills and is paid by
     bank with no payment provider set up."""

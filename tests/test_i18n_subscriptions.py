@@ -63,7 +63,7 @@ def test_status_badge_translates_enum_label():
 def test_sub_table_translates_status_and_frequency():
     # Mechanisms: enum status badge + enum frequency label in a table row.
     row = {"id": "sub:1", "frequency": "monthly", "status": "active"}
-    html = to_xml(_sub_table([row], _list_state({})))
+    html = to_xml(_sub_table([row], _list_state({}), True))
     assert "XX_MONTHLY" in html
     assert "XX_ACTIVE" in html
 

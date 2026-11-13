@@ -314,10 +314,14 @@ def _sentence_cell(*content, cls: str = "") -> FT:
     return Td(*content, cls=f"cell--note {cls}".rstrip())
 
 
-def _sub_table(subs: list[dict], state: dict) -> FT:
+def _sub_table(subs: list[dict], state: dict, any_exist: bool) -> FT:
+    """The table of one page of a list view; ``any_exist`` is whether the view's kind has any
+    agreement at all, so an empty view says nothing matches rather than that there are none."""
     if not subs and state["review"]:
         return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
                                    _list_base(state)), id="sub-table")
+    if not subs and any_exist:
+        return Div(P(t("subscriptions.none_in_view"), cls="text-muted"), id="sub-table")
     if not subs:
         text = _LIST_TEXT[state["kind"]]
         return Div(empty_state_cta(t(text["empty"]), t(text["new"]), text.get("form") or _new_url(state),
@@ -1278,7 +1282,7 @@ def _list_views(all_items: list[dict], state: dict) -> tuple[FT, FT, int]:
     listed = _listed(all_items, state)
     page, per_page = state["page"], state["per_page"]
     return (_sub_status_cards(all_items, state),
-            _sub_table(listed[(page - 1) * per_page: page * per_page], state), len(listed))
+            _sub_table(listed[(page - 1) * per_page: page * per_page], state, bool(all_items)), len(listed))
 
 
 async def _agreements(token: str, direction: str | None = None) -> dict[str, dict]:
@@ -1703,7 +1707,7 @@ def setup_routes(app) -> None:
         except APIError as exc:
             api.raise_if_signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
-        return _sub_table(_listed(items, state), state)
+        return _sub_table(_listed(items, state), state, bool(items))
 
     # --- Create blank draft → redirect to detail ---
 

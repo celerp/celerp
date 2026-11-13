@@ -65,9 +65,11 @@ def test_the_subscriptions_module_bills_on_its_own_only_through_the_dispatcher()
     # agreement only in an automatic mode someone allowed to has turned on.
     # The document status guards refuse a status change and the period badge only renders;
     # neither bills.
+    # Demo records are seeded only when a person creates a demo company.
     assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "doc_status_guard",
                                       "doc_detail_badges", "on_modules_ready", "on_company_restored",
-                                      "on_company_module_enabled"}
+                                      "on_company_module_enabled", "demo_records"}
+    assert manifest["slots"]["demo_records"]["handler"] == "celerp_subscriptions.demo:seed_demo_agreements_hook"
     assert manifest["slots"]["periodic_operation"]["handler"] == "celerp_subscriptions.billing:run_due"
     assert [c["handler"] for c in manifest["slots"]["doc_status_guard"]] == [
         "celerp_subscriptions.billing:guard_bill_status", "celerp_subscriptions.billing:guard_agreement_status"]
@@ -91,6 +93,6 @@ def test_the_list_shows_when_each_subscription_is_next_due():
     from ui.routes.subscriptions import _list_state, _sub_table
 
     html = to_xml(_sub_table([{"id": "doc:s1", "ref_id": "SUB-1", "frequency": "monthly",
-                               "next_bill_date": "2026-02-01", "status": "active"}], _list_state({})))
+                               "next_bill_date": "2026-02-01", "status": "active"}], _list_state({}), True))
     assert f">{t('th.next_due')}<" in html and t("th.next_due") == "Next Due"
     assert "Next Run" not in html and "2026-02-01" in html
