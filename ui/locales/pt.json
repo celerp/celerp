@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Ativar cobrança automática",
   "subscriptions.err_collection_off": "A cobrança automática não está disponível. Conecte o Stripe pelo Celerp Cloud para ativá-la.",
   "subscriptions.err_no_card_on_file": "O pagador não tem cartão cadastrado. Envie um link de configuração primeiro.",
+  "subscriptions.err_payer_change_in_flight": "Não é possível alterar o pagador enquanto uma cobrança no cartão da fatura {ref} estiver em andamento, porque essa cobrança é feita no cartão do pagador atual. Tente novamente quando ela terminar.",
   "subscriptions.err_payer_not_contact": "O pagador não é um dos seus contatos. Escolha um contato como pagador primeiro.",
   "subscriptions.err_payer_no_email": "O pagador não tem e-mail. Adicione um e-mail ao contato primeiro.",
   "subscriptions.err_cloud_unreachable": "Não foi possível conectar ao Celerp Cloud. Tente novamente.",

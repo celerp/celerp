@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Abilita riscossione automatica",
   "subscriptions.err_collection_off": "La riscossione automatica non è disponibile. Collega Stripe tramite Celerp Cloud per attivarla.",
   "subscriptions.err_no_card_on_file": "Il pagatore non ha una carta salvata. Inviagli prima un link di configurazione.",
+  "subscriptions.err_payer_change_in_flight": "Il pagatore non può essere cambiato mentre è in corso un addebito con carta sulla fattura {ref}, perché quell'addebito è sulla carta del pagatore attuale. Riprova quando sarà terminato.",
   "subscriptions.err_payer_not_contact": "Il pagatore non è tra i tuoi contatti. Scegli prima un contatto come pagatore.",
   "subscriptions.err_payer_no_email": "Il pagatore non ha un indirizzo e-mail. Aggiungine uno al contatto.",
   "subscriptions.err_cloud_unreachable": "Impossibile raggiungere Celerp Cloud. Riprova.",

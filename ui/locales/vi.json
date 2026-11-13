@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Bật thu tiền tự động",
   "subscriptions.err_collection_off": "Không thể sử dụng thu tiền tự động. Hãy kết nối Stripe qua Celerp Cloud để bật tính năng.",
   "subscriptions.err_no_card_on_file": "Người trả tiền chưa có thẻ lưu. Hãy gửi liên kết thiết lập trước.",
+  "subscriptions.err_payer_change_in_flight": "Không thể đổi người thanh toán khi khoản trừ thẻ cho hóa đơn {ref} đang được xử lý, vì khoản trừ đó dùng thẻ của người thanh toán hiện tại. Hãy thử lại sau khi hoàn tất.",
   "subscriptions.err_payer_not_contact": "Người trả tiền không nằm trong danh bạ của bạn. Hãy chọn một liên hệ làm người trả trước.",
   "subscriptions.err_payer_no_email": "Người trả tiền không có địa chỉ email. Hãy thêm email vào liên hệ trước.",
   "subscriptions.err_cloud_unreachable": "Không thể kết nối Celerp Cloud. Hãy thử lại.",

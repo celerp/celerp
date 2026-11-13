@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "自動回収を有効にする",
   "subscriptions.err_collection_off": "自動回収を利用できません。Celerp Cloud 経由で Stripe を連携して有効にしてください。",
   "subscriptions.err_no_card_on_file": "支払者に登録済みカードがありません。先に設定用リンクを送信してください。",
+  "subscriptions.err_payer_change_in_flight": "請求書 {ref} のカード決済が処理中のため、支払者を変更できません。この決済は現在の支払者のカードに対するものです。完了してからもう一度お試しください。",
   "subscriptions.err_payer_not_contact": "支払者が連絡先に登録されていません。先に連絡先から支払者を選択してください。",
   "subscriptions.err_payer_no_email": "支払者のメールアドレスがありません。先に連絡先へ追加してください。",
   "subscriptions.err_cloud_unreachable": "Celerp Cloud に接続できませんでした。もう一度お試しください。",

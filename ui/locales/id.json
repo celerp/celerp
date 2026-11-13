@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Aktifkan penagihan otomatis",
   "subscriptions.err_collection_off": "Penagihan otomatis tidak tersedia. Hubungkan Stripe melalui Celerp Cloud untuk mengaktifkannya.",
   "subscriptions.err_no_card_on_file": "Pembayar tidak memiliki kartu tersimpan. Kirim tautan pengaturan terlebih dahulu.",
+  "subscriptions.err_payer_change_in_flight": "Pembayar tidak dapat diubah selama tagihan kartu pada faktur {ref} sedang berjalan, karena tagihan itu dikenakan ke kartu pembayar saat ini. Coba lagi setelah selesai.",
   "subscriptions.err_payer_not_contact": "Pembayar bukan salah satu kontak Anda. Pilih kontak sebagai pembayar terlebih dahulu.",
   "subscriptions.err_payer_no_email": "Pembayar tidak memiliki alamat email. Tambahkan email ke kontak terlebih dahulu.",
   "subscriptions.err_cloud_unreachable": "Tidak dapat menghubungi Celerp Cloud. Coba lagi.",

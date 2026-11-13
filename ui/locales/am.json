@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "ራስ-ሰር ገንዘብ ማሰባሰብን አንቃ",
   "subscriptions.err_collection_off": "ራስ-ሰር ገንዘብ ማሰባሰብ አይገኝም። ለማንቃት Stripeን በCelerp Cloud በኩል ያገናኙ።",
   "subscriptions.err_no_card_on_file": "ከፋዩ የተመዘገበ ካርድ የለውም። መጀመሪያ የማዋቀሪያ አገናኝ ይላኩለት።",
+  "subscriptions.err_payer_change_in_flight": "በደረሰኝ {ref} ላይ የካርድ ክፍያ በሂደት ላይ እያለ ከፋዩ መቀየር አይችልም፤ ያ ክፍያ በአሁኑ ከፋይ ካርድ ላይ ነው። ክፍያው ካለቀ በኋላ እንደገና ይሞክሩ።",
   "subscriptions.err_payer_not_contact": "ከፋዩ ከእውቂያዎችዎ አንዱ አይደለም። መጀመሪያ እውቂያ እንደ ከፋይ ይምረጡ።",
   "subscriptions.err_payer_no_email": "ከፋዩ የኢሜይል አድራሻ የለውም። መጀመሪያ ወደ እውቂያው ኢሜይል ያክሉ።",
   "subscriptions.err_cloud_unreachable": "ከCelerp Cloud ጋር መገናኘት አልተቻለም። እንደገና ይሞክሩ።",

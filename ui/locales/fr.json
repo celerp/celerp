@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Activer le prélèvement automatique",
   "subscriptions.err_collection_off": "Le prélèvement automatique n'est pas disponible. Connectez Stripe via Celerp Cloud pour l'activer.",
   "subscriptions.err_no_card_on_file": "Le payeur n'a pas de carte enregistrée. Envoyez-lui d'abord un lien de configuration.",
+  "subscriptions.err_payer_change_in_flight": "Le payeur ne peut pas être changé pendant qu'un prélèvement par carte sur la facture {ref} est en cours, car ce prélèvement porte sur la carte du payeur actuel. Réessayez une fois qu'il est terminé.",
   "subscriptions.err_payer_not_contact": "Le payeur ne figure pas parmi vos contacts. Choisissez d'abord un contact comme payeur.",
   "subscriptions.err_payer_no_email": "Le payeur n'a pas d'adresse e-mail. Ajoutez-en une à sa fiche contact.",
   "subscriptions.err_cloud_unreachable": "Impossible de joindre Celerp Cloud. Réessayez.",

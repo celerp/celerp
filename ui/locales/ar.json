@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "تفعيل التحصيل التلقائي",
   "subscriptions.err_collection_off": "التحصيل التلقائي غير متاح. اربط Stripe عبر Celerp Cloud لتفعيله.",
   "subscriptions.err_no_card_on_file": "لا توجد بطاقة محفوظة للدافع. أرسل إليه رابط إعداد أولًا.",
+  "subscriptions.err_payer_change_in_flight": "لا يمكن تغيير الدافع أثناء تنفيذ خصم من البطاقة على الفاتورة {ref}، لأن هذا الخصم يتم على بطاقة الدافع الحالي. حاول مرة أخرى بعد انتهائه.",
   "subscriptions.err_payer_not_contact": "الدافع ليس من جهات اتصالك. اختر جهة اتصال لتكون الدافع أولًا.",
   "subscriptions.err_payer_no_email": "ليس لدى الدافع عنوان بريد إلكتروني. أضفه إلى جهة الاتصال أولًا.",
   "subscriptions.err_cloud_unreachable": "تعذّر الاتصال بـ Celerp Cloud. حاول مجددًا.",

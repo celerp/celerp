@@ -349,9 +349,35 @@ async def _refuse_unknown_member(session, company_id, before: dict, after: dict)
         raise HTTPException(status_code=422, detail=catalog_refusal("subscriptions.err_beneficiary"))
 
 
+async def _check_payer_change(session, entry, before: dict, after: dict) -> None:
+    """A change of who pays (contact_id) an agreement that collects automatically, before or
+    after the change and whatever its status, by any writer: it needs the collection
+    permissions from the actor's role (403 naming the first missing), and it is refused (409
+    naming the invoice) while a card charge on one of the agreement's invoices may already be
+    with Cloud, since that charge, asked for again, goes to the card first asked. Later charges
+    read the payer for each new request and wait for the new payer's card (collect.stop_reason
+    no_card_on_file), so the earlier payer's card is never charged again."""
+    if before.get("contact_id") == after.get("contact_id") or (
+            "collection" not in (*configured_modes(before), *configured_modes(after))):
+        return
+    await require_mode_permissions(session, entry.company_id, entry.actor_id, ["collection"])
+    from celerp.services import collection
+    invoices = (await session.execute(select(Projection).where(
+        Projection.company_id == entry.company_id, Projection.entity_type == "doc",
+        Projection.state["source_agreement"].as_string() == entry.entity_id,
+        Projection.state["collection"]["state"].as_string().in_(sorted(collection.IN_FLIGHT)),
+    ).order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+    for row in invoices:
+        attempt = row.state.get("collection") or {}
+        if attempt.get("state") != "pending" or attempt.get("asked"):
+            raise HTTPException(status_code=409, detail=t(
+                "subscriptions.err_payer_change_in_flight", ref=row.state.get("ref_id") or row.entity_id))
+
+
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
-    building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
+    building no schedule (refuse_unbuildable_terms), and none changes who pays an agreement that
+    collects automatically without the checks of _check_payer_change. The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, finalize, revert, an import) is refused (409), except Unvoid,
     the only way out of void (write_agreement writes no status on a void agreement); so is any
@@ -367,6 +393,7 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
     await _refuse_unknown_member(session, entry.company_id, transition.before or {}, transition.after)
+    await _check_payer_change(session, entry, transition.before or {}, transition.after)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     status, was = transition.after.get("status"), (transition.before or {}).get("status")

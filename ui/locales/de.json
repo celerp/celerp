@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Automatischen Zahlungseinzug aktivieren",
   "subscriptions.err_collection_off": "Automatischer Zahlungseinzug ist nicht verfügbar. Verbinden Sie Stripe über Celerp Cloud, um ihn zu aktivieren.",
   "subscriptions.err_no_card_on_file": "Für den Zahler ist keine Karte hinterlegt. Senden Sie ihm zuerst einen Einrichtungslink.",
+  "subscriptions.err_payer_change_in_flight": "Der Zahler kann nicht geändert werden, solange eine Kartenzahlung für die Rechnung {ref} läuft, denn diese Zahlung erfolgt mit der Karte des aktuellen Zahlers. Versuchen Sie es erneut, wenn sie abgeschlossen ist.",
   "subscriptions.err_payer_not_contact": "Der Zahler gehört nicht zu Ihren Kontakten. Wählen Sie zuerst einen Kontakt als Zahler.",
   "subscriptions.err_payer_no_email": "Für den Zahler ist keine E-Mail-Adresse hinterlegt. Ergänzen Sie sie zunächst beim Kontakt.",
   "subscriptions.err_cloud_unreachable": "Celerp Cloud konnte nicht erreicht werden. Versuchen Sie es erneut.",

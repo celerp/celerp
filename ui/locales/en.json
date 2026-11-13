@@ -7865,6 +7865,7 @@
   "perm.name.automate_collection": "Enable automatic collection",
   "subscriptions.err_collection_off": "Automatic collection is not available. Connect Stripe through Celerp Cloud to turn it on.",
   "subscriptions.err_no_card_on_file": "The payer has no card on file. Send them a setup link first.",
+  "subscriptions.err_payer_change_in_flight": "The payer can't change while a card charge on invoice {ref} is under way, because that charge is to the current payer's card. Try again once it has finished.",
   "subscriptions.err_payer_not_contact": "The payer is not one of your contacts. Choose a contact as the payer first.",
   "subscriptions.err_payer_no_email": "The payer has no email address. Add one to the contact first.",
   "subscriptions.err_cloud_unreachable": "Could not reach Celerp Cloud. Try again.",

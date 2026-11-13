@@ -814,6 +814,13 @@ async def test_an_amendment_invoice_is_collected_as_a_period_invoice_is(client, 
     assert [p["entity_id"] for p in cloud.sent("attempt")][-1] == invoice
 
 
+async def _edit(client, headers, eid: str, field: str, value):
+    """The document's own edit of one field, naming the version it read."""
+    version = (await client.get(f"/docs/{eid}", headers=headers)).json()["version"]
+    return await client.patch(f"/docs/{eid}", headers=headers, json={
+        "expected_version": version, "fields_changed": {field: {"new": value}}})
+
+
 async def test_payer_change_needs_the_collection_permission(client, session, monkeypatch, cloud):
     """Changing who pays an agreement that collects automatically, through the document's own
     edit, needs automate_collection: a member who may only edit documents is refused and the
@@ -824,7 +831,7 @@ async def test_payer_change_needs_the_collection_permission(client, session, mon
     other = await _payer(client, hd, "other@example.test")
     assert await _bind(cid, other)
     manager, _ = await member(client, session, hd, "manager")
-    r = await client.patch(f"/docs/{eid}", headers=manager, json={"contact_id": other})
+    r = await _edit(client, manager, eid, "contact_id", other)
     assert r.status_code == 403, r.text
     assert (await template(client, hd, eid))["contact_id"] == payer
 
@@ -850,3 +857,48 @@ async def test_every_invoice_an_automatic_agreement_issues_opens_its_collection(
     assert all(d["collection"]["attempt_number"] == 1 and d["collection"]["asked"] for d in invoices), invoices
     assert [d.get("collection") for d in docs if d["doc_type"] == "credit_note"] == [None]
     assert sorted(p["entity_id"] for p in cloud.sent("attempt")) == sorted(d["entity_id"] for d in invoices)
+
+
+# Every field the document edit still changes on an agreement past draft, with the permission a
+# change to it needs on an agreement that collects automatically, beyond edit_documents.
+_EDITABLE_AFTER_DRAFT = {
+    "description": None, "customer_note": None, "internal_note": None, "shipping_attn": None,
+    "contact_shipping_address": None, "ref_id": None, "line_items": None, "contact_id": "automate_collection",
+    "contact_name": None, "contact_company_name": None, "contact_billing_address": None, "contact_phone": None,
+    "contact_email": None, "contact_tax_id": None, "payment_terms": None, "accounting_sync_excluded": None,
+}
+
+
+async def test_every_field_editable_after_draft_needs_its_permission(client, session, monkeypatch, cloud):
+    """Guard over every field the document edit changes on an active agreement that collects
+    automatically, driven by a member who may only edit documents: who pays is refused (403)
+    and stays, every other field changes. The owner's payer change waits (409) while a charge
+    asked of Cloud has no answer, and goes through once it has one."""
+    from celerp_docs.routes import _FINALIZED_EDITABLE_FIELDS
+    assert set(_EDITABLE_AFTER_DRAFT) == _FINALIZED_EDITABLE_FIELDS
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    cid, eid, payer = await _collecting(client, hd)
+    other = await _payer(client, hd, "other@example.test")
+    assert await _bind(cid, other)
+    manager, _ = await member(client, session, hd, "manager")
+    doc = await template(client, hd, eid)
+    assert doc["status"] == "active"
+    values = {"contact_id": other, "accounting_sync_excluded": True, "line_items": [
+        {**li, "description": "Changed"} for li in doc["line_items"]]}
+    for field, permission in _EDITABLE_AFTER_DRAFT.items():
+        r = await _edit(client, manager, eid, field, values.get(field, f"Changed {field}"))
+        assert r.status_code == (403 if permission else 200), (field, r.text)
+    assert (await template(client, hd, eid))["contact_id"] == payer
+    freeze_day(monkeypatch, "2026-07-01")
+    cloud.answers["attempt"] = None
+    await tick(session, cid, "2026-07-01")
+    [c] = await _collection(session, eid)
+    assert c["state"] == "pending" and c["asked"]
+    [invoice] = await billed_docs(session, eid)
+    r = await _edit(client, hd, eid, "contact_id", other)
+    assert r.status_code == 409 and _says(r, "subscriptions.err_payer_change_in_flight", ref=invoice["ref_id"]), r.text
+    assert await _attempt_outcome(cid, invoice["entity_id"], 1, "succeeded")
+    r = await _edit(client, hd, eid, "contact_id", other)
+    assert r.status_code == 200, r.text
+    assert (await template(client, hd, eid))["contact_id"] == other
