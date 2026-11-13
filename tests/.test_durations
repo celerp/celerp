@@ -29361,5 +29361,9 @@
     "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[\\xb2-True]": 0.9290603448171169,
     "tests/test_document_fund_ui.py::test_fund_cell_shown_again_after_its_editor_is_left": 0.008335291058756411,
     "tests/test_donors.py::test_donor_history_counts_a_credit_note_on_its_own_date": 0.48368000297341496,
-    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_no_3500]": 0.15711416897829622
+    "tests/test_funds.py::test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds[restored_no_3500]": 0.15711416897829622,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[1000001-True]": 1.041966830031015,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[9999999999999999999999999999999999999999-True]": 0.22370169800706208,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[seats6-True]": 0.2091666499618441,
+    "default_modules/celerp-subscriptions/tests/test_saas.py::test_new_subscriber_refuses_bad_seats_or_plan[seats9-True]": 0.20072785613592714
 }
