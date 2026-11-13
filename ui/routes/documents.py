@@ -56,6 +56,7 @@ from ui.components.files import files_error, files_section as _shared_doc_files_
 from ui.components.encode import as_js, html_response, js, raw_html, safe_url, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
+from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
 from ui.components.operation_key import (
     operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
@@ -3446,7 +3447,7 @@ celerpUpdateBulkAlloc();
         view = await _fund_view(request, entity_id)
         if not isinstance(view, FundView):
             return view
-        return fund_editor(view, target) if view.editable else funds_saved(view, target)[0]
+        return fund_editor(view, target) if view.editable or view.changes else funds_saved(view, target)[0]
 
     @app.post("/docs/{entity_id}/funds")
     async def doc_fund_save(request: Request, entity_id: str):
@@ -3469,6 +3470,29 @@ celerpUpdateBulkAlloc();
             return fund_editor(view, target, value=value, error=error_message(e))
         return html_response(funds_saved(FundView(doc, view.funds, view.editable), target), headers={
             "HX-Trigger": _json.dumps({"celerpListVersion": {"version": result.get("version")}})})
+
+    @app.post("/docs/{entity_id}/funds/change")
+    async def doc_fund_change(request: Request, entity_id: str):
+        """Change fund on a posted document from outside: the document's or one line's new fund,
+        with a reason; its entries are voided and posted again on the new fund. A refusal keeps
+        the selection, the reason and the form's key (sending it again is the same change); a
+        change answers with every fund control again."""
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        form = await request.form()
+        target, value = str(form.get("target") or ""), str(form.get("value") or "")
+        reason, key = str(form.get("reason") or ""), str(form.get(OPERATION_KEY_FIELD) or "")
+        choice = {"document": value} if target == FUND_DOCUMENT else {"lines": {target: value}}
+        try:
+            await api.change_doc_fund(token := _token(request), entity_id, {
+                "expected_version": _form_version(form), "request_key": key, "reason": reason, **choice})
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return fund_editor(view, target, value=value, error=error_message(e), reason=reason, key=key)
+        # The entries posted again move the open balance by fund the payment form shows.
+        return html_response(funds_saved(FundView(doc, view.funds, view.editable, view.changes), target), headers={
+            "HX-Trigger": _json.dumps({"celerpListVersion": {"version": doc.get("version")}, **doc_money_redraw()})})
 
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of a document's or a list's text fields (terms_text, customer_note) via

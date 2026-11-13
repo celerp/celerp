@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from test_helpers import make_test_token
+from ui.components.doc_money import EVENT
 from test_ui import _company_stub, _mock_get_company  # noqa: F401  (autouse fixture: the company settings)
 
 pytestmark = pytest.mark.asyncio
@@ -160,11 +161,67 @@ async def test_a_line_save_stores_unrestricted_as_no_fund(ui_client):
     assert "fund_id" not in sent[0] and sent[1]["fund_id"] is None and sent[2]["fund_id"] == "fund:r"
 
 
-async def test_posted_document_fund_cells_read_only(ui_client):
-    html = await _page(ui_client, _bill(status="final", line_choice="fund:r"))
+def _tag(html: str, dom_id: str) -> str:
+    """The opening tag of the element with ``dom_id``, whatever order its attributes are in."""
+    return re.search(rf'<[^>]*\bid="{re.escape(dom_id)}"[^>]*>', html).group(0)
+
+
+async def test_posted_outside_document_changes_fund_with_a_reason(ui_client):
+    """A posted record from outside keeps its fund fields click to edit for a user who manages
+    accounting: the editor is Change fund, a fund with a required reason and the form's own key,
+    saved to the change route; its local lines and Set all stay read only, and a refusal keeps
+    the selection, the reason and the key beside Try again."""
+    from ui.api_client import APIError
+
+    posted = _bill(status="final", line_choice="fund:r")
+    html = await _page(ui_client, posted)
     assert "Building fund" in _element(html, "fund-cell-L1")
-    assert not re.search(r'id="fund-cell-L1"[^>]*hx-get', html)
-    assert not re.search(r'id="doc-fund"[^>]*hx-get', html)
+    assert 'hx-get="/docs/doc:b1/funds/L1/edit"' in _tag(html, "fund-cell-L1") and "hx-get" in _tag(html, "doc-fund")
+    assert "hx-get" not in _tag(html, "fund-cell-L2") and "Set all outside lines to" not in html
+
+    company = {"id": "c1", "name": "Test Corp", "currency": "USD", "settings": {"funds_enabled": True}}
+
+    async def _call(method: str, url: str, docs: list[dict], change: AsyncMock | None = None, data=None):
+        with patch("ui.api_client.get_doc", new=AsyncMock(side_effect=docs)), \
+             patch("ui.api_client.list_funds", new=AsyncMock(return_value=_FUNDS)), \
+             patch("ui.api_client.change_doc_fund", new=change or AsyncMock()), \
+             patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(company))):
+            return await (ui_client.get(url) if method == "GET" else ui_client.post(url, data=data))
+
+    r = await _call("GET", "/docs/doc:b1/funds/L1/edit", [posted])
+    form = re.search(r"<form.*?</form>", r.text, re.S).group(0)
+    assert 'hx-post="/docs/doc:b1/funds/change"' in form and 'hx-trigger="submit"' in form
+    assert re.search(r'<input[^>]*name="reason"[^>]*required', form)
+    assert re.search(r'<input[^>]*type="hidden"[^>]*name="idempotency_key"', form)
+    assert "posts them again on the new fund" in form
+
+    change = AsyncMock(return_value={"copies": {"doc:b1": "doc:b1"}})
+    moved = {**_bill(status="final", line_choice="unrestricted"), "version": 9}
+    r = await _call("POST", "/docs/doc:b1/funds/change", [posted, moved], change,
+                    {"target": "L1", "value": "unrestricted", "reason": "Wrong grant", "expected_version": "7",
+                     "idempotency_key": "k1"})
+    assert r.status_code == 200, r.text
+    assert change.await_args.args[1:] == ("doc:b1", {"expected_version": 7, "request_key": "k1",
+                                                     "reason": "Wrong grant", "lines": {"L1": "unrestricted"}})
+    assert '"version": 9' in r.headers["HX-Trigger"] and "Unrestricted" in _element(r.text, "fund-cell-L1")
+    assert EVENT in r.headers["HX-Trigger"]  # the open balance by fund on the payment form is redrawn
+    change = AsyncMock(return_value={"copies": {}})
+    await _call("POST", "/docs/doc:b1/funds/change", [posted, posted], change,
+                {"target": "document", "value": "fund:r", "reason": "Grant", "expected_version": "7",
+                 "idempotency_key": "k2"})
+    assert change.await_args.args[2] == {"expected_version": 7, "request_key": "k2", "reason": "Grant",
+                                         "document": "fund:r"}
+
+    refused = AsyncMock(side_effect=APIError(422, "This period is locked."))
+    r = await _call("POST", "/docs/doc:b1/funds/change", [posted], refused,
+                    {"target": "L1", "value": "unrestricted", "reason": "Wrong grant", "expected_version": "7",
+                     "idempotency_key": "k3"})
+    assert "This period is locked." in r.text and "Try again" in r.text
+    assert 'value="Wrong grant"' in r.text and 'value="k3"' in r.text and 'value="unrestricted"' in r.text
+
+    ui_client.cookies.update({"celerp_token": make_test_token(role="viewer")})
+    html = await _page(ui_client, posted)
+    assert "hx-get" not in _tag(html, "fund-cell-L1") and "hx-get" not in _tag(html, "doc-fund")
 
 
 async def _post(ui_client, doc_after: dict, choose: AsyncMock, data: dict, *, doc: dict | None = None):

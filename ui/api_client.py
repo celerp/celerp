@@ -957,6 +957,13 @@ async def choose_doc_funds(token: str, entity_id: str, body: dict) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/fund-choices", json=body)).json()
 
 
+async def change_doc_fund(token: str, entity_id: str, body: dict) -> dict:
+    """Change fund on a posted document from outside: {expected_version, request_key, reason,
+    document, lines}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/change-fund", json=body)).json()
+
+
 async def list_funds(token: str) -> dict:
     """The company's funds, archived ones included, by name."""
     async with _api_client(token) as c:

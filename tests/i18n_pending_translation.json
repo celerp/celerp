@@ -2077,6 +2077,14 @@
     "posting.fund.change_moves_nothing": {
       "en": "Nothing would move: each line already has its own fund. Change the fund on the lines instead.",
       "params": []
+    },
+    "fund.change_reason": {
+      "en": "Reason for the change",
+      "params": []
+    },
+    "fund.change_hint": {
+      "en": "This document has posted. Saving voids its entries and posts them again on the new fund.",
+      "params": []
     }
   },
   "modules": {

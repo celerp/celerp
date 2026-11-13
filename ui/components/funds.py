@@ -3,7 +3,8 @@
 """The fund controls of a document that came from outside, in a company with funds in use:
 "Fund for this document" in its header, a Fund cell on each line and "Set all outside
 lines to" above the lines. Each is a click-to-edit field over the searchable fund select;
-a save answers with every control again, so the others follow the one that changed."""
+a save answers with every control again, so the others follow the one that changed. Once
+the record has posted, the same fields are Change fund: a new fund with a reason."""
 from __future__ import annotations
 
 import re
@@ -21,6 +22,7 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.encode import js
 from ui.components.icons import icon
+from ui.components.operation_key import FIELD as OPERATION_KEY
 from ui.components.table import EMPTY, searchable_select
 from ui.i18n import t
 
@@ -58,14 +60,19 @@ class FundView:
     doc: dict
     funds: list[dict]
     editable: bool
+    changes: bool = False
 
     @classmethod
     def of(cls, doc: dict, funds: list[dict], settings: dict, role: str) -> "FundView":
         """The view a user with ``role`` has. The controls take a choice until the record posts:
         a draft, or an accounting app's open document, which posts nothing of its own until a
-        local payment; the server refuses a record that has posted."""
-        return cls(doc, funds, editable=role_has_permission(settings, role, "edit_documents")
-                   and (doc.get("status") == "draft" or doc.get("origin") == "accounting_system"))
+        local payment; the server refuses a record that has posted. After that, a record from
+        outside takes Change fund from a user who manages accounting (``changes``)."""
+        editable = role_has_permission(settings, role, "edit_documents") \
+            and (doc.get("status") == "draft" or doc.get("origin") == "accounting_system")
+        changes = not editable and doc.get("status") not in ("draft", "void") and shows_funds(doc) \
+            and role_has_permission(settings, role, "manage_accounting")
+        return cls(doc, funds, editable, changes)
 
     @property
     def entity_id(self) -> str:
@@ -103,9 +110,10 @@ def shows_funds(doc: dict) -> bool:
 
 
 def _field(view: FundView, target: str, dom_id: str, *content, oob: bool = False) -> FT:
-    """A control's display state: click to edit when the document takes a choice."""
+    """A control's display state: click to edit when the document takes a choice or Change fund."""
     attrs = dict(hx_get=view.url(target, edit=True), hx_target="this", hx_swap="outerHTML",
-                 hx_trigger="click", title=t("documents.click_to_edit"), cls="editable-cell") if view.editable else {}
+                 hx_trigger="click", title=t("documents.click_to_edit"), cls="editable-cell") \
+        if view.editable or view.changes else {}
     return Div(*content, id=dom_id, **attrs, **({"hx_swap_oob": "true"} if oob else {}))
 
 
@@ -149,11 +157,12 @@ def line_cell(view: FundView, li: dict, *, oob: bool = False) -> FT:
                   *((" ", uses) if uses else ()), oob=oob)
 
 
-def _save_attrs(view: FundView) -> dict:
+def _save_attrs(view: FundView, *, change: bool = False) -> dict:
     # The page's version pins the choice to the document it shows; a page without the line
     # editor's version uses the one it was drawn from.
     version = view.doc.get("version")
-    return dict(hx_post=f"/docs/{view.entity_id}/funds", hx_target="this", hx_swap="outerHTML",
+    return dict(hx_post=f"/docs/{view.entity_id}/funds" + ("/change" if change else ""), hx_target="this",
+                hx_swap="outerHTML",
                 hx_vals=f"js:{{expected_version: window._celerpEntityVersion ?? {int(version or 0)}}}")
 
 
@@ -172,22 +181,33 @@ def set_all(view: FundView, *, value: str = "", error: str | None = None, oob: b
     return Div(*content, id="fund-set-all", **({"hx_swap_oob": "true"} if oob else {}))
 
 
-def editor(view: FundView, target: str, *, value: str | None = None, error: str | None = None) -> FT:
-    """The fund select of ``target``, saving on change; Escape puts the display back. After a
-    refusal it keeps the selection, with the reason and Try again."""
+def editor(view: FundView, target: str, *, value: str | None = None, error: str | None = None,
+           reason: str = "", key: str = "") -> FT:
+    """The fund select of ``target``, saving on change; Escape puts the display back. On a
+    posted record it is Change fund: the fund, a required reason and the form's key, saved by
+    Save. After a refusal it keeps the selection (and the reason and key), with the reason it
+    was refused and Try again."""
     dom_id = "doc-fund" if target == DOCUMENT else f"fund-cell-{target}"
     current = view.chosen(target) if value is None else value
     restore = js("if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:'#'+{1},swap:'outerHTML'}});}}",
                  view.url(target), dom_id)
+    change = ()
+    if view.changes:
+        change = (Input(type="text", name="reason", value=reason, required=True, placeholder=t("fund.change_reason"),
+                        aria_label=t("fund.change_reason"), cls="form-input form-input--sm"),
+                  Input(type="hidden", name=OPERATION_KEY, value=key or str(uuid.uuid4())),
+                  *(() if error else (Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),)),
+                  Div(t("fund.change_hint"), cls="text-muted"))
     return Form(
         searchable_select("value", fund_options(view.funds), value=current or "", placeholder=EMPTY,
                           aria_label=t("fund.document_label") if target == DOCUMENT else t("th.fund"),
                           autofocus=True),
         Input(type="hidden", name="target", value=target),
+        *change,
         *((Span(error, cls="field-error", role="alert"), " ",
            Button(t("btn.try_again"), type="submit", cls="btn btn--ghost btn--xs")) if error else ()),
         id=dom_id, cls="editable-cell editable-cell--editing", onkeydown=restore,
-        hx_trigger="change, submit", **_save_attrs(view))
+        hx_trigger="submit" if view.changes else "change, submit", **_save_attrs(view, change=view.changes))
 
 
 def saved(view: FundView, target: str) -> tuple:
