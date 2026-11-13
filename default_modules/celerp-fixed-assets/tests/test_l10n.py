@@ -19,6 +19,7 @@ from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _finalize, _sell
 from ui.i18n import refusal_text
+from shipped_sources import SHIPPED_ROOTS
 
 D = Decimal
 ZZ_MODULE = "celerp_l10n_zz"
@@ -254,7 +255,7 @@ def test_no_country_rules_in_core():
     repo = PACKAGE.parents[2]
     for module in sorted(p for p in (repo / "default_modules").iterdir() if (p / "__init__.py").exists()):
         assert "fixed_asset_rules" not in (loader.read_manifest(module).get("slots") or {}), module.name
-    shipped = [p for root in (repo / "celerp", repo / "default_modules") for p in root.rglob("*.json")
+    shipped = [p for root in SHIPPED_ROOTS for p in (repo / root).rglob("*.json")
                if "tests" not in p.relative_to(repo).parts]
     assert shipped
     carrying = [str(p.relative_to(repo)) for p in shipped if "fixed_asset_classes" in p.read_text()]

@@ -198,3 +198,46 @@ def test_refused_fails_when_the_expected_sentence_is_only_part_of_the_message(dr
     screen = _Screen([])
     assert drive.refused(_browser(screen), drive.time.monotonic() + 0.05, "Your data was last opened with Celerp") == 1
     assert "(want 'Your data was last opened with Celerp')" in capsys.readouterr().out
+
+
+class _Celerp:
+    """Celerp's window on one page: the setup wizard, the login page or a signed-in page."""
+
+    def __init__(self, path):
+        self.url = f"http://127.0.0.1:5000{path}"
+        self.posted = []
+
+    def query_selector(self, selector):
+        return object() if selector == ".topbar" and not self.url.endswith(("/setup", "/login")) else None
+
+    def evaluate(self, js, *args):
+        self.posted.append(args)
+        return "302 http://127.0.0.1:5000/"
+
+    def goto(self, url):
+        self.url = url
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def _run(drive, monkeypatch, command, page):
+    chromium = types.SimpleNamespace(connect_over_cdp=lambda _url: _browser(page))
+    monkeypatch.setattr(drive, "sync_playwright", lambda: contextlib.nullcontext(types.SimpleNamespace(chromium=chromium)))
+    return drive.main(command, 9222, 60)
+
+
+def test_open_data_fails_when_setup_is_offered(drive, monkeypatch, capsys):
+    # The data the refused copy opened is gone if Celerp offers setup: open-data fails at once
+    # and creates nothing, where sign-in would set up fresh data and pass.
+    setup = _Celerp("/setup")
+    started = drive.time.monotonic()
+    assert _run(drive, monkeypatch, "open-data", setup) == 1
+    assert drive.time.monotonic() - started < 30
+    assert setup.posted == []
+    assert "setup" in capsys.readouterr().out
+    assert _run(drive, monkeypatch, "open-data", _Celerp("/dashboard")) == 0
+    # sign-in keeps setting up a fresh install.
+    fresh = _Celerp("/setup")
+    assert _run(drive, monkeypatch, "sign-in", fresh) == 0
+    assert len(fresh.posted) == 1

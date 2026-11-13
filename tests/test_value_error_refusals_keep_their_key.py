@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 from celerp.accounting_roles import Refused, refusal_detail
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +28,7 @@ def _sites() -> Counter:
     argument) in a ValueError or Exception handler that use the caught exception other than as
     ``refusal_detail(exc)``."""
     sites = Counter()
-    for path in [*(ROOT / "celerp").rglob("*.py"), *(ROOT / "default_modules").rglob("*.py"), *(ROOT / "ui").rglob("*.py")]:
+    for path in (p for root in APP_ROOTS for p in (ROOT / root).rglob("*.py")):
         for handler in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(handler, ast.ExceptHandler) or not handler.name:
                 continue

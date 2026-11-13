@@ -38,6 +38,7 @@ from test_import_navigation import _ui_request
 from test_import_upsert import _Form, _numbered_via, _staged_form
 from test_set_aside_older_paths import _net
 from ui.i18n import t
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -380,7 +381,7 @@ async def test_no_importer_stores_a_line_amount_under_a_key_no_reader_takes():
     root = Path(__file__).resolve().parents[1]
     written = re.compile(r"""["']total_price["']\s*(:|\]\s*=)""")
     offenders = [f"{path.relative_to(root)}:{n}"
-                 for base in ("celerp", "ui", "default_modules")
+                 for base in APP_ROOTS
                  for path in sorted((root / base).rglob("*.py")) if "tests" not in path.parts
                  for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
                  if written.search(line)]

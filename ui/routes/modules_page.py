@@ -29,7 +29,7 @@ import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from celerp.modules.license import PAID_MODULE_REFUSAL, marketplace_flags
 
@@ -49,6 +49,7 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
 from ui.security import not_permitted_redirect, owner_refusal
+from ui.components.encode import call, html_response, js_value, raw_html, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def _license_upsell(lang: str) -> FT:
     return Div(
         Strong(t("modules.license_move_title", lang), cls="small"),
         P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),
-        A(label, href=url, target="_blank", rel="noopener noreferrer",
+        A(label, href=safe_url(url), target="_blank", rel="noopener noreferrer",
           cls="btn btn--sm btn--primary"),
         cls="module-license-upsell",
     )
@@ -152,7 +153,7 @@ def _tabs(active: str, lang: str) -> FT:
     # The marketplace tab carries a shield badge on the left: its listings are
     # vetted (official and verified only), so the same trust mark used on the
     # rows also labels the tab.
-    badge = Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted tab-badge",
+    badge = Span(raw_html(_SHIELD_SVG), cls="trust-icon trust-icon--trusted tab-badge",
                  aria_hidden="true")
     items = [
         ("local", (t("modules.tab_local", lang),)),
@@ -179,7 +180,7 @@ def _turn_off_items(found: dict | None, lang: str):
     parts = []
     for kind, key in (("blocking", "modules.turn_off_finish_first"), ("listed", "modules.turn_off_kept")):
         if found.get(kind):
-            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=item["href"])) for item in found[kind]))]
+            parts += [Div(t(key, lang)), Ul(*(Li(A(item["label"], href=safe_url(item["href"]))) for item in found[kind]))]
     return Div(*parts, cls="module-turn-off small") if parts else ""
 
 
@@ -461,7 +462,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
               body: JSON.stringify({path: p}),
             }).then(function (r) { return r.text(); }).then(function (html) {
               var panel = document.getElementById('local-modules-panel');
-              if (panel) { panel.outerHTML = html; }  // fragment swap, no reload
+              if (panel) { panel.replaceWith(celerpFragment(html)); }  // fragment swap, no reload
             });
           });
         };
@@ -476,15 +477,13 @@ def _local_panel(modules: list[dict], lang: str = "en",
     if load_error_toasts:
         payload = [{"key": f"{n}|{e}", "msg": _load_error_message(lbl, e, lang)}
                    for n, lbl, e in load_error_toasts]
-        errors_json = json.dumps(payload).replace("</", "<\\/")
         load_error_js = Script(
-            "(function(){if(!window.celerpToast)return;"
-            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{};"
-            "var errs=" + errors_json + ";"
-            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown[x.key])return;"
-            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);});"
-            "})();"
-        )
+            "(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);if(!window.celerpToast)return;"
+            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||new Set();"
+            "var errs=CFG.errs;"
+            "errs.forEach(function(x){if(window.__moduleLoadErrorsShown.has(x.key))return;"
+            "window.__moduleLoadErrorsShown.add(x.key);celerpToast(x.msg,'error',true);});"
+            "})();", data_cfg=js_value({'errs': payload}))
     else:
         load_error_js = ""
 
@@ -545,7 +544,7 @@ def _restarting_panel(lang: str, panel_id: str = "local-modules-panel") -> FT:
               return;
             }
             fetch('/', {cache: 'no-store'}).then(function (r) {
-              if (r.ok) { window.location = '/modules'; } else { setTimeout(poll, 1500); }
+              if (r.ok) { celerpGo('/modules'); } else { setTimeout(poll, 1500); }
             }).catch(function () { setTimeout(poll, 1500); });
           }, 2500);
         })();
@@ -568,7 +567,7 @@ _SHIELD_SVG = (
 
 def _trust_icon(tier: str, lang: str):
     tip = t("marketplace.official_tip", lang) if tier == "official" else t("marketplace.verified_tip", lang)
-    return Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
+    return Span(raw_html(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -581,7 +580,7 @@ def _source_icon(is_default: bool, lang: str):
     if not is_default:
         return None
     tip = t("modules.source_default", lang)
-    return Span(NotStr(_SHIELD_SVG),
+    return Span(raw_html(_SHIELD_SVG),
                 cls="module-source-icon trust-icon trust-icon--default",
                 title=tip, aria_label=tip, role="img")
 
@@ -639,7 +638,7 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
     # The Stripe URL is only known on the FIRST render (from /modules/buy). On a
     # re-poll (url is None) we keep waiting without a stale reopen link.
     if url:
-        actions.insert(0, A(t("marketplace.open_checkout", lang), href=url, target="_blank",
+        actions.insert(0, A(t("marketplace.open_checkout", lang), href=safe_url(url), target="_blank",
                             rel="noopener noreferrer", cls="btn btn--sm btn--secondary"))
 
     parts = [
@@ -661,10 +660,7 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
     if url:
         # First render only: open Checkout in the external browser, and wire Esc to
         # cancel. Attached to document once so it isn't re-added on every re-poll.
-        parts.append(Script(
-            f"(function(){{var u={_json.dumps(url)};"
-            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
-            f"else{{window.open(u,'_blank');}}}})();"))
+        parts.append(Script(call("celerpOpenExternal", url)))
         parts.append(Script("""
         (function () {
           if (window.__celerpBuyEsc) return;
@@ -748,15 +744,15 @@ def _marketplace_module_cell(m: dict, lang: str) -> FT:
     if m.get("description"):
         parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
-        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", str(m["data_access"]), cls="community-disclosure"))
     if m.get("network_calls"):
-        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
-    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", str(m["network_calls"]), cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = [A(t("marketplace.view_page", lang),
-               href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
+               href=safe_url(m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}"),
                target="_blank", rel="noopener noreferrer")]
     if m.get("feedback"):
-        links.append(A(t("marketplace.feedback", lang), href=m["feedback"],
+        links.append(A(t("marketplace.feedback", lang), href=safe_url(m["feedback"]),
                        target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
     return Td(*parts, data_filter_value=m["name"], cls="module-cell")
@@ -918,17 +914,17 @@ def _community_module_cell(m: dict, lang: str) -> FT:
     if m.get("description"):
         parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
-        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", str(m["data_access"]), cls="community-disclosure"))
     if m.get("network_calls"):
-        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
-    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", str(m["network_calls"]), cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = []
     if source := catalog.source_url(m):
-        links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.view_source", lang), href=safe_url(source), target="_blank", rel="noopener noreferrer"))
     if m.get("repo"):
-        links.append(A(t("marketplace.report_bug", lang), href=m["repo"] + "/issues", target="_blank", rel="noopener noreferrer"))
+        links.append(A(t("marketplace.report_bug", lang), href=safe_url(m["repo"] + "/issues"), target="_blank", rel="noopener noreferrer"))
     links.append(A(t("marketplace.feedback", lang),
-                   href=m.get("feedback") or "https://github.com/celerp/community-modules/discussions",
+                   href=safe_url(m.get("feedback") or "https://github.com/celerp/community-modules/discussions"),
                    target="_blank", rel="noopener noreferrer"))
     parts.append(Div(*links, cls="marketplace-card__links"))
     return Td(*parts, data_filter_value=m["name"], cls="module-cell")
@@ -987,12 +983,12 @@ def _load_error_message(label: str, error: str, lang: str) -> str:
     return t("modules.load_failed", lang, label=label, error=error)
 
 
-def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResponse:
+def _toast(fragment: FT, message: str | None, *, error: bool = True) -> Response:
     """Swap the fragment in place and surface the message as a corner toast, the
     app-wide notice surface, rather than crowding the fragment itself. A None
     message swaps silently."""
     headers = toast_header(message, "error" if error else "success") if message else {}
-    return HTMLResponse(to_xml(fragment), headers=headers)
+    return html_response(fragment, headers=headers)
 
 
 def _close_gate_host() -> FT:
@@ -1184,7 +1180,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return HTMLResponse("", headers={"HX-Refresh": "true"})
+        return html_response((), headers={"HX-Refresh": "true"})
 
     @app.post("/modules/{module_name}/enable")
     async def module_enable(request: Request, module_name: str):
@@ -1433,7 +1429,7 @@ def setup_routes(app):
             catalog.discard_staged_archive(module_id, download_token)
         except OSError:
             pass
-        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
+        return html_response((), headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
@@ -1469,7 +1465,7 @@ def setup_routes(app):
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True,
                                 owner=await api.installation_owner(token))
-        resp = HTMLResponse(to_xml(_restarting_panel(lang, panel_id="local-modules-panel")))
+        resp = html_response(_restarting_panel(lang, panel_id="local-modules-panel"))
         if new:
             set_session_cookies(resp, new[0], new[1], request)
         return resp
@@ -1611,7 +1607,7 @@ def setup_routes(app):
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than
         # leaving the user on the catalog row.
-        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
+        return html_response((), headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):

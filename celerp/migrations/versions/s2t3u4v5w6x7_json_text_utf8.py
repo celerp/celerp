@@ -1,10 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""On a SQL_ASCII database, every json value an earlier version stored with characters past
-ASCII written as \\u escapes is rewritten to hold them as UTF-8 text, the form every engine
-now writes (dump_json): such a database cannot read the escapes back, so a query or index on
-that value failed. It is the first revision after the release, so it runs before any later
-one reads a json value. Any other encoding, or a database without such values, is left as it is.
+"""Every json value an earlier version stored with characters past ASCII written as \\u
+escapes is rewritten to hold them as UTF-8 text, the form every engine now writes (dump_json):
+a SQL_ASCII database cannot read the escapes back, so a query or index on that value failed. It
+is the first revision after the release, so it runs before any later one reads a json value.
+When it was released it rewrote SQL_ASCII databases only; u4v5w6x7y8z9 runs the same rewrite
+again for the UTF8 installs that passed it.
 
 Revision ID: s2t3u4v5w6x7
 Revises: n9b0c1d2e3f4

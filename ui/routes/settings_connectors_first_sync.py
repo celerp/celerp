@@ -15,6 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 from ui.components.activity import fmt_price, fmt_qty, relative_time
 from ui.i18n import get_lang, refusal_text, t
+from ui.components.encode import html_response
 
 
 # The preview's tables, in the order its tabs show them.
@@ -423,8 +424,7 @@ def setup_first_sync_routes(app) -> None:
         except APIError as exc:
             # The preview is read again with the refusal, so a preview that changed shows
             # its new version, to review and start again.
-            return Response(to_xml(Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")),
-                            media_type="text/html", headers={"HX-Trigger": "connectorDirectionsChanged"})
+            return html_response(Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning"), headers={"HX-Trigger": "connectorDirectionsChanged"})
         return Response(status_code=204, headers={"HX-Redirect": f"/settings/connectors/{platform}"})
 
     @app.post("/settings/connectors/{platform}/first-sync/retry")

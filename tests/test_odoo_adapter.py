@@ -38,6 +38,7 @@ from migration_support import count, load_run, maker, real_engine, recognition_p
 from test_helpers import fastest_cpu_seconds
 from test_migration_e2e import _passing, migrate_set
 from ui.i18n import t
+from shipped_sources import CORE_ROOT, REPO, shipped_sources
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 CUTOVER = date(2024, 2, 29)
@@ -279,10 +280,8 @@ def test_what_decoding_json_holds_is_never_more_than_its_measure(shape):
 def _parameters_no_caller_passes() -> list[str]:
     """Every parameter with a default, of a function in the Odoo adapter, that no call in the app
     passes a value for. Passing on a parameter of one's own counts only once that one is passed."""
-    import celerp
-
-    root = Path(celerp.__file__).parent
-    trees = {path: ast.parse(path.read_text(encoding="utf-8")) for path in root.rglob("*.py")}
+    root = REPO / CORE_ROOT
+    trees = {path: ast.parse(path.read_text(encoding="utf-8")) for _rel, path in shipped_sources()}
     calls = []   # (the call, the parameters of the function it is made in)
     for tree in trees.values():
         for fn in ast.walk(tree):

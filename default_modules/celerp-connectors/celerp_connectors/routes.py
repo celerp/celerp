@@ -28,6 +28,7 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
+from ui.components.encode import inert_media_type
 
 log = logging.getLogger(__name__)
 
@@ -76,9 +77,9 @@ async def connector_media(token: str, request: Request):
         raise HTTPException(status_code=404, detail="Not found")
     headers = {"Cache-Control": "no-store", "Content-Length": str(size)}
     if request.method == "HEAD":
-        return Response(media_type=media.mime, headers=headers)
+        return Response(media_type=inert_media_type(media.mime), headers=headers)
     return StreamingResponse(company_file_chunks(media.company_id, media.url, _MEDIA_READ_BYTES),
-                             media_type=media.mime, headers=headers)
+                             media_type=inert_media_type(media.mime), headers=headers)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -196,6 +197,24 @@ async def _ready_config(session: AsyncSession, company_id, connector):
     return config
 
 
+async def _manual_sync(session: AsyncSession, company_id, connector, entity: str):
+    """Sync ``entity`` now for a person, after the request's transaction ends (the sync's
+    transactions begin inside its execution), answering a failure as the person sees it."""
+    from celerp.connectors.sync_runner import run_sync
+
+    await session.commit()
+    try:
+        with _execution_refusals(connector):
+            return await run_sync(connector, company_id, entity, purpose="manual_sync")
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=refusal_detail(exc))
+    except Exception as exc:
+        log.exception("connector sync error: %s/%s", connector.name, entity)
+        raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[ConnectorInfo])
@@ -238,21 +257,7 @@ async def trigger_sync(
         )
 
     await _ready_config(session, company_id, connector)
-    # The sync's transactions begin inside its execution.
-    await session.commit()
-
-    from celerp.connectors.sync_runner import run_sync
-    try:
-        with _execution_refusals(connector):
-            result = await run_sync(connector, company_id, payload.entity.value, purpose="manual_sync")
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=refusal_detail(exc))
-    except Exception as exc:
-        log.exception("connector sync error: %s/%s", connector_name, payload.entity)
-        raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
-
+    result = await _manual_sync(session, company_id, connector, payload.entity.value)
     return SyncResponse(
         connector=connector_name,
         entity=result.entity,
@@ -768,6 +773,16 @@ class ReconciledRequest(BaseModel):
     signature: str
 
 
+def _set_held_order_decision(entry: dict, *, reconciled: bool = False, import_next: str | None = None) -> None:
+    """The one writer of a person's decision on an attention entry (Mark reconciled, Undo,
+    Import as). Each decision replaces every earlier one, so the sync acts only on the last
+    thing the person chose: an Undo or a mark never leaves an older Import as waiting."""
+    entry["reconciled"] = reconciled
+    entry.pop("import_next", None)
+    if import_next is not None:
+        entry["import_next"] = import_next
+
+
 async def _set_order_reconciled(
     session: AsyncSession, company_id, order_id: str, signature: str | None, actor_id,
 ) -> dict:
@@ -793,7 +808,7 @@ async def _set_order_reconciled(
             )
         if signature is not None and entry["signature"] != signature:
             raise HTTPException(status_code=409, detail=_order_changed())
-        entry["reconciled"] = signature is not None
+        _set_held_order_decision(entry, reconciled=signature is not None)
 
     entry = await update_attention_entry(
         session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
@@ -801,11 +816,13 @@ async def _set_order_reconciled(
     if entry is None:
         raise HTTPException(status_code=404, detail=t("error.order_no_attention"))
     try:
-        await set_woocommerce_order_reconciled(
-            session, str(company_id), order_id,
-            signature=entry["signature"], reconciled=signature is not None,
-            reason=entry.get("reason"), actor_id=actor_id,
-        )
+        # An order whose number another record holds was never imported: the list holds its mark.
+        if not entry.get("number_held"):
+            await set_woocommerce_order_reconciled(
+                session, str(company_id), order_id,
+                signature=entry["signature"], reconciled=signature is not None,
+                reason=entry.get("reason"), actor_id=actor_id,
+            )
     except WooCommerceReconciliationChanged as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=_order_changed()) from exc
@@ -828,6 +845,52 @@ async def mark_order_reconciled(
     """A person reconciled this order change by hand; the import leaves the
     order alone until WooCommerce changes it again."""
     return await _set_order_reconciled(session, company_id, order_id, payload.signature, user.id)
+
+
+@router.post("/woocommerce/orders/{order_id}/import-next")
+async def import_order_under_next_number(
+    order_id: str,
+    payload: ReconciledRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Import an order whose number another record holds under the next free WOO-<n>-<k>,
+    now, answering the number it took and its document; the order's own reason when it still
+    waits on a person. ``payload.signature`` is the order state the person reviewed: the choice
+    is stored with it, and the sync imports under the next number only while the order in
+    WooCommerce still has that state."""
+    from celerp import connectors
+    from celerp.connectors.sync_runner import attention_entries, update_attention_entry
+    from celerp.models.projections import Projection
+    from celerp.services.company_lock import lock_company
+
+    require_on(await company_settings(company_id), "celerp-docs")
+    if not order_id.isdigit():
+        raise HTTPException(status_code=422, detail="order_id must be a WooCommerce order number")
+    connector = connectors.get("woocommerce")
+    await _ready_config(session, company_id, connector)
+    await lock_company(session, uuid.UUID(str(company_id)))
+
+    def _apply(entry: dict) -> None:
+        if not entry.get("number_held"):
+            raise HTTPException(status_code=409, detail=t("error.order_number_not_held"))
+        if entry.get("signature") != payload.signature:
+            raise HTTPException(status_code=409, detail=_order_changed())
+        _set_held_order_decision(entry, import_next=payload.signature)
+
+    if await update_attention_entry(
+        session, str(company_id), "woocommerce", SyncEntity.ORDERS.value, order_id, _apply
+    ) is None:
+        raise HTTPException(status_code=404, detail=t("error.order_no_attention"))
+    await _manual_sync(session, company_id, connector, SyncEntity.ORDERS.value)
+    entity_id = f"doc:woocommerce:order:{order_id}"
+    doc = await session.get(Projection, {"company_id": uuid.UUID(str(company_id)), "entity_id": entity_id})
+    if doc is not None:
+        return {"number": (doc.state or {}).get("ref_id"), "doc_id": entity_id}
+    waiting = next((e for e in await attention_entries(str(company_id), "woocommerce", SyncEntity.ORDERS.value)
+                    if str(e.get("id")) == order_id), None)
+    raise HTTPException(status_code=409, detail=waiting["reason"] if waiting else t("error.order_no_attention"))
 
 
 @router.delete("/woocommerce/orders/{order_id}/reconciled")

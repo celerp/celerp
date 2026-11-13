@@ -12,13 +12,16 @@ in-page position alone, so the correct stored line is edited.
 
 from __future__ import annotations
 
+from html import unescape
 import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
-from test_helpers import make_test_token
+from test_helpers import make_test_token, script_cfg
+
+_CAN_EDIT_LINES = "window._CELERP_CAN_EDIT_LINES = _CELERP_CFG.canEditLines"
 
 
 _PAGE_LIMIT = 100
@@ -211,7 +214,7 @@ async def test_finalized_audit_pager_swaps_without_saving(ui_app):
     pager = _pager_html(r.text)
     assert "celerpPageNav" not in pager, "finalized audit paging must not save draft lines"
     assert 'hx-get="/lists/list:aud?offset=100&amp;limit=100"' in pager
-    assert "window._CELERP_CAN_EDIT_LINES = false" in r.text
+    assert script_cfg(r.text, _CAN_EDIT_LINES)["canEditLines"] is False
 
 
 @pytest.mark.asyncio
@@ -226,8 +229,8 @@ async def test_draft_list_pager_saves_first(ui_app):
             c.cookies.update(_cookies())
             r = await c.get("/lists/list:big")
     assert r.status_code == 200, r.text
-    assert "celerpPageNav(this.getAttribute('href'))" in _pager_html(r.text)
-    assert "window._CELERP_CAN_EDIT_LINES = true" in r.text
+    assert 'celerpPageLink(this,event,"celerpPageNav")' in unescape(_pager_html(r.text))
+    assert script_cfg(r.text, _CAN_EDIT_LINES)["canEditLines"] is True
 
 
 def _tbody_offsets(page_mock: AsyncMock) -> list[int]:

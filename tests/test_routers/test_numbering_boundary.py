@@ -28,6 +28,7 @@ from test_tax_acceptance_matrix import _demo_company
 from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
 from ui.routes.documents import _doc_detail
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -771,6 +772,87 @@ async def test_the_number_a_padded_key_holds_is_shown_nowhere(client, session):
     assert KEY_FIELD not in json.dumps(app.openapi())
 
 
+async def test_blank_number_finds_nothing(client, session):
+    """A number that is blank once stripped names no record on either lookup, even while a
+    Document and a List hold an emptied number; an empty one is refused by the query."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    doc = (await _quote_doc(client, h, contacts)).json()["id"]
+    lst = await _list(client, h, contacts, "quotation")
+    for kind, eid in (("docs", doc), ("lists", lst)):
+        r = await client.patch(f"/{kind}/{quote(eid)}", headers=h,
+                               json={"fields_changed": {"ref_id": {"old": None, "new": "  "}}})
+        assert r.status_code < 300, r.text
+        assert (await client.get(f"/{kind}/{quote(eid)}", headers=h)).json()["ref_id"] == ""
+    for kind in ("docs", "lists"):
+        for blank in (" ", "\t", "\xa0", "\u3000"):
+            r = await client.get(f"/{kind}/numbered", headers=h, params={"number": blank})
+            assert r.status_code == 200, r.text
+            assert r.json()["ids"] == [], (kind, repr(blank), r.text)
+        assert (await client.get(f"/{kind}/numbered", headers=h, params={"number": ""})).status_code == 422
+
+
+async def test_padded_key_is_absent_from_every_json_body(client, session, monkeypatch):
+    """No JSON body shows KEY_FIELD: every GET route of the app is called with a padded-key
+    Document and List in its path ids and their number as the search text, and so is the
+    renumber door. A new door anywhere in the app, search and agent routes included, is
+    walked here without being listed."""
+    import re
+    from celerp.config import settings
+
+    # The relay-backed settings and footer reads take their unreachable path on this machine.
+    monkeypatch.setattr(settings, "gateway_http_url", "http://127.0.0.1:9")
+    # Search answers through every bundled module's provider, as a booted app registers them.
+    from celerp.modules import slots
+    from celerp.modules.loader import read_manifest
+    manifests = {pkg.name: read_manifest(pkg) for pkg in sorted((_REPO / "default_modules").iterdir()) if pkg.is_dir()}
+    providers = [provider | {"_module": name, "_first_party": True} for name, m in manifests.items()
+                 if (provider := (m.get("slots") or {}).get("search_provider"))]
+    monkeypatch.setitem(slots._slots, "search_provider", providers)
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    n = f"PADK-{uuid.uuid4().hex[:4].upper()}"
+    keys = {}
+    for kind in ("doc", "list"):
+        number = f"{n}{kind[0].upper()}"
+        keys[kind] = f"{kind}:\xa0{number}\xa0"
+        await emit_event(session, company_id=auth["company_id"], entity_id=keys[kind], entity_type=kind,
+                         event_type=f"{kind}.created", data=_imported(kind, keys[kind], number)["data"],
+                         actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    for kind, key in keys.items():
+        state = (await session.get(Projection, (auth["company_id"], key), populate_existing=True)).state
+        assert state.get(KEY_FIELD), (kind, state)
+
+    shown: dict[str, int] = {}
+    leaks = []
+    for path, ops in app.openapi()["paths"].items():
+        if "get" not in ops:
+            continue
+        kind = "list" if path.startswith("/lists") else "doc"
+        url = re.sub(r"\{[^}]+\}", quote(keys[kind], safe=""), path)
+        for params in ({}, {"q": n, "number": n}):
+            r = await client.get(url, headers=h, params=params)
+            shown[f"{path} {params}"] = r.status_code
+            if KEY_FIELD in r.text:
+                leaks.append(f"GET {path} {params}")
+    # Renumber answers twice over: with the new number, and unchanged when it is the same.
+    for attempt in ("new number", "same number"):
+        r = await client.post(f"/docs/{quote(keys['doc'], safe='')}/renumber", headers=h,
+                              json={"ref_id": f"{n}-R"})
+        shown[f"POST renumber {attempt}"] = r.status_code
+        if KEY_FIELD in r.text:
+            leaks.append(f"POST /docs/{{entity_id}}/renumber ({attempt})")
+    # The walk reached the records: each door that shows them answered.
+    for door in ("/docs {}", "/docs/{entity_id} {}", "/lists/{entity_id} {}", "/search {'q': '%s', 'number': '%s'}" % (n, n)):
+        assert shown.get(door) == 200, (door, shown.get(door))
+    assert shown["POST renumber new number"] == shown["POST renumber same number"] == 200
+    # Search reached both records through the docs provider, so its rows were walked too.
+    found = json.dumps((await client.get("/search", headers=h, params={"q": n})).json())
+    assert all(json.dumps(key)[1:-1] in found for key in keys.values()), found[:300]
+    assert not leaks, leaks
+
+
 @pytest.mark.parametrize("door", _DOORS)
 async def test_a_number_that_is_not_text_is_refused_and_a_blank_one_is_stored_empty(client, session, door):
     """A number that is not text is refused through every door. A number of nothing but spaces
@@ -881,7 +963,6 @@ _NOT_A_RECORD_NUMBER = {
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_shopify"),
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_quickbooks"),
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_xero"),
-        ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_woocommerce"),
     },
     "a bill taking back the number of the order it was, which no other record holds (number_holder)": {
         ("celerp-docs/celerp_docs/routes.py", "revert_doc_to_draft"),
@@ -908,7 +989,7 @@ def _own_nodes(fn):
             todo.extend(ast.iter_child_nodes(node))
 
 
-def _app_functions(roots=("celerp", "default_modules", "ui")):
+def _app_functions(roots=APP_ROOTS):
     """(file, function node) for every function of the app under ``roots``, tests left out."""
     for path in sorted(_REPO.rglob("*.py")):
         rel = path.relative_to(_REPO)
@@ -1067,6 +1148,10 @@ _REFUSAL_WAY_OUT = {
     (f"{_DOCS}/routes.py", "import_list"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/routes.py", "batch_import_lists"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/import_service.py", "create_imported_doc"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/doc_service.py", "upsert_order_from_woocommerce"): (
+        "user", "the WOO- number the order's attention line settles: Mark reconciled or Import as WOO-<n>-<k>"),
+    (f"{_DOCS}/doc_service.py", "_woocommerce_order_number"): (
+        "system", "the WOO- number composed from a store order: held elsewhere, the order waits on a person"),
     (f"{_DOCS}/routes.py", "revert_doc_to_draft"): (
         "system", "the order number a bill was converted from: held elsewhere, the bill stays a bill"),
 }
@@ -1156,7 +1241,7 @@ def _map_census() -> list[tuple[str, str, str, str]]:
     rows = []
     for path in sorted(_REPO.rglob("*.py")):
         rel = str(path.relative_to(_REPO))
-        if rel.split("/")[0] not in {"celerp", "default_modules", "ui"} or "/tests/" in rel or "/test_" in rel:
+        if rel.split("/")[0] not in APP_ROOTS or "/tests/" in rel or "/test_" in rel:
             continue
         tree = ast.parse(path.read_text())
         owner = {}

@@ -28,9 +28,10 @@ from connector_test_support import connect, connector_session, stand_in_executio
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
 from ui.i18n import refusal_text, t
 from test_helpers import merge_items
+from shipped_sources import APP_ROOTS
 
 REPO = Path(__file__).resolve().parents[1]
-PRODUCTION_ROOTS = ("celerp", "ui", "default_modules")
+PRODUCTION_ROOTS = APP_ROOTS
 SESSION_TOKEN = "test-session-token-channel-links"
 LIVE_SHOPIFY = {"product_id": "9001", "variant_id": "9002", "sync_enabled": True}
 LIVE_WOO = {"product_id": "77", "sync_enabled": True}

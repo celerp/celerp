@@ -322,7 +322,7 @@ class TestPickedPageSize:
         panel = re.search(r'<form[^>]*id="list-filters".*?</form>', r.text, re.S).group(0)
         assert re.search(r'<form[^>]*action="/lists"[^>]*method="get"', panel)
         select = re.search(r'<select name="type"[^>]*>.*?</select>', panel, re.S).group(0)
-        assert "submit()" in select and "hx-get" not in select
+        assert "celerpSubmitWithout(this," in select and "hx-get" not in select
         assert re.findall(r'<option value="([^"]*)"', select) == ["", "quotation", "transfer", "audit", "writeoff", "shipping_doc"]
         assert re.search(r'<option value="audit" selected>', select)
 
@@ -342,7 +342,7 @@ class TestPickedPageSize:
         status = re.search(r'<input type="hidden" name="status"[^>]*>', panel).group(0)
         assert "list-status-filter" in status
         select = re.search(r'<select name="type"[^>]*>', panel).group(0)
-        assert ".list-status-filter" in select and "submit()" in select
+        assert 'celerpSubmitWithout(this,".list-status-filter,' in select
         assert re.search(r'<input type="date" name="from" value="2026-01-01"', panel)
         assert re.search(r'<input type="date" name="to" value="2026-01-31"', panel)
         assert re.search(r'<input[^>]*name="q"[^>]*value="abc"', panel)

@@ -13,6 +13,7 @@ from fasthtml.common import *
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.i18n import t
+from ui.components.encode import safe_url
 
 
 async def supported_sources() -> list[str]:
@@ -30,7 +31,7 @@ def _option_row(icon: str, title: str, desc: str, href: str, *extra) -> FT:
     return Div(
         Div(
             Span(icon, cls="start-option-icon", aria_hidden="true"),
-            A(title, href=href, cls="auth-link start-option-title"),
+            A(title, href=safe_url(href), cls="auth-link start-option-title"),
             cls="start-option-head",
         ),
         P(desc, cls="start-option-desc"),

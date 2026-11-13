@@ -40,6 +40,7 @@ from celerp.connectors.base import (
     store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
+from celerp.models.projections import strip_number
 from celerp.modules.boundary import needs_modules
 
 log = logging.getLogger(__name__)
@@ -148,9 +149,9 @@ class QuickBooksConnector(ConnectorBase):
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
         """Invoice, customer and item ids repeat across companies, so a sampled
-        invoice counts only when its number and total match what was imported,
-        a sampled customer only when its contact details do, and a sampled item
-        only when its SKU or name does."""
+        invoice counts only when its number (both stripped, as a record stores
+        it) and total match what was imported, a sampled customer only when its
+        contact details do, and a sampled item only when its SKU or name does."""
         def customer_id(record: dict) -> str:
             return str((record.get("attributes") or {}).get("quickbooks_id") or "")
 
@@ -177,7 +178,7 @@ class QuickBooksConnector(ConnectorBase):
             if invoice is not None:
                 ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
                 matches.append(
-                    ref_id == record.get("ref_id")
+                    strip_number(ref_id) == strip_number(str(record.get("ref_id") or ""))
                     and abs((money(invoice.get("TotalAmt")) or 0.0) - float(record.get("total") or 0)) < 0.005
                 )
             elif customer is not None:

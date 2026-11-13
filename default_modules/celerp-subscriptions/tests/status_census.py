@@ -44,15 +44,18 @@ import ast
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from shipped_sources import APP_ROOTS, MODULE_ROOT, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions"
 API_CLIENT = ROOT / "ui" / "api_client.py"
 ACTION_VERBS = {"post", "patch", "put", "delete"}
 REDRAW = "_redrawn"
+REFUSED_REDRAW = "_refused_redrawn"
 # How a UI action route answers: a done action loads its page again with a toast (_done) or is
-# redrawn from a read after it (_redrawn); a refusal is shown where the user is.
-ANSWERS = {"_done", REDRAW, "_refused", "_action_error"}
+# redrawn from a read after it (_redrawn); a refusal is shown where the user is, alone or with
+# the views its control changed drawn again from what is stored (_refused_redrawn).
+ANSWERS = {"_done", REDRAW, REFUSED_REDRAW, "_refused", "_action_error"}
 # Every answer a UI action route may give: ANSWERS, a whole page, a step of the app's shared
 # CSV import wizard, the sign-in page, or 404 for an action it does not have.
 IMPORT_WIZARD = "ui.routes.csv_import"
@@ -156,9 +159,9 @@ def _refusal_handler(t: ast.Try) -> bool:
 
 
 def _redrawn_defs(route: ast.AST) -> list[ast.AST]:
-    """The nested functions a route hands to ``_redrawn``."""
+    """The nested functions a route hands to ``_redrawn`` or ``_refused_redrawn``."""
     passed = {a.id for c in ast.walk(route) if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
-              and c.func.id == REDRAW for a in c.args if isinstance(a, ast.Name)}
+              and c.func.id in (REDRAW, REFUSED_REDRAW) for a in c.args if isinstance(a, ast.Name)}
     return [n for n in ast.walk(route) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             and n is not route and n.name in passed]
 
@@ -474,7 +477,7 @@ class DeliverDoor:
 
 def _code_files() -> list[Path]:
     files = []
-    for top in ("celerp", "ui", "default_modules", "premium_modules"):
+    for top in (*APP_ROOTS, PREMIUM_ROOT):
         files += [p for p in (ROOT / top).rglob("*.py") if "tests" not in p.parts]
     return sorted(files)
 
@@ -560,7 +563,7 @@ class BadgeRender:
 def badge_renders() -> list[BadgeRender]:
     """Every doc_detail_badges render a bundled or premium module's manifest names."""
     rows = []
-    for top in ("default_modules", "premium_modules"):
+    for top in (MODULE_ROOT, PREMIUM_ROOT):
         for manifest in sorted((ROOT / top).glob("*/__init__.py")):
             text = manifest.read_text(encoding="utf-8")
             if '"doc_detail_badges"' not in text:

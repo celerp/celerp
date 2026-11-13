@@ -201,6 +201,10 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                 if columns_node is None and len(stmt.args) >= 3:
                     columns_node = stmt.args[2]
                 columns = _string_sequence(columns_node)
+                # A partial or operator-class index is not the plain index over the same
+                # columns, so only its name proves it.
+                if any(k.arg in ("postgresql_where", "sqlite_where", "postgresql_ops") for k in stmt.keywords):
+                    columns = ()
                 if index_name and table:
                     sigs.append(RevisionSignature(
                         rev=rev_id, kind="create_index",

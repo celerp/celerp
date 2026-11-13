@@ -26,7 +26,6 @@ from ui.routes.settings import (
     _TIMEZONES,
     _TZ_SEARCH,
     _FISCAL_MONTHS,
-    _FISCAL_VALUES,
     _tz_offset_str,
     _company_display_cell,
     _user_display_cell,
@@ -38,6 +37,7 @@ from ui.routes.settings import (
     users_tab_for,
     _password_form,
 )
+from ui.components.encode import html_response
 
 
 def _general_tabs(active: str, lang: str = "en", is_admin: bool = True, is_owner: bool = False) -> FT:
@@ -106,7 +106,7 @@ def setup_routes(app):
         )
         if status == 200:
             return page
-        return HTMLResponse(to_xml(page), status_code=status)
+        return html_response(page, status_code=status)
 
     @app.get("/settings/general")
     async def settings_general_page(request: Request):

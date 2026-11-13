@@ -17,19 +17,25 @@ from datetime import date, timedelta
 import pytest
 
 from celerp_docs.doc_money import CONVERSION_KEYS, DOC_TOTAL_FIELDS, document_money, list_money
-from celerp_docs.record_copy import conversion_of
+from celerp_docs.record_copy import RECORD_KEYS, conversion_of
 from test_consignment_in_sale import _consign, _state
 from test_tax_acceptance_matrix import _demo_company, _tax
 
 # A value of each key a source can hold, so every conversion door is handed all of CONVERSION_KEYS.
 SOURCE = {"discount": 10, "discount_type": "percentage", "shipping": 5, "doc_taxes": [_tax("VAT 7%", 7)],
-          "tax_rate": 3, "tax": 70, "currency": "USD", "payment_terms": "Net 30"}
+          "tax_rate": 3, "tax": 70, "currency": "USD"}
 # A quotation whose tax is an amount with no rate: the money rule keeps that amount as it is.
 UNRATED = [{"tax": 70}, {"tax": 70, "tax_rate": None}]
 
 
 def test_every_conversion_key_has_a_source_value():
     assert set(SOURCE) == CONVERSION_KEYS
+
+
+def test_conversion_keys_hold_no_record_keys():
+    """A key every copy already carries (RECORD_KEYS) is not listed again as a conversion key; only
+    currency is both, a money input the record snapshot also carries."""
+    assert CONVERSION_KEYS & RECORD_KEYS <= {"currency"}
 
 
 class _Reads(dict):
@@ -88,8 +94,10 @@ async def _company(client, session):
 
 
 async def _quotation_doc(client, h, cust, line) -> dict:
+    """A quotation holding every CONVERSION_KEYS value and a payment term (a RECORD_KEYS value)."""
     qid = (await _ok(await client.post("/docs", headers=h, json={
-        "doc_type": "quotation", "contact_id": cust, "line_items": [line], **SOURCE})))["id"]
+        "doc_type": "quotation", "contact_id": cust, "line_items": [line], "payment_terms": "Net 30",
+        **SOURCE})))["id"]
     return await _ok(await client.get(f"/docs/{qid}", headers=h))
 
 
@@ -116,6 +124,7 @@ async def test_a_quotation_document_converts_to_an_invoice_of_the_quoted_total_a
     _kept(inv, quote)
     for key in ("subtotal", "discount_amount", "tax", "total"):
         assert inv[key] == pytest.approx(quote[key]), key
+    assert inv["payment_terms"] == "Net 30"
     assert date.fromisoformat(inv["due_date"]) - date.fromisoformat(inv["issue_date"]) == timedelta(days=30)
 
 

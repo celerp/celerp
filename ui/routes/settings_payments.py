@@ -27,6 +27,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.cloud_gate import upgrade_banner
+from ui.components.encode import as_js
 from ui.components.module_off import module_off_page
 from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import (
@@ -73,7 +74,7 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
         Option(t("pay.deposit_default_option"), value="", selected=not deposit_account),
         *bank_account_options(bank_accounts, default_code=deposit_account or None),
         _new_opt,
-        name="stripe_deposit_account", cls="form-input", onchange=_new_js,
+        name="stripe_deposit_account", cls="form-input", onchange=as_js(_new_js),
     )
     return Div(
         P(t("pay.settings_connected"), cls="form-hint"),

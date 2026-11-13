@@ -300,24 +300,19 @@ class TestAuthRouting:
         assert b"inactivity" in r.content.lower()
 
     def test_idle_logout_js_wired_through_renderer(self):
-        """The idle timer is a template interpolated per render: the module constant
-        keeps the placeholder, and the renderer substitutes the effective minutes
-        while preserving the logout mechanics. (The deployment-aware minutes matrix
-        lives in test_idle_policy.py.)"""
-        from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_js
-        import re
-        # The module-level template is uninterpolated: the placeholder survives and
-        # no concrete "<n> * 60000" is baked in at import time.
-        assert "__IDLE_MIN__" in _IDLE_LOGOUT_JS
-        assert not re.search(r"\d+ \* 60000", _IDLE_LOGOUT_JS)
-        # The renderer fills the placeholder with an integer and keeps the mechanics.
-        js = _idle_logout_js()
-        assert "__IDLE_MIN__" not in js
-        assert re.search(r"\d+ \* 60000", js)
-        assert "/logout?reason=idle" in js
-        assert "addEventListener" in js
+        """The idle timer script is a constant that reads its timeout from its data-cfg value,
+        which the renderer fills per render in milliseconds; the logout mechanics stay in the
+        constant. (The deployment-aware minutes matrix lives in test_idle_policy.py.)"""
+        from fasthtml.common import to_xml
+
+        from test_helpers import script_cfg
+        from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_script
+        assert isinstance(script_cfg(to_xml(_idle_logout_script()), "IDLE_MS"), int)
+        assert "dataset.cfg" in _IDLE_LOGOUT_JS
+        assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
+        assert "addEventListener" in _IDLE_LOGOUT_JS
         # The timer carries the current page so login can return there
-        assert "next=" in js
+        assert "next=" in _IDLE_LOGOUT_JS
 
     def test_idle_timer_counts_scroll_in_capture_phase(self):
         """Scrolling an inner panel must reset the idle timer. Scroll events do not
@@ -512,7 +507,7 @@ class TestAuthRouting:
     async def test_health_system_returns_503_on_api_failure(self, ui_client):
         """GET /health/system when API is unreachable → 503 degraded, not fake 200."""
         import httpx
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -527,7 +522,7 @@ class TestAuthRouting:
     async def test_health_proxy_returns_503_on_api_failure(self, ui_client):
         """GET /health when API is unreachable → 503 with version key, not 404."""
         import httpx
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -545,7 +540,7 @@ class TestAuthRouting:
         mock_response = MagicMock()
         mock_response.json.return_value = {"status": "ok", "version": "1.0.9"}
         mock_response.status_code = 200
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -3216,8 +3211,7 @@ class TestDocumentPolish:
             # stays until dismissed, not an inline hint beside Send. It keeps the
             # message and the link to Web Access to connect again.
             assert "Web Access refused this computer" in content
-            assert "celerpToast(" in content
-            assert "'error',true," in content
+            assert '"error",true,{"href": "/settings/cloud"' in content
             assert "/settings/cloud" in content
             assert "Open Web Access" in content
             # The message is carried by the toast call, not rendered inline as
@@ -6011,12 +6005,13 @@ class TestItemActionRouteCompleteness:
         """Only a draft can be deleted, so stock rows carry no Delete (the bulk bar's rule)."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}]
         rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
                 {"entity_id": "item:a", "sku": "A", "status": "available"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/item:d'" in html
-        assert "/api/items/item:a'" not in html
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
+        assert 'celerpConfirmDelete(' in html and '"/api/items/item:d"' in html
+        assert '"/api/items/item:a"' not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -6034,11 +6029,15 @@ class TestItemActionRouteCompleteness:
         """data_table renders row-menu delete using onclick+htmx.ajax (same pattern as bulk ops)."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
-            "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True)))
+        assert 'celerpConfirmDelete(' in html and '"/api/items/gc:ROW-001"' in html, \
+            "row-menu delete must confirm, then DELETE /api/items/{id} (same as bulk pattern)"
+        page_js = (Path(__file__).resolve().parent.parent / "ui/static/celerp-page.js").read_text()
+        confirm_delete = page_js[page_js.index("function celerpConfirmDelete"):]
+        assert "htmx.ajax('DELETE', url" in confirm_delete[:300]
         assert 'hx-delete="/api/items/gc:ROW-001"' not in html, \
             "row-menu delete must not use hx-delete attribute (breaks in Electron via htmx:confirm)"
         assert "/api/inventory/" not in html, \
@@ -6048,10 +6047,11 @@ class TestItemActionRouteCompleteness:
         """data_table with entity_type='inventory' must still DELETE to /api/items/{id}, not /api/inventorys/{id}."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
+        assert '"/api/items/item:demo-abc123"' in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
         assert "/api/inventorys/" not in html, \
             "row-menu must never generate /api/inventorys/ (misspelled pluralized route)"
@@ -12776,7 +12776,7 @@ class TestInventoryItemDetailFixes:
         """Label-template route source must dereference tpl entries, not the translation function t."""
         src = (Path(__file__).parent.parent / "ui" / "routes" / "inventory.py").read_text()
         assert 'tpl.get("name", "Template")' in src
-        assert "celerpPrintLabel('{entity_id}','{tpl['id']}')" in src
+        assert 'str(entity_id), str(tpl["id"])' in src
         assert 't.get("name", "Template")' not in src
 
     @pytest.mark.asyncio
@@ -13638,7 +13638,9 @@ class TestSendToPurchaseOrder:
         assert line["unit"] == "box"        # purchase unit, not sell unit
 
     @pytest.mark.asyncio
-    async def test_send_to_new_po_blank_qty_when_reorder_unset(self, ui_client):
+    async def test_send_to_new_po_refuses_an_item_without_reorder_qty(self, ui_client):
+        """The API refuses a zero quantity in a whole unit, so the item is named and no PO is made
+        (never a quantity the user did not choose)."""
         item = dict(self._PO_ITEM)
         item.pop("reorder_qty")
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
@@ -13654,9 +13656,9 @@ class TestSendToPurchaseOrder:
                 content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
-        assert r.status_code == 204
-        line = mock_create.call_args[0][1]["line_items"][0]
-        assert line["quantity"] == 0  # blank/editable, never a fabricated number
+        assert r.status_code == 200
+        assert t("inv.reorder_needs_quantity", items="WIDGET") in html.unescape(r.text)
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_to_existing_po_appends_lines(self, ui_client):
@@ -15339,8 +15341,9 @@ class TestDocumentsOverhaul:
             r = await ui_client.get(
                 "/account/poll?panel=account-gate-panel&mode=email&n=3&next=doc-send")
         content = r.content.decode()
-        assert "celerp_open_send" in content
-        assert "location.reload" in content
+        assert '"reloadWith","celerp_open_send")' in content and "celerpResume(" in content
+        page_js = (Path(__file__).resolve().parent.parent / "ui/static/celerp-page.js").read_text()
+        assert "reloadWith: function (key) { sessionStorage.setItem(key, '1'); location.reload(); }" in page_js
 
         doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
@@ -16260,7 +16263,7 @@ class TestInventoryUXFixes:
         assert isinstance(result, HTMLResponse)
         # Full page with print trigger - not an HTMX fragment
         assert b"window.print()" in result.body
-        assert b"<!DOCTYPE html>" in result.body
+        assert result.body.lower().startswith(b"<!doctype html>")
 
     def test_print_bulk_helper_generates_html(self):
         """_bulk_print_preview_page returns base_shell response with template picker."""
@@ -16855,6 +16858,44 @@ class TestFilesSectionRenders:
         assert "file-tag-select" in html
         assert "file-desc" in html
         assert "Main contract" in html
+
+    def test_files_section_scripts_find_their_elements(self):
+        """Every element a files section script looks up by id is in the section, so the column
+        resize finds its table and gives its columns their drag handles. Each script reads its
+        ids from its own data-cfg; an id expression this check cannot resolve fails it."""
+        import html as _html
+        import json as _json
+        from ui.components.files import files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        page = to_xml(files_section("contact", "c1", files))
+        ids = set(re.findall(r'\bid="([^"]+)"', page))
+
+        def resolve(expr: str, cfg, body: str):
+            expr = expr.strip()
+            if expr == "JSON.parse(document.currentScript.dataset.cfg)":
+                return cfg
+            m = re.fullmatch(r"CFG\.(\w+)", expr)
+            if m:
+                return cfg[m.group(1)]
+            m = re.fullmatch(r"'([^']*)'\s*\+\s*SID", expr)
+            if m and "var SID=CFG.sid;" in body:
+                return m.group(1) + cfg["sid"]
+            raise AssertionError(f"unresolved id expression {expr!r}")
+
+        looked_up = []
+        for attrs, body in re.findall(r"<script([^>]*)>(.*?)</script>", page, re.S):
+            cfg = re.search(r"""data-cfg=(?:"([^"]*)"|'([^']*)')""", attrs)
+            if cfg:
+                cfg = _json.loads(_html.unescape(cfg.group(1) or cfg.group(2)))
+                for m in re.finditer(r"getElementById\(", body):
+                    depth, end = 1, m.end()
+                    while depth:
+                        depth += {"(": 1, ")": -1}.get(body[end], 0)
+                        end += 1
+                    looked_up.append(resolve(body[m.end():end - 1], cfg, body))
+        assert {"files-table-c1", "files-section-c1", "file-drop-zone-c1"} <= set(looked_up)
+        assert [i for i in looked_up if i not in ids] == []
 
     def test_files_section_doc_entity(self):
         """files_section with entity_type='doc' uses /docs/ URLs."""
@@ -17880,12 +17921,12 @@ class TestBackupRoutes:
         real_cls = httpx.AsyncClient
 
         def _mock_api_client(*args, **kwargs):
-            # Only the route's API client is built via httpx.AsyncClient; the test client
-            # uses the module-imported AsyncClient name, so it is unaffected by this patch.
+            # Only the route's API client is built via the local client class; the test client
+            # is a plain httpx.AsyncClient, so it is unaffected by this patch.
             kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, text=err))
             return real_cls(*args, **kwargs)
 
-        with patch("httpx.AsyncClient", _mock_api_client):
+        with patch("ui.api_client._LocalAsyncClient", _mock_api_client):
             async with ui_client as c:
                 c.cookies.update({"celerp_token": test_token})
                 r = await c.post(
@@ -19841,8 +19882,8 @@ class TestChartOfAccountsAddEdit:
             r = await ui_client.get("/settings/accounting/chart/1000/cash-flow/edit")
         assert r.status_code == 200
         body = r.content.decode()
-        assert "Escape" in body
-        assert "/settings/accounting/chart/1000/cash-flow/display" in body
+        # celerpCellKey (celerp-page.js) restores the display cell from this URL on Escape.
+        assert 'celerpCellKey(this,event,{"url": "/settings/accounting/chart/1000/cash-flow/display"' in body
 
     @pytest.mark.asyncio
     async def test_cash_flow_field_patch_saves_without_a_redirect_and_shows_the_new_value(self, ui_client):
@@ -19943,7 +19984,7 @@ class TestChartOfAccountsAddEdit:
         assert b"Account not found" in r.content
 
     @pytest.mark.asyncio
-    async def test_create_account_submit_expired_token_shows_error_banner(self, ui_client):
+    async def test_create_account_submit_expired_token_sends_to_sign_in(self, ui_client):
         create = AsyncMock(side_effect=APIError(401, "Unauthorized"))
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
@@ -19952,8 +19993,8 @@ class TestChartOfAccountsAddEdit:
                 "/settings/accounting/chart/new",
                 data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
             )
-        assert r.status_code == 200
-        assert b"Unauthorized" in r.content
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/login")
 
     @pytest.mark.asyncio
     async def test_create_account_submit_unauthenticated_redirects_login(self, ui_client):
@@ -20407,8 +20448,7 @@ class TestSharedCellUrlsAndDates:
         html = to_xml(editable_cell("eq1", "serviced_at", "2026-07-01", cell_type="date",
                                     restore_url=restore))
         assert 'type="date"' in html
-        assert "Escape" in html
-        assert restore in html
+        assert f'celerpCellKey(this,event,{{"url": "{restore}"' in html
 
     def test_display_cell_date_shows_the_day_only(self):
         from fasthtml.common import to_xml
@@ -20743,7 +20783,7 @@ async def test_module_restart_refresh_failure_still_restarts(ui_client):
         r = await ui_client.post("/modules/restart")
     assert r.status_code == 200
     # Restart proceeded: the poll-and-reload panel is returned.
-    assert "window.location = '/modules'" in r.content.decode()
+    assert "celerpGo('/modules')" in r.content.decode()
     # No new session cookie was minted on the failure path.
     set_cookie = r.headers.get("set-cookie", "")
     assert "celerp_token=" not in set_cookie

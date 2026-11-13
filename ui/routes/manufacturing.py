@@ -8,11 +8,12 @@ from decimal import Decimal
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, error_message
 import uuid
+from urllib.parse import urlencode
 
 from ui.components.operation_key import (
     kept_operation_key, operation_key_attrs, operation_key_vals, required_operation_key,
@@ -28,6 +29,7 @@ from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
 from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
+from ui.components.encode import call, EVENT, html_response, safe_url, THIS
 
 logger = logging.getLogger(__name__)
 
@@ -126,21 +128,21 @@ def _order_row(order: dict, deleted: dict[str, dict], today: str = "") -> FT:
     # so the edit fragment can prefill without a second fetch.
     due_cell = Td(
         Div(due or EMPTY, cls="editable-cell" + (" cell--alert" if overdue else ""),
-            hx_get=f"/manufacturing/runs/{rid}/edit/due_date?current={due or ''}",
+            hx_get=f"/manufacturing/runs/{rid}/edit/due_date?{urlencode({'current': due or ''})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("manufacturing.set_due_date_hint")),
         cls="cell--center",
     )
     prio_cell = Td(
         Div(_priority_badge(order.get("priority")), cls="editable-cell",
-            hx_get=f"/manufacturing/runs/{rid}/edit/priority?current={order.get('priority') or ''}",
+            hx_get=f"/manufacturing/runs/{rid}/edit/priority?{urlencode({'current': order.get('priority') or ''})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("manufacturing.set_priority_hint")),
         cls="cell--center",
     )
     src_id, src_no = order.get("source_doc_id"), order.get("source_doc_number")
     if src_id and src_no:
-        src_cell = A(src_no, href=doc_href(src_id), cls="table-link")
+        src_cell = A(src_no, href=safe_url(doc_href(src_id)), cls="table-link")
     else:
         src_cell = Span(t("manufacturing.to_stock"), cls="hint")
     return Tr(
@@ -214,7 +216,7 @@ def _demand_row(l: dict) -> FT:
     unit = l.get("unit")
     doc_type = l.get("doc_type") or ""
     doc_no = l.get("doc_number") or EMPTY
-    doc_cell = (A(doc_no, href=_doc_href(l.get("doc_id"), doc_type), cls="table-link")
+    doc_cell = (A(doc_no, href=safe_url(_doc_href(l.get("doc_id"), doc_type)), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
         # value carries the demand line (product + its document) so each makes a 1:1-linked work order.
@@ -312,7 +314,7 @@ def _wc_cell(wc_id: str, field: str, value, *, align: str = "left") -> FT:
     disp = value if value not in (None, "") else EMPTY
     return Td(
         Div(disp, cls="editable-cell",
-            hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?current={'' if value is None else value}",
+            hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?{urlencode({'current': '' if value is None else value})}",
             hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
             title=t("label.dblclick_to_edit")),
         cls=f"cell--{align}",
@@ -633,10 +635,7 @@ def setup_routes(app):
             msg, kind = t(key, n=made), "success"
         else:
             msg, kind = t("manufacturing.nothing_to_make_selected"), "info"
-        return HTMLResponse(
-            to_xml(_demand_table(lines, kept)),
-            headers=toast_header(msg, kind),
-        )
+        return html_response(_demand_table(lines, kept), headers=toast_header(msg, kind))
 
     @app.get("/manufacturing/requirements")
     async def requirements_print(request: Request):
@@ -704,7 +703,7 @@ def setup_routes(app):
             return api.refusal_response(e)
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         items += (await deleted_items(token, [i.get("item_id") for i in order.get("inputs") or []])).values()
-        return HTMLResponse(to_xml(_run_sheet_print_view(order, items, await _company_today(token))))
+        return html_response(_run_sheet_print_view(order, items, await _company_today(token)))
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
@@ -794,11 +793,8 @@ def setup_routes(app):
                                  *(w.rstrip(".") for w in why if w)]) + "."
             kind = "success" if done else "info"
         runs = _runs_for_status(orders, status)
-        return HTMLResponse(
-            to_xml(_order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token),
-                                kept_key=kept)),
-            headers=toast_header(msg, kind),
-        )
+        return html_response(_order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token),
+                                kept_key=kept), headers=toast_header(msg, kind))
 
     async def _reconcile_context(token: str, run_id: str) -> tuple[dict, list[dict]]:
         needs = await api.mfg_reconcile_needs(token, run_id)
@@ -909,12 +905,9 @@ def setup_routes(app):
         post = f"/manufacturing/runs/{run_id}/schedule"
         # ESC cancels the edit: restore the cell's display chip (innerHTML of the editable-cell)
         # without persisting. Mirrors the inventory inline-edit escape pattern.
-        escape_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','/manufacturing/runs/{run_id}/cell/{field}?current={current}',"
-            f"{{target:this.closest('.editable-cell'),swap:'innerHTML'}});"
-            f"event.preventDefault();event.stopPropagation();}}"
-        )
+        escape_js = call("celerpCellKey", THIS, EVENT, {
+            "url": f"/manufacturing/runs/{run_id}/cell/{field}?{urlencode({'current': current})}",
+            "target": ".editable-cell", "swap": "innerHTML", "stop": True})
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
                   "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}
         if field == "priority":
@@ -952,24 +945,24 @@ def setup_routes(app):
                     return P(t("error.session_expired"), cls="cell-error")
                 refused = error_message(e)  # e.g. the run closed meanwhile: say so
         table = await _incomplete_runs_table(token)
-        return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
+        return html_response(table, headers=toast_header(refused, "error")) if refused else table
 
     # ── Work Centers ──────────────────────────────────────────────────────
     async def _wc_table_response(token: str) -> FT:
-        centers, locations = [], []
         try:
             centers = (await api.list_work_centers(token)).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
-        except APIError:
-            pass
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            # Said where the table was, never an empty table; the next redraw replaces it.
+            return Div(P(error_message(e), cls="flash flash--error"), id="wc-table")
         loc_names = {l.get("id"): l.get("name") for l in locations}
         return _wc_table(centers, loc_names)
 
-    async def _wc_error_response(token: str, message: str) -> HTMLResponse:
+    async def _wc_error_response(token: str, message: str) -> Response:
         # A refused work-center action re-renders the table and says why through
         # the corner toast, rather than leaving the row silently reverted.
-        return HTMLResponse(to_xml(await _wc_table_response(token)),
-                            headers=toast_header(message, "error"))
+        return html_response(await _wc_table_response(token), headers=toast_header(message, "error"))
 
     @app.get("/manufacturing/work-centers")
     async def work_centers_page(request: Request):
@@ -983,9 +976,9 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.create_work_center(token, {"name": "New work center"})
-        except APIError:
-            # A "New work center" already exists - just refresh; the user can rename it.
-            pass
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return await _wc_error_response(token, error_message(e))
         return await _wc_table_response(token)
 
     @app.get("/manufacturing/work-centers/{wc_id}/edit/{field}")

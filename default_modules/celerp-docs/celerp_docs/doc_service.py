@@ -279,6 +279,50 @@ class WooCommerceReconciliationChanged(ValueError):
     """The order changed since the person reviewed it."""
 
 
+class WooCommerceNumberHeld(ValueError):
+    """A new WooCommerce order whose WOO- number another record holds. Celerp never numbers
+    an incoming order on its own, since the holder is often this order imported by hand and
+    a second import would book the sale and its stock twice. A person either marks this
+    ``signature`` reconciled (the holder is this order) or imports it under ``number_held``'s
+    next free number. ``detail`` is the refusal naming the holder and both ways out."""
+
+    def __init__(self, detail: dict, signature: str, number_held: dict):
+        super().__init__(detail["message"])
+        self.detail = detail
+        self.signature = signature
+        self.number_held = number_held
+
+
+async def _woocommerce_order_number(session, cid, order: dict, entity_id: str, existing_state: dict,
+                                    take_next: bool) -> str:
+    """The number a WooCommerce order is to be stored under, which the writer checks like every
+    number Celerp issues (require_number_free). An imported order keeps the number it was stored
+    under. A new one takes WOO- plus the store's number; while another record holds it, the
+    order is refused (WooCommerceNumberHeld) unless a person asked for it to take the next free
+    WOO-<n>-<k>, k from 2."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.models.projections import strip_number
+    from celerp_docs.sequences import number_holder
+
+    if existing_state.get("ref_id"):
+        return existing_state["ref_id"]
+    number = strip_number(f"WOO-{order.get('number') or order.get('id')}")
+    holder = await number_holder(session, cid, number, exclude_entity_id=entity_id)
+    if holder is None:
+        return number
+    k = 2
+    while await number_holder(session, cid, f"{number}-{k}", exclude_entity_id=entity_id):
+        k += 1
+    next_number = f"{number}-{k}"
+    if take_next:
+        return next_number
+    raise WooCommerceNumberHeld(
+        catalog_refusal("documents.err_woo_number_held", number=number, holder=holder.shown, next=next_number),
+        woocommerce_reconciliation_signature(order),
+        {"number": number, "holder": holder.shown, "holder_id": holder.entity_id, "next_number": next_number},
+    )
+
+
 async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
     """Serialize every change to one external order (webhook, sync, a person).
 
@@ -515,12 +559,15 @@ async def _notify_goods_taken(session, company_id, moved: list[dict]) -> None:
             i18n={"title": title, "body": body, "params": params})
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict, operation: str | None = None) -> str:
+async def upsert_order_from_woocommerce(company_id: str, order: dict, operation: str | None = None, *,
+                                        take_next_number: bool = False) -> str:
     """Reconcile one WooCommerce order through Celerp's canonical sales lifecycle.
 
     Draft source data may be refreshed until issuance. Once finalized, commercial
     fields are immutable: only supported lifecycle progress is applied, and a changed
     source fingerprint fails visibly rather than rewriting posted accounting.
+    ``take_next_number`` is a person's choice to import a new order whose number
+    another record holds under the next free one (_woocommerce_order_number).
     """
     from types import SimpleNamespace
 
@@ -551,6 +598,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
 
     from celerp.services.payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
     from celerp_docs.routes_payments import deposit_account, require_online_deposit_account
+    from celerp_docs.sequences import require_number_free
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
@@ -938,9 +986,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
                     f"does not reconcile to mapped subtotal/tax/shipping {mapped_total:g}"
                 )
 
+            ref_id = await require_number_free(session, cid, await _woocommerce_order_number(
+                session, cid, order, entity_id, existing_state, take_next_number), exclude_entity_id=entity_id)
             data = {
                 "doc_type": "invoice",
-                "ref_id": f"WOO-{order.get('number') or order_id}",
+                "ref_id": ref_id,
                 "status": "draft",
                 "line_items": line_items,
                 "subtotal": subtotal,

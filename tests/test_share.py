@@ -138,7 +138,8 @@ async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient
     # The link carries the address the page is read from, which the page
     # itself fills in so a relay-hosted copy points at the relay address.
     assert 'id="dp-import"' in r.text
-    assert "accept?link='+encodeURIComponent(location.origin+location.pathname)" in r.text
+    assert 'href="https://www.celerp.com/accept"' in r.text
+    assert "a.search='?link='+encodeURIComponent(location.origin+location.pathname)" in r.text
     # Brand line leads; import trails it. No direct bundle link (the accept
     # page offers the bundle as its own fallback) and no prominent CTA.
     assert r.text.index("Powered by Celerp") < r.text.index("Import into Celerp")

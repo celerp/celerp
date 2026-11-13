@@ -367,9 +367,6 @@ class BooksPatch(BaseModel):
     opening_balance_date: object = None
 
 
-_FISCAL_YEAR_STARTS = frozenset(f"{m:02d}-01" for m in range(1, 13))
-
-
 async def _check_books_change(session: AsyncSession, company_id, current: dict, key: str, value) -> object:
     """The value to store for one books setting, or a keyed refusal saying what to do."""
     from celerp.accounting_roles import refusal
@@ -393,7 +390,8 @@ async def _check_books_change(session: AsyncSession, company_id, current: dict, 
                     currency=held))
         return value
     if key == "fiscal_year_start":
-        if value not in _FISCAL_YEAR_STARTS:
+        from celerp.services.periods import FISCAL_YEAR_STARTS
+        if value not in FISCAL_YEAR_STARTS:
             raise HTTPException(status_code=422, detail=refusal(
                 "company.fiscal_year_start_invalid",
                 f"{value} is not a fiscal year start. Pick the first day of a month, as MM-01.",

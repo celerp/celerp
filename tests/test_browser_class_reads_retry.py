@@ -15,14 +15,18 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from shipped_sources import APP_ROOTS
 
 _TESTS = Path(__file__).resolve().parent
 _BROWSER_TESTS = _TESTS / "test_browser"
-_APP_DIRS = ("ui", "celerp", "default_modules")
+_APP_DIRS = APP_ROOTS
 _SCRIPT_READS = re.compile(
     r"className|classList(?!\s*\.\s*(?:add|remove|toggle|replace)\b)|getAttribute\(\s*['\"]class['\"]|activeElement")
 # Test functions whose class read cannot see a change in flight, each with the reason.
 _STABLE_READS = {
+    ("test_encoding_guard.py", "test_celerp_node_writes_text_not_markup"):
+        "it reads the class of an element its own script builds and never attaches, which neither htmx nor a "
+        "page script can reach",
     ("test_mobile_reflow.py", "_fits"):
         "the classes only label an overflowing element in the failure message; the check is its geometry",
     ("test_bulk_delete_drafts.py", "test_a_reloaded_row_matches_the_row_the_list_drew"):

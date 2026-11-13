@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from shipped_sources import APP_ROOTS
 
 _ROOT = Path(__file__).resolve().parents[2]
 _OLD = re.compile(r"\bfirst_sync_at\b|\bfirst_sync_undo\b(?!_links)")
@@ -15,7 +16,7 @@ _OLD = re.compile(r"\bfirst_sync_at\b|\bfirst_sync_undo\b(?!_links)")
 
 def test_no_code_outside_the_migrations_names_the_old_first_sync_columns():
     hits = []
-    paths = [p for d in ("celerp", "ui", "default_modules", "tests") for p in (_ROOT / d).rglob("*.py")]
+    paths = [p for d in (*APP_ROOTS, "tests") for p in (_ROOT / d).rglob("*.py")]
     for path in paths:
         rel = path.relative_to(_ROOT)
         if "migrations" in rel.parts:

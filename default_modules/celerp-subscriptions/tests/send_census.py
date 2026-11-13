@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from shipped_sources import APP_ROOTS, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parents[3]
 OWNER = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions" / "billing.py"
-SOURCE_TOPS = ("celerp", "ui", "default_modules", "premium_modules")
+SOURCE_TOPS = (*APP_ROOTS, PREMIUM_ROOT)
 OWNER_FN = "send_state"
 STATUS_READERS = {"send_state", "send_status", "send_written"}
 RAW_KEYS = {"state", "at"}

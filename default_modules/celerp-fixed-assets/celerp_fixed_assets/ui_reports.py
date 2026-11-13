@@ -39,6 +39,7 @@ from celerp_fixed_assets.ui_routes import (
     _text,
     _token,
 )
+from ui.components.encode import safe_url
 
 _BASE = "/fixed-assets/reports"
 
@@ -418,7 +419,7 @@ def _chooser(report: Report, params: dict, classes: list[dict], setup: dict, act
         fields = [_input("date_from", params["date_from"], type_="date", aria_label=t("fixed_assets.date_from")),
                   _input("date_to", params["date_to"], type_="date", aria_label=t("fixed_assets.date_to"))]
     return Form(*fields, Button(t("fixed_assets.show"), type="submit", cls="btn btn--secondary"),
-                method="get", action=action, cls="flex-row")
+                method="get", action=safe_url(action), cls="flex-row")
 
 
 def _subtitle(params: dict) -> str:
@@ -512,7 +513,7 @@ def _register_routes(app, report: Report) -> None:
 
 def _card(name: str, href: str, hint: str) -> FT:
     """A report on the index: the whole card opens it, as on the app's own Reports page."""
-    return A(Strong(name), P(hint, cls="quick-link-desc"), href=href, cls="quick-link-card")
+    return A(Strong(name), P(hint, cls="quick-link-desc"), href=safe_url(href), cls="quick-link-card")
 
 
 def setup_report_routes(app) -> None:

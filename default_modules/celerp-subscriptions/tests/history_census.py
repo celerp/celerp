@@ -27,10 +27,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import owned_fields_census  # noqa: E402
+from shipped_sources import APP_ROOTS, MODULE_ROOT, PREMIUM_ROOT
 
 ROOT = owned_fields_census.ROOT
 PACKAGE = owned_fields_census.PACKAGE
-SOURCE_TOPS = ("ui", "celerp", "default_modules", "premium_modules")
+SOURCE_TOPS = (*APP_ROOTS, PREMIUM_ROOT)
 
 # Fields History renders through its generic line, and why no describer is needed.
 GENERIC = {"status": "the generic line names the status by its label on both sides"}
@@ -73,7 +74,7 @@ def registrations() -> list[str]:
 def _module(site: str) -> str:
     path = Path(site.rsplit(":", 1)[0])
     parts = path.with_suffix("").parts
-    return ".".join(parts[2:] if parts[0] in ("default_modules", "premium_modules") else parts)
+    return ".".join(parts[2:] if parts[0] in (MODULE_ROOT, PREMIUM_ROOT) else parts)
 
 
 def describers() -> dict:

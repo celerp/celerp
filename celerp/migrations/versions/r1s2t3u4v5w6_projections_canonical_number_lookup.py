@@ -9,19 +9,25 @@ the record (strip_numbers), then the number lookup indexes are rebuilt on the ca
 expressions.
 
 A start of this version before the upgrade ran has already created the new indexes from the
-models, so a valid one is kept. Each is built without blocking writes to projections, and an
-INVALID index of the same name, what a cancelled concurrent build leaves, is rebuilt. The
-indexes on the plain lowercase expressions are dropped: no query reads them any more.
+models, so a valid one is kept. Each is built on its own without blocking writes to projections,
+and an INVALID index of the same name, what a cancelled concurrent build leaves, is rebuilt. Once
+all three are valid, the indexes on the plain lowercase expressions are dropped: no query reads
+them any more. A build that fails drops only that index and the upgrade finishes
+(build_lookup_index); the old indexes then stay, so numbering keeps an index until the next start
+builds the missing one.
 
 Revision ID: r1s2t3u4v5w6
 Revises: o0c1d2e3f4a5
 Create Date: 2026-11-10
 """
 
+import logging
+
 from alembic import op
 import sqlalchemy as sa
 
 from celerp.migrations._json_compat import update_projection_state
+from celerp.migrations._lookup_index import build_lookup_index
 from celerp.models.projections import NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN, strip_numbers
 
 revision = "r1s2t3u4v5w6"
@@ -29,18 +35,11 @@ down_revision = "o0c1d2e3f4a5"
 branch_labels = None
 depends_on = None
 
-_VALID = sa.text("SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass(:name)")
-_NAMES = ("ix_projections_canonical_number_shown", "ix_projections_canonical_number_kept",
-          "ix_projections_canonical_number_key")
+log = logging.getLogger(__name__)
+
 _UNTRIMMED = ("ix_projections_number_shown", "ix_projections_number_kept", "ix_projections_number_key")
-
-
-def _missing(name: str) -> bool:
-    """Whether *name* has to be built: no valid index of that name. An invalid one is dropped."""
-    valid = op.get_bind().execute(_VALID, {"name": name}).scalar()
-    if valid is False:
-        op.drop_index(name, table_name="projections", postgresql_concurrently=True)
-    return valid is not True
+_CANONICAL = ("ix_projections_canonical_number_shown", "ix_projections_canonical_number_kept",
+              "ix_projections_canonical_number_key")
 
 
 def _strip_numbers(state: dict, row) -> bool:
@@ -53,22 +52,26 @@ def upgrade() -> None:
                             extra_cols=("entity_id",))
     # Each index is written out so the restamp walker proves the revision by its indexes.
     with op.get_context().autocommit_block():
-        if _missing("ix_projections_canonical_number_shown"):
-            op.create_index("ix_projections_canonical_number_shown", "projections",
-                            ["company_id", NUMBER_SHOWN],
-                            postgresql_concurrently=True)
-        if _missing("ix_projections_canonical_number_kept"):
-            op.create_index("ix_projections_canonical_number_kept", "projections",
-                            ["company_id", NUMBER_KEPT],
-                            postgresql_concurrently=True)
-        if _missing("ix_projections_canonical_number_key"):
-            op.create_index("ix_projections_canonical_number_key", "projections",
-                            ["company_id", NUMBER_KEYED], postgresql_concurrently=True)
-        unbuilt = [name for name in _NAMES if op.get_bind().execute(_VALID, {"name": name}).scalar() is not True]
-        if unbuilt:
-            raise RuntimeError(f"Indexes {unbuilt} were not created successfully")
+        built = [
+            build_lookup_index("ix_projections_canonical_number_shown", "projections", lambda: op.create_index(
+                "ix_projections_canonical_number_shown", "projections", ["company_id", NUMBER_SHOWN],
+                postgresql_concurrently=True)),
+            build_lookup_index("ix_projections_canonical_number_kept", "projections", lambda: op.create_index(
+                "ix_projections_canonical_number_kept", "projections", ["company_id", NUMBER_KEPT],
+                postgresql_concurrently=True)),
+            build_lookup_index("ix_projections_canonical_number_key", "projections", lambda: op.create_index(
+                "ix_projections_canonical_number_key", "projections", ["company_id", NUMBER_KEYED],
+                postgresql_concurrently=True)),
+        ]
+        if not all(built):
+            return
+        # The superseded indexes go only once their replacements are valid. One that cannot be
+        # dropped costs index upkeep, never a lookup, so it is logged and the upgrade finishes.
         for name in _UNTRIMMED:
-            op.drop_index(name, table_name="projections", postgresql_concurrently=True, if_exists=True)
+            try:
+                op.drop_index(name, table_name="projections", postgresql_concurrently=True, if_exists=True)
+            except Exception as exc:
+                log.warning("Could not drop the superseded index %s (%s)", name, exc)
 
 
 def downgrade() -> None:
@@ -82,5 +85,5 @@ def downgrade() -> None:
         op.create_index("ix_projections_number_key", "projections",
                         ["company_id", sa.text("lower(entity_id)")], postgresql_concurrently=True,
                         if_not_exists=True)
-        for name in _NAMES:
+        for name in _CANONICAL:
             op.drop_index(name, table_name="projections", postgresql_concurrently=True, if_exists=True)

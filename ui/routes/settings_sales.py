@@ -11,6 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.encode import call, EVENT, THIS
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY
 from ui.config import COOKIE_NAME
@@ -302,8 +303,7 @@ def _numbering_input(dt: str, field: str, value: str, error: FT = "") -> FT:
     """A numbering cell open for editing, with the reason a save was refused when there is
     one: blur saves, Escape restores the saved value."""
     restore_url = f"/settings/numbering/{dt}/{field}/display"
-    esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-              f"{{target:this.closest('.editable-cell'),swap:'outerHTML'}});event.preventDefault();}}")
+    esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url, "target": ".editable-cell"})
     extra = {"type": "number", "min": "1"} if field == "next" else {"type": "text"}
     return Div(
         Input(

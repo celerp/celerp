@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -31,6 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
+from ui.components.encode import call, css_color, EVENT, html_response, inert_media_type, js_value, safe_url, THIS
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,8 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None, *
     tag_pills = []
     for tag in tags:
         v = vocab_map.get(tag)
-        pill_style = f"background:{v['color']};color:#fff" if v and v.get("color") else ""
+        tag_color = css_color(v.get("color")) if v else None
+        pill_style = f"background:{tag_color};color:#fff" if tag_color else ""
         tag_pills.append(
             Span(
                 tag,
@@ -333,7 +335,7 @@ def _financial_summary(docs: list[dict], contact_id: str = "", invoice_totals: d
         )
         content = [label_el, Div(value, cls="financial-card-value")]
         if href:
-            return A(*content, href=href, cls="financial-card financial-card--link")
+            return A(*content, href=safe_url(href), cls="financial-card financial-card--link")
         return Div(*content, cls="financial-card")
 
     ytd_filter = "&preset=this_fy"
@@ -586,13 +588,12 @@ def _contacts_bulk_toolbar() -> FT:
     return Div(
         Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
         Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
-               style="display:none",
+               style="display:none", data_zero=t("doc.0_selected"),
                onclick=(
-                   "CelerpSelection.clear();"
-                   "CelerpSelection.syncCheckboxes();"
-                   "document.getElementById('contact-bulk-count').textContent=" + _json.dumps(t("doc.0_selected")) + ";"
+                   "CelerpSelection.clear();CelerpSelection.syncCheckboxes();"
+                   "document.getElementById('contact-bulk-count').textContent=this.dataset.zero;"
                    "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
-                   "document.getElementById('contact-bulk-clear-btn').style.display='none';"
+                   "this.style.display='none';"
                    "_resetBulkActions();"
                )),
         Select(
@@ -652,14 +653,14 @@ def _contact_bulk_templates() -> FT:
       body: JSON.stringify({target_contact_id: winner.value, source_contact_ids: sources})
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (d.merged_into) {
-        window.location.href = '/contacts/' + d.merged_into;
+        celerpGo('/contacts/' + encodeURIComponent(d.merged_into));
       } else {
         var res = document.getElementById('bulk-action-result');
-        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || list.dataset.mergeFailed) + '</p>';
+        if (res) res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [d.detail || list.dataset.mergeFailed]));
       }
     }).catch(function(err) {
       var res = document.getElementById('bulk-action-result');
-      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailed + '</p>';
+      if (res) res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [list.dataset.mergeFailed]));
     });
   };
   if (window.htmx) htmx.process(list.parentElement);
@@ -748,12 +749,12 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     _role = _get_role(request)
     _can_edit = role_has_permission(_settings, _role, "edit_contacts")
     _can_import_export = role_has_permission(_settings, _role, "import_export_data")
-    _bulk_cfg = _json.dumps({
+    _bulk_cfg = {
         "selectedTpl": t("label.n_selected"),
         "confirmDelete": t("contacts.confirm_bulk_delete"),
         "deletedTpl": t("contacts.deleted_count"),
         "deleteFailed": t("contacts.delete_failed"),
-    })
+    }
     return await base_shell(
         page_header(
             label,
@@ -766,73 +767,75 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
-        Script(f"""
-(function(){{
-  var CFG = {_bulk_cfg};
-  function updateContactBulkToolbar(){{
+        Script("""
+(function(){
+  var PAGE = JSON.parse(document.currentScript.dataset.cfg);
+  var CFG = PAGE.bulk;
+  var CONTACT_TYPE = PAGE.contactType;
+  function updateContactBulkToolbar(){
     var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
     var toolbar = document.getElementById('contact-bulk-toolbar');
     var countEl = document.getElementById('contact-bulk-count');
     var clearBtn = document.getElementById('contact-bulk-clear-btn');
-    if (countEl) countEl.textContent = CFG.selectedTpl.replace('{{n}}', n);
+    if (countEl) countEl.textContent = CFG.selectedTpl.replace('{n}', n);
     if (toolbar) toolbar.classList.toggle('is-active', n > 0);
     if (clearBtn) clearBtn.style.display = n > 0 ? '' : 'none';
-  }}
-  window.contactBulkChanged = function(action){{
+  }
+  window.contactBulkChanged = function(action){
     var ctx = document.getElementById('contact-bulk-context');
-    if (ctx) ctx.innerHTML = '';
-    document.getElementById('bulk-action-result').innerHTML = '';
-    if (action === 'contact-export'){{
+    if (ctx) ctx.replaceChildren();
+    document.getElementById('bulk-action-result').replaceChildren();
+    if (action === 'contact-export'){
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
-      var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
-      window.location.href = '/contacts/{contact_type}s/export/csv?' + qs;
+      var qs = ids.map(function(id){return 'selected=' + encodeURIComponent(id);}).join('&');
+      celerpGo('/contacts/' + CONTACT_TYPE + 's/export/csv?' + qs);
       return;
-    }}
-    if (action === 'delete'){{
-      celerpConfirm(CFG.confirmDelete).then(function(yes){{ if (!yes) return;
+    }
+    if (action === 'delete'){
+      celerpConfirm(CFG.confirmDelete).then(function(yes){ if (!yes) return;
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
-      fetch('/crm/contacts/bulk/delete', {{
+      fetch('/crm/contacts/bulk/delete', {
         method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{contact_ids: ids}})
-      }}).then(function(r){{ return r.json(); }}).then(function(d){{
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({contact_ids: ids})
+      }).then(function(r){ return r.json(); }).then(function(d){
         var res = document.getElementById('bulk-action-result');
-        if (d.deleted !== undefined){{
-          res.innerHTML = '<p class="flash flash--success">' + CFG.deletedTpl.replace('{{n}}', d.deleted) + '</p>';
-          setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
-        }} else {{
-          res.innerHTML = '<p class="flash flash--error">' + (d.detail || CFG.deleteFailed) + '</p>';
-        }}
-      }}).catch(function(err){{
-        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailed + '</p>';
-      }});
-      }});
+        if (d.deleted !== undefined){
+          res.replaceChildren(celerpNode('p', {'class': 'flash flash--success'}, [CFG.deletedTpl.replace('{n}', d.deleted)]));
+          setTimeout(function(){ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }, 800);
+        } else {
+          res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [d.detail || CFG.deleteFailed]));
+        }
+      }).catch(function(err){
+        document.getElementById('bulk-action-result').replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [CFG.deleteFailed]));
+      });
+      });
       return;
-    }}
-    if (action === 'contact-merge'){{
+    }
+    if (action === 'contact-merge'){
       var tpl = document.getElementById('tpl-contact-merge');
       if (!tpl || !ctx) return;
       var clone = tpl.content.cloneNode(true);
       ctx.appendChild(clone);
       if (window.htmx) htmx.process(ctx);
       return;
-    }}
-  }};
+    }
+  };
   // Hook into CelerpSelection updates
-  document.body.addEventListener('htmx:afterSwap', function(e){{
-    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){{
+  document.body.addEventListener('htmx:afterSwap', function(e){
+    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){
       if (typeof CelerpSelection !== 'undefined') CelerpSelection.syncCheckboxes();
       updateContactBulkToolbar();
-    }}
-  }});
-  document.addEventListener('change', function(e){{
+    }
+  });
+  document.addEventListener('change', function(e){
     if (e.target && e.target.classList.contains('row-select')) updateContactBulkToolbar();
-  }});
+  });
   document.body.addEventListener('celerpSelectionClear', updateContactBulkToolbar);
   updateContactBulkToolbar();
-}})();
-"""),
+})();
+""", data_cfg=js_value({'bulk': _bulk_cfg, 'contactType': contact_type})),
         title=page_title(f"nav.{nav_key}"),
         nav_active=nav_key,
         request=request,
@@ -888,28 +891,30 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         if contact_name in {_placeholder_name(kind) for kind in _PLACEHOLDER_KEYS} else ""
     )
 
-    delete_btn = "" if (is_deleted or not show_delete) else Script(f"""
-(function(){{
+    delete_btn = "" if (is_deleted or not show_delete) else Script("""
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var FAILED = CFG.failed;
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
-  btn.addEventListener('click', function(){{
-    celerpConfirm({_json.dumps(t("contacts.confirm_delete_contact"))}).then(function(yes){{ if (!yes) return;
-    fetch('/crm/contacts/bulk/delete', {{
+  btn.addEventListener('click', function(){
+    celerpConfirm(CFG.confirm).then(function(yes){ if (!yes) return;
+    fetch('/crm/contacts/bulk/delete', {
       method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: [{_json.dumps(cid)}]}})
-    }}).then(function(r){{ return r.json(); }}).then(function(d){{
-      if (d.deleted !== undefined) {{
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({contact_ids: [CFG.cid]})
+    }).then(function(r){ return r.json(); }).then(function(d){
+      if (d.deleted !== undefined) {
         sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = {_json.dumps(back_href)};
-      }} else {{
-        celerpToast(d.detail || {_json.dumps(t("contacts.delete_failed"))}, 'error');
-      }}
-    }}).catch(function(err){{ celerpToast({_json.dumps(t("contacts.delete_failed"))}, 'error'); }});
-    }});
-  }});
-}})();
-""")
+        celerpGo(CFG.backHref);
+      } else {
+        celerpToast(d.detail || FAILED, 'error');
+      }
+    }).catch(function(err){ celerpToast(FAILED, 'error'); });
+    });
+  });
+})();
+""", data_cfg=js_value({'confirm': t('contacts.confirm_delete_contact'), 'cid': cid, 'backHref': back_href, 'failed': t('contacts.delete_failed')}))
 
     action_bar = Div(
         Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
@@ -1111,8 +1116,7 @@ def setup_routes(app):
         has_real_contacts = any(not val.startswith("__new__") for val, _ in opts)
         opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
                            style="display:none" if has_real_contacts else ""))
-        from fasthtml.common import to_xml
-        return _R(content="".join(to_xml(el) for el in opt_els), media_type="text/html")
+        return html_response(tuple(opt_els))
 
     # ── /contacts/search ─────────────────────────────────────────────────
 
@@ -1184,8 +1188,9 @@ def setup_routes(app):
             if dup:
                 dup_id = dup.get("entity_id") or dup.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/contacts/{dup_id}"})
-        except APIError:
-            pass
+        except APIError as e:
+            # A check that could not run creates nothing: it exists to stop a second placeholder.
+            return api.refusal_response(e)
         try:
             result = await api.create_contact(token, {"name": default_name, "contact_type": contact_type})
             contact_id = result.get("entity_id") or result.get("id", "")
@@ -1593,7 +1598,7 @@ def setup_routes(app):
                     cls="form-group form-group--inline"),
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=f"document.getElementById('{target_div}').innerHTML=''"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=call("celerpClear", target_div)),
                     cls="form-row",
                 ),
                 hx_post=f"/contacts/{contact_id}/addresses",
@@ -1651,7 +1656,8 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm",
-                           onclick=f"htmx.ajax('GET',{_json.dumps(f'/contacts/{contact_id}/addresses/section')},'#addresses-section',{{swap:'outerHTML'}})"),
+                           onclick=call("celerpLoad", f"/contacts/{contact_id}/addresses/section",
+                                        "#addresses-section")),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/addresses/{address_id}",
@@ -1856,11 +1862,8 @@ def setup_routes(app):
             return P(t("label.not_editable"), cls="cell-error")
 
         val = str(contact.get(field, "") or "")
-        _esc_js = (
-            "if(event.key==='Escape'){"
-            f"htmx.ajax('GET','/contacts/{contact_id}/field/{field}/display',"
-            "{target:this.closest('td'),swap:'outerHTML'});event.preventDefault()}"
-        )
+        restore = {"url": f"/contacts/{contact_id}/field/{field}/display"}
+        _esc_js = call("celerpCellKey", THIS, EVENT, restore)
 
         if field == "contact_type":
             input_el = Select(
@@ -1903,7 +1906,7 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
                 cls="cell-input cell-input--select", autofocus=True,
                 onkeydown=_esc_js,
-                onchange="if(this.value==='__add_new__'){window.location.href='/settings/contacts?tab=payment-terms';return false;}",
+                onchange="if(this.value==='__add_new__'){celerpGo('/settings/contacts?tab=payment-terms');return false;}",
             )
         elif field == "phone":
             return phone_input_td(
@@ -1927,25 +1930,9 @@ def setup_routes(app):
                 name="value", value=val,
                 id=f"edit-{field}",
                 cls="cell-input", autofocus=True,
-                onkeydown=(
-                    "if(event.key==='Escape'){this._escaping=true;"
-                    f"htmx.ajax('GET','/contacts/{contact_id}/field/{field}/display',"
-                    "{target:this.closest('td'),swap:'outerHTML'});event.preventDefault()}"
-                    "else if(event.key==='Enter'){event.preventDefault();this.blur()}"
-                ),
+                onkeydown=call("celerpCellKey", THIS, EVENT, {**restore, "enter": "blur"}),
             )
-            blur_guard_js = Script(
-                "requestAnimationFrame(()=>{"
-                f"var el=document.getElementById('edit-{field}');"
-                "if(!el)return;el._ready=false;"
-                "setTimeout(()=>{el._ready=true;el.focus()},350);"
-                "el.addEventListener('blur',function(e){"
-                "if(!el._ready||el._escaping)return;"
-                f"htmx.ajax('PATCH','/contacts/{contact_id}/field/{field}',"
-                "{target:el.closest('td'),swap:'outerHTML',values:{value:el.value}})"
-                "},{once:true})"
-                "})"
-            )
+            blur_guard_js = Script(call("celerpCellSaveOnBlur", f"edit-{field}", f"/contacts/{contact_id}/field/{field}"))
             return Td(input_el, blur_guard_js, cls="cell cell--editing")
         return Td(input_el, cls="cell cell--editing")
 
@@ -1987,7 +1974,7 @@ def setup_routes(app):
         cell = _contact_display_cell(contact_id, field, contact.get(field))
         if refused is not None:
             # The stored value stays in the cell and the reason shows as a toast.
-            return HTMLResponse(to_xml(cell), headers=toast_header(str(refused.detail), "error"))
+            return html_response(cell, headers=toast_header(str(refused.detail), "error"))
         if field == "name":
             # The page's heading and breadcrumb carry the name too (absent on Company Details).
             name = contact.get("name") or ""
@@ -2149,7 +2136,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
-            media_type=content_type,
+            media_type=inert_media_type(content_type),
             headers={"Content-Disposition": api.file_disposition(resp, "attachment")},
         )
 

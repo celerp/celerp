@@ -25,7 +25,7 @@ def _drafts():
 
 
 def test_every_draft_header_action_saves_the_lines_first():
-    prefix, _, suffix = persist_then_post("\0").partition("\0")
+    prefix, _, suffix = persist_then_post("URL-SLOT").partition("URL-SLOT")
     for sub in _drafts():
         left, right = _sub_action_controls(_EID, sub, sub.get("next_bill_date"))
         actions = [n for n in _nodes([*left, *right]) if n.tag in ("button", "form")]

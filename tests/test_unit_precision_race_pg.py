@@ -29,6 +29,7 @@ from celerp.db import get_session
 from celerp.main import app
 from celerp.models.projections import Projection
 from test_helpers import company_auth
+from shipped_sources import SHIPPED_ROOTS
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -323,7 +324,7 @@ _DISPLAY_READERS = {
 
 def test_only_display_reads_skip_the_units_lock():
     found: dict[str, set[str]] = {}
-    for path in sorted((_ROOT / "default_modules").rglob("*.py")) + sorted((_ROOT / "celerp").rglob("*.py")):
+    for path in sorted(p for root in SHIPPED_ROOTS for p in (_ROOT / root).rglob("*.py")):
         tree = ast.parse(path.read_text())
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):

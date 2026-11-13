@@ -12,6 +12,7 @@ import json
 from fasthtml.common import to_xml
 
 from ui import i18n
+from ui.components.encode import js_value
 from ui.components.table import data_table
 
 _ENGLISH = ("'Merge '", "'a new SKU'", "'Confirm'", "'Cancel'", "'Keep stock on books'",
@@ -31,7 +32,7 @@ def test_the_merge_confirmation_is_written_in_the_readers_language():
     for english in _ENGLISH:
         assert english not in html, english
     for german in ("{n} Artikel in {target} zusammenführen?", "Bestätigen", "Abbrechen"):
-        assert json.dumps(german) in html, german
+        assert js_value(german) in html, german
 
 
 def test_the_merge_question_puts_the_count_before_the_items_in_every_language():

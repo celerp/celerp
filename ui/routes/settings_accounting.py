@@ -36,6 +36,7 @@ _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
+from ui.components.encode import as_js, call, EVENT, safe_url, THIS
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -131,11 +132,16 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
     )
 
 
-def _period_lock_tab(lock_data: dict) -> FT:
+def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None,
+                     lock_value: str | None = None) -> FT:
+    """The period lock tab, the element every lock and close response replaces; ``banner``
+    (a refusal or success) heads it, so the tab keeps its one id. ``lock_value`` is a refused
+    lock date the lock form keeps in place of the stored one."""
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
     return Div(
+        banner if banner is not None else "",
         H3(t("page.period_lock"), cls="section-title"),
         P(
             t("settings_accounting.period_lock_help"),
@@ -144,7 +150,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
         Form(
             Div(
                 Label(t("label.lock_through_date")),
-                Input(type="date", name="lock_date", value=lock_date,
+                Input(type="date", name="lock_date", value=lock_date if lock_value is None else lock_value,
                       cls="form-input max-w-md"),
                 cls="form-field",
             ),
@@ -182,7 +188,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
         Form(
             Div(
                 Label(t("label.fiscal_year_end_date")),
-                Input(type="date", name="fiscal_year_end",
+                Input(type="date", name="fiscal_year_end", value=close_value,
                       cls="form-input max-w-md"),
                 cls="form-field",
             ),
@@ -198,6 +204,18 @@ def _period_lock_tab(lock_data: dict) -> FT:
         id="period-lock-content",
         cls="settings-card",
     )
+
+
+async def _period_lock_refused(token: str, message: str, close_value: str = "",
+                               lock_value: str | None = None) -> FT:
+    """A refused lock or close: the banner above the period lock tab, so both forms stay
+    and the refused form keeps the date entered. The lock is read as the tab's own render
+    reads it; a failed read leaves the stored lock out rather than losing the forms."""
+    try:
+        lock_data = await api.get_period_lock(token)
+    except Exception:
+        lock_data = {}
+    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"), lock_value)
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -244,7 +262,7 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
             Div(
                 Label(t("label.bank_account"), cls="form-label"),
                 Select(*bank_options, _bank_opt, name="bank_account_id",
-                       cls="form-input cell-input--select", onchange=_bank_js),
+                       cls="form-input cell-input--select", onchange=as_js(_bank_js)),
                 cls="form-field",
             ),
             Div(
@@ -303,10 +321,7 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     code = a.get("code", "")
     current = a.get("cash_flow_category") or ""
     restore_url = f"/settings/accounting/chart/{code}/cash-flow/display"
-    esc_js = (
-        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
-    )
+    esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
     return Td(
         Select(
             Option(t("acct.cash_flow_derived"), value="", selected=not current),
@@ -339,10 +354,7 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
     """The picker in place of the account. A change saves and swaps in the updated
     row; Escape puts the display cell back without saving."""
     restore_url = f"/settings/accounting/posting-accounts/{key}/display"
-    esc_js = (
-        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
-    )
+    esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
     return Td(
         Div(
             account_picker("value", candidates, value=code or "", aria_label=label,
@@ -571,7 +583,7 @@ def _reconciliation_summary(rec: dict | None, currency: str | None) -> FT | None
         return None
     state = rec["state"]
     reasons = [Li(refusal_text({"message": "", "message_key": r.get("body", ""), "params": r.get("params") or {}}),
-                  " ", A(t("older_stock.state.fix"), href=r["action_url"])
+                  " ", A(t("older_stock.state.fix"), href=safe_url(r["action_url"]))
                   if r.get("action_url") not in (None, OLDER_STOCK_PATH) else None)
                for r in rec.get("reasons") or []]
     opened = [Li(_uncertain_text(o, currency) if o["kind"] == "uncertain" else
@@ -594,13 +606,13 @@ def _placement_failure(failed: dict | None) -> FT | None:
     if not failed:
         return None
     report = bug_report_url(area="Accounting",
-                            current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
+                                     current=f"Older stock could not be placed ({failed.get('error') or 'unknown error'}).")
     return Div(
         H4(t("notice.older_stock_failed.title")),
         P(t("older_stock.failed")),
         Div(Button(t("btn.retry"), type="button", cls="btn btn--sm btn--primary",
                    hx_post=f"{_OLDER_STOCK_URL}/retry", hx_target="#older-stock-card", hx_swap="outerHTML"),
-            A(t("nav.report_bug"), href=report, target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
+            A(t("nav.report_bug"), href=safe_url(report), target="_blank", rel="noopener", cls="btn btn--sm btn--secondary"),
             cls="form-actions"),
         cls="error-banner mb-md",
     )
@@ -702,7 +714,7 @@ def _older_stock_filters_of(request: Request) -> dict:
     return filters
 
 
-async def _older_stock_action(request: Request, call) -> FT:
+async def _older_stock_action(request: Request, fetch_view) -> FT:
     """Run an older-stock action and answer with the card again: the outcome on success,
     the API's reason on a refusal, read within the filters the page was showing."""
     token = _token(request)
@@ -710,7 +722,7 @@ async def _older_stock_action(request: Request, call) -> FT:
         return P(t("error.session_expired"), cls="cell-error")
     filters = _older_stock_filters_of(request)
     try:
-        view = await call(token)
+        view = await fetch_view(token)
         message, kind = view.pop("message", ""), view.pop("kind", "success")
         if any(filters.values()):
             view = await api.get_older_stock(token, filters)
@@ -851,7 +863,7 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
             ),
             Div(id="account-form-error"),
         ),
-        onkeydown="if(event.key==='Escape'){window.location='/settings/accounting?tab=chart'}",
+        onkeydown="if(event.key==='Escape'){celerpGo('/settings/accounting?tab=chart')}",
         hx_target="#account-form-error",
         hx_swap="innerHTML",
         **action,
@@ -1077,7 +1089,8 @@ def setup_routes(app):
                 "rate": rate,
             })
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=bank-accounts"})
 
     @app.get("/settings/accounting/bank-accounts/{bank_id}/edit")
@@ -1200,7 +1213,7 @@ def setup_routes(app):
         try:
             result = await api.set_period_lock(token, lock_date)
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="period-lock-content")
+            return await _period_lock_refused(token, str(e.detail), lock_value=lock_date)
         return _period_lock_tab(result)
 
     @app.post("/settings/accounting/close-year")
@@ -1211,17 +1224,14 @@ def setup_routes(app):
         form = await request.form()
         fiscal_year_end = (form.get("fiscal_year_end") or "").strip()
         if not fiscal_year_end:
-            return Div(P(t("acct.fiscal_year_end_date_is_required"), cls="error-banner"), id="period-lock-content")
+            return await _period_lock_refused(token, t("acct.fiscal_year_end_date_is_required"))
         try:
             result = await api.close_fiscal_year(token, fiscal_year_end)
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="period-lock-content")
-        lock_data = {"lock_date": result.get("lock_date")}
-        content = _period_lock_tab(lock_data)
-        # Prepend success message
+            return await _period_lock_refused(token, str(e.detail), fiscal_year_end)
         net = result.get("net_income", 0)
         msg = t("settings_accounting.fiscal_year_closed", date=fiscal_year_end, net=f"{net:,.2f}")
-        return Div(P(msg, cls="success-banner mb-md"), content, id="period-lock-content")
+        return _period_lock_tab({"lock_date": result.get("lock_date")}, banner=P(msg, cls="success-banner mb-md"))
 
     @app.post("/settings/accounting/rules")
     async def create_rule(request: Request):
@@ -1245,7 +1255,8 @@ def setup_routes(app):
             banks_data = await api.get_bank_accounts(token)
             banks = banks_data.get("items", [])
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="rules-list")
+            api.raise_if_signed_out(e)
+            return Div(P(api.error_message(e), cls="error-banner"), id="rules-list")
         return _rules_tab(rules, banks)
 
     @app.delete("/settings/accounting/rules/{rule_id}")
@@ -1327,7 +1338,8 @@ def setup_routes(app):
                 "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
 
     @app.get("/settings/accounting/chart/{code}/edit")
@@ -1436,13 +1448,13 @@ def setup_routes(app):
         """Move the ticked lots to the chosen inventory account, once per page render."""
         form = await request.form()
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.move_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
                                               str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/move-all")
     async def older_stock_move_all(request: Request):
@@ -1450,31 +1462,31 @@ def setup_routes(app):
         form = await request.form()
         filters = _older_stock_filters_of(request)
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.move_all_older_stock(token, {k: filters[k] for k in ("account", "q") if k in filters},
                                                   str(form.get("selection", "")).strip(),
                                                   str(form.get("code", "")).strip(), required_operation_key(form))
             done = view.pop("result")
             return {**view, "message": t("older_stock.moved", n=done["moved"], code=done["code"])}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/moves/{move_id}/undo")
     async def older_stock_undo(request: Request, move_id: str):
-        async def call(token):
+        async def fetch_view(token):
             return {**await api.undo_older_stock_move(token, move_id), "message": t("older_stock.undo_done")}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/retry")
     async def older_stock_retry(request: Request):
-        async def call(token):
+        async def fetch_view(token):
             view = await api.retry_older_stock(token)
             if view.pop("result")["placed"]:
                 return {**view, "message": t("older_stock.placed_msg")}
             return {**view, "message": t("older_stock.still_failed"), "kind": "error"}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.post("/settings/accounting/older-stock/corrections")
     async def older_stock_correct(request: Request):
@@ -1482,13 +1494,13 @@ def setup_routes(app):
         toolbar) treated their difference; ``kind`` rides in the URL."""
         form = await request.form()
 
-        async def call(token):
+        async def fetch_view(token):
             view = await api.correct_older_stock(token, list(dict.fromkeys(form.getlist("selected"))),
                                                  request.query_params.get("kind", "").strip())
             view.pop("result", None)
             return {**view, "message": t("older_stock.corrected_msg")}
 
-        return await _older_stock_action(request, call)
+        return await _older_stock_action(request, fetch_view)
 
     @app.get("/settings/accounting/chart/{code}/cash-flow/edit")
     async def cash_flow_field_edit(request: Request, code: str):

@@ -32,6 +32,7 @@ from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
 from celerp.tax_regimes import TAX_COUNTRIES, country_name, tax_country
+from ui.components.encode import js_value, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
+            *client_scripts(get_lang(request), request),
             _activating_form(lang=get_lang(request)),
             title=page_title("page.activating_modules"),
         )
@@ -465,17 +467,18 @@ def _activating_form(lang: str = "en") -> FT:
               id="activating-failed", cls="auth-alt-action", hidden=True),
             cls="activating-body",
         ),
-        Script(f"""
-(function() {{
+        Script("""
+(function() {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
   var statusEl = document.getElementById('activating-status');
   var modulesEl = document.getElementById('activating-modules');
-  var msgActivatingXofY = {json.dumps(t("setup.activating_module_x_of_y", lang))};
-  var msgLoadingModules = {json.dumps(t("setup.loading_modules", lang))};
-  var msgAllLoaded = {json.dumps(t("setup.all_modules_loaded", lang))};
-  var msgTimedOut = {json.dumps(t("setup.activating_timed_out", lang))};
-  var msgRestarting = {json.dumps(t("setup.restarting_server", lang))};
-  var msgApplying = {json.dumps(t("setup.applying_configuration", lang))};
-  var msgModulesFailed = {json.dumps(t("setup.modules_failed_to_start", lang))};
+  var msgActivatingXofY = CFG.activatingXofY;
+  var msgLoadingModules = CFG.loadingModules;
+  var msgAllLoaded = CFG.allLoaded;
+  var msgTimedOut = CFG.timedOut;
+  var msgRestarting = CFG.restarting;
+  var msgApplying = CFG.applying;
+  var msgModulesFailed = CFG.modulesFailed;
   var failedEl = document.getElementById('activating-failed');
   var spinnerEl = document.querySelector('.activating-spinner');
   var attempts = 0;
@@ -491,93 +494,93 @@ def _activating_form(lang: str = "en") -> FT:
   var loadingStreak = 0;
   var maxLoadingStreak = 30;
 
-  function showError(message, modules) {{
+  function showError(message, modules) {
     statusEl.textContent = message;
     statusEl.classList.add('activating-status--error');
     if (spinnerEl) spinnerEl.hidden = true;
     failedEl.hidden = false;
     renderModules(modules, true);
-  }}
+  }
 
-  function renderModules(modules, failed) {{
+  function renderModules(modules, failed) {
     modulesEl.textContent = '';
     if (!modules || modules.length === 0) return;
     var list = document.createElement('ul');
     list.className = 'activating-module-list';
-    for (var i = 0; i < modules.length; i++) {{
+    for (var i = 0; i < modules.length; i++) {
       var m = modules[i];
       var li = document.createElement('li');
       var state = m.running ? 'done' : (failed ? 'error' : 'pending');
       li.className = 'activating-module activating-module--' + state;
-      li.textContent = (m.running ? '\u2713' : (failed ? '\u2717' : '\u25cc')) + ' ' + (m.label || m.name);
+      li.textContent = (m.running ? '✓' : (failed ? '✗' : '◌')) + ' ' + (m.label || m.name);
       list.appendChild(li);
-    }}
+    }
     modulesEl.appendChild(list);
-  }}
+  }
 
-  function poll() {{
+  function poll() {
     attempts++;
-    if (attempts > maxAttempts) {{
+    if (attempts > maxAttempts) {
       showError(msgTimedOut, null);
       return;
-    }}
-    fetch('/setup/activating-status', {{cache: 'no-store'}})
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        if (data.phase === 'down') {{
+    }
+    fetch('/setup/activating-status', {cache: 'no-store'})
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.phase === 'down') {
           downSeen = true;
           readyAt = null;
           loadingStreak = 0;
           statusEl.textContent = msgRestarting;
           modulesEl.textContent = '';
           setTimeout(poll, 600);
-        }} else if (data.phase === 'loading') {{
+        } else if (data.phase === 'loading') {
           downSeen = true;
           readyAt = null;
           loadingStreak++;
-          if (loadingStreak > maxLoadingStreak) {{
+          if (loadingStreak > maxLoadingStreak) {
             showError(msgModulesFailed, data.modules);
             return;
-          }}
+          }
           var loaded = data.loaded || 0;
           var total = data.requested || 0;
           statusEl.textContent = total > 0
-            ? msgActivatingXofY.replace('{{loaded}}', loaded).replace('{{total}}', total)
+            ? msgActivatingXofY.replace('{loaded}', loaded).replace('{total}', total)
             : msgLoadingModules;
           renderModules(data.modules);
           setTimeout(poll, 700);
-        }} else if (data.phase === 'ready') {{
+        } else if (data.phase === 'ready') {
           loadingStreak = 0;
           statusEl.textContent = msgAllLoaded;
           renderModules(data.modules);
-          if (!readyAt) {{ readyAt = Date.now(); }}
+          if (!readyAt) { readyAt = Date.now(); }
           // Wait for the UI itself to be stable after its own restart
-          if (Date.now() - readyAt >= readyStableMs) {{
-            window.location.href = '/dashboard';
-          }} else {{
+          if (Date.now() - readyAt >= readyStableMs) {
+            celerpGo('/dashboard');
+          } else {
             setTimeout(poll, 600);
-          }}
-        }} else {{
+          }
+        } else {
           setTimeout(poll, 800);
-        }}
-      }})
-      .catch(function() {{
+        }
+      })
+      .catch(function() {
         // Network error: either still restarting or not yet down
         readyAt = null;
         loadingStreak = 0;
-        if (!downSeen) {{
+        if (!downSeen) {
           statusEl.textContent = msgApplying;
-        }} else {{
+        } else {
           statusEl.textContent = msgRestarting;
-        }}
+        }
         setTimeout(poll, 600);
-      }});
-  }}
+      });
+  }
 
   // Give the /system/restart background task ~600ms to fire before first poll
   setTimeout(poll, 600);
-}})();
-"""),
+})();
+""", data_cfg=js_value({'activatingXofY': t('setup.activating_module_x_of_y', lang), 'loadingModules': t('setup.loading_modules', lang), 'allLoaded': t('setup.all_modules_loaded', lang), 'timedOut': t('setup.activating_timed_out', lang), 'restarting': t('setup.restarting_server', lang), 'applying': t('setup.applying_configuration', lang), 'modulesFailed': t('setup.modules_failed_to_start', lang)})),
         cls="auth-card",
     )
 
@@ -640,7 +643,7 @@ def _cloud_form() -> FT:
         ),
         Div(
             A(cloud_cta_label,
-                href=cloud_href,
+                href=safe_url(cloud_href),
                 target="_blank",
                 cls="btn btn--primary btn--full",
             ),

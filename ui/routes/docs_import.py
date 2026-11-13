@@ -43,6 +43,7 @@ from ui.routes.csv_import import (
 )
 from ui.i18n import t, get_lang
 from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES
+from ui.components.encode import safe_url
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -338,7 +339,7 @@ def _external_link(url: str | None) -> FT | str:
     """The sender's original page, opened in a new tab. Only web addresses are linked."""
     if not url or urlsplit(url).scheme not in ("http", "https"):
         return EMPTY
-    return A(t("received.open_original"), href=url, target="_blank", rel="noopener noreferrer", cls="table-link")
+    return A(t("received.open_original"), href=safe_url(url), target="_blank", rel="noopener noreferrer", cls="table-link")
 
 
 def _state_badge(state: str) -> FT:
@@ -397,7 +398,7 @@ def _received_actions(r: dict) -> FT:
         parts.append(Form(Button(t("received.mark_reconciled"), cls="btn btn--secondary", type="submit"),
                           method="post", action=f"/docs/received/{rid}/mark-reconciled"))
     if r.get("booked_id"):
-        parts.append(P(A(t("received.open_booked"), href=_booked_href(r.get("booked_kind"), r["booked_id"]), cls="table-link")))
+        parts.append(P(A(t("received.open_booked"), href=safe_url(_booked_href(r.get("booked_kind"), r["booked_id"])), cls="table-link")))
     return Div(*parts, cls="received-actions", style="margin: 16px 0;")
 
 

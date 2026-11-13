@@ -626,8 +626,8 @@
  },
  {
   "route": "ui POST /lists/new-audit",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route with the API client mocked, so none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /lists/{entity_id}/items/csv",
@@ -855,11 +855,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST."
  },
  {
-  "route": "ui POST /settings/connectors/{platform}/attention/{record_id}/reconciled",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE, api POST."
- },
- {
   "route": "ui POST /settings/connectors/{platform}/connect-apikey",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, commit, lock lock_company, write session.add, write session.delete."
@@ -918,11 +913,6 @@
   "route": "ui POST /settings/default-price-list",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
-  "route": "ui PUT /settings/labels/{tmpl_id}",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
  },
  {
   "route": "ui DELETE /settings/locations/{location_id}",
@@ -1050,12 +1040,6 @@
  },
  {
   "site": "celerp/connectors/outbound_queue.py enqueue_outbound add",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/events/engine.py connector_upsert emit_event",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."

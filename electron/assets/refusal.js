@@ -56,14 +56,20 @@
    * Show the screen for `view` in `doc`, driven by the preload bridge `celerp`. The
    * state is the main process's (update-state.js), replayed on every load, so a page
    * that loads again shows where the update stands; a click shows its result at once.
+   * What a click started (`intent`) is kept apart from main's state, so no event from main
+   * can drop it, and each ends on its own signal: checking when the check settles,
+   * installing when the state leaves "downloaded", relaunching never (the process exits).
    */
   function showRefusal(doc, celerp, view) {
     const el = (id) => doc.getElementById(id);
     let state = { status: "idle", checking: false };
+    let intent = "";
     let action = "update";
 
     function render() {
-      const screen = screenFor(view, state);
+      const screen = screenFor(view, { ...state, relaunching: intent === "relaunching",
+                                       installing: state.installing || intent === "installing",
+                                       checking: state.checking || intent === "checking" });
       action = screen.action;
       el("refusal-detail").textContent = screen.detail;
       el("status").textContent = screen.status;
@@ -74,26 +80,34 @@
     const follow = (next) => {
       if ((next.revision ?? 0) < (state.revision ?? 0)) return;
       state = next;
+      if (intent === "installing" && state.status !== "downloaded") intent = "";
+      render();
+    };
+    const start = (next) => {
+      intent = next;
       render();
     };
 
     el("refusal-message").textContent = view.message;
     el("refusal-download").textContent = view.download;
-    el("refusal-download").href = view.downloadUrl;
     el("refusal-quit").textContent = view.quit;
     el("refusal-update").addEventListener("click", () => {
       if (action === "relaunch") {
-        follow({ ...state, relaunching: true });
+        start("relaunching");
         celerp.restartApp();
         return;
       }
       if (action === "restart") {
-        follow({ ...state, installing: true });
+        start("installing");
         celerp.installUpdate();
         return;
       }
-      follow({ ...state, checking: true });
-      celerp.checkForUpdates();
+      start("checking");
+      // Main answers a check it ignores with no event, so the check's own end ends checking.
+      new Promise((resolve) => resolve(celerp.checkForUpdates())).catch(() => {}).then(() => {
+        if (intent === "checking") start("");
+        return celerp.getUpdateState();
+      }).then(follow);
     });
     el("refusal-quit").addEventListener("click", () => celerp.quit());
     for (const on of ["onUpdateLog", "onUpdateAvailable", "onDownloadProgress", "onUpdateDownloaded", "onUpdateError",

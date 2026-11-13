@@ -23,6 +23,7 @@ from test_cost_follows_goods import _doc_number, _invoice, _ship
 from test_cost_restatement import _state
 from test_invoice_unshipped_books import _lot
 from test_set_aside_goods_every_exit import _refused
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -403,7 +404,7 @@ _WRITE = re.compile(r"\.state = |\.state\[[^]]+\] = |(?<![\w.])Projection\(|Proj
 async def test_every_projection_writer_is_accounted_for():
     root = Path(__file__).resolve().parents[1]
     found: dict[tuple[str, str], int] = {}
-    for base in ("celerp", "default_modules", "ui"):
+    for base in APP_ROOTS:
         for path in sorted((root / base).rglob("*.py")):
             rel = path.relative_to(root).as_posix()
             if "/tests/" in rel or "/migrations/versions/" in rel:

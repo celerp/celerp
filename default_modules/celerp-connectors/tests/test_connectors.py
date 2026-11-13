@@ -442,6 +442,38 @@ async def test_sync_asks_for_an_update_when_the_relay_requires_one(
     assert resp.json()["detail"] == "Update Celerp to continue syncing Xero."
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("error", "status", "shown"), [
+    (ValueError("Xero refused the contact list."), 400, "Xero refused the contact list."),
+    (RuntimeError("socket closed"), 502, "socket closed"),
+])
+async def test_a_failed_manual_sync_answers_what_went_wrong(
+        client, connector_session, patch_session_token, error, status, shown):
+    """A refusal the sync raises reaches the person as a refusal (400); anything else as a
+    sync error naming the service (502), never an unhandled 500."""
+    from celerp.models.connector_config import ConnectorConfig
+    from connector_test_support import record_first_sync
+    from test_helpers import register_admin
+    from ui.i18n import refusal_text
+
+    session = connector_session
+    headers = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
+    config = ConnectorConfig(company_id=str(company_id), connector="xero")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
+    await session.commit()
+    with patch("celerp.connectors.sync_runner.run_sync", new=AsyncMock(side_effect=error)):
+        resp = await client.post("/connectors/xero/sync", headers=headers, json={"entity": "contacts"})
+    assert resp.status_code == status, resp.text
+    message = refusal_text(resp.json()["detail"])
+    assert shown in message
+    if status == 502:
+        assert "Xero" in message
+
+
 # ── QuickBooks connector tests ────────────────────────────────────────────────
 
 @pytest.fixture

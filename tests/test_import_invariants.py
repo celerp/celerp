@@ -28,6 +28,7 @@ from fasthtml.common import to_xml
 from test_helpers import make_test_token
 from ui.i18n import t as t_
 from ui.routes import csv_import as ci
+from shipped_sources import APP_ROOTS
 
 _REPO = Path(__file__).resolve().parent.parent
 _COMPANY_A = "company-a"
@@ -126,7 +127,7 @@ class TestImportStageInvariant:
     def test_no_route_constructs_a_staging_path(self):
         """Only the staging service names the stage directory or resolves stage paths."""
         offenders = []
-        for path in [*(_REPO / "ui").rglob("*.py"), *(_REPO / "celerp").rglob("*.py")]:
+        for path in (p for r in APP_ROOTS for p in (_REPO / r).rglob("*.py")):
             if path.name == "import_stage.py":
                 continue
             src = path.read_text(encoding="utf-8")

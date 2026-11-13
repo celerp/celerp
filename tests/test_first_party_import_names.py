@@ -8,9 +8,10 @@ import ast
 import importlib
 import importlib.util
 from pathlib import Path
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = ("celerp", "ui", "default_modules")
+SOURCES = APP_ROOTS
 
 
 # The packages this tree ships: the app, its UI and every bundled module (an optional module

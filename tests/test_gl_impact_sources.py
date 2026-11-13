@@ -22,9 +22,10 @@ from sqlalchemy import select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.ledger_sources import SOURCE_KEYS
+from shipped_sources import SHIPPED_ROOTS
 
 REPO = Path(__file__).resolve().parents[1]
-_ROOTS = ("celerp", "default_modules")
+_ROOTS = SHIPPED_ROOTS
 
 
 def _poster_names() -> set[str]:

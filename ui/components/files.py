@@ -13,6 +13,7 @@ from fasthtml.common import *
 from ui.components.attrs import hx_vals
 from ui.components.table import searchable_select
 from ui.i18n import t
+from ui.components.encode import call, html_response, js_value, safe_url, THIS
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
 _DOCUMENT_TAGS: tuple[str, ...] = (
@@ -57,7 +58,7 @@ if(!window.celerpFilesFetch){
     var n=document.getElementById('files-notice-'+sid);
     if(!n) return;
     n.textContent='';
-    if((type||'').indexOf('text/html')===0) n.innerHTML=body;
+    if((type||'').indexOf('text/html')===0) n.replaceChildren(celerpFragment(body));
     else n.textContent=body.trim().length&&body.length<=300?body.trim():window.__shellI18n.requestFailed;
   };
   window.celerpFilesFetch=function(sid,url,opts,refresh){
@@ -72,11 +73,30 @@ if(!window.celerpFilesFetch){
         if(!r.ok){window.celerpFilesNotice(sid,r.headers.get('Content-Type'),body);return;}
         var cur=document.getElementById('files-section-'+sid);
         if(!cur){location.reload();return;}
-        cur.outerHTML=body;
+        cur.replaceWith(celerpFragment(body));
         var ns=document.getElementById('files-section-'+sid);
         if(ns&&window.htmx) htmx.process(ns);
-        if(window._celerpDZ&&window._celerpDZ[sid]) window._celerpDZ[sid]();
+        if(window._celerpDZ&&window._celerpDZ.has(sid)) window._celerpDZ.get(sid)();
       });});
+  };
+  // A file's tag or description, from the field el, sent as a file write.
+  window.celerpFilesWrite=function(el,sid,url,method,field,refresh){
+    var fd=new FormData();fd.append(field,el.value);
+    return window.celerpFilesFetch(sid,url,{method:method,body:fd},refresh);
+  };
+  // Double-click a description to edit it in place: Enter or leaving saves, Escape puts it back.
+  window.celerpFilesDescEdit=function(el,sid,url,refresh){
+    var inp=document.createElement('input');
+    inp.type='text';
+    var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;
+    inp.className='form-input form-input--sm';inp.style='width:100%';
+    var cancelled=false;
+    inp.onblur=function(){if(!cancelled)window.celerpFilesWrite(inp,sid,url,'POST','description',refresh);};
+    inp.onkeydown=function(e){
+      if(e.key==='Enter')inp.blur();
+      if(e.key==='Escape'){cancelled=true;el.textContent=el.dataset.orig;inp.replaceWith(el);}
+    };
+    el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();
   };
   document.addEventListener('htmx:responseError',function(e){
     var target=e.detail&&e.detail.target, xhr=e.detail&&e.detail.xhr;
@@ -95,14 +115,14 @@ def files_error_block(body, status: int = 400) -> FT:
     return Div(body, cls="flash flash--error")
 
 
-def files_error(body, status: int = 400) -> HTMLResponse:
+def files_error(body, status: int = 400) -> Response:
     """A refused Files-section request: an error status, so the client leaves the section as it is
     and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
     200 fragment that would be swapped over the section."""
-    return HTMLResponse(to_xml(files_error_block(body, status)), status_code=max(status, 400))
+    return html_response(files_error_block(body, status), status_code=max(status, 400))
 
 
-def files_session_expired() -> HTMLResponse:
+def files_session_expired() -> Response:
     """The sign-in notice for a Files-section request made without a session."""
     return files_error("", 401)
 
@@ -295,12 +315,12 @@ def files_section(
     # Vanilla JS: drag resize handles between <th> elements.
     # Injected once per section render; keyed by sid so multiple sections
     # on the same page don't collide.
-    resize_js = f"""
-(function(){{
-  var table=document.getElementById('files-table-{sid}');
+    resize_js = """
+(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);
+  var table=document.getElementById(CFG.table);
   if(!table) return;
   var ths=table.querySelectorAll('thead th');
-  ths.forEach(function(th,i){{
+  ths.forEach(function(th,i){
     // Skip last column (delete button - fixed narrow)
     if(i===ths.length-1) return;
     var handle=document.createElement('div');
@@ -309,16 +329,16 @@ def files_section(
     th.style.position='relative';
     th.appendChild(handle);
     var startX,startW;
-    handle.addEventListener('mousedown',function(e){{
+    handle.addEventListener('mousedown',function(e){
       startX=e.pageX; startW=th.offsetWidth;
       document.addEventListener('mousemove',onMove);
       document.addEventListener('mouseup',onUp);
       e.preventDefault();
-    }});
-    function onMove(e){{ th.style.width=(startW+e.pageX-startX)+'px'; }}
-    function onUp(){{ document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); }}
-  }});
-}})();
+    });
+    function onMove(e){ th.style.width=(startW+e.pageX-startX)+'px'; }
+    function onUp(){ document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); }
+  });
+})();
 """
 
     # ── Table rows ────────────────────────────────────────────────────────────
@@ -340,11 +360,8 @@ def files_section(
         # When actions target a different entity, refresh via base_url/_section after mutation
         cross_entity = file_action_base != base_url
 
-        def _write_js(url: str, method: str, body: str) -> str:
-            """JS snippet: send a file write, then show the section it answers with, or (for a
-            cross-entity write) the section re-read from this entity."""
-            refresh = f"'{base_url}/_section'" if cross_entity else "null"
-            return f"celerpFilesFetch('{sid}','{url}',{{method:'{method}',body:{body}}},{refresh});"
+        # A write shows the section it answers with, or (cross-entity) the section re-read here.
+        refresh = f"{base_url}/_section" if cross_entity else None
 
         # The Excel funnel reads this explicit value (the tag's display label) rather than the cell's
         # textContent, which for the editable <select> would be every option concatenated.
@@ -360,10 +377,8 @@ def files_section(
                         *tag_opts_row,
                         name="document_tag",
                         cls="form-input form-input--xs file-tag-select",
-                        onchange=(
-                            f"(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);"
-                            + _write_js(f"{file_action_base}/{fid}/tag", "PATCH", "fd") + "})(this)"
-                        ),
+                        onchange=call("celerpFilesWrite", THIS, sid, f"{file_action_base}/{fid}/tag",
+                                      "PATCH", "document_tag", refresh),
                     ),
                     data_filter_value=_tag_fv,
                 )
@@ -385,31 +400,13 @@ def files_section(
                           data_filter_value=_tag_fv)
 
         if can_describe:
-            _desc_fetch = (
-                f"var fd=new FormData();fd.append('description',inp.value);"
-                + _write_js(f"{file_action_base}/{fid}/description", "POST", "fd")
-            )
             desc_cell = Td(
                 Span(
                     desc if desc else "--",
                     cls="file-desc muted",
                     title=t("label.dblclick_to_edit"),
-                    **{
-                        "ondblclick": (
-                            f"(function(el){{var inp=document.createElement('input');"
-                            f"inp.type='text';"
-                            f"var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
-                            f"inp.className='form-input form-input--sm';inp.style='width:100%';"
-                            f"var cancelled=false;"
-                            f"inp.onblur=function(){{if(cancelled)return;"
-                            + _desc_fetch +
-                            f"}};"
-                            f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
-                            f"if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
-                            f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
-                            f"}})(this)"
-                        )
-                    },
+                    ondblclick=call("celerpFilesDescEdit", THIS, sid, f"{file_action_base}/{fid}/description",
+                                    refresh),
                 ),
             )
         else:
@@ -419,7 +416,7 @@ def files_section(
         if has_linked:
             if linked_ref:
                 linked_content = (
-                    A(linked_ref, href=linked_url, cls="doc-ref-link")
+                    A(linked_ref, href=safe_url(linked_url), cls="doc-ref-link")
                     if linked_url else
                     Span(linked_ref, cls="badge badge--muted")
                 )
@@ -430,9 +427,9 @@ def files_section(
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
             Td(
-                Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                Img(src=safe_url(file_download_url), style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
                 if (show_preview and f.get("mime", "").startswith("image/")) else "",
-                A(fname, href=file_download_url, target="_blank", rel="noopener",
+                A(fname, href=safe_url(file_download_url), target="_blank", rel="noopener",
                   cls="file-link file-link--clip", title=fname),
                 cls="files-name-cell",
             ),
@@ -544,45 +541,46 @@ def files_section(
     # The global _celerpDZ registry lets the new section call its own init
     # once inserted (htmx:afterSettle fires for hx-* swaps; for plain fetch
     # swaps we call it directly after setting outerHTML).
-    drop_js = f"""
-(function(){{
-  if(!window._celerpDZ) window._celerpDZ={{}};
-  function initDropZone(){{
-    var zone=document.getElementById('file-drop-zone-{sid}');
-    var inp=document.getElementById('file-drop-input-{sid}');
+    drop_js = """
+(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);
+  var SID=CFG.sid;
+  if(!window._celerpDZ) window._celerpDZ=new Map();
+  function initDropZone(){
+    var zone=document.getElementById('file-drop-zone-' + SID);
+    var inp=document.getElementById('file-drop-input-' + SID);
     if(!zone||!inp||zone._dzInited) return;
     zone._dzInited=true;
-    function upload(file){{
+    function upload(file){
       var fd=new FormData(); fd.append('file',file);
       var txt=zone.querySelector('.file-drop-text');
       if(txt) txt.textContent=zone.dataset.uploadingText;
-      celerpFilesFetch('{sid}','{base_url}',{{method:'POST',body:fd}},null)
-        .catch(function(e){{alert(zone.dataset.uploadFailedText);}})
-        .then(function(){{if(txt&&document.body.contains(zone)) txt.textContent=zone.dataset.dropText;}});
-    }}
-    zone.addEventListener('click',function(e){{
+      celerpFilesFetch(SID,CFG.url,{method:'POST',body:fd},null)
+        .catch(function(e){alert(zone.dataset.uploadFailedText);})
+        .then(function(){if(txt&&document.body.contains(zone)) txt.textContent=zone.dataset.dropText;});
+    }
+    zone.addEventListener('click',function(e){
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
-    }});
-    inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
-    var cam=document.getElementById('file-camera-input-{sid}');
+    });
+    inp.addEventListener('change',function(){ if(inp.files.length) upload(inp.files[0]); });
+    var cam=document.getElementById('file-camera-input-' + SID);
     var camBtn=zone.querySelector('.file-camera-btn');
-    if(cam&&camBtn){{
-      camBtn.addEventListener('click',function(e){{e.preventDefault(); cam.click();}});
-      cam.addEventListener('change',function(){{ if(cam.files.length) upload(cam.files[0]); }});
-    }}
-    zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
-    zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
-    zone.addEventListener('drop',function(e){{
+    if(cam&&camBtn){
+      camBtn.addEventListener('click',function(e){e.preventDefault(); cam.click();});
+      cam.addEventListener('change',function(){ if(cam.files.length) upload(cam.files[0]); });
+    }
+    zone.addEventListener('dragover',function(e){e.preventDefault();zone.classList.add('file-drop-zone--active');});
+    zone.addEventListener('dragleave',function(){zone.classList.remove('file-drop-zone--active');});
+    zone.addEventListener('drop',function(e){
       e.preventDefault(); zone.classList.remove('file-drop-zone--active');
       if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
-    }});
-  }}
-  window._celerpDZ['{sid}']=initDropZone;
+    });
+  }
+  window._celerpDZ.set(SID,initDropZone);
   initDropZone();
-  document.addEventListener('htmx:afterSettle',function(e){{
-    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-{sid}') initDropZone();
-  }});
-}})();
+  document.addEventListener('htmx:afterSettle',function(e){
+    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-' + SID) initDropZone();
+  });
+})();
 """
 
     upload_zone = Div(
@@ -594,7 +592,7 @@ def files_section(
         Button(t("msg.take_photo"), type="button", cls="btn btn--sm btn--secondary file-camera-btn"),
         Input(type="file", id=f"file-camera-input-{sid}", accept="image/*",
               capture="environment", style="display:none"),
-        Script(drop_js),
+        Script(drop_js, data_cfg=js_value({"sid": sid, "url": str(base_url)})),
         cls="file-drop-zone",
         id=f"file-drop-zone-{sid}",
         # Translated strings the JS above reads via dataset instead of splicing
@@ -608,9 +606,11 @@ def files_section(
         H3(title or t("label.files"), cls="section-title"),
         filter_bar,
         Div(table, cls="table-scroll-wrap"),
-        Script(resize_js),
+        Script(resize_js, data_cfg=js_value({"table": f"files-table-{sid}"})),
         Script(COLUMN_FILTER_JS),
-        Script(f"window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-{sid}'));"),
+        Script("window.celerpRefreshFilters&&window.celerpRefreshFilters("
+               "document.getElementById(JSON.parse(document.currentScript.dataset.cfg)));",
+               data_cfg=js_value(f"files-section-{sid}")),
     ]
     if pagination:
         children.append(pagination)

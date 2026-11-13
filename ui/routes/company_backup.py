@@ -48,7 +48,7 @@ from celerp.services.company_handoff_transfer import HandoffDownloadError, downl
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.handoff_opening as opening
@@ -77,6 +77,7 @@ from ui.routes.migrations import (
     wizard_table,
 )
 from ui.streaming import ClosingStreamingResponse
+from ui.components.encode import html_response, js_value, safe_url
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -106,8 +107,8 @@ _REPLACED, _PUT_BACK = "replaced", "put_back"
 _OUTCOMES = frozenset({_CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED, _REPLACED, _PUT_BACK})
 
 
-def _html(page, status_code: int = 200) -> HTMLResponse:
-    return page if isinstance(page, HTMLResponse) else HTMLResponse(to_xml(page), status_code=status_code)
+def _html(page, status_code: int = 200) -> Response:
+    return page if isinstance(page, Response) else html_response(page, status_code=status_code)
 
 
 def _message(e: APIError) -> str:
@@ -223,7 +224,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
             *(sign_in_fields(email) if mode is START_COMPANY else []),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/read", enctype="multipart/form-data", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/read"), enctype="multipart/form-data", cls="auth-form",
         ),
         # First run offers restore once, here; a backup of a whole installation
         # (not one company) is recovered from its own page.
@@ -332,7 +333,7 @@ async def _module_section(mode: WizardMode, preview: dict) -> list:
                 cls="form-group"),
             code,
             Button(t("company_backup.import_module"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/import-module", enctype="multipart/form-data", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/import-module"), enctype="multipart/form-data", cls="auth-form"))
     elif _INCOMPATIBLE not in statuses:
         consent = [Label(Input(type="checkbox", name="consent", value=m["name"]),
                          " " + t("company_backup.module_consent", name=m.get("label") or m["name"]),
@@ -348,9 +349,9 @@ async def _module_section(mode: WizardMode, preview: dict) -> list:
             code,
             Button(t("company_backup.enable_and_open" if opens else "company_backup.prepare_modules"),
                    type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/prepare", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/prepare"), cls="auth-form"))
         out.append(Form(Button(t("company_backup.decline_modules"), type="submit", cls="btn btn--secondary btn--full"),
-                        method="post", action=f"{mode.base}/decline", cls="auth-alt-action"))
+                        method="post", action=safe_url(f"{mode.base}/decline"), cls="auth-alt-action"))
     return out
 
 
@@ -374,9 +375,9 @@ def _cancel(mode: WizardMode):
     """Choosing another file deletes this upload. A login with no company has no session to
     delete it with; its upload expires on its own."""
     if mode is START_COMPANY:
-        return P(A(t("company_backup.choose_other"), href=mode.base, cls="auth-link"), cls="auth-alt-action")
+        return P(A(t("company_backup.choose_other"), href=safe_url(mode.base), cls="auth-link"), cls="auth-alt-action")
     return Form(Button(t("company_backup.choose_other"), type="submit", cls="btn btn--secondary btn--full"),
-                method="post", action=f"{mode.base}/discard", cls="auth-alt-action")
+                method="post", action=safe_url(f"{mode.base}/discard"), cls="auth-alt-action")
 
 
 async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, values: dict | None = None,
@@ -398,7 +399,7 @@ async def _preview_page(request: Request, mode: WizardMode, preview: dict, *, va
             *_start_company_fields(mode, values),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t(_BUTTONS.get(action, _BUTTONS[_CREATE])), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         )]
     else:
         step = await _module_section(mode, preview)
@@ -475,7 +476,7 @@ def _replace_section(mode: WizardMode, preview: dict, replace: dict) -> list:
             P(t("company_backup.replace_saved_first", company=company), cls="form-hint"),
             Button(t("company_backup.replace_button", company=company), type="submit",
                    cls="btn btn--danger btn--full"),
-            method="post", action=f"{mode.base}/replace", cls="auth-form"))
+            method="post", action=safe_url(f"{mode.base}/replace"), cls="auth-form"))
     else:
         lines.append(P(t("company_backup.err_replace_owner_only", company=company), cls="flash flash--warning"))
     lines.append(H2(t("company_backup.replace_or_separate"), cls="mt-md"))
@@ -598,29 +599,30 @@ async def _opening_page(request: Request, mode: WizardMode):
         request,
         auth_header(t(_TITLE), t("company_backup.opening_subtitle")),
         P(_stage_text(job), id="opening-stage", aria_live="polite"),
-        Div(Div(style=f"width:{job.percent or 0}%", cls="import-progress-fill", id="opening-bar"),
+        Div(Div(style=f"width:{int(job.percent or 0)}%", cls="import-progress-fill", id="opening-bar"),
             cls="import-progress"),
         P(t("company_backup.opening_nothing_imported"), cls="form-hint"),
-        Noscript(A(t("company_backup.check_again"), href=f"{mode.base}/opening", cls="btn btn--secondary btn--full")),
+        Noscript(A(t("company_backup.check_again"), href=safe_url(f"{mode.base}/opening"), cls="btn btn--secondary btn--full")),
         Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary btn--full"),
-             method="post", action=f"{mode.base}/opening/cancel"),
-        Script(f"""
-        (function () {{
+             method="post", action=safe_url(f"{mode.base}/opening/cancel")),
+        Script("""
+        (function () {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
           var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
-          setTimeout(function poll() {{
-            fetch({status!r}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.status === 404) {{ window.location = {opened!r}; return null; }}
+          setTimeout(function poll() {
+            fetch(CFG.status, {cache: 'no-store'}).then(function (r) {
+              if (r.status === 404) { celerpGo(CFG.opened); return null; }
               return r.ok ? r.json() : null;
-            }}).then(function (s) {{
-              if (!s) {{ setTimeout(poll, 2000); return; }}
-              if (s.state !== 'running') {{ window.location = {opened!r}; return; }}
+            }).then(function (s) {
+              if (!s) { setTimeout(poll, 2000); return; }
+              if (s.state !== 'running') { celerpGo(CFG.opened); return; }
               stage.textContent = s.text;
               bar.style.width = (s.percent || 0) + '%';
               setTimeout(poll, 1000);
-            }}).catch(function () {{ setTimeout(poll, 2000); }});
-          }}, 1000);
-        }})();
-        """),
+            }).catch(function () { setTimeout(poll, 2000); });
+          }, 1000);
+        })();
+        """, data_cfg=js_value({'status': str(status), 'opened': str(opened)})),
         status_code=200,
         title=_TITLE,
     )
@@ -741,7 +743,7 @@ def _opening_chosen_page(request: Request, mode: WizardMode, preview: dict):
         auth_header(t(_TITLE)),
         P(t("company_backup.opening_chosen", name=preview["open_now"].get("company_name") or ""), cls="form-hint"),
         Form(Button(t("company_backup.open_chosen"), type="submit", cls="btn btn--primary btn--full"),
-             method="post", action=f"{mode.base}/staged", id="open-chosen", cls="auth-form"),
+             method="post", action=safe_url(f"{mode.base}/staged"), id="open-chosen", cls="auth-form"),
         Script("document.getElementById('open-chosen').submit();"),
         _cancel(mode),
         title=_TITLE,
@@ -774,19 +776,20 @@ async def _restarting_page(request: Request, mode: WizardMode, message: str | No
         auth_header(t(_TITLE)),
         P(message or t("company_backup.restarting"), cls="form-hint"),
         P(t("company_backup.restart_slow"), cls="flash flash--warning", id="restart-timeout", style="display:none;"),
-        A(t("company_backup.check_again"), href=staged, cls="btn btn--secondary btn--full"),
-        Script(f"""
-        (function () {{
+        A(t("company_backup.check_again"), href=safe_url(staged), cls="btn btn--secondary btn--full"),
+        Script("""
+        (function () {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
           var tries = 0, MAX = 40;
-          setTimeout(function poll() {{
-            if (tries++ >= MAX) {{ document.getElementById('restart-timeout').style.display = ''; return; }}
-            fetch({staged!r}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ window.location = {staged!r}; }}
-              else {{ setTimeout(poll, 1500); }}
-            }}).catch(function () {{ setTimeout(poll, 1500); }});
-          }}, 2500);
-        }})();
-        """),
+          setTimeout(function poll() {
+            if (tries++ >= MAX) { document.getElementById('restart-timeout').style.display = ''; return; }
+            fetch(CFG.staged, {cache: 'no-store'}).then(function (r) {
+              if (r.ok && r.headers.get('X-Celerp-Staged')) { celerpGo(CFG.staged); }
+              else { setTimeout(poll, 1500); }
+            }).catch(function () { setTimeout(poll, 1500); });
+          }, 2500);
+        })();
+        """, data_cfg=js_value({'staged': str(staged)})),
         _cancel(mode),
         status_code=status_code,
         title=_TITLE,
@@ -906,7 +909,7 @@ async def _resolving_page(request: Request, mode: WizardMode, e: APIError, targe
             *_start_company_fields(mode, values),
             setup_code_field() if await setup_code_required(mode) else "",
             Button(t("company_backup.check_again"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         ),
         status_code=_status(e),
         title=_TITLE,
@@ -924,7 +927,7 @@ async def _password_again_page(request: Request, mode: WizardMode, e: APIError, 
             Input(type="hidden", name="company_name", value=str(form.get("company_name", ""))),
             *_start_company_fields(mode, values),
             Button(t(_BUTTONS[_CREATE]), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/{target}", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/{target}"), cls="auth-form",
         ),
         _cancel(mode),
         title=_TITLE,
@@ -1465,7 +1468,7 @@ async def _ready_page(request: Request, values: dict, sent: dict):
         Div(Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--primary btn--full",
                    **{"data-copy": "", "data-copy-text": sent["link"]}),
             A(t("company_backup.ready_download"), href=DOWNLOAD, cls="btn btn--secondary btn--full"),
-            A(t("migration.move_another"), href=COMPANY.base, cls="btn btn--secondary btn--full"),
+            A(t("migration.move_another"), href=safe_url(COMPANY.base), cls="btn btn--secondary btn--full"),
             cls="flex-col gap-sm"),
         H2(t("company_backup.ready_next"), cls="mt-md"),
         Ul(Li(t("company_backup.ready_receives", email=values["recipient"], firm=values["firm_name"])),

@@ -10,7 +10,7 @@ picked up when the module is on again.
 from __future__ import annotations
 
 from celerp_fixed_assets import runs, yearend
-from celerp_fixed_assets.calc.periods import parse_period
+from celerp.services.periods import parse_period
 
 
 async def _prepared_runs(session, company_id) -> list[dict]:

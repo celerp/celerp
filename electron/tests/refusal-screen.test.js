@@ -12,7 +12,7 @@ const VIEW = {
   message: "Your data was last opened with Celerp 2.6.0, which is newer than this copy (2.5.3).",
   detail: "Your data has not been changed. Update Celerp to open it.",
   update: "Update Celerp", restart: "Restart to install", download: "Download the installer",
-  downloadUrl: "https://celerp.com/download", quit: "Quit", checking: "Checking...",
+  quit: "Quit", checking: "Checking...",
   downloading: "Downloading... {pct}%", ready: "v{version} ready to install",
   noUpdate: "No newer version is available yet.",
   notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
@@ -30,7 +30,7 @@ function page() {
   const elements = {};
   const doc = {
     getElementById: (id) => {
-      elements[id] ??= { id, textContent: "", hidden: id === "refusal", disabled: false, href: "", clicks: [],
+      elements[id] ??= { id, textContent: "", hidden: id === "refusal", disabled: false, clicks: [],
                          addEventListener(type, fn) { this.clicks.push(fn); },
                          // A disabled button takes no click, as in a browser.
                          click() { if (!this.disabled) this.clicks.forEach((fn) => fn()); } };
@@ -41,7 +41,8 @@ function page() {
   const on = {};
   const celerp = {
     getUpdateState: async () => IDLE,
-    checkForUpdates: () => calls.push("check"),
+    // As the preload bridge does: a promise that settles once main's check is done.
+    checkForUpdates: async () => { calls.push("check"); },
     installUpdate: () => calls.push("install"),
     quit: () => calls.push("quit"),
     restartApp: () => calls.push("relaunch"),
@@ -52,6 +53,9 @@ function page() {
   }
   return { doc, el: doc.getElementById, celerp, calls, on };
 }
+
+// Let every pending promise of the screen settle (a check that ended, the state read after it).
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("the screen says what happened and offers Update Celerp, the installer and Quit",
   async function test_refusal_screen_shows() {
@@ -64,7 +68,7 @@ test("the screen says what happened and offers Update Celerp, the installer and 
     // Nothing has been checked yet, so the status line claims nothing.
     expect(p.el("status").textContent).toBe("");
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Update Celerp", disabled: false });
-    expect(p.el("refusal-download")).toMatchObject({ textContent: VIEW.download, href: VIEW.downloadUrl });
+    expect(p.el("refusal-download")).toMatchObject({ textContent: VIEW.download });
     expect(p.el("refusal-quit").textContent).toBe(VIEW.quit);
     p.el("refusal-quit").click();
     expect(p.calls).toEqual(["quit"]);
@@ -98,6 +102,7 @@ test("nothing newer says so, stops promising an update and offers Check again",
     await showRefusal(p.doc, p.celerp, VIEW);
     p.el("refusal-update").click();
     p.on.onUpdateNotAvailable({ ...IDLE, upToDate: true, revision: 2 });
+    await settle();
     expect(p.el("status").textContent).toBe(VIEW.noUpdate);
     expect(p.el("refusal-detail").textContent).toBe(VIEW.notReleased);
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", disabled: false });
@@ -112,6 +117,7 @@ test("every failure says what failed and offers Update Celerp again", async func
   for (const failure of ["check", "stopped", "inactive"]) {
     p.el("refusal-update").click();
     p.on.onUpdateError({ ...IDLE, status: "error", failure, revision: p.calls.length });
+    await settle();
     expect([failure, p.el("status").textContent]).toEqual([failure, VIEW.failed[failure]]);
     expect(p.el("refusal-detail").textContent).toBe(VIEW.detail);
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Update Celerp", disabled: false });
@@ -181,6 +187,7 @@ test("loading.html carries the screen's elements and loads its script", function
                     "refusal-quit", "status"]) {
     expect([id, html.includes(`id="${id}"`)]).toEqual([id, true]);
   }
+  expect(html).toContain('<a id="refusal-download" href="https://celerp.com/download"></a>');
   expect(html).toContain('<script src="refusal.js"></script>');
   expect(html).toMatch(/<div class="refusal" id="refusal" hidden>/);
 });
@@ -192,6 +199,7 @@ async function foundRelease(version, status) {
   await showRefusal(p.doc, p.celerp, VIEW);
   p.el("refusal-update").click();
   p.on.onUpdateAvailable({ ...IDLE, status, version, percent: 0, revision: 2 });
+  await settle();
   return p;
 }
 
@@ -205,9 +213,8 @@ test("a release that cannot open the data is not offered: the screen says no rel
     expect(p.calls).toEqual(["check", "check"]);
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", disabled: true });
     expect(p.el("status").textContent).toBe("Checking...");
-    // Quit and the installer page stay.
+    // Quit stays.
     expect(p.el("refusal-quit").hidden).toBe(false);
-    expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
   });
 
 test("a release being downloaded is offered as the way out, and ends at Restart to install",
@@ -231,4 +238,78 @@ test("updater state from before the refusal offers one action: Celerp restarts a
     p.el("refusal-update").click();
     expect(p.calls).toEqual(["relaunch"]);
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Restarting...", disabled: true });
+  });
+
+// A check main answers only through checkForUpdates' promise (a check it ignores sends no event).
+function pendingCheck(p) {
+  const check = {};
+  p.celerp.checkForUpdates = () => {
+    p.calls.push("check");
+    return new Promise((resolve, reject) => Object.assign(check, { resolve, reject }));
+  };
+  return check;
+}
+
+test("Restart Now stays Restarting... whatever main sends after the click, until the process exits",
+  async function test_refusal_screen_relaunching_survives_later_events() {
+    const p = page();
+    p.celerp.getUpdateState = async () => ({ ...IDLE, status: "relaunch", revision: 4 });
+    await showRefusal(p.doc, p.celerp, VIEW);
+    p.el("refusal-update").click();
+    p.on.onUpdateLog({ ...IDLE, status: "relaunch", revision: 5 });
+    await settle();
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Restarting...", disabled: true });
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["relaunch"]);
+  });
+
+test("Check again ends when the check settles, even when main sends nothing (a withdrawn release)",
+  async function test_refusal_screen_check_again_ends_when_check_settles() {
+    for (const ending of ["resolve", "reject"]) {
+      const p = page();
+      p.celerp.getUpdateState = async () => ({ ...IDLE, status: "too-old", version: "2.5.9", revision: 3 });
+      await showRefusal(p.doc, p.celerp, VIEW);
+      const check = pendingCheck(p);
+      p.el("refusal-update").click();
+      await settle();
+      expect([ending, p.el("status").textContent, p.el("refusal-update").disabled]).toEqual([ending, "Checking...", true]);
+      // Main found nothing newer: the release was withdrawn, so its state reads as up to date.
+      p.celerp.getUpdateState = async () => ({ ...IDLE, upToDate: true, revision: 5 });
+      check[ending](new Error("check failed"));
+      await settle();
+      expect([ending, p.el("status").textContent, p.el("refusal-update").textContent, p.el("refusal-update").disabled])
+        .toEqual([ending, VIEW.noUpdate, "Check again", false]);
+      // Quit stays usable throughout.
+      p.el("refusal-quit").click();
+      expect(p.calls).toEqual(["check", "quit"]);
+    }
+  });
+
+test("every busy state a button sets ends on its own signal and survives unrelated events",
+  async function test_every_refusal_intent_ends_and_survives_events() {
+    const intents = [
+      // [start state, label while busy, an unrelated event, the busy state's own end (null: the process exits)]
+      [{ ...IDLE, status: "relaunch", revision: 2 }, "Restarting...",
+        { ...IDLE, status: "relaunch", revision: 3 }, null],
+      [{ ...IDLE, status: "downloaded", version: "2.6.0", percent: 100, revision: 2 }, "Restarting...",
+        { ...IDLE, status: "downloaded", version: "2.6.0", percent: 100, revision: 3 },
+        { event: { ...IDLE, status: "error", failure: "stopped", downloadFailed: true, version: "2.6.0", revision: 4 } }],
+      [{ ...IDLE, revision: 2 }, "Update Celerp", { ...IDLE, revision: 3 }, { settles: true }],
+    ];
+    for (const [start, busyLabel, unrelated, end] of intents) {
+      const p = page();
+      p.celerp.getUpdateState = async () => start;
+      await showRefusal(p.doc, p.celerp, VIEW);
+      const check = pendingCheck(p);
+      p.el("refusal-update").click();
+      p.on.onUpdateLog(unrelated);
+      await settle();
+      expect([start.status, p.el("refusal-update").textContent, p.el("refusal-update").disabled])
+        .toEqual([start.status, busyLabel, true]);
+      if (!end) continue;
+      if (end.event) p.on.onUpdateError(end.event);
+      if (end.settles) check.resolve();
+      await settle();
+      expect([start.status, p.el("refusal-update").disabled]).toEqual([start.status, false]);
+    }
   });

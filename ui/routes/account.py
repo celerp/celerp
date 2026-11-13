@@ -27,7 +27,7 @@ from urllib.parse import quote, urlparse
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -37,6 +37,7 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from ui.components.encode import call, html_response, safe_url
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
 
@@ -124,12 +125,10 @@ def _with_next(url: str, next_action: str | None) -> str:
 # Dismissal removes the dialog from the DOM, not just visually: the waiting
 # state polls on an element inside it, and a hidden closed dialog must not
 # keep polling (and later fire a resume with nothing on screen). The resume
-# path instead only close()s - its trigger element rides inside the dialog
-# and must stay in the DOM while the staged request goes out.
+# path instead only close()s (celerpResume's "fire" step) - its trigger element
+# rides inside the dialog and must stay in the DOM while the staged request goes out.
 _DISMISS_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
                        "if(d){d.close();d.remove();}")
-_CLOSE_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
-                     "if(d){d.close();}")
 
 
 def _cancel_parts(lang: str, panel_id: str) -> list:
@@ -160,10 +159,10 @@ def gate_modal(panel: FT) -> FT:
         id="account-gate-host")
 
 
-def gate_modal_response(panel: FT) -> HTMLResponse:
+def gate_modal_response(panel: FT) -> Response:
     """gate_modal as an HTMX response: retargets the swap at the modal host
     regardless of which control triggered it."""
-    return HTMLResponse(to_xml(gate_modal(panel)), headers={
+    return html_response(gate_modal(panel), headers={
         "HX-Retarget": "#account-gate-host", "HX-Reswap": "outerHTML"})
 
 
@@ -385,7 +384,7 @@ def _waiting_panel(lang: str, panel_id: str, mode: str, n: int = 0,
     if safe_authorize:
         parts.append(P(t("account.google_open_hint", lang), cls="text-muted"))
         parts.append(A(t("account.google_open_link", lang),
-                       href=safe_authorize, target="_blank", rel="noopener",
+                       href=safe_url(safe_authorize), target="_blank", rel="noopener",
                        cls="btn btn--sm btn--outline"))
     if n < POLL_MAX:
         link_q = f"&google_url={quote(safe_authorize, safe='')}" if safe_authorize else ""
@@ -438,22 +437,12 @@ def _signed_in_panel(lang: str, panel_id: str, status: dict,
     return Div(*parts, id=panel_id, cls="cloud-connect-section")
 
 
-def _resume_guard_script(next_action: str, body: str) -> Script:
-    """One-shot guard: the poll can render the signed-in panel more than once
-    (slow response, back navigation); the staged action must fire once. The
-    marker is per-continuation and expires so a later identical action still
-    resumes. The body runs on htmx:afterSettle, not inline: htmx executes this
-    script while inserting the swapped panel, before it wires hx-trigger
-    listeners on the sibling resume element, so an event fired inline (or on a
-    0ms timeout) is dropped."""
-    return Script(
-        f"(function(){{var k='celerp_resume::'+{json.dumps(next_action)};"
-        "var last=parseInt(sessionStorage.getItem(k)||'0',10);"
-        "if(Date.now()-last<30000){return;}"
-        "sessionStorage.setItem(k,String(Date.now()));"
-        "document.body.addEventListener('htmx:afterSettle',function h(){"
-        "document.body.removeEventListener('htmx:afterSettle',h);"
-        f"{body}}});}})();")
+def _resume_guard_script(next_action: str, step: str, arg: str | None = None) -> Script:
+    """The staged action, once: celerpResume (celerp-page.js) runs *step* with *arg* on the
+    next htmx:afterSettle, at most once per continuation in 30 seconds. The poll can render
+    the signed-in panel more than once (slow response, back navigation), and htmx runs this
+    script before it wires the sibling resume element's listeners."""
+    return Script(call("celerpResume", f"celerp_resume::{next_action}", step, arg))
 
 
 def _resume_parts(next_action: str) -> list:
@@ -463,16 +452,12 @@ def _resume_parts(next_action: str) -> list:
         # The document page's send affordance only exists on the connected
         # render; reload with a one-shot marker the page reads to auto-open
         # the send dialog.
-        return [_resume_guard_script(next_action,
-                                     "sessionStorage.setItem('celerp_open_send','1');"
-                                     "location.reload();")]
+        return [_resume_guard_script(next_action, "reloadWith", "celerp_open_send")]
     if next_action == "ai":
         # The AI page renders its chat once the account exists; load it fresh.
-        return [_resume_guard_script(next_action, "location.assign('/ai');")]
+        return [_resume_guard_script(next_action, "go", "/ai")]
     if next_action in _RESUBMIT_FORMS:
-        return [_resume_guard_script(next_action,
-                                     f"var f=document.getElementById('{_RESUBMIT_FORMS[next_action]}');"
-                                     "if(f){f.requestSubmit();}")]
+        return [_resume_guard_script(next_action, "submit", _RESUBMIT_FORMS[next_action])]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")
         fire = Div(id="account-resume",
@@ -486,18 +471,16 @@ def _resume_parts(next_action: str) -> list:
                    hx_vals=json.dumps({"id": module_id, "zone": "1"}),
                    hx_target="#community-zone", hx_swap="outerHTML",
                    hx_trigger="celerp-resume")
-    return [fire, _resume_guard_script(
-        next_action,
-        _CLOSE_GATE_MODAL +
-        "var el=document.getElementById('account-resume');"
-        "if(el){htmx.trigger(el,'celerp-resume');}")]
+    return [fire, _resume_guard_script(next_action, "fire")]
+
+
+_PANEL_IDS = ("celerp-account-panel", "cloud-relay-tab", GATE_PANEL_ID)
 
 
 def _panel_id_from(request: Request) -> str:
     pid = request.query_params.get("panel", "celerp-account-panel")
     # The id lands in HTML attributes; keep it to known targets.
-    allowed = ("celerp-account-panel", "cloud-relay-tab", GATE_PANEL_ID)
-    return pid if pid in allowed else "celerp-account-panel"
+    return pid if pid in _PANEL_IDS else "celerp-account-panel"
 
 
 def setup_routes(app):
@@ -511,9 +494,7 @@ def setup_routes(app):
         if not await _account_allowed(request):
             # Below-admin click on an account entry point: say why nothing
             # opens instead of swapping in silence.
-            return HTMLResponse(
-                to_xml(Div(id=panel_id)),
-                headers=toast_header(t("account.admin_only", lang), "info"))
+            return html_response(Div(id=panel_id), headers=toast_header(t("account.admin_only", lang), "info"))
         intent = request.query_params.get("intent", "signup")
         next_action = _next_from(request.query_params.get("next"))
         methods = await signup_methods(token) if intent != "claim" else {}
@@ -571,10 +552,7 @@ def setup_routes(app):
                                authorize_url=url)
         # Open the system browser (Google refuses embedded webviews; same
         # pattern as the marketplace checkout).
-        panel.children = (*panel.children, Script(
-            f"(function(){{var u={json.dumps(url)};"
-            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
-            f"else{{window.open(u,'_blank');}}}})();"))
+        panel.children = (*panel.children, Script(call("celerpOpenExternal", url)))
         return panel
 
     @app.get("/account/poll")

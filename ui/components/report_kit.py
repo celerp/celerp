@@ -26,6 +26,7 @@ from ui.api_client import APIError
 from ui.components.shell import no_access_text
 from ui.components.table import fmt_money
 from ui.i18n import t
+from ui.components.encode import raw_html, safe_url
 
 # SVG icons (matching documents.py style)
 ICON_CSV_EXPORT = (
@@ -71,14 +72,14 @@ def action_bar(print_path: str, csv_path: str, params) -> FT:
     """
     return Div(
         A(
-            NotStr(ICON_CSV_EXPORT),
-            href=href(csv_path, params),
+            raw_html(ICON_CSV_EXPORT),
+            href=safe_url(href(csv_path, params)),
             cls="btn btn--ghost btn--icon",
             title=t("btn.export_csv"),
         ),
         A(
-            NotStr(ICON_PRINT),
-            href=href(print_path, params),
+            raw_html(ICON_PRINT),
+            href=safe_url(href(print_path, params)),
             target="_blank",
             cls="btn btn--ghost btn--icon",
             title=t("btn.print"),
@@ -197,7 +198,7 @@ def journal_totals(data: dict, currency: str | None = None, *,
         extra.append(Span(filter_words or t("acct.filtered_totals"),
                           cls="val-chip val-chip--alert"))
         if clear_href:
-            extra.append(A(t("acct.filter_clear"), href=clear_href, cls="btn btn--ghost btn--sm"))
+            extra.append(A(t("acct.filter_clear"), href=safe_url(clear_href), cls="btn btn--ghost btn--sm"))
     return totals_chips(total_debit, total_credit, abs(total_debit - total_credit) < 0.01,
                         currency, extra, id=JOURNAL_TOTALS_ID,
                         **({"hx_swap_oob": "true"} if oob else {}))
@@ -280,7 +281,7 @@ def print_shell(company: dict, title: str, subtitle: str, body: FT,
         Body(
             report_header(company, title, subtitle) if header else None,
             body,
-            Div(NotStr(f'{t("reports.powered_by")} <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
+            Div(t("reports.powered_by"), " ", A("celerp.com", href="https://celerp.com"), cls="report-footer"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )

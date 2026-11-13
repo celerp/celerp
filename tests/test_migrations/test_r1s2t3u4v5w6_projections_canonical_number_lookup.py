@@ -146,7 +146,7 @@ def test_every_server_encoding_upgrades_stores_padded_numbers_stripped_and_holds
         assert sorted(r for r in stored if r[1]) == sorted((f"LEG-{n}-\u00c9",) * 2 for n in _PADS)
         numbers = [f"{p}-{n.lower()}-\u00c9" for p in ("leg", "key") for n in sorted(_PADS)]
         holders, statements, plan = asyncio.run(_lookups(async_url, cid, numbers))
-        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)] + [
+        assert [h[:2] for h in holders] == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)] + [
             ("doc", f"MOVED-{n}") for n in sorted(_PADS)], holders
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
@@ -166,7 +166,7 @@ def test_a_head_database_restored_into_another_encoding_keeps_its_number_indexes
 
         assert [_valid(dst_url, name) for name in INDEXES] == [True, True, True]
         holders, statements, plan = asyncio.run(_lookups(dst_async, cid, ["leg-space-\u00c9"]))
-        assert holders == [("doc", "LEG-space-\u00c9")]
+        assert [h[:2] for h in holders] == [("doc", "LEG-space-\u00c9")]
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
             w for line in plan for w in line.split()}, plan
@@ -247,6 +247,7 @@ def test_every_numbering_statement_and_index_definition_is_ascii_without_chr(mon
     for kind in ("doc", "list"):
         asyncio.run(_ids_numbered(session, "c", kind, candidate, doc_type="invoice"))
     monkeypatch.setattr(revision, "op", op)
+    monkeypatch.setattr("celerp.migrations._lookup_index.op", op)
     monkeypatch.setattr(revision, "update_projection_state", lambda *_, **__: None)
     revision.upgrade()
 

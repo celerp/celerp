@@ -33,7 +33,7 @@ from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 from celerp.importers.adapters.base import COMPANY_QUESTION
@@ -57,6 +57,7 @@ from ui.security import company_owner
 from ui.routes.auth import auth_header, finish_sign_in
 from ui.routes.setup import browser_timezone_field, company_choice_script, setup_timezone
 from ui.streaming import ClosingStreamingResponse
+from ui.components.encode import html_response, safe_url
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -172,7 +173,7 @@ def wizard_page(request: Request, *content, status_code: int = 200, title: str =
                       title=page_title(title))
     if status_code == 200:
         return page
-    return HTMLResponse(to_xml(page), status_code=status_code)
+    return html_response(page, status_code=status_code)
 
 
 def wizard_table(*parts, cls: str = "data-table") -> FT:
@@ -182,7 +183,7 @@ def wizard_table(*parts, cls: str = "data-table") -> FT:
 
 def back_link(href: str) -> FT:
     label = t("auth.return_to_setup") if href == "/setup" else t("btn.back")
-    return P(A(label, href=href, cls="auth-link"), cls="auth-alt-action")
+    return P(A(label, href=safe_url(href), cls="auth-link"), cls="auth-alt-action")
 
 
 def _steps(current: int) -> FT:
@@ -215,9 +216,9 @@ def choice_card(label: str, desc: str, *, href: str | None = None, post_to: str 
     whole card is the click target; the label is the link or button itself."""
     if post_to:
         action = Button(label, type="submit", cls="quick-link-action")
-        return Form(Strong(action), P(desc, cls="quick-link-desc"), method="post", action=post_to,
+        return Form(Strong(action), P(desc, cls="quick-link-desc"), method="post", action=safe_url(post_to),
                     cls="quick-link-card")
-    return Div(Strong(A(label, href=href, cls="quick-link-action")), P(desc, cls="quick-link-desc"),
+    return Div(Strong(A(label, href=safe_url(href), cls="quick-link-action")), P(desc, cls="quick-link-desc"),
                cls="quick-link-card")
 
 
@@ -268,12 +269,12 @@ def api_token(request: Request, mode: WizardMode) -> str | None:
     return None if mode.bootstrap or mode.start_company else get_token(request)
 
 
-def upload_again_page(request: Request, mode: WizardMode, message: str) -> HTMLResponse:
+def upload_again_page(request: Request, mode: WizardMode, message: str) -> Response:
     """An upload that is gone: the reason, and the way to upload the file again."""
     resp = wizard_page(request, auth_header(t(mode.title)), flash(message),
-                       A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
+                       A(t("migration.upload_again"), href=safe_url(mode.base), cls="btn btn--primary btn--full"),
                        back_link(mode.back), title=mode.title)
-    return resp if isinstance(resp, HTMLResponse) else HTMLResponse(to_xml(resp))
+    return resp if isinstance(resp, Response) else html_response(resp)
 
 
 def _expired(request: Request, mode: WizardMode, message: str | None = None):
@@ -397,7 +398,7 @@ def _checklist_panel(mode: WizardMode, source: str, checklist: dict | None, erro
                  for u in uploads)),
             P(t("migration.export_remove_hint"), cls="form-hint"),
         ) if uploads else "",
-        P(A(t("migration.export_print"), href=f"{mode.base}/checklist?{urlencode({'source': source})}",
+        P(A(t("migration.export_print"), href=safe_url(f"{mode.base}/checklist?{urlencode({'source': source})}"),
             target="_blank", rel="noopener", cls="auth-link"), cls="export-print-link"),
         id="export-checklist", cls="export-checklist",
     )
@@ -460,13 +461,13 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         *(sign_in_fields(email) if mode.start_company else []),
         P(t("migration.retention"), cls="form-hint"),
         Button(t("migration.analyze"), type="submit", cls="btn btn--primary btn--full"),
-        method="post", action=f"{mode.base}/scan", enctype="multipart/form-data", cls="auth-form",
+        method="post", action=safe_url(f"{mode.base}/scan"), enctype="multipart/form-data", cls="auth-form",
     )
     sample = Form(
         setup_code_field() if code_required else "",
         *(sign_in_fields(email) if mode.start_company else []),
         Button(t("migration.try_sample"), type="submit", cls="btn btn--secondary btn--full"),
-        method="post", action=f"{mode.base}/sample", cls="auth-form mt-sm",
+        method="post", action=safe_url(f"{mode.base}/sample"), cls="auth-form mt-sm",
     )
     return wizard_page(
         request,
@@ -500,9 +501,9 @@ def _change_source_page(request: Request, mode: WizardMode, entry: dict, source:
             Input(type="hidden", name="confirm", value="1"),
             Input(type="hidden", name="prepared_by", value=entry.get("prepared_by", "")),
             Button(t("migration.change_source_confirm"), type="submit", cls="btn btn--primary btn--full"),
-            method="get", action=mode.base, cls="auth-form",
+            method="get", action=safe_url(mode.base), cls="auth-form",
         ),
-        A(t("migration.keep_current_file"), href=f"{mode.base}/coverage", cls="btn btn--secondary btn--full mt-sm"),
+        A(t("migration.keep_current_file"), href=safe_url(f"{mode.base}/coverage"), cls="btn btn--secondary btn--full mt-sm"),
         back_link(mode.back),
     )
 
@@ -556,16 +557,16 @@ async def _choose_source(request: Request, mode: WizardMode):
 
 
 def _with_cleared_scan(resp, request: Request, mode: WizardMode):
-    if not isinstance(resp, HTMLResponse):
-        resp = HTMLResponse(to_xml(resp))
+    if not isinstance(resp, Response):
+        resp = html_response(resp)
     _clear_scan_cookie(resp, mode, request)
     return resp
 
 
 def _with_draft(resp, request: Request, mode: WizardMode, token: str | None):
     """``resp`` keeping the export-set draft ``token``, or dropping a draft the API no longer holds."""
-    if not isinstance(resp, HTMLResponse):
-        resp = HTMLResponse(to_xml(resp))
+    if not isinstance(resp, Response):
+        resp = html_response(resp)
     if token:
         _set_cookie(resp, DRAFT_COOKIE, token, mode, request)
     else:
@@ -702,7 +703,7 @@ def _request_actions(mode: WizardMode, row: dict) -> FT:
     actions = []
     if row.get("files") and row.get("readable"):
         actions.append(Form(Button(t("migration.export_request_add"), type="submit", cls="btn btn--primary btn--sm"),
-                            method="post", action=f"{path}/add"))
+                            method="post", action=safe_url(f"{path}/add")))
     if row.get("status") in ("pending", "sent"):
         actions.append(Button(t("btn.revoke"), type="button", hx_post=f"{path}/revoke",
                               hx_confirm=t("migration.export_request_revoke_confirm"),
@@ -791,9 +792,9 @@ async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | 
         field("reply_to", "company_backup.reply_label", "email", "320"),
         Button(t("migration.export_request_send"), type="submit", cls="btn btn--secondary btn--full"),
         id="export-request-form", hx_post=f"{mode.base}/requests", hx_target="#export-requests",
-        hx_swap="outerHTML", method="post", action=f"{mode.base}/requests", cls="auth-form",
+        hx_swap="outerHTML", method="post", action=safe_url(f"{mode.base}/requests"), cls="auth-form",
     ) if asked else P(sources_error or t("migration.export_requests_no_source"), cls="form-hint")
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.export_requests_title")),
         P(t("migration.export_requests_hint"), cls="form-hint"),
         P(notice, cls="flash flash--success") if notice else "",
@@ -801,7 +802,7 @@ async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | 
         form,
         flash(list_error) if list_error else _requests_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
         id="export-requests", cls="export-requests",
-    )))
+    ))
 
 
 async def _requests(request: Request, mode: WizardMode):
@@ -950,9 +951,9 @@ async def _moves_panel(request: Request, mode: WizardMode, *, values: dict | Non
         P(t("migration.move_request_files_read"), cls="form-hint"),
         Button(t("migration.move_request_send"), type="submit", cls="btn btn--secondary btn--full"),
         id="move-request-form", hx_post=f"{mode.base}/move-requests", hx_target="#move-requests",
-        hx_swap="outerHTML", method="post", action=f"{mode.base}/move-requests", cls="auth-form",
+        hx_swap="outerHTML", method="post", action=safe_url(f"{mode.base}/move-requests"), cls="auth-form",
     )
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.move_requests_title")),
         P(t("migration.move_requests_hint"), cls="form-hint"),
         P(notice, cls="flash flash--success") if notice else "",
@@ -960,7 +961,7 @@ async def _moves_panel(request: Request, mode: WizardMode, *, values: dict | Non
         form,
         flash(list_error) if list_error else _moves_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
         id="move-requests", cls="export-requests",
-    )))
+    ))
 
 
 async def _moves(request: Request, mode: WizardMode):
@@ -1022,7 +1023,7 @@ def _several_table(mode: WizardMode, rows: list[dict]) -> FT:
     def next_action(row: dict) -> FT:
         if row["state"] == "ready":
             return Form(Button(t("migration.several_continue"), type="submit", cls="btn btn--primary btn--sm"),
-                        method="post", action=f"{mode.base}/several/{row['id']}/open")
+                        method="post", action=safe_url(f"{mode.base}/several/{row['id']}/open"))
         if row["state"] == "started":
             return A(t("migration.several_open_run"), href=f"/migrations/{row['run_id']}", cls="auth-link")
         return Span(row.get("error") or t("migration.several_gone"))
@@ -1090,7 +1091,7 @@ async def _several(request: Request, mode: WizardMode, *, error: str | None = No
         Button(t("migration.several_upload"), type="submit", cls="btn btn--primary btn--full"),
         hx_post=f"{mode.base}/several", hx_encoding="multipart/form-data", hx_target="#several-list",
         hx_swap="outerHTML", hx_on__after_request="if (event.detail.successful) this.files.value=''",
-        method="post", action=f"{mode.base}/several", enctype="multipart/form-data", cls="auth-form",
+        method="post", action=safe_url(f"{mode.base}/several"), enctype="multipart/form-data", cls="auth-form",
     )
     page = wizard_page(
         request,
@@ -1116,9 +1117,9 @@ async def _upload_several(request: Request, mode: WizardMode):
             str(form.get("source", "")).strip() or None, str(form.get("prepared_by", "")).strip())
     except APIError as e:
         detail = e.detail.get("prepared_by") if isinstance(e.detail, dict) else e.detail
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(detail))))
-    return HTMLResponse(to_xml(await _several_panel(
-        request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads)))))
+        return html_response(await _several_panel(request, mode, error=str(detail)))
+    return html_response(await _several_panel(
+        request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads))))
 
 
 def _file_id(request: Request) -> str | None:
@@ -1147,12 +1148,12 @@ async def _remove_several(request: Request, mode: WizardMode):
     if (denied := await gate(request, mode)) is not None:
         return denied
     if (file_id := _file_id(request)) is None:
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=t("migration.several_gone"))))
+        return html_response(await _several_panel(request, mode, error=t("migration.several_gone")))
     try:
         await api.migration_several_remove(get_token(request), file_id)
     except APIError as e:
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(e.detail))))
-    return HTMLResponse(to_xml(await _several_panel(request, mode, notice=t("migration.several_removed"))))
+        return html_response(await _several_panel(request, mode, error=str(e.detail)))
+    return html_response(await _several_panel(request, mode, notice=t("migration.several_removed")))
 
 
 async def _sample(request: Request, mode: WizardMode):
@@ -1275,7 +1276,7 @@ def _coverage_page(request: Request, mode: WizardMode, entry: dict, errors: dict
             field_error(errors, "mappings"),
             field_error(errors, "prepared_by"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/decisions", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/decisions"), cls="auth-form",
         ),
         back_link(mode.base),
     )
@@ -1342,7 +1343,7 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
             ) if len(rows) > 1 else "",
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
-            method="post", action=f"{mode.base}/decisions", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/decisions"), cls="auth-form",
         ),
         back_link(f"{mode.base}/coverage"),
     )
@@ -1460,7 +1461,7 @@ async def _review_page(request: Request, mode: WizardMode, entry: dict, *, value
             setup_code_field() if await setup_code_required(mode) else "",
             browser_timezone_field(),
             Button(t("migration.create_and_migrate"), type="submit", cls="btn btn--primary btn--full"),
-            method="post", action=f"{mode.base}/start", cls="auth-form",
+            method="post", action=safe_url(f"{mode.base}/start"), cls="auth-form",
         ),
         company_choice_script(),
         back_link(back),
@@ -1709,7 +1710,7 @@ def migrations_routes(app) -> None:
             # A poll swaps its answer into the block, so it never gets the full error page.
             if e.status in (503, 504):
                 return _reconnecting_fragment(run_id)
-            return HTMLResponse("", headers={"HX-Refresh": "true"})
+            return html_response((), headers={"HX-Refresh": "true"})
 
     async def _action(request: Request, run_id: str, action: str):
         token = get_token(request)
@@ -2034,7 +2035,7 @@ async def _complete_page(request: Request, run: dict):
             request,
             auth_header(t("migration.sample_done_title"), t("migration.sample_done_body")),
             pack,
-            A(t("migration.move_first_company"), href=COMPANY.base, cls="btn btn--primary btn--full"),
+            A(t("migration.move_first_company"), href=safe_url(COMPANY.base), cls="btn btn--primary btn--full"),
             A(t("migration.open_sample"), href=open_href, cls="btn btn--secondary btn--full mt-sm"),
         )
     try:
@@ -2044,7 +2045,7 @@ async def _complete_page(request: Request, run: dict):
     totals = [row for row in recon.get("rows") or [] if row.get("check") in _TOTAL_CHECKS]
 
     def option(label: str, href: str, hint: str = ""):
-        return Div(A(label, href=href, cls="btn btn--secondary btn--full"),
+        return Div(A(label, href=safe_url(href), cls="btn btn--secondary btn--full"),
                    P(hint, cls="form-hint") if hint else "", cls="mt-sm")
 
     return wizard_page(
@@ -2121,7 +2122,7 @@ def _xero_attachments_slot(run: dict) -> FT | str:
 
 
 def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error: str | None = None,
-                            account: bool = False) -> HTMLResponse:
+                            account: bool = False) -> Response:
     """The Xero attachments section, swapped in place by every action on it and refreshed
     every few seconds while a fetch is under way."""
     base = f"/migrations/{run_id}/xero-attachments"
@@ -2139,7 +2140,7 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
     if status == "signing_in":
         url = fetch.get("authorize_url") or ""
         body = [P(t("migration.xero_attachments_sign_in_hint")),
-                Div(A(t("migration.xero_attachments_sign_in"), href=url, target="_blank", rel="noopener",
+                Div(A(t("migration.xero_attachments_sign_in"), href=safe_url(url), target="_blank", rel="noopener",
                       cls="btn btn--primary btn--sm") if url else "",
                     Button(t("company_backup.ready_copy_link"), type="button", cls="btn btn--secondary btn--sm",
                            **{"data-copy": "", "data-copy-text": url}) if url else "",
@@ -2167,7 +2168,7 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
     message = account_panel(get_lang(request), next_action="xero-attachments") if account \
         else (flash(error) if error else "")
     polling = {"hx_get": base, "hx_trigger": "every 5s", "hx_swap": "outerHTML"} if status in _XERO_LIVE else {}
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.xero_attachments_title")),
         P(t("migration.xero_attachments_hint"), cls="form-hint"),
         message,
@@ -2185,10 +2186,10 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
             cls="mt-md",
         ) if unmatched else "",
         id="xero-attachments", cls="export-requests mt-md", **polling,
-    )))
+    ))
 
 
-async def _xero_attachments(request: Request, run_id: str, action: str = "") -> HTMLResponse:
+async def _xero_attachments(request: Request, run_id: str, action: str = "") -> Response:
     token = get_token(request)
     error, account = None, False
     if action:

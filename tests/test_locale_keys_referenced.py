@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parents[1]
 SECTIONS = ("company_backup.", "accountant_access.", "firm_view.", "sync_accounts.", "migration.",
@@ -18,7 +19,7 @@ SECTIONS = ("company_backup.", "accountant_access.", "firm_view.", "sync_account
 
 def _shipped_source() -> str:
     parts = []
-    for top in ("celerp", "ui", "default_modules", "electron"):
+    for top in (*APP_ROOTS, "electron"):
         for path in (ROOT / top).rglob("*"):
             if (path.suffix in (".py", ".js", ".html") and path.is_file()
                     and not {"tests", "locales", "node_modules"} & set(path.parts)):

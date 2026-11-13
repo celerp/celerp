@@ -14,11 +14,12 @@ from urllib.parse import quote
 from fasthtml.common import *
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 from ui.components.attrs import hx_vals
 from ui.components.shell import secret_input
 from ui.components.activity import relative_time
+from ui.components.table import doc_href
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token, authorize_in_process
 from ui.security import is_safe_authorize_url
@@ -29,6 +30,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+from ui.components.encode import call, html_response, safe_url
 
 log = logging.getLogger(__name__)
 
@@ -203,13 +205,13 @@ def _last_sync_info(run, attention: int = 0, href: str = "") -> FT:
     counts = _changes(run)
     status = _sync_status_label(run.status)
     if href and run.status in ("failed", "partial") and getattr(run, "errors", None):
-        status = A(status, href=f"{href}#{_SYNC_REASONS_ID}")
+        status = A(status, href=safe_url(f"{href}#{_SYNC_REASONS_ID}"))
     elif run.status == "success" and attention:
         # The sync finished, but records it processed are still waiting on a person.
         status_cls = "connector-sync-info--warn"
         status = t("connectors.needs_attention")
         if href:
-            status = A(status, href=f"{href}#{_ATTENTION_ID}")
+            status = A(status, href=safe_url(f"{href}#{_ATTENTION_ID}"))
     parts = [relative_time(finished.isoformat()), status, counts]
     if attention:
         parts.append(t("connectors.attention_count", n=attention))
@@ -610,11 +612,14 @@ def _cell(value) -> str:
 
 def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
     """One record waiting on a person. A change only a person can reconcile
-    (it carries a signature) offers Mark reconciled, and Undo once marked; one the lock
-    date holds links to Period lock. ``error`` explains why the last Mark or Undo did not apply."""
+    (it carries a signature) offers Mark reconciled, and Undo once marked; an order whose
+    number another record holds links to that record and also offers Import as the next
+    free number; one the lock date holds links to Period lock. ``error`` explains why the
+    last action did not apply."""
     record_id = str(entry.get("id", ""))
     item_id = f"connector-attention-{platform}-{record_id}"
     action = Span()
+    held = entry.get("number_held")
     if entry.get("signature"):
         url = f"/settings/connectors/{platform}/attention/{record_id}/reconciled"
         common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
@@ -629,7 +634,12 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
                 t("connectors.attention_mark_reconciled", lang),
                 cls="btn btn--xs btn--outline", hx_post=url,
                 hx_vals=hx_vals({"signature": entry["signature"]}), **common,
-            ))
+            ), *((" ", Button(
+                t("connectors.attention_import_as", lang, number=held["next_number"]),
+                cls="btn btn--xs btn--outline",
+                hx_post=f"/settings/connectors/{platform}/attention/{record_id}/import-next",
+                hx_vals=hx_vals({"signature": entry["signature"]}), **common,
+            )) if held else ()))
     if entry.get("kind") == "conflict":
         url = f"/settings/connectors/{platform}/attention/{record_id}/resolve"
         common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
@@ -650,9 +660,11 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
     from ui.components.shell import flash
     locked = Span(" ", t("connectors.attention_locked", lang), " ",
                   A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
+    holder = Span(" ", A(t("connectors.attention_open_holder", lang, holder=held["holder"]),
+                         href=safe_url(doc_href(held["holder_id"])))) if held else Span()
     return Li(
-        Strong(str(entry.get("label", record_id))), ": ", str(entry.get("reason", "")),
-        locked, action, flash(error) if error else Span(), id=item_id,
+        Strong(str(entry.get("label", record_id))), ": ", refusal_text(entry.get("reason", "")),
+        holder, locked, action, flash(error) if error else Span(), id=item_id,
     )
 
 
@@ -794,7 +806,7 @@ def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
     href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
     return Div(
         P(t("connectors.connect_lapsed", lang, service=get_connector(cid).display_name)),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
@@ -1121,17 +1133,17 @@ def _entitlement_cta(lang: str = "en") -> FT:
     href, label = commercial_cta("subscribe", "cloud", t("connectors.start_trial", lang), lang)
     return Div(
         P(t("connectors.no_subscription", lang), cls="settings-hint"),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
 
-def _connect_refused(platform: str, reason: str | FT) -> HTMLResponse:
+def _connect_refused(platform: str, reason: str | FT) -> Response:
     """A refused connect answers beside the form, so the values typed or pasted into it
     stay where they are for the user to check."""
     if isinstance(reason, str):
         reason = Span(reason, cls="flash flash--warning")
-    return HTMLResponse(to_xml(reason), headers={
+    return html_response(reason, headers={
         "HX-Retarget": f"#connector-connect-result-{platform}", "HX-Reswap": "innerHTML"})
 
 
@@ -1147,7 +1159,7 @@ def _connect_required(platform: str, exc: Exception, lang: str) -> FT | None:
     href, label = commercial_cta("subscribe", "cloud", t("btn.get_connect", lang), lang)
     return Div(
         P(t("connectors.peer_needs_connect", lang), cls="settings-hint"),
-        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=safe_url(href), target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 
@@ -1507,7 +1519,7 @@ async def _grant_action(request: Request, grant_id: str, action):
         errors.append(str(exc))
     table = _grants_table(grants, lang)
     table.children = (*(P(e, cls="flash flash--warning") for e in errors), *table.children)
-    return HTMLResponse(to_xml(table))
+    return html_response(table)
 
 
 def setup_routes(app):
@@ -1535,7 +1547,7 @@ def setup_routes(app):
                 page_header(t("accountant_access.title", lang), back),
                 P(t("accountant_access.owner_only", lang, owner=owner), cls="flash flash--warning"),
                 title=t("accountant_access.title", lang), nav_active="settings", request=request)
-            return HTMLResponse(to_xml(page), status_code=403)
+            return html_response(page, status_code=403)
         if (denied := await _check_permission(request, "manage_integrations")):
             return denied
         company = getattr(request.state, "auth_company", {})
@@ -1624,9 +1636,7 @@ def setup_routes(app):
         except api.APIError:
             grants = None
         refreshed = [] if grants is None else [_grants_table(grants, lang, hx_swap_oob="true")]
-        return HTMLResponse(
-            to_xml(Div(content, *refreshed)),
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+        return html_response(Div(content, *refreshed), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
     @app.post("/settings/accountant-access/grants/{grant_id}/renew")
     async def accountant_access_renew(request: Request, grant_id: str):
@@ -1673,12 +1683,12 @@ def setup_routes(app):
         # link, so nothing is silently lost if the popup is blocked (GDR: users must
         # always know what comes next and have a visible way forward).
         return Div(
-            Script(f"window.open({url!r}, '_blank', 'noopener');"),
+            Script(call("celerpOpen", str(url), "_blank", "noopener")),
             Span(t("connectors.authorize_opened", lang,
                    default="Opening authorization in a new tab, complete it there, then return here."),
                  cls="flash flash--info"),
             A(t("connectors.authorize_link", lang, default="If nothing opened, click here to authorize"),
-              href=url, target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
+              href=safe_url(url), target="_blank", rel="noopener", cls="btn btn--sm btn--outline"),
         )
 
     @app.post("/settings/connectors/{platform}/frequency")
@@ -1771,9 +1781,9 @@ def setup_routes(app):
             rows = _entity_direction_rows(platform, directions, lang, detail=detail, error=error)
             if detail:
                 # A first sync's preview on the same page shows the new directions.
-                return HTMLResponse(to_xml(rows), headers={} if error else {
+                return html_response(rows, headers={} if error else {
                     "HX-Trigger": "connectorDirectionsChanged"})
-            return HTMLResponse(to_xml(rows), headers={
+            return html_response(rows, headers={
                 "HX-Retarget": f"#connector-directions-{platform}", "HX-Reswap": "outerHTML"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
@@ -1927,7 +1937,7 @@ def setup_routes(app):
         if polling and runs and not _any_in_progress(runs):
             msg, kind = _sync_complete_toast(runs, attention, service_name(platform), lang)
             from ui.components.shell import toast_header
-            return HTMLResponse(to_xml(view), headers=toast_header(msg, kind))
+            return html_response(view, headers=toast_header(msg, kind))
         return view
 
     @app.post("/settings/connectors/{platform}/deposit-account")
@@ -1996,6 +2006,29 @@ def setup_routes(app):
             return _attention_item(platform, entry, lang, error=str(exc.detail))
         return _attention_item(platform, result["entry"], lang)
 
+    @app.post("/settings/connectors/{platform}/attention/{record_id}/import-next")
+    async def connector_import_next(request: Request, platform: str, record_id: str):
+        """HTMX: import a WooCommerce order whose number another record holds under the next
+        free number, for the order state the person reviewed, then show the number it took in
+        the entry's place, linked to the order. Only WooCommerce orders carry this action."""
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if platform != "woocommerce":
+            return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
+        token = _token(request)
+        from ui.api_client import APIError, import_woocommerce_order_next
+
+        lang = get_lang(request)
+        signature = str((await request.form()).get("signature", ""))
+        try:
+            result = await import_woocommerce_order_next(token, record_id, signature)
+        except APIError as exc:
+            entries = await _attention(_request_company_id(request), platform)
+            entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
+            return _attention_item(platform, entry, lang, error=refusal_text(exc.detail) or str(exc.detail))
+        return Li(A(t("connectors.attention_imported_as", lang, number=result["number"]),
+                    href=f"/docs/{result['doc_id']}"), id=f"connector-attention-{platform}-{record_id}")
+
     @app.post("/settings/connectors/{platform}/attention/{record_id}/resolve")
     async def connector_resolve_conflict(request: Request, platform: str, record_id: str):
         """HTMX: keep the store's or Celerp's values of a product changed in both, then
@@ -2050,9 +2083,9 @@ def setup_routes(app):
         section = await _from_accountant_section(token, lang)
         date = result.get("ts") or "--"
         if result.get("already"):  # a stale tab repeated it; nothing new was posted
-            return HTMLResponse(to_xml(section), headers=toast_header(
+            return html_response(section, headers=toast_header(
                 t("accountant_access.from_already", lang, date=date), "info"))
-        return HTMLResponse(to_xml(section), headers=toast_header(
+        return html_response(section, headers=toast_header(
             t("accountant_access.from_posted", lang, date=date), "success"))
 
     @app.get("/settings/connectors/{platform}")

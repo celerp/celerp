@@ -25,6 +25,7 @@ from test_money_stock_and_contact_invariants import _auth_company
 from test_tax_refusal_draft_route import route
 from ui.i18n import refusal_text, t
 from test_helpers import doc_version
+from shipped_sources import SHIPPED_ROOTS
 
 _LINES = [{"description": "Taxed", "quantity": 1, "unit_price": 100.0, "taxes": []},
           {"description": "Unset", "quantity": 1, "unit_price": 50.0, "taxes": None}]
@@ -163,7 +164,7 @@ def test_every_writer_that_issues_a_document_refuses_a_line_whose_tax_is_unset()
     calls refuse_unset_line_tax or is named above with its reason."""
     root = Path(__file__).resolve().parent.parent
     issuing = {}
-    for top in ("celerp", "default_modules"):
+    for top in SHIPPED_ROOTS:
         for path in (root / top).rglob("*.py"):
             if "/tests/" in str(path) or path.name in ("doc_projections.py", "schemas.py"):
                 continue

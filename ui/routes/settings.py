@@ -10,7 +10,7 @@ from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -20,6 +20,7 @@ from ui.components.shell import base_shell, page_header, flash, toast_header, pa
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
 from celerp.tax_regimes import country_name, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
+from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
@@ -33,6 +34,7 @@ from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
+from ui.components.encode import call, EVENT, html_response, inert_media_type, safe_url, THIS
 
 
 def _refusal_message(e: APIError) -> str:
@@ -198,20 +200,10 @@ _TZ_SEARCH: dict[str, str] = {tz: f"{tz} {_tz_offset_str(tz)}" for tz in _TIMEZO
 
 # (raw fiscal-year-start value -> translation key); labels resolved at render (R1)
 _FISCAL_MONTHS: list[tuple[str, str]] = [
-    ("01-01", "settings.fiscal_month_jan"),
-    ("02-01", "settings.fiscal_month_feb"),
-    ("03-01", "settings.fiscal_month_mar"),
-    ("04-01", "settings.fiscal_month_apr"),
-    ("05-01", "settings.fiscal_month_may"),
-    ("06-01", "settings.fiscal_month_jun"),
-    ("07-01", "settings.fiscal_month_jul"),
-    ("08-01", "settings.fiscal_month_aug"),
-    ("09-01", "settings.fiscal_month_sep"),
-    ("10-01", "settings.fiscal_month_oct"),
-    ("11-01", "settings.fiscal_month_nov"),
-    ("12-01", "settings.fiscal_month_dec"),
+    (v, f"settings.fiscal_month_{m}")
+    for v, m in zip(FISCAL_YEAR_STARTS, ("jan", "feb", "mar", "apr", "may", "jun",
+                                         "jul", "aug", "sep", "oct", "nov", "dec"))
 ]
-_FISCAL_VALUES: frozenset[str] = frozenset(v for v, _ in _FISCAL_MONTHS)
 
 # Fields that use constrained selects/comboboxes instead of free-text input
 _COMPANY_SELECT_FIELDS = frozenset({"currency", "timezone", "fiscal_year_start"})
@@ -263,8 +255,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             if not isinstance(tax, dict):
                 return tax
             restore_url = f"/settings/{pfx}/{idx}/{field}/display"
-            esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-                      f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}")
+            esc_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
             if field in _TAX_SELECT_FIELDS:
                 if field in _TAX_BOOL_FIELDS:
                     val = str(bool(tax.get(field))).lower()
@@ -471,9 +462,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
 def _toast_response(message: str, *fragments: FT):
     """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
     so no stale error text persists in the page."""
-    from starlette.responses import HTMLResponse as _HR
-    body = "".join(to_xml(f) for f in fragments)
-    return _HR(body, headers=toast_header(message, "error"))
+    return html_response(fragments, headers=toast_header(message, "error"))
 
 
 def _status_error(status_id: str, message: str, oob: FT | None = None):
@@ -1049,7 +1038,7 @@ def setup_routes(app):
         # A withdrawn currency the books are already kept in may be saved unchanged; the API refuses moving to one.
         if field == "currency" and value not in KNOWN_CURRENCY_CODES:
             return P(t("error.invalid_currency", value=repr(value)), cls="cell-error")
-        if field == "fiscal_year_start" and value not in _FISCAL_VALUES:
+        if field == "fiscal_year_start" and value not in FISCAL_YEAR_STARTS:
             return P(t("error.invalid_fiscal_year", value=repr(value)), cls="cell-error")
         if field == "timezone":
             try:
@@ -1073,8 +1062,7 @@ def setup_routes(app):
             changes = _business_type_change_lines(result.get("changes") or {})
             headline = t("settings.business_type_saved_restart" if restart else "settings.business_type_saved")
             # Changes made on the user's behalf stay on screen until dismissed.
-            return Response(to_xml(cell), media_type="text/html",
-                            headers=toast_header("\n".join([headline, *changes]), "success",
+            return html_response(cell, headers=toast_header("\n".join([headline, *changes]), "success",
                                                  persist=restart or bool(changes)))
 
         try:
@@ -1137,7 +1125,7 @@ def setup_routes(app):
         except APIError:
             # The reset is done; only the redraw failed, so the cell says so.
             return Td(flash(t("users.reset_password_done", lang), "success"), cls="cell")
-        return HTMLResponse(to_xml(card), headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
+        return html_response(card, headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
 
     # ── Users PATCH endpoints ────────────────────────────────────────
     @app.get("/settings/users/{user_id}/{field}/edit")
@@ -1339,7 +1327,8 @@ def setup_routes(app):
         try:
             await api.create_user(token, {"name": name, "email": email, "password": password, "role": role})
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         # Redirect to users tab on success
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/general?tab=users"})
 
@@ -1521,7 +1510,7 @@ def setup_routes(app):
         enc = quote(category, safe="")
         patch_url = f"/settings/cat-schema/{enc}/{idx}/{field}"
         display_url = f"/settings/cat-schema/{enc}/{idx}/{field}/display"
-        esc_js = f"if(event.key==='Escape'){{htmx.ajax('GET','{display_url}',{{target:this.closest('td'),swap:'outerHTML'}});}}"
+        esc_js = call("celerpCellKey", THIS, EVENT, {"url": display_url})
         if field in ("required", "editable", "show_in_table"):
             return Td(
                 Select(
@@ -1762,8 +1751,7 @@ def setup_routes(app):
         if not saved.get("taxes_from"):
             return cell
         # Naming the country replaced the company's starting taxes: say so, with the way to them.
-        from starlette.responses import HTMLResponse as _HR
-        return _HR(to_xml(cell), headers=toast_header(
+        return html_response(cell, headers=toast_header(
             t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
             action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
 
@@ -1819,7 +1807,7 @@ def setup_routes(app):
                 type="button",
                 cls=f"flash {flash_cls} bulk-filter-btn{' is-active' if active else ''}",
                 data_filter=value,
-                onclick=f"celerpBulkFilter('{value}', this)",
+                onclick=call('celerpBulkFilter', str(value), THIS),
             )
 
         return Div(
@@ -1988,7 +1976,6 @@ def setup_routes(app):
     @app.get("/topbar-company-switcher")
     async def topbar_company_switcher(request: Request):
         """HTMX fragment: company switcher pill for the topbar. Renders empty when only 1 company."""
-        from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return Response(content="", media_type="text/html")
@@ -2006,15 +1993,14 @@ def setup_routes(app):
         widget = Select(
             *options,
             Option(t("firm_view.all_companies", get_lang(request)), value=""),
-            onchange="location=this.value?'/switch-company/'+this.value:'/companies'",
+            onchange="celerpGo(this.value?'/switch-company/'+this.value:'/companies')",
             cls="company-switcher-select",
         )
-        return Response(to_xml(widget), media_type="text/html")
+        return html_response(widget)
 
     @app.get("/topbar-relay-status")
     async def topbar_relay_status(request: Request):
         """HTMX fragment: return the relay dot span for the topbar user menu."""
-        from fasthtml.common import to_xml
         from ui.i18n import get_lang
         token = _token(request)
         lang = get_lang(request)
@@ -2038,11 +2024,11 @@ def setup_routes(app):
             dot_href = "/settings/cloud"
             dot_target = "_self"
         dot = Span(
-            A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+            A(Span(cls=dot_cls, title=dot_title), href=safe_url(dot_href), target=dot_target,
               cls="relay-dot-link", onclick="event.stopPropagation()"),
             id="relay-dot-wrap",
         )
-        return Response(to_xml(dot), media_type="text/html")
+        return html_response(dot)
 
     def _cloud_claim_selection(
         matches: list[dict], email: str, iid: str,
@@ -2405,7 +2391,8 @@ def setup_routes(app):
         try:
             await api.create_category(token, name)
         except APIError as e:
-            return _refusal(e)
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="cell-error")
         return Response("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.delete("/settings/categories/{category_key}")
@@ -2544,14 +2531,11 @@ def setup_routes(app):
     # token is missing.
 
     def _backup_error(detail: str, lang: str = "en", flash_id: str | None = None) -> Response:
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         kwargs = {"cls": "empty-state-msg"}
         if flash_id:
             kwargs["id"] = flash_id
-        return Response(
-            content=to_xml(Div(detail, **kwargs)),
-            media_type="text/html",
-        )
+        return html_response(Div(detail, **kwargs))
 
     @app.get("/backup/active")
     async def backup_active(request: Request):
@@ -2578,7 +2562,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         token = _token(request)
         lang = get_lang(request)
         try:
@@ -2589,10 +2573,7 @@ def setup_routes(app):
             return _backup_error(msg, lang)
         items = data.get("items", []) if isinstance(data, dict) else []
         if not items:
-            return Response(
-                content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
-                media_type="text/html",
-            )
+            return html_response(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg"))
         from fasthtml.common import A, Button, Div, Table, Thead, Tbody, Tr, Th, Td
         def _fmt(iso: str | None) -> str:
             if not iso:
@@ -2627,7 +2608,7 @@ def setup_routes(app):
             Tbody(*rows),
             cls="data-table",
         )
-        return Response(content=to_xml(table), media_type="text/html")
+        return html_response(table)
 
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
@@ -2635,7 +2616,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         token = _token(request)
         lang = get_lang(request)
         try:
@@ -2648,10 +2629,7 @@ def setup_routes(app):
         except Exception:
             return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
         msg = t("settings.backup_triggered", lang)
-        resp = Response(
-            content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
-            media_type="text/html",
-        )
+        resp = html_response(Div(msg, cls="flash flash--success", id="backup-flash"))
         resp.headers["HX-Trigger"] = "backupDone"
         return resp
 
@@ -2670,14 +2648,11 @@ def setup_routes(app):
         try:
             stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-            )
+            from fasthtml.common import Div
+            return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
-            media_type=headers.get("content-type", "application/octet-stream"),
+            media_type=inert_media_type(headers.get("content-type")),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
@@ -2695,14 +2670,11 @@ def setup_routes(app):
         try:
             stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-            )
+            from fasthtml.common import Div
+            return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
-            media_type=headers.get("content-type", "application/octet-stream"),
+            media_type=inert_media_type(headers.get("content-type")),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
@@ -2711,30 +2683,25 @@ def setup_routes(app):
 
         The API answers with a flash (success, or "Import failed" / "Restore
         failed") at HTTP 200 for the HTMX swap; it is relayed verbatim so a
-        failed restore is never reported as a success. On success every session
+        failed restore is never reported as a success. The flash was encoded by the
+        backup module; it is relayed with an inert type, which htmx swaps the same way. On success every session
         has ended, so the browser's session cookies are dropped as well. Any
         other status (403 for anyone but the installation owner) is an error flash.
         """
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         from celerp.services.backup_import import SESSION_ENDED_HEADER
         if r.status_code >= 400:
             detail = api.error_text(r, r.text[:200])
-            return Response(
-                content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
-                media_type="text/html",
-            )
-        resp = Response(content=r.text, media_type="text/html")
+            return html_response(Div(detail, cls="flash flash--error", id="backup-flash"))
+        resp = Response(content=r.content, media_type=inert_media_type(r.headers.get("content-type")))
         if r.headers.get(SESSION_ENDED_HEADER):
             from ui.config import clear_session_cookies
             clear_session_cookies(resp, request)
         return resp
 
     def _recovery_error(detail: str) -> Response:
-        from fasthtml.common import Div, to_xml
-        return Response(
-            content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
-            media_type="text/html",
-        )
+        from fasthtml.common import Div
+        return html_response(Div(detail, cls="flash flash--error", id="backup-flash"))
 
     @app.post("/backup/restore/{backup_id}")
     async def backup_restore(request: Request, backup_id: str):
@@ -3205,7 +3172,6 @@ def _company_settings_card(company: dict, lang: str = "en", can_change_business_
 async def _companies_list_response(token: str, lang: str, *notice) -> Response:
     """The "Your companies" fragment: the companies to work in, plus a Deactivated
     section when one of the user's companies is deactivated, with any *notice* on top."""
-    from fasthtml.common import to_xml
     try:
         resp = await api.my_companies(token)
     except Exception:
@@ -3220,7 +3186,7 @@ async def _companies_list_response(token: str, lang: str, *notice) -> Response:
         content = Select(
             *[Option(c.get("company_name", ""), value=c.get("company_id", ""),
                      selected=c.get("is_current", False)) for c in companies],
-            onchange="location='/switch-company/'+this.value",
+            onchange="celerpGo('/switch-company/'+this.value)",
             cls="cell-input cell-input--select",
             style="max-width:320px;",
         )
@@ -3231,7 +3197,7 @@ async def _companies_list_response(token: str, lang: str, *notice) -> Response:
             Table(Tbody(*[_deactivated_company_row(c, lang) for c in deactivated]), cls="detail-table"),
             cls="companies-deactivated",
         ))
-    return Response(to_xml(Div(*parts) if len(parts) > 1 else content), media_type="text/html")
+    return html_response(Div(*parts) if len(parts) > 1 else content)
 
 
 def _deactivated_company_row(company: dict, lang: str) -> FT:
@@ -3570,7 +3536,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
                hx_post=f"/settings/{prefix}/new", hx_swap="none", hx_trigger="click delay:250ms"),
     ]
     if import_path:
-        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
+        actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=safe_url(import_path), cls="btn btn--secondary ml-sm"))
 
     return Div(
         Div(*actions, cls="page-actions mb-md"),
@@ -4062,7 +4028,7 @@ def _cloud_relay_unconnected(
     children.append(
         Div(
             *(
-                [A(subscribe_label, href=subscribe_href, target="_blank", cls="btn btn--primary")]
+                [A(subscribe_label, href=safe_url(subscribe_href), target="_blank", cls="btn btn--primary")]
                 if show_header else []
             ),
             Button(t("btn.connect_to_cloud"),
@@ -4216,12 +4182,12 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             style="display:flex;align-items:center;margin-top:12px;",
         )
 
-    def _link_subscription_button(*, style: str | None = None) -> FT:
+    def _link_subscription_button() -> FT:
         return Button(
             t("btn.link_subscription"), type="button",
             hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
             hx_target="#account-gate-host", hx_swap="outerHTML",
-            cls="btn btn--sm btn--outline", style=style,
+            cls="btn btn--sm btn--outline", style="margin-top:8px;",
         )
 
     if relay_status == "inactive" and token_bound and not entitlement_known:
@@ -4265,7 +4231,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         if relay_status == "error":
             recovery.append(_reconnect_controls())
             if not entitlement_known or entitled is False:
-                recovery.append(_link_subscription_button(style="margin-top:8px;"))
+                recovery.append(_link_subscription_button())
             if token_bound:
                 recovery.append(disconnect_button)
         return Div(
@@ -4302,7 +4268,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # Show team URL (subdomain) if configured
         if public_url:
             rows.append(Tr(Td(t("settings.team_url"), cls="detail-label"), Td(
-                A(public_url, href=public_url, target="_blank", cls="cell--mono"),
+                A(public_url, href=safe_url(public_url), target="_blank", cls="cell--mono"),
                 P(t("settings.share_this_url_with_your_team_members_to_access_ce"), cls="settings-hint",
                   style="margin:4px 0 0;"),
             )))
@@ -4320,7 +4286,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                 Li(t("cloud.free_b4")),
                 style="margin:6px 0 0;padding-left:20px;",
             ),
-            _link_subscription_button(style="margin-top:8px;"),
+            _link_subscription_button(),
             style="margin-top:12px;",
         ) if entitlement_known and tier == "free" else ""
 
@@ -4331,7 +4297,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             _reconnect_controls()
             if relay_status == "inactive" and entitlement_known and tier != "free"
             else "",
-            _link_subscription_button(style="margin-top:8px;")
+            _link_subscription_button()
             if entitlement_known and entitled is False and tier != "free"
             else "",
             disconnect_button,
@@ -4351,7 +4317,7 @@ def _company_backup_section() -> FT:
         P(t("company_backup.contents"), cls="settings-hint"),
         Div(
             A(t("company_backup.download"), href=DOWNLOAD, cls="btn btn--primary btn--sm"),
-            A(t("company_backup.restore_title"), href=SETTINGS.base, cls="btn btn--secondary btn--sm"),
+            A(t("company_backup.restore_title"), href=safe_url(SETTINGS.base), cls="btn btn--secondary btn--sm"),
             A(t("company_backup.send_title"), href=SEND, cls="btn btn--secondary btn--sm"),
             A(t("company_backup.saved_title"), href=SAVED, cls="btn btn--secondary btn--sm"),
             cls="flex-row gap-sm flex-wrap",

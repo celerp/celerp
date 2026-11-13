@@ -16,13 +16,14 @@ from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from celerp.services.permissions import role_has_permission
 from ui.api_client import APIError
 from ui.config import get_role as _get_role, get_token as _token
 from ui.i18n import get_lang, refusal_text, t
+from ui.components.encode import html_response
 
 ACTIONS = ("publish", "unpublish", "stop", "resume")
 
@@ -184,7 +185,7 @@ def setup_routes(app) -> None:
                  *([_bulk_confirmation(platform, asks)] if asks else [])]
         if extra:
             return _bulk_result(done, "flash--success", *extra)
-        return HTMLResponse(to_xml(_bulk_result(done, "flash--success")), headers={"HX-Refresh": "true"})
+        return html_response(_bulk_result(done, "flash--success"), headers={"HX-Refresh": "true"})
 
     @app.post("/api/items/{entity_id}/channel-sync/{platform}/{action}")
     async def item_channel_sync(request: Request, entity_id: str, platform: str, action: str):

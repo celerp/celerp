@@ -22,6 +22,7 @@ from celerp.services.permissions import require_permission
 from celerp_fixed_assets import setup, views
 from celerp_fixed_assets.moves import _locked_assets
 from celerp_fixed_assets.store import _emit, _state
+from ui.components.encode import inert_media_type
 
 ENTITY_TYPE = "fa_asset"
 ATTACHED = "fa.asset.file_attached"
@@ -61,7 +62,7 @@ def serve(company_id, match: dict):
     if dest is None or not dest.exists():
         raise HTTPException(status_code=404, detail="This file is no longer stored.")
     return FileResponse(path=str(dest), filename=match["filename"],
-                        media_type=match.get("mime") or "application/octet-stream")
+                        media_type=inert_media_type(match.get("mime")))
 
 
 async def store_file(session, company_id, user_id, asset_id: str, file: UploadFile, tag: str | None,

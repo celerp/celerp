@@ -65,20 +65,6 @@ async def _list_entity(client, tok) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Unit: _fmt_money + _esc
-# ---------------------------------------------------------------------------
-
-def test_share_esc():
-    """_esc escapes HTML on the dead-link page (None -> '', angle brackets and
-    quotes entitized). Money formatting now lives in celerp.output.doc_print."""
-    from celerp.output.share_render import _esc
-
-    assert _esc(None) == ""
-    assert _esc("<script>") == "&lt;script&gt;"
-    assert _esc('"quoted"') == "&quot;quoted&quot;"
-
-
-# ---------------------------------------------------------------------------
 # revoke_share_link: no share token
 # ---------------------------------------------------------------------------
 

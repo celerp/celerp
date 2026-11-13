@@ -9,13 +9,14 @@ import inspect
 from pathlib import Path
 
 from celerp import credentials
+from shipped_sources import APP_ROOTS
 
 REPO = Path(__file__).resolve().parents[1]
 _ISSUERS = ("issue_token_pair", "issue_token_pair_by_id")
 
 
 def _production_sources():
-    for root in ("celerp", "ui", "default_modules"):
+    for root in APP_ROOTS:
         for path in sorted((REPO / root).rglob("*.py")):
             if "tests" in path.relative_to(REPO).parts:
                 continue

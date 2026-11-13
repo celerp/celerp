@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from celerp.modules import loader, slots
+from shipped_sources import CORE_ROOT, MODULE_ROOT, UI_ROOT
 
 _ROOT = Path(__file__).resolve().parents[2]
 # Readers that take slot names: the registry's own, and the page helpers that
@@ -29,8 +30,8 @@ _INDIRECT = {"visible_slot_contributions": False, "required_connectors": True}
 
 
 def _sources() -> list[Path]:
-    files = [*(_ROOT / "celerp").rglob("*.py"), *(_ROOT / "ui").rglob("*.py"),
-             *(_ROOT / "default_modules").glob("*/*/**/*.py")]
+    files = [*(_ROOT / CORE_ROOT).rglob("*.py"), *(_ROOT / UI_ROOT).rglob("*.py"),
+             *(_ROOT / MODULE_ROOT).glob("*/*/**/*.py")]
     return sorted(f for f in files if "tests" not in f.relative_to(_ROOT).parts
                   and f != _ROOT / "celerp" / "modules" / "slots.py")
 

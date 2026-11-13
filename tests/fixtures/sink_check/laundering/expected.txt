@@ -1,0 +1,5 @@
+JS-NAV | ui/mini.py:2
+JS-NAV | ui/mini.py:3
+JS-NAV | ui/mini.py:4
+JS-NAV | ui/star.py:14
+JS-NAV | ui/star.py:14

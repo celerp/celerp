@@ -307,9 +307,12 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     });
   }
 
-  // Run one updater check (see run).
+  // Run one updater check (see run). A check while the found release cannot open the data
+  // starts from idle, so its result (a newer release, or nothing newer when that release was
+  // withdrawn) is applied and told.
   function check() {
     if (relaunch) return Promise.resolve(null);
+    if (judged().status === "too-old") state = initialUpdateState();
     used = true;
     const autoDownload = updater.autoDownload;
     if (recorded) updater.autoDownload = false;

@@ -3,6 +3,8 @@
 """The inventory row menu's Delete confirm says what happens to the drafts it deletes."""
 from __future__ import annotations
 
+from html import unescape
+
 from fasthtml.common import to_xml
 
 from ui import i18n
@@ -21,7 +23,7 @@ def test_the_row_menu_delete_says_what_happens_to_a_draft():
                 "where you can restore them.") in html
         assert "cannot be undone" not in html
         i18n.set_lang("fr")
-        # The apostrophe in the French text is escaped for the single-quoted confirm() argument.
-        assert "Les brouillons que rien d\\'autre n\\'utilise sont effacés." in _row_menu_delete("draft")
+        # The French apostrophe reaches the confirm() argument intact, inside one script literal.
+        assert "Les brouillons que rien d'autre n'utilise sont effacés." in unescape(_row_menu_delete("draft"))
     finally:
         i18n.set_lang("en")

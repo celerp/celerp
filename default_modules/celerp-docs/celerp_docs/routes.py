@@ -33,7 +33,8 @@ from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
-    NUMBER_FIELDS, NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_key, strip_number,
+    NUMBER_FIELDS, NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, shown_state, strip_key,
+    strip_number,
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
@@ -100,6 +101,7 @@ from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, refusal_text, t
+from ui.components.encode import inert_media_type
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1252,7 +1254,7 @@ def _doc_row(r: Projection, contact_name: str | None, issue_date: str | None) ->
     """The list row for a document: its displayed state (``_doc_display``) with ``id``,
     ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``). A document with
     no issue_date shows ``issue_date``, the ``_doc_issue_date`` it is windowed and sorted by."""
-    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    row = shown_state(r.state) | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
                      "contact_name": contact_name}
     if not row.get("issue_date") and issue_date:
         row["issue_date"] = issue_date
@@ -1431,8 +1433,12 @@ async def list_docs(
 async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", "list"], number: str,
                         doc_type: str | None = None) -> list[str]:
     """Every Document (of doc_type, when given) or List whose number is ``number``, both compared
-    in their canonical form as numbering compares them."""
-    wanted = canonical_number(_sa.literal(strip_number(number), _sa.Text))
+    in their canonical form as numbering compares them. A blank number is no number and
+    names no record, as free_number reads it."""
+    number = strip_number(number)
+    if not number:
+        return []
+    wanted = canonical_number(_sa.literal(number, _sa.Text))
     numbers = (NUMBER_KEPT, NUMBER_SHOWN) if kind == "doc" else (NUMBER_SHOWN,)
     query = select(Projection.entity_id).where(
         Projection.company_id == company_id,
@@ -1908,7 +1914,7 @@ async def _memo_fixed_taken(session: AsyncSession, company_id, entity_id: str, s
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    doc = row.state | {"id": row.entity_id, "version": row.version}
+    doc = shown_state(row.state) | {"id": row.entity_id, "version": row.version}
     # Payments Stripe reported are refunded or reversed in Stripe, never here.
     if held := await stripe_payment_indexes(session, company_id, entity_id, doc.get("payments") or []):
         doc["payments"] = [p | {"held_by": "stripe"} if p.get("index") in held else p for p in doc["payments"]]
@@ -3972,7 +3978,7 @@ async def renumber_doc(
     old_ref = state.get("ref_id") or ""
     if new_ref == old_ref:
         # No-op: return current state without emitting an event
-        return row.state | {"id": entity_id}
+        return shown_state(row.state) | {"id": entity_id}
 
     entry = await emit_event(
         session,
@@ -3993,7 +3999,7 @@ async def renumber_doc(
     await session.commit()
 
     updated = await _get_doc(session, company_id, entity_id)
-    return updated.state | {"id": entity_id}
+    return shown_state(updated.state) | {"id": entity_id}
 
 
 @router.post("/{entity_id}/unvoid")
@@ -9145,7 +9151,7 @@ async def get_list(
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
     state = await _fill_list_issue_date(session, company_id, entity_id, row.state)
-    return state | {"id": row.entity_id, "version": row.version,
+    return shown_state(state) | {"id": row.entity_id, "version": row.version,
                     "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
@@ -9207,7 +9213,7 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    header = await _fill_list_issue_date(session, company_id, entity_id, dict(head.header or {}))
+    header = await _fill_list_issue_date(session, company_id, entity_id, shown_state(head.header or {}))
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
@@ -9852,6 +9858,23 @@ class ListLinePagePatch(BaseModel):
     expected_version: int | None = None
 
 
+def _keep_unchanged_lines(page: list, window: list) -> list:
+    """The page with every row it sent as unchanged ({"line_id": ..., "unchanged": true}, a row
+    the editor did not touch) put back as the stored line of that id, exactly as stored. The page
+    shows only some of a line's fields, so a row rebuilt from it would drop or reset the rest. A
+    row naming no line of the loaded window means the page is out of date."""
+    by_id = {li["line_id"]: li for li in window if isinstance(li, dict) and li.get("line_id")}
+    kept = []
+    for li in page:
+        if isinstance(li, dict) and li.get("unchanged") is True:
+            stored = by_id.get(li.get("line_id"))
+            if stored is None:
+                raise _stale_doc("documents.err_list_changed")
+            li = stored
+        kept.append(li)
+    return kept
+
+
 @lists_router.patch("/{entity_id}/line-page")
 async def patch_list_line_page(
     entity_id: str,
@@ -9915,6 +9938,7 @@ async def patch_list_line_page(
     # any window outside it means the client's view is stale: reject and reload rather than mutate.
     if offset > len(stored) or offset + original_count > len(stored):
         raise _stale_doc("documents.err_list_changed")
+    page = _keep_unchanged_lines(page, stored[offset:offset + original_count])
     # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
     # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
@@ -13640,7 +13664,7 @@ async def download_doc_file(
     return FileResponse(
         path=str(dest),
         filename=match["filename"],
-        media_type=match.get("mime", "application/octet-stream"),
+        media_type=inert_media_type(match.get("mime")),
     )
 
 

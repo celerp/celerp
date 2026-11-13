@@ -30,7 +30,7 @@ from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,7 @@ from celerp_docs.doc_money import UnratedTaxError, computable_tax, document_mone
 from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
+from ui.components.encode import html_response
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -628,22 +629,22 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
     return ident_mode
 
 
-@public_router.get("/share/{token}", response_class=HTMLResponse)
+@public_router.get("/share/{token}")
 async def view_shared_doc(
     token: str,
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Public read-only document view - the exact letterhead layout the Print
     button produces, plus the shared quiet footer. No authentication required.
     CORS: Access-Control-Allow-Origin: * so celerp.com/accept JS can probe reachability.
     """
     share_row = await _active_share_row(session, token)
     if share_row is None:
-        return HTMLResponse(_not_found_page("link-expired"), status_code=404)
+        return html_response(_not_found_page("link-expired"), status_code=404)
 
     row = await session.get(Projection, (share_row.company_id, share_row.entity_id))
     if row is None:
-        return HTMLResponse(_not_found_page("doc-missing"), status_code=404)
+        return html_response(_not_found_page("doc-missing"), status_code=404)
 
     state = dict(row.state or {})
     if row.entity_type == "list":
@@ -675,7 +676,7 @@ async def view_shared_doc(
         pay_url=pay_url,
         line_identifier=ident_mode,
     )
-    return HTMLResponse(html, headers={"Access-Control-Allow-Origin": "*"})
+    return html_response(html, headers={"Access-Control-Allow-Origin": "*"})
 
 
 @public_router.options("/share/{token}")

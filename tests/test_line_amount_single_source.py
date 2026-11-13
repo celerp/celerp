@@ -10,6 +10,7 @@ import pytest
 
 from celerp.output.doc_print import render_doc_print_html
 from celerp.services.auto_je import bill_line_charges
+from shipped_sources import APP_ROOTS
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,7 +64,7 @@ _ALLOWED_READS = {
     "ui/routes/docs_import.py": (1, "shows the amount the received file states, as received"),
 }
 _READ = re.compile(r"""(\.get\(\s*|\[)["']line_total["'](?!\]\s*=[^=])""")
-_SCANNED = ("celerp", "ui", "default_modules")
+_SCANNED = APP_ROOTS
 
 
 def test_no_module_works_out_a_line_amount_itself():

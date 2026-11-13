@@ -173,7 +173,7 @@ def test_fill_row_and_collect_carry_barcode():
     src = inspect.getsource(_docs)
     assert "barcodeEl.value = data.barcode || ''" in src
     assert 'row.querySelector(\'[data-name="barcode"]\')?.value' in src
-    assert "...(barcode ? {{barcode}} : {{}})" in src
+    assert "...(barcode ? {barcode} : {})" in src
 
 
 def test_pdf_width_fractions_sum_to_one():

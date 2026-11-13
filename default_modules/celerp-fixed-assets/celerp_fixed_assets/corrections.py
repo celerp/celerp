@@ -26,7 +26,7 @@ from fastapi import HTTPException
 from celerp.services.business_time import business_today
 
 from celerp_fixed_assets import notices, projections, reclassify, runs, setup, sources
-from celerp_fixed_assets.calc.periods import fiscal_year_start_index, month_index, parse_period, period_label
+from celerp.services.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
     _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use)

@@ -4,17 +4,14 @@
 
 Data interpolated into hx_vals / onclick / hx_confirm / Script bodies must be
 escaped or JSON-encoded, never hand-built with an f-string. These tests prove the
-helpers escape adversarial input and a repo-grep guard prevents regressions.
+helpers escape adversarial input; scripts/sink_check.py (tests/test_sink_check.py) refuses the
+hand-built shapes.
 """
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
-from ui.components.attrs import esc_attr, hx_vals
-
-_UI_DIR = Path(__file__).resolve().parents[1] / "ui"
+from ui.components.attrs import hx_vals
 
 
 def test_hx_vals_escapes_json_breakout():
@@ -25,21 +22,3 @@ def test_hx_vals_escapes_json_breakout():
     parsed = json.loads(out)
     assert parsed == {"search": evil, "page": "1"}
     assert "evil" not in {k for k in parsed if k != "search"}
-
-
-def test_esc_attr_escapes_quotes_and_brackets():
-    out = esc_attr('"><script>alert(1)</script>')
-    assert "<script>" not in out
-    assert '"' not in out  # quote is escaped (&quot;)
-
-
-def test_no_fstring_hx_vals_in_ui_tree():
-    """Guard: hx_vals must never be built by f-string interpolation. Use hx_vals()."""
-    offenders = []
-    pattern = re.compile(r"""hx_vals\s*=\s*f['"]""")
-    for path in _UI_DIR.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for i, line in enumerate(text.splitlines(), 1):
-            if pattern.search(line):
-                offenders.append(f"{path.relative_to(_UI_DIR)}:{i}")
-    assert not offenders, f"f-string hx_vals found (use hx_vals()): {offenders}"

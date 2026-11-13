@@ -25,6 +25,7 @@ from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
+from ui.components.encode import js_value, raw_html, safe_url
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
@@ -1007,7 +1008,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
             return None
         if allowed(settings, role):
             links.append(A(import_icon(), t(label),
-                           href=f"{href}?hint=import", cls="getting-started-link"))
+                           href=safe_url(f"{href}?hint=import"), cls="getting-started-link"))
     if not links:
         return None
     options = ""
@@ -1034,7 +1035,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         await _getting_started_ai_line(token, settings, role),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
-        NotStr("<!-- /getting-started-card -->"),
+        raw_html("<!-- /getting-started-card -->"),
         id="getting-started-card",
         cls="getting-started-card",
     )
@@ -1116,7 +1117,7 @@ def _kpi_card(spec: dict, values: dict) -> FT:
         P(sub_str, cls="kpi-sub") if sub_str else "",
     )
     if href:
-        return A(inner, href=href, cls=card_cls)
+        return A(inner, href=safe_url(href), cls=card_cls)
     return Div(inner, cls=card_cls)
 
 
@@ -1149,13 +1150,13 @@ _CUR_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$", "EUR": "€", "G
 
 
 _CHART_EMPTY_ICONS = {
-    "line": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "line": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
              'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
              '<path d="M7 7 v32 h32" opacity="0.4"/><path d="M12 31 l8 -7 l6 4 l12 -14"/></svg>'),
-    "check": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "check": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
               'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
               '<circle cx="23" cy="23" r="16" opacity="0.4"/><path d="M15 23 l5 5 l11 -12"/></svg>'),
-    "bars": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "bars": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
              'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
              '<path d="M7 7 v32 h32" opacity="0.4"/>'
              '<rect x="13" y="25" width="5" height="10" fill="currentColor" stroke="none" opacity="0.65"/>'
@@ -1168,7 +1169,7 @@ def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
     """A polished empty-state for a chart with no data yet, so a brand-new dashboard
     reads as complete (and self-explanatory) rather than broken or blank."""
     return Div(
-        NotStr(_CHART_EMPTY_ICONS.get(icon, _CHART_EMPTY_ICONS["line"])),
+        _CHART_EMPTY_ICONS.get(icon, _CHART_EMPTY_ICONS["line"]),
         P(t(title_key), cls="chart-empty-title"),
         P(t(sub_key), cls="chart-empty-sub"),
         cls="chart-empty",
@@ -1184,15 +1185,15 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
     # Revenue trend (full-width line chart) — shown whenever there is any invoiced revenue.
     revenue_trend = revenue_trend or []
     rev_has_data = any(float(p.get("total", 0) or 0) > 0 for p in revenue_trend)
-    rev_labels = json.dumps([_MONTH_ABBR[int(p["month"][5:7])] for p in revenue_trend]) if rev_has_data else "[]"
-    rev_data = json.dumps([float(p.get("total", 0) or 0) for p in revenue_trend]) if rev_has_data else "[]"
+    rev_labels = [_MONTH_ABBR[int(p["month"][5:7])] for p in revenue_trend] if rev_has_data else []
+    rev_data = [float(p.get("total", 0) or 0) for p in revenue_trend] if rev_has_data else []
     cur_sym = _CUR_SYMBOLS.get((currency or "USD").upper(), "")
 
     # Open credits are negative, so a bucket can net below zero: any non-zero bucket is data.
     buckets = (ar_aging or {}).get("buckets", {})
     ar_has_data = any(float(v or 0) != 0 for v in buckets.values())
-    ar_labels = json.dumps([t("reports.aging_current") if k == "current" else k for k in buckets]) if ar_has_data else "[]"
-    ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
+    ar_labels = [t("reports.aging_current") if k == "current" else k for k in buckets] if ar_has_data else []
+    ar_data = [float(v) for v in buckets.values()] if ar_has_data else []
 
     # Category keys are schema slugs; chart them under the inventory tabs' display names.
     names = category_names or {}
@@ -1204,8 +1205,8 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
     if uncategorized > 0:
         cats[t("label.uncategorized")] = uncategorized
     cat_has_data = any(int(v or 0) > 0 for v in cats.values())
-    cat_labels = json.dumps(list(cats.keys())) if cat_has_data else "[]"
-    cat_data = json.dumps([int(v) for v in cats.values()]) if cat_has_data else "[]"
+    cat_labels = list(cats.keys()) if cat_has_data else []
+    cat_data = [int(v) for v in cats.values()] if cat_has_data else []
 
     # The revenue card always shows — with an empty-state when there is no invoiced
     # revenue yet — so the first page a customer lands on never looks broken or bare.
@@ -1236,9 +1237,12 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
             )
         )
 
-    chart_init = f"""
-    function initDashboardCharts() {{
-      if (typeof Chart === 'undefined') {{ setTimeout(initDashboardCharts, 100); return; }}
+    chart_init = """
+    (function () {
+    var CFG = JSON.parse(document.currentScript.dataset.cfg);
+    function initDashboardCharts() {
+      var REV_DATA = CFG.revData, AR_LABELS = CFG.arLabels, CAT_LABELS = CFG.catLabels, CUR_SYM = CFG.curSym;
+      if (typeof Chart === 'undefined') { setTimeout(initDashboardCharts, 100); return; }
       var style = getComputedStyle(document.documentElement);
       var colors = [
         style.getPropertyValue('--c-chart-1').trim() || '#4f8ef7',
@@ -1252,68 +1256,72 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       var gridColor = style.getPropertyValue('--c-border').trim() || '#333';
 
       var revCtx = document.getElementById('chart-revenue-trend');
-      if (revCtx && {rev_data}.length > 0) {{
+      if (revCtx && REV_DATA.length > 0) {
         var rg = revCtx.getContext('2d').createLinearGradient(0, 0, 0, 230);
         rg.addColorStop(0, 'rgba(79,142,247,0.30)');
         rg.addColorStop(1, 'rgba(79,142,247,0.00)');
-        new Chart(revCtx, {{
+        new Chart(revCtx, {
           type: 'line',
-          data: {{ labels: {rev_labels}, datasets: [{{
-            label: {json.dumps(t('acct.section_revenue'))}, data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
+          data: { labels: CFG.revLabels, datasets: [{
+            label: CFG.revLabel, data: CFG.revData, borderColor: colors[0], backgroundColor: rg,
             fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
-            pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
-          options: {{
+            pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }] },
+          options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: {{
-              legend: {{ display: false }},
-              tooltip: {{ callbacks: {{ label: function(c) {{ return '{cur_sym}' + c.parsed.y.toLocaleString(); }} }} }}
-            }},
-            scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
-              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
-            }}
-          }}
-        }});
-      }}
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: function(c) { return CUR_SYM + c.parsed.y.toLocaleString(); } } }
+            },
+            scales: {
+              y: { beginAtZero: true, ticks: { color: textColor, callback: function(v) { return CUR_SYM + v.toLocaleString(); } }, grid: { color: gridColor } },
+              x: { ticks: { color: textColor }, grid: { display: false } }
+            }
+          }
+        });
+      }
 
       var arCtx = document.getElementById('chart-ar-aging');
-      if (arCtx && {ar_labels}.length > 0) {{
-        new Chart(arCtx, {{
+      if (arCtx && AR_LABELS.length > 0) {
+        new Chart(arCtx, {
           type: 'bar',
-          data: {{ labels: {ar_labels}, datasets: [{{ data: {ar_data}, backgroundColor: colors }}] }},
-          options: {{
+          data: { labels: CFG.arLabels, datasets: [{ data: CFG.arData, backgroundColor: colors }] },
+          options: {
             responsive: true,
-            scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
-              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
-            }},
-            plugins: {{ legend: {{ display: false }} }}
-          }}
-        }});
-      }}
+            scales: {
+              y: { beginAtZero: true, ticks: { color: textColor, callback: function(v) { return CUR_SYM + v.toLocaleString(); } }, grid: { color: gridColor } },
+              x: { ticks: { color: textColor }, grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+          }
+        });
+      }
 
       var catCtx = document.getElementById('chart-inventory-cat');
-      if (catCtx && {cat_labels}.length > 0) {{
-        new Chart(catCtx, {{
+      if (catCtx && CAT_LABELS.length > 0) {
+        new Chart(catCtx, {
           type: 'bar',
-          data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
-          options: {{
+          data: { labels: CFG.catLabels, datasets: [{ label: CFG.catLabel, data: CFG.catData, backgroundColor: colors[0] }] },
+          options: {
             indexAxis: 'y', responsive: true,
-            scales: {{ x: {{ beginAtZero: true, ticks: {{ color: textColor, precision: 0 }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
-            plugins: {{ legend: {{ display: false }} }}
-          }}
-        }});
-      }}
-    }}
+            scales: { x: { beginAtZero: true, ticks: { color: textColor, precision: 0 }, grid: { color: gridColor } }, y: { ticks: { color: textColor }, grid: { display: false } } },
+            plugins: { legend: { display: false } }
+          }
+        });
+      }
+    }
     initDashboardCharts();
+    })();
     """
+    chart_cfg = js_value({"revData": rev_data, "revLabels": rev_labels, "revLabel": t("acct.section_revenue"),
+                          "curSym": str(cur_sym), "arLabels": ar_labels, "arData": ar_data,
+                          "catLabels": cat_labels, "catLabel": t("th.items"), "catData": cat_data})
 
     return Div(
         H2(t("page.charts"), cls="section-title"),
         revenue_card,
         Div(*chart_cards, cls="charts-grid"),
         Script(src=_CHARTJS_CDN),
-        Script(chart_init),
+        Script(chart_init, data_cfg=chart_cfg),
         cls="charts-section",
     )
 
@@ -1346,7 +1354,7 @@ def _quick_links(cfg: dict) -> FT:
                 A(
                     Strong(_dl(label)),
                     P(_dl(desc), cls="quick-link-desc"),
-                    href=href,
+                    href=safe_url(href),
                     cls="quick-link-card",
                 )
                 for href, label, desc in links

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from fasthtml.common import *
 
+from ui.components.encode import js_value
+
 
 # Static asset paths (served by Starlette StaticFiles at /static/...)
 _CSS = "/static/vendor/intl-tel-input/intlTelInput.min.css"
@@ -64,30 +66,30 @@ def phone_input_td(
     # nationalMode:false  → always shows international format with +
     # separateDialCode:false → dial code is part of the number field (stored in E.164)
     # autoPlaceholder:"aggressive" → shows e.g. "+66 XX XXXX XXXX" as placeholder
-    init_js = f"""
-(function() {{
-  var inputEl  = document.getElementById({input_id!r});
-  var hiddenEl = document.getElementById({hidden_id!r});
+    init_js = """
+(function() {var CFG=JSON.parse(document.currentScript.dataset.cfg);
+  var inputEl  = document.getElementById(CFG.inputId);
+  var hiddenEl = document.getElementById(CFG.hiddenId);
   if (!inputEl || !hiddenEl) return;
   var iti = null;
-  function sync() {{ hiddenEl.value = (iti && iti.getNumber()) || inputEl.value; }}
+  function sync() { hiddenEl.value = (iti && iti.getNumber()) || inputEl.value; }
   inputEl.addEventListener('input', sync);
   inputEl.addEventListener('countrychange', sync);
-  try {{ iti = window.intlTelInput ? window.intlTelInput(inputEl, {{
+  try { iti = window.intlTelInput ? window.intlTelInput(inputEl, {
     nationalMode: false,
     separateDialCode: false,
     autoPlaceholder: 'aggressive',
     formatOnDisplay: true,
     initialCountry: 'auto',
-    geoIpLookup: function(cb) {{
+    geoIpLookup: function(cb) {
       // Cheap: parse existing stored value if present, else default to TH
       var v = hiddenEl.value || '';
-      if (v.startsWith('+66')) {{ cb('th'); return; }}
-      if (v.startsWith('+1'))  {{ cb('us'); return; }}
+      if (v.startsWith('+66')) { cb('th'); return; }
+      if (v.startsWith('+1'))  { cb('us'); return; }
       cb('th');
-    }},
-  }}) : null; }} catch (e) {{ iti = null; }}
-}})();
+    },
+  }) : null; } catch (e) { iti = null; }
+})();
 """
 
     return Td(
@@ -104,7 +106,7 @@ def phone_input_td(
             cls="iti-wrap",
         ),
         Input(type="hidden", id=hidden_id, name="value", value=value),
-        Script(init_js),
+        Script(init_js, data_cfg=js_value({'inputId': str(input_id), 'hiddenId': str(hidden_id)})),
         Button(
             t("btn.save"), type="button",
             hx_patch=patch_url,

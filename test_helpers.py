@@ -679,6 +679,30 @@ def sidebar_label(item: str, lang: str) -> str:
     return re.sub(r"^\W+", "", i18n.t(item, lang))
 
 
+def script_cfg(html: str, marker: str) -> dict:
+    """The server values a page script reads from its data-cfg attribute.
+
+    The script is the one whose body contains ``marker``; the page must have exactly one.
+    """
+    from html.parser import HTMLParser
+
+    found: list[dict] = []
+
+    class _Scripts(HTMLParser):
+        cfg: str | None = None
+
+        def handle_starttag(self, tag, attrs):
+            self.cfg = dict(attrs).get("data-cfg") if tag == "script" else None
+
+        def handle_data(self, data):
+            if self.cfg is not None and marker in data:
+                found.append(json.loads(self.cfg))
+
+    _Scripts().feed(html)
+    assert len(found) == 1, f"{len(found)} scripts with data-cfg contain {marker!r}"
+    return found[0]
+
+
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 

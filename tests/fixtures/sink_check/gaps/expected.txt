@@ -1,0 +1,10 @@
+JS-HTML | ui/static/shape-gaps-seed.js:3
+JS-HTML | ui/static/shape-gaps-seed.js:4
+JS-HTML | ui/static/shape-gaps-seed.js:5
+PY-HTMLRESP | ui/shape-gaps-seed.py:5
+PY-HTMLRESP | ui/shape-gaps-seed.py:6
+PY-JSHOLE | ui/shape-gaps-seed.py:9
+PY-URLHOLE | ui/shape-gaps-seed.py:10
+PY-URLHOLE | ui/shape-gaps-seed.py:11
+PY-URLHOLE | ui/shape-gaps-seed.py:12
+PY-URLHOLE | ui/shape-gaps-seed.py:8

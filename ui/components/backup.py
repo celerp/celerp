@@ -9,6 +9,7 @@ Used on System Recovery (settings.py _system_recovery_content).
 from __future__ import annotations
 
 from fasthtml.common import A, Button, Div, Input
+from ui.components.encode import call
 from ui.i18n import t, get_lang
 
 
@@ -62,7 +63,7 @@ def local_backup_buttons(
         Button(t("btn.import_backup"),
             # The picker opens straight from the click: the browser stops a click
             # from opening it once the user has spent a few seconds on a dialog.
-            onclick=f"document.getElementById('{import_input_id}').click()",
+            onclick=call("celerpClick", import_input_id),
             cls=f"btn btn--secondary{size_cls}",
             title=t(_TOOLTIP_KEYS["import"]),
             id="backup-import-btn",

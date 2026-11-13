@@ -29,6 +29,7 @@ from ui.components.table import (
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.reports import _get_company
+from ui.components.encode import as_js, call, EVENT
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -233,7 +234,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Label(t("th.account"), cls="form-label"),
                 Select(*account_options, _acct_opt, name="account_code",
-                       cls="form-input cell-input--select", onchange=_acct_js),
+                       cls="form-input cell-input--select", onchange=as_js(_acct_js)),
                 cls="form-field",
             ),
             Div(
@@ -258,7 +259,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=f"document.getElementById('recon-expand-{line_id}').innerHTML=''",
+                       onclick=call("celerpClear", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -292,7 +293,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
                 *[
                     Div(
                         Select(*account_options, _acct_opt, name="account_code_0",
-                               cls="form-input cell-input--select w-auto", onchange=_acct_js),
+                               cls="form-input cell-input--select w-auto", onchange=as_js(_acct_js)),
                         Input(type="number", name="amount_0", placeholder=t("label.amount"),
                               step=money_step(currency), cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
@@ -307,7 +308,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=f"document.getElementById('recon-expand-{line_id}').innerHTML=''",
+                       onclick=call("celerpClear", f"recon-expand-{line_id}"),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -322,10 +323,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
 # ── Progress bar ──────────────────────────────────────────────────────────────
 
 def _recon_progress(total: int, matched: int, created: int, skipped: int) -> FT:
-    if total == 0:
-        pct = 0
-    else:
-        pct = int((matched + created + skipped) / total * 100)
+    pct = int((matched + created + skipped) / total * 100) if total else 0
     return Div(
         Div(
             Span(t("recon.progress_resolved", done=matched + created, total=total),
@@ -528,7 +526,7 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
-        Script(f"celerpToast({json.dumps(notice)}, {json.dumps(notice_kind)});") if notice else None,
+        Script(call('celerpToast', notice, notice_kind)) if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
         **{"data-session-id": session_id,
@@ -687,7 +685,7 @@ def _mapper_fragment(
                   cls="btn btn--secondary ml-sm"),
                 cls="mt-md",
             ),
-            onkeydown=f"if(event.key==='Escape'){{window.location='/accounting/reconcile/{session_id}'}}",
+            onkeydown=call("celerpGoOnEscape", EVENT, f"/accounting/reconcile/{session_id}"),
             hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
@@ -733,7 +731,7 @@ def setup_routes(app):
                 name="bank_account_id",
                 cls="form-input cell-input--select",
                 required=True,
-                onchange=_bank_js,
+                onchange=as_js(_bank_js),
             )
         else:
             bank_select_or_msg = P(t("acct.no_bank_accounts_configured"),
@@ -1063,9 +1061,8 @@ def setup_routes(app):
         try:
             await api.create_recon_expense(token, session_id, line_id, data)
         except APIError as e:
-            if e.status == 401:
-                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+            api.raise_if_signed_out(e)
+            return await _fresh_workspace(token, session_id, notice=api.error_message(e))
         return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/split-confirm")

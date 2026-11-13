@@ -17,8 +17,9 @@ from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, rea
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
 from ui.components.doc_money import DOC_MONEY_JS
+from ui.components.encode import js_value, safe_url
 from ui.components.icons import icon
-from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
+from ui.components.preview_confirm import preview_confirm_script
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -35,13 +36,14 @@ _CSS_VER = _css_version()
 # Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. The
 # effective minutes are decided per render by effective_idle_logout_minutes() so the timer is on only
 # when the installation is exposed as a server (no token-TTL surgery); an active user's interactions
-# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the placeholder below.
-_IDLE_LOGOUT_JS = ("""
+# keep resetting it, and 0 minutes renders a no-op. _idle_logout_script() gives the script the
+# timeout in milliseconds as its data-cfg value.
+_IDLE_LOGOUT_JS = """
 (function(){
-  var IDLE_MS = __IDLE_MIN__ * 60000;
+  var IDLE_MS = JSON.parse(document.currentScript.dataset.cfg);
   if (IDLE_MS <= 0) return;
   var t;
-  function out(){ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }
+  function out(){ celerpGo('/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search)); }
   function reset(){ clearTimeout(t); t = setTimeout(out, IDLE_MS); }
   // capture:true so scroll counts as activity: scroll events do not bubble, so a
   // document listener only sees them in the capture phase. Without it, scrolling an
@@ -53,17 +55,17 @@ _IDLE_LOGOUT_JS = ("""
   document.addEventListener('htmx:afterRequest', reset);
   reset();
 })();
-""")
+"""
 
 
-def _idle_logout_js() -> str:
-    """Render the idle-logout script with the deployment's effective minutes.
+def _idle_logout_script() -> Script:
+    """The idle-logout script with the deployment's effective timeout.
 
-    Interpolated per full shell render (not at import) so a Connect/disconnect or
+    Built per full shell render (not at import) so a Connect/disconnect or
     headless change is picked up on the next navigation without a process restart.
     """
     from celerp.config import effective_idle_logout_minutes
-    return _IDLE_LOGOUT_JS.replace("__IDLE_MIN__", str(effective_idle_logout_minutes()))
+    return Script(_IDLE_LOGOUT_JS, data_cfg=js_value(effective_idle_logout_minutes() * 60000))
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 # Escape exits a plain form field, on every page including the sign-in and setup pages,
@@ -124,7 +126,7 @@ function celerpFetch(url, opts) {
   return fetch(url, opts).then(function(r) {
     var to = r.headers.get('HX-Redirect');
     if (!to) return r;
-    location.href = to;
+    celerpGo(to);
     return new Promise(function() {});
   });
 }
@@ -256,7 +258,7 @@ var _CELERP_NOTICE = '.cell-error, .flash, .error-banner, .error-inline, .toast_
 function celerpTryAgainButton() {
   var button = document.createElement('a');
   button.className = 'btn btn--secondary btn--sm try-again';
-  button.href = window.__shellI18n.tryAgainHref || location.href;
+  celerpSetUrl(button, 'href', window.__shellI18n.tryAgainHref || location.href);
   button.textContent = window.__shellI18n.tryAgain;
   return button;
 }
@@ -325,7 +327,7 @@ function celerpToast(message, type, persist, action) {
     if (!a || !a.href || !a.label) return;
     var link = document.createElement('a');
     link.className = 'toast__action';
-    link.href = a.href;
+    celerpSetUrl(link, 'href', a.href);
     link.textContent = a.label;
     toast.appendChild(link);
   });
@@ -419,12 +421,12 @@ document.addEventListener('htmx:beforeSwap', function(e) {
     e.detail.isError = false;
   }
   var t = e.detail.target;
-  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
+  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.cloneNode(true) : null;
 });
 document.addEventListener('htmx:afterSwap', function() {
   if (_cellBeforeEdit === null) return;
   document.querySelectorAll('.cell--editing').forEach(function(c) {
-    if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;
+    if (c._restoreNode === undefined) c._restoreNode = _cellBeforeEdit;
   });
   _cellBeforeEdit = null;
 });
@@ -433,11 +435,9 @@ document.addEventListener('keydown', function(e) {
     var editing = document.querySelector('.cell--editing');
     if (editing) {
       var cell = e.target.closest && e.target.closest('.cell--editing');
-      if (!e.defaultPrevented && cell && cell._restoreHtml !== undefined) {
+      if (!e.defaultPrevented && cell && cell._restoreNode !== undefined) {
         e.preventDefault();
-        var tpl = document.createElement('template');
-        tpl.innerHTML = cell._restoreHtml.trim();
-        var shown = tpl.content.firstElementChild;
+        var shown = cell._restoreNode;
         cell.replaceWith(shown);
         htmx.process(shown);
       }
@@ -574,9 +574,12 @@ function initCombobox(wrap) {
   if (wrap._comboboxInit) return;
   wrap._comboboxInit = true;
   var allowCustom = wrap.dataset.allowCustom === 'true';
-  // Server-search mode: HTMX swaps the list innerHTML; we save original for restore.
+  // Server-search mode: HTMX swaps the list contents; we keep a copy of the original for restore.
   var isServerSearch = wrap.dataset.searchUrl === '1';
-  var originalListHTML = isServerSearch ? list.innerHTML : null;
+  var originalList = isServerSearch ? Array.from(list.childNodes, function(n) { return n.cloneNode(true); }) : null;
+  function restoreOriginalList() {
+    list.replaceChildren.apply(list, originalList.map(function(n) { return n.cloneNode(true); }));
+  }
   // Multi-select mode: values live in a bag of hidden inputs (one per selection)
   // rather than the single hidden input, because a repeated query key is what the
   // server reads and one input cannot carry two values.
@@ -824,8 +827,8 @@ function initCombobox(wrap) {
 
   function openList() {
     // Restore original static options so user sees full list on re-focus after a search
-    if (isServerSearch && originalListHTML) {
-      list.innerHTML = originalListHTML;
+    if (isServerSearch) {
+      restoreOriginalList();
       markSelected();
     }
     // Clear the summary so typing searches rather than filtering against "3 selected".
@@ -841,7 +844,7 @@ function initCombobox(wrap) {
     if (isServerSearch) {
       if (!input.value) {
         // User cleared the search, so put the static options back and show them all
-        list.innerHTML = originalListHTML;
+        restoreOriginalList();
         markSelected();
         filterOpts('');
       }
@@ -1264,26 +1267,20 @@ _TOAST_CONTAINER_HTML = Div(id="toast-container", cls="toast-container")
 
 _NOTIFICATION_JS = """
 // The bell is an unread inbox: it lists only unread notifications, so a
-// dismissed (read) one never reappears on refresh. Escape all server strings
-// (recipient emails and doc numbers flow into titles/bodies).
-function _notifEsc(s) {
-  var d = document.createElement('div');
-  d.textContent = (s == null ? '' : String(s));
-  return d.innerHTML;
-}
-
-function _notifItemHtml(n) {
-  var inner = '<div class="notif-item__title">' + _notifEsc(n.title) + '</div>'
-            + '<div class="notif-item__body">' + _notifEsc(n.body) + '</div>';
+// dismissed (read) one never reappears on refresh. Server strings (recipient
+// emails and doc numbers flow into titles/bodies) are written as text nodes, and
+// a link is kept only when its address stays safe.
+function _notifItem(n) {
+  var inner = [celerpNode('div', {'class': 'notif-item__title'}, [n.title]),
+               celerpNode('div', {'class': 'notif-item__body'}, [n.body])];
   // A referenced document becomes a link; otherwise plain content.
-  var content = n.action_url
-    ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
-    : '<div class="notif-item__link">' + inner + '</div>';
-  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread')
-    + (n.priority === 'high' ? ' notif-item--high' : '') + '" data-id="' + _notifEsc(n.id) + '">'
-    + content
-    + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
-    + '</div>';
+  var link = n.action_url && celerpSafeUrl(n.action_url) === n.action_url;
+  var content = celerpNode(link ? 'a' : 'div', {'class': 'notif-item__link', href: link ? n.action_url : null}, inner);
+  var cls = 'notif-item' + (n.read ? '' : ' notif-item--unread') + (n.priority === 'high' ? ' notif-item--high' : '');
+  var label = window.__shellI18n.markAsRead;
+  return celerpNode('div', {'class': cls, 'data-id': n.id}, [
+    content,
+    celerpNode('button', {'class': 'notif-item__dismiss', type: 'button', title: label, 'aria-label': label}, ['\u00d7'])]);
 }
 
 // A found app update is worth one bell count so the user notices it on the
@@ -1308,9 +1305,9 @@ function _renderNotifs(data) {
   }
   if (list) {
     if (!data.items || data.items.length === 0) {
-      list.innerHTML = '<div class="notif-panel__empty">' + window.__shellI18n.noNotifications + '</div>';
+      list.replaceChildren(celerpNode('div', {class: 'notif-panel__empty'}, window.__shellI18n.noNotifications));
     } else {
-      list.innerHTML = data.items.slice(0, 10).map(_notifItemHtml).join('');
+      list.replaceChildren.apply(list, data.items.slice(0, 10).map(_notifItem));
     }
   }
 }
@@ -1415,15 +1412,15 @@ document.addEventListener('DOMContentLoaded', function() {
         var data = JSON.parse(e.data || '{}');
         var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
         var nx = '&next=' + encodeURIComponent(location.pathname + location.search);
-        window.location.href = '/login?reason=evicted' + by + nx;
+        celerpGo('/login?reason=evicted' + by + nx);
       } catch(_) {
-        window.location.href = '/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search);
+        celerpGo('/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search));
       }
     });
 
     es.addEventListener('drain', function(e) {
       es.close();
-      window.location.href = '/login?reason=expired';
+      celerpGo('/login?reason=expired');
     });
 
     es.onerror = function() {
@@ -1487,7 +1484,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // download that failed its security check names none: it offers help instead.
     function setInstallerLink(url) {
       if (!installerLink) return;
-      if (url) installerLink.href = url;
+      if (url) celerpSetUrl(installerLink, 'href', url);
       installerLink.style.display = url ? '' : 'none';
     }
 
@@ -1815,7 +1812,7 @@ window.celerpUseDays = function(record){
     var label = '\\u2605 ' + window.__shellI18n.starOnGithub;
     if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
     el.textContent = label;
-    el.href = d.url;
+    celerpSetUrl(el, 'href', d.url);
     el.title = d.tooltip || window.__shellI18n.appreciateSupport;
     el.style.display = '';
   }).catch(function(){});
@@ -1929,13 +1926,13 @@ def star_supporter_card() -> FT:
         "var actions=document.getElementById('star-card-actions');"
         "var wall=document.getElementById('star-card-wall');"
         "var link=document.getElementById('star-card-star');"
-        "if(link&&d.url)link.href=d.url;"
+        "if(link&&d.url)celerpSetUrl(link,'href',d.url);"
         "if(bd&&bd.badge){"
         "if(h)h.textContent=d.thanks_headline||card.dataset.fallbackThanksHeadline;"
         "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
         "if(b2)b2.style.display='none';"
         "if(actions)actions.style.display='none';"
-        "if(wall&&bd.wall_url){wall.href=bd.wall_url;wall.style.display='inline-block';}"
+        "if(wall&&bd.wall_url){celerpSetUrl(wall,'href',bd.wall_url);wall.style.display='inline-block';}"
         "}else{"
         "if(h)h.textContent=d.headline||card.dataset.fallbackHeadline;"
         "var parts=(d.body||'').split('\\n\\n');"
@@ -2336,14 +2333,9 @@ def try_again_address(request) -> str:
     return "/" + path.lstrip("/")
 
 
-def _js_value(value) -> str:
-    """*value* as a JavaScript literal that is safe inside a <script> element."""
-    return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
-
-
 def try_again_script(lang: str) -> str:
     """The script behind _try_again_script_src: which messages get the Try again button, in *lang*."""
-    return f"window.__celerpTryAgainPattern = {_js_value(try_again_pattern(lang))};"
+    return f"window.__celerpTryAgainPattern = {js_value(try_again_pattern(lang))};"
 
 
 def try_again_version(lang: str) -> str:
@@ -2364,7 +2356,9 @@ def client_scripts(lang: str = "en", request=None) -> list:
     config = {**_shell_js_i18n(lang), "tryAgainHref": try_again_address(request)}
     return [
         Script(src="/static/htmx.min.js"),
-        Script(f"window.__shellI18n = {_js_value(config)};"),
+        Script(src="/static/celerp-dom.js"),
+        Script(src="/static/celerp-page.js"),
+        Script("window.__shellI18n = JSON.parse(document.currentScript.dataset.cfg);", data_cfg=js_value(config)),
         Script(src=_try_again_script_src(lang)),
         Script(_CLIENT_JS),
     ]
@@ -2443,9 +2437,9 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
-        Script(PREVIEW_CONFIRM_JS),
+        preview_confirm_script(),
         Script(DOC_MONEY_JS),
-        Script(_idle_logout_js()),
+        _idle_logout_script(),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
         Script(_BACKUP_BANNER_JS),
@@ -2783,7 +2777,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             dot_target = "_self"
         if relay_known:
             relay_dot = Span(
-                A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+                A(Span(cls=dot_cls, title=dot_title), href=safe_url(dot_href), target=dot_target,
                   cls="relay-dot-link", onclick="event.stopPropagation()"),
                 id="relay-dot-wrap",
             )
@@ -2810,13 +2804,13 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 Div(
                     A(
                         _menu_icon("bug"), t("nav.report_bug", lang, default="Report a bug"),
-                        href=_bug_report_url(),
+                        href=safe_url(_bug_report_url()),
                         target="_blank",
                         rel="noopener",
                         cls="user-menu__item",
                         # Append the current page (and the matching Area) to the bug form at click
                         # time — the path is only known client-side; see _BUG_LINK_JS.
-                        onclick="this.href=celerpBugUrl(this.dataset.base)",
+                        onclick="celerpSetUrl(this, 'href', celerpBugUrl(this.dataset.base))",
                         **{"data-base": _bug_report_url()},
                     ),
                     A(
@@ -2835,7 +2829,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         "⎋ " + t("nav.logout", lang),
                         href="/logout",
                         cls="user-menu__item user-menu__item--logout",
-                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')",
+                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>celerpGo('/login'))",
                     ),
                     id="user-menu-panel",
                     cls="user-menu__panel",
@@ -2912,7 +2906,7 @@ _SIDEBAR_JS = """
       arrow.addEventListener('click', function(e) {
         e.stopPropagation();
         g.classList.toggle('sidebar-group--open');
-        var s = saved(); s[key] = g.classList.contains('sidebar-group--open'); persist(s);
+        var s = Object.assign({}, saved()); s[key] = g.classList.contains('sidebar-group--open'); persist(s);
       });
     }
   });
@@ -3065,7 +3059,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             # Shown only when its probe answers with the link (slots.py, nav probe_href).
             return Div(hx_get=f"{item['probe_href']}?active={int(is_active)}", hx_trigger="load",
                        hx_swap="outerHTML")
-        return A(label, href=href, cls=f"nav-link {'nav-link--active' if is_active else ''}")
+        return A(label, href=safe_url(href), cls=f"nav-link {'nav-link--active' if is_active else ''}")
 
     sections: list[FT] = [_link(item) for item in top_level]
 
@@ -3081,7 +3075,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
         settings_href = next((i["settings_href"] for i in items if i.get("settings_href")), None)
         if settings_href:
             header = Div(
-                A(_menu_icon("settings"), group_label, href=settings_href, cls="sidebar-group-settings-link"),
+                A(_menu_icon("settings"), group_label, href=safe_url(settings_href), cls="sidebar-group-settings-link"),
                 Span("›", cls="sidebar-group-arrow"),
                 cls="sidebar-group-header",
             )
@@ -3203,9 +3197,8 @@ def _menu_icon(name: str) -> FT:
     return Span(icon(name), cls="menu-icon")
 
 
-def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
-    content = NotStr(msg) if raw else msg
-    return Div(content, cls=f"flash flash--{kind}", id="flash")
+def flash(msg: str | tuple, kind: str = "error") -> FT:
+    return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
 def no_access_text(error=None, *, permission: str | None = None) -> str:
@@ -3278,7 +3271,7 @@ RESTART_POLL_JS = """
   setTimeout(function () {
     var timer = setInterval(function () {
       fetch("/login", { cache: "no-store" }).then(function (r) {
-        if (r.ok) { clearInterval(timer); window.location.href = "/"; }
+        if (r.ok) { clearInterval(timer); celerpGo("/"); }
       }).catch(function () { /* still restarting */ });
     }, 1500);
   }, 4000);
@@ -3294,7 +3287,7 @@ def load_error(message: str, lang: str = "en", *, href: str | None = None,
                hx_get: str | None = None, target: str | None = None) -> FT:
     """Recoverable read failure with its retry. Empty-state copy is reserved for successful reads."""
     if href:
-        retry: FT = A(t("btn.retry", lang), href=href, cls="btn btn--secondary btn--sm")
+        retry: FT = A(t("btn.retry", lang), href=safe_url(href), cls="btn btn--secondary btn--sm")
     else:
         retry = Button(
             t("btn.retry", lang), type="button", cls="btn btn--secondary btn--sm",

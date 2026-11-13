@@ -202,6 +202,21 @@ def _local_timeout(timeout: float | httpx.Timeout) -> httpx.Timeout:
     return httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
 
 
+class _LocalAsyncClient(httpx.AsyncClient):
+    """The local API client. httpx refuses to encode a json body holding inf or nan with a
+    ValueError, which would answer 500; here it is the invalid input it is, refused before
+    anything is sent. Only the encoding is caught, so a ValueError from the caller's own
+    code (a bad response's JSONDecodeError included) is never reported as invalid input."""
+
+    def build_request(self, *args, **kwargs) -> httpx.Request:
+        if kwargs.get("json") is None:
+            return super().build_request(*args, **kwargs)
+        try:
+            return super().build_request(*args, **kwargs)
+        except ValueError as exc:
+            raise APIError(422, t("error.invalid_input")) from exc
+
+
 def _local_client(
     token: str | None = None,
     *,
@@ -235,7 +250,7 @@ def _local_client(
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.AsyncClient(
+    return _LocalAsyncClient(
         base_url=API_BASE,
         headers=merged_headers or None,
         timeout=_local_timeout(timeout),
@@ -416,12 +431,20 @@ def error_code(e: APIError) -> str:
     return ""
 
 
+def raise_if_signed_out(e: APIError) -> None:
+    """Raise ``e`` again when it is an ended session (401), so the app's handler clears the
+    session cookies and sends the browser to the sign-in page. Not part of error_message:
+    the API also answers 401 for a wrong password on a confirmation prompt, which the
+    routes asking for one show as text."""
+    if e.status == 401:
+        raise e
+
+
 def refusal_response(e: APIError) -> PlainTextResponse:
     """The reply a UI route gives for an APIError it caught: the refusal as short plain
     text with its status, which the page's error banner shows. An ended session is raised
-    again, so the app's handler sends the browser to the sign-in page."""
-    if e.status == 401:
-        raise e
+    again (raise_if_signed_out)."""
+    raise_if_signed_out(e)
     return PlainTextResponse(error_message(e), status_code=e.status)
 
 
@@ -4149,6 +4172,15 @@ async def set_woocommerce_order_reconciled(
         if signature is None:
             return _raise(await c.delete(path)).json()
         return _raise(await c.post(path, json={"signature": signature})).json()
+
+
+async def import_woocommerce_order_next(token: str, order_id: str, signature: str) -> dict:
+    """Import a WooCommerce order whose number another record holds under the next free
+    number, for the order state the person reviewed (``signature``). Returns
+    {"number", "doc_id"}; refused (409) with the reason it still waits on."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/woocommerce/orders/{order_id}/import-next",
+                                   json={"signature": signature})).json()
 
 
 async def set_connector_direction(token: str, platform: str, entity: str, direction: str) -> dict:

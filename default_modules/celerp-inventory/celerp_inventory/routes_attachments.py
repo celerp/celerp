@@ -56,6 +56,7 @@ from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
 from celerp_inventory.routes import flatten_item, get_item_projection
 from ui.i18n import t
+from ui.components.encode import inert_media_type
 
 logger = logging.getLogger(__name__)
 
@@ -600,5 +601,5 @@ async def download_item_file(
     return FileResponse(
         path=str(dest),
         filename=match["filename"],
-        media_type=match.get("mime", "application/octet-stream"),
+        media_type=inert_media_type(match.get("mime")),
     )

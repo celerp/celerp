@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
+from ui.components.encode import call, EVENT, html_response, js_value, safe_url, THIS
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -67,21 +69,21 @@ def doc_href(doc_id) -> str:
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
-_DEFAULT_COL_WIDTHS: dict[str, str] = {
-    "sku": "110px",
-    "name": "200px",
-    "barcode": "130px",
-    "category": "130px",
-    "quantity": "110px",
-    "status": "90px",
-    "weight": "100px",
-    "weight_unit": "80px",
-    "sell_by": "90px",
-    "location_name": "140px",
-    "pieces": "80px",
-    "created_at": "120px",
-    "updated_at": "120px",
-    "_attr_default": "120px",
+_DEFAULT_COL_WIDTHS: dict[str, int] = {  # px
+    "sku": 110,
+    "name": 200,
+    "barcode": 130,
+    "category": 130,
+    "quantity": 110,
+    "status": 90,
+    "weight": 100,
+    "weight_unit": 80,
+    "sell_by": 90,
+    "location_name": 140,
+    "pieces": 80,
+    "created_at": 120,
+    "updated_at": 120,
+    "_attr_default": 120,
 }
 
 
@@ -169,7 +171,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         ]
         if total is not None:
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
-        card = A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
+        card = A(*inner, href=safe_url(href), cls=cls, **({"title": title} if title else {}))
         if is_active:
             # Set after the class so the card's markup still opens href, class (pages and tests read it so).
             card.attrs["aria-current"] = "true"
@@ -231,7 +233,7 @@ BULK_TOOLBAR_JS = """
     var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
     if(a.confirm){var q=a.confirm.replace('{n}',ids.length);a=Object.assign({},a,{confirm:null});
       celerpConfirm(q).then(function(yes){if(yes)runAction(bar,a);});return;}
-    if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
+    if(a.method==='open'){celerpOpen(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
     // A table that carries its render's operation key sends it, so an action sent again
@@ -388,7 +390,7 @@ COLUMN_FILTER_JS = """
 (function(){
   if(window.__celerpColFilter)return;window.__celerpColFilter=true;""" + _FILTER_POP_JS + """
   var state=new WeakMap();
-  function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
+  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}
   function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
   function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}
   function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
@@ -396,8 +398,7 @@ COLUMN_FILTER_JS = """
     var a=active(t);
     rows(t).forEach(function(r){
       var show=true;
-      for(var key in a){
-        var s=a[key];
+      for(var [key,s] of a){
         if(key.indexOf('_range_')===0){
           // Date-range filter: cell must be an ISO date within [from, to].
           var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);
@@ -412,7 +413,7 @@ COLUMN_FILTER_JS = """
       r.classList.toggle('dp-row-hidden',!show);
       if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
     });
-    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',!!a[b.getAttribute('data-col')]);});
+    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});
     if(window.celerpBulkRefresh)window.celerpBulkRefresh();
     if(window.celerpTableEnhance)window.celerpTableEnhance(t);
   }
@@ -420,10 +421,10 @@ COLUMN_FILTER_JS = """
   function seedDefaults(t){
     var a=active(t);
     t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){
-      var col=b.getAttribute('data-col'); if(col in a) return;
+      var col=b.getAttribute('data-col'); if(a.has(col)) return;
       var ex=b.getAttribute('data-filter-exclude').split('\\u241f');
       var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});
-      a[col]=new Set(keep);
+      a.set(col,new Set(keep));
     });
   }
   function refresh(t){ if(t){seedDefaults(t);apply(t);} }
@@ -448,7 +449,7 @@ COLUMN_FILTER_JS = """
     var list=document.createElement('div');list.className='colfilter-list';
     function commit(){
       var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
-      if(checked.length===values.length){delete a[col];}else{a[col]=new Set(checked);}
+      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}
       selAllCb.checked=(checked.length===values.length);
       selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
       apply(t);
@@ -456,18 +457,18 @@ COLUMN_FILTER_JS = """
     values.forEach(function(v){
       var lbl=document.createElement('label');lbl.className='colfilter-item';
       var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
-      cb.checked=!a[col]||a[col].has(v);
+      cb.checked=!a.has(col)||a.get(col).has(v);
       cb.addEventListener('change',commit);
       lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));
       list.appendChild(lbl);
     });
-    selAllCb.checked=!a[col];selAllCb.indeterminate=!!a[col];
+    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);
     selAllCb.addEventListener('change',function(){
       list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
     search.addEventListener('input',function(){var q=search.value.toLowerCase();
       list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
     var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;
-    clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
+    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
     openFilterPop(pop,btn);
     search.focus();
@@ -488,7 +489,7 @@ COLUMN_FILTER_JS = """
     if(!(inp.classList&&inp.classList.contains('js-table-search')))return;
     var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;
     var a=active(t),q=inp.value.trim().toLowerCase();
-    if(q)a['_search_']=q;else delete a['_search_'];
+    if(q)a.set('_search_',q);else a.delete('_search_');
     apply(t);
   });
   // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.
@@ -500,7 +501,7 @@ COLUMN_FILTER_JS = """
     var col=wrap.getAttribute('data-daterange-col'),a=active(t);
     var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';
     var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';
-    if(from||to)a['_range_'+col]={from:from,to:to};else delete a['_range_'+col];
+    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);
     apply(t);
   });
   document.addEventListener('htmx:afterSwap',function(e){
@@ -706,7 +707,7 @@ def empty_state_cta(
                 Button(*label, hx_post=action_url, hx_swap="none", cls="empty-state-cta-btn")
             )
         elif action_url:
-            inner.append(A(*label, href=action_url, cls="empty-state-cta-btn"))
+            inner.append(A(*label, href=safe_url(action_url), cls="empty-state-cta-btn"))
     if more:
         inner.append(Div(inner.pop(), *more, cls="empty-state-cta-actions"))
     return Div(*inner, cls="empty-state-cta")
@@ -722,7 +723,7 @@ def period_empty_text(period: tuple[str, str, str] | None, lang: str | None = No
 
 
 def period_all_time_link(period: tuple[str, str, str], lang: str | None = None, cls: str | None = None) -> FT:
-    return A(t("filter.all_time", lang), href=period[2], cls=cls)
+    return A(t("filter.all_time", lang), href=safe_url(period[2]), cls=cls)
 
 
 def period_empty_note(period: tuple[str, str, str] | None, lang: str | None = None) -> FT | str:
@@ -1092,14 +1093,9 @@ def editable_cell(
     # Enter: trigger blur to save.
     # ESC: the restore request targets the cell, so the global htmx handler snapshots
     # the table's scroll position before it and restores it when it settles.
-    escape_js = (
-        f"if(event.key==='Escape'){{"
-        f"this._escaping=true;"
-        f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"event.preventDefault();}}"
-        f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
-    )
-    blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    cell = {"url": str(restore_url)}
+    escape_js = call("celerpCellKey", THIS, EVENT, {**cell, "enter": "trigger"})
+    blur_restore_js = call("celerpCellBlur", THIS, cell)
     # Typed editors save on blur only a value changed from the one they opened with; leaving
     # an untouched editor restores the cell, so opening one and moving on never writes.
     # The opening value is read from the box on its first focus, not from the HTML value:
@@ -1107,15 +1103,10 @@ def editable_cell(
     blur_save = dict(
         onfocus="if(this._v===undefined)this._v=this.value",
         hx_trigger="blur[this.value!==this._v] delay:200ms",
-        onblur=(f"if(!this._escaping&&this.value===this._v){{"
-                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"),
+        onblur=call("celerpCellBlur", THIS, {**cell, "when": "unchanged"}),
     )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
-    combobox_escape_js = (
-        f"if(event.key==='Escape'){{"
-        f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"event.preventDefault();}}"
-    )
+    combobox_escape_js = call("celerpCellKey", THIS, EVENT, cell)
 
     if cell_type in ("select", "status") and options is not None:
         options = _options_with_mixed(options, display_val)
@@ -1181,11 +1172,7 @@ def editable_cell(
         )
     elif cell_type == "textarea":
         # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
-        textarea_escape_js = (
-            f"if(event.key==='Escape'){{this._escaping=true;"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
-        )
+        textarea_escape_js = call("celerpCellKey", THIS, EVENT, cell)
         input_el = Textarea(
             display_val, name="value", **swap, **_aria, **blur_save,
             cls="cell-input cell-textarea-input", rows="5",
@@ -1220,11 +1207,13 @@ def editable_cell(
 
 def _normalize_number_str(s: str) -> str:
     """Format a numeric string for display and editing: drop .0 for integers and keep
-    every digit of a real number, so an editor opened on a value holds exactly that value."""
+    every digit of a real number, so an editor opened on a value holds exactly that value.
+    Text that is not a finite number (a refused entry such as "inf" or "1e309") stays as typed."""
     try:
-        return plain_number(float(s))
+        n = float(s)
     except (ValueError, TypeError):
         return s
+    return plain_number(n) if math.isfinite(n) else s
 
 
 def _display_val(value, cell_type: str, currency: str | None = None,
@@ -1246,7 +1235,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         label = display_enum(s, domain) if s else ""
         if s and status_doc:
             doc_id, doc_number = status_doc
-            return Span(label, ": ", A(doc_number, href=doc_href(doc_id), cls="badge__doc-link"), cls=badge_cls)
+            return Span(label, ": ", A(doc_number, href=safe_url(doc_href(doc_id)), cls="badge__doc-link"), cls=badge_cls)
         return Span(label or EMPTY, cls=badge_cls)
     if cell_type == "money":
         try:
@@ -1269,7 +1258,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else empty_mark()
     if cell_type == "image":
         if s:
-            return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
+            return Img(src=safe_url(s), cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title=t("table.drop_image_upload_hint"))
     if cell_type == "textarea":
         # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
@@ -1326,7 +1315,7 @@ def display_cell(
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
+            return Td(A(inner, href=safe_url(link_href), cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
         return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
@@ -1355,7 +1344,7 @@ def display_cell(
 
     if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
         return Td(
-            A(inner, href=link_href, cls="table-link"),
+            A(inner, href=safe_url(link_href), cls="table-link"),
             id=_cell_id,
             title=t("label.dblclick_to_edit"),
             hx_get=_edit,
@@ -1451,7 +1440,7 @@ def row_menu(safe_id: str, *items: FT) -> FT:
     ``A`` or ``Button`` carrying ``row-menu-item``; ``safe_id`` is unique on the page."""
     return Td(
         Div(
-            Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+            Button("⋮", cls="row-menu-btn", onclick=call('toggleRowMenu', str(safe_id))),
             Div(*items, cls="row-menu-dropdown", id=f"menu-{safe_id}"),
             cls="row-menu",
         ),
@@ -1480,22 +1469,16 @@ def data_row(
     entity_id = row.get("id") or row.get("entity_id", "")
     safe_id = entity_id.replace(":", "-")
     _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
-    # Single-quoted JS string literal so the inline onclick stays all single
-    # quotes: a double quote here (e.g. from json.dumps) forces the whole
-    # attribute to escape its single quotes, mangling the htmx.ajax URL.
-    _confirm_delete_row = (
-        "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
-    )
+    _confirm_delete_row = t("table.confirm_delete_row")
     action_cell = [] if not show_row_menu else [
         row_menu(
             safe_id,
-            A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
+            A(t("btn.edit"), href=safe_url(f"/{entity_type}/{entity_id}"), cls="row-menu-item"),
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=f"celerpConfirm({_confirm_delete_row}).then(function(yes){{if(yes)"
-                              f"htmx.ajax('DELETE','{_delete_url}',"
-                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}});}})")]
+                      onclick=call("celerpConfirmDelete", _confirm_delete_row, str(_delete_url),
+                                   f"#row-{safe_id}"))]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
@@ -1622,7 +1605,7 @@ def data_table(
     def _th(f: dict) -> FT:
         key = f["key"]
         default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
-        th_style = f"width:{default_width}"
+        th_style = f"width:{int(default_width)}px"
         spec = (column_filters or {}).get(key)
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
                                     field_label(f)) if spec else ""
@@ -1682,130 +1665,131 @@ def data_table(
             paired = f["paired_with"]
             key = f["key"]
             _virtual_followers.setdefault(paired, []).append(key)
-    _js = f"""
-(function(){{
-  var PAGE_KEY = '{page_key}';
-  var ORDER_KEY = 'celerp_col_order_{entity_type}';
-  var SCHEMA_DEFAULTS = {_json.dumps(_schema_defaults)};
+    _js = """
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var PAGE_KEY = CFG.pageKey;
+  var ORDER_KEY = 'celerp_col_order_' + CFG.entityType;
+  var SCHEMA_DEFAULTS = CFG.schemaDefaults;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {_json.dumps(_virtual_followers)};
+  var VIRTUAL_FOLLOWERS = CFG.virtualFollowers;
   var table = document.getElementById('data-table');
   if (!table) return;
   var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
   var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
 
-  var AUTO_HIDE = {'true' if auto_hide_empty else 'false'};
+  var AUTO_HIDE = CFG.autoHide;
 
   // Detect empty columns (>80% null/dash cells in tbody)
-  var colEmpty = {{}};
-  if (AUTO_HIDE) {{
-    ths.forEach(function(th, idx) {{
+  var colEmpty = {};
+  if (AUTO_HIDE) {
+    ths.forEach(function(th, idx) {
       var key = th.dataset.key;
       var total = rows.length;
       if (total === 0) return;
       var col_idx = Array.from(th.parentNode.children).indexOf(th);
-      var empty = rows.filter(function(tr) {{
+      var empty = rows.filter(function(tr) {
         var td = tr.cells[col_idx];
         if (!td) return true;
         var txt = td.textContent.trim();
         return !txt || txt === '--';
-      }}).length;
+      }).length;
       colEmpty[key] = total > 0 && (empty / total > 0.8);
-    }});
-  }}
+    });
+  }
 
   // Load persisted prefs or compute smart defaults
   var prefs;
-  try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null'); }} catch(e) {{ prefs = null; }}
-  if (!prefs) {{
-    prefs = {{}};
-    ths.forEach(function(th) {{
+  try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null'); } catch(e) { prefs = null; }
+  if (!prefs) {
+    prefs = {};
+    ths.forEach(function(th) {
       prefs[th.dataset.key] = AUTO_HIDE ? !colEmpty[th.dataset.key] : (SCHEMA_DEFAULTS[th.dataset.key] !== false);
-    }});
-  }} else {{
+    });
+  } else {
     // Merge: columns not in stored prefs get their schema default
-    ths.forEach(function(th) {{
-      if (!(th.dataset.key in prefs)) {{
+    ths.forEach(function(th) {
+      if (!(th.dataset.key in prefs)) {
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
-      }}
-    }});
-  }}
+      }
+    });
+  }
 
   // One source for the export link's column list: the columns the table shows, in order.
-  window.celerpSyncExportCols = function(t) {{
+  window.celerpSyncExportCols = function(t) {
     var keys = Array.from(t.querySelectorAll('thead th[data-key]'))
-      .filter(function(th) {{ return th.style.display !== 'none'; }})
-      .map(function(th) {{ return th.dataset.key; }});
-    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {{
+      .filter(function(th) { return th.style.display !== 'none'; })
+      .map(function(th) { return th.dataset.key; });
+    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {
       var url = new URL(a.getAttribute('href'), window.location.origin);
       url.searchParams.set('cols', keys.join(','));
-      a.setAttribute('href', url.pathname + url.search);
-    }});
-  }};
+      celerpSetUrl(a, 'href', url.pathname + url.search);
+    });
+  };
 
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
-  function applyVis(liveTable) {{
+  function applyVis(liveTable) {
     liveTable = liveTable || table;
     // Re-read prefs from localStorage so post-swap calls reflect changes made in
     // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
     // share the in-memory `prefs` variable from this IIFE closure).
-    try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; }} catch(e) {{}}
+    try { prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; } catch(e) {}
     var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
     var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
-    liveThs.forEach(function(th) {{
+    liveThs.forEach(function(th) {
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      liveRows.forEach(function(tr) {{
+      liveRows.forEach(function(tr) {
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(liveTable);
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
-  }}
+  }
   applyVis();
   // Re-apply after HTMX settles so rows added during the swap phase are also covered.
   // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
   // accumulate duplicate listeners on document.body.
-  var _VIS_SETTLE_KEY = '__celerpVisSettle_{entity_type}';
-  if (!window[_VIS_SETTLE_KEY]) {{
-    window[_VIS_SETTLE_KEY] = true;
-    document.body.addEventListener('htmx:afterSettle', function(e) {{
+  window.__celerpVisSettle = window.__celerpVisSettle || new Set();
+  if (!window.__celerpVisSettle.has(CFG.entityType)) {
+    window.__celerpVisSettle.add(CFG.entityType);
+    document.body.addEventListener('htmx:afterSettle', function(e) {
       var tid = e.detail && e.detail.target ? e.detail.target.id || '' : '';
       // The whole content, or one row re-rendered in place (data_row draws every column).
-      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {{
+      if (tid === 'inventory-content' || tid.indexOf('row-') === 0) {
         // Re-query the live table after each settle - the old `table` ref may be detached
         var liveTable = document.getElementById('data-table');
         if (liveTable) applyVis(liveTable);
-      }}
-    }});
-  }}
+      }
+    });
+  }
 
   // Drag-to-resize column headers — persist widths to localStorage
-  var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
-  function loadWidths() {{
-    try {{ return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveWidths() {{
-    var w = {{}};
-    ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
-    try {{ localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); }} catch(e) {{}}
-  }}
+  var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType;
+  function loadWidths() {
+    try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveWidths() {
+    var w = {};
+    ths.forEach(function(th) { if (th.style.width) w[th.dataset.key] = th.style.width; });
+    try { localStorage.setItem(WIDTH_KEY, JSON.stringify(w)); } catch(e) {}
+  }
   // Restore persisted widths synchronously. A saved width is an explicit px value that needs no
   // committed layout, and applying it before the sticky controller can pin the header is what keeps
   // the frozen header's captured geometry in step with the body for a custom column layout.
-  (function() {{
+  (function() {
     var saved = loadWidths();
-    if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }})();
-  ths.forEach(function(th) {{
+    if (saved) ths.forEach(function(th) { if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; });
+  })();
+  ths.forEach(function(th) {
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
     th.style.position = 'relative';
     th.appendChild(handle);
     var startX, startW;
-    handle.addEventListener('mousedown', function(e) {{
+    handle.addEventListener('mousedown', function(e) {
       startX = e.pageX;
       startW = th.offsetWidth;
       e.preventDefault();
@@ -1815,24 +1799,24 @@ def data_table(
       document.body.classList.add('col-resizing');
       var scrollWrap = table.closest('.table-scroll-wrap');
       var autoScrollRaf = null;
-      function onMove(e2) {{
+      function onMove(e2) {
         e2.preventDefault();
         th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px';
         // Auto-scroll the container when dragging near the right edge
-        if (scrollWrap) {{
+        if (scrollWrap) {
           var rect = scrollWrap.getBoundingClientRect();
           var ZONE = 48; // px from edge to trigger auto-scroll
           if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
-          if (e2.clientX > rect.right - ZONE) {{
+          if (e2.clientX > rect.right - ZONE) {
             var speed = Math.round((e2.clientX - (rect.right - ZONE)) / ZONE * 12) + 2;
-            (function scroll() {{
+            (function scroll() {
               scrollWrap.scrollLeft += speed;
               autoScrollRaf = requestAnimationFrame(scroll);
-            }})();
-          }}
-        }}
-      }}
-      function onUp() {{
+            })();
+          }
+        }
+      }
+      function onUp() {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
         if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
@@ -1841,126 +1825,125 @@ def data_table(
         // Let the sticky controller recapture the new width once, now the drag is over, so a pinned
         // header re-aligns its body to the dragged column instead of staying at the old geometry.
         window.dispatchEvent(new Event('resize'));
-      }}
+      }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
-    }});
-  }});
+    });
+  });
 
   // Drag-and-drop column reorder via HTML5 drag on <th>
   var dragKey = null;
-  ths.forEach(function(th) {{
-    th.addEventListener('dragstart', function(e) {{
+  ths.forEach(function(th) {
+    th.addEventListener('dragstart', function(e) {
       dragKey = th.dataset.key;
       e.dataTransfer.effectAllowed = 'move';
       th.classList.add('col-dragging');
-    }});
-    th.addEventListener('dragend', function() {{
+    });
+    th.addEventListener('dragend', function() {
       th.classList.remove('col-dragging');
       dragKey = null;
-      table.querySelectorAll('th[data-key]').forEach(function(t) {{ t.classList.remove('col-drag-over'); }});
-    }});
-    th.addEventListener('dragover', function(e) {{
+      table.querySelectorAll('th[data-key]').forEach(function(t) { t.classList.remove('col-drag-over'); });
+    });
+    th.addEventListener('dragover', function(e) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      table.querySelectorAll('th[data-key]').forEach(function(t) {{ t.classList.remove('col-drag-over'); }});
+      table.querySelectorAll('th[data-key]').forEach(function(t) { t.classList.remove('col-drag-over'); });
       th.classList.add('col-drag-over');
-    }});
-    th.addEventListener('drop', function(e) {{
+    });
+    th.addEventListener('drop', function(e) {
       e.preventDefault();
       th.classList.remove('col-drag-over');
       if (!dragKey || dragKey === th.dataset.key) return;
       // Resolve the canonical group: if dragging a virtual, treat its primary as the drag source
       var effectiveDragKey = dragKey;
-      for (var pk in VIRTUAL_FOLLOWERS) {{
-        if (VIRTUAL_FOLLOWERS[pk].indexOf(dragKey) !== -1) {{ effectiveDragKey = pk; break; }}
-      }}
+      for (var pk in VIRTUAL_FOLLOWERS) {
+        if (VIRTUAL_FOLLOWERS[pk].indexOf(dragKey) !== -1) { effectiveDragKey = pk; break; }
+      }
       // Move TH (and any virtual followers) before the drop target
       var thead_tr = table.querySelector('thead tr');
       var srcTh = thead_tr.querySelector('th[data-key="' + effectiveDragKey + '"]');
       if (!srcTh) return;
       thead_tr.insertBefore(srcTh, th);
       // Place virtual followers immediately after the primary
-      (VIRTUAL_FOLLOWERS[effectiveDragKey] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[effectiveDragKey] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth) srcTh.insertAdjacentElement('afterend', vth);
-      }});
+      });
       // Re-order body cells to match header
       var allThs = Array.from(thead_tr.children);
-      table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+      table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
         var cells = Array.from(tr.children);
-        var newOrder = allThs.map(function(h) {{
+        var newOrder = allThs.map(function(h) {
           var k = h.dataset.key;
           if (!k) return null;
-          return cells.find(function(td) {{ return td.dataset.col === k; }});
-        }}).filter(Boolean);
+          return cells.find(function(td) { return td.dataset.col === k; });
+        }).filter(Boolean);
         // Preserve fixed columns (checkbox, search match, actions) by class
         var checkboxTd = tr.querySelector('.col-checkbox');
         var matchTd = tr.querySelector('.col-match');
         var actionsTd = tr.querySelector('.col-actions');
-        var dataTds = newOrder.filter(function(td) {{
+        var dataTds = newOrder.filter(function(td) {
           return td && td !== checkboxTd && td !== actionsTd;
-        }});
+        });
         var ordered = [];
         if (checkboxTd) ordered.push(checkboxTd);
         if (matchTd) ordered.push(matchTd);
         ordered = ordered.concat(dataTds);
         if (actionsTd) ordered.push(actionsTd);
-        ordered.forEach(function(td) {{ tr.appendChild(td); }});
-      }});
+        ordered.forEach(function(td) { tr.appendChild(td); });
+      });
       // Persist new order and notify picker
-      var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
-      try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
-      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
+      var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){return h.dataset.key;});
+      try { localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); } catch(e) {}
+      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {detail: {order: newOrder}}));
       window.celerpSyncExportCols(table);
       dragKey = null;
-    }});
-  }});
+    });
+  });
 
   // Apply persisted column order on page load
   var storedOrder;
-  try {{ storedOrder = JSON.parse(localStorage.getItem(ORDER_KEY) || 'null'); }} catch(e) {{ storedOrder = null; }}
-  if (storedOrder && storedOrder.length) {{
+  try { storedOrder = JSON.parse(localStorage.getItem(ORDER_KEY) || 'null'); } catch(e) { storedOrder = null; }
+  if (storedOrder && storedOrder.length) {
     var thead_tr = table.querySelector('thead tr');
     var actionsTh = thead_tr.querySelector('.col-actions');
-    storedOrder.forEach(function(key) {{
+    storedOrder.forEach(function(key) {
       var th2 = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th2 && actionsTh) thead_tr.insertBefore(th2, actionsTh);
       // Place virtual followers immediately after their primary
-      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
-      }});
-    }});
+      });
+    });
     // Re-order tbody to match new header order
     var allThs2 = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
       var matchTd = tr.querySelector('.col-match');
       var actionsTd = tr.querySelector('.col-actions');
-      var dataCells = allThs2.map(function(th2) {{
-        return cells.find(function(td) {{ return td.dataset.col === th2.dataset.key; }});
-      }}).filter(Boolean);
+      var dataCells = allThs2.map(function(th2) {
+        return cells.find(function(td) { return td.dataset.col === th2.dataset.key; });
+      }).filter(Boolean);
       var ordered = [];
       if (checkboxTd) ordered.push(checkboxTd);
       if (matchTd) ordered.push(matchTd);
       ordered = ordered.concat(dataCells);
       if (actionsTd) ordered.push(actionsTd);
-      ordered.forEach(function(td) {{ tr.appendChild(td); }});
-    }});
-  }}
-}})();
+      ordered.forEach(function(td) { tr.appendChild(td); });
+    });
+  }
+})();
 """
-    _bulk_i18n_prelude = (
-        "var I18N_CONFIRM_MERGE=" + _json.dumps(t("table.confirm_merge")) + ";\n"
-        "var I18N_A_NEW_SKU=" + _json.dumps(t("table.a_new_sku")) + ";\n"
-        "var I18N_NEW_DOC_TYPE=" + _json.dumps(t("table.new_doc_type")) + ";\n"
-        "var I18N_N_SELECTED=" + _json.dumps(t("label.n_selected")) + ";\n"
-    )
-    _bulk_js = _bulk_i18n_prelude + """
+    _bulk_js = r"""var _CELERP_BULK_CFG=JSON.parse(document.currentScript.dataset.cfg);
+var I18N_CONFIRM_MERGE=_CELERP_BULK_CFG.confirmMerge;
+var I18N_A_NEW_SKU=_CELERP_BULK_CFG.aNewSku;
+var I18N_NEW_DOC_TYPE=_CELERP_BULK_CFG.newDocType;
+var I18N_N_SELECTED=_CELERP_BULK_CFG.nSelected;
+
 var CelerpSelection=(function(){
-  var KEY='celerp_inv_selection',_map={};
+  var KEY=_CELERP_BULK_CFG.selectionKey,_map={};
   function _save(){try{sessionStorage.setItem(KEY,JSON.stringify(_map))}catch(e){}}
   function _load(){try{_map=JSON.parse(sessionStorage.getItem(KEY)||'{}')}catch(e){_map={}}}
   _load();
@@ -1987,19 +1970,19 @@ function submitBulkAction(formEl){
 }
 function _clearBulkResult(){
   var r=document.getElementById('bulk-action-result');
-  if(r) r.innerHTML='';
+  if(r) r.replaceChildren();
 }
 function _resetBulkActions(){
   var sel=document.getElementById('bulk-action-select');
   if(sel) sel.value='';
   var ctx=document.getElementById('bulk-context');
-  if(ctx) ctx.innerHTML='';
+  if(ctx) ctx.replaceChildren();
   _clearBulkResult();
 }
 function bulkActionChanged(action){
   var ctx=document.getElementById('bulk-context');
   if(!ctx) return;
-  ctx.innerHTML='';
+  ctx.replaceChildren();
   _clearBulkResult();
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
@@ -2007,10 +1990,10 @@ function bulkActionChanged(action){
     // Archiving retires the product but leaves any remaining stock on the books. When stock is
     // still held the user must choose (keep on books vs write off) - never a silent ledger move.
     if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
-    celerpConfirm('Archive selected items? They will be hidden from the default view.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
+    celerpConfirm(_CELERP_BULK_CFG.confirmArchive).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
   }
   if(action==='restore'){
-    celerpConfirm('Restore selected items to the catalog? They will become available again.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
+    celerpConfirm(_CELERP_BULK_CFG.confirmRestore).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
   }
   if(action==='expire'){
     // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
@@ -2021,21 +2004,21 @@ function bulkActionChanged(action){
     _bulkWriteOff();return;
   }
   if(action==='make_available'){
-    celerpConfirm('Make selected draft items available? They will count as real stock.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
+    celerpConfirm(_CELERP_BULK_CFG.confirmMakeAvailable).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
   }
   if(action==='revert_to_draft'){
-    celerpConfirm('Revert selected items to draft? Only items with no circulation history can revert.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
+    celerpConfirm(_CELERP_BULK_CFG.confirmRevertToDraft).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
   }
   if(action==='delete'){
     // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
     var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
-    celerpConfirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
+    celerpConfirm(samples?_CELERP_BULK_CFG.confirmDelete:_CELERP_BULK_CFG.confirmDeleteDrafts).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
   }
   if(action==='restore_deleted'){
     _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
-    celerpConfirm('Duplicate selected items? A copy of each will be created.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
+    celerpConfirm(_CELERP_BULK_CFG.confirmDuplicate).then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
   }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
   // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
@@ -2045,9 +2028,9 @@ function bulkActionChanged(action){
   var tpl=document.getElementById(tplId);
   if(!tpl) return;
   // Validate selection count constraints
-  if(action==='split'&&n!==1){alert('Select exactly 1 item to split.');return;}
-  if(action==='transform'&&n!==1){alert('Select exactly 1 item to transform.');return;}
-  if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
+  if(action==='split'&&n!==1){alert(_CELERP_BULK_CFG.splitNeedsOne);return;}
+  if(action==='transform'&&n!==1){alert(_CELERP_BULK_CFG.transformNeedsOne);return;}
+  if(action==='merge'&&n<2){alert(_CELERP_BULK_CFG.mergeNeedsTwo);return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
   // Split: auto-load preview immediately; no qty input needed
@@ -2096,7 +2079,7 @@ function _selectedStockedIds(){
   // the current page, so the guard is never skipped on stale zero data.
   var all=CelerpSelection.all();
   return Object.keys(all).filter(function(id){
-    var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+    var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
     var q=(cb&&cb.dataset.qty!=null&&cb.dataset.qty!=='')?cb.dataset.qty:(all[id].qty||'0');
     return parseFloat(q)>0;
   });
@@ -2111,13 +2094,13 @@ function _stockGuardChoice(keepFn){
   dlg.className='modal-dialog';dlg.id='stock-guard-choice';
   var body=document.createElement('div');body.className='modal-body';
   var msg=document.createElement('p');
-  msg.textContent='Some selected items still hold stock. Archiving retires the product but leaves its stock on the books. What should happen to the remaining stock?';
+  msg.textContent=_CELERP_BULK_CFG.stockGuardPrompt;
   body.appendChild(msg);
   var acts=document.createElement('div');acts.className='modal-actions';
   function mkBtn(label,cls,fn){var b=document.createElement('button');b.type='button';b.className='btn '+cls;b.textContent=label;b.addEventListener('click',function(){dlg.close();dlg.remove();if(fn)fn();});return b;}
-  acts.appendChild(mkBtn('Keep stock on books','btn--secondary',keepFn));
-  acts.appendChild(mkBtn('Write off remaining stock','btn--primary',_bulkWriteOff));
-  acts.appendChild(mkBtn('Cancel','btn--ghost',null));
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.keepStock,'btn--secondary',keepFn));
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.writeOff,'btn--primary',_bulkWriteOff));
+  acts.appendChild(mkBtn(_CELERP_BULK_CFG.cancel,'btn--ghost',null));
   body.appendChild(acts);dlg.appendChild(body);
   document.body.appendChild(dlg);
   dlg.addEventListener('cancel',function(){dlg.remove();});
@@ -2140,7 +2123,7 @@ function _liveMergeMeta(id){
   // cell without re-selecting the row, so the meta snapshotted at select time (and kept
   // in sessionStorage) goes stale. Read the live row when it is on the page; fall back to
   // the stored snapshot only for selected rows not currently rendered (other pages).
-  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\\"')+'"]');
+  var cb=document.querySelector('.row-select[value="'+id.replace(/"/g,'\"')+'"]');
   if(cb){
     var tr=cb.closest('tr');
     var skuCell=tr&&tr.querySelector('[data-col="sku"]');
@@ -2171,13 +2154,13 @@ function _populateMergeTargets(){
     var n=CelerpSelection.count();
     var isNewSku=sel.value==='__new__';
     var targetText=sel.options[sel.selectedIndex].textContent;
-    confirmDiv.innerHTML='';
+    confirmDiv.replaceChildren();
     confirmDiv.style.display='flex';
     confirmDiv.style.flexDirection='column';
     confirmDiv.style.gap='0.5rem';
     confirmDiv.style.marginTop='0.5rem';
     var msg=document.createElement('span');
-    msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';
+    msg.textContent=I18N_CONFIRM_MERGE.replace('{n}',n).replace('{target}',isNewSku?I18N_A_NEW_SKU:targetText);
     msg.style.fontSize='0.85rem';
     // "New SKU" reveals [dropdown] -> [enter SKU]; picking an item hides it
     // (that item's SKU wins, so there is nothing extra to show).
@@ -2214,7 +2197,7 @@ function _populateMergeTargets(){
     btnRow.style.display='flex';
     btnRow.style.gap='0.5rem';
     var btn=document.createElement('button');
-    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent='Confirm';
+    btn.type='button';btn.className='btn btn--primary btn--sm';btn.textContent=_CELERP_BULK_CFG.confirm;
     btn.addEventListener('click',function(){
       var skuEl=document.getElementById('merge-resulting-sku');
       // "New SKU" mode needs a typed SKU; the merge bases on the first selected
@@ -2256,7 +2239,7 @@ function _populateMergeTargets(){
       });
     });
     var cancel=document.createElement('button');
-    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';
+    cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent=_CELERP_BULK_CFG.cancel;
     cancel.addEventListener('click',function(){
       confirmDiv.style.display='none';
       sel.value='';
@@ -2275,9 +2258,9 @@ function sendToTypeChanged(docType, docLabel){
   var targetSel=document.getElementById('send-to-target-select');
   if(!targetSel) return;
   // Reset to just "New <type>", using the type's display label not its raw key
-  targetSel.innerHTML='';
+  targetSel.replaceChildren();
   var newOpt=document.createElement('option');
-  newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);
+  newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{type}',(docLabel||docType));
   targetSel.appendChild(newOpt);
   if(!docType) return;
   // Fetch matching docs
@@ -2299,7 +2282,7 @@ function sendToTypeChanged(docType, docLabel){
     var toolbar=document.getElementById('bulk-toolbar');
     var countEl=document.getElementById('bulk-count');
     var clearBtn=document.getElementById('bulk-clear-btn');
-    if(countEl) countEl.textContent=n+' selected';
+    if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{n}',n);
     if(toolbar){if(n>0){toolbar.classList.add('is-active')}else{toolbar.classList.remove('is-active')}}
     if(clearBtn){clearBtn.style.display=n>0?'':'none'}
     var all=CelerpSelection.all();
@@ -2385,7 +2368,7 @@ function sendToTypeChanged(docType, docLabel){
     var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
              (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
     if(!path){return;}
-    var m=path.match(/\\/api\\/items\\/([^/]+)\\/field\\/quantity/);
+    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
     if(!m){return;}
     var eid=m[1];
     var safeId=eid.replace(/:/g,'-');
@@ -2412,7 +2395,7 @@ function sendToTypeChanged(docType, docLabel){
       var fmt=fmtNum(rawQty, decimals);
       if(col==='weight'){
         span.textContent=(rawQty&&rawQty!=='--'&&newUnit&&newUnit!=='--')
-          ?fmt+'\u00a0'+newUnit:(fmt||'--');
+          ?fmt+' '+newUnit:(fmt||'--');
       } else if(col==='pieces'){
         span.textContent=fmt||'--';
       }
@@ -2454,56 +2437,32 @@ function sendToTypeChanged(docType, docLabel){
 })();
 """)
     top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
-    scripts = [Script(_js)]
+    scripts = [Script(_js, data_cfg=js_value({
+        "pageKey": str(page_key), "entityType": entity_type, "schemaDefaults": _schema_defaults,
+        "virtualFollowers": _virtual_followers, "autoHide": bool(auto_hide_empty)}))]
     if show_checkboxes:
-        _bulk_js_localized = (
-            _bulk_js
-            .replace("'celerp_inv_selection'", f"'{selection_key}'")
-            .replace("'Archive selected items? They will be hidden from the default view.'",
-                     _json.dumps(t("table.confirm_archive_selected")))
-            .replace("'Restore selected items to the catalog? They will become available again.'",
-                     _json.dumps(t("table.confirm_restore_selected")))
-            .replace("'Make selected draft items available? They will count as real stock.'",
-                     _json.dumps(t("table.confirm_make_available_selected")))
-            .replace("'Revert selected items to draft? Only items with no circulation history can revert.'",
-                     _json.dumps(t("table.confirm_revert_to_draft_selected")))
-            .replace("'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. "
-                     "A draft another record still names moves to Deleted, where Restore brings it back.'",
-                     _json.dumps(t("table.confirm_delete_drafts_selected")))
-            .replace("'Delete selected items? This cannot be undone.'",
-                     _json.dumps(t("table.confirm_delete_selected")))
-            .replace("'Duplicate selected items? A copy of each will be created.'",
-                     _json.dumps(t("table.confirm_duplicate_selected")))
-            .replace("'Select exactly 1 item to split.'",
-                     _json.dumps(t("inv.select_exactly_1_item_to_split")))
-            .replace("'Select exactly 1 item to transform.'",
-                     _json.dumps(t("table.select_exactly_1_to_transform")))
-            .replace("'Select at least 2 items to merge.'",
-                     _json.dumps(t("inv.select_at_least_2_items_to_merge")))
-            .replace(
-                "'Some selected items still hold stock. Archiving retires the product but "
-                "leaves its stock on the books. What should happen to the remaining stock?'",
-                _json.dumps(t("table.stock_guard_prompt")),
-            )
-            .replace("'Keep stock on books'", _json.dumps(t("table.keep_stock_on_books")))
-            .replace("'Write off remaining stock'", _json.dumps(t("table.write_off_remaining_stock")))
-            .replace("'Cancel'", _json.dumps(t("btn.cancel")))
-            .replace("'Confirm'", _json.dumps(t("btn.confirm")))
-            .replace(
-                "msg.textContent='Merge '+n+' items into '+(isNewSku?'a new SKU':targetText)+'?';",
-                "msg.textContent=I18N_CONFIRM_MERGE.replace('{n}',n)"
-                ".replace('{target}',isNewSku?I18N_A_NEW_SKU:targetText);",
-            )
-            .replace(
-                "newOpt.value='__new__';newOpt.textContent='New '+(docLabel||docType);",
-                "newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{type}',(docLabel||docType));",
-            )
-            .replace(
-                "if(countEl) countEl.textContent=n+' selected';",
-                "if(countEl) countEl.textContent=I18N_N_SELECTED.replace('{n}',n);",
-            )
-        )
-        scripts.append(Script(_bulk_js_localized))
+        scripts.append(Script(_bulk_js, data_cfg=js_value({
+            "confirmMerge": t("table.confirm_merge"),
+            "aNewSku": t("table.a_new_sku"),
+            "newDocType": t("table.new_doc_type"),
+            "nSelected": t("label.n_selected"),
+            "selectionKey": selection_key,
+            "confirmArchive": t("table.confirm_archive_selected"),
+            "confirmRestore": t("table.confirm_restore_selected"),
+            "confirmMakeAvailable": t("table.confirm_make_available_selected"),
+            "confirmRevertToDraft": t("table.confirm_revert_to_draft_selected"),
+            "confirmDeleteDrafts": t("table.confirm_delete_drafts_selected"),
+            "confirmDelete": t("table.confirm_delete_selected"),
+            "confirmDuplicate": t("table.confirm_duplicate_selected"),
+            "splitNeedsOne": t("inv.select_exactly_1_item_to_split"),
+            "transformNeedsOne": t("table.select_exactly_1_to_transform"),
+            "mergeNeedsTwo": t("inv.select_at_least_2_items_to_merge"),
+            "stockGuardPrompt": t("table.stock_guard_prompt"),
+            "keepStock": t("table.keep_stock_on_books"),
+            "writeOff": t("table.write_off_remaining_stock"),
+            "cancel": t("btn.cancel"),
+            "confirm": t("btn.confirm"),
+        })))
     if top_scroll:
         scripts.append(_top_scroll_js)
     return Div(
@@ -2530,10 +2489,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
       the picker in sync when the user drags a table column header directly
     - Reset to default button (clears all localStorage keys and reloads)
     """
-    import json as _json
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
     col_data = [{"key": f["key"], "label": field_label(f)} for f in schema]
-    default_keys = _json.dumps([f["key"] for f in schema if f.get("show_in_table", True)])
+    default_keys = [f["key"] for f in schema if f.get("show_in_table", True)]
 
     checkboxes = [
         Label(
@@ -2546,90 +2504,87 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
         for f in schema
     ]
 
-    _mgr_js = f"""
-(function(){{
-  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}',WIDTH_KEY='celerp_col_widths_{entity_type}';
-  var ALL={_json.dumps(col_data)};
-  var DEFAULTS={default_keys};
+    _mgr_js = """
+(function(){
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var VIS_KEY=CFG.visKey,ORDER_KEY=CFG.orderKey,WIDTH_KEY=CFG.widthKey;
+  var ALL=CFG.all;
+  var DEFAULTS=CFG.defaults;
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
-  function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
-  function saveVis(p){{localStorage.setItem(VIS_KEY,JSON.stringify(p))}}
-  function loadOrder(){{try{{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}}catch(e){{return null}}}}
-  function saveOrder(o){{localStorage.setItem(ORDER_KEY,JSON.stringify(o))}}
-  function applyVis(prefs){{
+  function loadVis(){try{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}catch(e){return null}}
+  function saveVis(p){localStorage.setItem(VIS_KEY,JSON.stringify(p))}
+  function loadOrder(){try{return JSON.parse(localStorage.getItem(ORDER_KEY)||'null')}catch(e){return null}}
+  function saveOrder(o){localStorage.setItem(ORDER_KEY,JSON.stringify(o))}
+  function applyVis(prefs){
     var t=document.getElementById('data-table');if(!t)return;
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
     var rows=Array.from(t.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th){{
+    ths.forEach(function(th){
       var k=th.dataset.key,show=prefs[k]!==false;
       th.style.display=show?'':'none';
-      rows.forEach(function(tr){{var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';}});
-    }});
-  }}
-  function applyOrderToTable(order){{
+      rows.forEach(function(tr){var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';});
+    });
+  }
+  function applyOrderToTable(order){
     if(!order||!order.length)return;
     var t=document.getElementById('data-table');if(!t)return;
     var htr=t.querySelector('thead tr');if(!htr)return;
     var actTh=htr.querySelector('.col-actions');
-    order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
+    order.forEach(function(k){var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
-    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
+    t.querySelectorAll('tbody tr.data-row').forEach(function(tr){
       var cbTd=tr.querySelector('.col-checkbox'),mTd=tr.querySelector('.col-match'),aTd=tr.querySelector('.col-actions');
-      var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
+      var data=allThs.map(function(h){return tr.querySelector('[data-col="'+h.dataset.key+'"]');}).filter(Boolean);
       var out=[];if(cbTd)out.push(cbTd);if(mTd)out.push(mTd);out=out.concat(data);if(aTd)out.push(aTd);
-      out.forEach(function(td){{tr.appendChild(td);}});
-    }});
-  }}
-  function applyOrderToPicker(order){{
+      out.forEach(function(td){tr.appendChild(td);});
+    });
+  }
+  function applyOrderToPicker(order){
     if(!order||!order.length)return;
     var labels=menu.querySelectorAll('label[data-col]');if(!labels.length)return;
     var parent=labels[0].parentNode;
-    order.forEach(function(key){{var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);}});
-  }}
-  function pickerOrder(){{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
-  }}
-  function syncCB(){{var p=loadVis()||{{}};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){{c.checked=p[c.value]!==false;}});}}
-  btn.addEventListener('click',function(e){{e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();}});
-  document.addEventListener('click',function(e){{if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';}});
-  menu.addEventListener('change',function(e){{
+    order.forEach(function(key){var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);});
+  }
+  function pickerOrder(){
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){return l.dataset.col;});
+  }
+  function syncCB(){var p=loadVis()||{};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=p[c.value]!==false;});}
+  btn.addEventListener('click',function(e){e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();});
+  document.addEventListener('click',function(e){if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';});
+  menu.addEventListener('change',function(e){
     if(e.target.type!=='checkbox')return;
-    var k=e.target.value,p=loadVis()||{{}};
-    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
+    var k=e.target.value,p=Object.assign({},loadVis());
+    if(!Object.keys(p).length)ALL.forEach(function(c){p[c.key]=DEFAULTS.indexOf(c.key)!==-1;});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
     applyOrderToTable(pickerOrder());
-  }});
+  });
   var ds=null;
-  menu.querySelectorAll('label[draggable]').forEach(function(l){{
-    l.addEventListener('dragstart',function(e){{ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';}});
-    l.addEventListener('dragend',function(){{l.style.opacity='';ds=null;}});
-    l.addEventListener('dragover',function(e){{e.preventDefault();e.dataTransfer.dropEffect='move';}});
-    l.addEventListener('drop',function(e){{
+  menu.querySelectorAll('label[draggable]').forEach(function(l){
+    l.addEventListener('dragstart',function(e){ds=l;e.dataTransfer.effectAllowed='move';l.style.opacity='0.5';});
+    l.addEventListener('dragend',function(){l.style.opacity='';ds=null;});
+    l.addEventListener('dragover',function(e){e.preventDefault();e.dataTransfer.dropEffect='move';});
+    l.addEventListener('drop',function(e){
       e.preventDefault();if(!ds||ds===l)return;
       var par=l.parentNode,sn=ds.nextSibling;par.insertBefore(ds,l);if(sn)par.insertBefore(l,sn);else par.appendChild(l);
       ds.style.opacity='';
       var no=pickerOrder();saveOrder(no);applyOrderToTable(no);
-    }});
-  }});
+    });
+  });
   // Sync picker when table header is dragged (data_table fires this event)
-  document.addEventListener('celerp:col-reorder',function(e){{
+  document.addEventListener('celerp:col-reorder',function(e){
     if(!e.detail||!e.detail.order)return;
     applyOrderToPicker(e.detail.order);
     saveOrder(e.detail.order);
-  }});
+  });
   var sv=loadVis();if(sv)applyVis(sv);
   var so=loadOrder();
-  if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
+  if(so){applyOrderToPicker(so);applyOrderToTable(so);}
   menu.style.display='none';
-}})();
+})();
 """
-    reset_onclick = (
-        f"localStorage.removeItem('celerp_cols_{entity_type}');"
-        f"localStorage.removeItem('celerp_col_order_{entity_type}');"
-        f"localStorage.removeItem('celerp_col_widths_{entity_type}');"
-        f"location.reload();"
-    )
+    reset_onclick = call("celerpResetColumns", [
+        f"celerp_cols_{entity_type}", f"celerp_col_order_{entity_type}", f"celerp_col_widths_{entity_type}"])
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
@@ -2646,7 +2601,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
             id="col-mgr-menu",
             style="display:none",
         ),
-        Script(_mgr_js),
+        Script(_mgr_js, data_cfg=js_value({'visKey': f"celerp_cols_{entity_type}", 'all': col_data, 'defaults': default_keys, 'orderKey': f"celerp_col_order_{entity_type}", 'widthKey': f"celerp_col_widths_{entity_type}"})),
         cls="column-manager",
     )
 
@@ -2698,7 +2653,7 @@ def server_pager(offset: int, limit: int, total: int, href, *,
 
     def _nav_attrs(url: str) -> dict:
         if nav_js:
-            return {"onclick": f"event.preventDefault();{nav_js}(this.getAttribute('href'))"}
+            return {"onclick": call("celerpPageLink", THIS, EVENT, nav_js)}
         if hx_target:
             return {"hx_get": url, "hx_target": hx_target, "hx_select": hx_target, "hx_swap": "outerHTML"}
         return {}
@@ -2706,7 +2661,7 @@ def server_pager(offset: int, limit: int, total: int, href, *,
     def _link(label: str, p: int, *, current: bool = False) -> FT:
         url = href((p - 1) * limit, limit)
         extra = {"aria-current": "page"} if current else {}
-        return A(label, href=url, cls="page-btn" + (" page-btn--active" if current else ""),
+        return A(label, href=safe_url(url), cls="page-btn" + (" page-btn--active" if current else ""),
                  **_nav_attrs(url), **extra)
 
     def _edge(label: str, p: int, enabled: bool) -> FT:
@@ -2724,16 +2679,10 @@ def server_pager(offset: int, limit: int, total: int, href, *,
                   total=f"{total:,}")
     else:
         label = t("table.page_range_none", total=f"{total:,}")
-    if nav_js:
-        onchange = f"{nav_js}(this.value)"
-    elif hx_target:
-        onchange = f"htmx.ajax('GET',this.value,{{target:'{hx_target}',select:'{hx_target}',swap:'outerHTML'}})"
-    else:
-        onchange = "window.location=this.value"
     sizes = sorted(set(page_sizes) | {limit})
     size_select = Select(
         *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],
-        onchange=onchange, cls="filter-select per-page-select",
+        onchange=call("celerpPageSize", THIS, nav_js or "", hx_target or ""), cls="filter-select per-page-select",
     )
     return Nav(*controls,
                Span(label, cls="page-count"),
@@ -2803,8 +2752,7 @@ def search_results(fragment: FT, page_url: str, *out_of_band: FT):
     """The response to a search_bar or sort request: the result fragment, with the page's own
     URL for the address bar, so a reload or a shared link opens the whole page. Page controls
     outside the fragment that carry the search are passed as out_of_band (hx_swap_oob) elements."""
-    from starlette.responses import HTMLResponse
-    return HTMLResponse("".join(to_xml(ft) for ft in (fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
+    return html_response(tuple((fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
 
 
 def table_search(table_id: str, placeholder: str = "") -> FT:
@@ -2831,7 +2779,7 @@ def breadcrumbs(crumbs: list[tuple[str, str | None]]) -> FT:
         if i > 0:
             parts.append(Span("›", cls="breadcrumb-sep"))
         if href is not None:
-            parts.append(A(label, href=href, cls="breadcrumb-link"))
+            parts.append(A(label, href=safe_url(href), cls="breadcrumb-link"))
         else:
             parts.append(Span(label, cls="breadcrumb-current"))
     return Div(*parts, cls="breadcrumbs")
@@ -2855,11 +2803,10 @@ def bank_account_options(bank_accounts: list[dict] | None, default_code: str | N
 
 
 def add_new_option(label: str = "", redirect_url: str = "#") -> tuple:
-    """Return (Option element, onchange JS snippet) for 'add new' in dynamic selects."""
+    """Return (Option element, onchange handler) for 'add new' in dynamic selects."""
     label = label or t("label._add_new")
     option = Option(label, value="__new__")
-    js = f"if(this.value==='__new__')window.location='{redirect_url}'"
-    return option, js
+    return option, call("celerpAddNew", THIS, "__new__", redirect_url)
 
 
 def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: str = "") -> FT:
@@ -2903,44 +2850,29 @@ def col_resize_script(table_selector: str, storage_key: str):
     fixed — this only resizes, never adds/removes/reorders. The last column has no handle (it is
     pinned to the right edge; resize it by dragging its left neighbour's handle).
     """
-    import json as _json
-    sel = _json.dumps(table_selector)
-    key = _json.dumps(storage_key)
-    js = (
-        "(function(){"
-        "var SEL=" + sel + ",KEY=" + key + ",MIN=3;"  # MIN = floor width per column, in %
-        "function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);return m?m[0]:'';}"
-        "document.querySelectorAll(SEL).forEach(function(t){"
-        "if(t.dataset.colResize)return;t.dataset.colResize='1';"
-        # Only VISIBLE columns participate: a display:none column (e.g. price/tax hidden on a no-money
-        # audit/transfer list) must never be a resize neighbour, or dragging its visible left column
-        # resizes nothing (the qty-can't-grow-into-on-hand bug).
-        "var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){return getComputedStyle(h).display!=='none';});if(!ths.length)return;"
-        "function tw(){return t.offsetWidth||1;}"
-        "function pct(h){return h.offsetWidth/tw()*100;}"
-        "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
-        # Baseline: restore saved % per column, else capture the current rendered proportions;
-        # then normalise so the set sums to exactly 100% and fills the table.
-        "requestAnimationFrame(function(){"
-        "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}"
-        "var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);});"
-        "var s=ws.reduce(function(a,b){return a+b;},0)||1;"
-        "ths.forEach(function(h,i){h.style.width=(ws[i]/s*100)+'%';});"
-        "});"
-        # Handles on every column except the last (which is pinned to the right edge).
-        "ths.forEach(function(h,idx){"
-        "if(idx>=ths.length-1)return;"
-        "if(h.querySelector('.col-resize-handle'))return;"
-        "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';h.appendChild(d);"
-        "d.addEventListener('mousedown',function(e){"
-        "var nx=ths[idx+1],W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;"
-        "document.body.style.cursor='col-resize';"
-        "function mv(ev){var dp=(ev.pageX-sx)/W*100,a=a0+dp,b=b0-dp;"
-        "if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;}"
-        "h.style.width=a+'%';nx.style.width=b+'%';}"
-        "function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';save();}"
-        "document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);e.preventDefault();e.stopPropagation();"
-        "});});});"
-        "})();"
+    # MIN = floor width per column, in %
+    resize_js = (
+        "(function(){var CFG=JSON.parse(document.currentScript.dataset.cfg);"
+        "var SEL=CFG.sel,KEY=CFG.key,MIN=3;function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);"
+            "return m?m[0]:'';}document.querySelectorAll(SEL).forEach(function(t){"
+            "if(t.dataset.colResize)return;t.dataset.colResize='1';var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){"
+            "return getComputedStyle(h).display!=='none';});if(!ths.length)return;function tw(){"
+            'return t.offsetWidth||1;}function pct(h){return h.offsetWidth/tw()*100;'
+            '}function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);'
+            '});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}requestAnimationFrame(function(){'
+            "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){"
+            '}var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
+            '});var s=ws.reduce(function(a,b){return a+b;},0)||1;ths.forEach(function(h,'
+            "i){h.style.width=(ws[i]/s*100)+'%';});});ths.forEach(function(h,idx){"
+            "if(idx>=ths.length-1)return;if(h.querySelector('.col-resize-handle'))return;"
+            "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';"
+            "h.appendChild(d);d.addEventListener('mousedown',function(e){var nx=ths[idx+1],"
+            'W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;'
+            "document.body.style.cursor='col-resize';function mv(ev){var dp=(ev.pageX-sx)/W*100,"
+            'a=a0+dp,b=b0-dp;if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;'
+            "}h.style.width=a+'%';nx.style.width=b+'%';}function up(){document.removeEventListener('mousemove',"
+            "mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';"
+            "save();}document.addEventListener('mousemove',mv);document.addEventListener('mouseup',"
+            'up);e.preventDefault();e.stopPropagation();});});});})();'
     )
-    return Script(js)
+    return Script(resize_js, data_cfg=js_value({"sel": table_selector, "key": storage_key}))

@@ -7,8 +7,11 @@ import os
 import uuid
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 import pytest
 from httpx import AsyncClient
+
+from test_helpers import script_cfg
 
 # Repo root: default_modules/celerp-labels/tests/ → up 4 levels (resolved path)
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
@@ -429,9 +432,8 @@ class TestColumnManagerUi:
         ]
         rows = [{"id": "item:1", "name": "Ruby"}]
         html = to_xml(data_table(schema, rows, entity_type="inventory"))
-        assert "celerp_col_widths_inventory" in html, (
-            "WIDTH_KEY for inventory not found in data_table JS output"
-        )
+        cfg = script_cfg(html, "var WIDTH_KEY = 'celerp_col_widths_' + CFG.entityType")
+        assert cfg["entityType"] == "inventory"
 
 
 @pytest.mark.asyncio
@@ -453,8 +455,8 @@ async def test_labels_print_single_ui_route_reachable(client: AsyncClient):
 class TestLabelPrintJsFlow:
     """Verify the JS print helper uses the UI GET route (no fetch/blob)."""
 
-    def test_print_js_uses_window_open_not_fetch(self):
-        """celerpPrintLabel must use window.open() pointing to /labels/print/."""
+    def test_print_js_uses_celerp_open_not_fetch(self):
+        """celerpPrintLabel must open /labels/print/ in a window through celerpOpen()."""
         import sys, os
         sys.path.insert(0, _REPO_ROOT)
         from fasthtml.common import to_xml
@@ -465,8 +467,8 @@ class TestLabelPrintJsFlow:
         import inspect
         from ui.routes import inventory
         src = inspect.getsource(inventory)
-        assert "window.open('/labels/print/" in src, (
-            "celerpPrintLabel must use window.open('/labels/print/...') not fetch+blob; "
+        assert "celerpOpen('/labels/print/" in src, (
+            "celerpPrintLabel must use celerpOpen('/labels/print/...') not fetch+blob; "
             "the API /api/labels/print route is not available on the UI layer"
         )
         assert "fetch('/api/labels/print/" not in src, (
@@ -549,7 +551,7 @@ async def test_barcode_height_saved_and_retrieved(client: AsyncClient):
 
 
 def test_extract_fields_from_form_includes_barcode_height():
-    """_extract_fields_from_form must parse barcode_height from multidict form data."""
+    """_extract_fields_from_form carries barcode_height from the form as typed; the API parses it."""
     from celerp_labels.ui_routes import _extract_fields_from_form
 
     class FakeForm:
@@ -563,8 +565,8 @@ def test_extract_fields_from_form_includes_barcode_height():
 
     fields = _extract_fields_from_form(FakeForm())
     assert len(fields) == 1
-    assert fields[0].get("barcode_height") == 1, (
-        f"barcode_height not parsed from form, field: {fields[0]}"
+    assert fields[0].get("barcode_height") == "1", (
+        f"barcode_height not carried from form, field: {fields[0]}"
     )
 
 
@@ -656,28 +658,28 @@ def test_extract_fields_barcode_text_type_preserved():
 # Label size / fixed dimensions tests
 # ---------------------------------------------------------------------------
 
-def test_format_to_mm_named_square():
-    """_format_to_mm: named 24x24mm → (24.0, 24.0)."""
-    from celerp_labels.ui_routes import _format_to_mm
-    assert _format_to_mm("24x24mm", None, None) == (24.0, 24.0)
+def test_label_size_named_square():
+    """label_size: named 24x24mm -> (24.0, 24.0)."""
+    from celerp_labels.service import label_size
+    assert label_size({"format": "24x24mm"}) == (24.0, 24.0)
 
 
-def test_format_to_mm_named_rect():
-    """_format_to_mm: named 40x30mm → (40.0, 30.0)."""
-    from celerp_labels.ui_routes import _format_to_mm
-    assert _format_to_mm("40x30mm", None, None) == (40.0, 30.0)
+def test_label_size_named_rect():
+    """label_size: named 40x30mm -> (40.0, 30.0)."""
+    from celerp_labels.service import label_size
+    assert label_size({"format": "40x30mm"}) == (40.0, 30.0)
 
 
-def test_format_to_mm_custom():
-    """_format_to_mm: custom format falls back to width_mm/height_mm."""
-    from celerp_labels.ui_routes import _format_to_mm
-    assert _format_to_mm("custom", 37.5, 22.0) == (37.5, 22.0)
+def test_label_size_custom():
+    """label_size: custom format falls back to width_mm/height_mm."""
+    from celerp_labels.service import label_size
+    assert label_size({"format": "custom", "width_mm": 37.5, "height_mm": 22.0}) == (37.5, 22.0)
 
 
-def test_format_to_mm_default_fallback():
-    """_format_to_mm: None/unknown format with no custom dims → default 40x30."""
-    from celerp_labels.ui_routes import _format_to_mm
-    assert _format_to_mm(None, None, None) == (40.0, 30.0)
+def test_label_size_default_fallback():
+    """label_size: None/unknown format with no custom dims -> default 40x30."""
+    from celerp_labels.service import label_size
+    assert label_size({"format": None}) == (40.0, 30.0)
 
 
 def test_label_sheet_fixed_dimensions():
@@ -1112,23 +1114,31 @@ def test_measurements_sample_preview():
     assert _SAMPLE_DATA.get("measurements") == "6.51 x 6.54 x 4.01"
 
 
+def _new_field_row():
+    """The row the designer clones when a field is added. A <template>'s content is
+    its own fragment (selectors never reach into it, as in a browser), so it is
+    parsed on its own, the way the page's script reads template.content."""
+    from fasthtml.common import to_xml
+    from celerp_labels.ui_routes import _editor_panel
+    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
+    tpl = BeautifulSoup(html, "html.parser").find("template", id="field-row-template")
+    return BeautifulSoup(tpl.decode_contents(), "html.parser").select_one(".field-row-compact")
+
+
 def test_new_field_seeds_default_font_size():
     """A field added in the designer starts at the default point size, so its size
     box shows what it will print at instead of sitting blank."""
-    from fasthtml.common import to_xml
-    from celerp_labels.ui_routes import _editor_panel, FIELD_DEFAULT_PT
-    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    assert f'[fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' in html
+    from celerp_labels.ui_routes import FIELD_DEFAULT_PT
+    row = _new_field_row()
+    assert row.select_one(".fld-fs")["value"] == str(FIELD_DEFAULT_PT)
 
 
 def test_new_field_seeds_default_barcode_height():
     """A field added in the designer carries the default bar height in its box, so a
     barcode field shows the height it will print at rather than blank."""
-    from fasthtml.common import to_xml
-    from celerp_labels.ui_routes import _editor_panel
     from celerp_labels.service import BARCODE_HEIGHT_DEFAULT
-    html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    assert f'[barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' in html
+    row = _new_field_row()
+    assert row.select_one(".fld-bh")["value"] == str(BARCODE_HEIGHT_DEFAULT)
 
 
 def test_measurements_in_field_picker():

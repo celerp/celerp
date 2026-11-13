@@ -29,7 +29,7 @@ from celerp.accounting_roles import refusal
 from celerp.services.business_time import business_today, company_today
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
-from celerp_fixed_assets.calc.periods import month_index, period_label
+from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import conflict
 from celerp_fixed_assets.store import _emit, _entities, _state

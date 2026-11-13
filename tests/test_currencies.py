@@ -22,6 +22,7 @@ from celerp.services.currencies import CURRENCIES, CURRENCY_CODES, HISTORICAL, K
 from celerp.services.money import currency_dp, doc_rate, require_doc_rate, round_money
 from test_helpers import make_test_token
 from ui.i18n import refusal_text
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -59,7 +60,7 @@ def test_every_known_currency_has_its_name_and_only_those_do():
 def test_no_other_list_of_currencies_is_kept():
     """One list: no module outside celerp/services/currencies.py spells out the codes."""
     run = re.compile(r'"AED",\s*"AFN",\s*"ALL"|"AED",\s*"AUD",\s*"BDT"')
-    found = [p.relative_to(ROOT).as_posix() for top in ("celerp", "ui", "default_modules")
+    found = [p.relative_to(ROOT).as_posix() for top in APP_ROOTS
              for p in (ROOT / top).rglob("*.py") if run.search(p.read_text(errors="ignore"))]
     assert found == ["celerp/services/currencies.py"]
 

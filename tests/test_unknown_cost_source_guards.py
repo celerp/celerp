@@ -13,6 +13,7 @@ from pathlib import Path
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.services.goods_cost import GOODS_COST_KEYS, GOODS_COST_UNKNOWN, UNKNOWN_FLAG_EVENTS, unknown_flag_error
 from celerp_inventory.projections import is_core_item_key
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parents[1]
 INV = "default_modules/celerp-inventory/celerp_inventory"
@@ -21,7 +22,7 @@ MFG = "default_modules/celerp-manufacturing/celerp_manufacturing"
 
 
 def _sources():
-    for top in ("celerp", "default_modules", "ui"):
+    for top in APP_ROOTS:
         for path in sorted((ROOT / top).rglob("*.py")):
             rel = path.relative_to(ROOT).as_posix()
             if "/tests/" not in rel and "/migrations/" not in rel:

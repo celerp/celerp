@@ -360,9 +360,10 @@ class Fence:
             self._guarded.append(target)
 
     @contextlib.contextmanager
-    def engine(self, **kwargs):
-        """A new engine on the fenced database, guarded for as long as it is open."""
-        engine = sa.create_engine(self._url, **SYNC_TEXT, **kwargs)
+    def engine(self, text=SYNC_TEXT, **kwargs):
+        """A new engine on the fenced database with the text settings ``text``, guarded for as
+        long as it is open."""
+        engine = sa.create_engine(self._url, **text, **kwargs)
         self.guard(engine)
         try:
             yield engine

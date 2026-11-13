@@ -138,8 +138,8 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
     return_banner = (
         Div(
             Span(t("settings_inventory.unit_added_prompt"), style="font-size:13px;"),
-            A(t("settings_inventory.return_to_import"), href="javascript:window.close()",
-              cls="btn btn--secondary btn--sm"),
+            Button(t("settings_inventory.return_to_import"), type="button", onclick="window.close()",
+                   cls="btn btn--secondary btn--sm"),
             cls="settings-card",
             style="display:flex;align-items:center;gap:10px;padding:8px 14px;margin-bottom:8px;",
         )

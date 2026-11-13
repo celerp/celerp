@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
 
     services:
       postgres:
@@ -58,7 +58,7 @@ jobs:
       - name: Tune the throwaway Postgres
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
 
-      - name: Run tests (shard ${{ matrix.group }}/36)
+      - name: Run tests (shard ${{ matrix.group }}/37)
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
@@ -67,7 +67,7 @@ jobs:
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 36 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 37 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
@@ -82,7 +82,7 @@ jobs:
         run: >
           timeout 630 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 36 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 37 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
@@ -410,7 +410,7 @@ jobs:
         run: >
           pytest tests/test_embedded_pg_modes.py tests/test_embedded_pg_manager.py
           tests/test_embedded_pg_integration.py tests/test_default_modules_boot.py tests/test_backup_dump_script.py
-          tests/test_win_restricted_launch.py
+          tests/test_win_restricted_launch.py tests/test_embedded_pg_ledger_lookup_plan.py
           --noconftest -o addopts="" -p no:cacheprovider --timeout=300 -q
 
   # Electron unit tests (incl. the L0 packaged-requires gate). Nothing ran these in

@@ -35,6 +35,7 @@ from celerp.config import settings
 from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
+from ui.components.encode import call, html_response
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 
@@ -75,9 +76,8 @@ def _fmt_date(iso: str) -> str:
 
 def _flash(msg: str, kind: str = "success") -> Response:
     """Return an HTMX-swappable flash div."""
-    from fasthtml.common import Div, to_xml
-    html = to_xml(Div(msg, cls=f"flash flash--{kind}", id="backup-flash"))
-    return Response(content=html, media_type="text/html")
+    from fasthtml.common import Div
+    return html_response(Div(msg, cls=f"flash flash--{kind}", id="backup-flash"))
 
 
 def _restore_flash(result, base_msg: str) -> Response:
@@ -105,13 +105,12 @@ def _signed_out(message, follow=None) -> Response:
     """The answer to a recovery that ended every session: *message*, then *follow*
     (default: the sign-in link), with SESSION_ENDED_HEADER for the UI to drop the
     browser's session cookies."""
-    from fasthtml.common import A, Div, to_xml
+    from fasthtml.common import A, Div
 
     from celerp.services.backup_import import SESSION_ENDED_HEADER
     if follow is None:
         follow = A(t("btn.sign_in"), href="/login", cls="btn btn--primary mt-sm")
-    return Response(content=to_xml(Div(message, follow, id="backup-flash")), media_type="text/html",
-                    headers={SESSION_ENDED_HEADER: "1"})
+    return html_response(Div(message, follow, id="backup-flash"), headers={SESSION_ENDED_HEADER: "1"})
 
 
 def _recovery_response(result, success_msg: str) -> Response:
@@ -132,7 +131,7 @@ def _recovery_response(result, success_msg: str) -> Response:
 def _confirm_without_safety(result) -> Response:
     """No safety copy could be made, so nothing changed: say why and offer to continue
     from the staged backup without one."""
-    from fasthtml.common import Button, Div, to_xml
+    from fasthtml.common import Button, Div
     body = Div(
         Div(f"{result.error} {t('system_recovery.safety_failed_confirm')}", cls="flash flash--warning"),
         Button(
@@ -145,7 +144,7 @@ def _confirm_without_safety(result) -> Response:
         ),
         id="backup-flash",
     )
-    return Response(content=to_xml(body), media_type="text/html")
+    return html_response(body)
 
 
 def _backup_table(items: list[dict]):
@@ -161,7 +160,7 @@ def _backup_table(items: list[dict]):
                 Div(
                     Button(
                         t("btn.export"),
-                        onclick=f"window.location.href='/backup/export/{item['id']}'",
+                        onclick=call('celerpGo', f"/backup/export/{item['id']}"),
                         cls="btn btn--xs btn--secondary",
                     ),
                     Button(
@@ -221,11 +220,8 @@ async def list_backups(request: Request):
     from celerp.services.cloud_entitlement import stored_api_key
     if not await stored_api_key() or not settings.backup_encryption_key:
         if request.headers.get("HX-Request"):
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(t("settings.cloud_not_connected"), cls="empty-state-msg")),
-                media_type="text/html",
-            )
+            from fasthtml.common import Div
+            return html_response(Div(t("settings.cloud_not_connected"), cls="empty-state-msg"))
         return {"items": []}
 
     try:
@@ -238,13 +234,9 @@ async def list_backups(request: Request):
 
     items = data.get("items", [])
     if not items:
-        from fasthtml.common import Div, to_xml
-        return Response(
-            content=to_xml(Div(t("settings.no_backups_yet"), cls="empty-state-msg")),
-            media_type="text/html",
-        )
-    from fasthtml.common import to_xml
-    return Response(content=to_xml(_backup_table(items)), media_type="text/html")
+        from fasthtml.common import Div
+        return html_response(Div(t("settings.no_backups_yet"), cls="empty-state-msg"))
+    return html_response(_backup_table(items))
 
 
 @router.post("/restore/{backup_id}")

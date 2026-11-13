@@ -55,6 +55,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     validate_cell,
     validate_column_mapping,
 )
+from ui.components.encode import call, js_value, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +227,7 @@ def _import_rows_label(n: int) -> str:
 
 def import_back_link(home: str) -> Any:
     """An upload page's Back, to the list the import belongs to."""
-    return A(t("btn.back"), href=home, cls="btn btn--secondary")
+    return A(t("btn.back"), href=safe_url(home), cls="btn btn--secondary")
 
 
 def _mapping_js_labels() -> dict[str, str]:
@@ -421,22 +422,24 @@ def column_mapping_form(
                 Button(t("btn.continue_to_preview"), type="button", cls="btn btn--primary",
                        data_busy=t("import.processing"),
                        onclick="this.disabled=true;this.textContent=this.dataset.busy;this.classList.add('btn--disabled');this.form.submit()"),
-                A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
             method="post",
-            action=confirm_action,
+            action=safe_url(confirm_action),
         ),
-        Script(f"var _MAPPING_OPTIONS = {_json.dumps(option_defs)};"),
-        Script(f"var _MUTEX_GROUPS = {_json.dumps(_mutex_groups)};"),
-        Script(f"var _MAP_I18N = {_json.dumps(_mapping_js_labels())};"),
-        Script(_MAPPING_JS),
+        Script(_MAPPING_JS, data_cfg=js_value({"options": option_defs, "mutex": _mutex_groups,
+                                               "labels": _mapping_js_labels()})),
         id="import-preview",
         cls="import-panel",
     )
 
 
 _MAPPING_JS = """
+var _MAP_CFG = JSON.parse(document.currentScript.dataset.cfg);
+var _MAPPING_OPTIONS = _MAP_CFG.options;
+var _MUTEX_GROUPS = _MAP_CFG.mutex;
+var _MAP_I18N = _MAP_CFG.labels;
 (function() {
   var ATTR = '__attr__', SKIP = '__skip__';
   var allDropdowns = [];  // track all instances for cross-column awareness
@@ -535,13 +538,13 @@ _MAPPING_JS = """
     var toggleRow = document.createElement('div');
     toggleRow.className = 'mapping-dd-toggle-matched';
     var toggleLink = document.createElement('a');
-    toggleLink.href = '#';
+    celerpSetUrl(toggleLink, 'href', '#');
     toggleLink.textContent = _MAP_I18N.show_matched;
     toggleRow.appendChild(toggleLink);
     panel.appendChild(toggleRow);
 
     function renderOptions() {
-      optList.innerHTML = '';
+      optList.replaceChildren();
       var q = search.value.toLowerCase();
       var used = getUsedValues(col);
       var lastGroup = '';
@@ -809,7 +812,7 @@ def _source_choice_form(error: UploadError, preview_action: str) -> FT:
         ) if error.header_lines else "",
         Button(t("btn.continue"), cls="btn btn--primary", type="submit"),
         method="post",
-        action=preview_action,
+        action=safe_url(preview_action),
         enctype="multipart/form-data",
         cls="import-source-choice",
     )
@@ -838,7 +841,7 @@ def upload_form(
                 Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),
                 Div(
-                    A(t("btn.download_template"), href=template_href, cls="link",
+                    A(t("btn.download_template"), href=safe_url(template_href), cls="link",
                       onclick="event.stopPropagation()"),
                     cls="import-dropzone-template",
                 ),
@@ -847,7 +850,7 @@ def upload_form(
             ),
             Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title=t("import.upload_first_hint"), style="margin-top: 12px;"),
             method="post",
-            action=preview_action,
+            action=safe_url(preview_action),
             enctype="multipart/form-data",
         ),
         Script(_DROPZONE_JS),
@@ -969,13 +972,18 @@ _INLINE_FIX_JS = """
     form.querySelectorAll('[data-row][data-col]').forEach(function(el) {
       fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
     });
-    e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
+    e.detail.parameters.fixes_json = JSON.stringify(fixes);
   });
 })();
 """
 
+
+def _bold_count(sentence: str, n: int) -> tuple:
+    """A translated sentence with its ``{n}`` placeholder as a bold count."""
+    pre, _, post = sentence.partition("{n}")
+    return pre, Strong(str(n)), post
+
 _INLINE_FIX_CSS = """
-<style>
 .csv-fix-panel { margin-top: 12px; }
 .csv-fix-summary { font-size: 13px; margin-bottom: 12px; }
 .csv-fix-summary strong { color: var(--c-orange, #f59e0b); }
@@ -996,7 +1004,6 @@ _INLINE_FIX_CSS = """
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .csv-fix-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
-</style>
 """
 
 
@@ -1051,7 +1058,7 @@ def _fix_errors_panel(
                 fill_widget,
                 Button(t("btn.apply"),
                     type="button",
-                    onclick=f"csvFillColumn({json.dumps(col)})",
+                    onclick=call('csvFillColumn', col),
                     cls="btn btn--secondary btn--xs",
                 ),
                 cls="csv-fill-bar",
@@ -1131,13 +1138,13 @@ def _fix_errors_panel(
 """
 
     return Div(
-        NotStr(_INLINE_FIX_CSS),
+        Style(_INLINE_FIX_CSS),
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
             P(
                 # The count is bolded inside the one translated sentence.
-                NotStr(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
-                         n=f"<strong>{total_errors}</strong>", rows=len(error_row_indices), total=len(rows))),
+                *_bold_count(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
+                               n="{n}", rows=len(error_row_indices), total=len(rows)), total_errors),
                 cls="csv-fix-summary",
             ),
             Div(
@@ -1169,7 +1176,7 @@ def _fix_errors_panel(
                     A(t("msg.download_error_report"), href="#",
                       onclick="document.getElementById('csv-err-dl').submit(); return false",
                       cls="btn btn--secondary btn--sm"),
-                    A(t("btn.cancel"), href=back_href, cls="btn btn--ghost btn--sm"),
+                    A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--ghost btn--sm"),
                     cls="csv-fix-actions",
                 ),
                 hx_post=revalidate_action,
@@ -1181,13 +1188,13 @@ def _fix_errors_panel(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
                 id="csv-err-dl",
                 method="post",
-                action=error_report_action,
+                action=safe_url(error_report_action),
                 style="display:none",
             ),
             cls="csv-fix-panel",
         ),
         Script(_INLINE_FIX_JS),
-        Script(NotStr(err_nav_js)),
+        Script(err_nav_js),
         id="import-preview",
         cls="import-panel",
     )
@@ -1358,7 +1365,7 @@ def _confirm_panel(
                     id="import-spinner",
                     cls="htmx-indicator import-spinner-label",
                 ),
-                A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
             cls="import-panel",
@@ -1483,7 +1490,7 @@ def plan_review_panel(
     ready = int(counts.get("create", 0) or 0) + int(counts.get("update", 0) or 0)
     locations = list(plan.get("locations_to_create") or [])
     return Div(
-        NotStr(_INLINE_FIX_CSS),
+        Style(_INLINE_FIX_CSS),
         _step_indicator(3, has_mapping=True),
         Div(
             P(notice, cls="flash flash--warning") if notice else "",
@@ -1525,7 +1532,7 @@ def plan_review_panel(
                     A(t("msg.download_error_report"), href="#", cls="btn btn--ghost btn--sm",
                       onclick="document.getElementById('import-err-dl').submit(); return false")
                     if errors else "",
-                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--ghost btn--sm"),
+                    A(t("import.upload_corrected_file"), href=safe_url(upload_href), cls="btn btn--ghost btn--sm"),
                     Button(t("btn.cancel"), type="button", hx_post=cancel_action, cls="btn btn--ghost btn--sm"),
                     cls="csv-fix-actions flex-row gap-sm mt-md",
                 ),
@@ -1534,7 +1541,7 @@ def plan_review_panel(
                 hx_swap="outerHTML",
             ),
             Form(Input(type="hidden", name="csv_ref", value=csv_ref), id="import-err-dl",
-                 method="post", action=error_report_action, style="display:none"),
+                 method="post", action=safe_url(error_report_action), style="display:none"),
             cls="import-panel",
         ),
         Script(_INLINE_FIX_JS),
@@ -1593,8 +1600,8 @@ def import_abort_panel(
         _step_indicator(review_step, has_mapping=has_mapping),
         P(message, cls="flash flash--error"),
         Div(
-            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
-            A(t("btn.cancel"), href=back_href, cls="btn btn--ghost"),
+            A(import_icon(), t("msg.import_more"), href=safe_url(import_more_href), cls="btn btn--secondary"),
+            A(t("btn.cancel"), href=safe_url(back_href), cls="btn btn--ghost"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",
@@ -1682,8 +1689,8 @@ def import_result_panel(
         extra,
         error_block,
         Div(
-            A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
-            A(import_icon(), t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("import.view_entity", label=label_title), href=safe_url(back_href), cls="btn btn--primary"),
+            A(import_icon(), t("msg.import_more"), href=safe_url(import_more_href), cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",

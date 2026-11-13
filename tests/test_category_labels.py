@@ -11,13 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from test_helpers import script_cfg
+
 from ui import i18n
 
 _ROOT = Path(__file__).resolve().parent.parent
 _LIBRARY = _ROOT / "default_modules/celerp-verticals/celerp_verticals/categories"
 _DE = {"Accept-Language": "de"}
 _TAB_LABEL = re.compile(r'class="category-tab ?[^"]*"[^>]*>([^<(]+?) \(\d+\)</a>')
-_CHART = re.compile(r"labels: (\[[^\]]*\]), datasets: \[\{ label: \"[^\"]*\", data: \[[^\]]*\], backgroundColor: colors\[0\]")
 
 
 async def _gem_company(owner_ui) -> None:
@@ -29,9 +30,8 @@ async def _tabs_and_chart(owner_ui) -> tuple[list[str], list[str]]:
     inv = await owner_ui.get("/inventory", headers=_DE)
     assert inv.status_code == 200
     dash = await owner_ui.get("/dashboard", headers=_DE)
-    m = _CHART.search(dash.text)
-    assert m, "the category chart is on the dashboard"
-    return _TAB_LABEL.findall(inv.text), json.loads(m.group(1))
+    assert 'id="chart-inventory-cat"' in dash.text, "the category chart is on the dashboard"
+    return _TAB_LABEL.findall(inv.text), script_cfg(dash.text, "initDashboardCharts")["catLabels"]
 
 
 @pytest.mark.asyncio

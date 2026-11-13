@@ -26,6 +26,7 @@ from ui.components.report_kit import (
 from ui.components.shell import refusal_fix, toast_header
 from ui.components.table import EMPTY, bulk_toolbar, select_all_th, fmt_money, period_empty_note
 from ui.i18n import refusal_text, t
+from ui.components.encode import safe_url
 
 # What the journal can be narrowed by: one search box. The API takes this name and
 # both books read it back under it, so a filtered page, its print sheet and its
@@ -125,9 +126,9 @@ def journal_filter_bar(base_url: str, filters: dict, carried: dict,
         Button(t("btn.apply", lang), type="submit", cls="btn btn--secondary btn--sm"),
     ]
     if filters:
-        controls.append(A(t("acct.filter_clear", lang), href=href(base_url, carried),
+        controls.append(A(t("acct.filter_clear", lang), href=safe_url(href(base_url, carried)),
                           cls="btn btn--ghost btn--sm"))
-    return Form(*controls, action=base_url, method="get",
+    return Form(*controls, action=safe_url(base_url), method="get",
                 cls="journal-filter-bar flex-row gap-sm mb-md")
 
 
@@ -199,7 +200,7 @@ def _source_cell(row: dict):
     if row.get("doc_id"):
         return A(row["source"], href=f"/docs/{row['doc_id']}", cls="drilldown-link")
     if row.get("href"):
-        return A(row["source"], href=row["href"], cls="drilldown-link")
+        return A(row["source"], href=safe_url(row["href"]), cls="drilldown-link")
     return row["source"]
 
 

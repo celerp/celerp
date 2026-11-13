@@ -536,7 +536,7 @@ class TestSearchableSelectAddNew:
         from ui.components import shell
         src = inspect.getsource(shell)
         assert "__new__:" in src
-        assert "window.location" in src
+        assert "htmx.ajax('POST', val.slice('__new__:'.length)" in src
 
 
 # ── _inventory_cell_renderers purchase_unit renderer ────────────────────────

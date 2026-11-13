@@ -80,6 +80,16 @@
       "file": "ui/components/shell.py",
       "text": "Celerp",
       "reason": "brand name in the logo image alt text"
+    },
+    {
+      "file": "ui/routes/stars.py",
+      "text": "Celerp",
+      "reason": "brand name (page title)"
+    },
+    {
+      "file": "ui/components/report_kit.py",
+      "text": "celerp.com",
+      "reason": "brand domain, the link text of the report footer's site link"
     }
   ]
 }

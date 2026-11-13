@@ -155,3 +155,36 @@ def test_normalize_never_gives_one_stored_id_to_two_lines():
     normalize_line_ids(incoming, stored)
     assert incoming[0]["line_id"] == stored[0]["line_id"]
     assert incoming[1]["line_id"] != stored[0]["line_id"] and _well_formed([incoming[1]["line_id"]])
+
+
+@pytest.mark.asyncio
+async def test_list_line_page_keeps_rows_sent_as_unchanged(client, h):
+    """A row the editor did not touch is sent as its line id marked unchanged: the stored line
+    stays exactly as stored, fields the page never shows included, while an edited row replaces
+    its own."""
+    a, b = [await lot(client, h, f"LID-U{i}", 5) for i in range(2)]
+    q = await quotation(client, h, [line(x, 1, sku=f"U{i}", name=f"Stored name {i}") for i, x in enumerate((a, b))])
+    st = await state(client, h, q)
+    first, second = st["line_items"]
+    page = [{"line_id": first["line_id"], "unchanged": True},
+            {k: v for k, v in second.items() if k != "name"} | {"quantity": 2}]
+    r = await client.patch(f"/lists/{q}/line-page", headers=h, json={
+        "line_items": page, "offset": 0, "original_count": 2, "expected_version": st["version"]})
+    assert r.status_code == 200, r.text
+    kept, edited = (await state(client, h, q))["line_items"]
+    assert kept == first
+    assert edited["quantity"] == 2 and "name" not in edited
+
+
+@pytest.mark.asyncio
+async def test_list_line_page_refuses_an_unchanged_row_it_does_not_hold(client, h):
+    """An unchanged row must name a line of the window the page loaded; one that does not means
+    the page is out of date, and nothing is written."""
+    a = await lot(client, h, "LID-UX", 5)
+    q = await quotation(client, h, [line(a, 1, sku="UX")])
+    st = await state(client, h, q)
+    r = await client.patch(f"/lists/{q}/line-page", headers=h, json={
+        "line_items": [{"line_id": str(uuid.uuid4()), "unchanged": True}], "offset": 0,
+        "original_count": 1, "expected_version": st["version"]})
+    assert r.status_code == 409, r.text
+    assert (await state(client, h, q))["line_items"] == st["line_items"]

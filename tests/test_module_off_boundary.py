@@ -31,6 +31,7 @@ from migration_support import real_engine  # noqa: F401 - fixture
 from test_helpers import REPO_ROOT, as_another_client, mark_running
 from test_payments_stripe import (  # noqa: F401  (payments_on is a fixture)
     BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register, payments_on)
+from shipped_sources import CORE_ROOT, MODULE_ROOT, UI_ROOT
 
 _OFF = "The {} module is turned off for your company."
 _STARTS = "The {} module starts after Celerp restarts."
@@ -109,11 +110,13 @@ def _refused(outcome: dict, label: str, *, starting: bool = True) -> None:
                        "params": {"module": label}}, outcome
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 @pytest.mark.parametrize("name", ["receive_payment", "receive_fees", "receive_refund", "receive_release"])
 def test_a_payment_delivery_without_documents_is_refused_naming_it(fresh_process, name):
     _refused(fresh_process[name], "Documents")
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 @pytest.mark.parametrize("call,label", [
     ("woocommerce.sync_products", "Inventory"), ("woocommerce.sync_orders", "Documents"),
     ("shopify.sync_contacts", "Contacts"), ("shopify.sync_orders", "Documents"),
@@ -123,6 +126,7 @@ def test_a_connector_sync_without_its_module_is_refused_naming_it(fresh_process,
     _refused(fresh_process[call], label)
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 def test_connecting_a_store_without_inventory_is_refused_before_anything_is_claimed(fresh_process):
     """The refusal comes before the connector is claimed: the fresh process has no
     database session, so getting any further would fail on it."""
@@ -775,8 +779,8 @@ def _core_files():
     """Code that runs whichever modules a company uses: celerp/, ui/ and the modules
     folded into core."""
     from celerp.modules.loader import CORE_FOLDED
-    roots = [REPO_ROOT / "celerp", REPO_ROOT / "ui",
-             *(REPO_ROOT / "default_modules" / name for name in sorted(CORE_FOLDED))]
+    roots = [REPO_ROOT / CORE_ROOT, REPO_ROOT / UI_ROOT,
+             *(REPO_ROOT / MODULE_ROOT / name for name in sorted(CORE_FOLDED))]
     for root in roots:
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(REPO_ROOT)

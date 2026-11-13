@@ -829,6 +829,35 @@ def test_trimmed_numbering_lookup_indexes_are_recognized_as_schema_ddl_not_data_
     ]
 
 
+def test_cost_scope_index_is_recognized_as_schema_ddl():
+    migration = (
+        Path(__file__).resolve().parent.parent
+        / "celerp/migrations/versions/t3u4v5w6x7y8_ledger_cost_scope_lookup.py"
+    )
+    assert [(sig.kind, sig.table, sig.extra) for sig in extract_signatures(migration)] == [
+        ("create_index", "ledger", "ix_ledger_je_cost_scope")
+    ]
+
+
+@pytest.mark.parametrize(("drop_indexes", "invalid_indexes", "expected"), [
+    (("ix_ledger_je_cost_scope",), (), "r1s2t3u4v5w6"),
+    ((), ("ix_ledger_je_cost_scope",), "r1s2t3u4v5w6"),
+    ((), (), "u4v5w6x7y8z9"),
+])
+def test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it(
+        drop_indexes, invalid_indexes, expected):
+    """A missing or invalid cost-scope lookup index (a build that failed and was dropped at an
+    earlier start) leaves t3u4v5w6x7y8 to run again; with the index valid the revision is proven
+    and the stamp walks past the data revision after it (u4v5w6x7y8z9), which the replay applies."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    with _pg_inspector_for_models(drop_indexes=drop_indexes, invalid_indexes=invalid_indexes) as inspector:
+        stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
+                                expected_metadata=load_kernel_metadata())
+    assert stamp == expected
+
+
 @pytest.mark.parametrize(("drop_indexes", "invalid_indexes", "expected"), [
     (("ix_ledger_je_doc_refs_gin",), (), "m8a9b0c1d2e3"),
     ((), ("ix_ledger_je_doc_refs_gin",), "m8a9b0c1d2e3"),

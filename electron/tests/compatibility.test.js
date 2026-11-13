@@ -8,7 +8,7 @@ const path = require("path");
 const { EventEmitter } = require("events");
 const { loadAppMain } = require("./app-main-loader.lib");
 const {
-  DOWNLOAD_URL, HELP_URL, REFUSED_EXIT, UPDATE_FAILURES, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
+  HELP_URL, REFUSED_EXIT, UPDATE_FAILURES, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
 } = require("../compatibility");
 const { translator } = require("../locale");
 const { openData, reopenData } = require("../boot");
@@ -67,7 +67,6 @@ describe("refusal screen", () => {
       update: "Update Celerp",
       restart: "Restart to install",
       download: "Download the installer",
-      downloadUrl: DOWNLOAD_URL,
       quit: "Quit",
       checking: "Checking...",
       downloading: "Downloading... {pct}%",

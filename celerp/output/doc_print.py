@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from fasthtml.common import (
     A, Body, Div, Head, Html, Meta, P, Script, Span, Strong, Style,
-    Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
+    Table, Tbody, Td, Th, Thead, Title, Tr,
 )
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
@@ -30,6 +30,7 @@ from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 from celerp.tax_regimes import country_name
+from ui.components.encode import safe_url, to_markup
 
 EMPTY = "--"
 
@@ -57,11 +58,12 @@ def import_accept_url(page: str) -> str:
 
 
 # On a share page the address the recipient is actually reading is the one to
-# import from; behind the relay the server cannot know it, so the page fills it in.
+# import from; behind the relay the server cannot know it, so the page puts it in the
+# link's query and keeps the accept address the server wrote.
 _IMPORT_FROM_PAGE_JS = (
     "(function(){var a=document.getElementById('dp-import');"
-    "if(a&&/^https?:$/.test(location.protocol)){a.href='" + IMPORT_ACCEPT_URL
-    + "?link='+encodeURIComponent(location.origin+location.pathname);}})();"
+    "if(a&&/^https?:$/.test(location.protocol)){"
+    "a.search='?link='+encodeURIComponent(location.origin+location.pathname);}})();"
 )
 
 _BRAND_URL = _brand_url("doc-print")
@@ -254,13 +256,13 @@ def _doc_footer(import_url: str | None, import_from_page: bool = False):
     so a printed or PDF'd copy never carries a URL that 404s. On the share
     page itself (``import_from_page``) the link is pointed at the page's own
     address once it loads."""
-    brand = A(_BRAND_LABEL, href=_BRAND_URL, target="_blank", rel="noopener")
+    brand = A(_BRAND_LABEL, href=safe_url(_BRAND_URL), target="_blank", rel="noopener")
     if not import_url:
         return Div(brand, cls="dp-footer")
     return Div(
         brand,
         Span("|", cls="dp-footer__sep"),
-        A("Import into Celerp", href=import_url, id="dp-import"),
+        A("Import into Celerp", href=safe_url(import_url), id="dp-import"),
         Script(_IMPORT_FROM_PAGE_JS) if import_from_page else None,
         cls="dp-footer",
     )
@@ -279,7 +281,7 @@ def _pay_bar(pay_url: str | None, doc: dict, currency: str):
     amount = fmt_money(outstanding, currency)
     return Div(
         Span("Amount due ", Strong(amount)),
-        A(f"Pay {amount} now", href=pay_url, cls="dp-paybar__btn"),
+        A(f"Pay {amount} now", href=safe_url(pay_url), cls="dp-paybar__btn"),
         cls="dp-paybar",
     )
 
@@ -710,4 +712,4 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             Script("window.onload = function() { window.print(); }") if auto_print else None,
         ),
     )
-    return to_xml(page)
+    return to_markup(page)

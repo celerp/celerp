@@ -760,9 +760,10 @@ def _reconcile_after_migrate(db_url: str) -> None:
     rebuild (the other half of the version-change reconcile) runs in the API
     lifespan, where module projection handlers are loaded.
     """
+    from celerp.json_text import MIGRATION_TEXT
     from celerp.migrations._data_reconcile import replay_data_backfills
 
-    with _db_engine(db_url, pool_pre_ping=True) as engine:
+    with _db_engine(db_url, text=MIGRATION_TEXT, pool_pre_ping=True) as engine:
         replayed, failures = replay_data_backfills(engine)
         if failures:
             click.echo(

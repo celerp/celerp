@@ -105,7 +105,7 @@ def test_a_database_with_escaped_and_raw_thai_upgrades_numbers_imports_and_resto
 
         _assert_readable(sync_url, cid)
         holders, stored, refused = asyncio.run(_number(async_url, cid))
-        assert holders == [("doc", f"{THAI}-1"), ("doc", f"{THAI}-2")]
+        assert [h[:2] for h in holders] == [("doc", f"{THAI}-1"), ("doc", f"{THAI}-2")]
         assert (stored, refused) == (f"{THAI}-3", 409)
         # A save writes UTF-8 text, which every later query reads.
         _sql(sync_url, "UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = 'doc:raw'",
@@ -119,10 +119,12 @@ def test_a_database_with_escaped_and_raw_thai_upgrades_numbers_imports_and_resto
         assert asyncio.run(_number(rest_async, cid))[0] == holders
 
 
-def test_the_escape_rewrite_runs_again_without_changing_anything():
+@pytest.mark.parametrize("encoding", ENCODINGS)
+def test_unescape_json_text_rewrites_escapes_on_utf8(encoding):
+    """On every encoding, not SQL_ASCII alone, and a second run changes nothing."""
     from celerp.migrations._json_compat import unescape_json_text
 
-    with throwaway_db("jsonidem", "SQL_ASCII") as (_, sync_url):
+    with throwaway_db("jsonidem", encoding) as (_, sync_url):
         upgrade_to(sync_url, BEFORE_STATE_INDEX)
         _seed_both_forms(sync_url)
         engine = create_engine(sync_url, **SYNC_TEXT)
@@ -194,8 +196,12 @@ async def test_a_company_backup_with_thai_text_restores_on_a_sql_ascii_database(
 _SYNC_FACTORIES = {"create_engine", "engine_from_config"}
 
 
-def _passes_sync_text(call: ast.Call) -> bool:
-    return any(k.arg is None and getattr(k.value, "id", None) == "SYNC_TEXT" for k in call.keywords)
+def _passes_sync_text(call: ast.Call, rel: str) -> bool:
+    """**SYNC_TEXT; or **MIGRATION_TEXT in the engine env.py migrates through; or the fence engine's
+    own **text, whose default is SYNC_TEXT."""
+    names = {getattr(k.value, "id", None) for k in call.keywords if k.arg is None}
+    return "SYNC_TEXT" in names or rel == "celerp/migrations/env.py" and "MIGRATION_TEXT" in names or (
+        rel == "celerp/migrations/compatibility.py" and "text" in names)
 
 
 def test_every_engine_writes_json_as_utf8_text():
@@ -206,7 +212,7 @@ def test_every_engine_writes_json_as_utf8_text():
     for rel, path in shipped_sources():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             name = getattr(node.func, "attr", getattr(node.func, "id", None)) if isinstance(node, ast.Call) else None
-            if name in _SYNC_FACTORIES and not _passes_sync_text(node) or name == "create_async_engine" and not any(
+            if name in _SYNC_FACTORIES and not _passes_sync_text(node, rel) or name == "create_async_engine" and not any(
                     k.arg == "json_serializer" for k in node.keywords):
                 missing.append(f"{rel}:{node.lineno}")
     assert not missing, missing
@@ -265,8 +271,6 @@ _ASCII_DUMPS = {
     ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
     ("celerp/services/staged_downloads.py", "stage"): _FILE,
     ("celerp/services/update.py", "write_state"): _FILE,
-    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_chat_script"): _PAGE,
-    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_empty_state"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_job_button"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_resend"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_showcase_view"): _PAGE,
@@ -282,7 +286,6 @@ _ASCII_DUMPS = {
     ("default_modules/celerp-docs/celerp_docs/routes_share.py", "download_share_bundle"): _WIRE,
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py", "_hash"): _DIGEST,
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_imports.py", "_operation_key"): _DIGEST,
-    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_fill_button"): _PAGE,
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_page"): _PAGE,
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_revalue_files_card"): _PAGE,
     ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_settings_fields"): _PAGE,
@@ -297,7 +300,6 @@ _ASCII_DUMPS = {
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_preview_hash"): _DIGEST,
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "write_import_batch"): _DIGEST,
     ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_build_field_options_js"): _PAGE,
-    ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_editor_panel"): _PAGE,
     ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_fingerprint"): _DIGEST,
 }
 

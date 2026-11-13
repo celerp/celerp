@@ -519,6 +519,7 @@ class TestRestoreJourneyNotice:
             (tmp_path / RESTORE_NOTICE_FILE).unlink()
             r2 = await ui_client.get("/login?reason=evicted")
             assert "a new session was started" in r2.text  # an ordinary eviction is unchanged
+            assert '<a href="https://celerp.com/pricing" target="_blank" rel="noopener noreferrer">relay service</a>' in r2.text
 
     @pytest.mark.asyncio
     async def test_failed_recovery_is_the_reason_given_at_sign_in(self, ui_client, monkeypatch, tmp_path):

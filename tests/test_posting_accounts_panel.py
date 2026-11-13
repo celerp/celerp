@@ -14,6 +14,7 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from html import unescape
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 
@@ -234,7 +235,8 @@ async def test_editing_offers_a_searchable_picker_and_escape_cancels(ui_client):
     body = r.content.decode()
     assert "combobox" in body
     assert 'hx-patch="/settings/accounting/posting-accounts/general_expense"' in body
-    assert "Escape" in body and "/settings/accounting/posting-accounts/general_expense/display" in body
+    # celerpCellKey (celerp-page.js) restores the display cell from this URL on Escape.
+    assert 'celerpCellKey(this,event,{"url": "/settings/accounting/posting-accounts/general_expense/display"})' in unescape(body)
 
 
 @pytest.mark.asyncio

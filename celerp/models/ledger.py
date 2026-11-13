@@ -25,6 +25,12 @@ class LedgerEntry(Base):
         Index("ix_ledger_je_doc_refs_gin", sa.text("(metadata::jsonb) jsonb_path_ops"),
               postgresql_using="gin",
               postgresql_where=sa.text("event_type = 'acc.journal_entry.created'")),
+        # The journal entries a record's cost postings are keyed under, by prefix (GL Impact's
+        # cost-scope lookup). text_pattern_ops serves the prefix match under any collation.
+        # Declared here so a schema without it is never stamped past t3u4v5w6x7y8.
+        Index("ix_ledger_je_cost_scope", "company_id", "entity_id",
+              postgresql_ops={"entity_id": "text_pattern_ops"},
+              postgresql_where=sa.text("event_type = 'acc.journal_entry.created'")),
         # Idempotency is per-company: different companies legitimately reuse the
         # same key (e.g. doc numbers reset per company), so this must NOT be a
         # global unique — otherwise the second company to emit collides.

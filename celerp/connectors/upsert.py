@@ -106,9 +106,11 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict, first_sync=No
     return await docs_svc.upsert_invoice_from_xero(company_id, invoice, operation=_operation(first_sync))
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict, first_sync=None) -> str:
+async def upsert_order_from_woocommerce(company_id: str, order: dict, first_sync=None, *,
+                                        take_next_number: bool = False) -> str:
     from celerp_docs import doc_service as docs_svc
-    return await docs_svc.upsert_order_from_woocommerce(company_id, order, operation=_operation(first_sync))
+    return await docs_svc.upsert_order_from_woocommerce(
+        company_id, order, operation=_operation(first_sync), take_next_number=take_next_number)
 
 
 def woocommerce_reconciliation_signature(order: dict) -> str:

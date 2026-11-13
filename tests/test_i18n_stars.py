@@ -13,7 +13,10 @@ tree that hardcodes the English copy instead of calling ``t()`` at render time.
 
 import pytest
 
+from fasthtml.common import P
+
 from ui import i18n
+from ui.components.encode import to_markup
 from ui.routes.stars import _claim_result_page, _claim_success_body
 
 # Sentinel catalog: one unmistakable value per key the claim-result page renders.
@@ -38,19 +41,19 @@ def _xx_lang():
 
 
 def test_claim_result_page_translates_back_link():
-    out = _claim_result_page("Some title", "Some body")
+    out = to_markup(_claim_result_page("Some title", "Some body"))
     assert "XX_BACK_TO_CELERP" in out
     assert "Some title" in out
     assert "Some body" in out
 
 
 def test_claim_success_body_translates_with_interpolation():
-    out = _claim_success_body("Ada")
-    assert out == "XX_RECOGNISED <strong>Ada</strong>"
+    out = to_markup(P(_claim_success_body("Ada")))
+    assert "XX_RECOGNISED <strong>Ada</strong>" in out
 
 
 def test_claim_result_page_embeds_translated_success_body():
     body = _claim_success_body("Ada")
-    out = _claim_result_page("Thank you", body)
+    out = to_markup(_claim_result_page("Thank you", body))
     assert "XX_RECOGNISED" in out
     assert "<strong>Ada</strong>" in out

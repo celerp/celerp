@@ -5,6 +5,7 @@ as one loopback caller, and the test suite's reset never reaches it, so its coun
 one test into the next."""
 import re
 from pathlib import Path
+from shipped_sources import APP_ROOTS, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parent.parent
 OWNER = ROOT / "celerp" / "routers" / "auth.py"
@@ -13,7 +14,7 @@ OWNER = ROOT / "celerp" / "routers" / "auth.py"
 def test_no_source_builds_a_second_rate_limiter():
     built = [
         f"{path.relative_to(ROOT)}:{n}"
-        for top in ("celerp", "ui", "default_modules", "premium_modules") if (ROOT / top).is_dir()
+        for top in (*APP_ROOTS, PREMIUM_ROOT) if (ROOT / top).is_dir()
         for path in (ROOT / top).rglob("*.py") if "tests" not in path.parts
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if re.search(r"\bLimiter\(|\bget_remote_address\b", line) and path != OWNER

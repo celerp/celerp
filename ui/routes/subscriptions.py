@@ -37,21 +37,16 @@ from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
+from ui.components.encode import as_js, html_response, to_markup
 
 logger = logging.getLogger(__name__)
 
 _PER_PAGE = 50
 
 
-def _signed_out(e: APIError) -> None:
-    """An ended session goes on to the app's sign-in redirect, never shown as a refusal."""
-    if e.status == 401:
-        raise e
-
-
 def _refused(e: APIError):
     """The API's refusal of an action, shown where the user is."""
-    _signed_out(e)
+    api.raise_if_signed_out(e)
     return _action_error(e)
 
 
@@ -67,9 +62,22 @@ async def _redrawn(draw, fallback=None, said: str = ""):
     try:
         return await draw()
     except APIError as e:
-        _signed_out(e)
+        api.raise_if_signed_out(e)
         warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
-        return HTMLResponse(to_xml(fallback() if fallback else ""), headers=toast_header(warning, "warning"))
+        return html_response(fallback() if fallback else (), headers=toast_header(warning, "warning"))
+
+
+async def _refused_redrawn(e: APIError, draw):
+    """A refused action whose control already shows the refused value: the refusal with every view
+    drawn again from what is stored (``draw()``'s markup). When that read fails, the refusal alone."""
+    refusal = _refused(e)
+    try:
+        views = await draw()
+    except APIError as read_error:
+        api.raise_if_signed_out(read_error)
+        return refusal
+    return html_response(views, headers={k: v for k, v in refusal.headers.items()
+                                        if k not in ("content-length", "content-type")})
 
 
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.
@@ -242,7 +250,7 @@ _PANEL_ESC_JS = Script("""
 document.addEventListener('keydown', function(e) {
   // Only a key the user pressed: a refusal's restore step sends its own Escape.
   if (e.key !== 'Escape' || !e.isTrusted) return;
-  document.querySelectorAll('[data-esc-clear]').forEach(function(p) { p.innerHTML = ''; });
+  document.querySelectorAll('[data-esc-clear]').forEach(function(p) { p.replaceChildren(); });
 });
 """)
 
@@ -425,6 +433,12 @@ def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
             Span(*right, id="sub-actions-right", style="display:contents"))
 
 
+def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict) -> str:
+    """Every element showing the schedule, drawn from what the agreement stores, each swapped
+    out of band by its id."""
+    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+
+
 def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
     """Every element of the agreement page that shows its schedule or billing settings: the
     actions with the bill date note and badge, the header's frequency and next bill date, the
@@ -471,14 +485,12 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
             stops.append(_cancel_button(entity_id))
         return [_status_badge(status), warning], stops
 
-    def _bill_vals():
-        fields = {"period_index": period_index} if period_index is not None else {}
-        return operation_key_vals(**fields)
+    bill_fields = {"period_index": period_index} if period_index is not None else {}
 
     if status == "draft":
         return [
             A(t("subscriptions.set_schedule"), href="#sub-schedule", cls="btn btn--secondary"),
-            Button(t("btn.activate"), cls="btn btn--primary", onclick=persist_then_post(f"/subscriptions/{entity_id}/activate"),
+            Button(t("btn.activate"), cls="btn btn--primary", onclick=as_js(persist_then_post(f"/subscriptions/{entity_id}/activate")),
                    title=t("subscriptions.activate_title")),
             note,
         ], []
@@ -489,9 +501,9 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     if status == "active":
         left.extend([
             Button(t("btn.generate_due"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate-due",
-                   hx_swap="none", hx_vals=_bill_vals()),
+                   hx_swap="none", hx_vals=operation_key_vals(**bill_fields)),
             Button(t("btn.bill_early"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/bill-early",
-                   hx_swap="none", hx_vals=_bill_vals()),
+                   hx_swap="none", hx_vals=operation_key_vals(**bill_fields)),
         ])
         right.append(_pause_button(entity_id))
     elif status == "paused":
@@ -622,7 +634,7 @@ _CHOSEN_ROWS_JS = """
   if(window.__celerpChosenRows)return;window.__celerpChosenRows=true;
   document.addEventListener('htmx:configRequest',function(e){
     var f=e.detail.elt.closest('form[data-chosen-rows]');if(!f)return;
-    e.detail.parameters[f.getAttribute('data-chosen-rows')]=JSON.stringify(Array.prototype.map.call(
+    e.detail.parameters.item=JSON.stringify(Array.prototype.map.call(
       f.querySelectorAll('.bulk-select:checked'),function(box){return box.value;}));});
 })();
 """
@@ -630,7 +642,7 @@ _CHOSEN_ROWS_JS = """
 
 def _bulk_form(*children, **attrs) -> FT:
     """A form over a bulk table: its ticked rows post as the one ``item`` field."""
-    return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows="item", **attrs)
+    return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows=True, **attrs)
 
 
 def _row_box(value: str, checked: bool = True) -> FT:
@@ -677,7 +689,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
               Tbody(*[_row(i) for i in items])),
         Div(Button(t("btn.generate_due"), type="submit", cls="btn btn--primary btn--sm"),
             Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
-                   onclick="document.getElementById('sub-due-panel').innerHTML=''"),
+                   onclick="document.getElementById('sub-due-panel').replaceChildren()"),
             cls="form-actions"),
         hx_post="/subscriptions/generate-due", hx_target="#sub-due-panel", hx_swap="innerHTML",
         cls="settings-card",
@@ -723,7 +735,7 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
         P(t("subscriptions.due_already", n=result["already_billed"]), cls="text-muted") if result.get("already_billed") else "",
         _outcome_table(result.get("results") or [], subs, request_key),
         Div(Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
-                   onclick="document.getElementById('sub-due-panel').innerHTML=''"), cls="form-actions"),
+                   onclick="document.getElementById('sub-due-panel').replaceChildren()"), cls="form-actions"),
         cls="settings-card",
     )
 
@@ -899,13 +911,13 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
     try:
         catch_up = (await api.subscriptions_catch_up(token)).get("items") or []
     except APIError as exc:
-        _signed_out(exc)
+        api.raise_if_signed_out(exc)
         catch_up = []
         errors.append(error_message(exc))
     try:
         summary = await api.subscriptions_summary(token)
     except APIError as exc:
-        _signed_out(exc)
+        api.raise_if_signed_out(exc)
         summary = {}
         errors.append(error_message(exc))
     return catch_up, summary, errors
@@ -1034,7 +1046,7 @@ def setup_routes(app) -> None:
             newer_id = entry.get("doc_id") if entry.get("state") == "billed" else None
             newer = await api.get_doc(token, newer_id) if newer_id and newer_id != doc_id else None
         except APIError as e:
-            _signed_out(e)
+            api.raise_if_signed_out(e)
             return ""
         if k is not None:
             text = (sentence("subscriptions.doc_period_rebilled", newer=newer.get("ref_id") or newer_id)
@@ -1084,7 +1096,7 @@ def setup_routes(app) -> None:
                 try:
                     results.extend((await api.run_subscriptions_catch_up(token, batch)).get("results") or [])
                 except APIError as e:
-                    _signed_out(e)
+                    api.raise_if_signed_out(e)
                     refusals.append(e)
                     results.extend({**item, "ok": False, "error": error_message(e)} for item in batch)
         else:
@@ -1095,7 +1107,7 @@ def setup_routes(app) -> None:
                                                                 "skip", {"reason": reason})
                     results.append({**item, "ok": True, "skipped": True, **done["period"]})
                 except APIError as e:
-                    _signed_out(e)
+                    api.raise_if_signed_out(e)
                     results.append({**item, "ok": False, "error": error_message(e)})
         if refusals and len(refusals) == len(range(0, len(chosen), 50)):
             return _refused(refusals[0])
@@ -1202,7 +1214,7 @@ def setup_routes(app) -> None:
         try:
             items = await _all_agreements(token, direction, review=review)
         except APIError as exc:
-            _signed_out(exc)
+            api.raise_if_signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
         return _sub_table(_listed(items, _list_state(request.query_params)), direction, review)
 
@@ -1408,18 +1420,23 @@ def setup_routes(app) -> None:
             return _action_error(t(_FIELD_ERRORS[field]))
         # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value is not None else {})}
+
+        async def stored():
+            return _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
+                                          await api.get_subscription_periods(token, entity_id))
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:
-            return _refused(e)
+            # The control already shows the refused value (Custom shows the days box).
+            return await _refused_redrawn(e, stored)
 
         async def draw():
             sub = await api.get_subscription(token, entity_id)
             schedule = await api.get_subscription_periods(token, entity_id)
-            views = to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+            views = _stored_schedule_views(entity_id, sub, schedule)
             # The version the save stored, for the page's next lines save, as a document's field saves hand it.
             version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):
-                return HTMLResponse(views, headers=toast_header(t("subscriptions.sending_off_manual"), "success", **version))
-            return HTMLResponse(views, headers={"HX-Trigger": json.dumps(version)})
+                return html_response(views, headers=toast_header(t("subscriptions.sending_off_manual"), "success", **version))
+            return html_response(views, headers={"HX-Trigger": json.dumps(version)})
         return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")

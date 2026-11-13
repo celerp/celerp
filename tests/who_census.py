@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from shipped_sources import APP_ROOTS, MODULE_ROOT, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_TOPS = ("celerp", "ui", "default_modules", "premium_modules")
+SOURCE_TOPS = (*APP_ROOTS, PREMIUM_ROOT)
 PRODUCER = ("celerp/services/ledger_display.py", "_actor")
 LABEL = ("ui/components/activity.py", "actor_label")
 LOOP_SLOT = "background_loop"
@@ -120,7 +121,7 @@ def loop_starts() -> list[tuple[str, str, bool]]:
 def _manifest_entries(slot: str) -> list[tuple[str, str]]:
     """[(module manifest, handler)] for each entry of ``slot`` in a module's manifest."""
     found = []
-    for top in ("default_modules", "premium_modules"):
+    for top in (MODULE_ROOT, PREMIUM_ROOT):
         for path in sorted((ROOT / top).glob("*/__init__.py")) if (ROOT / top).is_dir() else []:
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if not isinstance(node, ast.Dict):
@@ -137,7 +138,7 @@ def _manifest_entries(slot: str) -> list[tuple[str, str]]:
 
 def _module_of(path: str) -> str:
     parts = Path(path).with_suffix("").parts
-    return ".".join(parts[2:] if parts[0] in ("default_modules", "premium_modules") else parts)
+    return ".".join(parts[2:] if parts[0] in (MODULE_ROOT, PREMIUM_ROOT) else parts)
 
 
 def _reached_from_loop(path: str, tree, fn_name: str, loops: set[str]) -> bool:

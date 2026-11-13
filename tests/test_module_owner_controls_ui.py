@@ -5,7 +5,6 @@ file storage, are for the installation owner. Pages offer those controls only
 to them; a company admin sees what is installed and a plain note instead."""
 from __future__ import annotations
 
-import json
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -163,7 +162,9 @@ async def test_a_module_that_failed_to_load_names_the_reason_and_what_to_do(ui_c
     with _owner(True), patch("ui.api_client.get_modules", new=AsyncMock(return_value=broken)), \
             patch("ui.routes.modules_page._modules_dir_display", return_value="/data/modules"):
         r = await ui_client.get("/modules")
-    assert json.dumps(t("modules.load_failed", "en", label="Bad Mod", error=reason))[1:-1] in r.text
+    from test_helpers import script_cfg
+    [toast] = script_cfg(r.text, "__moduleLoadErrorsShown")["errs"]
+    assert toast["msg"] == t("modules.load_failed", "en", label="Bad Mod", error=reason)
 
 
 def test_zero_priced_marketplace_module_reads_paid():

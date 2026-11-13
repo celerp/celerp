@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from ui.i18n import t, get_lang
+from ui.components.encode import safe_url
 
 
 def _commercial_route(intent: str, sku: str = "") -> str:
@@ -166,7 +167,7 @@ def upgrade_banner(
         ),
         A(
             cta_label,
-            href=href,
+            href=safe_url(href),
             target="_blank",
             cls="btn btn--primary upgrade-banner__cta",
         ),

@@ -8,7 +8,7 @@ import hashlib
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
@@ -27,6 +27,7 @@ from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
+from celerp.services.periods import first_fiscal_year_end, fiscal_year_start_month, last_fiscal_year_end
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import (
@@ -2364,7 +2365,7 @@ async def general_ledger(
 
     base = await _base_currency(session, company_id)
     rows_out = []
-    tot_opening = tot_debit = tot_credit = tot_closing = Decimal(0)
+    tot_debit = tot_credit = Decimal(0)
     raw_closing_total = Decimal(0)
     # Sorted by account code: stable across replays, unlike dict encounter order.
     for code in sorted(set(opening_raw) | set(period_debit) | set(period_credit)):
@@ -2380,10 +2381,8 @@ async def general_ledger(
         raw_closing_total += raw_closing
         signed_opening = opening if debit_normal else -opening
         signed_closing = raw_closing if debit_normal else -raw_closing
-        tot_opening += signed_opening
         tot_debit += d
         tot_credit += c
-        tot_closing += signed_closing
         row_out = {
             "code": code,
             "name": acc.name if acc else code,
@@ -2406,10 +2405,8 @@ async def general_ledger(
         "contact_id": contact_id,
         "rows": rows_out,
         "totals": {
-            "opening": to_stored_float(round_money(tot_opening, base)),
             "debit": to_stored_float(round_money(tot_debit, base)),
             "credit": to_stored_float(round_money(tot_credit, base)),
-            "closing": to_stored_float(round_money(tot_closing, base)),
         },
         "balanced": abs(raw_closing_total) < Decimal("0.01"),
     }
@@ -5347,6 +5344,33 @@ async def close_fiscal_year(
             f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
             value=year_end)) from None
     company = await locked_company(session, company_id)
+    stored_start = (company.settings or {}).get("fiscal_year_start")
+    try:
+        start_month = fiscal_year_start_month(stored_start)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.fiscal_year_start_invalid",
+            f"This company's fiscal year start {stored_start} is not the first day of a month. "
+            "Set Fiscal year start in Company Details, then close the year.",
+            value=str(stored_start))) from None
+    last_end = last_fiscal_year_end(date.fromisoformat(year_end), start_month)
+    if last_end is None:
+        first_end = first_fiscal_year_end(start_month).isoformat()
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_before_first",
+            f"No fiscal year ends on or before {year_end}. With this company's fiscal year start, "
+            f"the first year end is {first_end}.",
+            value=year_end, year_end=first_end))
+    if last_end.isoformat() != year_end:
+        # The last fiscal year end on or before the entered date, so following it never
+        # closes the open year.
+        suggested = last_end.isoformat()
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_not_fiscal",
+            f"{year_end} is not the last day of a fiscal year. With this company's fiscal year "
+            f"start, the last year end on or before that date is {suggested}. To close that year, "
+            f"enter {suggested}, or change Fiscal year start in Company Details.",
+            value=year_end, year_end=suggested))
     # Build account balances through the year-end date
     posted = await journal_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)

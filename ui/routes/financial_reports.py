@@ -16,7 +16,7 @@ import re
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -41,6 +41,7 @@ from ui.routes.reports import (
     OPERATIONAL_REPORTS, _date_filter_bar, _get_company, _parse_dates,
     _resolve_preset,
 )
+from ui.components.encode import html_response, safe_url
 
 # Financial report cards on the /reports index, in reading order: the summary
 # statements first, then the detail an accountant works down into.
@@ -151,7 +152,7 @@ def report_nav(current_key: str, d_from: str, d_to: str) -> FT:
         label = t(REPORTS[key][3])
         if key == current_key:
             return Span(label, cls="report-nav-current")
-        return A(label, href=href(REPORTS[key][0], page_params(key, d_from, d_to)),
+        return A(label, href=safe_url(href(REPORTS[key][0], page_params(key, d_from, d_to))),
                  cls="drilldown-link")
 
     return Div(
@@ -270,7 +271,7 @@ async def _every_contact(token: str, params: dict) -> list[dict]:
             return items
 
 
-def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> str:
+def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> tuple:
     """Combobox options in the shape the picker's JS reads.
 
     Search results replace the option list whole, so each option has to carry
@@ -286,16 +287,16 @@ def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> str:
     ]
     els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
                    **({"style": "display:none"} if opts else {})))
-    return "".join(to_xml(el) for el in els)
+    return tuple(els)
 
 
-def _option_notice(message: str) -> str:
+def _option_notice(message: str):
     """A line of text in place of options, which the picker cannot select.
 
     An empty list would read as "nobody matched", so a search that could not run
     says what happened instead of answering with a result it does not have.
     """
-    return to_xml(Div(message, cls="combobox-option combobox-option--empty"))
+    return Div(message, cls="combobox-option combobox-option--empty")
 
 
 # Reports a ledger drilldown can arrive from, via the "src" query param.
@@ -353,7 +354,7 @@ def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str =
     rows = [
         Tr(
             Td(l.get("code", ""), cls="cell--mono"),
-            Td(A(l.get("name", ""), href=_ledger_href(l.get("code", "")), cls="drilldown-link")),
+            Td(A(l.get("name", ""), href=safe_url(_ledger_href(l.get("code", ""))), cls="drilldown-link")),
             Td(fmt_money(l.get('total_debit', 0), currency), cls="cell--number"),
             Td(fmt_money(l.get('total_credit', 0), currency), cls="cell--number"),
         )
@@ -401,7 +402,7 @@ def _tie_out_view(data: dict, currency: str | None = None) -> FT:
         ))
         for a in c.get("by_account") or []:
             rows.append(Tr(
-                Td(A(a["account"], href=_drill_ledger_href(a["account"], "opening-tie-out", "", as_of),
+                Td(A(a["account"], href=safe_url(_drill_ledger_href(a["account"], "opening-tie-out", "", as_of)),
                      cls="drilldown-link"), cls="cell--mono"), Td(as_of),
                 Td(fmt_money(a["ledger"], currency), cls=num), Td(fmt_money(a["expected"], currency), cls=num),
                 Td(fmt_money(a["difference"], currency), cls=num), Td(empty_mark()),
@@ -510,7 +511,7 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
             amt = float(l.get("amount", 0) or 0)
             code = l.get("code", "")
             label = f"{code} {l.get('name', '')}".strip()
-            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
+            name_cell = Td(A(label, href=safe_url(_ledger_href(code)), cls="drilldown-link") if code else label)
             cells = [
                 name_cell,
                 Td(fmt_money(amt, currency), cls="cell--number"),
@@ -525,7 +526,7 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
         )
         total_el = fmt_money(section_data.get('total', 0), currency)
         total_content = (
-            A(Strong(total_el), href=total_href, cls="drilldown-link", target="_blank")
+            A(Strong(total_el), href=safe_url(total_href), cls="drilldown-link", target="_blank")
             if total_href else Strong(total_el)
         )
         return Div(
@@ -574,12 +575,12 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
             synthetic = l.get("synthetic", False)
             is_parent = l.get("is_parent", False)
             # Accounts nest as deep as the chart does; each level indents one step.
-            indent = f"padding-left:{1.5 * l['depth']}rem" if l.get("depth") else None
+            indent = f"padding-left:{1.5 * float(l['depth'])}rem" if l.get("depth") else None
 
             if synthetic and l.get("href_pnl"):
                 label = t("financial.unclosed_net_income")
                 name_cell = Td(
-                    A(label, href=_pnl_href(), cls="drilldown-link"),
+                    A(label, href=safe_url(_pnl_href()), cls="drilldown-link"),
                     title=t("financial.retained_earnings_tooltip"),
                 )
             elif is_parent:
@@ -587,7 +588,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 name_cell = Td(Strong(label), style=indent)
             elif code and not synthetic:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style=indent)
+                name_cell = Td(A(label, href=safe_url(_ledger_href(code)), cls="drilldown-link"), style=indent)
             else:
                 name_cell = Td(l.get("name", ""))
 
@@ -600,7 +601,7 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         return Div(
             H3(title, cls="report-section-title"),
             Table(Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(A(Strong(total_el), href=_tb_href(), cls="drilldown-link"), cls="section-total"),
+            P(A(Strong(total_el), href=safe_url(_tb_href()), cls="drilldown-link"), cls="section-total"),
             cls="report-section",
         )
 
@@ -642,7 +643,7 @@ def _general_ledger_view(data: dict, currency: str | None = None,
         Tr(
             Td(r.get("code", ""), cls="cell--mono"),
             Td(A(r.get("name", ""),
-                 href=_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to),
+                 href=safe_url(_drill_ledger_href(r.get("code", ""), "general-ledger", date_from, date_to)),
                  cls="drilldown-link")),
             _num_cell(r.get("opening", 0)),
             _num_cell(r.get("debit", 0)),
@@ -654,10 +655,10 @@ def _general_ledger_view(data: dict, currency: str | None = None,
     body.append(Tr(
         Td(""),
         Td(Strong(t("label.total"))),
-        _num_cell(totals.get("opening", 0), strong=True),
+        Td("", cls="cell--number"),
         _num_cell(totals.get("debit", 0), strong=True),
         _num_cell(totals.get("credit", 0), strong=True),
-        _num_cell(totals.get("closing", 0), strong=True),
+        Td("", cls="cell--number"),
     ))
     return Table(
         Thead(Tr(
@@ -930,7 +931,7 @@ def setup_routes(app):
                   for path, name, desc in OPERATIONAL_REPORTS
                   if path.split("?")[0] in registered]
         content = Div(
-            *[A(Strong(name), P(desc, cls="quick-link-desc"), href=path, cls="quick-link-card")
+            *[A(Strong(name), P(desc, cls="quick-link-desc"), href=safe_url(path), cls="quick-link-card")
               for path, name, desc in cards],
             cls="quick-links-grid",
         )
@@ -977,7 +978,7 @@ def setup_routes(app):
                 Label(t("label.as_of_date"), cls="form-label"),
                 Input(type="date", name="as_of", value=as_of, cls="date-input"),
                 Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
-                action=_report_path("balance-sheet"), method="get", cls="date-custom-form",
+                action=safe_url(_report_path("balance-sheet")), method="get", cls="date-custom-form",
             )
             content = Div(
                 report_nav("balance-sheet", "", as_of),
@@ -1058,7 +1059,11 @@ def setup_routes(app):
                                  settings_link="/settings/general?tab=company"),
                 totals_chips(float(totals.get("debit", 0) or 0),
                              float(totals.get("credit", 0) or 0),
-                             bool(data.get("balanced", True)), currency),
+                             bool(data.get("balanced", True)), currency,
+                             extra=[A(t("acct.tab_trial_balance"),
+                                      href=safe_url(href(_report_path("trial-balance"),
+                                                         page_params("trial-balance", d_from or "", d_to or ""))),
+                                      cls="btn btn--ghost btn--sm")]),
                 Div(_bars("general-ledger", params), cls="flex-row mt-md mb-md"),
                 _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or "",
                                      period=(d_from, d_to, f"{_report_path('general-ledger')}?preset=all")),
@@ -1157,7 +1162,7 @@ def setup_routes(app):
                 _date_filter_bar(ledger_path(account_code), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=f"&src={origin}"),
-                A(t(back_key), href=href(back_path, back_qs), cls="btn btn--ghost btn--sm"),
+                A(t(back_key), href=safe_url(href(back_path, back_qs)), cls="btn btn--ghost btn--sm"),
                 cls="flex-row flex-between",
             ),
             elsewhere_note(data.get("elsewhere") or []),
@@ -1232,23 +1237,23 @@ def setup_routes(app):
         """
         token = _token(request)
         if not token:
-            return HTMLResponse(_option_notice(t("error.session_expired")))
+            return html_response(_option_notice(t("error.session_expired")))
         q = request.query_params.get("q", "").strip()
         if not q:
-            return HTMLResponse("")
+            return html_response(())
         selected = set(request.query_params.getlist("account"))
         try:
             contacts = await _every_contact(token, {"q": q})
             accounts = (await api.get_chart(token)).get("items") or []
         except APIError as e:
-            return HTMLResponse(_option_notice(
+            return html_response(_option_notice(
                 e.detail or t("acct.error_loading_data")))
         needle = q.lower()
         opts = _contact_options(contacts) + [
             (val, label) for val, label in _account_options(accounts)
             if needle in label.lower()
         ]
-        return HTMLResponse(_option_markup(opts, selected))
+        return html_response(_option_markup(opts, selected))
 
     async def _quick_pick(token: str, pick: str) -> list[tuple[str, str]]:
         """Expand a quick-pick into the subjects it stands for.
@@ -1281,8 +1286,8 @@ def setup_routes(app):
         ]
         return Div(
             *[A(label,
-                href=href(_report_path("statement"),
-                          [("pick", key), ("from", d_from), ("to", d_to)]),
+                href=safe_url(href(_report_path("statement"),
+                          [("pick", key), ("from", d_from), ("to", d_to)])),
                 cls="btn btn--ghost btn--sm")
               for key, label in picks],
             cls="picker-quickpicks",
@@ -1319,7 +1324,7 @@ def setup_routes(app):
             Input(type="hidden", name="from", value=d_from or ""),
             Input(type="hidden", name="to", value=d_to or ""),
             Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
-            method="get", action=_report_path("statement"), cls="flex-row gap-sm",
+            method="get", action=safe_url(_report_path("statement")), cls="flex-row gap-sm",
         )
         # Say so when the list on screen is part of the contact list, so nobody
         # reads a short list as the whole one.

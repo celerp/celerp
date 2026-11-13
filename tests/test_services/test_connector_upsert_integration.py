@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -119,6 +120,70 @@ async def test_woocommerce_order_creates_doc(use_test_session):
     assert st["total"] == 10.0
     assert st["line_items"][0]["unit_price"] == 5.0
     assert st["woocommerce_order_id"] == "55"
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session, monkeypatch):
+    """WOO- plus the order number is a number Celerp composes, so it is checked like every number
+    Celerp issues: an order whose number another record holds lands on the attention list with
+    the translated refusal naming the number, and the other orders sync under the number a
+    record stores (a padded platform number stored stripped)."""
+    from datetime import datetime, timezone
+
+    import httpx
+    import respx
+    from fasthtml.common import to_xml
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.models.projections import Projection
+    from celerp_docs.sequences import number_holder
+    from ui.i18n import _current_lang, t
+    from ui.routes.settings_connectors import _attention_item
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooHeld")
+    session.add(Projection(company_id=cid, entity_id="doc:typed", entity_type="doc", version=1,
+                           updated_at=datetime.now(timezone.utc), state={"doc_type": "invoice", "ref_id": "WOO-1001", "status": "draft"}))
+    await session.commit()
+
+    def order(oid: int, number: str) -> dict:
+        # A pending order stays a draft, so it keeps the number the upsert stored (finalizing an
+        # invoice claims its INV number).
+        return {"id": oid, "number": number, "status": "pending",
+                "line_items": [{"name": "Widget", "quantity": 1, "price": "5.00", "total": "5.00"}],
+                "total": "5.00"}
+
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck_testkey:cs_testsecret",
+                           store_handle="https://store.example.com")
+    monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url", AsyncMock(return_value=None))
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(
+            200, json=[order(61, "1001"), order(62, "1002 "), order(63, "1003")]))
+        result = await WooCommerceConnector().sync_orders(ctx)
+
+    assert [a["id"] for a in result.attention] == ["61"], result.attention
+    for lang in ("en", "th"):
+        token = _current_lang.set(lang)
+        try:
+            line = to_xml(_attention_item("woocommerce", result.attention[0], lang))
+        finally:
+            _current_lang.reset(token)
+        assert t("documents.err_woo_number_held", lang, number="WOO-1001", holder="WOO-1001",
+                 next="WOO-1001-2") in line, line
+        assert "409:" not in line and "{'code'" not in line, line
+        # The line names the holder as a link and offers both ways out.
+        assert 'href="/docs/doc:typed"' in line, line
+        assert 'hx-post="/settings/connectors/woocommerce/attention/61/reconciled"' in line, line
+        assert 'hx-post="/settings/connectors/woocommerce/attention/61/import-next"' in line, line
+        assert t("connectors.attention_import_as", lang, number="WOO-1001-2") in line, line
+    assert await number_holder(session, str(cid), "WOO-1001", exclude_entity_id="doc:typed") is None
+    assert (await _state(session, cid, "woocommerce:order:62"))["ref_id"] == "WOO-1002"
+    written = await session.scalar(text(
+        "SELECT data->>'ref_id' FROM ledger WHERE company_id = :c AND event_type = 'doc.created' "
+        "AND idempotency_key LIKE 'woocommerce:order:62:%'"), {"c": cid})
+    assert written == "WOO-1002"  # the event holds the number require_number_free returned
+    assert (await _state(session, cid, "woocommerce:order:63"))["ref_id"] == "WOO-1003"
 
 
 @pytest.mark.asyncio

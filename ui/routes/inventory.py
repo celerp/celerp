@@ -16,10 +16,9 @@ from urllib.parse import quote, urlencode, urlsplit
 logger = logging.getLogger(__name__)
 
 from fasthtml.common import *
-from fasthtml.common import to_xml
 from starlette.datastructures import QueryParams
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.module_off import can_open
@@ -30,6 +29,17 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
+from ui.components.encode import (
+    as_js,
+    call,
+    EVENT,
+    html_response,
+    inert_media_type,
+    js_value,
+    raw_html,
+    safe_url,
+    THIS,
+)
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -719,7 +729,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             cls="sp-confirm-row",
         ),
         *(
-            [Script(f"_updateSplitDelta(document.getElementById('{form_id}'));")]
+            [Script("_updateSplitDelta(document.currentScript.closest('form'));")]
             if _show_delta_badge else []
         ),
         hx_post=action,
@@ -1966,7 +1976,7 @@ def setup_routes(app):
         _make_available_btn = (
             Button(
                 t("inventory.make_available"),
-                onclick=f"event.preventDefault();htmx.ajax('POST','/api/items/{entity_id}/make-available',{{target:'#item-header-error',swap:'outerHTML'}});",
+                onclick=call("celerpPost", EVENT, f"/api/items/{entity_id}/make-available", "#item-header-error"),
                 cls="btn btn--primary",
             )
             if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
@@ -1979,7 +1989,7 @@ def setup_routes(app):
                 Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
                     Div(
-                        A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                        A(raw_html(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
                           cls="btn btn--ghost btn--icon", title=t("inventory.print_production_worksheet")),
                         _print_label_dropdown(entity_id),
                         A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
@@ -2060,16 +2070,18 @@ def setup_routes(app):
                 A(t("inv.create_template"), href="/settings/labels", cls="dropdown-link"),
             )
         print_js = """
-function celerpPrintLabel(entityId, templateId) {
+function celerpPrintLabel(link, ev, entityId, templateId) {
+    ev.preventDefault();
+    link.closest('.print-label-dropdown').classList.remove('open');
     // UI-layer GET route: no API auth needed, auto-triggers window.print()
-    window.open('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
+    celerpOpen('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
 }
 """
         items = [
             A(
                 tpl.get("name", "Template"),
                 href="#",
-                onclick=f"celerpPrintLabel('{entity_id}','{tpl['id']}');this.closest('.print-label-dropdown').classList.remove('open');return false;",
+                onclick=call("celerpPrintLabel", THIS, EVENT, str(entity_id), str(tpl["id"])),
                 cls="dropdown-item",
             )
             for tpl in templates
@@ -2409,8 +2421,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.get("/inventory/{entity_id}/worksheet/print")
     async def worksheet_print(request: Request, entity_id: str):
         """Standalone printable production worksheet (auto window.print(); user saves as PDF)."""
-        from fasthtml.common import to_xml
-        from starlette.responses import HTMLResponse
         from ui.routes.reports import _company_today
         token = _token(request)
         if not token:
@@ -2424,7 +2434,7 @@ function celerpPrintLabel(entityId, templateId) {
         cat = item.get("category") or ""
         category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
         today = await _company_today(token)
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today, category)))
+        return html_response(_worksheet_print_view(entity_id, item, items, today, category))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
     async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
@@ -2538,18 +2548,8 @@ function celerpPrintLabel(entityId, templateId) {
             restore_url = f"/api/items/{entity_id}/field/{field}/display"
             patch_url = f"/api/items/{entity_id}/field/{field}"
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
-            escape_js = (
-                f"if(event.key==='Escape'){{"
-                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-                f"event.preventDefault();}}"
-            )
-            add_new_url = "/settings/inventory?tab=locations"
-            import json as _json_loc
-            safe_val = _json_loc.dumps(current_val)  # JSON-encoded to prevent XSS
-            onchange_js = (
-                f"if(this.value==='__add_new__'){{"
-                f"window.open('{add_new_url}','_blank');this.value={safe_val};}}"
-            )
+            escape_js = call("celerpCellKey", THIS, EVENT, {"url": restore_url})
+            onchange_js = call("celerpAddNew", THIS, "__add_new__", "/settings/inventory?tab=locations", True, current_val)
             return Td(
                 Select(
                     *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
@@ -2665,7 +2665,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not headers:
             return out
         if isinstance(out, Response):
-            out.headers.update(headers)
+            out.headers["HX-Trigger"] = headers["HX-Trigger"]
             return out
         return (*(out if isinstance(out, tuple) else (out,)), *(HttpHeader(k, v) for k, v in headers.items()))
 
@@ -3326,7 +3326,6 @@ function celerpPrintLabel(entityId, templateId) {
         read (what a merge did to the books) is also raised as a toast that stays until
         dismissed.
         """
-        from starlette.responses import HTMLResponse
         # Without a result filter of its own the table reloads the list the owner is on
         # (search, tab, filters), never the unfiltered default.
         state = _base_state(_current_list_query(request))
@@ -3342,16 +3341,12 @@ function celerpPrintLabel(entityId, templateId) {
         )
         headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
                    else {"HX-Trigger": "celerpSelectionClear"})
-        return HTMLResponse(to_xml(content), headers=headers)
+        return html_response(content, headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
         """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
         validation failures like a weight-unit mismatch read as a clear popup."""
-        from starlette.responses import HTMLResponse
-        return HTMLResponse(
-            "", status_code=200,
-            headers={"HX-Reswap": "none", **toast_header(str(msg), "error")},
-        )
+        return html_response((), status_code=200, headers={"HX-Reswap": "none", **toast_header(str(msg), "error")})
 
     @app.post("/api/items/bulk/status")
     async def bulk_item_status(request: Request):
@@ -3507,7 +3502,8 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             new = await api.create_writeoff(token, entity_ids)
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{new['id']}"})
 
     # ── Bulk duplicate (create a copy of each selected item) ─────────────
@@ -3526,27 +3522,36 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             settings = (await api.get_company(token)).get("settings") or {}
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         if not role_has_permission(settings, _get_role(request), "edit_inventory"):
             return Div(P(missing_permission_text("edit_inventory"), cls="flash flash--error"), id="bulk-action-result")
         reserved: set[str] = set()
         ok = 0
-        failed = 0
+        refusals: list[str] = []
         for eid in entity_ids:
+            label = eid
             try:
                 source = await api.get_item(token, eid)
+                label = source.get("sku") or source.get("name") or eid
                 new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""), reserved=reserved)
                 await api.create_item(token, _duplicate_payload(
                     source, new_sku,
                     can_set_prices=role_has_permission(settings, _get_role(request), "set_inventory_prices"),
                 ))
                 ok += 1
-            except APIError:
-                failed += 1
+            except APIError as e:
+                api.raise_if_signed_out(e)
+                refusals.append(f"{label}: {error_message(e)}")
+        failed = len(refusals)
+        refused = t("inventory.bulk_duplicate_refusals", items="; ".join(refusals)) if refusals else ""
         if ok == 0:
-            return Div(P(t("inventory.bulk_duplicate_failed", n=failed), cls="flash flash--error"), id="bulk-action-result")
-        msg = t("inventory.bulk_duplicated_partial", ok=ok, failed=failed) if failed else t("inventory.bulk_duplicated", n=ok)
-        return _bulk_destructive_success(request, msg, cls="flash--warning" if failed else "flash--success")
+            return Div(P(f'{t("inventory.bulk_duplicate_failed", n=failed)} {refused}', cls="flash flash--error"),
+                       id="bulk-action-result")
+        if failed:
+            return _bulk_destructive_success(request, t("inventory.bulk_duplicated_partial", ok=ok, failed=failed),
+                                             cls="flash--warning", notice=refused)
+        return _bulk_destructive_success(request, t("inventory.bulk_duplicated", n=ok))
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
 
@@ -4162,17 +4167,16 @@ function celerpPrintLabel(entityId, templateId) {
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
-                    # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
+                    # Purchase-side: qty = reorder_qty in purchase units (an unset one is refused by name),
                     # cost price, purchase unit, the purchase-side default tax. Group the selection by each
                     # item's preferred supplier so a multi-supplier reorder becomes one draft
                     # PO per supplier (plus one for items with no supplier set).
                     from celerp.services.reorder import group_by_supplier
+                    # A failed read reaches the outer handler before anything is created, never
+                    # an item silently left out of every supplier group.
                     items = []
                     for eid in entity_ids:
-                        try:
-                            it = await api.get_item(token, eid)
-                        except APIError:
-                            it = {}
+                        it = await api.get_item(token, eid)
                         items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
                     groups = group_by_supplier(items)
                     created: list[tuple[str, str, str]] = []
@@ -4190,12 +4194,13 @@ function celerpPrintLabel(entityId, templateId) {
                                 payload["contact_name"] = sup
                             result = await api.create_doc(token, payload)
                         except APIError as e:
+                            api.raise_if_signed_out(e)
                             # One supplier group failed. Record it and keep going so the
                             # drafts already created are never discarded: the user is shown
                             # exactly which POs exist and which supplier to retry, rather than
                             # a bare error that invites re-sending the whole selection and
                             # duplicating the drafts that did succeed.
-                            failed.append(f"{label}: {e.detail}")
+                            failed.append(f"{label}: {error_message(e)}")
                             continue
                         # create_doc returns id="doc:<ref_id>"; the part after the
                         # prefix is the human-readable document number (e.g. PO-2608-0003).
@@ -4226,7 +4231,8 @@ function celerpPrintLabel(entityId, templateId) {
                         id="bulk-action-result",
                     )
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
 
     # ── T3: Item action routes ───────────────────────────────────────────
@@ -4744,7 +4750,8 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             result = await api.create_item(token, payload)
         except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+            api.raise_if_signed_out(e)
+            return Div(Span(error_message(e), cls="flash flash--error"), id="item-action-error")
         new_id = result.get("id", "")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 
@@ -4848,7 +4855,7 @@ function celerpPrintLabel(entityId, templateId) {
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
-            media_type=content_type,
+            media_type=inert_media_type(content_type),
             headers={"Content-Disposition": api.file_disposition(resp, "inline")},
         )
 
@@ -4894,7 +4901,7 @@ function celerpPrintLabel(entityId, templateId) {
             return api.refusal_response(e)
         return Response(
             content=resp.content,
-            media_type=resp.headers.get("content-type", "image/jpeg"),
+            media_type=inert_media_type(resp.headers.get("content-type", "image/jpeg")),
             headers={"Cache-Control": resp.headers.get("cache-control", "private, max-age=86400")},
         )
 
@@ -4949,7 +4956,7 @@ def _slot_action_link(action: dict, **values: str) -> FT:
     href = action.get("href_template", "")
     for name, value in values.items():
         href = href.replace("{" + name + "}", quote(str(value), safe=""))
-    return A(_slot_label(action, t("inv.action")), href=href, cls="btn btn--secondary btn--sm")
+    return A(_slot_label(action, t("inv.action")), href=safe_url(href), cls="btn btn--secondary btn--sm")
 
 
 def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
@@ -5071,7 +5078,7 @@ def _bulk_context_templates(
                 *loc_opts,
                 loc_new_opt,
                 name="bulk_location_id", cls="form-input form-input--sm",
-                onchange=loc_new_js,
+                onchange=as_js(loc_new_js),
             ),
             Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
             hx_post="/api/items/bulk/transfer",
@@ -5187,7 +5194,7 @@ def _bulk_context_templates(
         elif is_navigate:
             form = Form(
                 Button(_slot_label(action, t("btn.go")), type="submit", cls="btn btn--primary btn--sm"),
-                action=action["form_action"],
+                action=safe_url(action["form_action"]),
                 method="post",
                 target="_blank",
                 onsubmit="submitBulkAction(this)",
@@ -5607,8 +5614,7 @@ def _pricing_cost_stale(item: dict, currency: str | None, detail: str) -> tuple:
     both cost inputs and their opening texts set to the cost as it is now."""
     unit, total = (_cost_door_text(item, currency, per_unit) for per_unit in (True, False))
     return (Div(t("inventory.not_saved_detail", detail=detail),
-                Script(f"document.getElementById('unit_cost_price').value={json.dumps(unit)};"
-                       f"document.getElementById('total_cost_price').value={json.dumps(total)};"),
+                Script(call("celerpSetValues", {"unit_cost_price": unit, "total_cost_price": total})),
                 id="pricing-save-status", cls="recipe-save-status hint error", hx_swap_oob="true"),
             *_pricing_cost_opened(item, currency, oob=True))
 
@@ -5641,7 +5647,7 @@ def _is_version_stale(e: APIError) -> bool:
 def _stale(content) -> Response:
     """A cost refused because it changed since its editor opened: 409, swapped in like any
     answer (X-Swap-Refusal), so the editor shows the cost as it is now."""
-    return HTMLResponse(to_xml(content), status_code=409, headers={"X-Swap-Refusal": "1"})
+    return html_response(content, status_code=409, headers={"X-Swap-Refusal": "1"})
 
 
 async def _patch_cost(token: str, entity_id: str, old_item: dict, change: dict, opened_version: int | None) -> dict:
@@ -5978,13 +5984,11 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     Server-side pref save is preserved for cross-device sync (background fetch).
     Client-side: checkboxes immediately show/hide columns and persist to localStorage.
     """
-    import json as _json
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
     cat_pref = active_cat or "__all__"
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
-    col_data_js = _json.dumps(col_data)
     # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
     # Virtual total always follows its paired unit-price column (the primary).
     _vf_map: dict[str, list[str]] = {}
@@ -5992,8 +5996,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if f.get("virtual") and f.get("paired_with"):
             key, paired = f["key"], f["paired_with"]
             _vf_map.setdefault(paired, []).append(key)
-    virtual_followers_js = _json.dumps(_vf_map)
-    selected_js = _json.dumps(sorted(selected))
+    virtual_followers = _vf_map
+    selected_keys = sorted(selected)
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
@@ -6020,67 +6024,68 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
 
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    paired_secondaries_js = _json.dumps(list(_PAIRED_TABLE.values()))
+    paired_secondaries = list(_PAIRED_TABLE.values())
 
-    col_mgr_js = f"""
-(function() {{
+    col_mgr_js = """
+(function() {var CFG=JSON.parse(document.currentScript.dataset.cfg);
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = '{cat_pref}';
-  var ALL_COLS = {col_data_js};
+  var CAT_PREF = CFG.catPref;
+  var SELECTED_KEYS = CFG.selected;
+  var ALL_COLS = CFG.allCols;
   // Keys that are now merged into their primary column - strip from saved prefs
-  var MERGED_SECONDARIES = {paired_secondaries_js};
+  var MERGED_SECONDARIES = CFG.merged;
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {virtual_followers_js};
+  var VIRTUAL_FOLLOWERS = CFG.followers;
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
 
   // Load visibility from localStorage
-  function loadVis() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveVis(prefs) {{
+  function loadVis() {
+    try { return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveVis(prefs) {
     localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
-  }}
+  }
 
   // Load order from localStorage
-  function loadOrder() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveOrder(order) {{
+  function loadOrder() {
+    try { return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); } catch(e) { return null; }
+  }
+  function saveOrder(order) {
     localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
-  }}
+  }
 
   // Apply column visibility to the data table
-  function applyVisToTable(prefs) {{
+  function applyVisToTable(prefs) {
     var table = document.getElementById('data-table');
     if (!table) return;
     var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
     var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
+    ths.forEach(function(th) {
       var key = th.dataset.key;
       var colIdx = Array.from(th.parentNode.children).indexOf(th);
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
+      rows.forEach(function(tr) {
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(table);
-  }}
+  }
 
   // Sync checkboxes in menu to match localStorage
-  function syncCheckboxes() {{
-    var prefs = loadVis() || {{}};
-    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
+  function syncCheckboxes() {
+    var prefs = loadVis() || {};
+    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
       cb.checked = prefs[cb.value] !== false;
-    }});
-  }}
+    });
+  }
 
   // Apply column order to table (move TH and TD columns)
-  function applyOrderToTable(order) {{
+  function applyOrderToTable(order) {
     if (!order || !order.length) return;
     var table = document.getElementById('data-table');
     if (!table) return;
@@ -6088,117 +6093,117 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     if (!thead_tr) return;
     var actionsTh = thead_tr.querySelector('.col-actions');
     // Move TH elements into order (before actions column); each primary drags its virtual followers
-    order.forEach(function(key) {{
+    order.forEach(function(key) {
       var th = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
       // Place virtual followers immediately after their primary
-      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
-      }});
-    }});
+      });
+    });
     // Re-order tbody cells to match header using data-col attribute
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
       var matchTd = tr.querySelector('.col-match');
       var actionsTd = tr.querySelector('.col-actions');
-      var dataCells = allThs.map(function(th) {{
-        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
-      }}).filter(Boolean);
-      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
+      var dataCells = allThs.map(function(th) {
+        return cells.find(function(td) { return td.dataset.col === th.dataset.key; });
+      }).filter(Boolean);
+      [checkboxTd, matchTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {
         if (td) tr.appendChild(td);
-      }});
-    }});
+      });
+    });
     window.celerpSyncExportCols(table);
-  }}
+  }
 
   // Mirror the picker label order to match a given key array (picker is source of truth)
-  function applyOrderToPicker(order) {{
+  function applyOrderToPicker(order) {
     if (!order || !order.length) return;
     var labels = menu.querySelectorAll('label[data-col]');
     if (!labels.length) return;
     var parent = labels[0].parentNode;
     // Move labels into the declared order; unmentioned keys stay at end
-    order.forEach(function(key) {{
+    order.forEach(function(key) {
       var lbl = menu.querySelector('label[data-col="' + key + '"]');
       if (lbl) parent.appendChild(lbl);
-    }});
+    });
     // Always keep reset button and custom-col link at the bottom
     var resetBtn = menu.querySelector('#col-mgr-reset');
     if (resetBtn) parent.appendChild(resetBtn);
     var customLink = menu.querySelector('#col-mgr-custom-link');
     if (customLink) parent.appendChild(customLink);
-  }}
+  }
 
   // Get current picker order (label DOM order = source of truth)
-  function pickerOrder() {{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
-  }}
+  function pickerOrder() {
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) { return l.dataset.col; });
+  }
 
   // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {{
+  function saveToServer(visibleKeys) {
     var form = new FormData();
-    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
+    visibleKeys.forEach(function(k) { form.append('cols', k); });
+    Object.entries(CFG.hidden).forEach(function(kv) {
       form.append(kv[0], kv[1]);
-    }});
-    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
-  }}
+    });
+    fetch('/inventory/columns', {method:'POST', body:form}).catch(function(){});
+  }
 
   // Toggle open/close
-  btn.addEventListener('click', function(e) {{
+  btn.addEventListener('click', function(e) {
     e.stopPropagation();
     var isOpen = menu.style.display !== 'none';
     menu.style.display = isOpen ? 'none' : '';
     if (!isOpen) syncCheckboxes();
-  }});
+  });
 
   // Close on outside click
-  document.addEventListener('click', function(e) {{
-    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
+  document.addEventListener('click', function(e) {
+    if (!btn.contains(e.target) && !menu.contains(e.target)) {
       menu.style.display = 'none';
-    }}
-  }});
+    }
+  });
 
   // Checkbox change: immediate column toggle + re-apply order so new column
   // appears at its picker position rather than at the DOM end of the table.
-  menu.addEventListener('change', function(e) {{
+  menu.addEventListener('change', function(e) {
     if (e.target.type !== 'checkbox') return;
     var key = e.target.value;
-    var prefs = loadVis() || {{}};
+    var prefs = Object.assign({}, loadVis());
     // Init prefs from current state if empty
-    if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
-    }}
+    if (!Object.keys(prefs).length) {
+      ALL_COLS.forEach(function(c) { prefs[c.key] = SELECTED_KEYS.indexOf(c.key) !== -1; });
+    }
     prefs[key] = e.target.checked;
     saveVis(prefs);
     applyVisToTable(prefs);
     // Re-apply picker order so the newly-visible column lands in the right slot
     applyOrderToTable(pickerOrder());
     // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
+    var visibleKeys = ALL_COLS.filter(function(c) { return prefs[c.key] !== false; }).map(function(c){return c.key;});
     saveToServer(visibleKeys);
-  }});
+  });
 
   // Drag-and-drop reordering within column manager menu
   var dragSrc = null;
-  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
-    lbl.addEventListener('dragstart', function(e) {{
+  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {
+    lbl.addEventListener('dragstart', function(e) {
       dragSrc = lbl;
       e.dataTransfer.effectAllowed = 'move';
       lbl.style.opacity = '0.5';
-    }});
-    lbl.addEventListener('dragend', function() {{
+    });
+    lbl.addEventListener('dragend', function() {
       lbl.style.opacity = '';
       dragSrc = null;
-    }});
-    lbl.addEventListener('dragover', function(e) {{
+    });
+    lbl.addEventListener('dragover', function(e) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-    }});
-    lbl.addEventListener('drop', function(e) {{
+    });
+    lbl.addEventListener('drop', function(e) {
       e.preventDefault();
       if (!dragSrc || dragSrc === lbl) return;
       // Swap in picker DOM
@@ -6211,32 +6216,32 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var newOrder = pickerOrder();
       saveOrder(newOrder);
       applyOrderToTable(newOrder);
-    }});
-  }});
+    });
+  });
 
   // Listen for table-header drag reorder (fired by data_table.py drag handler)
-  document.addEventListener('celerp:col-reorder', function(e) {{
+  document.addEventListener('celerp:col-reorder', function(e) {
     if (!e.detail || !e.detail.order) return;
     applyOrderToPicker(e.detail.order);
-  }});
+  });
 
   // Init: apply localStorage state on page load
   // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
   var storedVis = loadVis();
-  if (storedVis) {{
-    MERGED_SECONDARIES.forEach(function(k) {{ delete storedVis[k]; }});
+  if (storedVis) {
+    MERGED_SECONDARIES.forEach(function(k) { delete storedVis[k]; });
     applyVisToTable(storedVis);
-  }}
+  }
   var storedOrder = loadOrder();
-  if (storedOrder) {{
-    storedOrder = storedOrder.filter(function(k) {{ return MERGED_SECONDARIES.indexOf(k) === -1; }});
+  if (storedOrder) {
+    storedOrder = storedOrder.filter(function(k) { return MERGED_SECONDARIES.indexOf(k) === -1; });
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
-  }}
+  }
 
   // Keep menu closed unless keep_open is set
-  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
-}})();
+  menu.style.display = CFG.menuDisplay;
+})();
 """
 
     return Div(
@@ -6276,7 +6281,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
             id="col-mgr-menu",
             style="display:none" if not keep_open else "",
         ),
-        Script(col_mgr_js),
+        Script(col_mgr_js, data_cfg=js_value({'catPref': cat_pref, 'allCols': col_data, 'merged': paired_secondaries, 'followers': virtual_followers, 'hidden': hidden_state, 'selected': selected_keys, 'menuDisplay': '' if keep_open else 'none'})),
         cls="column-manager",
         id="col-mgr-details",
     )
@@ -6401,7 +6406,7 @@ def _print_label_dropdown(entity_id: str) -> FT:
         Button("🖨",
             cls="btn btn--secondary btn--icon",
             title=t("btn._print_labels"),
-            onclick=f"var dd=document.getElementById('{dropdown_id}');dd.classList.toggle('open');",
+            onclick=call("celerpToggleOpen", dropdown_id),
         ),
         Div(
             Div(
@@ -6610,7 +6615,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     # Clicking a thumbnail makes that image the hero (the large one) — it does not open a new tab.
     thumbs = (
         Div(*[
-            Button(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
+            Button(Img(src=safe_url(_src(f)), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
                    type="button", title=t("inventory.set_main_image"),
                    hx_post=f"/api/items/{entity_id}/gallery-hero/{f['id']}",
                    hx_target="#wf-gallery", hx_swap="outerHTML",
@@ -6621,7 +6626,7 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     )
     return Div(
         H3(t("inventory.product_images"), cls="section-title"),
-        Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
+        Img(src=safe_url(_src(hero)), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
         thumbs,
         P(t("inventory.click_thumb_main"), cls="hint") if len(images) > 1 else "",
         cls="detail-card wf-gallery",
@@ -6673,8 +6678,8 @@ WORKFLOW_JS = """
   var sec=document.getElementById('workflow-section');
   if(!sec||sec._wfInit) return; sec._wfInit=true;
   var base=sec.getAttribute('data-base');
-  // outerHTML swaps do not re-run inline scripts, so re-init the fresh section after a reload.
-  function reload(html){ sec.outerHTML=html; var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
+  // Fragment swaps do not re-run inline scripts, so re-init the fresh section after a reload.
+  function reload(html){ sec.replaceWith(celerpFragment(html)); var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
   // Running total, recomputed client-side after each single-cell edit so editing a value or unit
   // never triggers a section reload.
   function fmtMin(m){ m=Math.round(m); if(m<=0)return '0 min'; if(m%1440===0)return (m/1440)+' d'; if(m%60===0)return (m/60)+' h'; if(m>=60){var h=Math.floor(m/60),mm=m%60;return h+' h '+mm+' min';} return m+' min'; }
@@ -7272,7 +7277,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
 
     demand_rows = [
         Tr(
-            Td(A(d.get("doc_number") or d.get("doc_id"), href=doc_href(d.get("doc_id")), cls="table-link")),
+            Td(A(d.get("doc_number") or d.get("doc_id"), href=safe_url(doc_href(d.get("doc_id"))), cls="table-link")),
             Td(doc_type_label(d.get("doc_type") or "")),
             Td(d.get("contact_name") or EMPTY),
             Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
@@ -7334,7 +7339,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     def _wo_source_cell(run: dict) -> FT:
         src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
         if src_id and src_no:
-            return A(src_no, href=doc_href(src_id), cls="table-link")
+            return A(src_no, href=safe_url(doc_href(src_id)), cls="table-link")
         return Span(t("inventory.to_stock"), cls="hint")  # no linked order = made to stock
 
     def _wo_row(run: dict) -> FT:
@@ -7623,7 +7628,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                 Td(_cur(unit_span), cls="cell--right"),
                 Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"),
             ), actions
-        unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
+        unit_id = f"unit_{conventional_key}"
+        total_id = f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
         # rest of the system where Enter always commits an inline edit.
         enter_commits = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
@@ -7633,7 +7639,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         is_cost = conventional_key == "cost_price"
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
                            step="any", min="0", placeholder="--", cls="form-input",
-                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty},{cdp})",
+                           oninput=call('syncPricingTotal', str(unit_id), str(total_id), qty, cdp),
                            onkeydown=enter_commits,
                            **{**_save, **({"hx_include": f"this, #{_PRICING_OPENED[True]}, #{_PRICING_OPENED_VERSION}"}
                                           if is_cost else {})})
@@ -7652,7 +7658,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             carried = ()
         total_input = Input(type="number", id=total_id, value=total_val, step="any", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
-                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
+                            oninput=call('syncPricingUnit', str(unit_id), str(total_id), qty, cdp, rdp),
                             onkeydown=enter_commits, **total_save)
         return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input), cls="cell--right"), Td(_cur(total_input), *carried, cls="cell--right")), actions
 
@@ -8101,6 +8107,40 @@ async def _item_split_preview(token: str, entity_id: str) -> dict:
         return {"cannot_split": True, "reason": str(e.detail)}
 
 
+# Batch Split preview and submit. Constant script: the unit, available quantity and post URL
+# come from the form's data attributes, and the preview is written as text.
+_BATCH_SPLIT_JS = """
+function batchSplitPreview(form) {
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
+  var avail = parseFloat(form.getAttribute('data-avail')) || 0;
+  var unit  = form.getAttribute('data-unit') || '';
+  var el    = form.querySelector('.batch-split-preview');
+  if (!el) return;
+  if (!qty || !count) { el.replaceChildren(); return; }
+  var total = qty * count;
+  el.replaceChildren(count + ' \u00d7 ' + qty + '\u00a0' + unit + ' = ' + total.toFixed(2) + '\u00a0' + unit);
+  if (total > avail) {
+    el.append(' ', celerpNode('span', {'class': 'batch-split-over'},
+      [(form.getAttribute('data-exceeds-label') || '').replace('{avail}', avail)]));
+  }
+}
+function batchSplitSubmit(form) {
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
+  if (!qty || qty <= 0) { alert(form.getAttribute('data-alert-qty')); return; }
+  if (!count || count < 2) { alert(form.getAttribute('data-alert-count')); return; }
+  var btn = form.querySelector('.btn--batch-submit');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  var compEl = form.querySelector('[name=batch_complement]');
+  var vals = { batch_qty: qty, batch_count: count };
+  if (compEl && compEl.value) vals.batch_complement = compEl.value;
+  htmx.ajax('POST', form.getAttribute('data-split-url'),
+    { target: '#item-action-error', swap: 'outerHTML', values: vals });
+}
+"""
+
+
 def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None,
                     connected_connectors: set[str] | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
@@ -8168,12 +8208,12 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                           title=_batch_qty_title,
                           step="any", min="0.001",
                           cls="form-input form-input--sm split-qty-main",
-                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                          oninput="batchSplitPreview(this.form)"),
                     *([Input(type="number", name="batch_complement",
                              placeholder=_comp_ph, title=_comp_title,
                              step=_comp_step, min="0",
                              cls="form-input form-input--sm split-complement",
-                             oninput=f"batchSplitPreview_{safe_id}(this.form)")]
+                             oninput="batchSplitPreview(this.form)")]
                       if _comp_name else []),
                     Span("×", cls="batch-split-sep"),
                     Input(type="number", name="batch_count",
@@ -8181,45 +8221,20 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                           title=_batch_count_title,
                           step="1", min="2",
                           cls="form-input form-input--sm batch-split-count",
-                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                          oninput="batchSplitPreview(this.form)"),
                     Button(t("th.batch"), type="button",
                            title=t("inv.tooltip.batch_submit"),
                            cls="btn btn--primary btn--xs btn--batch-submit",
-                           onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
+                           onclick="batchSplitSubmit(this.closest('form'))"),
                     cls="action-card-row",
                 ),
-                Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
-                Script(f"""
-function batchSplitPreview_{safe_id}(form) {{
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
-  var avail = {current_qty};
-  var unit  = '{sell_by_label}';
-  var el    = document.getElementById('batch-split-preview-{safe_id}');
-  if (!el) return;
-  if (!qty || !count) {{ el.innerHTML = ''; return; }}
-  var total = qty * count;
-  var over  = total > avail;
-  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
-    + ' = ' + total.toFixed(2) + '\u00a0' + unit
-    + (over ? ' <span class="batch-split-over">' + (form.getAttribute('data-exceeds-label') || '').replace('{{avail}}', avail) + '</span>' : '');
-}}
-function batchSplitSubmit_{safe_id}(form) {{
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
-  if (!qty || qty <= 0) {{ alert(form.getAttribute('data-alert-qty')); return; }}
-  if (!count || count < 2) {{ alert(form.getAttribute('data-alert-count')); return; }}
-  var btn = form.querySelector('.btn--batch-submit');
-  if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
-  var compEl = form.querySelector('[name=batch_complement]');
-  var vals = {{ batch_qty: qty, batch_count: count }};
-  if (compEl && compEl.value) vals.batch_complement = compEl.value;
-  htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
-    {{ target: '#item-action-error', swap: 'outerHTML', values: vals }});
-}}
-"""),
+                Div(cls="batch-split-preview"),
+                Script(_BATCH_SPLIT_JS),
                 onsubmit="return false;",
                 **{
+                    "data-unit": sell_by_label,
+                    "data-avail": current_qty,
+                    "data-split-url": f"/api/items/{entity_id}/batch-split",
                     "data-exceeds-label": t("inventory.js_exceeds_available"),
                     "data-alert-qty": t("inventory.js_enter_valid_qty"),
                     "data-alert-count": t("inventory.count_min_two"),

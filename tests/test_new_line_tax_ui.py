@@ -34,6 +34,7 @@ async def _post(ui_client, url: str, body: bytes, *, taxes: AsyncMock, create=No
     ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+        patch("ui.api_client.get_units", new=AsyncMock(return_value=[{"name": "piece", "decimals": 0}])),
         patch("ui.api_client.get_document_taxes", new=taxes),
         patch("ui.api_client.create_doc", new=create or AsyncMock(return_value={"id": "doc:NEW-1"})),
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc or {})),

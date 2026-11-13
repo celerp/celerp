@@ -24,48 +24,12 @@ from ui.i18n import t, get_lang, category_label
 
 try:
     from starlette.requests import Request
-    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.responses import RedirectResponse
 except ImportError:  # pragma: no cover
     Request = None  # type: ignore[assignment,misc]
-    HTMLResponse = RedirectResponse = None  # type: ignore[assignment,misc]
+    RedirectResponse = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
-
-# Named format → (width_mm, height_mm)
-_FORMAT_MM: dict[str, tuple[float, float]] = {
-    "24x24mm": (24.0, 24.0),
-    "29x29mm": (29.0, 29.0),
-    "34x34mm": (34.0, 34.0),
-    "40x30mm": (40.0, 30.0),
-    "62x29mm": (62.0, 29.0),
-    "100x50mm": (100.0, 50.0),
-    "A4": (210.0, 297.0),
-    "A5": (148.0, 210.0),
-    "letter": (216.0, 279.0),
-}
-_FORMAT_MM_DEFAULT = (40.0, 30.0)
-
-
-def _format_to_mm(
-    fmt: str | None,
-    width_mm: float | None,
-    height_mm: float | None,
-) -> tuple[float, float]:
-    """Return (width_mm, height_mm) for a template format string.
-
-    Priority: named format table > custom width_mm/height_mm > default 40x30.
-    """
-    if fmt and fmt != "custom":
-        if fmt in _FORMAT_MM:
-            return _FORMAT_MM[fmt]
-        # Try parsing "WxHmm" dynamically
-        import re
-        m = re.match(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm$", fmt)
-        if m:
-            return (float(m.group(1)), float(m.group(2)))
-    if width_mm and height_mm:
-        return (float(width_mm), float(height_mm))
-    return _FORMAT_MM_DEFAULT
 
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
@@ -123,8 +87,9 @@ _SAMPLE_DATA = {
 _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
-from .service import BARCODE_HEIGHT_DEFAULT
+from .service import _SIZES, BARCODE_HEIGHT_DEFAULT, FIELD_NUMBERS, LABEL_NUMBERS, LabelNumberError, label_number, label_size, printable_template
 from .service import display_label as _svc_display_label
+from ui.components.encode import html_response, js_value, safe_url
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
 # defaults small and leaves the label's vertical space for actual content. A size set
@@ -136,8 +101,361 @@ BARCODE_TEXT_DEFAULT_PT = 6.0
 # preset text sizes; the user changes it in place.
 FIELD_DEFAULT_PT = 6
 
+# The editor script. Its script element's data-cfg attribute holds the sample data, the field
+# list, the key to render type map, the format sizes and the add-field option groups.
+_EDITOR_JS = """
+(function() {
+  var CFG = JSON.parse(document.currentScript.dataset.cfg);
+  var MAX_CANVAS_PX = 400;
+  var sampleData = CFG.sampleData;
+  var allFields = CFG.allFields;
+  var typeMap = CFG.typeMap;
+  var formatSizes = CFG.formatSizes;
+  var addFieldGroups = CFG.addFieldGroups;
+
+  function fieldType(key) { return typeMap[key] || 'text'; }
+
+  function getCanvasDims() {
+    var fmtEl = document.getElementById('fmt-sel');
+    var fmt = fmtEl ? fmtEl.value : '40x30mm';
+    var wMm, hMm;
+    if (fmt === 'custom') {
+      wMm = parseFloat((document.getElementById('custom-w') || {}).value) || 50;
+      hMm = parseFloat((document.getElementById('custom-h') || {}).value) || 30;
+    } else {
+      var s = formatSizes[fmt];
+      if (s) { wMm = s[0]; hMm = s[1]; } else {
+        var m = fmt.toLowerCase().replace('mm','').split('x');
+        wMm = parseFloat(m[0]) || 40; hMm = parseFloat(m[1]) || 30;
+      }
+    }
+    var scale = Math.min(MAX_CANVAS_PX / wMm, MAX_CANVAS_PX / hMm, 5);
+    return { wMm: wMm, hMm: hMm, scale: scale,
+              wPx: Math.round(wMm * scale), hPx: Math.round(hMm * scale) };
+  }
+
+  var fmtSel = document.getElementById('fmt-sel');
+  var customDims = document.getElementById('custom-dims');
+  if (fmtSel && customDims) {
+    fmtSel.addEventListener('change', function() {
+      customDims.style.display = this.value === 'custom' ? 'block' : 'none';
+      labelEditorUpdatePreview();
+    });
+  }
+
+  function reindexFields() {
+    var list = document.getElementById('field-list');
+    if (!list) return;
+    list.querySelectorAll('.field-row-compact').forEach(function(row, i) {
+      row.setAttribute('data-idx', i);
+      row.querySelectorAll('[name]').forEach(function(el) {
+        el.name = el.name.replace(/fields\\[(\\d+)\\]/, 'fields[' + i + ']');
+      });
+      // Update searchable-select data-name
+      var ss = row.querySelector('.searchable-select');
+      if (ss) ss.setAttribute('data-name', 'fields[' + i + '][key]');
+    });
+  }
+  window.reindexFields = reindexFields;
+
+  // ── Searchable select component ──────────────────────────────────────────
+  // initSearchableSelect(wrapperEl, groups)
+  // groups: [{label: str|null, options: [{k,v}]}]
+  function initSearchableSelect(wrapper, groups) {
+    if (!wrapper || wrapper._ssInit) return;
+    wrapper._ssInit = true;
+    var display = wrapper.querySelector('.searchable-select__display');
+    var dropdown = wrapper.querySelector('.searchable-select__dropdown');
+    var searchIn = wrapper.querySelector('.searchable-select__search');
+    var listEl = wrapper.querySelector('.searchable-select__list');
+    var hiddenIn = wrapper.querySelector('input[type=hidden]');
+    var currentVal = wrapper.getAttribute('data-value') || '';
+
+    function renderOptions(filter) {
+      listEl.replaceChildren();
+      var f = filter ? filter.toLowerCase() : '';
+      groups.forEach(function(grp) {
+        var visOpts = grp.options.filter(function(o) {
+          return !f || o.v.toLowerCase().includes(f) || o.k.toLowerCase().includes(f);
+        });
+        if (!visOpts.length) return;
+        if (grp.label) {
+          var gl = document.createElement('div');
+          gl.className = 'searchable-select__group-label';
+          gl.textContent = grp.label;
+          listEl.appendChild(gl);
+        }
+        visOpts.forEach(function(o) {
+          var opt = document.createElement('div');
+          opt.className = 'searchable-select__option';
+          opt.textContent = o.v;
+          opt.setAttribute('data-key', o.k);
+          if (o.k === currentVal) opt.setAttribute('aria-selected', 'true');
+          opt.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            selectOption(o.k, o.v);
+          });
+          listEl.appendChild(opt);
+        });
+      });
+    }
+
+    function selectOption(k, v) {
+      currentVal = k;
+      display.value = v || '';
+      if (hiddenIn) hiddenIn.value = k;
+      // Sync fld-type, fld-label, and the fld-fs / fld-bh control visibility in the parent row
+      var row = wrapper.closest('.field-row-compact');
+      if (row) {
+        var typeIn = row.querySelector('.fld-type');
+        var ft = fieldType(k);
+        if (typeIn) typeIn.value = ft;
+        var labelIn = row.querySelector('.fld-label');
+        // Default to the leaf of a 'Category \u203a Field' option, not the whole path.
+        if (labelIn && !labelIn._userEdited) labelIn.value = String(v || k).split('\u203a').pop().trim();
+        var fsIn = row.querySelector('.fld-fs');
+        if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
+        var bhIn = row.querySelector('.fld-bh');
+        if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
+        var boldIn = row.querySelector('.fld-bold-wrap');
+        if (boldIn) boldIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';
+      }
+      closeDropdown();
+      labelEditorUpdatePreview();
+    }
+
+    function openDropdown() {
+      renderOptions('');
+      dropdown.classList.add('open');
+      searchIn.value = '';
+      searchIn.focus();
+    }
+    function closeDropdown() {
+      dropdown.classList.remove('open');
+    }
+
+    display.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (dropdown.classList.contains('open')) { closeDropdown(); } else { openDropdown(); }
+    });
+    searchIn.addEventListener('input', function() {
+      renderOptions(this.value);
+    });
+    searchIn.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeDropdown();
+    });
+    document.addEventListener('click', function(e) {
+      if (!wrapper.contains(e.target)) closeDropdown();
+    }, true);
+
+    // Init display with current value label
+    if (currentVal) {
+      var found = null;
+      groups.forEach(function(grp) {
+        grp.options.forEach(function(o) { if (o.k === currentVal) found = o.v; });
+      });
+      display.value = found || currentVal;
+    }
+  }
+  window.initSearchableSelect = initSearchableSelect;
+
+  // Init all existing searchable-selects (options stored in data-options attribute)
+  document.querySelectorAll('.field-row-compact .searchable-select').forEach(function(w) {
+    var opts = w.getAttribute('data-options');
+    if (opts) {
+      try { initSearchableSelect(w, JSON.parse(opts)); } catch(e) {}
+    }
+  });
+
+  var addBtn = document.getElementById('add-field-btn');
+  if (addBtn) {
+    addBtn.addEventListener('click', function() {
+      var list = document.getElementById('field-list');
+      var idx = list.querySelectorAll('.field-row-compact').length;
+      // A copy of the server's empty row, so a new field starts from the same markup and defaults.
+      var row = document.getElementById('field-row-template').content.firstElementChild.cloneNode(true);
+      row.querySelector('.searchable-select').id = 'ss-' + idx;
+      list.appendChild(row);
+      reindexFields();
+      initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
+      labelEditorUpdatePreview();
+    });
+  }
+
+  // ── Drag to reposition ───────────────────────────────────────────────────
+  var _drag = null;
+  function setupBlockDrag(block, idx, scale) {
+    block.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      var canvas = document.getElementById('preview-canvas');
+      _drag = {
+        block: block, idx: idx, scale: scale,
+        startX: e.clientX, startY: e.clientY,
+        origLeft: parseInt(block.style.left) || 0,
+        origTop: parseInt(block.style.top) || 0,
+        canvasW: canvas ? canvas.offsetWidth : 400,
+        canvasH: canvas ? canvas.offsetHeight : 300,
+      };
+    });
+  }
+  document.addEventListener('mousemove', function(e) {
+    if (!_drag) return;
+    var dx = e.clientX - _drag.startX;
+    var dy = e.clientY - _drag.startY;
+    var canvas = document.getElementById('preview-canvas');
+    var maxLeft = (canvas ? canvas.offsetWidth : _drag.canvasW) - (_drag.block.offsetWidth || 30);
+    var maxTop = (canvas ? canvas.offsetHeight : _drag.canvasH) - (_drag.block.offsetHeight || 12);
+    _drag.block.style.left = Math.max(0, Math.min(_drag.origLeft + dx, maxLeft)) + 'px';
+    _drag.block.style.top = Math.max(0, Math.min(_drag.origTop + dy, maxTop)) + 'px';
+  });
+  document.addEventListener('mouseup', function() {
+    if (!_drag) return;
+    var xMm = (parseInt(_drag.block.style.left) || 0) / _drag.scale;
+    var yMm = (parseInt(_drag.block.style.top) || 0) / _drag.scale;
+    var list = document.getElementById('field-list');
+    if (list) {
+      var rows = list.querySelectorAll('.field-row-compact');
+      if (_drag.idx < rows.length) {
+        var row = rows[_drag.idx];
+        var xIn = row.querySelector('.fld-x');
+        var yIn = row.querySelector('.fld-y');
+        if (xIn) xIn.value = xMm.toFixed(2);
+        if (yIn) yIn.value = yMm.toFixed(2);
+      }
+    }
+    _drag = null;
+  });
+
+  // ── Preview renderer (uses server-generated barcode/QR SVGs) ─────────
+  // Fixed QR size: always 10mm. Barcode: natural width (from the SVG's
+  // intrinsic size, matching the print sheet), min 20mm, capped by label edge.
+  var QR_SIZE_MM = 10;
+  var BC_MIN_W_MM = 20;
+  var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
+
+  window.labelEditorUpdatePreview = function() {
+    var canvas = document.getElementById('preview-canvas');
+    if (!canvas) return;
+    var dims = getCanvasDims();
+    canvas.style.width = dims.wPx + 'px';
+    canvas.style.height = dims.hPx + 'px';
+    canvas.replaceChildren();
+    var list = document.getElementById('field-list');
+    if (!list) return;
+    var rows = list.querySelectorAll('.field-row-compact');
+    var autoY = 2;
+    rows.forEach(function(row, i) {
+      var hiddenKey = row.querySelector('.fld-key') || row.querySelector('[name*="[key]"]');
+      var typeIn = row.querySelector('.fld-type');
+      var labelIn = row.querySelector('.fld-label');
+      var xEl = row.querySelector('.fld-x');
+      var yEl = row.querySelector('.fld-y');
+      var fsEl = row.querySelector('.fld-fs');
+      var key = hiddenKey ? hiddenKey.value.trim() : '';
+      if (!key) return;
+      var ftype = typeIn ? typeIn.value : fieldType(key);
+      var fieldLabel = labelIn ? (labelIn.value || '').trim() : '';
+      var xMm = (xEl && xEl.value !== '') ? parseFloat(xEl.value) : null;
+      var yMm = (yEl && yEl.value !== '') ? parseFloat(yEl.value) : null;
+      var fs = (fsEl && fsEl.value !== '') ? parseFloat(fsEl.value) : 7;
+      var lineHMm = fs * 0.35 * 1.4;
+      var xPos, yPos;
+      if (xMm !== null && !isNaN(xMm) && yMm !== null && !isNaN(yMm)) {
+        xPos = xMm; yPos = yMm;
+      } else {
+        xPos = 2; yPos = autoY;
+        autoY += lineHMm + 1;
+      }
+
+      var sample = sampleData[key] || key;
+      var block = document.createElement('div');
+      block.style.left = (xPos * dims.scale) + 'px';
+      block.style.top = (yPos * dims.scale) + 'px';
+      var scaledFs = Math.max(6, fs * dims.scale * 0.35);
+      block.style.fontSize = scaledFs + 'px';
+
+      if (ftype === 'barcode') {
+        block.className = 'label-field-block label-field-block--barcode';
+        var bcMaxWMm = dims.wMm - xPos - 2;
+        var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, 30)) * dims.scale);
+        var bhEl = row.querySelector('.fld-bh');
+        var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
+        var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
+        block.style.width = bcWPx + 'px';
+        var img = document.createElement('img');
+        celerpSetUrl(img, 'src', '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal);
+        img.style.width = bcWPx + 'px';
+        img.style.height = bcHPx + 'px';
+        img.alt = 'barcode';
+        img.onload = function() {
+          // Match the print sheet: natural width (SVG intrinsic size, 96 CSS
+          // px per inch), squeezed only when the label edge is closer.
+          var naturalMm = img.naturalWidth * 25.4 / 96;
+          var wPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, naturalMm)) * dims.scale) + 'px';
+          img.style.width = wPx;
+          block.style.width = wPx;
+        };
+        block.appendChild(img);
+      } else if (ftype === 'barcode_text') {
+        block.className = 'label-field-block label-field-block--barcode-text';
+        block.style.fontFamily = 'monospace';
+        // Honor a chosen font size; keep the 11px default when none is set.
+        block.style.fontSize = (fsEl && fsEl.value !== '') ? (scaledFs + 'px') : '11px';
+        block.textContent = sample;
+      } else if (ftype === 'qr') {
+        block.className = 'label-field-block label-field-block--qr';
+        // QR is always exactly 10mm
+        var qrPx = Math.round(QR_SIZE_MM * dims.scale);
+        block.style.width = qrPx + 'px';
+        block.style.height = qrPx + 'px';
+        var img = document.createElement('img');
+        celerpSetUrl(img, 'src', '/api/labels/preview/qr?value=' + encodeURIComponent(sample));
+        img.alt = 'qr';
+        block.appendChild(img);
+      } else {
+        block.className = 'label-field-block';
+        // Show "label: value" for text fields so fields are distinguishable
+        block.textContent = fieldLabel ? (fieldLabel + ': ' + sample) : sample;
+      }
+
+      // Bold applies to text and the barcode number, and must show in the preview
+      // so what the designer shows is what the printer produces.
+      var boldEl = row.querySelector('.fld-bold');
+      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {
+        block.style.fontWeight = boldEl.checked ? '700' : '';
+      }
+
+      setupBlockDrag(block, i, dims.scale);
+      canvas.appendChild(block);
+    });
+  };
+
+  // Render preview after DOM is fully settled.
+  // On initial page load: immediate call is fine since DOM is complete.
+  // After HTMX outerHTML swap: the inline script runs during swap processing,
+  // but HTMX may clear/reset styles afterward. We listen for htmx:afterSettle
+  // which fires once the swap is fully committed.
+  if (typeof htmx !== 'undefined') {
+    // HTMX is loaded: might be a swap. Listen once for afterSettle.
+    var settled = false;
+    document.addEventListener('htmx:afterSettle', function onSettle() {
+      document.removeEventListener('htmx:afterSettle', onSettle);
+      settled = true;
+      labelEditorUpdatePreview();
+    });
+    // Fallback: if afterSettle doesn't fire within 200ms (full page load),
+    // render immediately.
+    setTimeout(function() {
+      if (!settled) labelEditorUpdatePreview();
+    }, 200);
+  } else {
+    // No HTMX: plain page load.
+    labelEditorUpdatePreview();
+  }
+})();
+"""
+
 _LABELS_CSS = """
-<style id="labels-css">
 /* -- Settings page: template list (left) + editor (right) -- */
 .label-settings-layout { display: flex; gap: 16px; align-items: flex-start; }
 .label-settings-layout > .settings-card:first-child { width: 200px; flex-shrink: 0; }
@@ -280,15 +598,14 @@ _LABELS_CSS = """
 }
 .btn--icon:hover { border-color: var(--c-red); color: var(--c-red); }
 .success-banner { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: var(--c-green); padding: 8px 12px; border-radius: var(--radius); margin-bottom: 10px; font-size: 12px; }
-</style>
 """
 
 
 def _ft():
     from fasthtml.common import (
-        A, Button, Div, Form, H2, H3, H4, Input, Label, Li,
-        NotStr, Option, P, Script, Select, Span, Strong,
-        Table, Tbody, Td, Th, Thead, Tr, Ul,
+        A, B, Button, Div, Form, H2, H3, H4, Input, Label, Li,
+        Option, P, Script, Select, Span, Strong, Style,
+        Table, Tbody, Td, Template, Th, Thead, Tr, Ul,
     )
     return locals()
 
@@ -384,70 +701,72 @@ def _field_row_compact(
     The field key determines the render type (barcode/qr/text) via _FIELD_TYPE_MAP.
     """
     ft = _ft()
-    Div, Button, NotStr = ft["Div"], ft["Button"], ft["NotStr"]
+    B, Button, Div, Input, Label = ft["B"], ft["Button"], ft["Div"], ft["Input"], ft["Label"]
 
     key = field.get("key", "")
     # Show the leaf of a "Category > Field" path so the editor matches what prints.
-    label_val = _svc_display_label(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
+    label_val = _svc_display_label(field.get("label", "") or key)
     ftype = field.get("type", "text")
-    x_val = field.get("x", "")
-    y_val = field.get("y", "")
-    font_size = field.get("fontSize", "")
-    barcode_height = field.get("barcode_height", "")
+    is_text = ftype in ("text", "barcode_text")
 
     # Build option groups as JSON for the searchable-select component
     options_js = _build_field_options_js(key, global_extra, category_attrs)
-    safe_key = key.replace('"', "&quot;")
-    ss_id = f"ss-{idx}"
 
     return Div(
-        NotStr(
-            f'<div id="{ss_id}" class="searchable-select"'
-            f' data-name="fields[{idx}][key]" data-value="{safe_key}"'
-            f' data-options=\'{options_js}\'>'
-            f'<input type="text" readonly class="form-input form-input--sm searchable-select__display"'
-            f' placeholder="-- select --">'
-            f'<div class="searchable-select__dropdown">'
-            f'<input type="text" class="searchable-select__search" placeholder="Search fields...">'
-            f'<div class="searchable-select__list"></div>'
-            f'</div>'
-            f'<input type="hidden" name="fields[{idx}][key]" value="{safe_key}" class="fld-key">'
-            f'</div>'
+        Div(
+            Input(type="text", readonly=True, cls="form-input form-input--sm searchable-select__display",
+                  placeholder=t("labels.field_select_placeholder")),
+            Div(
+                Input(type="text", cls="searchable-select__search", placeholder=t("import.js_search_placeholder")),
+                Div(cls="searchable-select__list"),
+                cls="searchable-select__dropdown",
+            ),
+            Input(type="hidden", name=f"fields[{idx}][key]", value=key, cls="fld-key"),
+            id=f"ss-{idx}", cls="searchable-select",
+            data_name=f"fields[{idx}][key]", data_value=key, data_options=options_js,
         ),
-        NotStr(
-            f'<input type="text" name="fields[{idx}][label]" value="{label_val}" class="form-input form-input--sm fld-label fld-label-input"'
-            f' placeholder="Display label" title="Label shown on preview" oninput="this._userEdited=true; labelEditorUpdatePreview()">'
-        ),
+        Input(type="text", name=f"fields[{idx}][label]", value=label_val,
+              cls="form-input form-input--sm fld-label fld-label-input",
+              placeholder=t("labels.display_label"), title=t("labels.display_label_hint"),
+              oninput="this._userEdited=true; labelEditorUpdatePreview()"),
         Button(t("btn.u00d7"),
             type="button",
             onclick="this.closest('.field-row-compact').remove(); labelEditorUpdatePreview()",
             cls="btn btn--icon btn--danger",
             title=t("labels.remove_field"),
         ),
-        NotStr(
-            f'<input type="hidden" name="fields[{idx}][type]" value="{ftype}" class="fld-type">'
-            f'<input type="hidden" name="fields[{idx}][x]" value="{x_val}" class="fld-x">'
-            f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
-            f'<input type="number" name="fields[{idx}][fontSize]" value="{font_size}" class="form-input form-input--sm fld-fs"'
-            f' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"'
-            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};width:60px;"'
-            f' oninput="labelEditorUpdatePreview()">'
-            f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
-            f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
-            f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
-            f' oninput="labelEditorUpdatePreview()">'
-            # Bold has always been stored on the field and honoured by the renderers;
-            # there was simply no way to set it. An unchecked box submits nothing,
-            # which is exactly what the parser expects.
-            f'<label class="fld-bold-wrap" title="Bold this field"'
-            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};">'
-            f'<input type="checkbox" name="fields[{idx}][bold]" value="true" class="fld-bold"'
-            f'{" checked" if field.get("bold") else ""}'
-            f' onchange="labelEditorUpdatePreview()"><b>B</b></label>'
+        Input(type="hidden", name=f"fields[{idx}][type]", value=ftype, cls="fld-type"),
+        Input(type="hidden", name=f"fields[{idx}][x]", value=field.get("x", ""), cls="fld-x"),
+        Input(type="hidden", name=f"fields[{idx}][y]", value=field.get("y", ""), cls="fld-y"),
+        Input(type="number", name=f"fields[{idx}][fontSize]", value=field.get("fontSize", ""),
+              cls="form-input form-input--sm fld-fs",
+              **_limits("fontSize"), placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
+              style="width:60px;" if is_text else "display:none;width:60px;",
+              oninput="labelEditorUpdatePreview()"),
+        Input(type="number", name=f"fields[{idx}][barcode_height]", value=field.get("barcode_height", ""),
+              cls="form-input form-input--sm fld-bh",
+              **_limits("barcode_height"), placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
+              style="width:60px;" if ftype == "barcode" else "display:none;width:60px;",
+              oninput="labelEditorUpdatePreview()"),
+        # Bold has always been stored on the field and honoured by the renderers;
+        # there was simply no way to set it. An unchecked box submits nothing,
+        # which is exactly what the parser expects.
+        Label(
+            Input(type="checkbox", name=f"fields[{idx}][bold]", value="true", cls="fld-bold",
+                  checked=bool(field.get("bold")), onchange="labelEditorUpdatePreview()"),
+            B("B"),
+            cls="fld-bold-wrap", title=t("labels.bold_hint"),
+            style=None if is_text else "display:none;",
         ),
         cls="field-row-compact",
         data_idx=str(idx),
     )
+
+
+def _limits(name: str) -> dict[str, str]:
+    """The min and max a number input of the label number ``name`` offers (LABEL_NUMBERS)."""
+    _, lo, hi = LABEL_NUMBERS[name]
+    return {"min": f"{lo:g}", "max": f"{hi:g}"}
 
 
 def _editor_panel(
@@ -461,11 +780,12 @@ def _editor_panel(
     category_attrs: (key, "Category > label") tuples from category-schemas.
     """
     ft = _ft()
-    Div, H3, H4, Form, Input, Label, Select, Option, Button, Script, NotStr, Span, P = (
+    Div, H3, H4, Form, Input, Label, Select, Option, Button, Script, Span, P = (
         ft["Div"], ft["H3"], ft["H4"], ft["Form"], ft["Input"], ft["Label"],
-        ft["Select"], ft["Option"], ft["Button"], ft["Script"], ft["NotStr"],
+        ft["Select"], ft["Option"], ft["Button"], ft["Script"],
         ft["Span"], ft["P"],
     )
+    Template = ft["Template"]
 
     tid = tpl["id"]
     raw_fields = tpl.get("fields") or []
@@ -486,21 +806,11 @@ def _editor_panel(
     h_mm = tpl.get("height_mm") or ""
 
     # Build unified field options for JS (key, label, render type) - used by add-field button
-    all_fields_js_parts = [f'{{k:"{k}",v:"{v}",t:"{rtype}"}}' for k, v, rtype in _COMMON_FIELDS]
-    if global_extra:
-        for fk, fl in global_extra:
-            safe_k = fk.replace('"', '\\"')
-            safe_v = fl.replace('"', '\\"')
-            all_fields_js_parts.append(f'{{k:"{safe_k}",v:"{safe_v}",t:"text"}}')
-    if category_attrs:
-        for fk, fl in category_attrs:
-            safe_k = fk.replace('"', '\\"')
-            safe_v = fl.replace('"', '\\"')
-            all_fields_js_parts.append(f'{{k:"{safe_k}",v:"{safe_v}",t:"text"}}')
-    all_fields_js = "[" + ",".join(all_fields_js_parts) + "]"
+    extra = (global_extra or []) + (category_attrs or [])
+    all_fields = [{"k": k, "v": v, "t": rtype} for k, v, rtype in _COMMON_FIELDS]
+    all_fields += [{"k": k, "v": v, "t": "text"} for k, v in extra]
 
-    # Option groups JSON for add-field searchable-select
-    import json as _json
+    # Option groups for add-field searchable-select
     add_field_groups: list[dict] = [
         {"label": None, "options": [{"k": k, "v": v} for k, v, _ in _COMMON_FIELDS]},
     ]
@@ -508,391 +818,16 @@ def _editor_panel(
         add_field_groups.append({"label": "Attributes", "options": [{"k": k, "v": v} for k, v in global_extra]})
     if category_attrs:
         add_field_groups.append({"label": "Category Attributes", "options": [{"k": k, "v": v} for k, v in category_attrs]})
-    add_field_groups_js = _json.dumps(add_field_groups)
 
     # Type map: key -> render type (barcode/qr/text)
-    type_map_js_parts = [f'"{k}":"{t}"' for k, _v, t in _COMMON_FIELDS]
-    type_map_js = "{" + ",".join(type_map_js_parts) + "}"
+    type_map = {k: rtype for k, _v, rtype in _COMMON_FIELDS}
+    format_sizes = {name: list(mm) for name, mm in _SIZES.items()}
 
-    sample_data_js = "{" + ", ".join(f'"{k}":"{v}"' for k, v in _SAMPLE_DATA.items()) + "}"
-    format_sizes_js = "{'24x24mm':[24,24],'29x29mm':[29,29],'34x34mm':[34,34],'40x30mm':[40,30],'62x29mm':[62,29],'100x50mm':[100,50],'A4':[210,297],'A5':[148,210],'letter':[216,279]}"
-
-    init_js = NotStr(f"""
-<script>
-(function() {{
-  var MAX_CANVAS_PX = 400;
-  var sampleData = {sample_data_js};
-  var allFields = {all_fields_js};
-  var typeMap = {type_map_js};
-  var formatSizes = {format_sizes_js};
-  var addFieldGroups = {add_field_groups_js};
-
-  function fieldType(key) {{ return typeMap[key] || 'text'; }}
-
-  function getCanvasDims() {{
-    var fmtEl = document.getElementById('fmt-sel');
-    var fmt = fmtEl ? fmtEl.value : '40x30mm';
-    var wMm, hMm;
-    if (fmt === 'custom') {{
-      wMm = parseFloat((document.getElementById('custom-w') || {{}}).value) || 50;
-      hMm = parseFloat((document.getElementById('custom-h') || {{}}).value) || 30;
-    }} else {{
-      var s = formatSizes[fmt];
-      if (s) {{ wMm = s[0]; hMm = s[1]; }} else {{
-        var m = fmt.toLowerCase().replace('mm','').split('x');
-        wMm = parseFloat(m[0]) || 40; hMm = parseFloat(m[1]) || 30;
-      }}
-    }}
-    var scale = Math.min(MAX_CANVAS_PX / wMm, MAX_CANVAS_PX / hMm, 5);
-    return {{ wMm: wMm, hMm: hMm, scale: scale,
-              wPx: Math.round(wMm * scale), hPx: Math.round(hMm * scale) }};
-  }}
-
-  var fmtSel = document.getElementById('fmt-sel');
-  var customDims = document.getElementById('custom-dims');
-  if (fmtSel && customDims) {{
-    fmtSel.addEventListener('change', function() {{
-      customDims.style.display = this.value === 'custom' ? 'block' : 'none';
-      labelEditorUpdatePreview();
-    }});
-  }}
-
-  function reindexFields() {{
-    var list = document.getElementById('field-list');
-    if (!list) return;
-    list.querySelectorAll('.field-row-compact').forEach(function(row, i) {{
-      row.setAttribute('data-idx', i);
-      row.querySelectorAll('[name]').forEach(function(el) {{
-        el.name = el.name.replace(/fields\\[(\\d+)\\]/, 'fields[' + i + ']');
-      }});
-      // Update searchable-select data-name
-      var ss = row.querySelector('.searchable-select');
-      if (ss) ss.setAttribute('data-name', 'fields[' + i + '][key]');
-    }});
-  }}
-  window.reindexFields = reindexFields;
-
-  // ── Searchable select component ──────────────────────────────────────────
-  // initSearchableSelect(wrapperEl, groups)
-  // groups: [{{label: str|null, options: [{{k,v}}]}}]
-  function initSearchableSelect(wrapper, groups) {{
-    if (!wrapper || wrapper._ssInit) return;
-    wrapper._ssInit = true;
-    var display = wrapper.querySelector('.searchable-select__display');
-    var dropdown = wrapper.querySelector('.searchable-select__dropdown');
-    var searchIn = wrapper.querySelector('.searchable-select__search');
-    var listEl = wrapper.querySelector('.searchable-select__list');
-    var hiddenIn = wrapper.querySelector('input[type=hidden]');
-    var currentVal = wrapper.getAttribute('data-value') || '';
-
-    function renderOptions(filter) {{
-      listEl.innerHTML = '';
-      var f = filter ? filter.toLowerCase() : '';
-      groups.forEach(function(grp) {{
-        var visOpts = grp.options.filter(function(o) {{
-          return !f || o.v.toLowerCase().includes(f) || o.k.toLowerCase().includes(f);
-        }});
-        if (!visOpts.length) return;
-        if (grp.label) {{
-          var gl = document.createElement('div');
-          gl.className = 'searchable-select__group-label';
-          gl.textContent = grp.label;
-          listEl.appendChild(gl);
-        }}
-        visOpts.forEach(function(o) {{
-          var opt = document.createElement('div');
-          opt.className = 'searchable-select__option';
-          opt.textContent = o.v;
-          opt.setAttribute('data-key', o.k);
-          if (o.k === currentVal) opt.setAttribute('aria-selected', 'true');
-          opt.addEventListener('mousedown', function(e) {{
-            e.preventDefault();
-            selectOption(o.k, o.v);
-          }});
-          listEl.appendChild(opt);
-        }});
-      }});
-    }}
-
-    function selectOption(k, v) {{
-      currentVal = k;
-      display.value = v || '';
-      if (hiddenIn) hiddenIn.value = k;
-      // Sync fld-type, fld-label, and the fld-fs / fld-bh control visibility in the parent row
-      var row = wrapper.closest('.field-row-compact');
-      if (row) {{
-        var typeIn = row.querySelector('.fld-type');
-        var ft = fieldType(k);
-        if (typeIn) typeIn.value = ft;
-        var labelIn = row.querySelector('.fld-label');
-        // Default to the leaf of a 'Category \u203a Field' option, not the whole path.
-        if (labelIn && !labelIn._userEdited) labelIn.value = String(v || k).split('\u203a').pop().trim();
-        var fsIn = row.querySelector('.fld-fs');
-        if (fsIn) fsIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';  // font size: text + barcode number
-        var bhIn = row.querySelector('.fld-bh');
-        if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
-        var boldIn = row.querySelector('.fld-bold-wrap');
-        if (boldIn) boldIn.style.display = (ft === 'text' || ft === 'barcode_text') ? '' : 'none';
-      }}
-      closeDropdown();
-      labelEditorUpdatePreview();
-    }}
-
-    function openDropdown() {{
-      renderOptions('');
-      dropdown.classList.add('open');
-      searchIn.value = '';
-      searchIn.focus();
-    }}
-    function closeDropdown() {{
-      dropdown.classList.remove('open');
-    }}
-
-    display.addEventListener('click', function(e) {{
-      e.stopPropagation();
-      if (dropdown.classList.contains('open')) {{ closeDropdown(); }} else {{ openDropdown(); }}
-    }});
-    searchIn.addEventListener('input', function() {{
-      renderOptions(this.value);
-    }});
-    searchIn.addEventListener('keydown', function(e) {{
-      if (e.key === 'Escape') closeDropdown();
-    }});
-    document.addEventListener('click', function(e) {{
-      if (!wrapper.contains(e.target)) closeDropdown();
-    }}, true);
-
-    // Init display with current value label
-    if (currentVal) {{
-      var found = null;
-      groups.forEach(function(grp) {{
-        grp.options.forEach(function(o) {{ if (o.k === currentVal) found = o.v; }});
-      }});
-      display.value = found || currentVal;
-    }}
-  }}
-  window.initSearchableSelect = initSearchableSelect;
-
-  // Init all existing searchable-selects (options stored in data-options attribute)
-  document.querySelectorAll('.field-row-compact .searchable-select').forEach(function(w) {{
-    var opts = w.getAttribute('data-options');
-    if (opts) {{
-      try {{ initSearchableSelect(w, JSON.parse(opts)); }} catch(e) {{}}
-    }}
-  }});
-
-  var addBtn = document.getElementById('add-field-btn');
-  if (addBtn) {{
-    addBtn.addEventListener('click', function() {{
-      var list = document.getElementById('field-list');
-      var idx = list.querySelectorAll('.field-row-compact').length;
-      var row = document.createElement('div');
-      row.className = 'field-row-compact';
-      row.setAttribute('data-idx', idx);
-      row.innerHTML =
-        '<div class="searchable-select" data-name="fields[' + idx + '][key]" data-value="">' +
-        '<input type="text" readonly class="form-input form-input--sm searchable-select__display" placeholder="-- select --">' +
-        '<div class="searchable-select__dropdown">' +
-        '<input type="text" class="searchable-select__search" placeholder="Search fields...">' +
-        '<div class="searchable-select__list"></div>' +
-        '</div>' +
-        '<input type="hidden" name="fields[' + idx + '][key]" value="" class="fld-key">' +
-        '</div>' +
-        '<input type="text" name="fields[' + idx + '][label]" value="" class="form-input form-input--sm fld-label fld-label-input"' +
-        ' placeholder="Display label" title="Label shown on preview" oninput="this._userEdited=true; labelEditorUpdatePreview()">' +
-        '<button type="button" class="btn btn--icon btn--danger" title="Remove field"' +
-        ' onclick="this.closest(\\'.field-row-compact\\').remove(); reindexFields(); labelEditorUpdatePreview()">×</button>' +
-        '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
-        '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
-        '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="number" name="fields[' + idx + '][fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' +
-        ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
-        ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<input type="number" name="fields[' + idx + '][barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' +
-        ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
-        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<label class="fld-bold-wrap" title="Bold this field">' +
-        '<input type="checkbox" name="fields[' + idx + '][bold]" value="true" class="fld-bold"' +
-        ' onchange="labelEditorUpdatePreview()"><b>B</b></label>';
-      list.appendChild(row);
-      initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
-      labelEditorUpdatePreview();
-    }});
-  }}
-
-  // ── Drag to reposition ───────────────────────────────────────────────────
-  var _drag = null;
-  function setupBlockDrag(block, idx, scale) {{
-    block.addEventListener('mousedown', function(e) {{
-      e.preventDefault();
-      var canvas = document.getElementById('preview-canvas');
-      _drag = {{
-        block: block, idx: idx, scale: scale,
-        startX: e.clientX, startY: e.clientY,
-        origLeft: parseInt(block.style.left) || 0,
-        origTop: parseInt(block.style.top) || 0,
-        canvasW: canvas ? canvas.offsetWidth : 400,
-        canvasH: canvas ? canvas.offsetHeight : 300,
-      }};
-    }});
-  }}
-  document.addEventListener('mousemove', function(e) {{
-    if (!_drag) return;
-    var dx = e.clientX - _drag.startX;
-    var dy = e.clientY - _drag.startY;
-    var canvas = document.getElementById('preview-canvas');
-    var maxLeft = (canvas ? canvas.offsetWidth : _drag.canvasW) - (_drag.block.offsetWidth || 30);
-    var maxTop = (canvas ? canvas.offsetHeight : _drag.canvasH) - (_drag.block.offsetHeight || 12);
-    _drag.block.style.left = Math.max(0, Math.min(_drag.origLeft + dx, maxLeft)) + 'px';
-    _drag.block.style.top = Math.max(0, Math.min(_drag.origTop + dy, maxTop)) + 'px';
-  }});
-  document.addEventListener('mouseup', function() {{
-    if (!_drag) return;
-    var xMm = (parseInt(_drag.block.style.left) || 0) / _drag.scale;
-    var yMm = (parseInt(_drag.block.style.top) || 0) / _drag.scale;
-    var list = document.getElementById('field-list');
-    if (list) {{
-      var rows = list.querySelectorAll('.field-row-compact');
-      if (_drag.idx < rows.length) {{
-        var row = rows[_drag.idx];
-        var xIn = row.querySelector('.fld-x');
-        var yIn = row.querySelector('.fld-y');
-        if (xIn) xIn.value = xMm.toFixed(2);
-        if (yIn) yIn.value = yMm.toFixed(2);
-      }}
-    }}
-    _drag = null;
-  }});
-
-  // ── Preview renderer (uses server-generated barcode/QR SVGs) ─────────
-  // Fixed QR size: always 10mm. Barcode: natural width (from the SVG's
-  // intrinsic size, matching the print sheet), min 20mm, capped by label edge.
-  var QR_SIZE_MM = 10;
-  var BC_MIN_W_MM = 20;
-  var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
-
-  window.labelEditorUpdatePreview = function() {{
-    var canvas = document.getElementById('preview-canvas');
-    if (!canvas) return;
-    var dims = getCanvasDims();
-    canvas.style.width = dims.wPx + 'px';
-    canvas.style.height = dims.hPx + 'px';
-    canvas.innerHTML = '';
-    var list = document.getElementById('field-list');
-    if (!list) return;
-    var rows = list.querySelectorAll('.field-row-compact');
-    var autoY = 2;
-    rows.forEach(function(row, i) {{
-      var hiddenKey = row.querySelector('.fld-key') || row.querySelector('[name*="[key]"]');
-      var typeIn = row.querySelector('.fld-type');
-      var labelIn = row.querySelector('.fld-label');
-      var xEl = row.querySelector('.fld-x');
-      var yEl = row.querySelector('.fld-y');
-      var fsEl = row.querySelector('.fld-fs');
-      var key = hiddenKey ? hiddenKey.value.trim() : '';
-      if (!key) return;
-      var ftype = typeIn ? typeIn.value : fieldType(key);
-      var fieldLabel = labelIn ? (labelIn.value || '').trim() : '';
-      var xMm = (xEl && xEl.value !== '') ? parseFloat(xEl.value) : null;
-      var yMm = (yEl && yEl.value !== '') ? parseFloat(yEl.value) : null;
-      var fs = (fsEl && fsEl.value !== '') ? parseFloat(fsEl.value) : 7;
-      var lineHMm = fs * 0.35 * 1.4;
-      var xPos, yPos;
-      if (xMm !== null && !isNaN(xMm) && yMm !== null && !isNaN(yMm)) {{
-        xPos = xMm; yPos = yMm;
-      }} else {{
-        xPos = 2; yPos = autoY;
-        autoY += lineHMm + 1;
-      }}
-
-      var sample = sampleData[key] || key;
-      var block = document.createElement('div');
-      block.style.left = (xPos * dims.scale) + 'px';
-      block.style.top = (yPos * dims.scale) + 'px';
-      var scaledFs = Math.max(6, fs * dims.scale * 0.35);
-      block.style.fontSize = scaledFs + 'px';
-
-      if (ftype === 'barcode') {{
-        block.className = 'label-field-block label-field-block--barcode';
-        var bcMaxWMm = dims.wMm - xPos - 2;
-        var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, 30)) * dims.scale);
-        var bhEl = row.querySelector('.fld-bh');
-        var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
-        var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
-        block.style.width = bcWPx + 'px';
-        var img = document.createElement('img');
-        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal;
-        img.style.width = bcWPx + 'px';
-        img.style.height = bcHPx + 'px';
-        img.alt = 'barcode';
-        img.onload = function() {{
-          // Match the print sheet: natural width (SVG intrinsic size, 96 CSS
-          // px per inch), squeezed only when the label edge is closer.
-          var naturalMm = img.naturalWidth * 25.4 / 96;
-          var wPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(bcMaxWMm, naturalMm)) * dims.scale) + 'px';
-          img.style.width = wPx;
-          block.style.width = wPx;
-        }};
-        block.appendChild(img);
-      }} else if (ftype === 'barcode_text') {{
-        block.className = 'label-field-block label-field-block--barcode-text';
-        block.style.fontFamily = 'monospace';
-        // Honor a chosen font size; keep the 11px default when none is set.
-        block.style.fontSize = (fsEl && fsEl.value !== '') ? (scaledFs + 'px') : '11px';
-        block.textContent = sample;
-      }} else if (ftype === 'qr') {{
-        block.className = 'label-field-block label-field-block--qr';
-        // QR is always exactly 10mm
-        var qrPx = Math.round(QR_SIZE_MM * dims.scale);
-        block.style.width = qrPx + 'px';
-        block.style.height = qrPx + 'px';
-        var img = document.createElement('img');
-        img.src = '/api/labels/preview/qr?value=' + encodeURIComponent(sample);
-        img.alt = 'qr';
-        block.appendChild(img);
-      }} else {{
-        block.className = 'label-field-block';
-        // Show "label: value" for text fields so fields are distinguishable
-        block.textContent = fieldLabel ? (fieldLabel + ': ' + sample) : sample;
-      }}
-
-      // Bold applies to text and the barcode number, and must show in the preview
-      // so what the designer shows is what the printer produces.
-      var boldEl = row.querySelector('.fld-bold');
-      if (boldEl && (ftype === 'text' || ftype === 'barcode_text')) {{
-        block.style.fontWeight = boldEl.checked ? '700' : '';
-      }}
-
-      setupBlockDrag(block, i, dims.scale);
-      canvas.appendChild(block);
-    }});
-  }};
-
-  // Render preview after DOM is fully settled.
-  // On initial page load: immediate call is fine since DOM is complete.
-  // After HTMX outerHTML swap: the inline script runs during swap processing,
-  // but HTMX may clear/reset styles afterward. We listen for htmx:afterSettle
-  // which fires once the swap is fully committed.
-  if (typeof htmx !== 'undefined') {{
-    // HTMX is loaded: might be a swap. Listen once for afterSettle.
-    var settled = false;
-    document.addEventListener('htmx:afterSettle', function onSettle() {{
-      document.removeEventListener('htmx:afterSettle', onSettle);
-      settled = true;
-      labelEditorUpdatePreview();
-    }});
-    // Fallback: if afterSettle doesn't fire within 200ms (full page load),
-    // render immediately.
-    setTimeout(function() {{
-      if (!settled) labelEditorUpdatePreview();
-    }}, 200);
-  }} else {{
-    // No HTMX: plain page load.
-    labelEditorUpdatePreview();
-  }}
-}})();
-</script>
-""")
+    init_js = Script(_EDITOR_JS, data_cfg=js_value({
+        "sampleData": dict(_SAMPLE_DATA), "allFields": all_fields, "typeMap": type_map,
+        "formatSizes": format_sizes, "addFieldGroups": add_field_groups}))
+    new_row = _field_row_compact(0, {"key": "", "label": "", "type": "text", "fontSize": FIELD_DEFAULT_PT,
+                                     "barcode_height": BARCODE_HEIGHT_DEFAULT}, global_extra, category_attrs)
 
     return Div(
         H3(t("labels.edit_name", name=tpl['name']), cls="section-title"),
@@ -915,7 +850,7 @@ def _editor_panel(
             Div(
                 Div(
                     Label(t("label.width_mm")),
-                    Input(name="width_mm", type="number", step="0.5", min="5",
+                    Input(name="width_mm", type="number", step="0.5", **_limits("width_mm"),
                           id="custom-w", value=str(w_mm) if w_mm else "",
                           placeholder=t("labels.width_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -923,7 +858,7 @@ def _editor_panel(
                 ),
                 Div(
                     Label(t("label.height_mm")),
-                    Input(name="height_mm", type="number", step="0.5", min="5",
+                    Input(name="height_mm", type="number", step="0.5", **_limits("height_mm"),
                           id="custom-h", value=str(h_mm) if h_mm else "",
                           placeholder=t("labels.height_example"), cls="form-input form-input--sm",
                           oninput="labelEditorUpdatePreview()"),
@@ -943,6 +878,7 @@ def _editor_panel(
                 Div(
                     H4(t("page.fields")),
                     Div(*field_rows, id="field-list", cls="field-list"),
+                    Template(new_row, id="field-row-template"),
                     Button(t("btn._add_field"), type="button", id="add-field-btn",
                            cls="btn btn--sm btn--outline"),
                     cls="label-fields-panel",
@@ -980,11 +916,11 @@ def _label_settings_root(
     flash_kind: str = "success",
 ) -> object:
     ft = _ft()
-    Div, Script, NotStr = ft["Div"], ft["Script"], ft["NotStr"]
+    Div, Style = ft["Div"], ft["Style"]
     from ui.components.table import breadcrumbs
     crumbs = breadcrumbs([("Inventory", "/inventory"), ("\u2699\ufe0f Inventory Settings", "/settings/inventory"), ("Labels", None)])
     return Div(
-        NotStr(_LABELS_CSS),
+        Style(_LABELS_CSS, id="labels-css"),
         crumbs,
         _flash(flash, flash_kind) if flash else Div(),
         Div(
@@ -1055,34 +991,53 @@ async def _fetch_unit_map(api_base: str, token: str) -> dict[str, dict]:
     return build_unit_map(DEFAULT_UNITS)
 
 
+_PRINT_SHEET_CSS = """
+body { font-family: sans-serif; margin: 0; padding: 1rem; background: #fff; min-height: 0; }
+.label-sheet { display: flex; flex-wrap: wrap; gap: 0; }
+.label-item {
+  position: relative;
+  border: 1px solid #999;
+  font-size: 11px;
+  break-inside: avoid;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.label-field { position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }
+.label-field--barcode svg, .label-field--qr svg { display: block; }
+.bc-human { font-family: monospace; font-size: 9px; display: block; text-align: center; }
+.no-print { display: flex; gap: 8px; margin-bottom: 1rem; }
+@media print {
+  .no-print { display: none; }
+  body { padding: 0; margin: 0; }
+  .label-sheet { gap: 0; padding: 0; }
+}
+"""
+
+
 def _printable_label_sheet(
     items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None, back_url: str = "/inventory"
 ) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print(); Back returns to
     ``back_url``, an in-app path."""
-    from html import escape as html_escape
+    from fasthtml.common import Div, P, Script, Span
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
     unit_map = unit_map or build_unit_map(DEFAULT_UNITS)
-    if not template:
-        fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _FORMAT_MM_DEFAULT
-    else:
-        fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
-        w_mm, h_mm = _format_to_mm(
-            template.get("format"),
-            template.get("width_mm"),
-            template.get("height_mm"),
-        )
+    try:
+        template = printable_template(template or {})
+        w_mm, h_mm = label_size(template)
+    except LabelNumberError as e:
+        return _print_page(back_url, P(t("labels.cannot_print", reason=e.text), cls="flash flash--error"),
+                           status_code=422)
+    fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
 
-    from starlette.responses import HTMLResponse
     from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
                                        display_label, resolve_field_value)
 
-    def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float) -> str:
+    def _barcode_tag(val: str, module_height: int, left_mm: float, top_mm: float, avail_mm: float):
         res = _make_barcode_svg(val, module_height=module_height, stretch=True)
-        safe_val = html_escape(str(val), quote=True)
         if res:
             svg, natural_mm, _ = res
             # Natural width keeps every bar a whole multiple of the 0.2mm module;
@@ -1090,20 +1045,17 @@ def _printable_label_sheet(
             # the editor preview (BC_MIN_W_MM).
             bc_w = min(avail_mm, max(20.0, natural_mm))
             h_px = max(4, int(module_height) * 4)
-            return (
-                f'<div class="label-field label-field--barcode" data-value="{safe_val}"'
-                f' style="{wrap_style}width:{bc_w:.2f}mm;height:{h_px}px;">{svg}</div>'
-            )
-        return f'<div class="label-field label-field--barcode" style="{wrap_style}">{safe_val}</div>'
+            return Div(svg, cls="label-field label-field--barcode", data_value=str(val),
+                       style=f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;width:{bc_w:.2f}mm;height:{h_px}px;")
+        return Div(str(val), cls="label-field label-field--barcode", style=f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;")
 
-    def _qr_tag(val: str, wrap_style: str = "") -> str:
+    def _qr_tag(val: str, left_mm: float, top_mm: float):
         svg = _make_qr_svg(val, stretch=True)
-        safe_val = html_escape(str(val), quote=True)
         # QR is a fixed 10mm square in the editor preview; match it here.
-        qr_style = f"{wrap_style}width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
+        qr_style = f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
         if svg:
-            return f'<div class="label-field label-field--qr" data-value="{safe_val}" style="{qr_style}">{svg}</div>'
-        return f'<div class="label-field label-field--qr" style="{qr_style}">{safe_val}</div>'
+            return Div(svg, cls="label-field label-field--qr", data_value=str(val), style=qr_style)
+        return Div(str(val), cls="label-field label-field--qr", style=qr_style)
 
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
@@ -1145,10 +1097,10 @@ def _printable_label_sheet(
             else:
                 left_mm, top_mm = 2.0, auto_y
                 auto_y += _auto_step(ftype, f.get("fontSize"))
-            pos = f"left:{left_mm}mm;top:{top_mm}mm;"
+            pos = f"left:{float(left_mm)}mm;top:{float(top_mm)}mm;"
             if ftype == "barcode":
                 bc_height = int(f.get("barcode_height") or BARCODE_HEIGHT_DEFAULT)
-                field_lines.append(_barcode_tag(val, bc_height, pos, avail_mm=w_mm - left_mm - 2.0))
+                field_lines.append(_barcode_tag(val, bc_height, left_mm, top_mm, avail_mm=w_mm - left_mm - 2.0))
             elif ftype == "barcode_text":
                 fs = f.get("fontSize")
                 # The human-readable number is a caption, not body copy: it exists so a
@@ -1157,10 +1109,10 @@ def _printable_label_sheet(
                 # space the label needs for actual content. Default small; an explicit
                 # per-field size still wins.
                 fs_pt = float(fs) if fs not in (None, "") else BARCODE_TEXT_DEFAULT_PT
-                span_style = f' style="font-size:{fs_pt}pt;"'
-                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{html_escape(str(val))}</span></div>')
+                field_lines.append(Div(Span(str(val), cls="bc-human", style=f"font-size:{fs_pt}pt;"),
+                                       cls="label-field label-field--barcode-text", style=pos))
             elif ftype == "qr":
-                field_lines.append(_qr_tag(val, wrap_style=pos))
+                field_lines.append(_qr_tag(val, left_mm, top_mm))
             else:
                 # Honor the designer's per-field font size (points) when set; otherwise the
                 # label-item default applies, so existing labels look exactly as before.
@@ -1171,51 +1123,37 @@ def _printable_label_sheet(
                 # still printed regular. Emit it here too.
                 bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(
-                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{html_escape(str(display))}</div>')
-        label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
+                field_lines.append(Div(str(display), cls="label-field", style=pos + fs_style + bold_style))
+        label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {float(w_mm)}mm; height: {float(h_mm)}mm;"))
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Print Labels</title>
-<link rel="stylesheet" href="/static/app.css">
-<style>
-body {{ font-family: sans-serif; margin: 0; padding: 1rem; background: #fff; min-height: 0; }}
-.label-sheet {{ display: flex; flex-wrap: wrap; gap: 0; }}
-.label-item {{
-  position: relative;
-  border: 1px solid #999;
-  font-size: 11px;
-  break-inside: avoid;
-  width: {w_mm}mm;
-  height: {h_mm}mm;
-  box-sizing: border-box;
-  overflow: hidden;
-  flex-shrink: 0;
-}}
-.label-field {{ position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }}
-.label-field--barcode svg, .label-field--qr svg {{ display: block; }}
-.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
-.no-print {{ display: flex; gap: 8px; margin-bottom: 1rem; }}
-@media print {{
-  .no-print {{ display: none; }}
-  body {{ padding: 0; margin: 0; }}
-  .label-sheet {{ gap: 0; padding: 0; }}
-}}
-</style>
-</head>
-<body>
-<div class="no-print">
-  <button type="button" class="btn btn--primary" onclick="window.print()">{html_escape(t("btn.print"))}</button>
-  <a href="{html_escape(back_url)}" class="btn btn--secondary">{html_escape(t("label.back"))}</a>
-</div>
-<div class="label-sheet">{"".join(label_rows)}</div>
-<script>window.onload = function() {{ window.print(); }};</script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
+    return _print_page(back_url, Div(*label_rows, cls="label-sheet"),
+                       Script("window.onload = function() { window.print(); };"),
+                       print_button=True)
+
+
+def _print_page(back_url: str, *content, print_button: bool = False, status_code: int = 200):
+    """The minimal print page: Print (when there is a sheet) and Back to ``back_url``, an
+    in-app path, above ``content``."""
+    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Style, Title
+
+    page = Html(
+        Head(
+            Meta(charset="utf-8"),
+            Title(t("labels.print_labels")),
+            Link(rel="stylesheet", href="/static/app.css"),
+            Style(_PRINT_SHEET_CSS),
+        ),
+        Body(
+            Div(
+                *([Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()")]
+                  if print_button else []),
+                A(t("label.back"), href=safe_url(back_url), cls="btn btn--secondary"),
+                cls="no-print",
+            ),
+            *content,
+        ),
+    )
+    return html_response(page, status_code=status_code)
 
 
 def setup_ui_routes(app) -> None:
@@ -1341,7 +1279,10 @@ def setup_ui_routes(app) -> None:
     async def barcode_preview(request: Request):
         from celerp_labels.service import _make_barcode_svg
         value = request.query_params.get("value", "0000000")
-        height = int(request.query_params.get("height", "8"))
+        try:
+            height = int(label_number("barcode_height", request.query_params.get("height", BARCODE_HEIGHT_DEFAULT)))
+        except LabelNumberError as e:
+            return StarletteResponse(content=e.text, status_code=422, media_type="text/plain")
         res = _make_barcode_svg(value, module_height=height)
         if res:
             return StarletteResponse(content=res[0], media_type="image/svg+xml",
@@ -1463,8 +1404,8 @@ def setup_ui_routes(app) -> None:
         name = (form.get("name") or "").strip() or "Untitled"
         fmt = form.get("format") or "40x30mm"
 
-        width_mm = _parse_float(form.get("width_mm"))
-        height_mm = _parse_float(form.get("height_mm"))
+        width_mm = str(form.get("width_mm") or "").strip() or None
+        height_mm = str(form.get("height_mm") or "").strip() or None
         fields = _extract_fields_from_form(form)
 
         payload: dict = {"name": name, "format": fmt, "fields": fields}
@@ -1490,13 +1431,12 @@ def setup_ui_routes(app) -> None:
             error = str(exc)
 
         # Nothing was saved: the editor keeps what was typed and says why.
-        from fasthtml.common import to_xml
         from ui.components.shell import toast_header
         panel = _editor_panel({
             "id": tmpl_id, "name": name, "format": fmt,
             "fields": fields, "width_mm": width_mm, "height_mm": height_mm,
         })
-        return HTMLResponse(to_xml(panel), headers=toast_header(t("labels.could_not_save", error=error), "error"))
+        return html_response(panel, headers=toast_header(t("labels.could_not_save", error=error), "error"))
 
     @app.get("/labels/print/{entity_id}")
     async def labels_print_single(request: Request, entity_id: str):
@@ -1587,19 +1527,14 @@ def setup_ui_routes(app) -> None:
     async def labels_template_options(request: Request):
         """Return <option> elements for label templates (HTMX fragment for bulk toolbar select)."""
         templates = await _fetch_templates(request)
-        from fasthtml.common import Option, NotStr
+        from fasthtml.common import Option
         if not templates:
-            return NotStr('<option value="" disabled selected>No templates - create one in Settings</option>')
-        opts = "".join(
-            f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
-            for tpl in templates
-        )
+            return Option(t("label.no_templates_found_create_one_in_settings_labels"), value="", disabled=True, selected=True)
         # Pre-select first template
-        first_id = templates[0]["id"]
-        first_name = templates[0]["name"]
-        return NotStr(f'<option value="{first_id}" selected>{first_name}</option>' +
-                      "".join(f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
-                               for tpl in templates[1:]))
+        return tuple(
+            Option(tpl["name"], value=tpl["id"], selected=(i == 0))
+            for i, tpl in enumerate(templates)
+        )
 
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
@@ -1740,7 +1675,7 @@ def setup_ui_routes(app) -> None:
     async def _source_page(request: Request, back: str, *content):
         from fasthtml.common import A
 
-        return await base_shell(*content, A(t("label.back"), href=back, cls="btn btn--secondary"),
+        return await base_shell(*content, A(t("label.back"), href=safe_url(back), cls="btn btn--secondary"),
                                 title="Labels - Celerp", nav_active="labels", request=request)
 
     async def _source_error(request: Request, back: str, e):
@@ -1771,15 +1706,6 @@ def setup_ui_routes(app) -> None:
     log.info("celerp-labels: UI routes registered")
 
 
-def _parse_float(val) -> float | None:
-    if val is None or str(val).strip() == "":
-        return None
-    try:
-        return float(val)
-    except ValueError:
-        return None
-
-
 def _extract_fields_from_form(form) -> list[dict]:
     """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height] from multidict into ordered list."""
     import re
@@ -1801,9 +1727,10 @@ def _extract_fields_from_form(form) -> list[dict]:
             "label": (row.get("label") or k).strip(),
             "type": row.get("type", "text"),
         }
-        for num_attr in ("x", "y", "fontSize", "barcode_height"):
-            v = _parse_float(row.get(num_attr))
-            if v is not None:
+        # Numbers go as typed: the API's label number parser canonicalises or refuses them.
+        for num_attr in FIELD_NUMBERS:
+            v = str(row.get(num_attr) or "").strip()
+            if v:
                 field[num_attr] = v
         if row.get("bold") in ("true", "1", "on"):
             field["bold"] = True

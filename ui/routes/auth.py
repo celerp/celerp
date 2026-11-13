@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
@@ -35,6 +35,7 @@ from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.currencies import is_email
+from ui.components.encode import html_response, js_value, safe_url
 
 
 logger = logging.getLogger(__name__)
@@ -114,11 +115,9 @@ def setup_routes(app):
             notice = flash(t("auth.company_deactivated"))
         elif reason == "evicted":
             ip_note = t("auth.evicted_from_ip", ip=by_ip) if by_ip else ""
-            notice = flash(
-                t("auth.evicted_message", ip_note=ip_note),
-                kind="warning",
-                raw=True,
-            )
+            pre, _, post = t("auth.evicted_message", ip_note=ip_note, relay_link="{relay_link}").partition("{relay_link}")
+            relay = A(t("auth.evicted_relay_link"), href="https://celerp.com/pricing", target="_blank", rel="noopener noreferrer")
+            notice = flash((pre, relay, post), kind="warning")
         elif reason == "expired":
             notice = flash(t("auth.session_expired_signin"), kind="warning")
         elif reason == "idle":
@@ -138,8 +137,7 @@ def setup_routes(app):
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp
-            from fasthtml.common import to_xml
-            html_resp = _Resp(content=to_xml(resp), media_type="text/html")
+            html_resp = html_response(resp)
             clear_session_cookies(html_resp, request)
             return html_resp
         return resp
@@ -588,8 +586,8 @@ async def finish_sign_in(request: Request, access_token: str, refresh_token: str
         logger.warning("Password reset notices could not be loaded at sign-in", exc_info=True)
         notices = []
     if notices:
-        resp = HTMLResponse(to_xml(auth_shell(_reset_notices(notices, dest),
-                                              title=page_title("recovery.notice_title"))))
+        resp = html_response(auth_shell(_reset_notices(notices, dest),
+                                              title=page_title("recovery.notice_title")))
     else:
         resp = RedirectResponse(dest, status_code=status_code)
     set_session_cookies(resp, access_token, refresh_token, request)
@@ -723,10 +721,10 @@ async def _setup_page(request: Request, values: dict, *, code_required: bool,
 # additional option and comes back, and makes Create a single submit. Runs before
 # the dropdowns initialise, so a restored choice is the one they show.
 _SETUP_FORM_JS = """
-(function () {
+(function () {var CFG=JSON.parse(document.currentScript.dataset.cfg);
   var form = document.getElementById('setup-form');
   var KEY = 'celerp-setup-form';
-  var KEPT = %s;
+  var KEPT = CFG.kept;
   function field(name) { return form.querySelector('[name="' + name + '"]'); }
   function save() {
     var data = {};
@@ -787,7 +785,7 @@ _SETUP_FORM_JS = """
     (wrap ? wrap.querySelector('.combobox-input') : focus).focus();
   }
 })();
-""" % json.dumps(list(_SETUP_KEPT_FIELDS))
+"""
 
 
 def _setup_form(
@@ -851,7 +849,7 @@ def _setup_form(
             data_focus=next(iter(errors), ""),
             data_mismatch=t("settings.passwords_do_not_match"),
         ),
-        Script(_SETUP_FORM_JS),
+        Script(_SETUP_FORM_JS, data_cfg=js_value({'kept': list(_SETUP_KEPT_FIELDS)})),
         company_choice_script(),
         Div(
             H2(t("setup.options_heading"), cls="setup-options-heading"),
@@ -879,7 +877,7 @@ def _setup_import_form(
             Div(
                 A(
                     t("auth.continue_to_login"),
-                    href=continue_to or "/login?imported=1",
+                    href=safe_url(continue_to or "/login?imported=1"),
                     cls="btn btn--primary btn--full",
                 ),
                 A(
@@ -977,7 +975,7 @@ def _direct_connection_gate(email: str, password: str, next_url: str) -> FT:
             ),
             Div(
                 A(cta_label,
-                  href=handoff_url, target="_blank",
+                  href=safe_url(handoff_url), target="_blank",
                   cls="btn btn--primary"),
                 Form(
                     Input(type="hidden", name="email", value=email),
