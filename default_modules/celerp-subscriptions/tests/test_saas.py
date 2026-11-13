@@ -274,6 +274,16 @@ async def test_seat_change_page_names_the_documents_numbers(owner_ui, session, m
     assert debit["entity_id"].removeprefix("doc:") != debit["ref_id"]
 
 
+async def test_agreement_page_shows_no_outstanding_of_its_own(owner_ui, monkeypatch):
+    """An agreement is a template, not a bill: its page shows no Outstanding amount, before or
+    after a period is billed (what is owed is on the documents it issues)."""
+    freeze_day(monkeypatch, "2026-03-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", line_items=[dict(SEATS)])
+    assert 'id="doc-outstanding"' not in (await owner_ui.get(f"/subscriptions/{eid}")).text
+    assert (await generate_due(owner_ui.api, {}, eid)).status_code == 200
+    assert 'id="doc-outstanding"' not in (await owner_ui.get(f"/subscriptions/{eid}")).text
+
+
 async def test_arrears_period_splits_effective_segments(owner_ui, session, monkeypatch):
     """Billed in arrears, a change from 1 to 3 seats from 11 March bills March on 1 April as two
     lines, one per effective segment, each prorated by its days of 31, and issues no credit or

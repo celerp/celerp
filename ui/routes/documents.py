@@ -35,6 +35,7 @@ from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, Fund
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.payments import dispute_status_key
+from celerp.services.record_quantities import TEMPLATE_DOC_TYPES
 from celerp.services.document_lines import line_item_id
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -11608,7 +11609,8 @@ async function celerpCsvImport(input, entityId) {{
             _rate_val = doc.get("conversion_rate")
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
-        if not is_list and outstanding_value is not None:
+        # A subscription agreement is a template: what is owed is on the documents it issues.
+        if not is_list and doc_type not in TEMPLATE_DOC_TYPES and outstanding_value is not None:
             _outstanding_hint = P(t("doc.memo_outstanding_hint"), cls="form-hint") if doc_type == "memo" else ""
             _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), _outstanding_hint, cls="form-group"))
 
