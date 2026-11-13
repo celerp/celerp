@@ -673,6 +673,20 @@ def test_mandated_accounting_terminology_applied():
     assert not wrong, f"Mandated accounting terminology not applied: {wrong}"
 
 
+# Names the English copy no longer uses: the settings page is Remote Access, the
+# stock placed at go-live is Opening inventory, a credit is a Credit Memo.
+_RETIRED_ENGLISH_TERMS = ("Web Access", "Older stock", "older stock", "credit note",
+                          "Credit Note", "Work In Progress")
+
+
+def test_english_uses_no_retired_term():
+    """No English string keeps a renamed term, so one screen never names a page or a
+    document two ways."""
+    en = _load_locale("en")
+    hits = {t: sorted(k for k, v in en.items() if t in v) for t in _RETIRED_ENGLISH_TERMS}
+    assert not {t: ks for t, ks in hits.items() if ks}
+
+
 # ---------------------------------------------------------------------------
 # Translation-integrity regressions: glossary-marker residue, punctuation-only
 # corruption, preserved technical literals, and Thai truncation. These guard the
