@@ -916,6 +916,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "line exists only where Documents wrote it, and the boot COGS backfill that may meet one "
         "fails without writing and retries at a later boot",
     ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
+    ("celerp/services/auto_je.py", "post_dispute_adjustment"): _PAYMENT_STEP,
     ("celerp/services/document_lines.py", "_memo_takes_by_line"):
         "reads what invoices took from a memo, and imports Documents only for a memo, which only "
         "Documents writes",
