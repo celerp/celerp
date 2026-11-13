@@ -62,7 +62,7 @@ from celerp.accounting_roles import (
     PERIOD_LOCK_PATH,
     POSTING_ACCOUNTS_PATH,
     SCHEMA_KEY,
-    SOURCE_CONTROLS_KEY,
+    chart_from_elsewhere,
     AccountRole,
     needs_accounting,
     no_account_chosen,
@@ -511,7 +511,7 @@ async def books_from_elsewhere(session: AsyncSession, company_id, settings: dict
     Only a company with none of these is Celerp's own."""
     from celerp.models.migration import MigrationRun
 
-    if SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup"):
+    if chart_from_elsewhere(settings):
         return True
     if await session.scalar(select(MigrationRun.id).where(MigrationRun.company_id == company_id).limit(1)):
         return True

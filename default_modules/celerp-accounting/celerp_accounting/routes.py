@@ -311,12 +311,12 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
     never extended; its company chooses the account in Posting Accounts. An existing
     account is never changed. Returns the roles whose account was added or found as
     seeded, which the caller may then map to it."""
-    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS
+    from celerp.accounting_roles import ROLES_KEY, SEEDED_TARGETS, chart_from_elsewhere
     from sqlalchemy import select as _select
 
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
-    if company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup"):
+    if company is None or chart_from_elsewhere(settings):
         return frozenset()
     mapped = settings.get(ROLES_KEY) or {}
     wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}

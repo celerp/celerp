@@ -202,6 +202,52 @@ async def test_restricted_net_assets_unmapped_only_once_funds_are_on(client, ses
     assert unmapped_roles({**settings, "funds_enabled": True}) == ["restricted_net_assets"]
 
 
+
+async def _roles_and_chart(client, auth) -> tuple[str | None, dict]:
+    accounts = (await client.get("/accounting/posting-accounts", headers=auth["headers"])).json()
+    chart = {a["code"]: a for a in (await client.get("/accounting/chart", headers=auth["headers"])).json()["items"]}
+    return next(a for a in accounts["roles"] if a["role"] == "restricted_net_assets")["code"], chart
+
+
+@pytest.mark.parametrize("chart", ["restored_backup", "own_3500", "seeded"])
+async def test_turning_funds_on_maps_restricted_net_assets_only_to_the_account_it_adds(client, session, auth, chart):
+    """Turning funds on adds 3500 and maps restricted net assets to it on a chart Celerp seeded.
+    On a chart from elsewhere, or where 3500 is already the company's own account, it never
+    maps the role by number: it refuses, naming the role and where to choose its account,
+    and changes nothing; once the role has its account, funds turn on."""
+    from celerp.models.company import Company
+    from ui.i18n import refusal_text
+
+    if chart == "restored_backup":
+        from celerp.services.company_lock import locked_company
+
+        company = await locked_company(session, auth["company_id"])
+        company.settings = {**(company.settings or {}), "restored_backup": {"backup_id": "b-elsewhere"}}
+        await session.commit()
+    if chart != "seeded":
+        r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+            "code": "3500", "name": "Owner Drawings", "account_type": "equity", "parent_code": "3000"})
+        assert r.status_code == 200, r.text
+    r = await _funds_on(client, auth)
+    role, accounts = await _roles_and_chart(client, auth)
+    if chart == "seeded":
+        assert r.status_code == 200, r.text
+        assert role == "3500" and accounts["3500"]["name"] == "Restricted Net Assets"
+        return
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "fund.turn_on_role_unmapped"
+    assert "Posting accounts" in refusal_text(r.json()["detail"]) and "Restricted net assets" in refusal_text(r.json()["detail"])
+    assert role is None and accounts["3500"]["name"] == "Owner Drawings"
+    assert not ((await session.get(Company, auth["company_id"], populate_existing=True)).settings or {}).get("funds_enabled")
+    r = await client.post("/accounting/accounts", headers=auth["headers"], json={
+        "code": "3510", "name": "Net assets with donor restrictions", "account_type": "equity", "parent_code": "3000"})
+    assert r.status_code == 200, r.text
+    r = await client.put("/accounting/posting-accounts/restricted_net_assets", headers=auth["headers"], json={"code": "3510"})
+    assert r.status_code == 200, r.text
+    assert (await _funds_on(client, auth)).status_code == 200
+    assert (await _roles_and_chart(client, auth))[0] == "3510"
+
+
 _STOCK_ROLES = ("inventory", "inventory_purchased", "inventory_opening", "cogs", "work_in_progress",
                 "landed_freight", "landed_insurance", "landed_duty", "landed_import_vat", "consignor_payable")
 

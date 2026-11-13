@@ -33,7 +33,7 @@ from celerp.accounting_roles import (
     ROLE_TYPES,
     SCHEMA_KEY,
     SCOPES_KEY,
-    SEEDED_TARGETS,
+    DEFAULT_CODES,
     SOURCE_CONTROLS_KEY,
     AccountRole,
     allowed_types,
@@ -269,7 +269,7 @@ def _proposals(chart: dict[str, dict], reserved: set[str]) -> dict[str, dict]:
     taken = set(chart) | reserved
     out: dict[str, dict] = {}
     for role in AccountRole:
-        base = SEEDED_TARGETS[role]
+        base = DEFAULT_CODES[role]
         code, n = base, 0
         while code in taken:
             n += 1

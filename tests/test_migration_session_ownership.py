@@ -291,7 +291,7 @@ async def test_migration_runs_only_in_staged_company_without_funds(real_client, 
     """A migration writes only into a staged company, whose token reaches no fund route, so no
     fund is ever asked during a run; the reconciled role map holds no restricted net assets
     account (only turning funds on maps it); migrated journal lines are marked ``migration`` and post as before."""
-    from celerp.accounting_roles import UNGUESSED_ROLES, AccountRole
+    from celerp.accounting_roles import SEEDED_TARGETS, AccountRole
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
     from celerp.models.projections import Projection
@@ -311,7 +311,7 @@ async def test_migration_runs_only_in_staged_company_without_funds(real_client, 
         r = await real_client.request(method.upper(), path, headers=auth(token), **({"json": body} if body else {}))
         assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED, (path, r.text)
 
-    assert AccountRole.RESTRICTED_NET_ASSETS in UNGUESSED_ROLES  # reconcile never maps it
+    assert AccountRole.RESTRICTED_NET_ASSETS not in SEEDED_TARGETS  # reconcile never maps it
     async with maker(real_engine)() as s:
         admin = await s.scalar(select(User).where(User.email == "admin@perm.example"))
         running = await s.scalar(select(UserCompany.company_id).where(UserCompany.user_id == admin.id))

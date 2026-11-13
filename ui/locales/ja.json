@@ -7535,6 +7535,7 @@
   "posting.fund.document_posted": "This document has posted; use Change fund",
   "posting.fund.inbound_key": "This record came in with {field}, which these books set themselves now that they use funds. Remove {field} and send it again.",
   "fund.turn_on_outside_keys": "{count} records carry fund fields sent from outside: {records}. Post them (they post as today while funds are off) or delete them, then turn funds on.",
+  "fund.turn_on_role_unmapped": "ファンドには{role}の勘定が必要です。設定 > 会計 > 転記勘定 で選択してから、ファンドをオンにしてください。",
   "fund.turn_off_choices_held": "Clear or post the fund choices on {records} first",
   "fund.choices_cleared_lines": "Amounts changed, so the fund choices on lines {lines} were cleared: choose again",
   "fund.choices_cleared_both": "Amounts changed, so the fund choices on lines {lines} and the fund for this document were cleared: choose again",

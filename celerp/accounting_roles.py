@@ -247,11 +247,28 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.DISPOSAL_LOSS: "6980",
     R.IMPAIRMENT_LOSS: "6410",
     R.REVALUATION_SURPLUS: "3400",
-    R.RESTRICTED_NET_ASSETS: "3500",
     R.DEFERRED_REVENUE: "2160",
     R.DISPUTED_PAYMENTS: "1170",
     R.PAYMENT_DISPUTE_LOSSES: "6945",
 }
+
+# Roles a seeded chart holds no account for: Celerp adds this account (code, name, parent)
+# and maps the role to it when the feature posting there is first turned on, never before.
+ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str]] = {
+    R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "3000"),
+}
+
+# The default code of every role: the seeded account, or the one added when turned on.
+DEFAULT_CODES: dict[AccountRole, str] = {
+    **SEEDED_TARGETS, **{role: account[0] for role, account in ADDED_WHEN_TURNED_ON.items()}}
+
+
+def chart_from_elsewhere(settings: dict | None) -> bool:
+    """Whether the company's chart came from outside Celerp (a migration's source books or a
+    restored backup), so an account carrying a default number proves nothing about it."""
+    settings = settings or {}
+    return SOURCE_CONTROLS_KEY in settings or bool(settings.get("restored_backup"))
+
 
 # Landed-cost clearing role per landed-cost kind, and back.
 LANDED_ROLE_BY_KIND: dict[str, AccountRole] = {
@@ -305,7 +322,7 @@ STOCK_ROLES: tuple[AccountRole, ...] = (
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
-    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES, R.RESTRICTED_NET_ASSETS,
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES,
     R.DEFERRED_REVENUE, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split

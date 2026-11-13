@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole, catalog_refusal
+from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole, catalog_refusal, chart_from_elsewhere
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
@@ -48,11 +48,6 @@ from celerp.services.permissions import read_authority, require_permission
 from celerp_accounting.models import Account
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-# The account Celerp adds for restricted net assets when funds are first turned on and
-# the role has none, under the equity header of the seeded chart.
-RESTRICTED_NET_ASSETS_ACCOUNT = ("3500", "Restricted Net Assets", "3000")
-
 
 class FundsSettingIn(BaseModel):
     enabled: bool
@@ -150,17 +145,21 @@ async def _fund(session: AsyncSession, company_id, fund_id: str) -> dict:
     return state
 
 
-async def _seed_restricted_net_assets(session: AsyncSession, company_id, settings: dict, user) -> None:
-    """Point the restricted net assets role at an account the first time funds go on:
-    the seeded account when the chart has it, else one Celerp adds."""
-    role = AccountRole.RESTRICTED_NET_ASSETS.value
-    if role_map(settings).get(role):
+async def _map_restricted_net_assets(session: AsyncSession, company_id, settings: dict, user) -> None:
+    """Point the restricted net assets role at an account the first time funds go on, only
+    at the account Celerp adds for it now (ADDED_WHEN_TURNED_ON). An account the chart
+    already holds at that number is the company's own, and a chart from elsewhere predates
+    the role, so neither is guessed from a number: turning funds on is refused until the
+    role has its account in Posting accounts."""
+    role = AccountRole.RESTRICTED_NET_ASSETS
+    if role_map(settings).get(role.value):
         return
-    code, name, parent = RESTRICTED_NET_ASSETS_ACCOUNT
-    if code not in (await lock_accounts(session, company_id, {code}) or {}):
-        from celerp_accounting.import_service import add_posting_account
-        await add_posting_account(session, company_id, code=code, name=name, account_type="equity", parent_code=parent)
-    await set_role(session, company_id, role, code, user.id)
+    code, name, parent = ADDED_WHEN_TURNED_ON[role]
+    if chart_from_elsewhere(settings) or code in (await lock_accounts(session, company_id, {code}) or {}):
+        raise HTTPException(status_code=422, detail=catalog_refusal("fund.turn_on_role_unmapped", role=role.value))
+    from celerp_accounting.import_service import add_posting_account
+    await add_posting_account(session, company_id, code=code, name=name, account_type="equity", parent_code=parent)
+    await set_role(session, company_id, role.value, code, user.id)
 
 
 @router.get("/funds")
@@ -204,7 +203,7 @@ async def set_funds_setting(
             if carried := await records_carrying(session, company_id, ("fund_choice", "fund_id")):
                 raise HTTPException(status_code=422, detail=catalog_refusal(
                     "fund.turn_on_outside_keys", count=len(carried), records=", ".join(carried)))
-            await _seed_restricted_net_assets(session, company_id, company.settings or {}, user)
+            await _map_restricted_net_assets(session, company_id, company.settings or {}, user)
             company = await locked_company(session, company_id)
         else:
             await _refuse_held(session, company_id)
