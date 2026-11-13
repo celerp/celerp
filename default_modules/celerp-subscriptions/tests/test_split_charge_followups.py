@@ -114,7 +114,8 @@ async def test_a_refund_of_the_excess_comes_off_the_rest(client, session, monkey
     rest on an invoice gives it back with it."""
     from celerp.services import payments
     hd, cid, eid, july, books = await _excess_split(client, session, monkeypatch, cloud)
-    assert await payments.receive_refund(_refund(cid, july, "pi_over", 1000, context=books))
+    for _ in range(2):
+        assert await payments.receive_refund(_refund(cid, july, "pi_over", 1000, context=books))
     assert await _owed(session, eid, july) == (0,)
     assert (await _unmatched(session), await _kept_refunds(session)) == (
         [("pi_over:rest", 1000)], [("pi_over:rest", 1000)])
@@ -137,6 +138,7 @@ async def test_a_refund_of_a_split_charge_delivered_again_changes_nothing(client
     assert await _owed(session, eid, july, new) == (3.55, 27.42)
     assert await payments.receive_payment(_charge(cid, july, "pi_late", books))
     assert await _owed(session, eid, july, new) == (3.55, 27.42)
+    assert await _kept_refunds(session) == []
 
 
 async def test_a_reversed_refund_of_a_split_charge_puts_every_part_back(client, session, monkeypatch, cloud):
@@ -191,6 +193,24 @@ async def test_a_dispute_larger_than_the_whole_split_charge_is_not_recorded(clie
     assert await payments.receive_dispute(_dispute(cid, july, "pi_late", "created", 3001))
     docs = await _docs(session, eid)
     assert [_stripe(docs[d], "pi_late").get("disputes") for d in (july, new)] == [None, None]
+
+
+async def test_a_dispute_of_a_split_charge_in_another_currency_is_not_recorded(client, session, monkeypatch, cloud):
+    from celerp.services import payments
+    cid, eid, july, new, books = await _amendment_split(client, session, monkeypatch, cloud)
+    assert await payments.receive_dispute({**_dispute(cid, july, "pi_late", "created", 1000), "currency": "eur"})
+    docs = await _docs(session, eid)
+    assert [_stripe(docs[d], "pi_late").get("disputes") for d in (july, new)] == [None, None]
+
+
+async def test_a_dispute_or_release_delivered_before_its_charge_waits_for_it(client, session, monkeypatch, cloud):
+    """July's charge succeeded but its payment is not delivered yet: neither a dispute nor a
+    release is taken, so each is delivered again once the payment is on July."""
+    from celerp.services import payments
+    cid, eid, july, new, books = await _amendment_split(client, session, monkeypatch, cloud, deliver=False)
+    assert await payments.receive_dispute(_dispute(cid, july, "pi_late", "created", 1000)) is False
+    assert await payments.receive_release({"company_id": cid, "entity_id": july, "reference": "pi_late",
+                                           "released_at": AT}) is False
 
 
 async def test_a_release_of_a_split_charge_releases_every_part(client, session, monkeypatch, cloud):
