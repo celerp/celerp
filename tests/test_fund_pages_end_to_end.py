@@ -122,6 +122,13 @@ async def test_movement_forms_post_and_fund_activity_reverses(client, session, a
         assert r.status_code == 200, r.text
         assert await _held(session, auth, r2) == 10
 
+        odd = f"{spent}|²"  # a line number no entry has: the form answers, nothing is released
+        r = await ui.post(f"{FUNDS}/release", headers=HX, data={
+            **common, "fund": f["R"], "to_fund": "", "account": "", "backing": odd, f"release:{odd}": "40",
+            "idempotency_key": _key()})
+        assert r.status_code == 200, r.text
+        assert await _held(session, auth, f["R"]) == 90
+
         ref = f"{spent}|0"
         r = await ui.post(f"{FUNDS}/release", headers=HX, data={
             **common, "fund": f["R"], "to_fund": "", "account": "", "backing": ref, f"release:{ref}": "40",

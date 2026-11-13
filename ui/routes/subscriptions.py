@@ -1255,9 +1255,9 @@ async def _subscriber_draft(token: str, form) -> dict | str:
     seats = (form.get("seats") or "").strip()
     if not seats:
         return t("subscriptions.err_seats_blank")
-    if not seats.isdigit() or int(seats) < 1:
+    if not seats.isdecimal() or int(seats) < 1:
         return t("subscriptions.err_seats", seats=seats)
-    plan_id = form.get("plan_id") or ""
+    plan_id = (form.get("plan_id") or "").strip()
     if not plan_id:
         return t("subscriptions.err_no_plan")
     plan = await api.get_item(token, plan_id)

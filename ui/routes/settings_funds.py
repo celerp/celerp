@@ -324,7 +324,7 @@ def _movement_body(kind: str, form) -> tuple[dict, dict]:
         body["fund"] = _fund_value(typed["fund"])
         body["backing"] = [{"je_id": ref.rpartition("|")[0], "line_index": int(ref.rpartition("|")[2]),
                             "amount": str(form.get(f"release:{ref}") or "").strip()}
-                           for ref in ticked if ref.rpartition("|")[2].isdigit()]
+                           for ref in ticked if ref.rpartition("|")[2].isdecimal()]
         typed.update({"backing": ticked, **{f"release:{ref}": str(form.get(f"release:{ref}") or "")
                                              for ref in ticked}})
     else:
