@@ -3470,6 +3470,34 @@ def _money_line(fields: dict, currency: str, rate: Decimal | None, amount: Decim
     return line
 
 
+async def _pooled_offsets(db: AsyncSession, company_id, bank: BankAccount, base: str, rate: Decimal | None,
+                          offsets: list[tuple[dict, Decimal]], *, inflow: bool, as_of: str,
+                          ) -> list[tuple[dict, Decimal]]:
+    """A statement line's *offsets* by fund (rule M/B). An offset moving value off an asset
+    (credited, the bank taking money in) or a liability (debited) moves a pooled balance:
+    with no fund it splits pro rata to what each fund holds there on *as_of* (pooled_split),
+    and a named fund is an explicit allocation, at most what that fund holds there. Every
+    other offset keeps the fund it names, none being the unrestricted group's."""
+    from celerp.services.money import allocate_pro_rata
+
+    kinds = dict((await db.execute(select(Account.code, Account.account_type).where(
+        Account.company_id == company_id, Account.code.in_({f["account"] for f, _ in offsets})))).all())
+    out: list[tuple[dict, Decimal]] = []
+    for fields, amount in offsets:
+        kind = kinds.get(fields["account"])
+        if not ((kind == "asset" and inflow) or (kind == "liability" and not inflow)):
+            out.append((fields, amount))
+            continue
+        based = round_money(amount if rate is None else amount * rate, base)
+        fund = fields.get("fund_id")
+        shares = await pooled_split(db, company_id, fields["account"], based, base, as_of=as_of,
+                                    allocation=[(fund, based)] if fund else None, credit=kind == "liability")
+        plain = {k: v for k, v in fields.items() if k != "fund_id"}
+        out += [({**plain, **({"fund_id": f} if f else {})}, part) for (f, _), part in
+                zip(shares, allocate_pro_rata(amount, [share for _, share in shares], bank.currency)) if part]
+    return out
+
+
 def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: list[tuple[dict, Decimal]],
                   *, inflow: bool) -> list[dict]:
     """Every line of an entry moving money on *bank*, the one way any writer builds it:
@@ -4326,8 +4354,10 @@ async def create_je_from_line(
     if payload.fund_id:
         offset["fund_id"] = payload.fund_id
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
-                            [(offset, abs(to_decimal(sl.amount)))], inflow=sl.amount > 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [(offset, abs(to_decimal(sl.amount)))],
+                                    inflow=sl.amount > 0, as_of=entry_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount > 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -4404,7 +4434,9 @@ async def split_stmt_line(
             "acct.err_split_total", total=_money_text(sum((a for _, a in offsets), Decimal(0)), bank.currency),
             amount=_money_text(abs(to_decimal(sl.amount)), bank.currency)))
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate), offsets, inflow=sl.amount >= 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, offsets, inflow=sl.amount >= 0, as_of=sl.line_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount >= 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -4629,8 +4661,10 @@ async def write_off_difference(
     idem_p = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "p")
 
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
-                            [({"account": account_code}, abs(remaining))], inflow=remaining > 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [({"account": account_code}, abs(remaining))],
+                                    inflow=remaining > 0, as_of=recon.statement_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=remaining > 0)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",

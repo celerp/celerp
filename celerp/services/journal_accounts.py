@@ -672,13 +672,14 @@ async def fund_balance_range(session: AsyncSession, company_id, *, as_of: str,
 
 async def pooled_split(session: AsyncSession, company_id, account: str, amount: Decimal, currency: str, *,
                        as_of: str, allocation: list[tuple[str | None, Decimal]] | None = None,
-                       ) -> list[tuple[str | None, Decimal]]:
+                       credit: bool = False) -> list[tuple[str | None, Decimal]]:
     """Each fund's share (None: the unrestricted group's) of ``amount`` moved off the pooled
     ``account`` (rule B): pro rata to what each holds there on ``as_of``, none above what it
     holds, the unrestricted group taking any amount beyond what the funds hold together. An
     explicit ``allocation`` replaces the split: each share at most what its fund holds there,
     adding up to ``amount``. What a fund holds there is the least it holds from ``as_of`` on
-    (fund_balance_range). Funds off: the unrestricted group moves it all."""
+    (fund_balance_range); on a ``credit`` account (a liability a debit moves off) it is the
+    least it owes there. Funds off: the unrestricted group moves it all."""
     from celerp.services.money import allocate_pro_rata, round_money
 
     settings = await session.scalar(select(Company.settings).where(Company.id == company_id)) or {}
@@ -686,8 +687,8 @@ async def pooled_split(session: AsyncSession, company_id, account: str, amount: 
         if allocation:
             raise HTTPException(status_code=422, detail=catalog_refusal("fund.not_enabled"))
         return [(None, amount)]
-    held = {fund: round_money(low, currency)
-            for (fund, code), (low, _) in (await fund_balance_range(session, company_id, as_of=as_of)).items()
+    held = {fund: round_money(-high if credit else low, currency)
+            for (fund, code), (low, high) in (await fund_balance_range(session, company_id, as_of=as_of)).items()
             if code == account}
     if allocation is not None:
         funds = await funds_by_id(session, company_id)

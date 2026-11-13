@@ -93,3 +93,44 @@ async def test_without_funds_the_statement_line_forms_have_no_fund_choice(owner_
     r = await api.post(f"/accounting/reconciliation/{sid}/lines/{gift}/create",
                        json={"account_code": "4100", "fund_id": str(uuid.uuid4())})
     assert r.status_code == 422 and "fund" in r.text.lower(), r.text
+
+
+async def _je(api, ts: str, *lines: tuple[str, float, float, str | None]) -> None:
+    r = await api.post("/accounting/journal-entries", json={
+        "ts": ts, "memo": "Setup", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": a, "debit": d, "credit": c, **({"fund_id": f} if f else {})} for a, d, c, f in lines]})
+    assert r.status_code == 200, r.text
+
+
+async def test_a_statement_line_moving_a_pooled_balance_takes_each_funds_share(owner_ui, session):
+    """Rule M/B: an entry line with no fund that moves value off an asset or liability splits pro rata to
+    what each fund holds there, the bank side moving with each share; a picked fund replaces the split and
+    never takes more than it holds there; an expense line with no fund stays unrestricted."""
+    api = owner_ui.api
+    assert (await api.put("/accounting/funds/setting", json={"enabled": True})).status_code == 200
+    library = await _fund(api, "Library", True)
+    # The processor clearing account (1140) holds 60 for Library and 40 unrestricted; accrued
+    # expenses (2140) owe 30 for Library.
+    await _je(api, "2026-03-01", ("1140", 60, 0, library), ("4100", 0, 60, library),
+              ("1140", 40, 0, None), ("4100", 0, 40, None))
+    await _je(api, "2026-03-01", ("6200", 30, 0, library), ("2140", 0, 30, library))
+    sid, bank, lines = await _statement(api)
+    code = bank["chart_account_code"]
+    payout, accrual = lines["Library gift"]["id"], lines["Supplies"]["id"]
+
+    r = await api.post(f"/accounting/reconciliation/{sid}/lines/{payout}/create",
+                       json={"account_code": "1140", "fund_id": library})
+    assert r.status_code == 422 and "Library" in r.text, r.text
+    r = await api.post(f"/accounting/reconciliation/{sid}/lines/{payout}/create", json={"account_code": "1140"})
+    assert r.status_code == 200, r.text
+    # 300 leaves clearing: Library's 60, the unrestricted 40 and the 200 beyond what the funds hold.
+    assert await _entries(session, r.json()["matched_je_id"]) == sorted([
+        (code, 60.0, 0.0, library), ("1140", 0.0, 60.0, library),
+        (code, 240.0, 0.0, None), ("1140", 0.0, 240.0, None)])
+
+    r = await api.post(f"/accounting/reconciliation/{sid}/lines/{accrual}/split", json={"splits": [
+        {"account_code": "2140", "amount": 100}, {"account_code": "6200", "amount": 20}]})
+    assert r.status_code == 200, r.text
+    assert await _entries(session, r.json()["matched_je_id"]) == sorted([
+        (code, 0.0, 30.0, library), ("2140", 30.0, 0.0, library),
+        (code, 0.0, 90.0, None), ("2140", 70.0, 0.0, None), ("6200", 20.0, 0.0, None)])

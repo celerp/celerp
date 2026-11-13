@@ -272,6 +272,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_accounting.recognition:_leg_keys": JOURNAL_LINE,
     "celerp_accounting.recognition:dependents": _SCHEDULES,
     "celerp_accounting.routes:_bank_entries": JOURNAL_LINE,
+    "celerp_accounting.routes:_pooled_offsets": JOURNAL_LINE,
     "celerp_accounting.routes:batch_import_accounting": OWN_CHOICE,
     "celerp_accounting.routes:close_fiscal_year": JOURNAL_LINE,
     "celerp_docs.routes:apply_doc_payment": SETTLED,
