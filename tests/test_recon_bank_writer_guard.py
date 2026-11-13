@@ -73,6 +73,22 @@ async def _online_fees(session, tok: str, doc_id: str, currency: str) -> None:
     await session.commit()
 
 
+async def _dispute(session, tok: str, doc_id: str, currency: str) -> None:
+    """Part of the payment taken back by a card dispute, from its deposit account."""
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je
+    claims = _claims(tok)
+    cid = uuid.UUID(claims["company_id"])
+    session.expire_all()
+    doc = await session.get(Projection, {"company_id": cid, "entity_id": doc_id})
+    assert await auto_je.post_dispute_adjustment(
+        session, company_id=cid, user_id=uuid.UUID(claims["sub"]), doc_id=doc_id, payment=doc.state["payments"][0],
+        dispute_id="dp_guard", step="funds_withdrawn", amount_minor=500,
+        currency=currency.lower(), occurred_at=datetime(2026, 9, 10, 12, tzinfo=timezone.utc))
+    await session.commit()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("currency", ["EUR", "JPY"])
 async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reconciles(client, session, currency):
@@ -101,6 +117,7 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
     r = await client.post(f"/docs/{inv}/void-payment", headers=h, json={"payment_index": 1, "refund_date": DAY})
     assert r.status_code == 200, r.text
     await _online_fees(session, tok, inv, currency)
+    await _dispute(session, tok, inv, currency)
 
     # A manual entry on the bank is refused without its amount in the bank's currency.
     lines = [{"account": code, "debit": 15, "credit": 0},
@@ -141,7 +158,7 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
     assert r.status_code == 200, r.text
 
     posted = await _bank_lines(session, cid, code)
-    assert len({je for je, _ in posted}) >= 11, posted
+    assert len({je for je, _ in posted}) >= 12, posted
     for je_id, line in posted:
         assert line.get("fx_currency") == currency, (je_id, line)
         assert (line.get("fx_debit") or line.get("fx_credit")), (je_id, line)
@@ -164,6 +181,7 @@ _BANK_WRITERS: dict[tuple[str, str], str] = {
     ("default_modules/celerp-docs/celerp_docs/routes.py", "reverse_payment_refund"):
         "payment_return_entries -> payment_bank_fx",
     ("celerp/services/auto_je.py", "create_for_online_fees"): "bank_fx_fields",
+    ("celerp/services/auto_je.py", "post_dispute_adjustment"): "bank_fx_fields",
     ("default_modules/celerp-accounting/celerp_accounting/migration_sink.py", "_journal_record"):
         "imported lines keep their fx fields; transfers carry the account's currency",
     ("celerp/services/lot_origin.py", "evidence_entries"): "reads entries; posts nothing to a bank",

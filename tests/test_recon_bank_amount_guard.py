@@ -112,6 +112,9 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "_line_party"): "which side of a note application a control line is on, not how much",
     ("routes.py", "_norm"):"retry comparison of a manual entry, base and foreign amounts both compared",
     ("migration_sink.py", "reconcile"): "migration totals against the source books, books currency",
+    ("donors.py", "donor_history"): "a donor's gifts as the receipts posted them, books currency",
+    ("fund_reports.py", "check_fund_reconciliation"): "each fund's balances against the ledger, books currency, every account",
+    ("recognition.py", "roll_forward"): "the deferred revenue accounts, books currency",
 }
 _AMOUNTS = {"debit", "credit", "fx_debit", "fx_credit"}
 _BANK_READING = {"_bank_amounts", "_bank_line_amounts"}
