@@ -923,6 +923,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/payments.py", "_apply_refund"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "_apply_release"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "charge_reference_parts"): _PAYMENT_STEP,
+    ("celerp/services/payments.py", "part_holds"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "_refund_shares"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "_refund_done"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "record_unmatched_payment"): _PAYMENT_STEP,

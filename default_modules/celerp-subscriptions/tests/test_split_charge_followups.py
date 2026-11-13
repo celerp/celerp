@@ -203,6 +203,57 @@ async def test_a_dispute_of_a_split_charge_in_another_currency_is_not_recorded(c
     assert [_stripe(docs[d], "pi_late").get("disputes") for d in (july, new)] == [None, None]
 
 
+async def _lose_dispute(payments, cid, july, ref, amount):
+    for state, outcome in (("created", None), ("funds_withdrawn", None), ("closed", "lost")):
+        assert await payments.receive_dispute(_dispute(cid, july, ref, state, amount, outcome))
+
+
+def _disputes(doc: dict, ref: str) -> list[tuple[str, int]]:
+    return [(x["outcome"], x["amount_minor"]) for x in (_stripe(doc, ref).get("disputes") or {}).values()]
+
+
+async def test_a_dispute_after_a_refund_lands_on_the_part_still_holding_the_money(client, session, monkeypatch, cloud):
+    """The amendment split; 16.45 is refunded (off the amendment invoice, whole), then the 13.55
+    left is disputed and lost: the loss is on July's payment, the only part still holding money."""
+    from celerp.services import payments
+    cid, eid, july, new, books = await _amendment_split(client, session, monkeypatch, cloud)
+    assert await payments.receive_refund(_refund(cid, july, "pi_late", 1645, context=books))
+    assert await _owed(session, eid, july, new) == (0, 27.42)
+    await _lose_dispute(payments, cid, july, "pi_late", 1355)
+    docs = await _docs(session, eid)
+    assert {d: _disputes(docs[d], "pi_late") for d in (july, new)} == {july: [("lost", 1355)], new: []}
+
+
+async def test_a_dispute_after_a_refund_of_the_rest_lands_on_the_charge_s_own_invoice(
+        client, session, monkeypatch, cloud):
+    """The excess split; the 10.00 rest is refunded (kept with the rest), then the 20.00 left is
+    disputed and lost: all of it is on July's payment, none is told for the rest."""
+    from celerp.services import payments
+    hd, cid, eid, july, books = await _excess_split(client, session, monkeypatch, cloud)
+    assert await payments.receive_refund(_refund(cid, july, "pi_over", 1000, context=books))
+    assert await _kept_refunds(session) == [("pi_over:rest", 1000)]
+    await _lose_dispute(payments, cid, july, "pi_over", 2000)
+    assert _disputes((await _docs(session, eid))[july], "pi_over") == [("lost", 2000)]
+
+
+async def test_a_refund_before_a_late_success_with_an_excess_is_kept_with_the_rest(
+        client, session, monkeypatch, cloud):
+    """10.00 is paid by hand and 15.00 of July's 30.00 charge is refunded before the charge is
+    delivered; the charge then splits July 20.00 plus a 10.00 rest: the refund takes the rest's
+    10.00 (kept with it) and 5.00 of July's part, so July owes 5.00."""
+    from celerp.services import payments
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    [sent] = cloud.sent("attempt")
+    cloud.answers["cancel"] = (409, {"detail": "attempt_submitted"})
+    await _pay(client, hd, july, 10.0)
+    await tick(session, cid, "2026-07-02")
+    assert await payments.receive_refund(_refund(cid, july, "pi_e", 1500, context=sent["context"]))
+    assert await payments.receive_payment(_charge(cid, july, "pi_e", sent["context"], "2026-07-02T13:00:00+00:00"))
+    assert await _owed(session, eid, july) == (5.0,)
+    assert await _unmatched(session) == [("pi_e:rest", 1000)]
+    assert await _kept_refunds(session) == [("pi_e:rest", 1000)]
+
+
 async def test_a_dispute_or_release_delivered_before_its_charge_waits_for_it(client, session, monkeypatch, cloud):
     """July's charge succeeded but its payment is not delivered yet: neither a dispute nor a
     release is taken, so each is delivered again once the payment is on July."""
