@@ -22,8 +22,7 @@ from starlette.responses import RedirectResponse, PlainTextResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.currency import currency_options
-from ui.components.funds import fund_options
-from celerp.services.journal_accounts import funds_enabled
+from ui.components.funds import chosen_fund, fund_options, funds_in_use
 from celerp.services.peer_lines import UNRESTRICTED
 from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title
 from celerp.services.currencies import CURRENCY_CODES
@@ -203,8 +202,7 @@ def setup_routes(app):
         try:
             accounts = (await api.get_chart(token)).get("items", [])
             # With funds in use each line names its fund, Unrestricted until one is picked.
-            if funds_enabled(_settings):
-                funds = (await api.list_funds(token)).get("items") or []
+            funds = await funds_in_use(token, _settings)
             base_currency = (await api.get_company(token)).get("currency") or ""
             # One page of parties to open on; typing searches the whole list
             # server-side, the same way the statement picker works.
@@ -312,7 +310,7 @@ def setup_routes(app):
                  **({"contact": l["contact"]} if l["contact"] else {}),
                  **({"currency": l["currency"]} if l["currency"] else {}),
                  **({"rate": float(l["rate"])} if l["rate"] else {}),
-                 **({"fund_id": l["fund"]} if l["fund"] not in ("", UNRESTRICTED) else {})}
+                 **({"fund_id": chosen_fund(l["fund"])} if chosen_fund(l["fund"]) else {})}
                 for l in lines
             ]
             if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):

@@ -34,6 +34,18 @@ def fund_options(funds: list[dict]) -> list[tuple[str, str]]:
             *((f["id"], f["name"]) for f in funds if not f.get("archived"))]
 
 
+def chosen_fund(value) -> str | None:
+    """A fund select's value as a line's ``fund_id``: none for Unrestricted or no choice."""
+    value = str(value or "").strip()
+    return None if value in ("", UNRESTRICTED) else value
+
+
+async def funds_in_use(token: str, settings: dict) -> list[dict] | None:
+    """The company's funds when it has funds turned on, so a line form shows a Fund
+    choice; None when it has not."""
+    return (await api.list_funds(token)).get("items") or [] if funds_enabled(settings) else None
+
+
 def origin_badge(origin) -> FT:
     """The "From <source>" tag of a record or line that came from outside."""
     return Span(t("fund.from_source", source=t(origin_key(origin))), cls="badge badge--origin")

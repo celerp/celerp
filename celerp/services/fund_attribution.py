@@ -271,6 +271,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_accounting.funds:set_connection_default": STANDING,
     "celerp_accounting.recognition:_leg_keys": JOURNAL_LINE,
     "celerp_accounting.recognition:dependents": _SCHEDULES,
+    "celerp_accounting.routes:_bank_entries": JOURNAL_LINE,
     "celerp_accounting.routes:batch_import_accounting": OWN_CHOICE,
     "celerp_accounting.routes:close_fiscal_year": JOURNAL_LINE,
     "celerp_docs.routes:apply_doc_payment": SETTLED,
@@ -288,5 +289,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_fixed_assets.sales:_draft_invoice": DRAFT,
     "celerp_fixed_assets.sources:_bill_lines": READ,
     "celerp_fixed_assets.sources:_manual_lines": READ,
+    "ui.routes.accounting:setup_routes.journal_new_submit": JOURNAL_LINE,
+    "ui.routes.documents:_local_fund": DRAFT,
     "ui.routes.documents:_submitted_fund_allocation": SETTLED,
 }

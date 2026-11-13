@@ -30,6 +30,8 @@ from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.reports import _get_company
 from ui.components.encode import as_js, js
+from ui.components.funds import chosen_fund, fund_options, funds_in_use
+from celerp.services.peer_lines import UNRESTRICTED
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -217,8 +219,17 @@ def _form_rate(form, data: dict) -> str | None:
 
 # ── Create expense form (inline partial) ─────────────────────────────────────
 
+def _fund_pick(name: str, funds: list[dict] | None) -> FT | None:
+    """The Fund choice of a statement line's entry, Unrestricted until a fund is picked;
+    none when the company has no funds turned on."""
+    if funds is None:
+        return None
+    return searchable_select(name, fund_options(funds), value=UNRESTRICTED, placeholder=EMPTY,
+                             aria_label=t("th.fund"), cls_extra="form-input")
+
+
 def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
-                 contacts: list[dict] | None = None) -> FT:
+                 contacts: list[dict] | None = None, funds: list[dict] | None = None) -> FT:
     currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
@@ -243,6 +254,8 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
                                   cls_extra="form-input", search_url=PARTY_SEARCH_URL),
                 cls="form-field",
             ),
+            Div(Label(t("th.fund"), cls="form-label"), _fund_pick("fund", funds),
+                cls="form-field") if funds is not None else None,
             Div(
                 Label(t("th.memo"), cls="form-label"),
                 Input(type="text", name="memo", value=line.get("description", ""),
@@ -274,7 +287,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
 # ── Split form (inline partial) ───────────────────────────────────────────────
 
 def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
-                contacts: list[dict] | None = None) -> FT:
+                contacts: list[dict] | None = None, funds: list[dict] | None = None) -> FT:
     currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
@@ -299,6 +312,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
                         searchable_select("contact_0", contact_opts,
                                           placeholder=t("acct.je_line_party"),
                                           cls_extra="form-input", search_url=PARTY_SEARCH_URL),
+                        _fund_pick("fund_0", funds),
                         Input(type="text", name="memo_0", placeholder=t("th.memo"), cls="form-input"),
                         cls="split-entry-row flex-row gap-sm mb-sm",
                     )
@@ -996,9 +1010,10 @@ def setup_routes(app):
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
+            funds = await funds_in_use(token, (await api.get_company(token)).get("settings") or {})
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _create_form(session_id, line_id, line, chart, bank, contacts)
+        return _create_form(session_id, line_id, line, chart, bank, contacts, funds)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/split-form")
     async def split_form_partial(request: Request, session_id: str, line_id: str):
@@ -1014,9 +1029,10 @@ def setup_routes(app):
             chart_data = await api.get_chart(token)
             chart = chart_data.get("items", [])
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
+            funds = await funds_in_use(token, (await api.get_company(token)).get("settings") or {})
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _split_form(session_id, line_id, line, chart, bank, contacts)
+        return _split_form(session_id, line_id, line, chart, bank, contacts, funds)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm")
     async def match_confirm(request: Request, session_id: str, line_id: str):
@@ -1053,6 +1069,8 @@ def setup_routes(app):
         contact = str(form.get("contact", "")).strip()
         if contact:
             data["contact"] = contact
+        if fund := chosen_fund(form.get("fund")):
+            data["fund_id"] = fund
         if amount_raw:
             try:
                 data["amount"] = float(amount_raw)
@@ -1086,6 +1104,8 @@ def setup_routes(app):
                     split = {"account_code": code, "amount": float(amt_raw), "memo": memo}
                     if contact:
                         split["contact"] = contact
+                    if fund := chosen_fund(form.get(f"fund_{i}")):
+                        split["fund_id"] = fund
                     splits.append(split)
                 except ValueError:
                     pass

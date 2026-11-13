@@ -3269,9 +3269,10 @@ async def _lock_recon(
     db: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID, *, editable: bool,
 ) -> tuple[ReconciliationSession, BankAccount]:
     """The one way a reconciliation writer takes its locks, in the one order every path
-    uses: the company, then the session's bank account row, then the session itself,
-    read again as committed. An *editable* writer is refused on a completed session."""
-    await lock_company(db, company_id)
+    uses: the company and its fund ledger (a writer may post), then the session's bank
+    account row, then the session itself, read again as committed. An *editable* writer
+    is refused on a completed session."""
+    await hold_fund_ledger(db, company_id)
     recon = await _get_recon(db, session_id, company_id)
     bank = (await db.execute(
         select(BankAccount).where(BankAccount.id == recon.bank_account_id,
@@ -3476,14 +3477,23 @@ def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: l
     fields with its amount in the account's currency. Amounts are written in the
     account's currency, so the reconciliation always reads them; on an account kept in
     another currency than the books' they carry that amount and *rate* (``_bank_rate``),
-    and their books-currency amounts are converted once so the entry balances."""
+    and their books-currency amounts are converted once so the entry balances. Offsets
+    naming a fund (``fund_id``) get a bank line of their own carrying it, one per fund in
+    the order they first appear, so each fund balances on its own."""
     parts = [round_money(a, bank.currency) for _, a in offsets]
     based = parts if rate is None else split_to_base(parts, rate, base)
+    by_fund: dict[str | None, list] = {}
+    for (fields, _), part, b in zip(offsets, parts, based):
+        by_fund.setdefault(fields.get("fund_id"), []).append((fields, part, b))
     return [
-        _money_line({"account": bank.chart_account_code}, bank.currency, rate, sum(parts, Decimal(0)),
-                    sum(based, Decimal(0)), debit=inflow),
-        *(_money_line(fields, bank.currency, rate, part, b, debit=not inflow)
-          for (fields, _), part, b in zip(offsets, parts, based)),
+        line
+        for fund, rows in by_fund.items()
+        for line in (
+            _money_line({"account": bank.chart_account_code, **({"fund_id": fund} if fund else {})},
+                        bank.currency, rate, sum((p for _, p, _ in rows), Decimal(0)),
+                        sum((b for _, _, b in rows), Decimal(0)), debit=inflow),
+            *(_money_line(fields, bank.currency, rate, part, b, debit=not inflow) for fields, part, b in rows),
+        )
     ]
 
 
@@ -3823,10 +3833,12 @@ class StmtLineCreatePayload(BaseModel):
     # this is the only chance to say which: nothing downstream can infer it.
     contact: str | None = None
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
+    # The fund the entry belongs to, both its lines; none puts it in the unrestricted group.
+    fund_id: str | None = None
 
 
 class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo, contact}]
+    splits: list[dict]  # [{account_code, amount, memo, contact, fund_id}]
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
@@ -4311,6 +4323,8 @@ async def create_je_from_line(
     offset = {"account": payload.account_code}
     if payload.contact:
         offset["contact"] = payload.contact
+    if payload.fund_id:
+        offset["fund_id"] = payload.fund_id
     base = await _base_currency(db, company_id)
     entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
                             [(offset, abs(to_decimal(sl.amount)))], inflow=sl.amount > 0)
@@ -4382,6 +4396,8 @@ async def split_stmt_line(
         split = {"account": s["account_code"]}
         if s.get("contact"):
             split["contact"] = s["contact"]
+        if s.get("fund_id"):
+            split["fund_id"] = s["fund_id"]
         offsets.append((split, to_decimal(s.get("amount", 0))))
     if sum((a for _, a in offsets), Decimal(0)) != abs(to_decimal(sl.amount)):
         raise HTTPException(status_code=422, detail=t(
