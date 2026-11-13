@@ -847,7 +847,7 @@ def searchable_select(
     if record_prefix:
         from urllib.parse import quote
         selected_record = bool(value and not value.startswith("__"))
-        jump = A(icon("eye"), href=record_prefix + quote(value, safe="") if selected_record else None,
+        jump = A(icon("eye"), href=safe_url(record_prefix + quote(value, safe="")) if selected_record else None,
                  hidden=not selected_record, cls="combobox-record-link", target="_blank", rel="noopener",
                  title=t("documents.view_item_details") if record_type == "item" else t("ai.open_record"))
     wrap_attrs: dict = {"cls": "combobox-wrap"}

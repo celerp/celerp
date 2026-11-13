@@ -634,7 +634,7 @@ function initCombobox(wrap) {
     var value = hidden.value;
     link.hidden = !value || value.indexOf('__') === 0;
     if (link.hidden) link.removeAttribute('href');
-    else link.href = wrap.dataset.recordPrefix + encodeURIComponent(value);
+    else celerpSetUrl(link, 'href', wrap.dataset.recordPrefix + encodeURIComponent(value));
   }
   if (hidden) hidden.addEventListener('change', updateRecordLink);
   // Filtering clears the hidden selection after the input event starts.

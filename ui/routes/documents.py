@@ -4787,7 +4787,7 @@ def setup_routes(app):
             kept = {k: v for k, v in page_params.items() if k not in HISTORY_FILTERS}
             query = urlencode({**kept, **filters})
             headers["HX-Push-Url"] = page_path + (f"?{query}" if query else "")
-        return _R(to_xml(card), media_type="text/html", headers=headers)
+        return html_response(card, headers=headers)
 
     app.get("/docs/{entity_id}/history")(doc_history_paginated)
     app.get("/lists/{entity_id}/history")(doc_history_paginated)
@@ -9477,7 +9477,7 @@ async function celerpAcSearch(input, field) {
             : 'Use as custom entry: "' + q + '"';
         const custom = document.createElement('div');
         custom.className = 'catalog-ac-option catalog-ac-option--custom';
-        custom.innerHTML = _L.icon_pencil + ' ';
+        custom.append(celerpFragment(_L.icon_pencil), ' ');
         custom.append(document.createTextNode(_customLabel));
         custom.addEventListener('mousedown', e => {
             e.preventDefault();
@@ -10493,7 +10493,7 @@ function _celerpShowReservedConflicts(conflicts) {
     closeBtn.type = 'button';
     closeBtn.className = 'modal-dialog__close';
     closeBtn.setAttribute('aria-label', _L.close);
-    closeBtn.innerHTML = _L.icon_x;
+    closeBtn.replaceChildren(celerpFragment(_L.icon_x));
     closeBtn.onclick = () => dlg.close();
     header.append(title, closeBtn);
     dlg.appendChild(header);

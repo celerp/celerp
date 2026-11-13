@@ -2439,7 +2439,7 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
                         var remove = document.createElement('button');
                         remove.type = 'button';
                         remove.className = 'ai-file-chip__remove';
-                        remove.innerHTML = CELERP_AI_TEXT.icon_x;
+                        remove.replaceChildren(celerpFragment(CELERP_AI_TEXT.icon_x));
                         remove.setAttribute('aria-label', CELERP_AI_TEXT.remove_file.replace('{name}', fname));
                         remove.addEventListener('click', function(e) {
                             e.stopPropagation();

@@ -7170,7 +7170,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                    "q=parseFloat(r.querySelector('[name=labor_new_hours]').value)||0,"
                    "rt=parseFloat(r.querySelector('[name=labor_new_rate]').value)||0,"
                    "t=r.querySelector('[name=labor_new_total]');"
-                   "t.value=(q&&rt)?(q*rt).toFixed(2):'';")
+                   "t.value=(q&&rt)?(q*rt).toFixed(+r.dataset.dp):'';")
     # Switching Type flips which fields apply AND clears the now-inapplicable ones so no stale
     # greyed values linger (Qty/Rate for Fixed; the flat Total for rate-based).
     _kind_toggle = ("var r=this.closest('tr'),fx=this.value==='fixed',"
@@ -7179,10 +7179,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                     "t=r.querySelector('[name=labor_new_amount]'),o=r.querySelector('[name=labor_new_total]');"
                     "q.disabled=fx;rt.disabled=fx;t.hidden=!fx;t.disabled=!fx;o.hidden=fx;"
                     "if(fx){q.value='';rt.value='';t.value='';o.value='';}"
-                    "else{t.value='';var a=(parseFloat(q.value)||0)*(parseFloat(rt.value)||0);o.value=a?a.toFixed(2):'';}")
-    # Computed previews use the company's money precision, just like saved totals.
-    _live_total = _live_total.replace("toFixed(2)", f"toFixed({currency_dp(currency or 'USD')})")
-    _kind_toggle = _kind_toggle.replace("toFixed(2)", f"toFixed({currency_dp(currency or 'USD')})")
+                    "else{t.value='';var a=(parseFloat(q.value)||0)*(parseFloat(rt.value)||0);o.value=a?a.toFixed(+r.dataset.dp):'';}")
     # Clicking + Add with the required text field empty flashes it red instead of failing silently.
     _add_validate = ("var q=this.closest('tr').querySelector('.recipe-req');"
                      "if(q&&!q.value.trim()){q.classList.add('field-flash-error');q.focus();"
@@ -7200,7 +7197,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                  cls="form-input cell--number", hidden=True, disabled=True, onkeydown=_add_enter), cls="cell--number"),
         Td(Button(t("btn.save"), type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
-        cls="recipe-add-row",
+        # Computed previews use the company's money precision, just like saved totals.
+        cls="recipe-add-row", data_dp=currency_dp(currency or "USD"),
     )
     oh_add_row = Tr(
         Td(Input(type="text", name="oh_new_desc", value="", placeholder=t("inventory.ph_add_cost"), cls="form-input recipe-req", onkeydown=_add_enter)),

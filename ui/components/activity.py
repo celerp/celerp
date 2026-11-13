@@ -1457,7 +1457,7 @@ def _history_filters(rows: list[dict], filters: dict, filter_url: str, target: s
         select("hist_event", "event", "th.event"),
         select("hist_field", "field", "activity.th_field"),
         select("hist_who", "who", "documents.th_who"),
-        method="get", action=filter_url, cls="history-filters",
+        method="get", action=safe_url(filter_url), cls="history-filters",
         **({"onchange": "event.target.type === 'hidden' && this.submit()"} if not target else {}), **htmx)
 
 
