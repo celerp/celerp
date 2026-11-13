@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import gettempdir
 
 import pytest
+from playwright.sync_api import expect
 
 from .inline_edit import cancel_editor, ready, set_cell, settled
 
@@ -179,7 +180,9 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     rate.fill("30")
     assert page.locator("output[name=labor_new_total]").inner_text() == "60.00"
     assert page.locator("output[name=labor_new_total]").evaluate("el => el.tabIndex") == -1
-    assert page.locator("output[name=labor_new_total]").evaluate("el => {el.focus(); return document.activeElement !== el;}")
+    total = page.locator("output[name=labor_new_total]")
+    total.focus()
+    expect(total).not_to_be_focused()
     # Daily behaves like Hourly (still rate-based, Total stays the computed preview).
     page.select_option("select[name=labor_new_kind]", "daily")
     assert hours.is_editable() and not amount.is_editable()
