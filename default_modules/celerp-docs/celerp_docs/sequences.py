@@ -412,9 +412,11 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
     if pattern is not None:
         seq["pattern"] = require_pattern(pattern)
     if next_num is not None:
+        if next_num < 1:
+            raise Refused("documents.err_numbering_next_min")
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
-        seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
+        seq.update(next=next_num, year=day.year, month=day.month, day=day.day)
 
     # The counter's next number must be one a record can be stored under.
     _first_free({**settings, "sequences": {**sequences, doc_type: seq}}, doc_type, ())

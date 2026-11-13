@@ -1616,7 +1616,7 @@ class SequencePatch(BaseModel):
     model_config = {"extra": "forbid"}
     prefix: str | None = None
     pattern: str | None = None
-    next: int | None = Field(default=None, ge=1, strict=True)
+    next: int | None = Field(default=None, strict=True)
 
 
 @router.get("/sequences")

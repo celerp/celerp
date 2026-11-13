@@ -7433,6 +7433,7 @@
   "documents.sent_marker_cleared": "Segno di inviato rimosso.",
   "documents.err_numbering_overlap": "La numerazione di {doc_type} usa già questo formato. Scegli un altro prefisso o modello.",
   "documents.err_numbering_no_sequence_token": "Aggiungi al modello un token di sequenza come {example}.",
+  "documents.err_numbering_next_min": "Il numero successivo deve essere 1 o superiore.",
   "documents.err_numbering_unknown_tokens": "Celerp non riconosce questi token nel modello: {tokens}.",
   "documents.err_numbering_unknown_type": "'{value}' non è un tipo di documento. Usa uno di questi: {types}.",
   "documents.err_numbering_prefix_braces": "Un prefisso non può contenere parentesi graffe.",

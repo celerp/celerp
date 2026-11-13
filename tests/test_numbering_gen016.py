@@ -279,3 +279,13 @@ def test_locale_labels_present_in_all_locales():
         key = _DOC_TYPE_LABEL_KEYS[dtype]
         assert all(key in d for d in catalogs)
         assert all(not re.findall(r'\{\w+\}', d[key]) for d in catalogs)
+
+
+@pytest.mark.parametrize('value', [0, -3])
+async def test_a_next_number_below_one_is_refused_in_words_the_user_reads(client, session, auth, value):
+    """The refusal says the number must be 1 or more and never names the internal field."""
+    before = await _settings(session, auth)
+    r = await _configure(client, auth, TYPES[0], next=value)
+    assert r.status_code == 422, r.text
+    assert "must be 1 or more" in r.text and "(next)" not in r.text
+    assert await _settings(session, auth) == before
