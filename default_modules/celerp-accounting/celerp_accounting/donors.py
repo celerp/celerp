@@ -15,7 +15,7 @@ posting takes off gift income, however that credit is settled.
 A statement lists one donor's gifts in a period under the company's wording (``WORDING``,
 tax-neutral by default). Sending one records it on the contact (``STATEMENT_SENT``) under a key
 naming the donor, the period and the wording version, so sending again answers with the first
-result; a resend is asked for by name with the number of sends the asker saw, so one press sends
+result; a resend is asked for by name with the number of the send it asks for, so one press sends
 once, and a change of wording makes a new statement.
 """
 from __future__ import annotations
@@ -254,33 +254,32 @@ def _statement_key(party: str, date_from: str, date_to: str, version: int) -> st
 
 
 def _send_key(statement: str, n: int) -> str:
-    """The key of send ``n`` of a statement: its first send, then each resend after it."""
+    """The key of send ``n`` of a statement: 0 its first send, n resend n."""
     return f"{statement}:resend:{n}" if n else statement
 
 
-async def _sends(session: AsyncSession, company_id, statements: list[str]) -> dict[str, int]:
-    """How many times each statement key was sent: its first send and every resend."""
+async def _taken(session: AsyncSession, company_id, statements: list[str]) -> dict[str, list[int]]:
+    """The send numbers recorded for each statement key, in order: 0 its first send, n resend n."""
+    taken: dict[str, list[int]] = {key: [] for key in statements}
     if not statements:
-        return {}
-    keys = set((await session.execute(select(LedgerEntry.idempotency_key).where(
-        LedgerEntry.company_id == company_id,
-        or_(LedgerEntry.idempotency_key.in_(statements),
-            *(LedgerEntry.idempotency_key.startswith(f"{k}:resend:", autoescape=True) for k in statements))))).scalars())
-    counts = {}
-    for key in statements:
-        n = 0
-        while _send_key(key, n) in keys:
-            n += 1
-        counts[key] = n
-    return counts
+        return taken
+    for key in (await session.execute(select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            or_(LedgerEntry.idempotency_key.in_(statements),
+                *(LedgerEntry.idempotency_key.startswith(f"{k}:resend:", autoescape=True) for k in statements))))).scalars():
+        statement, _, n = key.rpartition(":resend:") if key not in taken else (key, "", "0")
+        if statement in taken and n.isdecimal():
+            taken[statement].append(int(n))
+    return {key: sorted(numbers) for key, numbers in taken.items()}
 
 
 async def _with_sends(session: AsyncSession, company_id, rows: list[dict], date_from: str, date_to: str,
                       version: int) -> list[dict]:
-    """``rows`` each with how many times the period's statement under this wording was sent."""
+    """``rows`` each with ``sends``, the number the next Send again of the period's statement under
+    this wording names: 0 while it was never sent, one past the last send otherwise."""
     keys = {_statement_key(row["contact_id"], date_from, date_to, version): row for row in rows}
-    sends = await _sends(session, company_id, list(keys))
-    return [{**row, "sends": sends[key]} for key, row in keys.items()]
+    taken = await _taken(session, company_id, list(keys))
+    return [{**row, "sends": taken[key][-1] + 1 if taken[key] else 0} for key, row in keys.items()]
 
 
 class SendIn(BaseModel):
@@ -296,8 +295,8 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
     """Email each donor of the period their statement and answer per donor: sent, no_email (no
     address, skipped) or failed (nothing recorded, so sending again retries). A statement already
     sent answers with its first result, marked ``repeat``; ``resend`` sends again to the donors it names, and only
-    to them, each with the number of sends the asker saw, so the same press arriving twice sends once and
-    the second answers with that send as stored, marked ``repeat``. Each donor holds the
+    to them, each with the number of the send it asks for (``sends`` as the asker read it), so the same
+    press arriving twice sends once and the second answers with that send as stored, marked ``repeat``. Each donor holds the
     company from the check to its record and commits on its own, so one failure never undoes
     another's record and a second send at once waits and answers with the first."""
     date_from, date_to = _period(payload.date_from.isoformat(), payload.date_to.isoformat())
@@ -315,13 +314,14 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
             continue
         statement = _statement_key(party, date_from, date_to, words["version"])
         await lock_company(session, company_id)  # two sends at once email a donor once
-        sends, seen = (await _sends(session, company_id, [statement]))[statement], payload.resend.get(party, 0)
-        if seen < sends:
-            earlier = await find_event_by_idempotency(session, company_id, _send_key(statement, seen))
+        taken, n = (await _taken(session, company_id, [statement]))[statement], payload.resend.get(party, 0)
+        done = n if n in taken else taken[0] if taken and party not in payload.resend else None
+        if done is not None:
+            earlier = await find_event_by_idempotency(session, company_id, _send_key(statement, done))
             results.append({**((earlier.metadata_ or {}).get("result") or answer), "repeat": True})
             await session.rollback()
             continue
-        key = _send_key(statement, sends)
+        key = _send_key(statement, n)
         sent = await email_service.send_email(
             to=row["email"], subject=t("donors.statement_subject", company=company, start=date_from, end=date_to),
             body_html=_statement_html(company, row, words["text"], date_from, date_to, currency),
@@ -366,8 +366,8 @@ async def preview_statements(
     _c: None = _READ[0], _p: None = _READ[1],
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Who a send for the period reaches, each with their total and gifts and how many times their
-    statement under the current wording was sent; a donor with no email address is marked and
+    """Who a send for the period reaches, each with their total and gifts and the number the next
+    Send again of their statement under the current wording names (0 while it was never sent); a donor with no email address is marked and
     would be skipped."""
     words = wording(await current_settings(session, company_id))
     rows = await _donor_rows(session, company_id, *_period(date_from, date_to))

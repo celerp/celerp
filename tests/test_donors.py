@@ -136,9 +136,10 @@ async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkey
 
 
 async def test_send_again_names_the_sends_it_saw_so_one_press_sends_once(client, auth, monkeypatch):
-    """Send again names how many sends of the statement it saw: the same press arriving twice (a
-    double click, a second tab, a colleague) emails the donor once and the second is answered with
-    that send as stored; a press naming every send so far sends again."""
+    """Send again names the number of the send it asks for: the same press arriving twice (a double
+    click, a second tab, a colleague) emails the donor once and the second is answered with that
+    send as stored; the next number sends again. A press from a page read before the wording
+    changed sends the new statement once, and a Send for all after it emails that donor no more."""
     donors = await _statement_donors(client, auth)
     sent = _mailbox(monkeypatch)
 
@@ -159,6 +160,12 @@ async def test_send_again_names_the_sends_it_saw_so_one_press_sends_once(client,
     assert len(sent) == 2 and first[mine]["state"] == "sent" and "repeat" not in first[mine]
     assert second[mine] == {**first[mine], "repeat": True} and await sends() == 2
     assert (await send(resend={mine: 2}))[mine]["state"] == "sent" and len(sent) == 3 and await sends() == 3
+    r = await client.put("/donors/statements/wording", headers=auth["headers"], json={"text": "With thanks, {name}."})
+    assert r.status_code == 200, r.text
+    assert await sends() == 0
+    stale, twin = await send(resend={mine: 3}), await send(resend={mine: 3})
+    assert len(sent) == 4 and "With thanks, Cy Donor." in sent[-1]["html"] and twin[mine] == {**stale[mine], "repeat": True}
+    assert (await send())[mine]["repeat"] is True and len(sent) == 4 and await sends() == 4
 
 
 async def test_donor_gifts_newest_first_and_statement_amounts_right_aligned(client, auth, monkeypatch):

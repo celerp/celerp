@@ -51,7 +51,8 @@ def _gift_line(gift: dict, currency: str | None) -> FT:
 
 
 def _statement_cell(row: dict, period: tuple[str, str]) -> FT:
-    """Sent or not; Send again names the sends it saw, so the same press arriving twice sends once."""
+    """Sent or not; Send again names the number of the send it asks for, so the same press arriving
+    twice sends once."""
     if not row["sends"]:
         return Td(t("donors.statement_not_sent"))
     return Td(Span(t("donors.statement_sent"), cls="badge badge--paid"), " ",
