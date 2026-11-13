@@ -113,10 +113,17 @@ jobs:
             echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
           fi
 
+  l10n-golden:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/l10n-golden.yml
+    secrets:
+      CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
+      CELERP_L10N_SOURCES: ${{ secrets.CELERP_L10N_SOURCES }}
+
   build:
-    needs: [prepare-release, setup-matrix]
+    needs: [prepare-release, setup-matrix, l10n-golden]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
-    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success'
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success' && (needs.l10n-golden.result == 'success' || (github.event_name == 'pull_request' && needs.l10n-golden.result == 'skipped'))
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.matrix) }}
@@ -206,6 +213,13 @@ jobs:
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           tar xz -f "$F" -C "electron/python-standalone/${{ matrix.standalone_dir }}"
           rm -f "$F"
+
+      - name: Fetch country packs
+        if: github.event_name != 'pull_request'
+        uses: ./.github/actions/l10n-packs
+        with:
+          token: ${{ secrets.CELERP_L10N_TOKEN }}
+          sources: ${{ secrets.CELERP_L10N_SOURCES }}
 
       - name: Install Python deps into standalone (arm64)
         if: matrix.os == 'macos-latest'
@@ -728,6 +742,10 @@ jobs:
           esac
           PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \
             "$RES/app/default_modules" --lock default_modules/first_party.lock.json
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            PYTHONPATH="$RES/app" "$PY" scripts/l10n_packs.py check \
+              "$RES/app/celerp/localization" --lock celerp/localization/packs.lock.json
+          fi
 
       # Boot smoke: actually LAUNCH the packaged app and require a real, DB-backed
       # boot before this build can ship. /health/ready does a live SELECT 1, so a

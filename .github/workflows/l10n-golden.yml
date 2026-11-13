@@ -1,0 +1,67 @@
+name: Country pack golden
+
+# Fetches the real country packs, validates them and runs the tests marked real_packs.
+# Called by ci.yml, build.yml and publish.yml on every event except pull_request (the
+# packs are private, so a pull request has no token to read them).
+on:
+  workflow_call:
+    secrets:
+      CELERP_L10N_TOKEN:
+        required: true
+      CELERP_L10N_SOURCES:
+        required: true
+
+jobs:
+  golden:
+    name: Real-pack golden
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
+
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
+      - name: Fetch country packs
+        uses: ./.github/actions/l10n-packs
+        with:
+          token: ${{ secrets.CELERP_L10N_TOKEN }}
+          sources: ${{ secrets.CELERP_L10N_SOURCES }}
+
+      - name: Validate country packs
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: python scripts/l10n_packs.py validate celerp/localization
+
+      - name: Run the real-pack golden
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: pytest tests/ default_modules/*/tests/ -m real_packs -o addopts="" -q --no-cov

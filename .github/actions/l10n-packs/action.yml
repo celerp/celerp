@@ -1,0 +1,20 @@
+name: Fetch country packs
+description: >
+  Download every country pack named in celerp/localization/packs.lock.json from its repository
+  and check it against the lock (scripts/l10n_packs.py fetch).
+inputs:
+  token:
+    description: Read token for the country pack repositories
+    required: true
+  sources:
+    description: JSON object of country code to owner/repo@tag
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Fetch and check the packs
+      shell: bash
+      env:
+        CELERP_L10N_TOKEN: ${{ inputs.token }}
+        CELERP_L10N_SOURCES: ${{ inputs.sources }}
+      run: python3 scripts/l10n_packs.py fetch

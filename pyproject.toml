@@ -122,7 +122,7 @@ asyncio_default_fixture_loop_scope = "function"
 # 8-19s per worker there, and a two-render test lands at 20-25s, so shards failed
 # on timing rather than on anything being wrong. 60s keeps the guard meaningful
 # (a genuine deadlock still trips it) with headroom for parallel runs.
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg and not integration' --timeout=60"
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser and not embedded_pg and not integration and not real_packs' --timeout=60"
 norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 # A warning is a failure. The ignores below are raised inside third-party libraries only.
 filterwarnings = [
@@ -137,6 +137,7 @@ markers = [
     "process: spawns OS processes or races separate database connections (slow). CI runs these in their own job.",
     "observer_control: the write observer's own controls, which make the findings they check on purpose.",
     "integration: several installations, each its own server process and database, and a stand-in relay (slow). CI runs these in their own job.",
+    "real_packs: checks against the real country packs, which a build fetches first (scripts/l10n_packs.py fetch). CI runs these in the l10n-golden workflow.",
 ]
 
 # NOTE: do NOT set [tool.coverage.run] core = "sysmon" here. The sys.monitoring
@@ -163,6 +164,8 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
     "importers/sample/*.manager",
     "output/fonts/*",
     "help/**/*",
+    "localization/packs.lock.json",
+    "localization/packs/*.json",
 ]
 "ui" = [
     "static/**/*",

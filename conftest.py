@@ -8,6 +8,7 @@ import atexit
 import contextvars
 import functools
 import inspect
+import json
 import os
 import shutil
 import sys
@@ -106,6 +107,32 @@ def _start_pg_container() -> str:
     port = _PG_CONTAINER.get_exposed_port(5432)
     return (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
             f"@{host}:{port}/{_PG_CONTAINER.dbname}")
+
+
+def _mark_expression(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == "-m" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("-m") and len(arg) > 2:
+            return arg[2:].lstrip("=")
+    return None
+
+
+# Country packs: every session reads the committed fixture set (absolute, so a server the
+# tests start from any folder reads the same set), except the real-pack golden session.
+_REAL_PACKS = "real_packs"
+if _mark_expression(sys.argv[1:]) != _REAL_PACKS:
+    os.environ.setdefault("CELERP_L10N_DIR", str(Path(_CHECKOUT) / "tests" / "fixtures" / "l10n"))
+
+
+def pytest_sessionstart(session):
+    """A real-pack session stops unless every country in the package lock has its pack."""
+    if session.config.option.markexpr != _REAL_PACKS:
+        return
+    from celerp.localization import packs
+    package_lock = Path(celerp.__file__).resolve().parent / "localization" / "packs.lock.json"
+    if set(packs()) != set(json.loads(package_lock.read_text(encoding="utf-8"))):
+        pytest.exit("country packs missing: run scripts/l10n_packs.py fetch", returncode=4)
 
 
 try:

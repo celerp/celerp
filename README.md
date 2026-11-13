@@ -146,6 +146,9 @@ celerp init   # creates DB, runs migrations, starts servers
 system Postgres are required. To develop against your own server instead, pass
 `--db-url postgresql+asyncpg://…`.
 
+A source checkout has no country packs, so setup offers only "Other country". A build with read
+access to the pack repositories fetches them with `python scripts/l10n_packs.py fetch`.
+
 Open **http://localhost:8080**. Run tests with `pytest tests/ -n auto`. The tests start a throwaway
 Postgres in Docker. To use a server of your own instead, create a database with "test" in its
 name on this machine and point `CELERP_TEST_DATABASE_URL` at it, for example
