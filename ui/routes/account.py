@@ -79,9 +79,6 @@ _GATE_BENEFIT_KEYS = {
 # that carries it. With the count missing or 0 the panel keeps the generic hint.
 _GATE_BENEFIT_COUNTS = {"doc-send": "free_email_quota", "ai": "free_ai_questions"}
 
-# Conditions that come with a kind's free allowance, shown after its benefit line.
-_GATE_BENEFIT_TERMS = {"ai": "ai.free_terms"}
-
 # Continuations whose form kept every typed value and the same operation: submitting it
 # again reuses what was staged, so the copy is never re-exported, the client gets one
 # email with one link, Celerp's team gets one move request, and a Xero sign-in keeps its link.
@@ -246,8 +243,7 @@ def _signup_body(lang: str, panel_id: str, google: bool,
             parts[1] = P(t(_GATE_BENEFIT_KEYS[kind], lang),
                          cls="settings-hint account-panel__benefit")
         elif n := (counts or {}).get(_GATE_BENEFIT_COUNTS[kind]):
-            terms = [" ", t(_GATE_BENEFIT_TERMS[kind], lang)] if kind in _GATE_BENEFIT_TERMS else []
-            parts[1] = P(t(_GATE_BENEFIT_KEYS[kind], lang, n=n), *terms,
+            parts[1] = P(t(_GATE_BENEFIT_KEYS[kind], lang, n=n),
                          cls="settings-hint account-panel__benefit")
     if method_toggle is not None:
         parts.append(method_toggle)
