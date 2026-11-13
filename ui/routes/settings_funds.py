@@ -17,6 +17,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 
 import ui.api_client as api
+from celerp.services.business_time import business_today
 from celerp.services.journal_accounts import funds_enabled
 from celerp.services.peer_lines import UNRESTRICTED
 from ui.api_client import APIError, error_message
@@ -132,13 +133,14 @@ def _add_form(values: dict) -> FT:
 @dataclass(frozen=True)
 class FundsBooks:
     """What the Funds tab is drawn from: the setting, the funds, and for the movement forms
-    the accounts a movement may move, the purpose spending a release may name and the
-    company currency."""
+    the accounts a movement may move, the purpose spending a release may name, the
+    company currency and today in the company's timezone (the forms' date)."""
     enabled: bool
     funds: list[dict]
     accounts: list[dict] = field(default_factory=list)
     spending: list[dict] = field(default_factory=list)
     currency: str = ""
+    today: str = ""
 
 
 def _field(label: str, control) -> FT:
@@ -227,7 +229,7 @@ def _movement_form(kind: str, books: FundsBooks, values: dict | None) -> FT:
         Form(
             P(t(help_key), cls="text-muted mb-md"),
             operation_key_input(),
-            _field(t("th.date"), _text("date", {"date": date.today().isoformat(), **values}, type="date")),
+            _field(t("th.date"), _text("date", {"date": books.today, **values}, type="date")),
             *_movement_fields(kind, books, values),
             _field(t("label.reason"), _text("reason", values)),
             Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"), cls="form-actions mt-md"),
@@ -275,7 +277,8 @@ async def funds_books(token: str) -> FundsBooks:
     accounts = [a for a in (await api.get_chart(token)).get("items") or ()
                 if a.get("account_type") in _MOVED_TYPES and a.get("is_active", True)]
     spending = (await api.list_release_spending(token)).get("items") or []
-    return FundsBooks(True, funds, accounts, spending, company.get("currency") or "")
+    return FundsBooks(True, funds, accounts, spending, company.get("currency") or "",
+                      business_today(company.get("timezone")).isoformat())
 
 
 async def funds_tab(token: str, banner: FT | str = "", kept: tuple[str, dict] | None = None) -> FT:

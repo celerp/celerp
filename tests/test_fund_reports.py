@@ -9,6 +9,7 @@ board-designated funds U1 and U2 and the restricted net assets account
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -506,3 +507,30 @@ async def test_fund_changes_dated_on_the_business_day(client, session, auth):
     assert [(c["record_id"], c["date"]) for c in april["fund_changes"]] == [(doc, "2026-04-01")]
     march = await _get(client, auth, "activity", date_from="2026-03-01", date_to="2026-03-31")
     assert march["fund_changes"] == []
+
+
+async def test_fund_movement_forms_dated_on_the_business_day(ui_client, monkeypatch):
+    """Each movement form opens dated today in the company's timezone on the business clock,
+    as a payment form does, not on the server's own date: at 12:00 UTC on 15 July 2027 a
+    company on UTC+14 is already on 16 July."""
+    from datetime import datetime as real_datetime
+    from unittest.mock import AsyncMock
+
+    import celerp.services.business_time as bt
+    from test_income_accounts import _ui_api
+
+    class Fixed(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2027, 7, 15, 12, 0, tzinfo=bt.timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(bt, "datetime", Fixed)
+    on = {"name": "Test Corp", "current_role": "owner", "timezone": "Pacific/Kiritimati",
+          "settings": {"modules": ["celerp-accounting"], "funds_enabled": True}}
+    funds = [{"id": "fund:1", "name": "Library gift", "restricted": True, "purpose": "Books", "archived": False}]
+    with _ui_api(get_company=AsyncMock(return_value=on), list_funds=AsyncMock(return_value={"items": funds}),
+                 get_chart=AsyncMock(return_value={"items": []}),
+                 list_release_spending=AsyncMock(return_value={"items": []})):
+        page = (await ui_client.get("/settings/accounting", params={"tab": "funds"})).text
+    dates = re.findall(r'<input[^>]*name="date"[^>]*>', page)
+    assert len(dates) == 4 and all('value="2027-07-16"' in d for d in dates), dates
