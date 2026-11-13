@@ -262,14 +262,19 @@ async def charge_parts(session, company_id, entity_id, doc_state, reference: str
     if any(p.get("reference") == reference and p.get("status") != "deleted"
            for row in rows.values() for p in row.state.get("payments", [])):
         return []
-    others = sorted((r for i, r in rows.items() if i != entity_id),
-                    key=lambda r: (str(r.state.get("issue_date") or ""), r.state.get("ref_id") or r.entity_id))
     parts, rest = [], amount_minor
-    for row in [rows[entity_id], *others]:
+    for row in [rows[entity_id], *spill_order(r for i, r in rows.items() if i != entity_id)]:
         if part := min(rest, owed(row.state)):
             parts.append((row, part))
             rest -= part
     return parts or None
+
+
+def spill_order(rows) -> list[Projection]:
+    """The order a charge spills over an agreement's other open invoices after its own
+    (``charge_parts``), oldest first: the order its follow-ups reverse
+    (``payments.charge_reference_parts``)."""
+    return sorted(rows, key=lambda r: (str(r.state.get("issue_date") or ""), r.state.get("ref_id") or r.entity_id))
 
 
 async def recorded_payment_books(session, company_id, row: Projection, reference: str) -> dict | None:
@@ -393,11 +398,12 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 
 
 async def record_stripe_release(session, company_id, row: Projection, *, reference: str,
-                                released_at: datetime.datetime) -> bool:
+                                released_at: datetime.datetime, key: str) -> bool:
     """Record on the document *row* that the online payment *reference* is no
     longer linked to Stripe: Stripe was disconnected, so it is refunded or voided
-    here from now on, for good. Only ``payments.receive_release`` and the
-    payment intake call it; the caller commits. The owner is told, once. False when
+    here from now on, for good. Only ``payments._apply_release`` calls it, for each
+    part of the charge (``payments.charge_reference_parts``) under that part's *key*;
+    the caller commits. The owner is told, once. False when
     the payment is not on the document; recording it again is a quiet True."""
     from celerp.events.engine import emit_event
     from celerp.notifications import service as notif_service
@@ -413,7 +419,7 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
         event_type="doc.payment.stripe_released",
         data={"payment_index": payment["index"], "reference": reference, "released_at": released_at.isoformat()},
         actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
-        idempotency_key=f"stripe-release:{reference}")
+        idempotency_key=f"stripe-release:{key}")
     if not getattr(entry, "was_deduped", False):
         ref = _doc_ref(row.state) or row.entity_id
         await notif_service.create(
