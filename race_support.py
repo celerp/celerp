@@ -81,6 +81,7 @@ async def _app_client(factory):
         with patch("celerp.gateway.client._client", MagicMock()), \
              patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
              patch("celerp.middleware.get_session_ctx", _ctx), \
+             patch("celerp.modules.boundary.get_session_ctx", _ctx), \
              patch("celerp.db.LifecycleSessionLocal", factory):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 yield c, pending
