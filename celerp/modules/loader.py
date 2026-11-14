@@ -1264,10 +1264,17 @@ def event_read_permissions() -> dict[str, str]:
     that is turned off keeps its events behind it. Only a module that passes admission
     names one, and only for a prefix no other installed module claims an overlapping
     prefix of; every other module event falls to the company-admin default."""
-    return dict(_admitted_event_permissions(module_search_path()))
+    search_path = module_search_path()
+    if search_path not in _event_permissions:
+        _event_permissions[search_path] = _admitted_event_permissions(search_path)
+    return dict(_event_permissions[search_path])
 
 
-@functools.lru_cache(maxsize=4)
+# Admitting every installed module reads and parses their source, so the result is kept
+# per module search path for the life of the process.
+_event_permissions: dict[str, tuple[tuple[str, str], ...]] = {}
+
+
 def _admitted_event_permissions(search_path: str) -> tuple[tuple[str, str], ...]:
     found: dict[str, dict] = {}
     for pkg in _installed_packages():

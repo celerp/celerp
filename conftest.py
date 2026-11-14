@@ -788,22 +788,36 @@ def _reset_loaded_modules(request):
     Browser tests are exempt: their server runs in-process and legitimately owns
     a populated _loaded (module-gated UI like the credit-note "Receive Returns"
     button reads loaded_modules()) and slot registry, so wiping it would hide
-    that UI."""
+    that UI.
+
+    The permission each module's events are read with is kept per module search path
+    and restored the same way: a test that computes it under doctored admission or
+    slots (a mocked boot admits no modules) leaves nothing for later tests. When the
+    test was the first to compute it for the real search path, it is settled again
+    once the slots are restored, as boot does, so later tests reuse it."""
     if request.node.get_closest_marker("browser"):
         yield
         return
-    from celerp.modules.loader import _loaded, _module_routes
+    from celerp.modules.loader import (
+        _event_permissions, _loaded, _module_routes, event_read_permissions, module_search_path,
+    )
     from celerp.modules import outcome as _outcome
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
     _module_routes.clear()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
+    _permissions_snapshot = dict(_event_permissions)
     yield
+    settle = module_search_path() in _event_permissions.keys() - _permissions_snapshot.keys()
+    _event_permissions.clear()
+    _event_permissions.update(_permissions_snapshot)
     _loaded.clear()
     _module_routes.clear()
     _outcome._awaiting_ui = False  # a lifespan that loaded modules waits for a UI
     _slots_mod._slots.clear()
     _slots_mod._slots.update({k: list(v) for k, v in _slot_snapshot.items()})
+    if settle:
+        event_read_permissions()
 
 
 @pytest.fixture(scope="session", autouse=True)
