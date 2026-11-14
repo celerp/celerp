@@ -42,3 +42,18 @@ def test_a_split_with_a_zero_quantity_is_stopped_with_the_reason(playwright):
     result = _submit(playwright, "0", "3")
     assert result["prevented"] is True
     assert result["message"] == "Enter a quantity above zero"
+
+
+@pytest.mark.parametrize("a,confirmed", [("2", True), ("0", False)])
+def test_the_confirm_button_sends_a_valid_split_for_the_selected_row_only(playwright, a, confirmed):
+    browser = playwright.chromium.launch()
+    try:
+        page = browser.new_page()
+        page.set_content('<input type="checkbox" class="row-select" data-entity-id="item:1" checked>'
+                         + _FORM.format(a=a, b="3"))
+        page.add_script_tag(content=_BULK_SPLIT_JS)
+        result = page.evaluate("""() => { const f = document.querySelector('form');
+            return [bulkSplitSubmit(f), (f.querySelector('[name=entity_id]') || {}).value || null]; }""")
+    finally:
+        browser.close()
+    assert result == ([True, "item:1"] if confirmed else [False, None])
