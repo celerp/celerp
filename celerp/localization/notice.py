@@ -11,7 +11,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.localization import lock_codes, missing
-from celerp.notifications.service import clear_every_company, notify_every_company
+from celerp.notifications import service as notification_service
 from celerp.tax_regimes import country_names
 from ui.i18n import t
 
@@ -27,8 +27,8 @@ async def sync_pack_notice(session: AsyncSession) -> None:
     elif codes := missing():
         body, params = "l10n.pack_missing.body", {"countries": list(codes)}
     else:
-        await clear_every_company(session, _CATEGORY, title)
+        await notification_service.clear_every_company(session, _CATEGORY, title)
         return
     english = {"countries": country_names(codes, "en")} if params else {}
-    await notify_every_company(session, _CATEGORY, title, t(body, "en", **english),
-                               i18n={"title": _TITLE, "body": body, "params": params})
+    await notification_service.notify_every_company(session, _CATEGORY, title, t(body, "en", **english),
+                                                    i18n={"title": _TITLE, "body": body, "params": params})
