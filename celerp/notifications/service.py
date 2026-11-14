@@ -281,7 +281,8 @@ async def notify_once(
 ) -> None:
     """A high-priority notice told once to the company, or to the member ``user_id``: never
     again to the same addressee with the same title and body, read or not. A notice already
-    told takes ``action_url`` as its link, so the link follows the condition to where it is now.
+    told takes ``action_url`` as its link, so the link follows the condition to where it is now,
+    and ``i18n`` as its keys, so a notice told under keys since renamed is read from the new ones.
     ``action_url`` and ``i18n`` as for ``create``; written when the session commits."""
     _defer(session, company_id, partial(_notify_once, company_id=company_id, category=category, title=title, body=body,
                             user_id=user_id, action_url=action_url, i18n=i18n))
@@ -295,9 +296,12 @@ def _notify_once(sync: Session, *, company_id, category, title, body, user_id, a
         Notification.body == body,
         Notification.user_id == user_id if user_id is not None else Notification.user_id.is_(None),
     )
-    if sync.execute(select(Notification.id).where(*same).limit(1)).first():
+    told = sync.execute(select(Notification.i18n).where(*same).limit(1)).first()
+    if told:
         sync.execute(update(Notification).where(*same, Notification.action_url.is_distinct_from(action_url))
                      .values(action_url=action_url))
+        if i18n is not None and told.i18n != i18n:
+            sync.execute(update(Notification).where(*same).values(i18n=i18n))
         return
     _add(sync, notif=Notification(company_id=company_id, user_id=user_id, category=category, title=title,
                                   body=body, action_url=action_url, priority="high", i18n=i18n))

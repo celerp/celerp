@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Tell each company its saved taxes still hold a row an earlier seed wrote and that is no
 longer right, as the country packs list them (tax_regimes.retired_taxes). An entry has its own
-words when the catalogs carry them (``notice.tax_seed.<id>``); any other is told by the names of
+words when the catalogs carry them (``notice.tax_seed.<country>.<id>``, by country as the id is
+unique within one pack only); any other is told by the names of
 its rows.
 
 Runs at every startup, and for one company whenever its tax lists are saved, imported or its
@@ -59,7 +60,7 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
 def _notice_keys(entry: dict) -> dict:
     """The notice's catalog keys and parameters: the entry's own words when the catalogs have
     them, else the words for any retired row, naming its rows."""
-    key = f"notice.tax_seed.{entry['id']}"
+    key = f"notice.tax_seed.{entry['country']}.{entry['id']}"
     if t(f"{key}.title", "en") != f"{key}.title":  # t gives the key back when no catalog has it
         return {"title": f"{key}.title", "body": f"{key}.body", "params": {}}
     names = ", ".join(row["name"] for row in entry["rows"])

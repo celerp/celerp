@@ -47,7 +47,7 @@ async def _notices(session, company_id) -> dict[str, Notification]:
     rows = (await session.execute(
         select(Notification).where(Notification.company_id == company_id))).scalars().all()
     prefix = "notice.tax_seed."
-    return {n.i18n["title"][len(prefix):-len(".title")]: n for n in rows
+    return {n.i18n["title"][len(prefix):-len(".title")].split(".")[-1]: n for n in rows
             if (n.i18n or {}).get("title", "").startswith(prefix)}
 
 
@@ -159,7 +159,7 @@ async def test_each_retired_seed_notice_names_its_rows_and_the_replacement():
 
     assert {entry["id"] for entry in retired_taxes()} == set(_REPLACEMENT)
     for entry in retired_taxes():
-        body = t(f"notice.tax_seed.{entry['id']}.body", "en")
+        body = t(f"notice.tax_seed.{entry['country']}.{entry['id']}.body", "en")
         assert [row["name"] for row in entry["rows"] if row["name"] not in body] == [], entry["id"]
         assert _REPLACEMENT[entry["id"]] in body, entry["id"]
 
@@ -207,6 +207,61 @@ async def test_two_packs_retiring_the_same_id_are_told_apart(session, monkeypatc
     assert await told(one) == {"Old Thai tax"}
 
 
+async def test_two_countries_retiring_one_id_each_show_their_own_words(session, monkeypatch):
+    """A catalog's own words belong to one country's entry: another pack retiring the same id is
+    told by its own words (here, the names of its rows), never by the first country's text."""
+    with_retired(monkeypatch, {
+        "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%"}]}],
+        "ET": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "Old Ethiopian tax"}]}]})
+    sst = {"name": "SST 6%", "rate": 6.0, "tax_type": "both", "is_default": False}
+    holding = await _company(session, sales=[sst, {**sst, "name": "Old Ethiopian tax", "rate": 1.0}])
+
+    await _run(session)
+    rows = (await session.execute(select(Notification).where(Notification.company_id == holding))).scalars().all()
+    assert sorted((n.i18n["title"], n.i18n["params"]) for n in rows) == [
+        ("notice.tax_seed.MY.my-sst-6.title", {}),
+        ("notice.tax_seed.retired.title", {"taxes": "Old Ethiopian tax"})]
+
+
+async def test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key(session):
+    """A notice an earlier release told under the id-only key is moved to the country key at the
+    next start, so a reader in another language sees it translated, not in the stored English."""
+    from sqlalchemy import update
+
+    old = await _company(session, sales=_OLD_ET)
+    await _run(session)
+    told = (await _notices(session, old))["et-wht-2025"]
+    await session.execute(update(Notification).where(Notification.id == told.id).values(
+        i18n={"title": "notice.tax_seed.et-wht-2025.title", "body": "notice.tax_seed.et-wht-2025.body", "params": {}}))
+    await session.commit()
+
+    await _run(session)
+    session.expire_all()
+    again = (await _notices(session, old))["et-wht-2025"]
+    assert again.id == told.id
+    assert again.i18n == {"title": "notice.tax_seed.ET.et-wht-2025.title",
+                          "body": "notice.tax_seed.ET.et-wht-2025.body", "params": {}}
+
+
+async def test_each_country_s_own_words_are_in_every_locale_under_its_country():
+    """Every catalog key of a retired entry's own words is keyed by country and id and names an
+    entry the packs retire, and every locale has the same entries as English, title and body."""
+    from celerp.tax_regimes import retired_taxes
+    from ui.i18n import _cached_load, available_langs
+
+    entries = {f"notice.tax_seed.{e['country']}.{e['id']}" for e in retired_taxes()}
+
+    def own_words(lang: str) -> set[str]:
+        return {k for k in _cached_load(lang) if k.startswith("notice.tax_seed.")
+                and not k.startswith("notice.tax_seed.retired.")}
+
+    english = own_words("en")
+    assert english and {k.rsplit(".", 1)[0] for k in english} <= entries
+    assert all(f"{k.rsplit('.', 1)[0]}.{part}" in english for k in english for part in ("title", "body"))
+    for lang in available_langs():
+        assert own_words(lang) == english, lang
+
+
 async def test_tax_seed_notice_links_purchasing_tab_for_purchasing_match(session):
     vat = [r for r in _OLD_ET if r["name"] == "VAT 15%"]
     wht = [r for r in _OLD_ET if r["name"] == "WHT 2%"]
@@ -244,7 +299,7 @@ async def _bell(client, h) -> set[str]:
     r = await client.get("/notifications", headers=h, params={"limit": 100})
     assert r.status_code == 200, r.text
     prefix = "notice.tax_seed."
-    return {n["i18n"]["title"][len(prefix):-len(".title")] for n in r.json()["items"]
+    return {n["i18n"]["title"][len(prefix):-len(".title")].split(".")[-1] for n in r.json()["items"]
             if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
 
 
@@ -329,7 +384,7 @@ async def _bell_links(client, h) -> dict[str, str]:
     r = await client.get("/notifications", headers=h, params={"limit": 100})
     assert r.status_code == 200, r.text
     prefix = "notice.tax_seed."
-    return {n["i18n"]["title"][len(prefix):-len(".title")]: n["action_url"] for n in r.json()["items"]
+    return {n["i18n"]["title"][len(prefix):-len(".title")].split(".")[-1]: n["action_url"] for n in r.json()["items"]
             if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
 
 
