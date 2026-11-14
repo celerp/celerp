@@ -35,12 +35,14 @@ async def test_default_bank_follows_the_currency_the_wizard_sets(client, session
 
 
 async def test_default_bank_follows_the_currency_of_the_default_locations_country(client, session):
+    from celerp.tax_regimes import get_regime
+    currency = get_regime("AU")["currency"]
     _, h = await admin(client)
     r = await client.post("/companies/me/locations", headers=h, json={
-        "name": "Tokyo", "type": "warehouse", "is_default": True, "address": {"country": "JP"}})
+        "name": "Sydney", "type": "warehouse", "is_default": True, "address": {"country": "AU"}})
     assert r.status_code == 200, r.text
-    assert (await client.get("/companies/me", headers=h)).json()["settings"]["currency"] == "JPY"
-    assert (await _default_bank(client, h))["currency"] == "JPY"
+    assert (await client.get("/companies/me", headers=h)).json()["settings"]["currency"] == currency
+    assert (await _default_bank(client, h))["currency"] == currency
 
 
 @pytest.mark.parametrize("currency", ["THB", "JPY"])

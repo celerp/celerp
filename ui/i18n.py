@@ -418,7 +418,8 @@ def _refusal_param(name: str, value):
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
     file type such as ".pdf" or a name reads as written); ``reason``
-    as why a production run waits for reconciling; ``doc_type`` as its label; any ISO day
+    as why a production run waits for reconciling; ``doc_type`` as its label; ``countries``
+    (a list of codes) as their names; any ISO day
     as a date (date_text)."""
     from ui.components.table import display_enum
 
@@ -436,6 +437,9 @@ def _refusal_param(name: str, value):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "reason":
         return reconcile_reason(str(value))
+    if name == "countries" and isinstance(value, list):
+        from celerp.tax_regimes import country_names
+        return country_names(value)
     if name == "doc_type":
         return doc_type_label(str(value))
     if name == "types" and isinstance(value, list):

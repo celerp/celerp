@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from celerp.tax_regimes import TAX_REGIMES
+from celerp.tax_regimes import get_regime
 from test_money_boundary import _company, _je
 from ui.i18n import refusal_text
 
@@ -20,7 +20,7 @@ _VAT = {"code": "VAT 7%", "rate": 7.0, "order": 0, "is_compound": False}
 
 async def _with_taxes(client, session, country: str) -> dict:
     auth = await _company(session, "THB")
-    r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": TAX_REGIMES[country]["taxes"]})
+    r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": get_regime(country)["taxes"]})
     assert r.status_code == 200, r.text
     return auth
 
@@ -127,7 +127,7 @@ def test_each_document_offers_only_taxes_for_its_side():
 
     from ui.routes.documents import _doc_detail
 
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
 
     def picker(doc_type: str) -> str:
         doc = {"entity_id": "doc:1", "doc_type": doc_type, "status": "draft", "ref_id": "D-1",
@@ -144,13 +144,13 @@ def test_each_document_offers_only_taxes_for_its_side():
 
     assert side(("purchase",)) and [t["name"] for t in taxes_for(th, "invoice")] == side(("both", "sales"))
     assert [t["name"] for t in taxes_for(th, "bill")] == side(("both", "purchase"))
-    assert "Sales Tax 10%" not in [t["name"] for t in taxes_for(TAX_REGIMES["MY"]["taxes"], "bill")]
+    assert "Sales Tax 10%" not in [t["name"] for t in taxes_for(get_regime("MY")["taxes"], "bill")]
 
 
 def test_a_new_line_starts_with_the_default_tax_for_its_side():
     """A new line takes its document side's default tax: never a withholding tax on a sale or a purchase."""
     from celerp.tax_regimes import default_line_taxes
 
-    th = TAX_REGIMES["TH"]["taxes"]
+    th = get_regime("TH")["taxes"]
     assert [t["code"] for t in default_line_taxes(th, "invoice", doc=None)] == ["VAT 7%"]
     assert [t["code"] for t in default_line_taxes(th, "bill", doc=None)] == ["VAT 7%"]

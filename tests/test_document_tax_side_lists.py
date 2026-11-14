@@ -107,10 +107,10 @@ async def test_the_invoice_editor_offers_sales_taxes(ui_client):
 async def test_the_editor_explains_igst_where_the_company_offers_it(ui_client, doc_type, country, shown):
     """IGST 18% is the new Indian default; the editor says it is for sales and purchases between
     states, and that within a state the same 18% is CGST 9% plus SGST 9%."""
-    from celerp.tax_regimes import TAX_REGIMES
+    from celerp.tax_regimes import get_regime
     from ui.i18n import t
 
-    seed = TAX_REGIMES[country]["taxes"]
+    seed = get_regime(country)["taxes"]
     html = await _editor(ui_client, doc_type, sales=seed, purchasing=seed)
     assert (t("documents.igst_note") in html) is shown
 

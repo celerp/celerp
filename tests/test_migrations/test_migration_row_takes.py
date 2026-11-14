@@ -61,7 +61,7 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
     from celerp.models.sync_run import SyncRun
     from celerp.models.migration import MigrationEntityMap, MigrationRun
     from celerp.services.migration_core_sink import deterministic_id
-    from celerp_accounting.routes import THAI_CHART_OF_ACCOUNTS, _seeded_account
+    from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS, _seeded_account
 
     upgrade_to(sync_url, RELEASE_HEAD)
     ids = _populate(sync_url)
@@ -69,7 +69,7 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
     eng = create_engine(sync_url)
     try:
         company = uuid.UUID(ids["company"])
-        rows = [_seeded_account(company, entry) for entry in THAI_CHART_OF_ACCOUNTS if entry["code"] != "6970"]
+        rows = [_seeded_account(company, entry) for entry in DEFAULT_CHART_OF_ACCOUNTS if entry["code"] != "6970"]
         run_id = uuid.uuid4()
         code = "M" + deterministic_id(SimpleNamespace(run_id=run_id), "account", "xero-sales").hex[:8]
         # The accounting module's table comes from the boot's create_all, as it does live.

@@ -3,430 +3,89 @@
 """
 Country-based tax regime defaults.
 
-Keyed by ISO 3166-1 alpha-2 country code (uppercase).
-Used to seed company.settings["taxes"] and company.settings["currency"]
-when a default location with a known country is first set.
+Each country's regime comes from the release's country packs (``celerp.localization``), keyed by
+ISO 3166-1 alpha-2 country code (uppercase). Used to seed company.settings["taxes"] and
+company.settings["currency"] when a default location with a known country is first set.
 
-Each entry:
+Each regime:
   currency: str          ISO 4217 code
-  taxes: list[dict]      matches the TaxRate schema in routers/companies.py
+  taxes: list[dict]      a list the TaxRatesPatch schema in routers/companies.py accepts
 
-"_default" is the fallback for unknown/unset country.
+``DEFAULT_REGIME`` is the fallback for an unknown or unset country.
 """
 from __future__ import annotations
 
 import copy
 
+from celerp.localization import lock_codes, missing, packs
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 
-_T = dict  # type alias for readability
+# The sides a tax is for; a row stored without one, or with a blank one, is for both.
+TAX_TYPES = ("sales", "purchase", "both")
 
-TAX_REGIMES: dict[str, _T] = {
-    # ── Southeast Asia ────────────────────────────────────────────────────
-    "TH": {
-        "currency": "THB",
-        "taxes": [
-            {"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True,
-             "description": "Thailand VAT at the reduced rate, extended to 30 Sep 2027 (the statutory rate "
-                            "is 10%)", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-            {"name": "VAT 0% (export)", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated exports. Input VAT stays reclaimable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-            {"name": "WHT 1%", "rate": -1.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on transport", "is_compound": False, "default_order": 1},
-            {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on advertising", "is_compound": False, "default_order": 1},
-            {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on services", "is_compound": False, "default_order": 1},
-            {"name": "WHT 5%", "rate": -5.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding tax on rentals", "is_compound": False, "default_order": 1},
-        ],
-    },
-    "SG": {
-        "currency": "SGD",
-        "taxes": [
-            {"name": "GST 9%", "rate": 9.0, "tax_type": "both", "is_default": True,
-             "description": "Singapore GST", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "GST-exempt", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated GST (exports and international services)",
-             "is_compound": False, "default_order": 0},
-        ],
-    },
-    "MY": {
-        "currency": "MYR",
-        "taxes": [
-            {"name": "Sales Tax 10%", "rate": 10.0, "tax_type": "sales", "is_default": True,
-             "description": "Malaysia sales tax, standard rate", "is_compound": False, "default_order": 0},
-            {"name": "Sales Tax 5%", "rate": 5.0, "tax_type": "sales", "is_default": False,
-             "description": "Malaysia sales tax, reduced rate for listed goods",
-             "is_compound": False, "default_order": 0},
-            {"name": "Service Tax 8%", "rate": 8.0, "tax_type": "sales", "is_default": False,
-             "description": "Malaysia service tax (selected services)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Service Tax 6%", "rate": 6.0, "tax_type": "sales", "is_default": False,
-             "description": "Malaysia service tax on listed services such as food and drink, telecoms, "
-                            "logistics, parking and rentals",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "PH": {
-        "currency": "PHP",
-        "taxes": [
-            {"name": "VAT 12%", "rate": 12.0, "tax_type": "both", "is_default": True,
-             "description": "Philippines VAT", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated VAT (exports)", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-            {"name": "EWT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Expanded withholding tax", "is_compound": False, "default_order": 1},
-            {"name": "EWT 1%", "rate": -1.0, "tax_type": "purchase", "is_default": False,
-             "description": "Expanded withholding tax on goods", "is_compound": False, "default_order": 1},
-        ],
-    },
-    "ID": {
-        "currency": "IDR",
-        "taxes": [
-            {"name": "PPN 11%", "rate": 11.0, "tax_type": "both", "is_default": True,
-             "description": "12% on a base of 11/12 of the price, for goods that are not luxury goods",
-             "is_compound": False, "default_order": 0},
-            {"name": "PPN 12%", "rate": 12.0, "tax_type": "both", "is_default": False,
-             "description": "Luxury goods, on the full price", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "PPN-exempt", "is_compound": False, "default_order": 0},
-            {"name": "PPN 0% (export)", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated exports. Input PPN stays creditable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-            {"name": "PPh 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Income tax withholding (PPh 23)", "is_compound": False, "default_order": 1},
-            {"name": "PPh 15%", "rate": -15.0, "tax_type": "purchase", "is_default": False,
-             "description": "Income tax withholding (PPh 23) on royalties, interest and prizes",
-             "is_compound": False, "default_order": 1},
-        ],
-    },
-    "VN": {
-        "currency": "VND",
-        "taxes": [
-            {"name": "VAT 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
-             "description": "Vietnam standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "VAT 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
-             "description": "Reduced rate until 31 Dec 2026. Excluded sectors stay at 10%",
-             "is_compound": False, "default_order": 0},
-            {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
-             "description": "Vietnam reduced VAT (essential goods)",
-             "is_compound": False, "default_order": 0},
-            {"name": "VAT 0% (export)", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated exports. Input VAT stays reclaimable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── Oceania ───────────────────────────────────────────────────────────
-    "AU": {
-        "currency": "AUD",
-        "taxes": [
-            {"name": "GST 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
-             "description": "Australia GST", "is_compound": False, "default_order": 0},
-            {"name": "GST-free", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "GST-free supply", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "NZ": {
-        "currency": "NZD",
-        "taxes": [
-            {"name": "GST 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
-             "description": "New Zealand GST", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated GST (exports)", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── Europe ────────────────────────────────────────────────────────────
-    "GB": {
-        "currency": "GBP",
-        "taxes": [
-            {"name": "VAT 20%", "rate": 20.0, "tax_type": "both", "is_default": True,
-             "description": "UK standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
-             "description": "UK reduced rate VAT", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated VAT", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "DE": {
-        "currency": "EUR",
-        "taxes": [
-            {"name": "MwSt 19%", "rate": 19.0, "tax_type": "both", "is_default": True,
-             "description": "Germany standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "MwSt 7%", "rate": 7.0, "tax_type": "both", "is_default": False,
-             "description": "Germany reduced VAT", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "FR": {
-        "currency": "EUR",
-        "taxes": [
-            {"name": "TVA 20%", "rate": 20.0, "tax_type": "both", "is_default": True,
-             "description": "France standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "TVA 10%", "rate": 10.0, "tax_type": "both", "is_default": False,
-             "description": "France intermediate rate", "is_compound": False, "default_order": 0},
-            {"name": "TVA 5.5%", "rate": 5.5, "tax_type": "both", "is_default": False,
-             "description": "France reduced rate", "is_compound": False, "default_order": 0},
-            {"name": "TVA 2.1%", "rate": 2.1, "tax_type": "both", "is_default": False,
-             "description": "France super-reduced rate (some medicines, press and shows)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "ES": {
-        "currency": "EUR",
-        "taxes": [
-            {"name": "IVA 21%", "rate": 21.0, "tax_type": "both", "is_default": True,
-             "description": "Spain standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "IVA 10%", "rate": 10.0, "tax_type": "both", "is_default": False,
-             "description": "Spain reduced rate", "is_compound": False, "default_order": 0},
-            {"name": "IVA 4%", "rate": 4.0, "tax_type": "both", "is_default": False,
-             "description": "Spain super-reduced rate (basic food, books, medicines)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exento", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "IT": {
-        "currency": "EUR",
-        "taxes": [
-            {"name": "IVA 22%", "rate": 22.0, "tax_type": "both", "is_default": True,
-             "description": "Italy standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "IVA 10%", "rate": 10.0, "tax_type": "both", "is_default": False,
-             "description": "Italy reduced rate", "is_compound": False, "default_order": 0},
-            {"name": "IVA 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
-             "description": "Italy reduced rate for listed goods and services",
-             "is_compound": False, "default_order": 0},
-            {"name": "IVA 4%", "rate": 4.0, "tax_type": "both", "is_default": False,
-             "description": "Italy super-reduced rate (basic food, books)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Esente", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "PT": {
-        "currency": "EUR",
-        "taxes": [
-            {"name": "IVA 23%", "rate": 23.0, "tax_type": "both", "is_default": True,
-             "description": "Portugal standard VAT (mainland)", "is_compound": False, "default_order": 0},
-            {"name": "IVA 13%", "rate": 13.0, "tax_type": "both", "is_default": False,
-             "description": "Portugal intermediate rate", "is_compound": False, "default_order": 0},
-            {"name": "IVA 6%", "rate": 6.0, "tax_type": "both", "is_default": False,
-             "description": "Portugal reduced rate", "is_compound": False, "default_order": 0},
-            {"name": "Isento", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── North America ─────────────────────────────────────────────────────
-    "US": {
-        "currency": "USD",
-        "taxes": [
-            # No federal VAT; state/local sales taxes vary. User must configure.
-            {"name": "Sales Tax", "rate": 0.0, "tax_type": "sales", "is_default": True,
-             "description": "State and local sales tax. Set the rate for your area",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "CA": {
-        "currency": "CAD",
-        "taxes": [
-            {"name": "GST 5%", "rate": 5.0, "tax_type": "both", "is_default": True,
-             "description": "Canada federal GST", "is_compound": False, "default_order": 0},
-            {"name": "PST 7%", "rate": 7.0, "tax_type": "both", "is_default": False,
-             "description": "British Columbia provincial sales tax, charged on the price before GST",
-             "is_compound": False, "default_order": 1},
-            {"name": "RST 7%", "rate": 7.0, "tax_type": "both", "is_default": False,
-             "description": "Manitoba retail sales tax, charged on the price before GST",
-             "is_compound": False, "default_order": 1},
-            {"name": "PST 6%", "rate": 6.0, "tax_type": "both", "is_default": False,
-             "description": "Saskatchewan provincial sales tax, charged on the price before GST",
-             "is_compound": False, "default_order": 1},
-            {"name": "QST 9.975%", "rate": 9.975, "tax_type": "both", "is_default": False,
-             "description": "Quebec sales tax, charged on the price before GST",
-             "is_compound": False, "default_order": 1},
-            {"name": "HST 13%", "rate": 13.0, "tax_type": "both", "is_default": False,
-             "description": "Harmonized sales tax in Ontario, in place of GST",
-             "is_compound": False, "default_order": 0},
-            {"name": "HST 14%", "rate": 14.0, "tax_type": "both", "is_default": False,
-             "description": "Harmonized sales tax in Nova Scotia from 1 Apr 2025, in place of GST",
-             "is_compound": False, "default_order": 0},
-            {"name": "HST 15%", "rate": 15.0, "tax_type": "both", "is_default": False,
-             "description": "Harmonized sales tax in New Brunswick, Newfoundland and Labrador, and Prince "
-                            "Edward Island, in place of GST",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated supplies such as exports and basic groceries. Input tax credits "
-                            "stay claimable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-        ],
-    },
-    "MX": {
-        "currency": "MXN",
-        "taxes": [
-            {"name": "IVA 16%", "rate": 16.0, "tax_type": "both", "is_default": True,
-             "description": "Mexico standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "IVA 8% (border region)", "rate": 8.0, "tax_type": "both", "is_default": False,
-             "description": "Eligible businesses in the northern and southern border regions. The "
-                            "incentive runs to 31 Dec 2026",
-             "is_compound": False, "default_order": 0},
-            {"name": "IVA 0%", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated VAT (exports, basic food, medicines)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exento", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── Asia ──────────────────────────────────────────────────────────────
-    "IN": {
-        "currency": "INR",
-        "taxes": [
-            {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
-             "description": "India central GST (standard rate split)",
-             "is_compound": False, "default_order": 0},
-            {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": False,
-             "description": "India state GST (standard rate split)",
-             "is_compound": False, "default_order": 0},
-            {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": True,
-             "description": "Integrated GST on sales between states. Within a state, 18% is charged as "
-                            "CGST 9% plus SGST 9%", "is_compound": False, "default_order": 0},
-            {"name": "CGST 2.5%", "rate": 2.5, "tax_type": "both", "is_default": False,
-             "description": "India central GST (reduced rate split)",
-             "is_compound": False, "default_order": 0},
-            {"name": "SGST 2.5%", "rate": 2.5, "tax_type": "both", "is_default": False,
-             "description": "India state GST (reduced rate split)", "is_compound": False, "default_order": 0},
-            {"name": "IGST 5%", "rate": 5.0, "tax_type": "both", "is_default": False,
-             "description": "Integrated GST at the reduced rate on sales between states. Within a state, 5% "
-                            "is charged as CGST 2.5% plus SGST 2.5%",
-             "is_compound": False, "default_order": 0},
-            {"name": "CGST 20%", "rate": 20.0, "tax_type": "both", "is_default": False,
-             "description": "India central GST (40% rate split)",
-             "is_compound": False, "default_order": 0},
-            {"name": "SGST 20%", "rate": 20.0, "tax_type": "both", "is_default": False,
-             "description": "India state GST (40% rate split)",
-             "is_compound": False, "default_order": 0},
-            {"name": "IGST 40%", "rate": 40.0, "tax_type": "both", "is_default": False,
-             "description": "Integrated GST at 40% on specified luxury and demerit goods since 22 Sep 2025, on "
-                            "sales between states. Within a state, 40% is charged as CGST 20% plus SGST 20%",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "GST-exempt", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated (export)", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Exports. Input GST stays reclaimable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-            {"name": "TDS 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
-             "description": "Tax deducted at source", "is_compound": False, "default_order": 1},
-        ],
-    },
-    "JP": {
-        "currency": "JPY",
-        "taxes": [
-            {"name": "消費税 10%", "rate": 10.0, "tax_type": "both", "is_default": True,
-             "description": "Japan consumption tax (standard)", "is_compound": False, "default_order": 0},
-            {"name": "消費税 8%", "rate": 8.0, "tax_type": "both", "is_default": False,
-             "description": "Japan consumption tax (reduced rate for food and drink)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── Middle East ───────────────────────────────────────────────────────
-    "AE": {
-        "currency": "AED",
-        "taxes": [
-            {"name": "VAT 5%", "rate": 5.0, "tax_type": "both", "is_default": True,
-             "description": "United Arab Emirates standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated VAT (exports and listed supplies)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    "SA": {
-        "currency": "SAR",
-        "taxes": [
-            {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
-             "description": "Saudi Arabia standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated VAT (exports and listed supplies)",
-             "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
-    # ── Africa ────────────────────────────────────────────────────────────
-    "ET": {
-        "currency": "ETB",
-        "taxes": [
-            {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
-             "description": "Ethiopia standard VAT", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
-            {"name": "Zero-rated", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Zero-rated supplies such as exports. Input VAT stays reclaimable, unlike Exempt",
-             "is_compound": False, "default_order": 0},
-            {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False,
-             "description": "Withholding on goods contracts above ETB 20,000 and services from ETB 10,000. "
-                            "30% when the supplier gives no TIN", "is_compound": False, "default_order": 1},
-        ],
-    },
-    # ── Fallback ──────────────────────────────────────────────────────────
-    "_default": {
-        "currency": "USD",
-        "taxes": [
-            {"name": "Standard Tax", "rate": 0.0, "tax_type": "both", "is_default": True,
-             "description": "Set your local tax rate", "is_compound": False, "default_order": 0},
-            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
-             "description": "Tax-exempt", "is_compound": False, "default_order": 0},
-        ],
-    },
+DEFAULT_REGIME: dict = {
+    "currency": "USD",
+    "taxes": [
+        {"name": "Standard Tax", "rate": 0.0, "tax_type": "both", "is_default": True,
+         "description": "Set your local tax rate", "is_compound": False, "default_order": 0},
+        {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
+         "description": "Tax-exempt", "is_compound": False, "default_order": 0},
+    ],
 }
 
 
-# The countries a company can name to start with the tax rates in force there.
-TAX_COUNTRIES: tuple[str, ...] = tuple(code for code in TAX_REGIMES if code != "_default")
+def tax_countries() -> tuple[str, ...]:
+    """The countries a company can name to start with the tax rates in force there: the lock's
+    countries whose pack loaded, in lock order."""
+    return tuple(packs())
+
+
+def _code(value: str | None) -> str:
+    return str(value or "").strip().upper()
 
 
 def tax_country(value: str | None) -> str:
     """The country code ``value`` names when Celerp has its tax rates, else ""."""
-    code = str(value or "").strip().upper()
-    return code if code in TAX_COUNTRIES else ""
+    code = _code(value)
+    return code if code in packs() else ""
 
 
-def country_name(value: str) -> str:
-    """A country as people read it: the catalog name of a tax country code, else the
-    value as written (an address may spell its country out)."""
-    code = tax_country(value)
+def pack_missing(value: str | None) -> bool:
+    """True when ``value`` names a country whose pack this installation lacks, or any country
+    when the lock itself is unreadable: its stored taxes are kept, never replaced."""
+    code = _code(value)
     if not code:
-        return value
+        return False
+    return lock_codes() is None or code in missing()
+
+
+def country_name(value: str, lang: str | None = None) -> str:
+    """A country as people read it: the catalog name of a country code, else the value as
+    written (an address may spell its country out)."""
     from ui.i18n import t
-    return t(f"country.{code}")
+    key = f"country.{_code(value)}"
+    name = t(key, lang)
+    return value if name == key else name
+
+
+def country_names(codes, lang: str | None = None) -> str:
+    """Several countries as people read them, in one line."""
+    return ", ".join(country_name(code, lang) for code in codes)
+
+
+def missing_pack_refusal(value: str | None) -> str | None:
+    """Why ``value`` cannot be chosen when its country's pack is missing, else None."""
+    if not pack_missing(value):
+        return None
+    from ui.i18n import t
+    if lock_codes() is None:
+        return t("l10n.pack_lock_missing.body")
+    return t("l10n.pack_missing.body", countries=country_name(value))
 
 
 def get_regime(country_code: str | None) -> dict:
-    """Return the tax regime for a country code (case-insensitive). Falls back to _default."""
-    if not country_code:
-        return TAX_REGIMES["_default"]
-    return TAX_REGIMES.get(country_code.strip().upper(), TAX_REGIMES["_default"])
+    """Return the tax regime for a country code (case-insensitive). Falls back to DEFAULT_REGIME."""
+    return packs().get(_code(country_code), DEFAULT_REGIME)
 
 
 # Which catalog Celerp set the company's sales taxes from: a tax country's code, or "" for the
@@ -448,7 +107,7 @@ def with_taxes(settings: dict, taxes: list[dict], seeded_for: str | None = None)
 
 def generic_taxes() -> list[dict]:
     """The neutral tax list a company starts from until it configures its own."""
-    return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
+    return copy.deepcopy(DEFAULT_REGIME["taxes"])
 
 
 def configured(settings: dict, key: str, default: list[dict]) -> list[dict]:
@@ -593,15 +252,15 @@ def unreadable_tax(value) -> str | None:
     return next((tax_text(entry) for entry in value if not isinstance(entry, dict)), None)
 
 
-def _tax_name_key(name) -> str:
+def tax_name_key(name) -> str:
     """A tax name as a lookup key: the same name in another case or with spaces around it
     is the same tax."""
     return str(name or "").strip().casefold()
 
 
 def holds_tax(taxes: list[dict], name: str) -> bool:
-    """Whether the tax list holds a tax named ``name`` (as _tax_name_key)."""
-    return any(_tax_name_key(x.get("name")) == _tax_name_key(name) for x in taxes)
+    """Whether the tax list holds a tax named ``name`` (as tax_name_key)."""
+    return any(tax_name_key(x.get("name")) == tax_name_key(name) for x in taxes)
 
 
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
@@ -612,7 +271,7 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
     purchase, and a sale has no output tax to net it against."""
     side = doc_side(doc_type)
     other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
-    sides = {_tax_name_key(x.get("name")): x.get("tax_type") or "both"
+    sides = {tax_name_key(x.get("name")): x.get("tax_type") or "both"
              for x in [*other, *side_taxes(settings, doc_type)]}
     for tax in applied:
         code = str(tax.get("code") or "").strip()
@@ -620,33 +279,25 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
             rate = float(tax.get("rate") or 0)
         except (TypeError, ValueError):
             rate = 0.0  # an unreadable rate is refused where the money is computed
-        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(_tax_name_key(code), "both")
+        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(tax_name_key(code), "both")
         if tax_side not in (side, "both"):
             return code or f"{rate:g}%"
     return None
 
 
-# Rows earlier seeds wrote that are no longer right. A company keeps the taxes it saved, so each
-# entry is told to the company as a notice (services/tax_seed_notice.py) and never changed for it.
-# An entry matches a tax list holding a row for each of its ``rows`` ("all") or for any one of them
-# ("any"); a row matches on its name (as _tax_name_key) and every other field given. An entry naming
-# a ``currency`` is that country's: a company whose books are saved in another currency holds a row
-# of the same name from its own country's catalog, not the retired one.
-RETIRED_SEED_ROWS: tuple[dict, ...] = (
-    {"id": "in-default-2025", "match": "all",
-     "rows": ({"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True})},
-    {"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": ({"name": "WHT 2%", "rate": -2.0},)},
-    {"id": "et-tot-2025", "match": "any", "rows": ({"name": "TOT 2%"}, {"name": "TOT 10%"})},
-    {"id": "ca-qst-compound", "match": "any", "rows": ({"name": "QST 9.975%", "is_compound": True},)},
-    {"id": "my-sst-6", "match": "any", "rows": ({"name": "SST 6%", "rate": 6.0},)},
-)
+def retired_taxes() -> list[dict]:
+    """The rows earlier seeds wrote that are no longer right, as the loaded country packs list them
+    (each pack's ``retired``, in lock order; the RetiredTax schema in routers/companies.py). A
+    company keeps the taxes it saved, so each entry is told to it as a notice
+    (services/tax_seed_notice.py) and never changed for it."""
+    return [entry for pack in packs().values() for entry in pack["retired"]]
 
 
 def _row_matches(row: dict, want: dict) -> bool:
     """Whether a stored tax row is the retired row ``want`` describes."""
     for field, value in want.items():
         if field == "name":
-            if _tax_name_key(row.get("name")) != _tax_name_key(value):
+            if tax_name_key(row.get("name")) != tax_name_key(value):
                 return False
         elif field == "rate":
             try:
@@ -660,7 +311,7 @@ def _row_matches(row: dict, want: dict) -> bool:
 
 
 def retired_seed_rows(settings: dict) -> list[dict]:
-    """The RETIRED_SEED_ROWS entries a company's saved tax lists still hold, in that order, each
+    """The retired_taxes entries a company's saved tax lists still hold, in that order, each
     ``{"id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
     company saved are read: a purchasing list never saved is a copy of the sales list, not a
     second place to find the same row. An entry of another currency than the saved one is not
@@ -669,7 +320,7 @@ def retired_seed_rows(settings: dict) -> list[dict]:
     lists = {side: [r for r in rows if isinstance(r, dict)]
              for side, rows in saved.items() if isinstance(rows, list)}
     found, books = [], settings.get("currency")
-    for entry in RETIRED_SEED_ROWS:
+    for entry in retired_taxes():
         if books and entry.get("currency", books) != books:
             continue
         test = all if entry["match"] == "all" else any

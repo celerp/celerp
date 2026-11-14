@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 import psycopg2
 import pytest
 
-from conftest_support import RefusedTestDatabase, TEST_DATABASE_VAR, opted_in_test_database
+from conftest_support import (
+    _RUN_VAR, _SESSION_VAR, RefusedTestDatabase, TEST_DATABASE_VAR, opted_in_test_database)
 from test_helpers import REPO_ROOT
 
 pytestmark = pytest.mark.process
@@ -43,11 +44,14 @@ def _local_test_url() -> str:
     return os.environ["DATABASE_URL"]
 
 
-def _import_conftest(env: dict[str, str], prelude: str = "") -> subprocess.CompletedProcess:
-    """Import the root conftest in a fresh process with exactly *env* for the database variables."""
+def _import_conftest(env: dict[str, str], prelude: str = "",
+                     code: str = "import conftest, os\nprint('URL', os.environ['DATABASE_URL'])\n",
+                     ) -> subprocess.CompletedProcess:
+    """Run *code* (by default: import the root conftest) in a fresh process, a run of its own,
+    with exactly *env* for the database variables."""
     base = {k: v for k, v in os.environ.items()
-            if k not in ("DATABASE_URL", TEST_DATABASE_VAR, "PYTEST_XDIST_WORKER")}
-    code = prelude + "import conftest, os\nprint('URL', os.environ['DATABASE_URL'])\n"
+            if k not in ("DATABASE_URL", TEST_DATABASE_VAR, "PYTEST_XDIST_WORKER", _RUN_VAR, _SESSION_VAR)}
+    code = prelude + code
     return subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env={**base, **env},
                           capture_output=True, text=True, timeout=120)
 
@@ -155,18 +159,99 @@ def test_a_worker_uses_the_container_the_run_started(monkeypatch):
 
     container = "postgresql+asyncpg://test:test@172.17.0.1:32768/test"
     controller: dict[str, str] = {}
-    assert conftest_support.provision_test_database(controller, lambda: container) == container
+    assert conftest_support.provision_test_database(controller, lambda: container, "run-main") == container
     assert TEST_DATABASE_VAR not in controller
 
     def no_container():
         raise AssertionError("a worker never starts a container")
     monkeypatch.setattr(conftest_support, "provision_worker_db", lambda url, worker: f"{url}_{worker}")
     worker = {**controller, "PYTEST_XDIST_WORKER": "gw0"}
-    assert conftest_support.provision_test_database(worker, no_container) == f"{container}_gw0"
+    assert conftest_support.provision_test_database(worker, no_container, "run-gw0") == f"{container}_gw0"
     with pytest.raises(RefusedTestDatabase):
         conftest_support.provision_test_database(
             {**controller, TEST_DATABASE_VAR: "postgresql://u@db.example.com/celerp_test",
-             "PYTEST_XDIST_WORKER": "gw0"}, no_container)
+             "PYTEST_XDIST_WORKER": "gw0"}, no_container, "run-gw0")
+
+
+_NESTED_PROBE = "nestprobe"
+_NESTED_SESSION = """
+import json, os, subprocess, sys
+from pathlib import Path
+from urllib.parse import urlsplit
+import psycopg2
+import conftest
+
+def connect(url):
+    p = urlsplit(url.replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=p.hostname, port=p.port, user=p.username, password=p.password,
+                            dbname=p.path.lstrip("/"))
+    conn.autocommit = True
+    return conn
+
+def tables(url):
+    conn = connect(url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+            return sorted(r[0] for r in cur.fetchall())
+    finally:
+        conn.close()
+
+def database_exists(url):
+    name = urlsplit(url).path.lstrip("/")
+    conn = connect(os.environ["CELERP_TEST_DATABASE_URL"])
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+own = os.environ["DATABASE_URL"]
+conn = connect(own)
+with conn.cursor() as cur:
+    cur.execute("CREATE TABLE kept (id int)")
+conn.close()
+Path(os.environ["CELERP_CONFIG"]).write_text("")
+Path(os.environ["DATA_DIR"]).mkdir(parents=True, exist_ok=True)
+child = subprocess.run([sys.executable, "-c", "import conftest, os; print(os.environ['DATABASE_URL'])"],
+                       env=os.environ.copy(), capture_output=True, text=True, timeout=100)
+child_url = child.stdout.strip().splitlines()[-1] if child.stdout.strip() else ""
+print("RESULT", json.dumps({
+    "child_rc": child.returncode, "child_err": child.stderr[-1500:], "own": own, "child_url": child_url,
+    "tables": tables(own), "config": Path(os.environ["CELERP_CONFIG"]).exists(),
+    "data": Path(os.environ["DATA_DIR"]).is_dir(), "child_db_left": bool(child_url) and database_exists(child_url)}))
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_session_started_inside_a_test_leaves_the_test_s_database_and_files_alone():
+    """A pytest a test starts inherits the test's environment, its xdist worker included. Taking
+    the worker's identity from it, such a session once recreated the worker's database empty, so
+    every later test on that worker met missing tables, and its exit removed the worker's config
+    and data directory. It gets a database of its own, dropped again when it exits."""
+    import json
+
+    proc = _import_conftest({TEST_DATABASE_VAR: _local_test_url(), "PYTEST_XDIST_WORKER": _NESTED_PROBE},
+                            prelude="", code=_NESTED_SESSION)
+    try:
+        found = re.search(r"^RESULT (.+)$", proc.stdout, re.M)
+        assert found, proc.stdout[-2000:] + proc.stderr[-2000:]
+        result = json.loads(found.group(1))
+        assert result["child_rc"] == 0, result["child_err"]
+        assert result["own"].endswith(f"_{_NESTED_PROBE}")
+        assert result["child_url"] not in ("", result["own"])
+        assert result["tables"] == ["kept"]
+        assert result["config"] and result["data"]
+        assert result["child_db_left"] is False
+    finally:
+        parts = urlsplit(_local_test_url().replace("+asyncpg", ""))
+        conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                                password=parts.password, dbname=parts.path.lstrip("/"))
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(f'DROP DATABASE IF EXISTS "{parts.path.lstrip("/")}_{_NESTED_PROBE}"')
+        conn.close()
 
 
 async def test_maintenance_never_runs_on_the_tables_the_run_builds(session):

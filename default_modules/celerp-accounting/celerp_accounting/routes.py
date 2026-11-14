@@ -76,9 +76,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
-# Default Thai chart of accounts seeded on company creation.
-# Follows Thai Accounting Standards (TAS) structure.
-THAI_CHART_OF_ACCOUNTS: list[dict] = [
+# Default chart of accounts seeded on company creation.
+# The default chart's structure follows the Thai Accounting Standards (TAS) layout.
+DEFAULT_CHART_OF_ACCOUNTS: list[dict] = [
     # --- Assets ---
     {"code": "1000", "name": "Assets", "account_type": "asset", "parent_code": None},
     {"code": "1100", "name": "Current Assets", "account_type": "asset", "parent_code": "1000"},
@@ -216,7 +216,7 @@ def _seeded_account(company_id: uuid.UUID, entry: dict) -> Account:
 
 
 async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Seed Thai default chart of accounts for a new company. Idempotent."""
+    """Seed the default chart of accounts for a new company. Idempotent."""
     from sqlalchemy import select as _select
 
     await lock_company(session, company_id)
@@ -225,7 +225,7 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
             _select(Account.code).where(Account.company_id == company_id)
         )).scalars().all()
     )
-    for entry in THAI_CHART_OF_ACCOUNTS:
+    for entry in DEFAULT_CHART_OF_ACCOUNTS:
         if entry["code"] in existing_codes:
             continue
         session.add(_seeded_account(company_id, entry))
@@ -311,7 +311,7 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
     wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
     if not wanted:
         return frozenset()
-    chart = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS}
+    chart = {e["code"]: e for e in DEFAULT_CHART_OF_ACCOUNTS}
     codes = {code for role, anchors in wanted.items() for code in (*anchors, SEEDED_TARGETS[role])}
     rows = {a.code: a for a in (await session.execute(_select(Account).where(
         Account.company_id == company_id, Account.code.in_(codes)))).scalars()}
@@ -634,7 +634,7 @@ async def seed_chart_endpoint(
             return False
         return True
 
-    for entry in THAI_CHART_OF_ACCOUNTS:
+    for entry in DEFAULT_CHART_OF_ACCOUNTS:
         if entry["code"] not in existing_codes:
             added += await seeded(entry["code"], import_service.create_chart_account(
                 session, company_id, code=entry["code"], name=entry["name"], account_type=entry["account_type"],

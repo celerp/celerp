@@ -1443,8 +1443,8 @@
  {
   "site": "celerp/notifications/service.py clear_every_company execute",
   "count": 1,
-  "class": "not reached from a route",
-  "reason": "Runs only at app startup (main.py), clearing the held-back notice once a start brings the records current. Driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
+  "class": "reached from a route",
+  "reason": "Company provisioning reaches it in the static call graph through sync_pack_notice, which clears every company only when called without a company; provisioning always passes its company. It runs at app startup (main.py), driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
  },
  {
   "site": "celerp/services/migration_core_sink.py stage_file_cleanup add",

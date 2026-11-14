@@ -10,7 +10,7 @@ Create Date: 2026-07-20
 A manual journal entry recorded in a foreign currency converts each line
 independently, so foreign amounts that balance exactly can convert to local
 amounts that do not. The difference posts to 6960 as its own visible line.
-New companies get the account from THAI_CHART_OF_ACCOUNTS on creation; this
+New companies get the account from DEFAULT_CHART_OF_ACCOUNTS on creation; this
 backfills existing ones, which would otherwise be refused at posting time.
 """
 

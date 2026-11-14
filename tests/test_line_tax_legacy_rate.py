@@ -16,11 +16,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from celerp.services.money import to_decimal
-from celerp.tax_regimes import TAX_REGIMES, default_line_taxes, line_tax
+from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
 from test_new_line_tax_ui import _post, _taxes
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 
-_TH = TAX_REGIMES["TH"]["taxes"]
+_TH = get_regime("TH")["taxes"]
 _VAT = line_tax(next(tax for tax in _TH if tax["name"] == "VAT 7%"))
 _LEVY = {"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
 _COMPOUND = {"name": "Levy 10%", "rate": 10.0, "tax_type": "both", "is_default": False, "is_compound": True,

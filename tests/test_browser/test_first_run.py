@@ -65,6 +65,8 @@ def test_a_new_install_inherits_nothing_the_other_tests_set(monkeypatch):
 
     assert not {"ENABLED_MODULES", "PYTHONPATH", "DATA_DIR", "MODULE_DIR"} & set(env)
     assert env["PATH"] == os.environ["PATH"]
+    # The country packs a release ships: without them the setup page offers no country at all.
+    assert env["CELERP_L10N_DIR"] == os.environ["CELERP_L10N_DIR"]
 
 
 def test_a_launch_that_fails_leaves_no_process_behind(monkeypatch):

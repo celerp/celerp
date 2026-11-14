@@ -8,6 +8,7 @@ import atexit
 import contextvars
 import functools
 import inspect
+import json
 import os
 import shutil
 import sys
@@ -108,8 +109,39 @@ def _start_pg_container() -> str:
             f"@{host}:{port}/{_PG_CONTAINER.dbname}")
 
 
+def _mark_expression(argv: list[str]) -> str | None:
+    for i, arg in enumerate(argv):
+        if arg == "-m" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("-m") and len(arg) > 2:
+            return arg[2:].lstrip("=")
+    return None
+
+
+# Country packs: every session reads the committed fixture set (absolute, so a server the
+# tests start from any folder reads the same set), except the real-pack golden session.
+_REAL_PACKS = "real_packs"
+if _mark_expression(sys.argv[1:]) != _REAL_PACKS:
+    os.environ.setdefault("CELERP_L10N_DIR", str(Path(_CHECKOUT) / "tests" / "fixtures" / "l10n"))
+
+
+def pytest_sessionstart(session):
+    """A session stops unless every country in its lock has its pack: the real-pack session
+    checks the package lock, any other the fixture set, whose expectations tests read through
+    the same reader the product uses and would otherwise meet with the generic fallback."""
+    from celerp.localization import lock_codes, packs
+    if session.config.option.markexpr != _REAL_PACKS:
+        if not lock_codes() or set(packs()) != set(lock_codes()):
+            pytest.exit(f"fixture country packs do not load from {os.environ.get('CELERP_L10N_DIR')}",
+                        returncode=4)
+        return
+    package_lock = Path(celerp.__file__).resolve().parent / "localization" / "packs.lock.json"
+    if set(packs()) != set(json.loads(package_lock.read_text(encoding="utf-8"))):
+        pytest.exit("country packs missing: run scripts/l10n_packs.py fetch", returncode=4)
+
+
 try:
-    provision_test_database(os.environ, _start_pg_container)
+    provision_test_database(os.environ, _start_pg_container, _worker)
 except RefusedTestDatabase as refused:
     pytest.exit(str(refused), returncode=4)
 # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled

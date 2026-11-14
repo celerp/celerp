@@ -1,0 +1,76 @@
+name: Country pack golden
+
+# Fetches the real country packs, validates them and runs the tests marked real_packs.
+# Runs on every push to a branch of this repository and on a manual run, and is called by
+# ci.yml, build.yml and publish.yml on their own events except pull_request. It never runs on
+# a pull request: the packs are private and a pull request's code must never see the token.
+# Branches whose push already calls it (main from ci.yml, develop and bugfix from build.yml)
+# are left out of the push trigger so a push runs it once.
+on:
+  push:
+    branches-ignore: [main, develop, bugfix]
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      CELERP_L10N_TOKEN:
+        required: true
+      CELERP_L10N_SOURCES:
+        required: true
+
+jobs:
+  golden:
+    name: Real-pack golden
+    # A fork's own pushes run in the fork, which has no token to read the packs.
+    if: github.repository == 'celerp/celerp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
+
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
+      - name: Fetch country packs
+        uses: ./.github/actions/l10n-packs
+        with:
+          token: ${{ secrets.CELERP_L10N_TOKEN }}
+          sources: ${{ secrets.CELERP_L10N_SOURCES }}
+
+      - name: Validate country packs
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: python scripts/l10n_packs.py validate celerp/localization
+
+      - name: Run the real-pack golden
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        # The golden compares, never rewrites: a runner that sets the write switch gets it unset here.
+        run: env -u CELERP_L10N_GOLDEN_WRITE pytest tests/ default_modules/*/tests/ -m real_packs -o addopts="" -q --no-cov

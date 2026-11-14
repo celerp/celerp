@@ -31,7 +31,7 @@ from celerp.services.currencies import CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
-from celerp.tax_regimes import TAX_COUNTRIES, country_name, tax_country
+from celerp.tax_regimes import country_name, missing_pack_refusal, tax_countries, tax_country
 from ui.components.encode import js_value, safe_url
 
 logger = logging.getLogger(__name__)
@@ -83,14 +83,19 @@ def company_setup_error(currency: str, vertical: str, country: str) -> tuple[str
         return "vertical", t("setup.business_type_required")
     if vertical not in {value for value, _ in business_type_options()}:
         return "vertical", t("setup.unknown_business_type", value=repr(vertical))
+    if refusal := missing_pack_refusal(country):
+        return "country", refusal
     if country and not tax_country(country):
         return "country", t("setup.invalid_country", value=repr(country))
     return None
 
 
-def tax_country_options() -> list[tuple[str, str]]:
-    """The countries Celerp has tax rates for, by name, then Other country (no country)."""
-    named = sorted(((code, country_name(code)) for code in TAX_COUNTRIES), key=lambda o: o[1])
+def tax_country_options(current: str = "") -> list[tuple[str, str]]:
+    """The countries Celerp has tax rates for, by name, then Other country (no country).
+    ``current``, a stored country whose pack is missing, is listed by name too, so the control
+    reads as the value does; choosing it again is refused with the reason."""
+    codes = [*tax_countries(), *([current] if current and current not in tax_countries() else [])]
+    named = sorted(((code, country_name(code)) for code in codes), key=lambda o: o[1])
     return named + [("", t("setup.country_other"))]
 
 

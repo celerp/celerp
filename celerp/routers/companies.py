@@ -10,11 +10,11 @@ import re
 import uuid
 from datetime import date
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,7 +49,10 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAXES_SEEDED_FOR, configured, get_regime, purchasing_taxes, sales_taxes, tax_country, with_taxes
+from celerp.tax_regimes import (
+    TAX_TYPES, TAXES_SEEDED_FOR, configured, get_regime, missing_pack_refusal, pack_missing, purchasing_taxes,
+    sales_taxes, tax_country, tax_name_key, with_taxes,
+)
 from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -65,9 +68,28 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> str | None:
-    """Seed the tax regime of the country in ``address`` into a company that has not
-    set anything up yet, and return the country whose taxes it set (None when it set none).
+async def _default_location_country(session: AsyncSession, company_id) -> str:
+    """The country stored on the company's default location, "" when it names none."""
+    addresses = (await session.execute(
+        select(Location.address).where(Location.company_id == company_id, Location.is_default.is_(True))
+    )).scalars().all()
+    return next((_address_country(a) for a in addresses if _address_country(a)), "")
+
+
+def _address_country(address) -> str:
+    return str(address.get("country") or "").strip() if isinstance(address, dict) else ""
+
+
+async def _apply_default_location(session: AsyncSession, company_id, before: str, address: dict | None) -> str | None:
+    """Every write that leaves ``address`` on the company's default location ends here: it
+    refuses a newly chosen country whose pack is missing, then seeds the country's tax
+    regime into a company that has not set anything up yet, and returns the country whose
+    taxes it set (None when it set none).
+
+    ``before`` is the default location's country before the write. A country newly chosen
+    there whose pack this installation lacks is refused, so no default location points at
+    taxes Celerp cannot set up; a country already stored is kept as it is, with the taxes
+    stored for it.
 
     Taxes are replaced only while they are unset or still the list Celerp itself seeded
     (TAXES_SEEDED_FOR), and only when the country differs from the one they were seeded
@@ -76,10 +98,10 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     while none was ever saved. A company that has posted entries of its own keeps both:
     changing them would silently restate its books, so it changes them explicitly in
     settings. Safe to call repeatedly."""
-    if not address:
-        return None
-    country = str(address.get("country") or "").strip()
-    if not country:
+    country = _address_country(address)
+    if country.upper() != before.upper() and (refusal := missing_pack_refusal(country)):
+        raise HTTPException(status_code=422, detail=refusal)
+    if not country or pack_missing(country):
         return None
 
     company = await locked_company(session, company_id)
@@ -198,17 +220,77 @@ class ColumnPrefsPatch(BaseModel):
 
 
 class TaxRate(BaseModel):
+    """One tax of a company's list, as the settings API and the country packs both take it."""
     name: str
     rate: FiniteFloat  # percentage, e.g. 7.0
-    tax_type: str = "both"  # sales|purchase|both
-    is_default: bool = False
+    tax_type: Literal[TAX_TYPES] = "both"
+    is_default: StrictBool = False
     description: str = ""
     is_compound: bool = False
     default_order: int = 0
 
+    @field_validator("tax_type", mode="before")
+    @classmethod
+    def _unset_side_is_both(cls, value):
+        # Every reader of a stored list takes a missing or blank side as both.
+        return "both" if value is None or value == "" else value
+
 
 class TaxRatesPatch(BaseModel):
+    """A whole tax list: no two of its taxes share a name, as tax_name_key compares them."""
     taxes: list[TaxRate]
+
+    @field_validator("taxes")
+    @classmethod
+    def _names_unique(cls, taxes: list[TaxRate]) -> list[TaxRate]:
+        seen: set[str] = set()
+        for tax in taxes:
+            key = tax_name_key(tax.name)
+            if key in seen:
+                raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
+            seen.add(key)
+        return taxes
+
+
+class RetiredTaxRow(BaseModel):
+    """A row a retired entry matches: its name, as tax_name_key compares it, and each other field given."""
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    rate: FiniteFloat | None = None
+    is_default: StrictBool | None = None
+    is_compound: StrictBool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_given(cls, name: str) -> str:
+        if not tax_name_key(name):
+            raise ValueError("a retired row needs a name")
+        return name
+
+
+class RetiredTax(BaseModel):
+    """Rows an earlier release seeded that are no longer right, as a country pack lists them. A
+    company still holding them is told (services/tax_seed_notice.py), never changed. ``match`` is
+    "all" when a list must hold every row, "any" when one is enough; with ``currency`` set, only
+    a company whose books are in that currency holds the retired rows."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    match: Literal["all", "any"]
+    currency: str | None = None
+    rows: list[RetiredTaxRow] = Field(min_length=1)
+
+
+class CountryPackTaxes(TaxRatesPatch):
+    """A country pack's tax material: its tax list and the earlier rows it retires."""
+    retired: list[RetiredTax] = []
+
+    @field_validator("retired")
+    @classmethod
+    def _ids_unique(cls, retired: list[RetiredTax]) -> list[RetiredTax]:
+        ids = [entry.id for entry in retired]
+        if dupes := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"duplicate retired id {', '.join(dupes)}")
+        return retired
 
 
 class PaymentTermsPatch(BaseModel):
@@ -685,6 +767,7 @@ async def create_location(
 ) -> dict:
     # Company first, then the location, as patch_location: the default regime below needs it too.
     await lock_company(session, company_id)
+    before = await _default_location_country(session, company_id)
     loc = Location(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -696,7 +779,7 @@ async def create_location(
     session.add(loc)
     await _flush_location(session, payload.name)
     if payload.is_default:
-        await _maybe_apply_regime(session, company_id, payload.address)
+        await _apply_default_location(session, company_id, before, payload.address)
     await session.commit()
     return {"id": str(loc.id)}
 
@@ -778,6 +861,7 @@ async def patch_location(
     # Company first, then the location: the order an import commit takes them in (and the
     # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
     await lock_company(session, company_id)
+    before = await _default_location_country(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
@@ -800,7 +884,8 @@ async def patch_location(
     # Re-seed regime if this is (or is becoming) the default location with a country
     effective_default = payload.is_default if payload.is_default is not None else loc.is_default
     effective_address = payload.address if payload.address is not None else loc.address
-    taxes_from = await _maybe_apply_regime(session, company_id, effective_address) if effective_default else None
+    taxes_from = (await _apply_default_location(session, company_id, before, effective_address)
+                  if effective_default else None)
     await session.commit()
     return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address,
             "is_default": loc.is_default, "taxes_from": taxes_from}
@@ -1508,7 +1593,7 @@ async def import_taxes_batch(
             res.errors.append(f"{name}: Invalid rate")
             continue
 
-        if tax_type not in {"sales", "purchase", "both"}:
+        if tax_type not in TAX_TYPES:
             res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
             continue
 
@@ -1778,7 +1863,7 @@ async def import_purchasing_taxes_batch(
             res.errors.append(f"{name}: Invalid rate")
             continue
         tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        if tax_type not in {"sales", "purchase", "both"}:
+        if tax_type not in TAX_TYPES:
             res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
             continue
         is_default_raw = r.get("is_default", False)

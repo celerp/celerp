@@ -119,3 +119,6 @@ celerp-droplet/
 
 # Test download, not a real module
 default_modules/acme-maintenance/
+
+# Country packs, filled by scripts/l10n_packs.py fetch
+celerp/localization/packs/
