@@ -10,9 +10,9 @@
     "sha256": "644ecea81a756dd9e40a2b5fc961a571ad6eb2fa54f098fd16ecab18311e9a76"
   },
   "MY": {
-    "version": "2026.1",
+    "version": "2026.2",
     "schema_version": 1,
-    "sha256": "c7a1fa9dabf1bd8ffa1f8b95380fdeb128031d7ac3672fef3cedea37ec75abba"
+    "sha256": "161773141dd269d0278d264eb3e367170ac5881d3ea698393312febd068bab75"
   },
   "PH": {
     "version": "2026.1",
@@ -75,9 +75,9 @@
     "sha256": "bbaa0f0ecd0b3dce122ae102810f9734392e5deb7586fafab408018b9e273df4"
   },
   "CA": {
-    "version": "2026.1",
+    "version": "2026.2",
     "schema_version": 1,
-    "sha256": "0c8308e2f7574e04cda90b1ae9ba3eee089badbae5c2b19703ce5c25bcc5b4da"
+    "sha256": "1696b4bab1e278b923392791a7e49432917b72e281f2b050d7debfdbc446683b"
   },
   "MX": {
     "version": "2026.1",
@@ -85,9 +85,9 @@
     "sha256": "446bfbce7c216c08f242687731602fe84787e562b2c3282223c788dca02ef49b"
   },
   "IN": {
-    "version": "2026.1",
+    "version": "2026.2",
     "schema_version": 1,
-    "sha256": "5b41c6fe528e89aeca3323029ac646373f6747ab51332a4bafde1eee10208491"
+    "sha256": "4520e21c603d28848b5ff1fd09489ce650eb8c7aa39cf636cd755e5066512dec"
   },
   "JP": {
     "version": "2026.1",
@@ -105,8 +105,8 @@
     "sha256": "bcf7a9514418a969d54992b93c5115481bd472b714d1a9e30d37b25a6a1117e6"
   },
   "ET": {
-    "version": "2026.1",
+    "version": "2026.2",
     "schema_version": 1,
-    "sha256": "d0adf7489c91e5dac10c8aa6bb71ccef7a090ee1bf366460e6f1ca84e9d15567"
+    "sha256": "2fa59ad072368a86d7fa601e14df6f299d0aa94bedc629a42de6a5d9daeb821c"
   }
 }
