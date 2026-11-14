@@ -28838,5 +28838,13 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/localization/__init__.py]": 0.0038552230689674616,
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/localization/notice.py]": 0.002495007123798132,
     "tests/test_tax_seeds.py::test_the_tax_regimes_docstring_has_no_em_dash": 0.002966816071420908,
-    "tests/test_browser/test_from_items_tax_e2e.py::test_from_items_invoice_total_is_subtotal_plus_default_rate[AU-None-1.1]": 5.178730493877083
+    "tests/test_browser/test_from_items_tax_e2e.py::test_from_items_invoice_total_is_subtotal_plus_default_rate[AU-None-1.1]": 5.178730493877083,
+    "tests/test_l10n_packs.py::test_any_lock_shape_is_read_or_unreadable_never_raises": 0.06296798796392977,
+    "tests/test_l10n_packs.py::test_country_editor_names_a_stored_country_whose_pack_is_missing": 0.006682487903162837,
+    "tests/test_l10n_packs.py::test_country_editor_takes_an_address_that_is_not_a_record[1 Silom Road]": 0.006195041933096945,
+    "tests/test_l10n_packs.py::test_country_editor_takes_an_address_that_is_not_a_record[None]": 0.0075849470449611545,
+    "tests/test_l10n_packs.py::test_country_editor_takes_an_address_that_is_not_a_record[address2]": 0.011433469015173614,
+    "tests/test_l10n_packs.py::test_lock_entry_not_an_object_is_unreadable_through_the_app": 0.2617451181868091,
+    "tests/test_l10n_packs.py::test_other_country_is_accepted_when_the_lock_is_unreadable": 0.020158784231171012,
+    "tests/test_l10n_packs.py::test_pack_notice_names_countries_in_the_readers_language": 0.03535733593162149
 }
