@@ -187,6 +187,26 @@ async def test_a_retirement_only_a_pack_lists_tells_the_companies_holding_its_ro
     assert (await session.get(Company, holding)).settings["taxes"] == th["taxes"]
 
 
+async def test_two_packs_retiring_the_same_id_are_told_apart(session, monkeypatch):
+    """Retirements are told per country: two packs that both use one id each tell the company
+    holding their own row, and a row only one of them retires never raises the other's notice."""
+    with_retired(monkeypatch, {
+        "TH": [{"id": "shared-id", "match": "any", "rows": [{"name": "Old Thai tax"}]}],
+        "MY": [{"id": "shared-id", "match": "any", "rows": [{"name": "Old Malaysian tax"}]}]})
+    thai = {"name": "Old Thai tax", "rate": 1.0, "tax_type": "both", "is_default": False}
+    malaysian = {**thai, "name": "Old Malaysian tax"}
+    both = await _company(session, sales=[thai, malaysian])
+    one = await _company(session, sales=[thai])
+
+    await _run(session)
+
+    async def told(company_id) -> set[str]:
+        rows = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars()
+        return {n.i18n["params"]["taxes"] for n in rows if (n.i18n or {}).get("title") == "notice.tax_seed.retired.title"}
+    assert await told(both) == {"Old Thai tax", "Old Malaysian tax"}
+    assert await told(one) == {"Old Thai tax"}
+
+
 async def test_tax_seed_notice_links_purchasing_tab_for_purchasing_match(session):
     vat = [r for r in _OLD_ET if r["name"] == "VAT 15%"]
     wht = [r for r in _OLD_ET if r["name"] == "WHT 2%"]

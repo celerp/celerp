@@ -287,10 +287,11 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
 
 def retired_taxes() -> list[dict]:
     """The rows earlier seeds wrote that are no longer right, as the loaded country packs list them
-    (each pack's ``retired``, in lock order; the RetiredTax schema in routers/companies.py). A
-    company keeps the taxes it saved, so each entry is told to it as a notice
-    (services/tax_seed_notice.py) and never changed for it."""
-    return [entry for pack in packs().values() for entry in pack["retired"]]
+    (each pack's ``retired``, in lock order; the RetiredTax schema in routers/companies.py), each
+    with its pack's ``country``: an id is unique within one pack only, so an entry is known by its
+    country and id together. A company keeps the taxes it saved, so each entry is told to it as a
+    notice (services/tax_seed_notice.py) and never changed for it."""
+    return [{**entry, "country": code} for code, pack in packs().items() for entry in pack["retired"]]
 
 
 def _row_matches(row: dict, want: dict) -> bool:
@@ -312,7 +313,7 @@ def _row_matches(row: dict, want: dict) -> bool:
 
 def retired_seed_rows(settings: dict) -> list[dict]:
     """The retired_taxes entries a company's saved tax lists still hold, in that order, each
-    ``{"id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
+    ``{"country", "id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
     company saved are read: a purchasing list never saved is a copy of the sales list, not a
     second place to find the same row. An entry of another currency than the saved one is not
     read. A list or row of the wrong shape holds nothing."""
@@ -327,5 +328,5 @@ def retired_seed_rows(settings: dict) -> list[dict]:
         sides = {side for side, rows in lists.items()
                  if test(any(_row_matches(r, want) for r in rows) for want in entry["rows"])}
         if sides:
-            found.append({"id": entry["id"], "lists": sides})
+            found.append({"country": entry["country"], "id": entry["id"], "lists": sides})
     return found

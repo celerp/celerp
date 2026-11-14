@@ -41,12 +41,12 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
     list saved or imported is told about, or cleared, the moment it is written. Caller commits."""
     if await is_company_migration_staged(session, company_id):
         return
-    found = {m["id"]: m["lists"] for m in retired_seed_rows(settings or {})}
+    found = {(m["country"], m["id"]): m["lists"] for m in retired_seed_rows(settings or {})}
     told: dict[str, tuple[set[str], dict]] = {}  # English title -> lists holding it, notice keys
     for entry in retired_taxes():
         notice = _notice_keys(entry)
         lists, _ = told.setdefault(t(notice["title"], "en", **notice["params"]), (set(), notice))
-        lists |= found.get(entry["id"], set())
+        lists |= found.get((entry["country"], entry["id"]), set())
     for title, (lists, notice) in told.items():
         if not lists:
             await notification_service.clear_standing(session, company_id, _CATEGORY, title)
