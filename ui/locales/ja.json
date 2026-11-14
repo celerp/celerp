@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "顧問料契約はまだありません。",
   "subscriptions.none_in_view": "この表示に一致する契約はありません。別のステータスを選ぶか、検索をクリアしてください。",
   "subscriptions.members_empty": "会員はまだいません。会員ランクを追加してから「新しい会員契約」を選択してください。",
-  "subscriptions.members_intro": "会員の状態は最新の請求書で決まります。支払期限までは有効、その後は契約で定めた日数だけ猶予期間となり、経過すると失効します。支払済みまたは全額相殺された請求書なら、再び有効になります。",
+  "subscriptions.members_intro": "会員の状態は最新の請求書で決まります。支払期限までは有効、その後は契約で定めた日数だけ猶予期間となり、経過すると失効します。支払済みまたは全額相殺された請求書なら、再び有効になります。解約された会員資格や期間が終わった会員資格は、請求書の内容にかかわらず終了と表示されます。状態の列で各契約の現状を確認できます。",
   "subscriptions.paid_by": "支払者",
   "subscriptions.standing": "会員の状態",
   "enum.member_standing.current": "有効",

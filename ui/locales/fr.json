@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Aucun contrat d'honoraires forfaitaires pour le moment.",
   "subscriptions.none_in_view": "Aucun accord ne correspond à cette vue. Choisissez un autre statut ou effacez la recherche.",
   "subscriptions.members_empty": "Aucun membre pour le moment. Ajoutez un niveau d'adhésion, puis choisissez Nouvelle adhésion.",
-  "subscriptions.members_intro": "Le statut de chaque membre dépend de sa dernière facture : à jour jusqu'à l'échéance, en période de grâce durant les jours prévus par l'accord, puis expiré. Une facture payée ou intégralement créditée rétablit le statut à jour.",
+  "subscriptions.members_intro": "Le statut de chaque membre dépend de sa dernière facture : à jour jusqu'à l'échéance, en période de grâce durant les jours prévus par l'accord, puis expiré. Une facture payée ou intégralement créditée rétablit le statut à jour. Une adhésion annulée, ou dont la durée est écoulée, est indiquée comme terminé quelles que soient ses factures. La colonne Statut indique où en est chaque accord.",
   "subscriptions.paid_by": "Payé par",
   "subscriptions.standing": "Statut",
   "enum.member_standing.current": "À jour",

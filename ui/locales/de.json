@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Noch keine Honorarverträge vorhanden.",
   "subscriptions.none_in_view": "Keine Vereinbarungen entsprechen dieser Ansicht. Wählen Sie einen anderen Status oder leeren Sie die Suche.",
   "subscriptions.members_empty": "Noch keine Mitglieder vorhanden. Fügen Sie eine Mitgliedschaftsstufe hinzu und wählen Sie dann Neue Mitgliedschaft.",
-  "subscriptions.members_intro": "Der Mitgliedsstatus ergibt sich aus der letzten Rechnung: gültig bis zur Fälligkeit, danach innerhalb der vereinbarten Nachfrist und anschließend abgelaufen. Eine bezahlte oder vollständig gutgeschriebene Rechnung macht die Mitgliedschaft wieder gültig.",
+  "subscriptions.members_intro": "Der Mitgliedsstatus ergibt sich aus der letzten Rechnung: gültig bis zur Fälligkeit, danach innerhalb der vereinbarten Nachfrist und anschließend abgelaufen. Eine bezahlte oder vollständig gutgeschriebene Rechnung macht die Mitgliedschaft wieder gültig. Eine gekündigte Mitgliedschaft oder eine, deren Laufzeit vorbei ist, gilt unabhängig von ihren Rechnungen als beendet. Die Spalte Status zeigt, wo jede Vereinbarung steht.",
   "subscriptions.paid_by": "Bezahlt von",
   "subscriptions.standing": "Mitgliedsstatus",
   "enum.member_standing.current": "Gültig",

@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Belum ada kontrak honorarium tetap.",
   "subscriptions.none_in_view": "Tidak ada perjanjian yang cocok dengan tampilan ini. Pilih status lain atau hapus pencarian.",
   "subscriptions.members_empty": "Belum ada anggota. Tambahkan tingkat keanggotaan, lalu pilih Keanggotaan baru.",
-  "subscriptions.members_intro": "Status setiap anggota berdasarkan tagihan terbarunya: aktif hingga jatuh tempo, dalam masa tenggang selama jumlah hari pada perjanjian, lalu kedaluwarsa. Tagihan yang dibayar atau dikreditkan penuh membuat statusnya aktif kembali.",
+  "subscriptions.members_intro": "Status setiap anggota berdasarkan tagihan terbarunya: aktif hingga jatuh tempo, dalam masa tenggang selama jumlah hari pada perjanjian, lalu kedaluwarsa. Tagihan yang dibayar atau dikreditkan penuh membuat statusnya aktif kembali. Keanggotaan yang dibatalkan, atau yang masanya sudah habis, tercatat berakhir apa pun tagihannya. Kolom Status menunjukkan posisi setiap perjanjian.",
   "subscriptions.paid_by": "Dibayar oleh",
   "subscriptions.standing": "Status keanggotaan",
   "enum.member_standing.current": "Aktif",

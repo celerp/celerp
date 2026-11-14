@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "No retainers yet.",
   "subscriptions.none_in_view": "No agreements match this view. Choose another status or clear the search.",
   "subscriptions.members_empty": "No members yet. Add a membership tier, then New membership.",
-  "subscriptions.members_intro": "Each member's standing comes from their latest bill: current until it falls due, in grace for the agreement's grace days after that, then lapsed. A paid or fully credited bill reads current again.",
+  "subscriptions.members_intro": "Each member's standing comes from their latest bill: current until it falls due, in grace for the agreement's grace days after that, then lapsed. A paid or fully credited bill reads current again. A cancelled membership, or one whose term is over, reads ended whatever its bills say. The Status column shows where each agreement stands.",
   "subscriptions.paid_by": "Paid by",
   "subscriptions.standing": "Standing",
   "enum.member_standing.current": "Current",

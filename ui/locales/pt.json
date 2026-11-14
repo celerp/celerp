@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Ainda não há contratos de honorários recorrentes.",
   "subscriptions.none_in_view": "Nenhum acordo corresponde a esta visualização. Escolha outro status ou limpe a pesquisa.",
   "subscriptions.members_empty": "Ainda não há membros. Adicione uma categoria de associação e depois escolha Nova associação.",
-  "subscriptions.members_intro": "A situação de cada membro vem da última cobrança: regular até o vencimento, em tolerância pelos dias previstos no acordo e depois vencida. Uma cobrança paga ou totalmente creditada volta a indicar situação regular.",
+  "subscriptions.members_intro": "A situação de cada membro vem da última cobrança: regular até o vencimento, em tolerância pelos dias previstos no acordo e depois vencida. Uma cobrança paga ou totalmente creditada volta a indicar situação regular. Uma associação cancelada, ou cujo prazo terminou, aparece como terminado seja qual for a cobrança. A coluna Status mostra a situação de cada acordo.",
   "subscriptions.paid_by": "Pago por",
   "subscriptions.standing": "Situação",
   "enum.member_standing.current": "Regular",

@@ -10665,7 +10665,7 @@
     "tests/test_je_import_races_pg.py::test_one_entry_imported_twice_at_once_under_different_keys_is_created_once[second-payload-wins]": 0.457,
     "tests/test_je_import_races_pg.py::test_the_same_entry_import_sent_twice_at_once_is_created_once": 0.486,
     "tests/test_journal_form_refusals.py::test_backdated_journal_form_shows_the_reconciliation_refusal": 1.633,
-    "tests/test_journal_form_refusals.py::test_replayed_token_with_different_amounts_reads_as_already_posted": 0.381,
+    "tests/test_journal_form_refusals.py::test_replayed_token_with_different_amounts_reads_as_already_made": 0.381,
     "tests/test_journal_reversal_invariant.py::test_a_reversal_follows_the_original_lines_after_the_account_changes": 11.233,
     "tests/test_journal_reversal_invariant.py::test_a_voided_entry_cannot_be_reversed": 6.155,
     "tests/test_journal_reversal_invariant.py::test_an_undone_reversal_lets_the_firm_void_and_cannot_be_undone_again": 12.293,

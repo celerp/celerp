@@ -3,7 +3,8 @@
 """The journal form tells two refusals apart by their code, never by the status they
 share: a posting inside a completed reconciliation shows that refusal, naming the
 account and the statement date, and only a replayed token with different amounts reads
-as already posted (with a fresh token, so a deliberate resubmit goes through)."""
+as already made with different details (with a fresh token, so a deliberate resubmit goes
+through)."""
 from __future__ import annotations
 
 import html
@@ -11,6 +12,8 @@ import re
 import uuid
 
 import pytest
+
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,11 +42,11 @@ async def test_backdated_journal_form_shows_the_reconciliation_refusal(owner_ui)
     page = await owner_ui.post("/accounting/journal/new",
                                data=_form("2026-09-15", bank["chart_account_code"], "10", uuid.uuid4().hex))
     body = html.unescape(page.text)
-    assert "already posted with different amounts" not in body
+    assert t("request.key_reused") not in body
     assert "Harbor Bank" in body and "30 Sep 2026" in body
 
 
-async def test_replayed_token_with_different_amounts_reads_as_already_posted(owner_ui):
+async def test_replayed_token_with_different_amounts_reads_as_already_made(owner_ui):
     bank = await _bank(owner_ui.api)
     token = uuid.uuid4().hex
     first = await owner_ui.post("/accounting/journal/new",
@@ -52,7 +55,7 @@ async def test_replayed_token_with_different_amounts_reads_as_already_posted(own
     page = await owner_ui.post("/accounting/journal/new",
                                data=_form("2026-10-05", bank["chart_account_code"], "20", token))
     body = html.unescape(page.text)
-    assert "already posted with different amounts" in body
+    assert t("request.key_reused") in body
     fresh = re.search(r'name="idempotency_token"[^>]*value="([^"]+)"|value="([^"]+)"[^>]*name="idempotency_token"', page.text)
     assert fresh and token not in fresh.groups()
 
