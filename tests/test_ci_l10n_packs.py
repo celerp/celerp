@@ -3,9 +3,9 @@
 """The release machinery ships the country packs and never ships without them.
 
 The real packs sit in private repositories, so only runs that have the read token fetch them:
-pushes to main, tags, branch builds and manual runs. Each of those runs the real-pack golden
-(one reusable workflow) and its build or release waits for it to pass. Pull requests, forks
-included, never fetch and run the tests on the committed fixture pack set. Every artifact is
+pushes to any branch of this repository, tags and manual runs. Each of those runs the real-pack
+golden (one workflow, also called by the others) and a build or release waits for it to pass.
+Pull requests, forks included, never fetch and run the tests on the committed fixture pack set. Every artifact is
 built in a job that fetched the packs first, and checked against the committed lock after.
 """
 from __future__ import annotations
@@ -96,7 +96,12 @@ def test_check_golden_gate_hard():
     assert "l10n-golden" in _needs(publish["jobs"]["build"])
 
     golden = _load("l10n-golden.yml")
-    assert set(_events(golden)) == {"workflow_call"}
+    events = _events(golden)
+    assert set(events) == {"workflow_call", "push", "workflow_dispatch"}  # never pull_request(_target)
+    # A push runs it once: the branches whose push workflows call it are left out of its own trigger.
+    callers = {b for name in ("ci.yml", "build.yml") for b in _events(_load(name))["push"].get("branches", [])}
+    assert set(events["push"]["branches-ignore"]) == callers and "branches" not in events["push"]
+    assert golden["jobs"]["golden"]["if"] == "github.repository == 'celerp/celerp'"
     assert set(_events(golden)["workflow_call"]["secrets"]) == set(SECRETS)
     [job] = golden["jobs"].values()
     assert "postgres" in job["services"]
