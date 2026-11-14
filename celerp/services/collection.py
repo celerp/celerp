@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Automatic card collection through Celerp Cloud (collection protocol 1).
+"""Automatic card collection through Celerp Cloud (collection protocol 2).
 
 Cloud holds the payer's card and charges it only when the app asks: the app decides
 every attempt (its number, its amount, when a retry is due) and Cloud reports what
@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # An attempt delivery needs Documents on the company it names.
 _on_invoices = needs_modules("celerp-docs", company=lambda payload: payload.get("company_id"))
 
-PROTOCOL = 1
+PROTOCOL = 2
 ROUTE = "/billing/connect/collection"
 BINDING_EVENT = "crm.contact.collection_binding"
 ATTEMPT_EVENT = "doc.collection"
@@ -56,7 +56,7 @@ CONSENT_TEXT_VERSION = "1"
 
 
 def offered() -> bool:
-    """Whether Cloud offers collection under this protocol (its flag is exactly the integer 1)."""
+    """Whether Cloud offers collection under this protocol (its flag is exactly the integer PROTOCOL)."""
     from celerp.gateway.state import get_feature_flags
     value = get_feature_flags().get("collection_protocol")
     return type(value) is int and value == PROTOCOL

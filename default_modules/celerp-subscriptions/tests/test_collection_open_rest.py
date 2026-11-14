@@ -131,13 +131,12 @@ class _Story:
         return 200, {"state": state, "attempt_number": p["attempt_number"]}
 
     def _cancel(self, p):
-        doc = p["entity_id"]
-        key = max((k for k in self.attempts if k[0] == doc), key=lambda k: k[1], default=None)
-        if key is None or self.attempts[key] == "canceled":
-            return 200, {"state": "canceled"}
-        if self.attempts[key] == "open" and self.rng.random() < 0.5:
+        """Cloud's answer to the cancel of the open attempt it names (the stand-in answers one it
+        has not seen or that ended)."""
+        key = (p["entity_id"], p["attempt_number"])
+        if self.attempts.get(key) == "open" and self.rng.random() < 0.5:
             self.attempts[key] = "canceled"
-            return 200, {"state": "canceled"}
+            return 200, {"state": "canceled", "attempt_number": key[1]}
         return 409, {"detail": "attempt_submitted"}
 
     def open(self) -> list[tuple[str, int]]:
@@ -249,6 +248,25 @@ def _overcommitted(story: _Story, docs: dict[str, dict]) -> list[str]:
     return []
 
 
+async def _arrive(session, cid: str, cloud) -> None:
+    """The requests held on the way reach Cloud, and each answer reaches the dispatcher that sent
+    it, which records it under the invoice's lock: an attempt request sent before (a retry) is
+    recorded as one."""
+    from celerp_subscriptions import collect
+    cloud.hold = set()
+    for payload, answer in cloud.arrive():
+        kind = "cancel" if "amount_minor" not in payload else "attempt"
+        row = await collect._locked(session, uuid.UUID(cid), payload["entity_id"])
+        if row is None:
+            continue
+        if kind == "attempt":
+            sent = [p for path, p in cloud.calls if path.endswith("/attempt") and p == payload]
+            await collect._attempted(session, uuid.UUID(cid), row, payload, answer, retry=len(sent) > 1)
+        else:
+            await collect._cancelled(session, uuid.UUID(cid), row, payload, answer)
+        await session.commit()
+
+
 async def _run_story(seed, client, session, monkeypatch, cloud):
     rng = random.Random(seed)
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
@@ -297,6 +315,10 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
                                   json={"payment_index": p["index"]})
             assert r.status_code in (200, 201), r.text
             stale = True  # a payment page opened before the void may now pay the attempt's amount
+        elif name in ("delay_attempt", "delay_cancel"):  # the next requests of that kind are held on the way
+            cloud.hold.add(name.removeprefix("delay_"))
+        elif name == "arrive":  # a cancel before its attempt, a duplicate cancel, a cancel crossing a charge
+            await _arrive(session, cid, cloud)
         elif name == "amend":
             r = await _amend(client, monkeypatch, hd, eid)
             assert r.status_code == 200, r.text
@@ -313,6 +335,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         names += ["void_hand"] if any(p.get("method") == "bank_transfer" and p.get("status") == "active"
                                       for d in invoices for p in d.get("payments") or []) else []
         names += ["amend"] if not amended and day < 15 else []
+        names += [f"delay_{k}" for k in ("attempt", "cancel") if k not in cloud.hold]
+        names += ["arrive"] if cloud.hold or cloud.held else []
         return names
 
     for _ in range(STEPS):
@@ -329,6 +353,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         if len(asked) > before:
             over += _overcommitted(story, docs)
         assert not over, f"seed {seed} after {trail}: {over}"
+    trail.append("arrive")
+    await step("arrive")
     while story.outcomes or story.payments:
         name = "deliver_payment" if story.payments else "deliver_outcome"
         trail.append(name)

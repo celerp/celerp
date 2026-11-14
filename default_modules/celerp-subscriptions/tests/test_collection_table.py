@@ -59,7 +59,8 @@ class _Pass:
 
     def __init__(self, monkeypatch, current: dict):
         self.row = SimpleNamespace(entity_id="doc:INV", state={
-            "collection": {"attempt_number": 1, "amount_minor": 3000, **current}})
+            "collection": {"attempt_number": 1, "request_key": "collect:doc:INV:1", "amount_minor": 3000,
+                           **current}})
         self.writes: list[dict] = []
         self.opened: list[int] = []
         self.told: list[str] = []
@@ -125,6 +126,8 @@ async def test_each_cell_does_what_its_action_says(monkeypatch, phase, event):
     step = await collect._ACTIONS[action](None, "cid", run.row, dict(run.row.state["collection"]), event, WHY[event])
     expected = _effect("next" if action == "next_when_due" else action, event, 1)
     assert ((step or (None,))[0], run.writes, run.opened) == expected
+    if expected[0] == "cancel":  # a cancel names the attempt it cancels
+        assert (step[1]["attempt_number"], step[1]["request_key"]) == (1, "collect:doc:INV:1")
     assert len(run.told) == (action == "tell")
 
 

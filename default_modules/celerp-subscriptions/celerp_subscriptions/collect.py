@@ -264,7 +264,11 @@ async def _event(session, company_id, row, current: dict, phase: str) -> tuple[s
 
 
 def _cancel(company_id, row) -> tuple[str, dict, bool]:
-    return "cancel", {"company_id": str(company_id), "entity_id": row.entity_id}, False
+    """The cancel request for the invoice's current attempt, named by its number and request key:
+    Cloud cancels that attempt only, and keeps the cancel when the attempt has not reached it yet."""
+    current = row.state["collection"]
+    return "cancel", {"company_id": str(company_id), "entity_id": row.entity_id,
+                      "attempt_number": current["attempt_number"], "request_key": current["request_key"]}, False
 
 
 async def _wait(session, company_id, row, current, event, why):
@@ -433,12 +437,21 @@ async def _attempted(session, company_id, row, payload: dict, answer, *, retry: 
 
 
 async def _cancelled(session, company_id, row, payload: dict, answer) -> None:
+    """Record Cloud's answer to the cancel of the attempt ``payload`` names, while that attempt is
+    the invoice's and its cancel waits: Cloud answers how the attempt stands, recorded as its
+    attempt answer is (canceled, or how it ended when it ended first); one still running, or
+    refused, keeps its cancel refused and the attempt runs to its outcome."""
     current = row.state.get("collection") or {}
-    if current.get("cancel") != "queued" or answer is None:
+    if current.get("cancel") != "queued" or current.get("attempt_number") != payload["attempt_number"] \
+            or answer is None:
         return
     status, body = answer
-    if status == 200 or collection.refusal_of(answer) == "no_attempt":
-        await collection.set_attempt(session, company_id, row, {"state": "canceled"}, drop=("cancel",))
+    if status == 200:
+        if (found := collection.outcome(body)) is None:
+            return
+        await collection.apply_outcome(session, company_id, row, found)
+        if not found["definitive"]:
+            await collection.set_attempt(session, company_id, row, {"cancel": "refused"})
     elif status == 409:
         await collection.set_attempt(session, company_id, row, {"cancel": "refused"})
 

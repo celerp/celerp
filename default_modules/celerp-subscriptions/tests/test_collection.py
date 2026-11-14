@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Automatic card collection on a sales agreement (Celerp Cloud collection protocol 1).
+"""Automatic card collection on a sales agreement (Celerp Cloud collection protocol 2).
 
 Initial conditions per test: a newly registered company (its owner holds every permission)
 and a payer contact with an email address. Celerp Cloud is a stand-in (``cloud``) that records
@@ -33,6 +33,7 @@ LINK = "https://cloud.test/consent/tok-1"
 
 # Celerp Cloud's states for an attempt that may still charge the card.
 _CLOUD_OPEN = frozenset({"prepared", "submitted", "processing", "requires_action", "unknown"})
+_CLOUD_ENDED = frozenset({"succeeded", "failed", "canceled", "unverifiable"})
 MAX_ATTEMPTS = 4  # Cloud's: the first attempt and three retries
 
 
@@ -49,18 +50,28 @@ class _Cloud:
     the last failure's retry time (before_retry_time); the attempt cap, cancelled attempts
     included (retry_limit); another currency (currency_changed) or more than the first attempt
     asked (amount_above_first_attempt). Cloud's answers, the app's cancels Cloud accepts and its
-    deliveries (``settle``) move each attempt's state."""
+    deliveries (``settle``) move each attempt's state.
+
+    A cancel names its attempt by number and request key, as Cloud requires: another key for the
+    number is refused (attempt_number_used); an attempt Cloud has not seen is kept as cancelled
+    (``cancels``: entity -> number -> request key), answered canceled, and that attempt is answered
+    canceled when it arrives, charging nothing; an attempt that already ended is answered as it
+    ended, whatever the test answers; otherwise the test's answer stands, and a cancel it accepts
+    cancels that attempt only."""
 
     current: "_Cloud | None" = None
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
         self.attempts: dict[str, dict[int, dict]] = {}
+        self.cancels: dict[str, dict[int, str]] = {}
+        self.hold: set[str] = set()  # routes whose requests are held on the way (arrive)
+        self.held: list[tuple[str, dict]] = []
         self.answers: dict = {
             "setup-link": (200, {"link": LINK, "emailed": True}),
             "attempt": lambda p: (200, {"state": "submitted", "attempt_number": p["attempt_number"],
                                         "failure_code": None, "retry_eligible_at": None}),
-            "cancel": (200, {"state": "canceled"}),
+            "cancel": lambda p: (200, _answer(p["attempt_number"], "canceled")),
             "revoke": (200, {"state": "revoked"}),
         }
         _Cloud.current = self
@@ -105,9 +116,14 @@ class _Cloud:
                 row["retry_at"] = retry_eligible_at
 
     def _attempt(self, p: dict, answer):
+        held = self.cancels.get(p["entity_id"], {}).get(p["attempt_number"])
+        if held is not None:
+            return (200, _answer(p["attempt_number"], "canceled")) if held == p["request_key"] \
+                else (409, {"detail": "attempt_number_used"})
         if refused := self.refusal(p):
             return 409, {"detail": refused}
         made = self.attempts.setdefault(p["entity_id"], {})
+        fresh = p["attempt_number"] not in made
         row = made.setdefault(p["attempt_number"], {
             "request_key": p["request_key"], "amount_minor": p["amount_minor"],
             "currency": p["currency"].lower(), "state": "prepared", "retry_at": None})
@@ -115,20 +131,47 @@ class _Cloud:
         if result is not None and result[0] == 200:
             self.settle(p["entity_id"], p["attempt_number"], result[1].get("state"),
                         result[1].get("retry_eligible_at"))
-        elif result is not None and row["state"] == "prepared":
+        elif result is not None and fresh:
             del made[p["attempt_number"]]  # refused by the test's answer: Cloud made nothing
         return result
 
     def _cancel(self, p: dict, answer):
-        result = answer(p) if callable(answer) else answer
-        made = self.attempts.get(p["entity_id"], {})
-        if result is not None and result[0] == 200 and result[1].get("state") == "canceled" and made:
-            self.settle(p["entity_id"], max(made), "canceled")
-        return result
+        n, key = p.get("attempt_number"), p.get("request_key")
+        if type(n) is not int or n < 1 or not isinstance(key, str) or not key:
+            return 422, {"detail": "attempt_number and request_key are required"}
+        row = self.attempts.get(p["entity_id"], {}).get(n)
+        if row is None:
+            held = self.cancels.setdefault(p["entity_id"], {}).setdefault(n, key)
+            result = (200, _answer(n, "canceled")) if held == key else (409, {"detail": "attempt_number_used"})
+        elif row["request_key"] != key:
+            result = 409, {"detail": "attempt_number_used"}
+        elif row["state"] in _CLOUD_ENDED:
+            result = 200, _answer(n, row["state"])
+        else:
+            result = answer(p) if callable(answer) else answer
+            if result is not None and result[0] == 200 and result[1].get("state") == "canceled":
+                self.settle(p["entity_id"], n, "canceled")
+            return result
+        return None if answer is None else result  # Cloud took it; the test lost its answer
+
+    def charged(self, entity_id: str) -> int:
+        """What Cloud charged the invoice's card, in minor units."""
+        return sum(r["amount_minor"] for r in self.attempts.get(entity_id, {}).values() if r["state"] == "succeeded")
 
     async def __call__(self, path: str, payload: dict):
         self.calls.append((path, payload))
         route = path.rsplit("/", 1)[-1]
+        if route in self.hold:
+            self.held.append((route, payload))
+            return None  # delayed on the way: the app reads no answer
+        return self._take(route, payload)
+
+    def arrive(self) -> list[tuple[dict, tuple[int, dict] | None]]:
+        """The requests held on the way reach Cloud, oldest first: each with Cloud's answer."""
+        held, self.held = self.held, []
+        return [(payload, self._take(route, payload)) for route, payload in held]
+
+    def _take(self, route: str, payload: dict):
         answer = self.answers[route]
         if route == "attempt":
             return self._attempt(payload, answer)
@@ -138,6 +181,11 @@ class _Cloud:
 
     def sent(self, route: str) -> list[dict]:
         return [p for path, p in self.calls if path == f"/billing/connect/collection/{route}"]
+
+
+def _answer(n: int, state: str) -> dict:
+    """Cloud's answer naming attempt ``n`` and its state."""
+    return {"state": state, "attempt_number": n, "failure_code": None, "retry_eligible_at": None}
 
 
 def _request(n: int, amount: int = 3000, currency: str = "USD", key: str | None = None) -> dict:
@@ -180,14 +228,15 @@ async def test_the_stand_in_cloud_refuses_each_attempt_cloud_refuses(monkeypatch
 
 
 def stand_in(monkeypatch, session) -> _Cloud:
-    """Celerp Cloud replaced for one test: payments on, collection protocol 1, the app's own
+    """Celerp Cloud replaced for one test: payments on, the app's collection protocol, the app's own
     delivery sessions joining the test's transaction, each request answered by a _Cloud."""
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.gateway import state
     from celerp.services import collection
 
     monkeypatch.setattr(state, "_feature_flags",
-                        {**state.get_feature_flags(), "payments_enabled": True, "collection_protocol": 1})
+                        {**state.get_feature_flags(), "payments_enabled": True,
+                         "collection_protocol": collection.PROTOCOL})
     monkeypatch.setattr("celerp.services.payments._own_session", lambda: AsyncSession(
         bind=session.bind, expire_on_commit=False, join_transaction_mode="create_savepoint"))
     fake = _Cloud()
@@ -281,7 +330,7 @@ async def test_hello_declares_the_collection_delivery_types():
             "invoice.refund", "invoice.payment_release"} <= set(hello["delivery_types"])
 
 
-@pytest.mark.parametrize("flag", [None, 2, True, "1", 1.0])
+@pytest.mark.parametrize("flag", [None, 1, 3, True, "2", 2.0])
 async def test_collection_protocol_version_mismatch_fails_closed(client, session, monkeypatch, cloud, flag):
     freeze_day(monkeypatch, "2026-06-15")
     hd = await register(client)
@@ -298,7 +347,7 @@ async def test_collection_protocol_version_mismatch_fails_closed(client, session
     assert r.status_code == 409 and _says(r, "subscriptions.err_collection_off"), r.text
     assert (await client.get(f"/subscriptions/{eid}/collection", headers=hd)).json()["offered"] is False
     assert cloud.calls == []
-    _flag(1)
+    _flag(collection.PROTOCOL)
     assert (await schedule(client, hd, eid, generation_mode="auto_invoice_collect")).status_code == 200
 
 
@@ -371,7 +420,7 @@ async def test_setup_link_validation_and_rate_limit(client, session, monkeypatch
     assert r.status_code == 200 and r.json() == {"link": LINK, "emailed": True}, r.text
     [sent] = cloud.sent("setup-link")
     assert {k: sent[k] for k in ("protocol", "company_id", "payer_contact_id", "payer_email", "delivery")} == {
-        "protocol": 1, "company_id": cid, "payer_contact_id": payer, "payer_email": "payer@example.test",
+        "protocol": 2, "company_id": cid, "payer_contact_id": payer, "payer_email": "payer@example.test",
         "delivery": "copy"}
     assert sent["consent_text_version"] and sent["request_key"] and sent.get("resend_receipt") is False
     cloud.answers["setup-link"] = (429, {"detail": "setup_link_daily_limit"})
@@ -486,7 +535,7 @@ async def test_collection_request_after_commit_only(client, session, monkeypatch
     for step in report.after_commit:
         await step(lambda: _same(session))
     [sent] = cloud.sent("attempt")
-    assert sent["protocol"] == 1 and sent["company_id"] == cid and sent["entity_id"] == doc["entity_id"]
+    assert sent["protocol"] == 2 and sent["company_id"] == cid and sent["entity_id"] == doc["entity_id"]
     assert sent["attempt_number"] == 1 and sent["request_key"] == f"collect:{doc['entity_id']}:1"
     assert sent["amount_minor"] == await _outstanding_minor(session, doc) and sent["currency"] == doc["currency"]
     assert sent["payer_contact_id"] == payer and isinstance(sent["generation"], int)
@@ -702,6 +751,162 @@ async def test_mode_manual_cancels_unsubmitted_attempts(client, session, monkeyp
     assert c["state"] == "canceled"
 
 
+async def test_the_stand_in_cloud_cancels_by_attempt_number_as_cloud_does(monkeypatch):
+    """Every collection test's Cloud takes a cancel as Celerp Cloud does: it names the attempt by
+    number and request key; one Cloud has not seen is kept and that attempt, when it arrives, is
+    answered canceled and charges nothing; another key for the number is refused; an attempt that
+    ended answers as it ended; a cancel of attempt 1 leaves attempt 2 alone."""
+    _at(monkeypatch, datetime(2026, 7, 3, tzinfo=timezone.utc))
+    fake, url = _Cloud(), "/billing/connect/collection/"
+    cancel = {"entity_id": "doc-1", "attempt_number": 1, "request_key": "collect:doc-1:1"}
+    assert (await fake(url + "cancel", {"entity_id": "doc-1"}))[0] == 422
+    assert await fake(url + "cancel", cancel) == (200, _answer(1, "canceled"))
+    assert await fake(url + "cancel", {**cancel, "request_key": "other"}) == (409, {"detail": "attempt_number_used"})
+    assert await fake(url + "attempt", _request(1, key="other")) == (409, {"detail": "attempt_number_used"})
+    assert await fake(url + "attempt", _request(1)) == (200, _answer(1, "canceled"))
+    assert fake.attempts.get("doc-1", {}) == {} and fake.charged("doc-1") == 0
+    fresh = _Cloud()
+    fresh.answers["attempt"] = lambda p: (200, _answer(p["attempt_number"], "succeeded"))
+    await fresh(url + "attempt", _request(1))
+    assert await fresh(url + "cancel", {**cancel, "request_key": "other"}) == (409, {"detail": "attempt_number_used"})
+    assert await fresh(url + "cancel", cancel) == (200, _answer(1, "succeeded"))
+    assert fresh.charged("doc-1") == 3000
+    two = _Cloud()
+    two.attempts["doc-1"] = {1: {"request_key": "collect:doc-1:1", "amount_minor": 3000, "currency": "usd",
+                                 "state": "canceled", "retry_at": None}}
+    assert (await two(url + "attempt", _request(2)))[0] == 200
+    assert await two(url + "cancel", cancel) == (200, _answer(1, "canceled"))
+    assert two.attempts["doc-1"][2]["state"] == "submitted"
+
+
+async def _late_answer(session, cid: str, doc_id: str, kind: str, payload: dict, answer) -> None:
+    """A dispatcher's answer from Cloud reaching the app late, recorded as the dispatcher records
+    it: under the invoice's lock."""
+    from celerp_subscriptions import collect
+    row = await collect._locked(session, uuid.UUID(cid), doc_id)
+    if kind == "attempt":
+        await collect._attempted(session, uuid.UUID(cid), row, payload, answer, retry=False)
+    else:
+        await collect._cancelled(session, uuid.UUID(cid), row, payload, answer)
+    await session.commit()
+
+
+async def test_a_cancel_that_reaches_cloud_before_its_attempt_holds(client, session, monkeypatch, cloud):
+    """Attempt 1 leaves for Cloud and is delayed on the way; a payment by hand lowers what July
+    owes and the next pass cancels attempt 1, which Cloud has not seen yet. Cloud keeps the cancel:
+    attempt 1 is answered canceled when it arrives and charges nothing, and attempt 2, asked only
+    once Cloud's answer for attempt 1 is final, asks what July owes then. The card never pays more
+    than July owes."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    cloud.answers["attempt"] = lambda p: (200, _answer(p["attempt_number"], "succeeded"))
+    cloud.hold = {"attempt"}
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    doc_id, total = doc["entity_id"], await _outstanding_minor(session, doc)
+    await _pay(client, hd, doc_id, 10.0)
+    owed = await _outstanding_minor(session, (await billed_docs(session, eid))[0])
+    cloud.hold = set()
+    await tick(session, cid, "2026-07-02")
+    assert doc_id not in cloud.attempts  # Cloud has not seen attempt 1
+    [cancel] = cloud.sent("cancel")
+    assert (cancel["attempt_number"], cancel["request_key"]) == (1, cloud.sent("attempt")[0]["request_key"])
+    [c] = await _collection(session, eid)
+    assert (c["attempt_number"], c["state"], c["definitive"]) == (1, "canceled", True)
+    [(first, answer)] = cloud.arrive()
+    assert answer == (200, _answer(1, "canceled")) and cloud.charged(doc_id) == 0
+    await _late_answer(session, cid, doc_id, "attempt", first, answer)
+    await tick(session, cid, "2026-07-03")
+    await tick(session, cid, "2026-07-04")
+    assert [(p["attempt_number"], p["amount_minor"]) for p in cloud.sent("attempt")] == [(1, total), (2, owed)]
+    assert cloud.calls.index(("/billing/connect/collection/cancel", cancel)) < [
+        i for i, (path, p) in enumerate(cloud.calls) if path.endswith("/attempt") and p["attempt_number"] == 2][0]
+    assert cloud.charged(doc_id) == owed and cloud.charged(doc_id) + (total - owed) <= total
+    [c] = await _collection(session, eid)
+    assert (c["attempt_number"], c["state"]) == (2, "succeeded")
+
+
+async def test_a_duplicate_cancel_arriving_after_the_next_attempt_leaves_it_alone(client, session, monkeypatch,
+                                                                                   cloud):
+    """Attempt 1 is with Cloud when a payment by hand lowers what July owes, and its cancel is sent
+    twice: the first is delayed on the way, the second is answered canceled and attempt 2 asks what
+    July owes then. The delayed cancel names attempt 1: reaching Cloud after attempt 2 exists, and
+    its answer reaching the app while attempt 2 has a cancel of its own on the way, it leaves
+    attempt 2 as it is."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    doc_id = doc["entity_id"]
+    await _pay(client, hd, doc_id, 10.0)
+    owed = await _outstanding_minor(session, (await billed_docs(session, eid))[0])
+    cloud.hold = {"cancel"}
+    await tick(session, cid, "2026-07-02")
+    cloud.hold = set()
+    [held] = cloud.held
+    cloud.held = []
+    await tick(session, cid, "2026-07-03")
+    await tick(session, cid, "2026-07-04")
+    assert [(p["attempt_number"], p["amount_minor"]) for p in cloud.sent("attempt")][1:] == [(2, owed)]
+    cloud.held = [held]
+    [(late, answer)] = cloud.arrive()
+    assert late["attempt_number"] == 1 and answer == (200, _answer(1, "canceled"))
+    assert cloud.attempts[doc_id][2]["state"] == "submitted"
+    await _pay(client, hd, doc_id, 5.0)
+    cloud.hold = {"cancel"}
+    await tick(session, cid, "2026-07-05")
+    assert (await _collection(session, eid))[0]["cancel"] == "queued"
+    await _late_answer(session, cid, doc_id, "cancel", late, answer)
+    [c] = await _collection(session, eid)
+    assert (c["attempt_number"], c["state"], c["cancel"]) == (2, "submitted", "queued")
+    assert cloud.charged(doc_id) == 0
+
+
+@pytest.mark.parametrize("payment", ["after_the_answer", "before_the_answer"])
+async def test_a_cancel_crossing_a_charge_that_succeeded_keeps_the_success(client, session, monkeypatch, cloud,
+                                                                             payment):
+    """Attempt 1 succeeded at Cloud and its payment is still on the way when a payment by hand
+    queues its cancel. Cloud answers the cancel with the success: July records it and waits for
+    the payment, nothing is charged again, and the payment, arriving after Cloud's answer or
+    before it, is taken once."""
+    from celerp.models.payment_closure import UnmatchedPayment
+    from celerp.services import payments
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    doc_id, [sent] = doc["entity_id"], cloud.sent("attempt")
+    cloud.settle(doc_id, 1, "succeeded")
+    await _pay(client, hd, doc_id, 10.0)
+    paid = {"company_id": cid, "entity_id": doc_id, "reference": "pi_1", "amount_minor": sent["amount_minor"],
+            "currency": sent["currency"], "paid_at": "2026-07-02T09:00:00+00:00", "managed": True,
+            "context": sent["context"], "request_key": sent["request_key"]}
+    if payment == "before_the_answer":
+        cloud.hold = {"cancel"}
+        await tick(session, cid, "2026-07-02")
+        assert await payments.receive_payment(paid)
+        cloud.hold = set()
+        [(late, answer)] = cloud.arrive()
+        assert answer == (200, _answer(1, "succeeded"))
+        await _late_answer(session, cid, doc_id, "cancel", late, answer)
+    else:
+        await tick(session, cid, "2026-07-02")
+        [c] = await _collection(session, eid)
+        assert (c["state"], c["definitive"]) == ("succeeded", True) and "cancel" not in c
+        await tick(session, cid, "2026-07-03")
+        assert await payments.receive_payment(paid)
+    await tick(session, cid, "2026-07-04")
+    await tick(session, cid, "2026-07-05")
+    [c] = await _collection(session, eid)
+    assert (c["state"], c["kept"]) == ("succeeded", "pi_1")
+    assert (await session.get(UnmatchedPayment, "pi_1")) is not None
+    assert len(cloud.sent("attempt")) == 1 and len(cloud.sent("cancel")) == 1
+    assert cloud.charged(doc_id) == sent["amount_minor"]
+
+
 async def test_offsession_success_through_apply_doc_payment(client, session, monkeypatch, cloud):
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
@@ -784,7 +989,7 @@ async def test_collection_ui_hidden_without_capability(owner_ui, session, monkey
     _flag(None)
     page = (await owner_ui.get(f"/subscriptions/{eid}")).text
     assert "auto_invoice_collect" not in page and "/collection/setup-link" not in page
-    _flag(1)
+    _flag(2)
     page = (await owner_ui.get(f"/subscriptions/{eid}")).text
     assert 'value="auto_invoice_collect"' in page and "/collection/setup-link" in page
 

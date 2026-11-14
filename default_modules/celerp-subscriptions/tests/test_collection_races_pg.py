@@ -54,7 +54,8 @@ async def _collecting(committed_engine, monkeypatch, answer: str = "submitted"):
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
     sessions = _Sessions(factory)
     monkeypatch.setattr(state, "_feature_flags",
-                        {**state.get_feature_flags(), "payments_enabled": True, "collection_protocol": 1})
+                        {**state.get_feature_flags(), "payments_enabled": True,
+                         "collection_protocol": collection.PROTOCOL})
     monkeypatch.setattr("celerp.services.payments._own_session", sessions)
     cloud = _Cloud()
     cloud.answers["attempt"] = lambda p: (200, {"state": answer, "attempt_number": p["attempt_number"]})
