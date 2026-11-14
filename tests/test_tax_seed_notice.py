@@ -223,6 +223,33 @@ async def test_two_countries_retiring_one_id_each_show_their_own_words(session, 
         ("notice.tax_seed.retired.title", {"taxes": "Old Ethiopian tax"})]
 
 
+async def test_a_retirement_no_pack_defines_any_more_has_its_notice_cleared(session, monkeypatch):
+    """A notice stands only while an installed pack still retires its rows: once the entry is gone
+    from every pack, its notice goes, by its catalog words or by its rows' names alike, the notices
+    of entries still defined stay, and a second pass changes nothing."""
+    old = {"name": "Old Thai tax", "rate": 1.0, "tax_type": "both", "is_default": False}
+    sst = {**old, "name": "SST 6%", "rate": 6.0}
+    kept = {"id": "th-kept", "match": "any", "rows": [{"name": "Kept tax"}]}
+    holding = await _company(session, sales=[old, sst, {**old, "name": "Kept tax"}])
+    with_retired(monkeypatch, {"TH": [{"id": "th-old", "match": "any", "rows": [{"name": "Old Thai tax"}]}, kept],
+                               "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%"}]}]})
+    await _run(session)
+
+    async def standing() -> dict:
+        rows = (await session.execute(select(Notification).where(Notification.company_id == holding))).scalars()
+        return {(n.i18n["title"], n.i18n["params"].get("taxes")): n.id for n in rows}
+    assert set(await standing()) == {("notice.tax_seed.retired.title", "Old Thai tax"),
+                                     ("notice.tax_seed.retired.title", "Kept tax"),
+                                     ("notice.tax_seed.MY.my-sst-6.title", None)}
+
+    with_retired(monkeypatch, {"TH": [kept], "MY": []})
+    await _run(session)
+    after = await standing()
+    assert set(after) == {("notice.tax_seed.retired.title", "Kept tax")}
+    await _run(session)
+    assert await standing() == after
+
+
 async def test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key(session):
     """A notice an earlier release told under the id-only key is moved to the country key at the
     next start, so a reader in another language sees it translated, not in the stored English."""

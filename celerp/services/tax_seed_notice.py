@@ -9,7 +9,8 @@ its rows.
 Runs at every startup, and for one company whenever its tax lists are saved, imported or its
 migration finishes. A company's taxes are its own, so this only reads them: each matched
 entry is one notice, told once, linking to a tax list that still holds it; an entry the company
-has since fixed has its notice removed, so a notice that stands is always still true. A company
+has since fixed, or that no installed pack retires any more, has its notice removed, so a
+notice that stands is always still true. A company
 staged for a migration is left as it is until its migration finishes.
 
 The same pass tells a company which of its quotations still hold totals an earlier version
@@ -24,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
+from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services.list_behavior import DRAFT, FINALIZED, is_money_list
@@ -34,6 +36,7 @@ from ui.i18n import t
 log = logging.getLogger(__name__)
 
 _CATEGORY = "accounting"
+_PREFIX = "notice.tax_seed."  # every retired-seed notice's catalog keys start with it
 _TAX_TABS = {"sales": "/settings/sales?tab=taxes", "purchase": "/settings/purchasing?tab=taxes"}
 
 
@@ -48,6 +51,11 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
         notice = _notice_keys(entry)
         lists, _ = told.setdefault(t(notice["title"], "en", **notice["params"]), (set(), notice))
         lists |= found.get((entry["country"], entry["id"]), set())
+    standing = (await session.execute(select(Notification.title).where(
+        Notification.company_id == company_id, Notification.category == _CATEGORY,
+        Notification.i18n["title"].as_string().startswith(_PREFIX)))).scalars().all()
+    for title in set(standing) - set(told):  # no installed pack retires its rows any more
+        await notification_service.clear_standing(session, company_id, _CATEGORY, title)
     for title, (lists, notice) in told.items():
         if not lists:
             await notification_service.clear_standing(session, company_id, _CATEGORY, title)
@@ -60,11 +68,11 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
 def _notice_keys(entry: dict) -> dict:
     """The notice's catalog keys and parameters: the entry's own words when the catalogs have
     them, else the words for any retired row, naming its rows."""
-    key = f"notice.tax_seed.{entry['country']}.{entry['id']}"
+    key = f"{_PREFIX}{entry['country']}.{entry['id']}"
     if t(f"{key}.title", "en") != f"{key}.title":  # t gives the key back when no catalog has it
         return {"title": f"{key}.title", "body": f"{key}.body", "params": {}}
     names = ", ".join(row["name"] for row in entry["rows"])
-    return {"title": "notice.tax_seed.retired.title", "body": "notice.tax_seed.retired.body",
+    return {"title": f"{_PREFIX}retired.title", "body": f"{_PREFIX}retired.body",
             "params": {"taxes": names}}
 
 
