@@ -28849,5 +28849,6 @@
     "tests/test_l10n_packs.py::test_pack_notice_names_countries_in_the_readers_language": 0.03535733593162149,
     "tests/test_l10n_packs.py::test_pack_matching_its_digest_without_the_pack_format_is_absent": 0.027587875025346875,
     "tests/test_l10n_packs_script.py::test_l10n_packs_check_refuses[lock entry not an object]": 0.004931316943839192,
-    "tests/test_worker_config_isolation.py::TestWorkerLabel::test_a_session_started_inside_another_takes_a_label_of_its_own": 0.025932222953997552
+    "tests/test_worker_config_isolation.py::TestWorkerLabel::test_a_session_started_inside_another_takes_a_label_of_its_own": 0.025932222953997552,
+    "tests/test_worker_config_isolation.py::TestWorkerLabel::test_a_nested_session_never_takes_a_sibling_worker_or_controller_label": 0.02634824998676777
 }
