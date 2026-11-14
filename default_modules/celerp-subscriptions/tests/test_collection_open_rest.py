@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""An invoice a recorded card charge leaves owing is asked for the rest, and no open invoice that
-may be collected is ever left with nothing asked and nobody told.
+"""An invoice a card charge leaves owing is never charged again (Cloud charges an invoice once):
+its collection stops and the company is told to collect the rest by hand; and no open invoice
+that may be collected is ever left with nothing asked and nobody told.
 
 Initial conditions per test (as test_collection_settlement): a newly registered company, a payer
 with a card on file, an agreement on Bill and collect automatically for 30.00 a month from 1 July
@@ -13,10 +14,10 @@ other online payments on an invoice (paid on its page, or placed by a person fro
 payments) at any point of an attempt, an amendment) under a seeded random story, with a stand-in
 Cloud that charges, fails or cancels each attempt it was asked for. After every step, each open invoice whose collection may go on has an
 attempt in progress, or its charge is on the way from Cloud, or the company was told why nothing
-is asked: its charge was kept among the unmatched payments, or it came to owe again after its
-collection ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
+is asked: its charge was kept among the unmatched payments, a charge on it succeeded and left it
+owing, or it came to owe again after its collection ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
 the next pass, so between passes its ended collection still counts; right after a pass it never
-does. And whenever an attempt is asked for, it and the invoice's other attempts Cloud may still
+does. No attempt is ever asked on an invoice a charge already succeeded on. And whenever an attempt is asked for, it and the invoice's other attempts Cloud may still
 charge, or charged and whose payment is on the way, never ask more than the invoice owes: the payer
 is never charged twice for the same money; and across the agreement, the money it took in (payments
 recorded on its invoices and every charge Cloud made, recorded or kept among the unmatched) with
@@ -81,25 +82,29 @@ async def _short_charge(client, session, monkeypatch, cloud, *, payment_first: b
 
 
 @pytest.mark.parametrize("payment_first", [False, True], ids=["outcome-first", "payment-first"])
-async def test_a_recorded_charge_that_leaves_the_invoice_owing_asks_for_the_rest(
+async def test_a_charge_that_leaves_the_invoice_owing_stops_collection_and_tells_the_company(
         client, session, monkeypatch, cloud, payment_first):
+    """Cloud charges an invoice once: after a successful charge it refuses any other attempt on the
+    invoice (invoice_paid). So the 10.00 July still owes is never asked; its collection stops and
+    the company is told once to collect the rest by hand."""
     hd, cid, eid, july = await _short_charge(client, session, monkeypatch, cloud, payment_first=payment_first)
+    await tick(session, cid, "2026-07-06")
     doc = (await _docs(session, eid))[july]
     assert doc["amount_outstanding"] == 10.0
-    assert _asked(cloud, july) == [3000, 2000, 1000]
-    assert doc["collection"]["state"] == "submitted" and doc["collection"]["attempt_number"] == 3
+    assert _asked(cloud, july) == [3000, 2000]
+    assert doc["collection"]["state"] == "stopped" and doc["collection"]["reason"] == "charged_once"
+    assert await _told(session, doc["ref_id"])
 
 
-async def test_the_rest_paid_by_hand_ends_the_collection(client, session, monkeypatch, cloud):
-    """The person then records July's last 10.00 by hand: July is paid, so the charge asked for it is
-    cancelled and nothing more is asked."""
+async def test_the_rest_paid_by_hand_leaves_the_collection_stopped(client, session, monkeypatch, cloud):
+    """The person then records July's last 10.00 by hand: July is paid and nothing more is asked."""
     hd, cid, eid, july = await _short_charge(client, session, monkeypatch, cloud, payment_first=False)
     await _pay(client, hd, july, 10.0)
     await tick(session, cid, "2026-07-06")
     doc = (await _docs(session, eid))[july]
     assert doc["amount_outstanding"] == 0
-    assert _asked(cloud, july) == [3000, 2000, 1000]
-    assert doc["collection"]["state"] in ("canceled", "stopped")
+    assert _asked(cloud, july) == [3000, 2000]
+    assert doc["collection"]["state"] == "stopped"
 
 
 # ── the state machine under seeded random stories ────────────────────────────
@@ -187,7 +192,8 @@ async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) 
             continue
         if c.get("state") == "succeeded" and c.get("kept") and await _told(session, c["kept"]):
             continue
-        if c.get("state") == "stopped" and c.get("reason") == "owes_again" and await _told(session, doc["ref_id"]):
+        if c.get("state") == "stopped" and c.get("reason") in ("owes_again", "charged_once") \
+                and await _told(session, doc["ref_id"]):
             continue
         if c.get("state") == "succeeded" and story and any(p[0] == doc_id for p in story.payments):
             continue
@@ -198,14 +204,18 @@ async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) 
 
 
 def _overasked(story: _Story, docs: dict[str, dict], asked: set[tuple[str, int]]) -> list[str]:
-    """Each attempt asked for since ``asked`` whose amount, with the invoice's other attempts Cloud
-    may still charge or charged with the payment on the way, is more than the invoice owes."""
+    """Each attempt asked for since ``asked`` on an invoice Cloud already charged (it charges an
+    invoice once), or whose amount, with the invoice's other attempts Cloud may still charge or
+    charged with the payment on the way, is more than the invoice owes."""
     over = []
     for p in story.cloud.sent("attempt"):
         key = (p["entity_id"], p["attempt_number"])
         if key in asked:
             continue
         asked.add(key)
+        if any(k[0] == key[0] and v == "charged" for k, v in story.attempts.items()):
+            over.append(f"{docs[key[0]].get('ref_id')} asked {p['amount_minor']} after a charge on it succeeded")
+            continue
         others = sum(story.amounts[k][0] for k, v in story.attempts.items() if k[0] == key[0] and k != key and (
             v == "open" or (v == "charged" and any(pay[1] == story.reference(k) for pay in story.payments))))
         if p["amount_minor"] + others > _minor(docs[key[0]]):

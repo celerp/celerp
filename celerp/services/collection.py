@@ -48,7 +48,7 @@ CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeed
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
 # The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
 STOP_REASONS = frozenset({"invoice_settled", "mode_manual", "no_card_on_file", "authorizer_lapsed", "collection_off",
-                          "nothing_to_charge", "no_books", "owes_again"})
+                          "nothing_to_charge", "no_books", "owes_again", "charged_once"})
 CONSENT_TEXT_VERSION = "1"
 
 
@@ -295,12 +295,34 @@ async def kept_unresolved(session, reference: str) -> bool:
     return refunded < amount
 
 
+async def stop_for_hand(session, company_id, doc_row, reason: str) -> None:
+    """Automatic collection on the invoice ends for ``reason`` (a STOP_REASONS key) while it still
+    owes: the company is told once to collect the rest by hand, and collection stops with the
+    reason. The caller holds the document's row lock and commits."""
+    from celerp.notifications.service import notify_once
+    from celerp.services.payments import dispute_amount
+    from ui.i18n import t
+    owed = outstanding_minor(doc_row.state)
+    why_key = f"collection.stopped_{reason}"
+    params = {"document": doc_row.state.get("ref_id") or doc_row.entity_id,
+              "amount": dispute_amount(owed or 0, doc_row.state.get("currency") or "")}
+    english = {**params, "why": t(why_key, "en")}
+    title, body = "collection.by_hand_title", "collection.by_hand_body"
+    await notify_once(session, company_id, "accounting", t(title, "en", **english), t(body, "en", **english),
+                      action_url=f"/docs/{doc_row.entity_id}",
+                      i18n={"title": title, "body": body,
+                            "params": {**params, "why": {"message": english["why"], "message_key": why_key}}})
+    await set_attempt(session, company_id, doc_row, {"state": "stopped", "reason": reason},
+                      drop=("cancel", "charged", "replace", "waits"))
+
+
 async def _charge_ended(session, company_id, doc_row, current: dict) -> None:
     """The attempt's money is recorded on the invoice, so the attempt is finished: paid when the
-    invoice owes nothing more, else followed by the next attempt for what it still owes, asked
-    for on the next pass."""
+    invoice owes nothing more. Cloud charges an invoice once (it refuses any attempt after a
+    success), so an invoice still owing is never asked again: collection stops and the company is
+    told to collect the rest by hand."""
     if is_open(doc_row.state):
-        await open_attempt(session, company_id, doc_row, current["attempt_number"] + 1)
+        await stop_for_hand(session, company_id, doc_row, "charged_once")
     else:
         await set_attempt(session, company_id, doc_row, {"state": "paid"}, drop=("cancel", "charged"))
 

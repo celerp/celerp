@@ -734,6 +734,7 @@ async def test_every_reason_collection_stops_for_is_one_the_invoice_page_names()
         source = Path(module.__file__).read_text(encoding="utf-8")
         written |= set(re.findall(r'"state": "stopped", "reason": "(\w+)"', source))
         written |= set(re.findall(r'return "off", "(\w+)"', source))  # the off event's reason, which stops a new attempt
+        written |= set(re.findall(r'stop_for_hand\([^)]*"(\w+)"\)', source))  # stopped, the company told to collect by hand
     written |= set(re.findall(r'return "(\w+)"$', inspect.getsource(collect.stop_reason), re.M))
     assert written == collection.STOP_REASONS
     words = json.loads((root / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
