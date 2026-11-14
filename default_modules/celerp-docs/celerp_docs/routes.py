@@ -13651,11 +13651,12 @@ async def upload_doc_file(
     document_tag: str | None = Form(default=None, max_length=128),
     description: str | None = Form(default=None, max_length=4096),
 ) -> dict:
-    """Attach a file to a document. A connected company's key names the document and the
-    file by its own ids, with the file's checksum (peer_import.receive_file)."""
-    peer_fields = {"source_file_id": source_file_id, "sha256_hex": sha256_hex,
-                   "document_tag": document_tag, "description": description}
-    if (peer := await receive_file(auth, session, entity_id, file, entity_type, **peer_fields)) is not None:
+    """Attach a file to a document or a list, with its tag and description. A connected
+    company's key names the document and the file by its own ids, with the file's checksum
+    (peer_import.receive_file); a signed-in user may not send those ids."""
+    if (peer := await receive_file(auth, session, entity_id, file, entity_type,
+                                   source_file_id=source_file_id, sha256_hex=sha256_hex,
+                                   document_tag=document_tag, description=description)) is not None:
         return peer
     await _get_file_owner(session, company_id, entity_id, entity_type)
     async with storing(session, company_id) as store:
@@ -13666,7 +13667,8 @@ async def upload_doc_file(
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         row = await _get_file_owner(session, company_id, entity_id, entity_type, for_update=True)
-        entry = await attach_file(session, company_id, row.entity_type, entity_id, meta, user.id)
+        entry = await attach_file(session, company_id, row.entity_type, entity_id, meta, user.id,
+                                  document_tag=document_tag, description=description)
     return {"event_id": entry.id, **meta}
 
 

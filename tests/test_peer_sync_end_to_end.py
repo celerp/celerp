@@ -248,7 +248,8 @@ async def test_a_documents_file_reaches_the_copy_under_its_company_lock(real_cli
     tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
     shipped = (await _client_activity(real_client, real_engine, tok, contacts))["shipped"]
     r = await real_client.post(f"/docs/{shipped}/files", headers=auth(tok),
-                               files={"file": ("delivery-note.pdf", b"%PDF-1.4 delivery note", "application/pdf")})
+                               files={"file": ("delivery-note.pdf", b"%PDF-1.4 delivery note", "application/pdf")},
+                               data={"document_tag": "delivery", "description": "Signed by the driver"})
     assert r.status_code == 200, r.text
     _route_to_app(monkeypatch, [])
     lock_rank = sys.modules["lock_rank"]
@@ -262,10 +263,11 @@ async def test_a_documents_file_reaches_the_copy_under_its_company_lock(real_cli
     assert (files.created, files.errors) == (1, [])
     assert next(r for r in again if r.entity.value == "attachments").created == 0
     async with maker(real_engine)() as s:
-        attached = (await s.execute(select(LedgerEntry.entity_id).where(
+        attached = (await s.execute(select(LedgerEntry.data).where(
             LedgerEntry.company_id == uuid.UUID(_company_of(firm_tok)),
             LedgerEntry.event_type == "doc.file_attached"))).scalars().all()
-    assert len(attached) == 1
+    assert [(a["document_tag"], a["description"]) for a in attached] == [
+        ("delivery", "Signed by the driver")]
     assert sorted(found) == [], "\n".join(sorted(found))
     assert "celerp/services/peer_attachments.py receive_attachment" in seen
 
