@@ -40,11 +40,11 @@ PLUGIN_MANIFEST = {
             {"prefix": "received_doc.", "handler": "celerp_docs.received:apply_received_event"},
         ],
         "send_to_targets": [
-            {"label": "Invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},
-            {"label": "Consignment Out", "doc_type": "memo", "statuses": ["draft"]},
-            {"label": "List/Quotation", "doc_type": "list", "statuses": ["draft", "sent"]},
-            {"label": "Shipping Document", "doc_type": "shipping_doc", "statuses": ["draft", "sent"]},
-            {"label": "Purchase Order", "doc_type": "purchase_order", "statuses": ["draft"]},
+            {"label_key": "settings.doc_type_invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},
+            {"label_key": "settings.doc_type_memo", "doc_type": "memo", "statuses": ["draft"]},
+            {"label_key": "enum.doc_type.list", "doc_type": "list", "statuses": ["draft", "sent"]},
+            {"label_key": "settings_sales.doc_type_shipping_doc", "doc_type": "shipping_doc", "statuses": ["draft", "sent"]},
+            {"label_key": "settings.doc_type_purchase_order", "doc_type": "purchase_order", "statuses": ["draft"]},
         ],
         "search_provider": {
             "handler": "celerp_docs.search:global_search",

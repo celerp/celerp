@@ -13288,26 +13288,40 @@ class TestBulkActionsPhase6SendTo:
     # -- Slot registration --
 
     @pytest.mark.asyncio
-    async def test_docs_module_registers_send_to_targets(self, ui_client):
-        """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots including memo."""
+    async def test_docs_module_registers_send_to_targets(self, ui_client, monkeypatch):
+        """celerp-docs PLUGIN_MANIFEST declares the send_to_targets the inventory bulk Send to offers,
+        each named by the label key the rest of the app uses for that document type, in the
+        request language."""
         import importlib
+        from fasthtml.common import to_xml
+        from celerp.modules import slots as slot_registry
         from test_helpers import REPO_ROOT
+        from ui.i18n import set_lang, t
+        from ui.routes.inventory import _bulk_toolbar
         spec = importlib.util.spec_from_file_location(
             "celerp_docs_entry", REPO_ROOT / "default_modules/celerp-docs/__init__.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        slots = mod.PLUGIN_MANIFEST.get("slots", {})
-        targets = slots.get("send_to_targets", [])
-        labels = [t["label"] for t in targets]
-        assert "Invoice" in labels
-        assert "List/Quotation" in labels
-        assert "Consignment Out" in labels
-        assert "Purchase Order" in labels
-        # Memo target must use doc_type=memo (not CRM memo)
-        memo_target = next(t for t in targets if t["label"] == "Consignment Out")
-        assert memo_target["doc_type"] == "memo"
-        po_target = next(t for t in targets if t["label"] == "Purchase Order")
-        assert po_target["doc_type"] == "purchase_order"
+        targets = mod.PLUGIN_MANIFEST.get("slots", {}).get("send_to_targets", [])
+        names = {
+            "invoice": "settings.doc_type_invoice", "memo": "settings.doc_type_memo",
+            "list": "enum.doc_type.list", "shipping_doc": "settings_sales.doc_type_shipping_doc",
+            "purchase_order": "settings.doc_type_purchase_order",
+        }
+        assert {tgt["doc_type"]: tgt.get("label_key") for tgt in targets} == names
+        assert not [tgt for tgt in targets if "label" in tgt], "the label key is the one name"
+        real = slot_registry.get
+        monkeypatch.setattr(slot_registry, "get", lambda slot: targets if slot == "send_to_targets" else real(slot))
+        try:
+            for lang in ("en", "th"):
+                set_lang(lang)
+                html = to_xml(_bulk_toolbar([]))
+                for doc_type, key in names.items():
+                    assert f'<option value="{doc_type}">{t(key)}</option>' in html, (lang, doc_type)
+        finally:
+            set_lang("en")
+        assert (t("enum.doc_type.list", "en"), t("settings_sales.doc_type_shipping_doc", "en")) == (
+            "Quotation", "Delivery Note")
 
     @pytest.mark.asyncio
     async def test_crm_module_does_not_register_send_to_target(self, ui_client):

@@ -4094,8 +4094,8 @@ function celerpPrintLabel(link, ev, entityId, templateId) {
                 ])
             elif doc_type in ("list", "shipping_doc"):
                 params = {"limit": 20}
-                # A Shipping Document target only offers shipping-doc drafts; the generic
-                # List/Quotation target keeps offering every list type, as before.
+                # The Delivery Note target only offers shipping-doc drafts; the Quotation
+                # (list) target keeps offering every list type.
                 if doc_type == "shipping_doc":
                     params["list_type"] = "shipping_doc"
                 if q:
@@ -5014,14 +5014,14 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     _loc_opt, _loc_js = add_new_option(t("inventory.add_new_location"), "/settings/inventory?tab=locations")
     loc_opts = [Option(loc.get("name", ""), value=loc.get("location_id") or loc.get("id", "")) for loc in locations]
 
-    # Send-to targets from modules (e.g. Invoice, List, Consignment Out)
+    # Send-to targets from modules (e.g. Invoice, Quotation, Consignment Out)
     _settings = settings or {}
     send_to_targets = [
         tgt for tgt in get_slot("send_to_targets")
         if module_contribution_visible(tgt, _settings, role, connected_connectors)
     ]
     send_to_opts = [
-        Option(tgt.get("label", ""), value=tgt.get("doc_type", ""))
+        Option(_slot_label(tgt, tgt.get("doc_type", "")), value=tgt.get("doc_type", ""))
         for tgt in send_to_targets
     ]
 
