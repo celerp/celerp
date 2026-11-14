@@ -81,6 +81,16 @@ def test_a_third_party_module_this_process_did_not_admit_names_nothing(_modules)
     assert _readers("acmeg.recorded") == _DEFAULT_READERS
 
 
+def test_loading_or_taking_out_a_module_changes_what_its_events_are_read_with_at_once(_modules):
+    pkg = _projecting(_modules, "acmeh.", "edit_documents")
+    assert "acmeh." not in loader.event_read_permissions()
+    loader.load_all(str(_modules), {pkg.name})
+    assert loader.event_read_permissions()["acmeh."] == "edit_documents"
+    loader._deactivate(pkg.name, "taken out")
+    assert "acmeh." not in loader.event_read_permissions()
+    assert _readers("acmeh.recorded") == _DEFAULT_READERS
+
+
 def test_a_module_from_before_read_permissions_loads_and_its_events_stay_closed(_modules):
     # The projection_handler entry exactly as manifests wrote it before "permission" existed.
     pkg = _projecting(_modules, "acmed.", permission=None)
