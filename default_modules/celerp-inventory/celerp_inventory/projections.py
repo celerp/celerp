@@ -7,6 +7,7 @@ from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LO
 from celerp.services.money import round_basis
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.field_schema import LEGACY_CATEGORY_FIELDS
+from celerp.services.pricing import coerce_price
 
 # Maps old weight_unit abbreviations to new unit names
 _WEIGHT_UNIT_MAP: dict[str, str] = {
@@ -108,7 +109,8 @@ def _normalize_attributes(current: dict) -> None:
 def _fold_legacy_category_fields(current: dict) -> None:
     """Move old preset values onto their core fields (in place); a value the core field already
     holds wins. Applied on every event, so a rebuild folds existing lots and a client still
-    writing an old key lands on the core field. A weight that is not a number stays where it is."""
+    writing an old key lands on the core field. A weight that is not a finite number (text, true,
+    nan, an infinity, a number too large for a float) stays where it is."""
     attrs = current.get("attributes")
     if not attrs or not LEGACY_CATEGORY_FIELDS.keys() & attrs.keys():
         return
@@ -117,9 +119,8 @@ def _fold_legacy_category_fields(current: dict) -> None:
         value = attrs.get(old)
         if core == "weight":
             if value not in (None, "") and current.get("weight") in (None, ""):
-                try:
-                    weight = float(value)
-                except (TypeError, ValueError):
+                weight = coerce_price(value)
+                if weight is None:
                     continue
                 current["weight"], current["weight_unit"] = weight, "gram"
         elif value not in (None, "") and attrs.get(core) in (None, ""):
