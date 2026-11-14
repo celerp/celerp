@@ -706,6 +706,65 @@ async def test_pack_notice_runs_without_enabled_modules(l10n_dir, client, sessio
     assert notice.i18n["params"] == {"countries": ["TH"]}
 
 
+async def _new_owner(session):
+    import uuid
+    from celerp.services.provisioning import create_install_owner
+    return await create_install_owner(session, name="Owner", email=f"pack-{uuid.uuid4().hex[:8]}@test.co",
+                                      password="x" * 12)
+
+
+async def test_a_company_registered_after_startup_is_told_of_missing_packs(l10n_dir, session):
+    import uuid
+    from celerp.services.provisioning import provision_registered_company
+
+    _drop(l10n_dir, "TH")
+    await _sync_notice(session)  # startup, before the company exists
+    company, _user = await provision_registered_company(
+        session, company_name="Late Co", owner_name="Owner", email=f"late-{uuid.uuid4().hex[:8]}@test.co",
+        password="x" * 12)
+    await session.commit()
+    [notice] = await _pack_notices(session, company.id)
+    assert notice.i18n["params"] == {"countries": ["TH"]}
+
+
+async def test_a_new_company_alone_is_told_and_no_other_company_is_written(l10n_dir, session):
+    from celerp.services.provisioning import provision_additional_company
+
+    other = await _company(session)  # an earlier company with no notice standing
+    _drop(l10n_dir, "TH")
+    user = await _new_owner(session)
+    company_id = (await provision_additional_company(session, user=user, company_name="Second Co")).id
+    await session.commit()
+    assert [n.company_id for n in await _pack_notices(session)] == [company_id]
+    assert await _pack_notices(session, other) == []
+
+
+async def test_the_new_company_notice_is_written_once_however_often_it_runs(l10n_dir, session):
+    from celerp.localization.notice import sync_pack_notice
+    from celerp.services.provisioning import provision_additional_company
+
+    _drop(l10n_dir, "MY")
+    user = await _new_owner(session)
+    company = await provision_additional_company(session, user=user, company_name="Again Co")
+    await session.commit()
+    for _ in range(2):
+        await sync_pack_notice(session, company.id)
+        await session.commit()
+    [notice] = await _pack_notices(session, company.id)
+    assert notice.i18n["params"] == {"countries": ["MY"]}
+    await _sync_notice(session)  # the startup pass keeps that one notice
+    assert [n.id for n in await _pack_notices(session)] == [notice.id]
+
+
+async def test_a_new_company_on_a_complete_install_gets_no_pack_notice(l10n_dir, session):
+    from celerp.services.provisioning import provision_additional_company
+
+    user = await _new_owner(session)
+    company = await provision_additional_company(session, user=user, company_name="Whole Co")
+    await session.commit()
+    assert await _pack_notices(session, company.id) == []
+
+
 async def test_pack_notice_failure_is_logged_and_boot_continues(monkeypatch, caplog):
     from test_main_lifespan import _boot_in_order
 
