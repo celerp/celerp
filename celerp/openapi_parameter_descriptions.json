@@ -580,12 +580,18 @@
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
   },
   "GET /ledger": {
+    "query:after": "Event id to read from: returns the page of events just newer than this one.",
+    "query:before": "Event id to read from: returns the page of events just older than this one.",
     "query:entity_id": "Identifier of the requested Celerp record.",
     "query:entity_type": "Business entity type used to filter ledger events.",
     "query:event_type": "Event type used to filter ledger events.",
+    "query:field": "Field name used to filter ledger events to those that changed it.",
     "query:limit": "Maximum number of records to return.",
-    "query:offset": "Number of matching records to skip before returning results.",
-    "query:resolve": "Whether to include resolved entity information with ledger events when available."
+    "query:resolve": "Whether to include resolved entity information with ledger events when available.",
+    "query:who": "Actor key, as returned by GET /ledger/facets, used to filter ledger events by who made them."
+  },
+  "GET /ledger/facets": {
+    "query:entity_id": "Identifier of the requested Celerp record."
   },
   "GET /ledger/{entry_id}": {
     "path:entry_id": "Identifier of the ledger entry."
