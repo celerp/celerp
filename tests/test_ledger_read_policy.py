@@ -82,9 +82,10 @@ async def test_a_custom_grant_opens_accounting_entries_and_its_revocation_closes
 
 
 @pytest.mark.asyncio
-async def test_a_disabled_module_keeps_its_events_behind_its_permission(client, session, monkeypatch):
-    """Fixed asset events stay hidden from a viewer when the module that owns them is not enabled."""
-    from celerp.modules import slots
+async def test_a_module_taken_out_leaves_its_events_to_company_admins(client, session, monkeypatch):
+    """Fixed asset events fall to the company-admin default once the module that owns them
+    is no longer loaded: its permission no longer opens them."""
+    from celerp.modules import loader, slots
 
     owner, viewer, operator = await _demo(client, session)
     started = await client.post("/fixed-assets/api/start", headers=owner, json={})
@@ -100,10 +101,12 @@ async def test_a_disabled_module_keeps_its_events_behind_its_permission(client, 
     monkeypatch.setattr(slots, "_slots", {k: list(v) for k, v in slots._slots.items()})
     slots.unregister_module("celerp-fixed-assets")
     assert not [c for c in slots.get("projection_handler") if c["prefix"] == "fa."]
+    monkeypatch.setattr(loader, "_event_permissions", {})  # as a load or take-out leaves it
 
-    assert _of(await _events(client, viewer), ("fa.",)) == []
-    assert (await client.get(f"/ledger/{assets[0]['id']}", headers=viewer)).status_code == 404
-    assert _of(await _events(client, operator), ("fa.",))  # operators hold view_fixed_assets
+    for role in (viewer, operator):  # operators hold view_fixed_assets
+        assert _of(await _events(client, role), ("fa.",)) == []
+        assert (await client.get(f"/ledger/{assets[0]['id']}", headers=role)).status_code == 404
+    assert _of(await _events(client, owner), ("fa.",))
 
 
 @pytest.mark.asyncio
@@ -136,25 +139,37 @@ def test_every_projection_handler_names_the_permission_its_events_are_read_with(
     assert [c for c in registered if not is_permission_key(c.get("permission"))] == []
     installed = event_read_permissions()
     assert {c["prefix"] for c in registered} <= set(installed)
-    assert installed["je."] == "view_financial_reports" and installed["item."] == "view_inventory"
+    assert installed["acc."] == "view_financial_reports" and installed["item."] == "view_inventory"
 
 
-def test_the_kept_event_permissions_are_what_admitting_the_installed_modules_gives():
-    """What every ledger read uses, worked out from boot's admission and the first-party
-    lock, equals a fresh admission of every installed module."""
+def test_the_kept_event_permissions_are_the_loaded_modules_own():
+    """What every ledger read uses is the permission on each projection handler the loaded
+    modules registered, and nothing from a module that is only installed."""
     from celerp.modules import loader
-    from celerp.modules.slots import get as get_slot, projection_prefixes_overlap
+    from celerp.modules.slots import get as get_slot
 
-    found = {}
-    for pkg in loader._installed_packages():
-        manifest = loader.read_manifest(pkg)
-        found.setdefault(manifest.get("name") or pkg.name, manifest)
-    admitted = loader.admit_modules(loader.module_search_path(), set(found)).admitted
-    claims = [(m.name, c) for m in admitted for c in m.manifest["slots"].get("projection_handler", [])]
-    claims += [(c["_module"], c) for c in get_slot("projection_handler") if c.get("_module") in loader.CORE_FOLDED]
-    prefixes = [(name, c["prefix"]) for name, manifest in found.items()
-                for c in (manifest.get("slots") or {}).get("projection_handler") or []]
-    prefixes += [(name, c["prefix"]) for name, c in claims if name in loader.CORE_FOLDED]
-    fresh = {c["prefix"]: c["permission"] for name, c in claims if "permission" in c
-             and not any(other != name and projection_prefixes_overlap(c["prefix"], p) for other, p in prefixes)}
-    assert fresh and loader.event_read_permissions() == fresh
+    registered = {c["prefix"]: c["permission"] for c in get_slot("projection_handler") if "permission" in c}
+    assert registered and loader.event_read_permissions() == registered
+
+
+@pytest.mark.asyncio
+async def test_ledger_history_and_dashboard_answer_beside_malformed_installed_modules(client, session, tmp_path,
+                                                                                     monkeypatch):
+    """An installed module that is turned off or refused, its manifest malformed, changes no
+    reader: every one still answers."""
+    from celerp.modules import loader
+    from test_modules.test_admission import _write_module
+
+    owner, viewer, operator = await _demo(client, session)
+    for i, slots in enumerate((["projection_handler"], {"projection_handler": "x.:apply"},
+                               {"projection_handler": ["x."]}, {"projection_handler": [{"handler": "x:y"}]})):
+        _write_module(tmp_path, f"acme-bad-{i}", {"name": f"acme-bad-{i}", "version": "1.0.0", "slots": slots})
+    monkeypatch.setenv("MODULE_DIR", str(tmp_path))
+    before = await client.get("/ledger", params={"limit": 5}, headers=owner)
+    loader._event_permissions.clear()
+    entity = before.json()["items"][0]["entity_id"]
+    for headers in (owner, operator):
+        for path, params in (("/ledger", {"limit": 5}), ("/ledger", {"entity_id": entity}),
+                             ("/dashboard/activity", {}), ("/dashboard/activity/search", {"q": "a"})):
+            r = await client.get(path, params=params, headers=headers)
+            assert r.status_code == 200, (path, r.text[:300])

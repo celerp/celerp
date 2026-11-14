@@ -11,8 +11,8 @@ through :func:`serialize_event`, which redacts each of its JSON payloads (data a
 
 Every ledger reader (the event list, a single event, the dashboard activity and History)
 shows an event only to a role holding the permission it is read with: the one its module names
-on its ``projection_handler`` contribution, enabled or not, or core's own for the events no
-module owns.
+on the ``projection_handler`` contribution of a loaded module, or core's own for the events
+no loaded module owns.
 """
 
 from __future__ import annotations
