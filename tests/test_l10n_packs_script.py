@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import http.client
+import http.server
 import importlib.util
 import io
 import json
@@ -19,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -228,6 +231,10 @@ def _serving(fail: dict | None = None):
     return _open
 
 
+def _patch_open(monkeypatch, opener) -> None:
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, request, *a, **k: opener(request))
+
+
 def _fetch_root(tmp_path) -> Path:
     target = tmp_path / "fetched"
     (target / "packs").mkdir(parents=True)
@@ -239,7 +246,7 @@ def test_l10n_packs_fetch_writes_and_checks(tmp_path, monkeypatch):
     target = _fetch_root(tmp_path)
     monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
-    monkeypatch.setattr(urllib.request, "urlopen", _serving())
+    _patch_open(monkeypatch, _serving())
     code, out = _run("fetch", str(target))
     assert code == 0, out
     assert sorted(p.name for p in (target / "packs").iterdir()) == sorted(f"{c}.json" for c in CODES)
@@ -259,7 +266,7 @@ def test_l10n_packs_fetch_fails_closed(tmp_path, monkeypatch, case):
         monkeypatch.delenv("CELERP_L10N_TOKEN", raising=False)
     else:
         monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
-    monkeypatch.setattr(urllib.request, "urlopen", _serving({"IN": _http_404} if case == "http error" else None))
+    _patch_open(monkeypatch, _serving({"IN": _http_404} if case == "http error" else None))
     code, out = _run("fetch", str(target))
     assert code != 0, out
     assert list((target / "packs").iterdir()) == []
@@ -275,13 +282,139 @@ def test_l10n_packs_fetch_hides_repo_names(tmp_path, monkeypatch, error, shown):
     sources = _sources()
     monkeypatch.setenv("CELERP_L10N_SOURCES", sources)
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
-    monkeypatch.setattr(urllib.request, "urlopen", _serving({"TH": error}))
+    _patch_open(monkeypatch, _serving({"TH": error}))
     code, out = _run("fetch", str(target))
     assert code != 0 and shown in out, out
     for value in json.loads(sources).values():
         repo, tag = value.split("@")
         for secret in (value, repo, tag, *repo.split("/")):
             assert secret not in out
+
+
+class _Interrupted(_Response):
+    def read(self, *a):
+        raise http.client.IncompleteRead(b"{", 4096)
+
+
+def _stale_root(tmp_path) -> tuple[Path, dict[str, bytes]]:
+    """A fetch root whose packs folder already holds a set of files, to prove fetch leaves them alone."""
+    target = _fetch_root(tmp_path)
+    for code in CODES:
+        (target / "packs" / f"{code}.json").write_bytes(f"stale {code}\n".encode())
+    return target, {p.name: p.read_bytes() for p in (target / "packs").iterdir()}
+
+
+@pytest.mark.parametrize("case", ["interrupted download", "bad digest", "http error", "write fails", "swap fails"])
+def test_l10n_packs_fetch_failure_leaves_existing_packs_untouched(tmp_path, monkeypatch, case):
+    """fetch downloads and verifies every pack against the lock before it replaces anything."""
+    target, before = _stale_root(tmp_path)
+    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
+    monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
+    serve = _serving({"IN": _http_404} if case == "http error" else None)
+
+    def _open(request):
+        response = serve(request)
+        if "secret-in/" not in request.full_url:
+            return response
+        if case == "interrupted download":
+            return _Interrupted(response.read())
+        if case == "bad digest":
+            return _Response(response.read().replace(b'"IN"', b'"IN" '))
+        return response
+    _patch_open(monkeypatch, _open)
+    if case == "write fails":
+        real = Path.write_bytes
+
+        def _write(self, data):
+            if self.name == "IN.json":
+                raise OSError("disk full")
+            return real(self, data)
+        monkeypatch.setattr(Path, "write_bytes", _write)
+    if case == "swap fails":
+        real_replace = os.replace
+
+        def _replace(src, dst):
+            if Path(src).name.startswith(".packs-new-"):
+                raise OSError("device busy")
+            return real_replace(src, dst)
+        monkeypatch.setattr(os, "replace", _replace)
+    code, out = _run("fetch", str(target))
+    assert code != 0, out
+    assert {p.name: p.read_bytes() for p in (target / "packs").iterdir()} == before
+    assert sorted(p.name for p in target.iterdir()) == ["packs", "packs.lock.json"]
+    if case == "bad digest":
+        assert "country IN: sha256 does not match the lock" in out
+
+
+def test_l10n_packs_fetch_replaces_a_stale_set(tmp_path, monkeypatch):
+    target, _ = _stale_root(tmp_path)
+    (target / "packs" / "SG.json").write_bytes(b"left over\n")
+    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
+    monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
+    _patch_open(monkeypatch, _serving())
+    code, out = _run("fetch", str(target))
+    assert code == 0, out
+    assert {p.name: p.read_bytes() for p in (target / "packs").iterdir()} == {
+        f"{c}.json": (FIXTURE / "packs" / f"{c}.json").read_bytes() for c in CODES}
+    assert sorted(p.name for p in target.iterdir()) == ["packs", "packs.lock.json"]
+
+
+@contextlib.contextmanager
+def _http_server(handle):
+    """A local HTTP server on 127.0.0.1 that records each request's headers and answers with ``handle``."""
+    seen: list[dict] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append({"path": self.path, "authorization": self.headers.get("Authorization")})
+            status, headers, body = handle(self.path)
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1], seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _pack_body(path: str) -> tuple[int, dict, bytes]:
+    code = path.split("secret-")[1].split("/")[0].upper()
+    return 200, {}, (FIXTURE / "packs" / f"{code}.json").read_bytes()
+
+
+@pytest.mark.parametrize("target_host, forwarded", [("localhost", False), ("127.0.0.1", True)])
+def test_l10n_packs_fetch_sends_the_token_to_the_first_host_only(tmp_path, monkeypatch, target_host, forwarded):
+    """A redirect to another host (localhost is not 127.0.0.1) never carries the token; one on the same host keeps it."""
+    target = _fetch_root(tmp_path)
+    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
+    monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
+    port = []
+
+    def _redirect(path):
+        if path.startswith("/moved/"):
+            return _pack_body(path)
+        return 302, {"Location": f"http://{target_host}:{port[0]}/moved{path}"}, b""
+    with _http_server(_redirect) as (server_port, seen):
+        port.append(server_port)
+        module = _script()
+        monkeypatch.setattr(module, "CONTENTS_URL", f"http://127.0.0.1:{server_port}/{{repo}}/{{tag}}")
+        assert module.fetch(target) == []
+    first = [r for r in seen if not r["path"].startswith("/moved/")]
+    moved = [r for r in seen if r["path"].startswith("/moved/")]
+    assert len(first) == len(moved) == len(CODES)
+    assert all(r["authorization"] == "Bearer token-value" for r in first)
+    assert all((r["authorization"] == "Bearer token-value") is forwarded for r in moved), moved
 
 
 # ── Subprocesses (marked process) ────────────────────────────────────────────
@@ -344,11 +477,11 @@ fixture, target, script = sys.argv[1:4]
 class R(io.BytesIO):
     def __enter__(self): return self
     def __exit__(self, *e): return False
-def opener(request, *a, **k):
+def opener(self, request, *a, **k):
     url = request.full_url
     code = url.split("secret-")[1].split("/")[0].upper()
     return R(open(f"{fixture}/packs/{code}.json", "rb").read())
-urllib.request.urlopen = opener
+urllib.request.OpenerDirector.open = opener
 sys.argv = [script, "fetch", target]
 runpy.run_path(script, run_name="__main__")
 """

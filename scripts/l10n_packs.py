@@ -12,7 +12,9 @@ only ``packs.lock.json`` (country code to version, schema version and sha256).
                                                            # validate, then write the lock
 
 ``fetch`` reads ``CELERP_L10N_SOURCES`` (JSON ``{"CC": "owner/repo@tag"}``) and
-``CELERP_L10N_TOKEN``. It writes nothing unless every pack downloads, and its messages name
+``CELERP_L10N_TOKEN``. It replaces the packs folder only after every pack downloads and
+matches its locked sha256 (any failure leaves the old files as they were), sends the token to
+the first host only (never across a redirect to another host), and its messages name
 the country and HTTP status only, never a repository, URL or tag. ``fetch`` and ``check`` use
 the standard library only, so they run under a bare runner Python before any install; only
 ``validate`` imports the app. A file whose sha256 equals the lock is byte-identical to the
@@ -24,8 +26,11 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -160,6 +165,21 @@ def write_lock(root: Path, add: list[str] | tuple[str, ...] = (), remove: list[s
     return []
 
 
+class _SameHostAuthorization(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but send the token only to the scheme, host and port it was meant for."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(new.full_url) != _origin(req.full_url):
+            new.remove_header("Authorization")
+        return new
+
+
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
 def _download(repo: str, tag: str, token: str) -> bytes:
     request = urllib.request.Request(CONTENTS_URL.format(repo=repo, tag=tag), headers={
         "Accept": "application/vnd.github.raw+json",
@@ -167,8 +187,31 @@ def _download(repo: str, tag: str, token: str) -> bytes:
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "celerp-pack-fetch",
     })
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.build_opener(_SameHostAuthorization).open(request, timeout=60) as response:
         return response.read()
+
+
+def _replace_packs(root: Path, fetched: dict[str, bytes]) -> None:
+    """Write the set into a new folder beside ``packs``, then swap it in; on any failure the old one stays."""
+    staging = Path(tempfile.mkdtemp(prefix=".packs-new-", dir=root))
+    old = root / ".packs-old"
+    moved = False
+    try:
+        for code, data in fetched.items():
+            (staging / f"{code}.json").write_bytes(data)
+        shutil.rmtree(old, ignore_errors=True)
+        if (root / "packs").exists():
+            os.replace(root / "packs", old)
+            moved = True
+        os.replace(staging, root / "packs")
+        moved = False
+    except BaseException:
+        if moved:
+            os.replace(old, root / "packs")
+        raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def fetch(root: Path) -> list[str]:
@@ -201,11 +244,14 @@ def fetch(root: Path) -> list[str]:
             defects.append(f"country {code}: fetch failed (HTTP {exc.code})")
         except Exception:  # noqa: BLE001 - the text can carry the URL, which is private
             defects.append(f"country {code}: fetch failed (network error)")
+    defects += [f"country {code}: sha256 does not match the lock" for code, data in fetched.items()
+                if hashlib.sha256(data).hexdigest() != lock[code]["sha256"]]
     if defects:
         return defects
-    (root / "packs").mkdir(parents=True, exist_ok=True)
-    for code, data in fetched.items():
-        (root / "packs" / f"{code}.json").write_bytes(data)
+    try:
+        _replace_packs(root, fetched)
+    except OSError as exc:
+        return [f"packs: not replaced ({exc.strerror or exc})"]
     return check(root)
 
 
