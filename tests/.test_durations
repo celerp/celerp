@@ -29802,5 +29802,11 @@
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_every_stored_collection_reads_as_one_phase[mode_manual-True-refused-succeeded]": 0.002279776963405311,
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_every_stored_collection_reads_as_one_phase[mode_manual-True-refused-unknown]": 0.0022672798950225115,
     "default_modules/celerp-subscriptions/tests/test_collection_table.py::test_every_stored_collection_reads_as_one_phase[mode_manual-True-refused-unverifiable]": 0.0022839589510113,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_open_rest.py]": 0.005711600999347866
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-subscriptions/tests/test_collection_open_rest.py]": 0.005711600999347866,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[payment_page-cancel_refused]": 1.6815145730506629,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[payment_page-submitted]": 0.8075841759564355,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[payment_page-succeeded]": 0.5796607078518718,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[placed-cancel_refused]": 0.6186044730711728,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[placed-submitted]": 0.7738987029297277,
+    "default_modules/celerp-subscriptions/tests/test_collection_settlement.py::test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice[placed-succeeded]": 0.7243996820179746
 }
