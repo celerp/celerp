@@ -14,8 +14,6 @@ on:
     secrets:
       CELERP_L10N_TOKEN:
         required: true
-      CELERP_L10N_SOURCES:
-        required: true
 
 jobs:
   golden:
@@ -61,7 +59,6 @@ jobs:
         uses: ./.github/actions/l10n-packs
         with:
           token: ${{ secrets.CELERP_L10N_TOKEN }}
-          sources: ${{ secrets.CELERP_L10N_SOURCES }}
 
       - name: Validate country packs
         env:

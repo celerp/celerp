@@ -11,11 +11,11 @@ only ``packs.lock.json`` (country code to version, schema version and sha256).
     python scripts/l10n_packs.py lock <root> [--add CC] [--remove CC]
                                                            # validate, then write the lock
 
-``fetch`` reads ``CELERP_L10N_SOURCES`` (JSON ``{"CC": "owner/repo@tag"}``) and
-``CELERP_L10N_TOKEN``. It replaces the packs folder only after every pack downloads and
-matches its locked sha256 (any failure leaves the old files as they were), sends the token to
-the first host only (never across a redirect to another host), and its messages name
-the country and HTTP status only, never a repository, URL or tag. ``fetch`` and ``check`` use
+``fetch`` downloads each locked country's pack from ``celerp/celerp-l10n-<cc>`` at tag
+``v<version>``, both taken from the lock, with ``CELERP_L10N_TOKEN``. It replaces the packs folder
+only after every pack downloads and matches its locked sha256 (any failure leaves the old files
+as they were), sends the token to the first host only (never across a redirect to another host),
+and its messages name the country and HTTP status. ``fetch`` and ``check`` use
 the standard library only, so they run under a bare runner Python before any install; only
 ``validate`` imports the app. A file whose sha256 equals the lock is byte-identical to the
 file ``validate`` passed before ``lock`` wrote that digest.
@@ -40,6 +40,7 @@ LOCK_NAME = "packs.lock.json"
 FORMAT = "celerp-localization"
 SCHEMA_VERSION = 1
 _ROW_NOUN = {"taxes": "tax", "retired": "retired"}
+PACK_REPO = "celerp/celerp-l10n-{cc}"
 CONTENTS_URL = "https://api.github.com/repos/{repo}/contents/pack/localization.json?ref={tag}"
 
 
@@ -55,7 +56,9 @@ def _read_lock(root: Path) -> dict | None:
         return None
     if not isinstance(lock, dict):
         return None
-    return lock if all(isinstance(e, dict) and isinstance(e.get("sha256"), str) for e in lock.values()) else None
+    return lock if all(isinstance(code, str) and code.isalpha() and len(code) == 2 and isinstance(e, dict)
+                       and isinstance(e.get("sha256"), str) and isinstance(e.get("version"), str)
+                       for code, e in lock.items()) else None
 
 
 def _pack_files(root: Path) -> dict[str, Path]:
@@ -187,7 +190,8 @@ def _origin(url: str) -> tuple[str, str]:
 
 
 def _download(repo: str, tag: str, token: str) -> bytes:
-    request = urllib.request.Request(CONTENTS_URL.format(repo=repo, tag=tag), headers={
+    url = CONTENTS_URL.format(repo=repo, tag=urllib.parse.quote(tag, safe=""))
+    request = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github.raw+json",
         "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -224,28 +228,14 @@ def fetch(root: Path) -> list[str]:
     token = os.environ.get("CELERP_L10N_TOKEN")
     if not token:
         return ["CELERP_L10N_TOKEN is not set"]
-    try:
-        sources = json.loads(os.environ.get("CELERP_L10N_SOURCES") or "")
-    except ValueError:
-        sources = None
-    if not isinstance(sources, dict):
-        return ["CELERP_L10N_SOURCES is not a JSON object of country code to owner/repo@tag"]
     lock = _read_lock(root)
     if lock is None:
         return [f"{LOCK_NAME}: missing or unreadable"]
-    defects = [f"country {code}: in the lock but not in CELERP_L10N_SOURCES" for code in lock if code not in sources]
-    defects += [f"country {code}: in CELERP_L10N_SOURCES but not in the lock" for code in sources if code not in lock]
+    defects: list[str] = []
     fetched: dict[str, bytes] = {}
-    for code in lock:
-        source = sources.get(code)
-        if source is None:
-            continue
-        repo, sep, tag = str(source).partition("@")
-        if not sep or repo.count("/") != 1 or not tag:
-            defects.append(f"country {code}: source is not owner/repo@tag")
-            continue
+    for code, entry in lock.items():
         try:
-            fetched[code] = _download(repo, tag, token)
+            fetched[code] = _download(PACK_REPO.format(cc=code.lower()), f"v{entry['version']}", token)
         except urllib.error.HTTPError as exc:
             defects.append(f"country {code}: fetch failed (HTTP {exc.code})")
         except Exception:  # noqa: BLE001 - the text can carry the URL, which is private

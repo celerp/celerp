@@ -597,7 +597,6 @@ jobs:
     uses: ./.github/workflows/l10n-golden.yml
     secrets:
       CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
-      CELERP_L10N_SOURCES: ${{ secrets.CELERP_L10N_SOURCES }}
 
   test:
     name: Test

@@ -118,7 +118,6 @@ jobs:
     uses: ./.github/workflows/l10n-golden.yml
     secrets:
       CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
-      CELERP_L10N_SOURCES: ${{ secrets.CELERP_L10N_SOURCES }}
 
   build:
     needs: [prepare-release, setup-matrix, l10n-golden]
@@ -219,7 +218,6 @@ jobs:
         uses: ./.github/actions/l10n-packs
         with:
           token: ${{ secrets.CELERP_L10N_TOKEN }}
-          sources: ${{ secrets.CELERP_L10N_SOURCES }}
 
       - name: Install Python deps into standalone (arm64)
         if: matrix.os == 'macos-latest'

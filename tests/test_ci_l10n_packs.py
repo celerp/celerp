@@ -23,8 +23,7 @@ GOLDEN = "./.github/workflows/l10n-golden.yml"
 ACTION = "./.github/actions/l10n-packs"
 GUARD = "github.event_name != 'pull_request'"
 SHELL_GUARD = 'if [ "${{ github.event_name }}" != "pull_request" ]; then'
-SECRETS = {"CELERP_L10N_TOKEN": "${{ secrets.CELERP_L10N_TOKEN }}",
-           "CELERP_L10N_SOURCES": "${{ secrets.CELERP_L10N_SOURCES }}"}
+SECRETS = {"CELERP_L10N_TOKEN": "${{ secrets.CELERP_L10N_TOKEN }}"}
 PACKS_CHECK = "--lock celerp/localization/packs.lock.json"
 
 
@@ -112,7 +111,7 @@ def test_check_golden_gate_hard():
     run = next(i for i, s in enumerate(steps) if "-m real_packs" in str(s.get("run", "")))
     assert install < fetch < validate < run
     assert steps[run]["run"].startswith("env -u CELERP_L10N_GOLDEN_WRITE pytest ")
-    assert steps[fetch]["with"] == {"token": SECRETS["CELERP_L10N_TOKEN"], "sources": SECRETS["CELERP_L10N_SOURCES"]}
+    assert steps[fetch]["with"] == {"token": SECRETS["CELERP_L10N_TOKEN"]}
 
     for path in sorted(WORKFLOWS.glob("*.yml")):
         assert pull_request_leaks(_load(path.name)) == [], path.name
@@ -197,12 +196,6 @@ def test_check_packaged_l10n_packs():
     assert '"localization/packs.lock.json"' in pyproject and '"localization/packs/*.json"' in pyproject
     assert "recursive-include celerp/localization *.json" in (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     assert "celerp/localization/packs/" in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-
-
-def test_check_public_tree_names_no_country_repo():
-    """The country repositories are private: the public tree never names one."""
-    done = subprocess.run(["git", "grep", "-n", "celerp-l10n" + "-"], cwd=ROOT, capture_output=True, text=True)
-    assert done.returncode == 1 and done.stdout == "", done.stdout
 
 
 def test_pull_request_leak_check_reads_a_copy():

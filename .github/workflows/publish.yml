@@ -16,7 +16,6 @@ jobs:
     uses: ./.github/workflows/l10n-golden.yml
     secrets:
       CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
-      CELERP_L10N_SOURCES: ${{ secrets.CELERP_L10N_SOURCES }}
 
   build:
     needs: l10n-golden
@@ -54,7 +53,6 @@ jobs:
         uses: ./.github/actions/l10n-packs
         with:
           token: ${{ secrets.CELERP_L10N_TOKEN }}
-          sources: ${{ secrets.CELERP_L10N_SOURCES }}
 
       - name: Pin dependencies and build
         run: |

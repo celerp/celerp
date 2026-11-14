@@ -239,10 +239,6 @@ def test_lock_refuses_a_change_that_does_not_fit(root, argv, defect):
     assert _lock_bytes(root) == before
 
 
-def _sources(codes=CODES) -> str:
-    return json.dumps({code: f"acme-private/secret-{code.lower()}@v2026.9" for code in codes})
-
-
 class _Response(io.BytesIO):
     def __enter__(self):
         return self
@@ -255,7 +251,7 @@ def _serving(fail: dict | None = None):
     """An opener that serves each fixture pack from its repository URL, or raises ``fail[code]``."""
     def _open(request, *a, **k):
         url = request.full_url if isinstance(request, urllib.request.Request) else str(request)
-        code = next(c for c in CODES if f"secret-{c.lower()}/" in url)
+        code = next(c for c in CODES if f"celerp-l10n-{c.lower()}/" in url)
         if fail and code in fail:
             raise fail[code](url)
         return _Response((FIXTURE / "packs" / f"{code}.json").read_bytes())
@@ -275,7 +271,6 @@ def _fetch_root(tmp_path) -> Path:
 
 def test_l10n_packs_fetch_writes_and_checks(tmp_path, monkeypatch):
     target = _fetch_root(tmp_path)
-    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
     _patch_open(monkeypatch, _serving())
     code, out = _run("fetch", str(target))
@@ -283,16 +278,32 @@ def test_l10n_packs_fetch_writes_and_checks(tmp_path, monkeypatch):
     assert sorted(p.name for p in (target / "packs").iterdir()) == sorted(f"{c}.json" for c in CODES)
 
 
+def test_l10n_packs_fetch_requests_exactly_the_locked_tags(tmp_path, monkeypatch):
+    """Each pack comes from celerp/celerp-l10n-<cc> at tag v<locked version>; nothing else names a revision."""
+    target = _fetch_root(tmp_path)
+    monkeypatch.setenv("CELERP_L10N_SOURCES", json.dumps({c: f"other/repo-{c}@v0" for c in CODES}))
+    monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
+    serve, urls = _serving(), []
+    _patch_open(monkeypatch, lambda request: urls.append(request.full_url) or serve(request))
+    code, out = _run("fetch", str(target))
+    assert code == 0, out
+    lock = json.loads((FIXTURE / "packs.lock.json").read_text(encoding="utf-8"))
+    module = _script()
+    assert sorted(urls) == sorted(module.CONTENTS_URL.format(repo=f"celerp/celerp-l10n-{c.lower()}",
+                                                             tag=f"v{lock[c]['version']}") for c in CODES)
+
+
 def _http_404(url):
     return urllib.error.HTTPError(url, 404, "Not Found", {}, None)
 
 
-@pytest.mark.parametrize("case", ["not json", "missing country", "extra country", "no token", "http error"])
+@pytest.mark.parametrize("case", ["no token", "http error", "unreadable lock"])
 def test_l10n_packs_fetch_fails_closed(tmp_path, monkeypatch, case):
     target = _fetch_root(tmp_path)
-    sources = {"not json": "{acme-private/secret-th@v2026.9", "missing country": _sources(CODES[:3]),
-               "extra country": _sources(CODES + ("SG",))}.get(case, _sources())
-    monkeypatch.setenv("CELERP_L10N_SOURCES", sources)
+    if case == "unreadable lock":
+        lock = json.loads((target / "packs.lock.json").read_text(encoding="utf-8"))
+        del lock["TH"]["version"]
+        (target / "packs.lock.json").write_text(json.dumps(lock), encoding="utf-8")
     if case == "no token":
         monkeypatch.delenv("CELERP_L10N_TOKEN", raising=False)
     else:
@@ -301,25 +312,18 @@ def test_l10n_packs_fetch_fails_closed(tmp_path, monkeypatch, case):
     code, out = _run("fetch", str(target))
     assert code != 0, out
     assert list((target / "packs").iterdir()) == []
-    assert "acme-private" not in out and "secret-" not in out
 
 
 @pytest.mark.parametrize("error, shown", [
     (_http_404, "country TH: fetch failed (HTTP 404)"),
     (lambda url: urllib.error.URLError(f"no route to {url}"), "country TH: fetch failed (network error)"),
 ])
-def test_l10n_packs_fetch_hides_repo_names(tmp_path, monkeypatch, error, shown):
+def test_l10n_packs_fetch_names_country_and_status(tmp_path, monkeypatch, error, shown):
     target = _fetch_root(tmp_path)
-    sources = _sources()
-    monkeypatch.setenv("CELERP_L10N_SOURCES", sources)
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
     _patch_open(monkeypatch, _serving({"TH": error}))
     code, out = _run("fetch", str(target))
     assert code != 0 and shown in out, out
-    for value in json.loads(sources).values():
-        repo, tag = value.split("@")
-        for secret in (value, repo, tag, *repo.split("/")):
-            assert secret not in out
 
 
 class _Interrupted(_Response):
@@ -339,13 +343,12 @@ def _stale_root(tmp_path) -> tuple[Path, dict[str, bytes]]:
 def test_l10n_packs_fetch_failure_leaves_existing_packs_untouched(tmp_path, monkeypatch, case):
     """fetch downloads and verifies every pack against the lock before it replaces anything."""
     target, before = _stale_root(tmp_path)
-    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
     serve = _serving({"IN": _http_404} if case == "http error" else None)
 
     def _open(request):
         response = serve(request)
-        if "secret-in/" not in request.full_url:
+        if "celerp-l10n-in/" not in request.full_url:
             return response
         if case == "interrupted download":
             return _Interrupted(response.read())
@@ -380,7 +383,6 @@ def test_l10n_packs_fetch_failure_leaves_existing_packs_untouched(tmp_path, monk
 def test_l10n_packs_fetch_replaces_a_stale_set(tmp_path, monkeypatch):
     target, _ = _stale_root(tmp_path)
     (target / "packs" / "SG.json").write_bytes(b"left over\n")
-    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
     _patch_open(monkeypatch, _serving())
     code, out = _run("fetch", str(target))
@@ -420,7 +422,7 @@ def _http_server(handle):
 
 
 def _pack_body(path: str) -> tuple[int, dict, bytes]:
-    code = path.split("secret-")[1].split("/")[0].upper()
+    code = path.split("celerp-l10n-")[1].split("/")[0].upper()
     return 200, {}, (FIXTURE / "packs" / f"{code}.json").read_bytes()
 
 
@@ -428,7 +430,6 @@ def _pack_body(path: str) -> tuple[int, dict, bytes]:
 def test_l10n_packs_fetch_sends_the_token_to_the_first_host_only(tmp_path, monkeypatch, target_host, forwarded):
     """A redirect to another host (localhost is not 127.0.0.1) never carries the token; one on the same host keeps it."""
     target = _fetch_root(tmp_path)
-    monkeypatch.setenv("CELERP_L10N_SOURCES", _sources())
     monkeypatch.setenv("CELERP_L10N_TOKEN", "token-value")
     port = []
 
@@ -510,7 +511,7 @@ class R(io.BytesIO):
     def __exit__(self, *e): return False
 def opener(self, request, *a, **k):
     url = request.full_url
-    code = url.split("secret-")[1].split("/")[0].upper()
+    code = url.split("celerp-l10n-")[1].split("/")[0].upper()
     return R(open(f"{fixture}/packs/{code}.json", "rb").read())
 urllib.request.OpenerDirector.open = opener
 sys.argv = [script, "fetch", target]
@@ -523,7 +524,7 @@ def test_check_l10n_packs_stdlib_fetch(tmp_path):
     """fetch and check run under a Python with nothing but the standard library."""
     target = _fetch_root(tmp_path)
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-    env.update(CELERP_L10N_SOURCES=_sources(), CELERP_L10N_TOKEN="token-value")
+    env.update(CELERP_L10N_TOKEN="token-value")
     done = _python("-I", "-S", "-c", _STUB_FETCH, str(FIXTURE), str(target), str(SCRIPT), cwd=tmp_path, env=env)
     assert done.returncode == 0, done.stdout + done.stderr
     assert sorted(p.name for p in (target / "packs").iterdir()) == sorted(f"{c}.json" for c in CODES)
