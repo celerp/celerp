@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import text
 
-from agreement_kit import agreement, freeze_day, member, revoke
+from agreement_kit import agreement, freeze_day, generate_due, member, revoke
 from test_helpers import ui_signed_in
 
 pytestmark = pytest.mark.asyncio
@@ -144,3 +144,86 @@ async def test_metrics_range_validation(owner_ui, monkeypatch, params, key, name
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == key and detail["params"]["parameter"] == named, r.text
+
+
+async def test_metrics_read_the_history_in_the_same_queries_and_agree_with_every_event_replayed(
+        owner_ui, session, monkeypatch):
+    """Agreement A (3 seats at 10 from 1 Jan; amended on 10 Feb to 5 seats from 15 Mar, which no
+    later event but its bills' records follows) and B (20 from 1 Jan) bill each month; B's
+    cancel is recorded after its March bill but dated 20 Feb, so it waits for that bill (MRR
+    50 at each month end: Jan and Feb A 30 + B 20, Mar A 50). The events that only write the billing records are passed
+    over, yet the answer equals the one measured by replaying every event of each agreement;
+    two more months of bills add no query."""
+    from sqlalchemy import event, select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp_subscriptions import billing, metrics
+
+    api = owner_ui.api
+    a = await _on(session, monkeypatch, "2026-01-01", lambda: agreement(
+        api, {}, start="2026-01-01", line_items=[_line("Team plan", 3, 10.0)]))
+    b = await _on(session, monkeypatch, "2026-01-01", lambda: agreement(
+        api, {}, start="2026-01-01", line_items=[_line("Solo plan", 1, 20.0)]))
+    seats = (await api.get(f"/docs/{a}")).json()["line_items"][0]["line_id"]
+
+    async def bill(month: str, eids: tuple[str, ...]) -> None:
+        for eid in eids:
+            r = await _on(session, monkeypatch, f"{month}-01", lambda e=eid: generate_due(api, {}, e))
+            assert r.status_code == 200, r.text
+
+    for month in ("2026-01", "2026-02"):
+        await bill(month, (a, b))
+    r = await _on(session, monkeypatch, "2026-02-10", lambda: api.post(f"/subscriptions/{a}/amend", json={
+        "effective": "2026-03-15", "quantities": {seats: 5}, "request_key": uuid.uuid4().hex}))
+    assert r.status_code == 200, r.text
+    await bill("2026-03", (a, b))
+    r = await _on(session, monkeypatch, "2026-02-20", lambda: api.post(f"/subscriptions/{b}/cancel"))
+    assert r.status_code == 200, r.text
+    cid = (await session.execute(text("SELECT company_id FROM projections WHERE entity_id = :e"), {"e": a})).scalar()
+    records = [e for e in (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.entity_id.in_((a, b)), LedgerEntry.event_type == "doc.updated"))).scalars()
+        if set(e.data["fields_changed"]) <= billing.BILLING_RECORDS]
+    assert records, "the bills wrote no billing records"
+
+    async def every_event(session, company_id):
+        rows = (await session.execute(select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_((a, b))).order_by(LedgerEntry.id))).scalars()
+        out: dict[str, list] = {}
+        for row in rows:
+            out.setdefault(row.entity_id, []).append(row)
+        return out
+
+    statements: list[str] = []
+    conn = (await session.connection()).sync_connection
+
+    def record(_conn, _cursor, statement, *args):
+        statements.append(statement)
+
+    async def measured(start: str, end: str) -> tuple[dict, int]:
+        statements.clear()
+        event.listen(conn, "before_cursor_execute", record)
+        try:
+            body = await metrics.revenue_metrics(
+                session, cid, datetime.fromisoformat(start).date(), datetime.fromisoformat(end).date(), None)
+        finally:
+            event.remove(conn, "before_cursor_execute", record)
+        return body, len(statements)
+
+    freeze_day(monkeypatch, "2026-04-02")
+    shown, queries = await measured("2026-01-01", "2026-03-31")
+    months = {m["month"]: m for m in shown["months"]}
+    assert (months["2026-01"]["mrr"], months["2026-02"]["mrr"], months["2026-03"]["mrr"]) == (50.0, 50.0, 50.0)
+    with monkeypatch.context() as m:
+        m.setattr(metrics, "_histories", every_event)
+        assert (await metrics.revenue_metrics(session, cid, datetime(2026, 1, 1).date(),
+                                              datetime(2026, 3, 31).date(), None)) == shown
+
+    for month in ("2026-04", "2026-05"):
+        await bill(month, (a,))
+    freeze_day(monkeypatch, "2026-06-02")
+    longer, more = await measured("2026-01-01", "2026-05-31")
+    assert more == queries
+    with monkeypatch.context() as m:
+        m.setattr(metrics, "_histories", every_event)
+        assert (await metrics.revenue_metrics(session, cid, datetime(2026, 1, 1).date(),
+                                              datetime(2026, 5, 31).date(), None)) == longer

@@ -16,12 +16,14 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import Text, and_, cast, func, literal, select
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import Refused
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
+from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.business_time import business_date_of
 from celerp.services.currencies import CURRENCY_CODES
@@ -126,28 +128,45 @@ def _money(value: Decimal, currency: str) -> float:
     return to_stored_float(round_money(value, currency))
 
 
-async def _histories(session: AsyncSession, company_id) -> dict[str, list[LedgerEntry]]:
-    """Each sales agreement's ledger events, oldest first."""
-    ids = [p.entity_id for p in await billing.agreements(session, company_id) if p.state.get("doc_type") == _SALES]
-    if not ids:
+async def _histories(session: AsyncSession, company_id) -> dict[str, list]:
+    """Each sales agreement's ledger events that change what is measured, oldest first, each
+    with the columns a replay reads. An event that only writes the agreement's billing records
+    (billing.BILLING_RECORDS) is left out: the reducer sets those fields and nothing else from
+    it, and no measure reads them. As the state cannot skip an event, one waits for every event
+    before it, left out or not, so each comes with ``ts`` the latest time among it and them."""
+    sales = list((await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == _SALES))).scalars())
+    if not sales:
         return {}
-    rows = (await session.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "doc",
-        LedgerEntry.entity_id.in_(ids)).order_by(LedgerEntry.id))).scalars().all()
-    out: dict[str, list[LedgerEntry]] = {i: [] for i in ids}
+    records_only = and_(LedgerEntry.event_type == "doc.updated", cast(LedgerEntry.data, JSONB)["fields_changed"].op("-")(
+        array(sorted(billing.BILLING_RECORDS), type_=Text)) == cast(literal("{}"), JSONB))
+    events = select(
+        LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.entity_type, LedgerEntry.event_type, LedgerEntry.data,
+        func.max(LedgerEntry.ts).over(partition_by=LedgerEntry.entity_id, order_by=LedgerEntry.id).label("ts"),
+        records_only.label("records_only"),
+    ).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_type == "doc",
+            LedgerEntry.entity_id.in_(sales)).subquery()
+    rows = (await session.execute(select(
+        events.c.entity_id, events.c.entity_type, events.c.event_type, events.c.data, events.c.ts,
+    ).where(~events.c.records_only).order_by(events.c.id))).all()
+    out: dict[str, list] = {}
     for row in rows:
-        out[row.entity_id].append(row)
+        out.setdefault(row.entity_id, []).append(row)
     return out
 
 
-def _points(histories: dict[str, list[LedgerEntry]], days: list[date], tz: str | None, books: str,
+def _points(histories: dict[str, list], days: list[date], tz: str | None, books: str,
             currency: str | None) -> tuple[list[_Point], dict[str, date]]:
-    """The MRR of every counted agreement at each day, and each agreement's start."""
+    """The MRR of every counted agreement at each day, and each agreement's start. An
+    agreement's MRR is measured again only when an event or an amendment taking effect changed
+    what it is measured from."""
     points = [_Point(d, {}, []) for d in days]
     starts: dict[str, date] = {}
     for eid, entries in histories.items():
         state: dict = {}
         at = 0
+        measured: tuple | None = None
         on = [date.fromisoformat(business_date_of(e.ts.isoformat(), tz)) for e in entries]
         for point in points:
             # Events in ledger order up to the end of this day; one dated earlier than an event
@@ -159,7 +178,10 @@ def _points(histories: dict[str, list[LedgerEntry]], days: list[date], tz: str |
                 continue
             if currency is not None and own_currency(state, books) != currency:
                 continue
-            mrr = agreement_mrr(state, point.day, books, currency)
+            terms = (at, sum(str(a.get("effective")) <= point.day.isoformat() for a in billing.amendments_of(state)))
+            if measured is None or measured[0] != terms:
+                measured = (terms, agreement_mrr(state, point.day, books, currency))
+            mrr = measured[1]
             if mrr is None:
                 point.not_converted.append(eid)
                 continue

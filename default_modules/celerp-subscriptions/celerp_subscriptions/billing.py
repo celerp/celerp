@@ -235,6 +235,12 @@ def not_moved(state: dict) -> str | None:
     return t("subscriptions.not_moved_pending")
 
 
+# The agreement's records of its own billing, written through write_agreement: which document
+# billed each period, the bills a release let go, and the last billing failure. Setting them
+# changes nothing else in the agreement's state, and no revenue measure reads them (metrics).
+BILLING_RECORDS = frozenset({"periods", "released_bills", "billing_failure"})
+
+
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
                           drop: tuple[str, ...] = (), key: str | None = None, metadata: dict | None = None) -> None:
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
