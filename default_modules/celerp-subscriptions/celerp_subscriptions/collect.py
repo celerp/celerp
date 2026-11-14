@@ -103,6 +103,12 @@ def phase_of(current: dict) -> str:
     return "replace" if state == "canceled" and current.get("replace") is True else "settled"
 
 
+def may_charge(current: dict) -> bool:
+    """Whether the attempt may still take money: asked, with Cloud, or charged and its payment
+    not recorded yet."""
+    return current.get("state") in collection.IN_FLIGHT | {"succeeded"} and phase_of(current) != "new"
+
+
 def require_sales(terms: dict) -> None:
     """409 for a purchasing agreement: it bills what the company owes its supplier, so it
     never collects from a card."""
@@ -158,8 +164,12 @@ def _in_progress(company_id, *where):
 
 
 async def advance_all(factory, company_id) -> None:
-    """Advance the collection of every invoice of the company that has one in progress."""
+    """Issue the amendment notes whose charge has settled (billing.release_held_notes), then
+    advance the collection of every invoice of the company that has one in progress."""
+    from celerp_subscriptions.billing import release_held_notes
     async with factory() as session:
+        await release_held_notes(session, company_id)
+        await session.commit()
         ids = (await session.execute(_in_progress(company_id))).scalars().all()
     for doc_id in ids:
         try:
@@ -247,12 +257,24 @@ async def _event(session, company_id, row, current: dict, phase: str) -> tuple[s
 
 
 async def _holder(session, company_id, row) -> str | None:
-    """Another invoice of the same agreement whose attempt asks more than that invoice owes now
-    and may still charge (asked, with Cloud, or succeeded and not recorded on it): the number of
-    the first such invoice, or None."""
+    """The invoice another amendment note of the same agreement credits while it is held
+    (billing.release_held_notes): this invoice is asked for once that note is issued, so it asks
+    for what the note leaves it owing. The number of the first such invoice, or None."""
+    from celerp_subscriptions.billing import doc_state
     agreement = row.state.get("source_agreement")
     if not agreement:
         return None
+    held = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["source_agreement"].as_string() == agreement,
+        Projection.state["doc_type"].as_string().in_(("credit_note", "debit_note")),
+        Projection.state["status"].as_string() == "draft",
+    ).order_by(Projection.entity_id))).scalars().all()
+    for note in held:
+        covering = str(note.state.get("original_doc_id") or "")
+        if covering and covering != row.entity_id:
+            return (await doc_state(session, company_id, covering) or {}).get("ref_id") or covering
+    return None
     others = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["source_agreement"].as_string() == agreement, Projection.entity_id != row.entity_id,

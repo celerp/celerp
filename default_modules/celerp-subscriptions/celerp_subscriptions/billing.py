@@ -690,11 +690,13 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
     return await agreement_document(session, company, tid, state, doc_kind(state), lines, service)
 
 
-async def issue_document(session, company: Company, tid: str, state: dict, doc: dict, actor, key: str) -> str:
+async def issue_document(session, company: Company, tid: str, state: dict, doc: dict, actor, key: str,
+                         *, held: bool = False) -> str:
     """Create ``doc`` for the agreement under the idempotency ``key``, numbered and finalized,
     with attempt 1 of its collection opened when it is an invoice of an agreement that collects
     automatically: every invoice an agreement issues comes through here, so none skips its
-    collection. Caller holds the locks and commits."""
+    collection. A ``held`` note stays a draft until the charge it waits on is settled
+    (release_held_notes). Caller holds the locks and commits."""
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import claim_number, draft_counter
 
@@ -710,6 +712,8 @@ async def issue_document(session, company: Company, tid: str, state: dict, doc: 
                      company_id=company.id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
                      data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=key)
     await session.flush()
+    if held:
+        return doc_id
     await finalize_document(doc_id, company.id, actor, session, commit=False)
     await session.flush()
     if kind == "invoice" and state.get("generation_mode") == COLLECT_MODE:
@@ -941,16 +945,52 @@ async def settle_amendment(session, company: Company, tid: str, state: dict, sch
     kind = doc_kind(state)
     note_type = "credit_note" if kind == "invoice" else "debit_note"
     try:
+        held = await charge_in_flight(session, company.id, covering_id)
         note = await agreement_document(session, company, tid, state, note_type, credits, service)
         note_id = await issue_document(session, company, tid, state, {**note, "original_doc_id": covering_id},
-                                       actor, f"{key}:cn")
+                                       actor, f"{key}:cn", held=held)
         doc = await agreement_document(session, company, tid, state, kind, prorated(new, effective, last, days, currency),
                                        service)
         doc_id = await issue_document(session, company, tid, state, doc, actor, f"{key}:dn")
-        await _apply_left_over(session, company, note_id, doc_id, actor, f"{key}:apply")
+        if not held:
+            await _apply_left_over(session, company, note_id, doc_id, actor, f"{key}:apply")
     except (HTTPException, KeyedRefusal) as exc:
         raise BillRefused(state, tid, exc) from exc
     return {"credit_note_id": note_id, "invoice_id": doc_id}
+
+
+async def charge_in_flight(session, company_id, doc_id: str) -> bool:
+    """Whether the document's collection attempt may still take money (collect.may_charge),
+    read under its row lock."""
+    from celerp_subscriptions.collect import may_charge
+    row = (await lock_projections(session, company_id, [doc_id])).get(doc_id)
+    return row is not None and may_charge((row.state or {}).get("collection") or {})
+
+
+async def release_held_notes(session, company_id) -> None:
+    """Issue each amendment note held while the charge of the invoice it credits was in flight,
+    once that charge can no longer take money, then apply what is left of it to its amendment's
+    document: a charge that paid the invoice in full leaves the whole note for the amendment, a
+    charge that failed leaves the invoice owing less. The person who made the amendment issues it."""
+    from celerp_docs.routes import finalize_document
+    company = await session.get(Company, company_id)
+    notes = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string().in_(("credit_note", "debit_note")),
+        Projection.state["status"].as_string() == "draft",
+        Projection.state["source_agreement"].as_string().is_not(None),
+    ).order_by(Projection.entity_id))).scalars().all()
+    for note in notes:
+        tid, covering_id = note.state.get("source_agreement"), str(note.state.get("original_doc_id") or "")
+        if not covering_id or await charge_in_flight(session, company_id, covering_id):
+            continue
+        agreement = await locked_agreement(session, company_id, tid)
+        [entry] = [a for a in amendments_of(agreement.state) if a.get("credit_note_id") == note.entity_id]
+        actor = SimpleNamespace(id=uuid.UUID(entry["by"]) if entry.get("by") else None)
+        await finalize_document(note.entity_id, company_id, actor, session, commit=False)
+        await session.flush()
+        await _apply_left_over(session, company, note.entity_id, entry["invoice_id"], actor,
+                               f"held-note:{note.entity_id}:apply")
 
 
 async def _apply_left_over(session, company: Company, note_id: str, doc_id: str, actor, key: str) -> None:
