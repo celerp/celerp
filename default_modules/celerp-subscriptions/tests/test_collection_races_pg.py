@@ -115,7 +115,7 @@ async def test_a_charge_paid_while_an_amendment_credits_its_invoice_is_never_cha
             return await payments.receive_payment({
                 "company_id": cid, "entity_id": july, "reference": "pi_race", "amount_minor": 3000,
                 "currency": "USD", "paid_at": "2026-07-15T11:00:00+00:00", "managed": True,
-                "context": sent["context"]})
+                "context": sent["context"], "request_key": sent["request_key"]})
 
         async def _amended(held):
             if held is not None:
@@ -245,7 +245,7 @@ async def test_a_late_success_while_the_amendment_invoice_is_paid_by_hand(commit
             return await payments.receive_payment({
                 "company_id": cid, "entity_id": july, "reference": "pi_spill", "amount_minor": 3000,
                 "currency": "USD", "paid_at": "2026-07-15T11:00:00+00:00", "managed": True,
-                "context": sent["context"]})
+                "context": sent["context"], "request_key": sent["request_key"]})
 
         async def _by_hand(held):
             if held is not None:
@@ -307,7 +307,7 @@ async def test_a_refund_crossing_a_late_success_that_no_longer_fits(committed_en
             sessions.held = held
             return await payments.receive_payment({
                 "company_id": cid, "entity_id": july, "reference": "pi_x", "amount_minor": 3000, "currency": "USD",
-                "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"]})
+                "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"], "request_key": sent["request_key"]})
 
         async def _refunded(held):
             sessions.held = held
@@ -336,7 +336,7 @@ async def test_two_refunds_at_once_of_a_late_success_that_no_longer_fits(committ
         new = await _amended_with_refused_cancel(client, hd, cid, eid, factory, cloud, monkeypatch)
         assert await payments.receive_payment({
             "company_id": cid, "entity_id": july, "reference": "pi_y", "amount_minor": 3000, "currency": "USD",
-            "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"]})
+            "paid_at": "2026-07-15T11:00:00+00:00", "managed": True, "context": sent["context"], "request_key": sent["request_key"]})
 
         def _refunded(rid, amount):
             async def door(held):

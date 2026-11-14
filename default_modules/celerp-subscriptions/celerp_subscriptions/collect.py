@@ -19,7 +19,7 @@ what each pass does is one cell of TABLE (the invoice's phase x what the pass fi
 - an attempt Cloud may hold for more than its invoice owes now (a payment by hand, an
   amendment's credit) is cancelled and, once cancelled, followed by the next attempt for what
   the invoice owes then; one never asked for is made again for that amount;
-- no new charge is asked on an invoice while an earlier invoice of its agreement has a charge
+- no new charge is asked on an invoice while another invoice of its agreement has a charge
   unresolved that may take more than that invoice owes (with Cloud, succeeded and not on the
   books, or kept among the unmatched payments):
   the invoice shows which one it waits on, and is asked what it owes once that is resolved;
@@ -374,29 +374,26 @@ async def _attempt_request(session, company_id, row, current: dict) -> tuple[str
 
 
 async def _charge_open_elsewhere(session, company_id, row) -> str | None:
-    """The number of an earlier invoice of the same agreement whose card charge may take, or took,
+    """The number of another invoice of the same agreement whose card charge may take, or took,
     more than that invoice owes now, or None. Cloud keeps one charge at a time per invoice only, so
-    an invoice is not asked while an earlier one of its agreement (an amendment's invoice waits on
-    the one its credit lowered) has such a charge unresolved: asked for and with Cloud (a cancel
-    refused included) or succeeded with its payment not arrived, for more than the invoice owes, or
-    with its payment kept among the unmatched payments, not yet recorded on an invoice nor
-    refunded. A charge for no more than its invoice owes holds nothing: whatever it takes, that
-    invoice keeps. Earlier is by when the invoice was made, so no two invoices wait on each other.
-    Read from what is stored on every pass, under a lock per agreement, so two passes never both
-    ask."""
-    from datetime import datetime, timezone
-    from sqlalchemy import func, tuple_
+    an invoice is not asked while another of its agreement (an amendment's invoice waits on the one
+    its credit lowered) has such a charge unresolved: asked for and with Cloud (a cancel refused
+    included) or succeeded with its payment not arrived, for more than the invoice owes, or with
+    its payment kept among the unmatched payments, not yet recorded on an invoice nor refunded.
+    Whatever such a charge takes beyond its own invoice is money the agreement may already have,
+    so asking more could take more than the agreement owes. A charge for no more than its invoice
+    owes holds nothing: whatever it takes, that invoice keeps. An invoice that waits has nothing
+    with Cloud, so no two invoices wait on each other's charges. Read from what is stored on every
+    pass, under a lock per agreement, so two passes never both ask."""
     from celerp.modules.registry import _named_lock
     tid = row.state.get("source_agreement")
     if not tid:
         return None
     await _named_lock(session, f"collection:{company_id}:{tid}", "pg_advisory_xact_lock")
-    c, epoch = Projection.state["collection"], datetime(1970, 1, 1, tzinfo=timezone.utc)
+    c = Projection.state["collection"]
     others = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["source_agreement"].as_string() == tid,
-        tuple_(func.coalesce(Projection.created_at, epoch), Projection.entity_id)
-        < tuple_(row.created_at or epoch, row.entity_id),
+        Projection.state["source_agreement"].as_string() == tid, Projection.entity_id != row.entity_id,
         c["state"].as_string().in_(sorted(collection.IN_FLIGHT | {"succeeded"}))
     ).order_by(Projection.entity_id))).scalars().all()
     for state in others:

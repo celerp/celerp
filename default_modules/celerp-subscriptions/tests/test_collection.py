@@ -525,7 +525,7 @@ async def test_manual_payment_during_pending_attempt_cancels_or_unmatched(client
     assert await payments.receive_payment({
         "company_id": cid, "entity_id": doc["entity_id"], "reference": "pi_late", "amount_minor": sent["amount_minor"],
         "currency": sent["currency"], "paid_at": "2026-07-03T09:00:00+00:00", "managed": True,
-        "context": sent["context"]})
+        "context": sent["context"], "request_key": sent["request_key"]})
     from celerp.models.payment_closure import UnmatchedPayment
     assert (await session.get(UnmatchedPayment, "pi_late")) is not None
 
@@ -555,7 +555,7 @@ async def test_offsession_success_through_apply_doc_payment(client, session, mon
     assert await payments.receive_payment({
         "company_id": cid, "entity_id": sent["entity_id"], "reference": "pi_1", "amount_minor": sent["amount_minor"],
         "currency": sent["currency"], "paid_at": "2026-07-01T13:00:00+00:00", "managed": True,
-        "context": sent["context"]})
+        "context": sent["context"], "request_key": sent["request_key"]})
     [doc] = await billed_docs(session, eid)
     assert doc["status"] == "paid"
     assert [(p["method"], p["reference"]) for p in doc["payments"]] == [("stripe", "pi_1")]
@@ -588,7 +588,7 @@ async def test_succeeded_attempt_is_taken_and_settles_with_its_payment(client, s
     assert await payments.receive_payment({
         "company_id": cid, "entity_id": doc["entity_id"], "reference": "pi_1", "amount_minor": sent["amount_minor"],
         "currency": sent["currency"], "paid_at": "2026-07-01T13:00:00+00:00", "managed": True,
-        "context": sent["context"]})
+        "context": sent["context"], "request_key": sent["request_key"]})
     [doc] = await billed_docs(session, eid)
     assert doc["status"] == "paid"
     assert (await _collection(session, eid))[0]["state"] == "paid"

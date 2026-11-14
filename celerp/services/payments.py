@@ -298,7 +298,8 @@ async def receive_payment(payload: dict) -> bool:
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
                                             amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                            context=payload.get("context"), managed=managed)
+                                            context=payload.get("context"), managed=managed,
+                                            request_key=payload.get("request_key"))
                 if released_at is None:
                     await _apply_parked_refunds(session, cid, entity_id, reference)
                 else:

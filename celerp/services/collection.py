@@ -305,30 +305,34 @@ async def _charge_ended(session, company_id, doc_row, current: dict) -> None:
         await set_attempt(session, company_id, doc_row, {"state": "paid"}, drop=("cancel", "charged"))
 
 
-def _own_charge(current: dict, charge: dict | None) -> bool:
-    """Whether the online ``charge`` recorded is the attempt's own: Cloud's delivery of it for
-    this invoice (None for a payment a person records from the unmatched payments), of the
-    attempt's amount in its currency, on the books the attempt was asked with. Cloud tells the
-    attempt's outcome without its charge's reference, so these are what tie the two. One whose own
-    charge was kept among the unmatched payments has had it."""
-    mine = (current.get("amount_minor"), current.get("currency"), (current.get("request") or {}).get("context"))
-    return charge is not None and not current.get("kept") and (
-        charge["amount_minor"], charge["currency"], charge["context"]) == mine
+def _own_charge(current: dict, reference: str, request_key) -> bool:
+    """Whether the online charge ``reference`` recorded is the attempt's own: Cloud delivers a
+    collection charge with the ``request_key`` of the attempt that asked it, so only that key ties
+    a payment to the attempt, and an attempt whose charge was kept among the unmatched payments
+    has had it, so only that payment (``kept``), recorded by a person, is its own. A payment paid
+    on the invoice's page carries no key and is never the attempt's own, whatever its amount."""
+    if current.get("kept"):
+        return reference == current["kept"]
+    mine = (current.get("request") or {}).get("request_key")
+    return isinstance(request_key, str) and bool(mine) and request_key == mine
 
 
-async def charge_recorded(session, company_id, doc_row, charge: dict | None) -> None:
-    """An online ``charge`` was recorded on the invoice. Any attempt with Cloud or succeeded ends
-    once the invoice owes nothing. On an invoice still owing, only the attempt's own charge
-    (_own_charge) ends it: one Cloud said succeeded ends (_charge_ended), and one still with Cloud
-    is marked ``charged`` and ends when Cloud says it succeeded; one never asked for charged
-    nothing. Any other payment leaves the attempt as it was, so one that succeeded waits for its
-    own payment and nothing more is asked meanwhile."""
+async def charge_recorded(session, company_id, doc_row, reference: str, request_key: str | None) -> None:
+    """The online charge ``reference`` was recorded on the invoice, delivered with ``request_key``
+    when it is a collection charge. Only the attempt's own charge
+    (_own_charge) ends the attempt: one Cloud said succeeded, or whose invoice now owes nothing,
+    ends (_charge_ended), and one still with Cloud on an invoice still owing is marked ``charged``
+    and ends when Cloud says it succeeded; one never asked for charged nothing. Any other payment
+    leaves the attempt as it was, even one that settles the invoice: an attempt with Cloud may
+    still charge the card until the next pass cancels it, and one that succeeded waits for its
+    own payment, so nothing more is asked meanwhile, on this invoice or another of its
+    agreement."""
     current = doc_row.state.get("collection") or {}
     state = current.get("state")
     if state not in IN_FLIGHT | {"succeeded"}:
         return
-    own = _own_charge(current, charge)
-    if not is_open(doc_row.state) or (own and state == "succeeded"):
+    own = _own_charge(current, reference, request_key)
+    if own and (state == "succeeded" or not is_open(doc_row.state)):
         await _charge_ended(session, company_id, doc_row, current)
     elif own and (state != "pending" or current.get("asked")):
         await set_attempt(session, company_id, doc_row, {"charged": True})

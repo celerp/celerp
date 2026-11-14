@@ -18,7 +18,12 @@ collection ended. An invoice that comes to owe again outside a pass (a payment v
 the next pass, so between passes its ended collection still counts; right after a pass it never
 does. And whenever an attempt is asked for, it and the invoice's other attempts Cloud may still
 charge, or charged and whose payment is on the way, never ask more than the invoice owes: the payer
-is never charged twice for the same money. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
+is never charged twice for the same money; and across the agreement, the money it took in (payments
+recorded on its invoices and every charge Cloud made, recorded or kept among the unmatched) with
+the charges Cloud may still make never comes to more than its invoices less its credit notes. A
+payer's own payment while a charge is with Cloud may overlap it, so this is checked whenever an
+attempt is asked for. A payment page opened before a payment by hand was voided may pay the
+attempt's own amount; it is not the attempt's charge. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
 more (default 2) are drawn from COLLECTION_ORACLE_SEED, else at random. A failing case names its
 seed: COLLECTION_ORACLE_SEED=<seed> with COLLECTION_ORACLE_RANDOM=1 replays it.
 """
@@ -38,16 +43,18 @@ from test_collection_settlement import _amend, _asked, _docs, _july
 
 pytestmark = pytest.mark.asyncio
 
-FIXED_SEEDS = [1, 2, 3, 5, 8, 13, 21, 34]
+FIXED_SEEDS = [1, 2, 3, 5, 8, 13, 21, 34, 1004, 1006, 1016]
 RANDOM_COUNT = int(os.environ.get("COLLECTION_ORACLE_RANDOM", "2"))
 STEPS = 28
 
 
-async def _deliver(cid, doc_id, ref, minor, context, day="2026-07-05") -> bool:
+async def _deliver(cid, doc_id, ref, minor, context, request_key=None, day="2026-07-05") -> bool:
+    """Cloud's delivery of an online payment: a collection charge carries its attempt's
+    ``request_key``, a payment paid on the invoice's page none."""
     from celerp.services import payments
     return await payments.receive_payment({
         "company_id": cid, "entity_id": doc_id, "reference": ref, "amount_minor": minor, "currency": "USD",
-        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context})
+        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context, "request_key": request_key})
 
 
 async def _short_charge(client, session, monkeypatch, cloud, *, payment_first: bool):
@@ -65,7 +72,7 @@ async def _short_charge(client, session, monkeypatch, cloud, *, payment_first: b
     r = await client.post(f"/docs/{july}/void-payment", headers=hd, json={"payment_index": hand["index"]})
     assert r.status_code in (200, 201), r.text
     await tick(session, cid, "2026-07-04")
-    steps = [lambda: _deliver(cid, july, "pi_20", 2000, sent["context"]),
+    steps = [lambda: _deliver(cid, july, "pi_20", 2000, sent["context"], sent["request_key"]),
              lambda: _attempt_outcome(cid, july, sent["attempt_number"], "succeeded")]
     for step in (steps if payment_first else steps[::-1]):
         assert await step() is True
@@ -104,8 +111,8 @@ class _Story:
     def __init__(self, rng: random.Random, cloud):
         self.rng, self.cloud = rng, cloud
         self.attempts: dict[tuple[str, int], str] = {}
-        self.amounts: dict[tuple[str, int], tuple[int, dict]] = {}
-        self.payments: list[tuple[str, str, int, dict]] = []
+        self.amounts: dict[tuple[str, int], tuple[int, dict, str]] = {}
+        self.payments: list[tuple[str, str, int, dict, str]] = []
         self.outcomes: list[tuple[str, int, str]] = []
         cloud.answers["attempt"] = self._attempt
         cloud.answers["cancel"] = self._cancel
@@ -113,7 +120,7 @@ class _Story:
     def _attempt(self, p):
         key = (p["entity_id"], p["attempt_number"])
         self.attempts.setdefault(key, "open")
-        self.amounts[key] = (p["amount_minor"], p["context"])
+        self.amounts[key] = (p["amount_minor"], p["context"], p["request_key"])
         state = self.rng.choice(["submitted", "processing", "requires_action", "unknown"])
         return 200, {"state": state, "attempt_number": p["attempt_number"]}
 
@@ -132,8 +139,8 @@ class _Story:
 
     def charge(self, key) -> None:
         self.attempts[key] = "charged"
-        minor, context = self.amounts[key]
-        self.payments.append((key[0], self.reference(key), minor, context))
+        minor, context, request_key = self.amounts[key]
+        self.payments.append((key[0], self.reference(key), minor, context, request_key))
         self.outcomes.append((key[0], key[1], "succeeded"))
 
     @staticmethod
@@ -207,17 +214,39 @@ def _overasked(story: _Story, docs: dict[str, dict], asked: set[tuple[str, int]]
     return over
 
 
+def _cents(amount) -> int:
+    return round((amount or 0) * 100)
+
+
+def _overcommitted(story: _Story, docs: dict[str, dict]) -> list[str]:
+    """Across the agreement, the money taken in (payments recorded on its invoices, credit notes
+    applied aside, and every charge Cloud made, recorded or kept among the unmatched) plus the charges Cloud may still make, when it
+    is more than the agreement's invoices less its credit notes."""
+    live = [d for d in docs.values() if d.get("status") not in ("draft", "void")]
+    owed = sum(_cents(d.get("total")) * (-1 if d.get("doc_type") == "credit_note" else 1)
+               for d in live if d.get("doc_type") in ("invoice", "credit_note"))
+    charges = {story.reference(k) for k in story.amounts}
+    paid = sum(_cents(p.get("amount")) - _cents(p.get("refunded")) for d in live if d.get("doc_type") == "invoice"
+               for p in d.get("payments") or [] if p.get("status") == "active" and p.get("method") != "credit_note" and p.get("reference") not in charges)
+    charged = sum(story.amounts[k][0] for k, v in story.attempts.items() if v in ("open", "charged"))
+    if paid + charged > owed:
+        return [f"paid {paid} with {charged} charged or with Cloud, the agreement owes {owed}: "
+                + "; ".join(f"{d.get('ref_id')} owes {_minor(d)} collection {d.get('collection')}"
+                            for d in live if d.get("doc_type") == "invoice")]
+    return []
+
+
 async def _run_story(seed, client, session, monkeypatch, cloud):
     rng = random.Random(seed)
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
     story = _Story(rng, cloud)
     story.attempts[(july, 1)] = "open"
     [first] = cloud.sent("attempt")
-    story.amounts[(july, 1)] = (first["amount_minor"], first["context"])
-    day, amended, trail, asked, foreign = 1, False, [], {(july, 1)}, 0
+    story.amounts[(july, 1)] = (first["amount_minor"], first["context"], first["request_key"])
+    day, amended, trail, asked, foreign, stale = 1, False, [], {(july, 1)}, 0, False
 
     async def step(name):
-        nonlocal day, amended, foreign
+        nonlocal day, amended, foreign, stale
         docs = await _docs(session, eid)
         invoices = [d for d in docs.values() if d.get("doc_type") == "invoice"]
         if name == "tick":
@@ -228,8 +257,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         elif name == "fail":
             story.fail(rng.choice(story.open()))
         elif name == "deliver_payment":
-            doc, ref, minor, context = story.payments.pop(rng.randrange(len(story.payments)))
-            assert await _deliver(cid, doc, ref, minor, context) is True
+            doc, ref, minor, context, request_key = story.payments.pop(rng.randrange(len(story.payments)))
+            assert await _deliver(cid, doc, ref, minor, context, request_key) is True
         elif name == "deliver_outcome":
             doc, n, state = story.outcomes.pop(rng.randrange(len(story.outcomes)))
             fields = {"retry_eligible_at": "2026-07-01T00:00:00+00:00"} if state == "failed" else {}
@@ -240,7 +269,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         elif name in ("page_pay", "place"):
             doc = rng.choice([d for d in invoices if _minor(d) >= 100])
             attempt = (doc.get("collection") or {}).get("amount_minor") or 500
-            minor, foreign = min(_minor(doc), rng.choice([500, 1000, attempt])), foreign + 1
+            minor, foreign = min(_minor(doc), attempt if stale else rng.choice([500, 1000, attempt])), foreign + 1
+            stale = False
             ref, on = f"pi_other_{foreign}", doc["entity_id"] if name == "page_pay" else f"doc:{uuid.uuid4().hex}"
             assert await _deliver(cid, on, ref, minor, first["context"]) is True
             if name == "place":
@@ -253,6 +283,7 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
             r = await client.post(f"/docs/{doc['entity_id']}/void-payment", headers=hd,
                                   json={"payment_index": p["index"]})
             assert r.status_code in (200, 201), r.text
+            stale = True  # a payment page opened before the void may now pay the attempt's amount
         elif name == "amend":
             r = await _amend(client, monkeypatch, hd, eid)
             assert r.status_code == 200, r.text
@@ -264,7 +295,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         names += ["charge", "charge", "fail"] if story.open() else []
         names += ["deliver_payment", "deliver_payment"] if story.payments else []
         names += ["deliver_outcome", "deliver_outcome"] if story.outcomes else []
-        names += ["hand_pay", "page_pay", "place"] if any(_minor(d) >= 100 for d in invoices) else []
+        names += ["hand_pay", "page_pay", "place"] + ["page_pay"] * 2 * stale \
+            if any(_minor(d) >= 100 for d in invoices) else []
         names += ["void_hand"] if any(p.get("method") == "bank_transfer" and p.get("status") == "active"
                                       for d in invoices for p in d.get("payments") or []) else []
         names += ["amend"] if not amended and day < 15 else []
@@ -279,7 +311,10 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         await step(name)
         alone = await _left_alone(session, cid, eid, story, passed=name == "tick")
         assert not alone, f"seed {seed} after {trail}: {alone}"
-        over = _overasked(story, await _docs(session, eid), asked)
+        docs, before = await _docs(session, eid), len(asked)
+        over = _overasked(story, docs, asked)
+        if len(asked) > before:
+            over += _overcommitted(story, docs)
         assert not over, f"seed {seed} after {trail}: {over}"
     while story.outcomes or story.payments:
         name = "deliver_payment" if story.payments else "deliver_outcome"

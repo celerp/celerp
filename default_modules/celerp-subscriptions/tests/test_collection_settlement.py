@@ -74,7 +74,7 @@ async def test_a_late_charge_on_an_invoice_paid_in_part_by_hand_is_kept_whole_am
     await tick(session, cid, "2026-07-02")
     delivery = {"company_id": cid, "entity_id": july, "reference": "pi_over", "amount_minor": 3000,
                 "currency": "USD", "paid_at": "2026-07-02T13:00:00+00:00", "managed": True,
-                "context": sent["context"]}
+                "context": sent["context"], "request_key": sent["request_key"]}
     assert await payments.receive_payment(delivery)
     assert await payments.receive_payment(delivery)
     assert (await _docs(session, eid))[july]["amount_outstanding"] == 20.0
@@ -102,7 +102,7 @@ async def test_a_late_charge_on_an_invoice_paid_by_hand_is_kept_whole_and_the_cr
     assert await _attempt_outcome(cid, july, 1, "succeeded") is True
     assert await payments.receive_payment({
         "company_id": cid, "entity_id": july, "reference": "pi_next", "amount_minor": 3000, "currency": "USD",
-        "paid_at": "2026-07-15T13:00:00+00:00", "managed": True, "context": sent["context"]})
+        "paid_at": "2026-07-15T13:00:00+00:00", "managed": True, "context": sent["context"], "request_key": sent["request_key"]})
     await tick(session, cid, "2026-07-16")
     docs = await _docs(session, eid)
     assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 10.97)
@@ -151,7 +151,7 @@ async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_
     hd, cid, eid, july, note, new, sent = await _amended_while_july_is_with_cloud(client, session, monkeypatch, cloud)
     delivery = {"company_id": cid, "entity_id": july, "reference": "pi_late", "amount_minor": 3000,
                 "currency": "USD", "paid_at": "2026-07-16T13:00:00+00:00", "managed": True,
-                "context": sent["context"]}
+                "context": sent["context"], "request_key": sent["request_key"]}
     assert await payments.receive_payment(delivery)
     assert await payments.receive_payment(delivery)
     await tick(session, cid, "2026-07-17")
@@ -204,7 +204,7 @@ async def test_an_amendment_after_a_successful_charge_charges_only_what_its_cred
     [sent] = cloud.sent("attempt")
     assert await payments.receive_payment({
         "company_id": cid, "entity_id": july, "reference": "pi_1", "amount_minor": 3000, "currency": "USD",
-        "paid_at": "2026-07-01T13:00:00+00:00", "managed": True, "context": sent["context"]})
+        "paid_at": "2026-07-01T13:00:00+00:00", "managed": True, "context": sent["context"], "request_key": sent["request_key"]})
     r = await _amend(client, monkeypatch, hd, eid)
     assert r.status_code == 200, r.text
     note, new = r.json()["credit_note_id"], r.json()["invoice_id"]
@@ -285,11 +285,14 @@ async def test_the_same_amend_request_key_with_another_quantity_is_refused(clien
     assert [a["line_items"][0]["quantity"] for a in (await template(client, hd, eid))["amendments"]] == [2]
 
 
-async def _delivered(cid: str, doc_id: str, reference: str, minor: int, context: dict, day: str) -> bool:
+async def _delivered(cid: str, doc_id: str, reference: str, minor: int, context: dict, day: str,
+                     request_key: str | None = None) -> bool:
+    """Cloud's delivery of an online payment: a collection charge carries its attempt's
+    ``request_key``, a payment paid on the invoice's page none."""
     from celerp.services import payments
     return await payments.receive_payment({
         "company_id": cid, "entity_id": doc_id, "reference": reference, "amount_minor": minor, "currency": "USD",
-        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context})
+        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context, "request_key": request_key})
 
 
 @pytest.mark.parametrize("when", ["submitted", "cancel_refused", "succeeded"])
@@ -321,10 +324,41 @@ async def test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twi
         assert await _attempt_outcome(cid, july, 1, "succeeded") is True
     await tick(session, cid, "2026-07-03")
     assert _asked(cloud, july) == [3000]
-    assert await _delivered(cid, july, "pi_charge", 3000, sent["context"], "2026-07-03")
+    assert await _delivered(cid, july, "pi_charge", 3000, sent["context"], "2026-07-03", sent["request_key"])
     await tick(session, cid, "2026-07-04")
     doc = (await _docs(session, eid))[july]
     assert _asked(cloud, july) == [3000]
     assert (doc["amount_outstanding"], doc["collection"]["state"], doc["collection"].get("kept")) == (
         20.0, "succeeded", "pi_charge")
     assert ("pi_charge", 3000) in await _unmatched(session)
+
+
+async def test_a_page_payment_of_the_attempts_amount_is_not_its_charge(client, session, monkeypatch, cloud):
+    """July owes 20.00 after a 10.00 payment by hand, so the 30.00 attempt is replaced by one for
+    20.00. The hand payment is voided (July owes 30.00 again) and the payer then pays 20.00 on a
+    payment page opened while July owed 20.00, on the same books. That payment carries no attempt's
+    key, so it is not the attempt's charge: Cloud's success of attempt 2 asks nothing more, and the
+    real 20.00 charge, which no longer fits July's 10.00, is kept among the unmatched payments."""
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    await _pay(client, hd, july, 10.0)
+    await tick(session, cid, "2026-07-02")
+    assert await _attempt_outcome(cid, july, 1, "canceled")
+    await tick(session, cid, "2026-07-03")
+    sent = cloud.sent("attempt")[-1]
+    assert (sent["attempt_number"], sent["amount_minor"]) == (2, 2000), sent
+    [hand] = [p for p in (await _docs(session, eid))[july]["payments"]
+              if p.get("method") == "bank_transfer" and p.get("status") == "active"]
+    r = await client.post(f"/docs/{july}/void-payment", headers=hd, json={"payment_index": hand["index"]})
+    assert r.status_code in (200, 201), r.text
+    await tick(session, cid, "2026-07-04")
+    assert await _delivered(cid, july, "pi_page", 2000, sent["context"], "2026-07-04")
+    assert not (await _docs(session, eid))[july]["collection"].get("charged")
+    assert await _attempt_outcome(cid, july, 2, "succeeded")
+    await tick(session, cid, "2026-07-05")
+    assert _asked(cloud, july) == [3000, 2000]
+    assert await _delivered(cid, july, "pi_charge2", 2000, sent["context"], "2026-07-05", sent["request_key"])
+    await tick(session, cid, "2026-07-06")
+    doc = (await _docs(session, eid))[july]
+    assert _asked(cloud, july) == [3000, 2000]
+    assert (doc["amount_outstanding"], doc["collection"].get("kept")) == (10.0, "pi_charge2")
+    assert await _unmatched(session) == [("pi_charge2", 2000)]

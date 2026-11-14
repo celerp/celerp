@@ -141,11 +141,13 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str,
                                 paid_at: datetime.datetime | None, context, managed: bool,
-                                idempotency_key: str | None = None):
+                                idempotency_key: str | None = None, request_key: str | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
     ``payments.receive_payment`` calls it, and ``payments.record_unmatched_payment``
     for one a person records on an invoice from the unmatched payments, under an
     *idempotency_key* of its own (each recording is one; the charge is *reference*).
+    *request_key* is the collection attempt's own key that Cloud delivers with a card
+    charge it collected; a page payment and a person's recording carry none.
 
     A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
     recorded on *context*, the books its payment page opened with
@@ -200,11 +202,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if getattr(entry, "was_deduped", False):
         return None
     from celerp.services.collection import charge_recorded
-    # A person's recording from the unmatched payments (its own idempotency key) is not Cloud's
-    # delivery of a charge for this invoice.
-    charge = None if idempotency_key else {
-        "amount_minor": amount_minor, "currency": currency.upper(), "context": context}
-    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True), charge)
+    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True),
+                          reference, request_key)
     return entry
 
 

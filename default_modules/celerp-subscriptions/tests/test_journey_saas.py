@@ -43,7 +43,7 @@ async def _deliver_payment(sent: dict, reference: str, paid_at: str) -> bool:
     return await payments.receive_payment({
         "company_id": sent["company_id"], "entity_id": sent["entity_id"], "reference": reference,
         "amount_minor": sent["amount_minor"], "currency": sent["currency"], "paid_at": paid_at,
-        "managed": True, "context": sent["context"]})
+        "managed": True, "context": sent["context"], "request_key": sent["request_key"]})
 
 
 async def _deliver_dispute(sent: dict, reference: str, state: str, occurred_at: str | None,
