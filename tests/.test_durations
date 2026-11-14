@@ -28964,5 +28964,6 @@
     "tests/test_l10n_pack_schema_oracle.py::test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_valid[5]": 0.19961636397056282,
     "tests/test_l10n_pack_schema_oracle.py::test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_valid[6]": 0.110717824078165,
     "tests/test_l10n_pack_schema_oracle.py::test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_valid[7]": 0.11099571397062391,
-    "tests/test_tax_seed_notice.py::test_a_retirement_no_pack_defines_any_more_has_its_notice_cleared": 0.05887940595857799
+    "tests/test_tax_seed_notice.py::test_a_retirement_no_pack_defines_any_more_has_its_notice_cleared": 0.05887940595857799,
+    "tests/test_ci_l10n_packs.py::test_pack_token_is_read_in_one_job_and_shared_as_a_checked_artifact": 0.11170965398196131
 }
