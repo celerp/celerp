@@ -54,14 +54,6 @@ def _asked(cloud, doc_id: str) -> list[int]:
     return [p["amount_minor"] for p in cloud.sent("attempt") if p["entity_id"] == doc_id]
 
 
-async def test_the_invoice_page_names_the_invoice_a_held_charge_waits_on():
-    from ui.i18n import t
-    from fasthtml.common import to_xml
-    from ui.routes.documents import _collection_status
-    assert t("collection.status_held", ref="PF-2607-0001") in to_xml(
-        _collection_status({"state": "pending", "asked": False, "held_by": "PF-2607-0001"}, None))
-
-
 async def _unmatched(session) -> list[tuple[str, int]]:
     from celerp.services.payments import unmatched_payments
     return [(p.reference, p.amount_minor) for p in await unmatched_payments(session)]
@@ -96,9 +88,9 @@ async def test_a_late_charge_on_an_invoice_paid_in_part_by_hand_is_kept_whole_am
 async def test_a_late_charge_on_an_invoice_paid_by_hand_is_kept_whole_and_the_credit_goes_to_the_amendment(
         client, session, monkeypatch, cloud):
     """July is paid 30.00 by hand while its charge is with Cloud, the cancel refused, then the
-    amendment's 16.45 credit is held while that charge may still take money. The 30.00 succeeds:
-    July owes nothing, so it is kept whole among the unmatched payments, and the next pass issues
-    the credit, all of it to the amendment's 27.42, which then owes 10.97."""
+    amendment's 16.45 credit is issued at once: July owes nothing, so all of it goes to the
+    amendment's 27.42, which then owes 10.97. The 30.00 succeeds and is kept whole among the
+    unmatched payments."""
     from celerp.services import payments
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
     [sent] = cloud.sent("attempt")
@@ -183,16 +175,15 @@ async def test_cloud_withdrawing_collection_still_cancels_a_charge_the_invoice_n
 async def test_a_late_success_after_the_charge_was_cancelled_for_a_smaller_balance_is_taken(
         client, session, monkeypatch, cloud):
     """Cloud delivers the 30.00 as succeeded after the app queued its cancel for the amendment's credit:
-    the outcome is recorded (a known outcome is not lost) and the amendment's invoice stays held."""
+    the outcome is recorded (a known outcome is not lost) and the amendment's invoice, its credit
+    issued at once, is asked its 27.42 without waiting for the July charge."""
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
     cloud.answers["cancel"] = None
     new = (await _amend(client, monkeypatch, hd, eid)).json()["invoice_id"]
     await tick(session, cid, "2026-07-15")
     assert await _attempt_outcome(cid, july, 1, "succeeded") is True
     await tick(session, cid, "2026-07-16")
-    c = (await _docs(session, eid))[july]["collection"]
-    assert c["state"] == "succeeded"
-    assert _asked(cloud, new) == []
+    assert _asked(cloud, new) == [2742]
 
 
 async def test_the_same_amend_request_key_with_another_quantity_is_refused(client, session, monkeypatch, cloud):

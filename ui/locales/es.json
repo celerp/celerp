@@ -7920,7 +7920,6 @@
   "subscriptions.receipt_not_resent": "No se envió el recibo. Inténtelo de nuevo.",
   "subscriptions.done_card_removed": "Tarjeta eliminada. No se volverá a cargar.",
   "collection.status_pending": "Cobro pendiente",
-  "collection.status_held": "El cargo espera a que se resuelva el cargo anterior de {ref}",
   "collection.status_requires_action": "Esperando que el pagador confirme el cargo.",
   "collection.payer_action_link": "Página de confirmación del pagador",
   "collection.status_failed_retry": "Cargo fallido, nuevo intento el {date}",

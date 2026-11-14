@@ -14,8 +14,8 @@ What is stored here:
   ``set_attempt`` under the document's row lock): the attempt number and its request
   key, the amount and currency asked for, Cloud's state for it, when a retry may be
   asked for, the bank's action link, a cancel waiting for Cloud's answer, whether a
-  cancelled attempt is followed by one for what the invoice owes then (``replace``), the
-  invoice of the same agreement it waits on (``held_by``), and why collection stopped.
+  cancelled attempt is followed by one for what the invoice owes then (``replace``), and why
+  collection stopped.
 """
 from __future__ import annotations
 
@@ -191,7 +191,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
         drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
-              "held_by", "kept"))
+              "kept"))
 
 
 def _instant(value) -> str | None | bool:

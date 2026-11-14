@@ -18,8 +18,7 @@ what each pass does is one cell of TABLE (the invoice's phase x what the pass fi
   cancelled, one it never saw stops; a cancel is asked for every pass until Cloud answers;
 - an attempt Cloud may hold for more than its invoice owes now (a payment by hand, an
   amendment's credit) is cancelled and, once cancelled, followed by the next attempt for what
-  the invoice owes then; one never asked for is made again for that amount; while it may still
-  charge, no other invoice of its agreement is first asked for;
+  the invoice owes then; one never asked for is made again for that amount;
 - a failed attempt whose retry time has passed is followed by the next attempt for what the
   invoice owes then, or stops with the reason it may not go on;
 - Cloud no longer offering collection stops only new charge requests: cancels, retries of a
@@ -63,19 +62,16 @@ WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 # Events: stop (stop_reason: the invoice is paid, credited or voided, the agreement left
 # collection, the card or the consenting member is gone), reduced / raised (the invoice owes
 # less / more than the attempt asks), off (Cloud no longer offers collection: only new charge
-# requests wait; cancels, retries of a request already sent and deliveries go on), held
-# (an amendment note of the agreement is held while the charge of the invoice it credits may
-# still take money: this invoice is asked for once that note is issued), none.
+# requests wait; cancels, retries of a request already sent and deliveries go on), none.
 PHASES = ("new", "asked", "submitted", "processing", "requires_action", "unknown", "cancel_queued",
           "cancel_refused", "failed", "replace", "succeeded", "settled")
-EVENTS = ("stop", "reduced", "raised", "off", "held", "none")
-_WITH_CLOUD = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "held": "wait",
-               "none": "wait"}
+EVENTS = ("stop", "reduced", "raised", "off", "none")
+_WITH_CLOUD = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "none": "wait"}
 TABLE: dict[tuple[str, str], str] = {
     **{("new", e): a for e, a in {"stop": "stop", "reduced": "reopen", "raised": "reopen", "off": "stop",
-                                   "held": "hold", "none": "ask"}.items()},
+                                   "none": "ask"}.items()},
     **{("asked", e): a for e, a in {"stop": "cancel", "reduced": "cancel_replace", "raised": "ask", "off": "ask",
-                                     "held": "ask", "none": "ask"}.items()},
+                                     "none": "ask"}.items()},
     **{(p, e): a for p in ("submitted", "processing", "requires_action", "unknown") for e, a in _WITH_CLOUD.items()},
     **{("cancel_queued", e): "send_cancel" for e in EVENTS},
     **{("cancel_refused", e): "wait" for e in EVENTS},
@@ -100,16 +96,6 @@ def phase_of(current: dict) -> str:
     if state in ("failed", "succeeded"):
         return state
     return "replace" if state == "canceled" and current.get("replace") is True else "settled"
-
-
-def may_charge(current: dict) -> bool:
-    """Whether the attempt may still take money: asked, with Cloud, or charged and its payment
-    not delivered yet (neither recorded nor kept among the unmatched payments)."""
-    if current.get("kept"):
-        return False
-    if current.get("state") == "succeeded":
-        return True
-    return current.get("state") in collection.IN_FLIGHT and phase_of(current) != "new"
 
 
 def require_sales(terms: dict) -> None:
@@ -167,12 +153,8 @@ def _in_progress(company_id, *where):
 
 
 async def advance_all(factory, company_id) -> None:
-    """Issue the amendment notes whose charge has settled (billing.release_held_notes), then
-    advance the collection of every invoice of the company that has one in progress."""
-    from celerp_subscriptions.billing import release_held_notes
+    """Advance the collection of every invoice of the company that has one in progress."""
     async with factory() as session:
-        await release_held_notes(session, company_id)
-        await session.commit()
         ids = (await session.execute(_in_progress(company_id))).scalars().all()
     for doc_id in ids:
         try:
@@ -244,9 +226,9 @@ async def _decide(session, company_id, doc_id: str) -> tuple[str, dict, bool] | 
 
 
 async def _event(session, company_id, row, current: dict, phase: str) -> tuple[str, str | None]:
-    """The first of EVENTS that holds for the invoice, with what it names: the stop reason, the
-    reason a cancel for a smaller balance gives, or the invoice that holds this one. Only an
-    attempt that may still charge asks an amount (a failed or cancelled one asks nothing)."""
+    """The first of EVENTS that holds for the invoice, with what it names: the stop reason, or the
+    reason a cancel for a smaller balance gives. Only an attempt that may still charge asks an
+    amount (a failed or cancelled one asks nothing)."""
     if reason := await stop_reason(session, company_id, row.state):
         return "stop", reason
     owed, asks = collection.outstanding_minor(row.state), current.get("amount_minor")
@@ -254,30 +236,7 @@ async def _event(session, company_id, row, current: dict, phase: str) -> tuple[s
         return ("reduced", "amount_changed") if owed < asks else ("raised", None)
     if not collection.offered():
         return "off", "collection_off"
-    if holder := await _holder(session, company_id, row):
-        return "held", holder
     return "none", None
-
-
-async def _holder(session, company_id, row) -> str | None:
-    """The invoice another amendment note of the same agreement credits while it is held
-    (billing.release_held_notes): this invoice is asked for once that note is issued, so it asks
-    for what the note leaves it owing. The number of the first such invoice, or None."""
-    from celerp_subscriptions.billing import doc_state
-    agreement = row.state.get("source_agreement")
-    if not agreement:
-        return None
-    held = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["source_agreement"].as_string() == agreement,
-        Projection.state["doc_type"].as_string().in_(("credit_note", "debit_note")),
-        Projection.state["status"].as_string() == "draft",
-    ).order_by(Projection.entity_id))).scalars().all()
-    for note in held:
-        covering = str(note.state.get("original_doc_id") or "")
-        if covering and covering != row.entity_id:
-            return (await doc_state(session, company_id, covering) or {}).get("ref_id") or covering
-    return None
 
 
 def _cancel(company_id, row) -> tuple[str, dict, bool]:
@@ -294,7 +253,7 @@ async def _ask(session, company_id, row, current, event, why):
 
 async def _stop(session, company_id, row, current, event, why):
     await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": why},
-                                 drop=("replace", "held_by"))
+                                 drop=("replace",))
     return None
 
 
@@ -303,11 +262,6 @@ async def _reopen(session, company_id, row, current, event, why):
     now, and decided again."""
     await collection.open_attempt(session, company_id, row, current["attempt_number"])
     return await _decide(session, company_id, row.entity_id)
-
-
-async def _hold(session, company_id, row, current, event, why):
-    await collection.set_attempt(session, company_id, row, {"held_by": why})
-    return None
 
 
 async def _queue_cancel(session, company_id, row, current, event, why):
@@ -343,7 +297,7 @@ async def _next_when_due(session, company_id, row, current, event, why):
     return await _next(session, company_id, row, current, event, why)
 
 
-_ACTIONS = {"wait": _wait, "ask": _ask, "stop": _stop, "reopen": _reopen, "hold": _hold, "cancel": _queue_cancel,
+_ACTIONS = {"wait": _wait, "ask": _ask, "stop": _stop, "reopen": _reopen, "cancel": _queue_cancel,
             "cancel_replace": _cancel_replace, "send_cancel": _send_cancel, "next": _next,
             "next_when_due": _next_when_due}
 
@@ -372,8 +326,7 @@ async def _attempt_request(session, company_id, row, current: dict) -> tuple[str
         "attempt_number": current["attempt_number"], "request_key": current["request_key"],
         "amount_minor": current["amount_minor"], "currency": current["currency"],
         "payer_contact_id": agreement.get("contact_id"), "generation": generation, "context": books}
-    await collection.set_attempt(session, company_id, row, {"asked": True, "request": request},
-                                 drop=("held_by",))
+    await collection.set_attempt(session, company_id, row, {"asked": True, "request": request})
     return "attempt", request, False
 
 

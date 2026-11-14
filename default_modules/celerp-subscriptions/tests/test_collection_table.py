@@ -5,8 +5,8 @@ its action says, and the phases and events are read as the table names them.
 
 Initial conditions: no database. The invoice is a stand-in row whose collection the test sets;
 writing its collection, opening an attempt and building the attempt request are stand-ins that
-record what was asked of them, and the stop reason, Cloud's offer and the holding invoice are
-whatever the cell's event needs.
+record what was asked of them, and the stop reason and Cloud's offer are whatever the cell's
+event needs.
 """
 from __future__ import annotations
 
@@ -18,11 +18,10 @@ from celerp.services import collection
 from celerp_subscriptions import collect
 
 # The reference: what a pass does in each cell, written out independently of collect.TABLE.
-_W = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "held": "wait", "none": "wait"}
+_W = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "none": "wait"}
 EXPECTED = {
-    "new": {"stop": "stop", "reduced": "reopen", "raised": "reopen", "off": "stop", "held": "hold", "none": "ask"},
-    "asked": {"stop": "cancel", "reduced": "cancel_replace", "raised": "ask", "off": "ask", "held": "ask",
-              "none": "ask"},
+    "new": {"stop": "stop", "reduced": "reopen", "raised": "reopen", "off": "stop", "none": "ask"},
+    "asked": {"stop": "cancel", "reduced": "cancel_replace", "raised": "ask", "off": "ask", "none": "ask"},
     "submitted": _W, "processing": _W, "requires_action": _W, "unknown": _W,
     "cancel_queued": dict.fromkeys(collect.EVENTS, "send_cancel"),
     "cancel_refused": dict.fromkeys(collect.EVENTS, "wait"),
@@ -43,8 +42,7 @@ COLLECTION = {
     "succeeded": {"state": "succeeded"},
     "settled": {"state": "paid"},
 }
-WHY = {"stop": "invoice_settled", "reduced": "amount_changed", "raised": None, "off": "collection_off",
-       "held": "PF-2607-0001", "none": None}
+WHY = {"stop": "invoice_settled", "reduced": "amount_changed", "raised": None, "off": "collection_off", "none": None}
 
 
 def test_every_cell_is_defined_and_names_an_action():
@@ -95,7 +93,6 @@ def _effect(action: str, event: str, n: int) -> tuple:
         "ask": asks,
         "stop": (None, [{"state": "stopped", "reason": WHY[event]}], []),
         "reopen": ("attempt", [], [n]),
-        "hold": (None, [{"held_by": WHY[event]}], []),
         "cancel": ("cancel", [{"cancel": "queued", "reason": WHY[event]}], []),
         "cancel_replace": ("cancel", [{"cancel": "queued", "reason": WHY[event], "replace": True}], []),
         "send_cancel": ("cancel", [], []),
@@ -152,27 +149,22 @@ def test_every_stored_collection_reads_as_one_phase(state, cancel, flag):
 
 
 @pytest.mark.parametrize("found, phase, expected", [
-    ({"stop": "invoice_settled", "owed": 1000, "offered": False, "holder": "X"}, "submitted", ("stop", "invoice_settled")),
-    ({"owed": 1355, "offered": False, "holder": "X"}, "submitted", ("reduced", "amount_changed")),
-    ({"owed": 4000, "offered": False, "holder": "X"}, "asked", ("raised", None)),
-    ({"owed": 1355, "offered": False, "holder": "X"}, "replace", ("off", "collection_off")),
-    ({"owed": 1355, "offered": True, "holder": "X"}, "failed", ("held", "X")),
-    ({"owed": 3000, "offered": False, "holder": "X"}, "new", ("off", "collection_off")),
-    ({"owed": 3000, "offered": True, "holder": "X"}, "new", ("held", "X")),
-    ({"owed": 3000, "offered": True, "holder": None}, "new", ("none", None)),
+    ({"stop": "invoice_settled", "owed": 1000, "offered": False}, "submitted", ("stop", "invoice_settled")),
+    ({"owed": 1355, "offered": False}, "submitted", ("reduced", "amount_changed")),
+    ({"owed": 4000, "offered": False}, "asked", ("raised", None)),
+    ({"owed": 1355, "offered": False}, "replace", ("off", "collection_off")),
+    ({"owed": 1355, "offered": True}, "failed", ("none", None)),
+    ({"owed": 3000, "offered": False}, "new", ("off", "collection_off")),
+    ({"owed": 3000, "offered": True}, "new", ("none", None)),
 ])
 @pytest.mark.asyncio
 async def test_the_event_is_the_first_that_holds(monkeypatch, found, phase, expected):
     """Stop, then a balance that differs from what a live attempt asks (a failed or cancelled one
-    asks nothing), then Cloud's offer, then a holding invoice."""
+    asks nothing), then Cloud's offer."""
     async def stop_reason(session, company_id, state):
         return found.get("stop")
 
-    async def holder(session, company_id, row):
-        return found["holder"]
-
     monkeypatch.setattr(collect, "stop_reason", stop_reason)
-    monkeypatch.setattr(collect, "_holder", holder)
     monkeypatch.setattr(collection, "outstanding_minor", lambda state: found["owed"])
     monkeypatch.setattr(collection, "offered", lambda: found["offered"])
     row = SimpleNamespace(entity_id="doc:INV", state={})

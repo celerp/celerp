@@ -7920,7 +7920,6 @@
   "subscriptions.receipt_not_resent": "ส่งใบเสร็จไม่สำเร็จ โปรดลองอีกครั้ง",
   "subscriptions.done_card_removed": "ลบบัตรแล้ว จะไม่มีการเรียกเก็บเงินจากบัตรนี้อีก",
   "collection.status_pending": "รอเรียกเก็บเงิน",
-  "collection.status_held": "การเรียกเก็บเงินรอจนกว่าการเรียกเก็บก่อนหน้าใน {ref} จะเสร็จสิ้น",
   "collection.status_requires_action": "รอผู้ชำระเงินยืนยันการเรียกเก็บ",
   "collection.payer_action_link": "หน้ายืนยันของผู้ชำระเงิน",
   "collection.status_failed_retry": "เรียกเก็บไม่สำเร็จ จะลองอีกครั้งวันที่ {date}",

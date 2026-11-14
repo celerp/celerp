@@ -195,7 +195,6 @@ async def test_e2e4_saas_subscriber_collected_from_a_card_on_file(owner_ui, sess
     # nothing more: the 16.00 credit is applied to the new invoice at once, which leaves 10.67 to charge.
     # The operator voids the payment by hand and records the parked charge on September instead.
     assert debit["amount_outstanding"] == 10.67
-    assert not (debit.get("collection") or {}).get("held_by")
     [by_hand] = [p for p in september["payments"] if p.get("method") == "bank_transfer"]
     r = await api.post(f"/docs/{september['entity_id']}/void-payment", json={"payment_index": by_hand["index"]})
     assert r.status_code == 200, r.text

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT
 """Card collection under real concurrency on PostgreSQL: a charge's payment arriving while an
 amendment credits its invoice, two amendments of one agreement at once, Cloud's answer to a
-cancel crossing its delivery of the charge's success, and a late success or its refunds while
-the amendment's credit is held. Whichever commits first, what the payer is
-charged in all is what the agreement owes (the 30.00 / 16.45 / 27.42 example: 40.97, never
-57.42), and a known outcome is never lost."""
+cancel crossing its delivery of the charge's success, and a late success that no longer fits
+the invoice its amendment's credit lowered, with its refunds. Whichever commits first, no
+invoice is paid twice: a charge that no longer fits is kept whole among the unmatched payments
+for a person to place, its refunds with it, and a known outcome is never lost."""
 from __future__ import annotations
 
 import asyncio
@@ -99,9 +99,9 @@ async def test_a_charge_paid_while_an_amendment_credits_its_invoice_is_never_cha
         committed_engine, monkeypatch, first):
     """July's 30.00 succeeds at Cloud while the amendment's 16.45 credit is issued against it.
     Payment first: July is paid, the credit goes to the amendment's invoice, which is charged
-    10.97. Amendment first: the credit is held while July's charge may take money, July takes the
-    30.00 whole and the next pass issues the credit, all of it to the amendment's 27.42, which is
-    charged 10.97. Either way 40.97 in all and nothing unmatched."""
+    10.97, 40.97 in all and nothing unmatched. Amendment first: the credit is issued at once and
+    lowers July to 13.55, so the 30.00 no longer fits it and is kept whole among the unmatched
+    payments for a person to place, and the amendment's invoice is charged its 27.42."""
     from celerp.models.payment_closure import UnmatchedPayment
     from celerp.services import payments
     async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
@@ -134,9 +134,12 @@ async def test_a_charge_paid_while_an_amendment_credits_its_invoice_is_never_cha
         docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
         async with factory() as s:
             parked = (await s.execute(select(UnmatchedPayment.reference))).scalars().all()
-    assert parked == [] and _charged(cloud, new) == [1097]
-    assert docs[july]["amount_outstanding"] == 0 and docs[new]["amount_outstanding"] == 10.97
-    assert sum(_charged(cloud, july)) + sum(_charged(cloud, new)) <= 4097
+    if first == "payment":
+        assert parked == [] and _charged(cloud, new) == [1097]
+        assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 10.97)
+    else:
+        assert parked == ["pi_race"] and _charged(cloud, new) == [2742]
+        assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
 
 
 @pytest.mark.parametrize("same_key", [False, True])
@@ -219,11 +222,11 @@ async def test_a_cancel_answer_crossing_the_charge_success_keeps_the_success(com
 
 
 @pytest.mark.parametrize("first", ["success", "by_hand"])
-async def test_a_late_success_while_the_held_invoice_is_paid_by_hand(committed_engine, monkeypatch, first):
-    """The amendment's 16.45 credit against July is held while its 30.00 is with Cloud. The 30.00's
+async def test_a_late_success_while_the_amendment_invoice_is_paid_by_hand(committed_engine, monkeypatch, first):
+    """The amendment's 16.45 credit lowers July to 13.55 while its 30.00 is with Cloud. The 30.00's
     success arrives while a person pays the amendment's 27.42 invoice 10.00 by hand. Whichever
-    commits first, July takes the 30.00 whole, the next pass issues the credit and applies all of
-    it to the amendment's invoice, so it owes 0.97, and nothing is unmatched."""
+    commits first, the 30.00 no longer fits July and is kept whole among the unmatched payments,
+    July still owes 13.55 and the amendment's invoice 17.42."""
     from celerp.models.payment_closure import UnmatchedPayment
     from celerp.services import payments
     async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
@@ -259,13 +262,13 @@ async def test_a_late_success_while_the_held_invoice_is_paid_by_hand(committed_e
         docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
         async with factory() as s:
             parked = (await s.execute(select(UnmatchedPayment.reference))).scalars().all()
-    assert parked == []
-    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 0.97)
+    assert parked == ["pi_spill"]
+    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 17.42)
 
 
 async def _amended_with_refused_cancel(client, hd, cid, eid, factory, cloud, monkeypatch) -> str:
-    """The amendment's 16.45 credit against July is held while its 30.00 is with Cloud: the
-    amendment's invoice id."""
+    """The amendment's 16.45 credit, issued at once, lowers July to 13.55 while its 30.00 is with
+    Cloud: the amendment's invoice id."""
     line = (await template(client, hd, eid))["line_items"][0]["line_id"]
     freeze_day(monkeypatch, "2026-07-15")
     amended = await client.post(f"/subscriptions/{eid}/amend", headers=hd,
@@ -289,11 +292,11 @@ async def _kept(factory) -> tuple[list, list]:
 
 
 @pytest.mark.parametrize("first", ["success", "refund"])
-async def test_a_refund_crossing_the_late_success_while_the_credit_is_held(committed_engine, monkeypatch, first):
-    """The 30.00 is refunded in Stripe while its late success is being delivered and the
-    amendment's 16.45 credit against July is held. Whichever commits first, July gets its 30.00
-    back, the next pass issues the credit on July: July owes 13.55, the amendment's invoice 27.42,
-    and nothing is kept."""
+async def test_a_refund_crossing_a_late_success_that_no_longer_fits(committed_engine, monkeypatch, first):
+    """The 30.00 is refunded in Stripe while its late success is being delivered, after the
+    amendment's 16.45 credit lowered July to 13.55. Whichever commits first, the 30.00 and its
+    refund are both kept among the unmatched for a person to place, and the invoices are
+    untouched: July owes 13.55, the amendment's invoice 27.42."""
     from celerp.services import payments
     async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
                                                                 sessions, cloud):
@@ -317,15 +320,15 @@ async def test_a_refund_crossing_the_late_success_while_the_credit_is_held(commi
         docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
         kept = await _kept(factory)
     assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
-    assert kept == ([], [])
+    assert kept == (["pi_x"], ["re_x"])
 
 
 @pytest.mark.parametrize("same", [False, True])
-async def test_two_refunds_of_a_charge_at_once_while_the_credit_is_held(committed_engine, monkeypatch, same):
-    """July's 30.00 is delivered while the amendment's 16.45 credit against it is held, then gets two
-    refund deliveries at once. Two refunds of 20.00 and 10.00 give back all of it whichever commits
-    first, and the credit issued on the next pass leaves July owing 13.55; the same 20.00 refund
-    delivered twice gives back 20.00 once, so the credit leaves July owing 3.55."""
+async def test_two_refunds_at_once_of_a_late_success_that_no_longer_fits(committed_engine, monkeypatch, same):
+    """July's 30.00 is delivered after the amendment's 16.45 credit lowered July to 13.55, so it is
+    kept whole among the unmatched, then gets two refund deliveries at once. Whichever commits
+    first, two refunds of 20.00 and 10.00 are each kept once, the same 20.00 refund delivered twice
+    is kept once, and the invoices are untouched: July owes 13.55, the amendment's invoice 27.42."""
     from celerp.services import payments
     async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
                                                                 sessions, cloud):
@@ -346,6 +349,5 @@ async def test_two_refunds_of_a_charge_at_once_while_the_credit_is_held(committe
         await _pass(factory, cid, "2026-07-21")
         docs = {d["entity_id"]: d for d in await _docs(factory, eid)}
         kept = await _kept(factory)
-    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == ((3.55, 27.42) if same
-                                                                                   else (13.55, 27.42))
-    assert kept == ([], [])
+    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
+    assert (kept[0], sorted(kept[1])) == (["pi_y"], ["re_a"] if same else ["re_a", "re_b"])

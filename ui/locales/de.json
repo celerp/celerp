@@ -7920,7 +7920,6 @@
   "subscriptions.receipt_not_resent": "Beleg nicht gesendet. Versuchen Sie es erneut.",
   "subscriptions.done_card_removed": "Karte entfernt. Sie wird nicht erneut belastet.",
   "collection.status_pending": "Zahlungseinzug ausstehend",
-  "collection.status_held": "Die Abbuchung wartet, bis die frühere Abbuchung auf {ref} abgeschlossen ist",
   "collection.status_requires_action": "Warten auf Bestätigung der Belastung durch den Zahler.",
   "collection.payer_action_link": "Bestätigungsseite des Zahlers",
   "collection.status_failed_retry": "Belastung fehlgeschlagen, erneuter Versuch am {date}",

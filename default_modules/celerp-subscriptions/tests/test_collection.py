@@ -800,8 +800,7 @@ async def test_a_refused_retry_of_an_unanswered_attempt_is_reconciled_before_it_
 
 async def test_an_amendment_invoice_is_collected_as_a_period_invoice_is(client, session, monkeypatch, cloud):
     """An invoice an amendment issues on an agreement that collects automatically opens its own
-    attempt and is charged after the amendment commits, as each period's invoice is (July's charge
-    failed, so no credit of the amendment is held)."""
+    attempt and is charged after the amendment commits, as each period's invoice is."""
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid, eid, payer = await _collecting(client, hd)
@@ -844,8 +843,7 @@ async def test_payer_change_needs_the_collection_permission(client, session, mon
 async def test_every_invoice_an_automatic_agreement_issues_opens_its_collection(client, session, monkeypatch, cloud):
     """Guard over every path that issues an agreement's invoice (a period billed by the
     dispatcher, a period billed early by hand, an amendment's invoice): each invoice opens
-    attempt 1 for what it owes and is asked for; the amendment's credit note collects nothing.
-    The earlier charges failed, so no credit of the amendment is held."""
+    attempt 1 for what it owes and is asked for; the amendment's credit note collects nothing."""
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid, eid, _ = await _collecting(client, hd)

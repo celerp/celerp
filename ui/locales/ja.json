@@ -7920,7 +7920,6 @@
   "subscriptions.receipt_not_resent": "領収メールを送信できませんでした。再試行してください。",
   "subscriptions.done_card_removed": "カードを削除しました。今後このカードへの請求はありません。",
   "collection.status_pending": "回収待ち",
-  "collection.status_held": "{ref} の前回の請求が確定するまで、この請求は保留されます",
   "collection.status_requires_action": "支払者による請求の確認待ちです。",
   "collection.payer_action_link": "支払者の確認ページ",
   "collection.status_failed_retry": "請求に失敗しました。{date} に再試行します",

@@ -6456,8 +6456,6 @@ def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
         text = Span(t("collection.status_requires_action"),
                     *((" ", A(t("collection.payer_action_link"), href=safe_url(url), target="_blank", rel="noopener"))
                       if url else ()))
-    elif state == "pending" and collection.get("held_by"):
-        text = t("collection.status_held", ref=collection["held_by"])
     elif state in IN_FLIGHT:
         text = t("collection.status_pending")
     elif state == "failed":
