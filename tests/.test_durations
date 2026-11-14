@@ -29192,5 +29192,11 @@
     "tests/test_history_hidden_rows.py::test_an_origin_row_shows_on_its_own_lot_only": 0.0022517109755426645,
     "tests/test_history_hidden_rows.py::test_system_posting_entries_are_left_out": 0.0021779449889436364,
     "tests/test_history_hidden_rows.py::test_the_steps_a_split_takes_on_its_own_are_left_out": 0.0021483548916876316,
-    "tests/test_inventory_fields_batch06.py::test_folding_old_preset_values_leaves_the_event_data_as_recorded": 0.002104831160977483
+    "tests/test_inventory_fields_batch06.py::test_folding_old_preset_values_leaves_the_event_data_as_recorded": 0.002104831160977483,
+    "tests/test_history_table.py::test_history_pushes_the_page_of_the_record_kind_from_either_door[chromium-doc:INV-1-/docs/doc:INV-1-/docs]": 0.04045621503610164,
+    "tests/test_history_table.py::test_history_pushes_the_page_of_the_record_kind_from_either_door[chromium-doc:INV-1-/docs/doc:INV-1-/lists]": 0.01298781600780785,
+    "tests/test_history_table.py::test_history_pushes_the_page_of_the_record_kind_from_either_door[chromium-list:QUO-1-/lists/list:QUO-1-/docs]": 0.01229736499954015,
+    "tests/test_history_table.py::test_history_pushes_the_page_of_the_record_kind_from_either_door[chromium-list:QUO-1-/lists/list:QUO-1-/lists]": 0.01426962111145258,
+    "tests/test_inventory_fields_batch06.py::test_a_category_that_showed_old_preset_columns_shows_their_core_fields[prefs0]": 0.004032544093206525,
+    "tests/test_inventory_fields_batch06.py::test_a_category_that_showed_old_preset_columns_shows_their_core_fields[prefs1]": 0.0036292538279667497
 }
