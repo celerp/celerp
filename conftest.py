@@ -141,7 +141,7 @@ def pytest_sessionstart(session):
 
 
 try:
-    provision_test_database(os.environ, _start_pg_container)
+    provision_test_database(os.environ, _start_pg_container, _worker)
 except RefusedTestDatabase as refused:
     pytest.exit(str(refused), returncode=4)
 # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled

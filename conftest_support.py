@@ -8,6 +8,7 @@ without importing the root conftest, which spins up Postgres at import time.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import sys
 import tempfile
@@ -17,18 +18,31 @@ from collections.abc import MutableMapping
 _CONFIG_PREFIX = "celerp-test-config-"
 _DATA_PREFIX = "celerp-test-data-"
 _RUN_VAR = "CELERP_TEST_RUN"
+_SESSION_VAR = "CELERP_TEST_SESSION"
 
 
 def worker_label(environ: MutableMapping[str, str]) -> str:
-    """This process's name in its test run: the run, then the xdist worker ("main" outside one).
+    """This process's name in its test run: the run, then the xdist worker ("main" outside one),
+    then the process id for a session started inside another session's process.
 
     The controller's conftest runs first and records a fresh run id in *environ*; its
     workers inherit that environment, so every worker of one run shares the run id and
     two runs on one machine at once never do. A label by worker alone was the same
     "gw1" in both runs, so their per-worker files were one file.
+
+    A pytest that a test starts inherits that test's whole environment, run and worker
+    included, so by those alone it was its parent: it recreated the parent's database empty
+    under the parent's later tests, and its exit removed the parent's config and data
+    directory. So the label a session takes is recorded in *environ*, and a process that
+    finds its own label already taken there adds its process id.
     """
     run = environ.setdefault(_RUN_VAR, uuid.uuid4().hex[:12])
-    return f"{run}-{environ.get('PYTEST_XDIST_WORKER', 'main')}"
+    label = f"{run}-{environ.get('PYTEST_XDIST_WORKER', 'main')}"
+    taken = environ.get(_SESSION_VAR, "")
+    if taken == label or taken.startswith(f"{label}-"):
+        label = f"{label}-{os.getpid()}"
+    environ[_SESSION_VAR] = label
+    return label
 
 
 def _is_own(path: str | None, prefix: str, tmpdir: str | None) -> bool:
@@ -82,23 +96,17 @@ def resolve_worker_data_dir(existing: str | None, worker: str, tmpdir: str | Non
     return existing
 
 
-def provision_worker_db(url: str, worker: str) -> str:
-    """Create an empty database <base>_<worker> on the shared server; return its asyncpg URL.
-
-    The worker database is the run's own throwaway, but its name is reused by every
-    run against the same base. A run that stopped before its teardown leaves rows
-    behind (one leftover User makes every later first-user registration answer
-    "System already bootstrapped"), and create_all never changes a leftover table.
-    So an existing one is dropped and created again. Only connections this role
-    holds on it are ended first; the base database itself is never touched.
-    """
+def _replace_worker_db(url: str, worker: str, create: bool) -> str:
+    """Drop the database <base>_<worker> on the server of *url* (the base), then create it
+    empty when *create*; return its asyncpg URL. Only connections this role holds on it are
+    ended first; the base database itself is never touched."""
     import re
     from urllib.parse import urlsplit, urlunsplit
     import psycopg2
 
     parts = urlsplit(url.replace("+asyncpg", ""))
     base_db = parts.path.lstrip("/") or "postgres"
-    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '', worker)}"
+    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '_', worker)}"
     conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
                             password=parts.password, dbname=base_db)
     conn.autocommit = True
@@ -110,11 +118,24 @@ def provision_worker_db(url: str, worker: str) -> str:
                 (worker_db,),
             )
             cur.execute(f'DROP DATABASE IF EXISTS "{worker_db}"')
-            cur.execute(f'CREATE DATABASE "{worker_db}"')
+            if create:
+                cur.execute(f'CREATE DATABASE "{worker_db}"')
     finally:
         conn.close()
     return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
         "postgresql://", "postgresql+asyncpg://")
+
+
+def provision_worker_db(url: str, worker: str) -> str:
+    """Create an empty database <base>_<worker> on the shared server; return its asyncpg URL.
+
+    The worker database is the run's own throwaway, but its name is reused by every
+    run against the same base. A run that stopped before its teardown leaves rows
+    behind (one leftover User makes every later first-user registration answer
+    "System already bootstrapped"), and create_all never changes a leftover table.
+    So an existing one is dropped and created again.
+    """
+    return _replace_worker_db(url, worker, create=True)
 
 
 TEST_DATABASE_VAR = "CELERP_TEST_DATABASE_URL"
@@ -151,21 +172,25 @@ def opted_in_test_database(environ: MutableMapping[str, str]) -> str | None:
         "Unset it to run the tests on a throwaway container.")
 
 
-def provision_test_database(environ: MutableMapping[str, str], start_container) -> str:
-    """Point DATABASE_URL at this process's test database and return it.
+def provision_test_database(environ: MutableMapping[str, str], start_container, label: str) -> str:
+    """Point DATABASE_URL at the test database of the session *label* (worker_label) and return it.
 
     *start_container* starts a throwaway Postgres and returns its URL; it runs only without an
     opt-in, and the xdist workers use that container as is, at whatever host Docker gives it
-    (only an opt-in is held to this machine). A worker gets its own database on the server.
+    (only an opt-in is held to this machine). A worker gets its own database on the server, and
+    so does a session started inside another, which drops it again at exit: its name carries a
+    process id, so no later run reuses it.
     The server's settings are never changed: a server the harness starts gets its durability
     settings at start, any other keeps its own.
     """
     url = opted_in_test_database(environ) or environ.get(_PROVISIONED_VAR)
     if url is None:
         url = environ[_PROVISIONED_VAR] = start_container()
-    worker = environ.get("PYTEST_XDIST_WORKER")
-    if worker:
-        url = provision_worker_db(url, worker)
+    session = label.split("-", 1)[1]  # the worker ("main" outside xdist), then a process id when nested
+    if session != "main":
+        base, url = url, provision_worker_db(url, session)
+        if "-" in session:
+            atexit.register(_replace_worker_db, base, session, False)
     environ["DATABASE_URL"] = url
     return url
 

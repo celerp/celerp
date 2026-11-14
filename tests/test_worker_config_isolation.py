@@ -105,11 +105,20 @@ class TestWorkerLabel:
 
     def test_the_workers_of_one_run_share_its_run_and_differ_by_worker(self):
         controller: dict[str, str] = {}
-        worker_label(controller)  # the controller's conftest runs first; its workers inherit its environment
+        main = worker_label(controller)  # the controller's conftest runs first; its workers inherit its environment
         gw0, gw1 = worker_label({**controller, "PYTEST_XDIST_WORKER": "gw0"}), \
             worker_label({**controller, "PYTEST_XDIST_WORKER": "gw1"})
         assert gw0 != gw1
-        assert gw0.removesuffix("-gw0") == gw1.removesuffix("-gw1") == worker_label(dict(controller))[:-len("-main")]
+        assert gw0.removesuffix("-gw0") == gw1.removesuffix("-gw1") == main.removesuffix("-main")
+
+    def test_a_session_started_inside_another_takes_a_label_of_its_own(self):
+        worker = {"PYTEST_XDIST_WORKER": "gw1"}
+        parent = worker_label(worker)
+        child_env = dict(worker)  # a pytest a test starts inherits the whole environment
+        child = worker_label(child_env)
+        assert child.startswith(f"{parent}-")
+        assert resolve_worker_config(None, child, _TMP) != resolve_worker_config(None, parent, _TMP)
+        assert resolve_worker_data_dir(None, child, _TMP) != resolve_worker_data_dir(None, parent, _TMP)
 
     def test_a_run_label_is_still_our_own_path(self):
         label = worker_label({"PYTEST_XDIST_WORKER": "gw0"})
