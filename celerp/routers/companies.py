@@ -224,7 +224,7 @@ class TaxRate(BaseModel):
     name: str
     rate: FiniteFloat  # percentage, e.g. 7.0
     tax_type: Literal[TAX_TYPES] = "both"
-    is_default: StrictBool = False
+    is_default: bool = False
     description: str = ""
     is_compound: bool = False
     default_order: int = 0
@@ -280,8 +280,15 @@ class RetiredTax(BaseModel):
     rows: list[RetiredTaxRow] = Field(min_length=1)
 
 
+class PackTaxRate(TaxRate):
+    """One tax of a country pack. A pack file writes its default flag as true or false; the
+    settings API keeps reading 0, 1 and "false" as it always has."""
+    is_default: StrictBool = False
+
+
 class CountryPackTaxes(TaxRatesPatch):
     """A country pack's tax material: its tax list and the earlier rows it retires."""
+    taxes: list[PackTaxRate]
     retired: list[RetiredTax] = []
 
     @field_validator("retired")
