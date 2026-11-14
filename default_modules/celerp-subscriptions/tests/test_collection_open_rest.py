@@ -8,14 +8,17 @@ with a card on file, an agreement on Bill and collect automatically for 30.00 a 
 2026, and Celerp Cloud as a stand-in.
 
 The state-machine test drives one agreement through the app's real entry points (dispatcher
-passes, Cloud's attempt and payment deliveries in any order, payments by hand and their voids, an
-amendment) under a seeded random story, with a stand-in Cloud that charges, fails or cancels each
-attempt it was asked for. After every step, each open invoice whose collection may go on has an
+passes, Cloud's attempt and payment deliveries in any order, payments by hand and their voids,
+other online payments on an invoice (paid on its page, or placed by a person from the unmatched
+payments) at any point of an attempt, an amendment) under a seeded random story, with a stand-in
+Cloud that charges, fails or cancels each attempt it was asked for. After every step, each open invoice whose collection may go on has an
 attempt in progress, or its charge is on the way from Cloud, or the company was told why nothing
 is asked: its charge was kept among the unmatched payments, or it came to owe again after its
 collection ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
 the next pass, so between passes its ended collection still counts; right after a pass it never
-does. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
+does. And whenever an attempt is asked for, it and the invoice's other attempts Cloud may still
+charge, or charged and whose payment is on the way, never ask more than the invoice owes: the payer
+is never charged twice for the same money. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
 more (default 2) are drawn from COLLECTION_ORACLE_SEED, else at random. A failing case names its
 seed: COLLECTION_ORACLE_SEED=<seed> with COLLECTION_ORACLE_RANDOM=1 replays it.
 """
@@ -130,8 +133,12 @@ class _Story:
     def charge(self, key) -> None:
         self.attempts[key] = "charged"
         minor, context = self.amounts[key]
-        self.payments.append((key[0], f"pi_{key[0][-6:]}_{key[1]}", minor, context))
+        self.payments.append((key[0], self.reference(key), minor, context))
         self.outcomes.append((key[0], key[1], "succeeded"))
+
+    @staticmethod
+    def reference(key) -> str:
+        return f"pi_{key[0][-6:]}_{key[1]}"
 
     def fail(self, key) -> None:
         self.attempts[key] = "failed"
@@ -145,6 +152,14 @@ async def _told(session, name: str) -> bool:
     return len(rows) == 1
 
 
+# The oracle's own reading of an attempt in progress: with Cloud, or failed and retried when due.
+IN_PROGRESS = frozenset({"pending", "submitted", "processing", "requires_action", "unknown", "failed"})
+
+
+def _minor(doc: dict) -> int:
+    return round((doc.get("amount_outstanding") or 0) * 100)
+
+
 def _ended(c: dict) -> bool:
     return c.get("state") == "paid" or (c.get("state") in ("stopped", "canceled")
                                         and c.get("reason") == "invoice_settled")
@@ -155,15 +170,13 @@ async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) 
     progress, no charge on the way (``story``: still owed by Cloud) and nothing the company was told
     of: a kept charge, or owing again after its collection ended. Unless a pass just ran
     (``passed``), an ended collection waits for the next pass to tell it."""
-    from celerp.services import collection
-    from celerp_subscriptions.collect import ACTIVE, stop_reason
     session.expire_all()
     alone = []
     for doc_id, doc in (await _docs(session, eid)).items():
         c = doc.get("collection") or {}
-        if doc.get("doc_type") != "invoice" or not c or await stop_reason(session, uuid.UUID(cid), doc) is not None:
+        if doc.get("doc_type") != "invoice" or not c or _minor(doc) <= 0 or doc.get("status") in ("draft", "void"):
             continue
-        if c.get("state") in ACTIVE or (c.get("state") == "canceled" and c.get("replace") is True):
+        if c.get("state") in IN_PROGRESS or (c.get("state") == "canceled" and c.get("replace") is True):
             continue
         if c.get("state") == "succeeded" and c.get("kept") and await _told(session, c["kept"]):
             continue
@@ -173,8 +186,25 @@ async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) 
             continue
         if _ended(c) and not passed:
             continue
-        alone.append(f"{doc.get('ref_id')} owes {collection.outstanding_minor(doc)} collection {c}")
+        alone.append(f"{doc.get('ref_id')} owes {_minor(doc)} collection {c}")
     return alone
+
+
+def _overasked(story: _Story, docs: dict[str, dict], asked: set[tuple[str, int]]) -> list[str]:
+    """Each attempt asked for since ``asked`` whose amount, with the invoice's other attempts Cloud
+    may still charge or charged with the payment on the way, is more than the invoice owes."""
+    over = []
+    for p in story.cloud.sent("attempt"):
+        key = (p["entity_id"], p["attempt_number"])
+        if key in asked:
+            continue
+        asked.add(key)
+        others = sum(story.amounts[k][0] for k, v in story.attempts.items() if k[0] == key[0] and k != key and (
+            v == "open" or (v == "charged" and any(pay[1] == story.reference(k) for pay in story.payments))))
+        if p["amount_minor"] + others > _minor(docs[key[0]]):
+            over.append(f"{docs[key[0]].get('ref_id')} asked {p['amount_minor']} with {others} on the way, "
+                        f"owes {_minor(docs[key[0]])}")
+    return over
 
 
 async def _run_story(seed, client, session, monkeypatch, cloud):
@@ -184,10 +214,10 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
     story.attempts[(july, 1)] = "open"
     [first] = cloud.sent("attempt")
     story.amounts[(july, 1)] = (first["amount_minor"], first["context"])
-    day, amended, trail = 1, False, []
+    day, amended, trail, asked, foreign = 1, False, [], {(july, 1)}, 0
 
     async def step(name):
-        nonlocal day, amended
+        nonlocal day, amended, foreign
         docs = await _docs(session, eid)
         invoices = [d for d in docs.values() if d.get("doc_type") == "invoice"]
         if name == "tick":
@@ -207,6 +237,16 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         elif name == "hand_pay":
             doc = rng.choice([d for d in invoices if (d.get("amount_outstanding") or 0) >= 1])
             await _pay(client, hd, doc["entity_id"], min(float(doc["amount_outstanding"]), rng.choice([5.0, 10.0])))
+        elif name in ("page_pay", "place"):
+            doc = rng.choice([d for d in invoices if _minor(d) >= 100])
+            attempt = (doc.get("collection") or {}).get("amount_minor") or 500
+            minor, foreign = min(_minor(doc), rng.choice([500, 1000, attempt])), foreign + 1
+            ref, on = f"pi_other_{foreign}", doc["entity_id"] if name == "page_pay" else f"doc:{uuid.uuid4().hex}"
+            assert await _deliver(cid, on, ref, minor, first["context"]) is True
+            if name == "place":
+                from celerp.services.payments import record_unmatched_payment
+                await record_unmatched_payment(session, uuid.UUID(cid), ref, doc["entity_id"])
+                await session.commit()
         elif name == "void_hand":
             doc, p = rng.choice([(d, p) for d in invoices for p in d.get("payments") or []
                                  if p.get("method") == "bank_transfer" and p.get("status") == "active"])
@@ -224,7 +264,7 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         names += ["charge", "charge", "fail"] if story.open() else []
         names += ["deliver_payment", "deliver_payment"] if story.payments else []
         names += ["deliver_outcome", "deliver_outcome"] if story.outcomes else []
-        names += ["hand_pay"] if any((d.get("amount_outstanding") or 0) >= 1 for d in invoices) else []
+        names += ["hand_pay", "page_pay", "place"] if any(_minor(d) >= 100 for d in invoices) else []
         names += ["void_hand"] if any(p.get("method") == "bank_transfer" and p.get("status") == "active"
                                       for d in invoices for p in d.get("payments") or []) else []
         names += ["amend"] if not amended and day < 15 else []
@@ -239,6 +279,8 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         await step(name)
         alone = await _left_alone(session, cid, eid, story, passed=name == "tick")
         assert not alone, f"seed {seed} after {trail}: {alone}"
+        over = _overasked(story, await _docs(session, eid), asked)
+        assert not over, f"seed {seed} after {trail}: {over}"
     while story.outcomes or story.payments:
         name = "deliver_payment" if story.payments else "deliver_outcome"
         trail.append(name)

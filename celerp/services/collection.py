@@ -295,8 +295,9 @@ def _own_charge(current: dict, charge: dict | None) -> bool:
     attempt's amount in its currency, on the books the attempt was asked with. Cloud tells the
     attempt's outcome without its charge's reference, so these are what tie the two. One whose own
     charge was kept among the unmatched payments has had it."""
-    return charge is not None and not current.get("kept") and (charge["amount_minor"], charge["currency"], charge["context"]) == (
-        current.get("amount_minor"), current.get("currency"), (current.get("request") or {}).get("context"))
+    mine = (current.get("amount_minor"), current.get("currency"), (current.get("request") or {}).get("context"))
+    return charge is not None and not current.get("kept") and (
+        charge["amount_minor"], charge["currency"], charge["context"]) == mine
 
 
 async def charge_recorded(session, company_id, doc_row, charge: dict | None) -> None:
