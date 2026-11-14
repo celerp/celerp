@@ -105,7 +105,6 @@
   "acct.closing_balance": "Saldo final",
   "acct.create": "Criar",
   "acct.currency_base_hint": "Moeda da empresa",
-  "acct.err_already_posted": "Este lançamento contábil já foi registrado com valores diferentes. Revise o diário e registre novamente se um novo lançamento for necessário.",
   "acct.err_amounts_numeric": "Informe os valores de débito e crédito como números, por exemplo 120.50.",
   "acct.err_currency_unknown": "{currency} não é uma moeda reconhecida pelo Celerp. Use um código de moeda de três letras, como USD, EUR ou THB.",
   "acct.err_rate_positive": "Informe uma taxa de câmbio maior que zero.",

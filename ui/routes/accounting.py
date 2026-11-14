@@ -24,7 +24,7 @@ from ui.api_client import APIError
 from ui.components.currency import currency_options
 from ui.components.funds import chosen_fund, fund_options, funds_in_use, journal_change_panel
 from celerp.services.peer_lines import UNRESTRICTED
-from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
+from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD, key_reused
 from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title, toast_header
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
@@ -351,8 +351,8 @@ def setup_routes(app):
                     status_code=303)
             except APIError as e:
                 api.raise_if_signed_out(e)
-                if api.error_code(e) == "idempotency_conflict":
-                    # Same token, different payload: the original already posted.
+                if key_reused(e):
+                    # Same token, different request: the original already posted.
                     # A fresh token lets a deliberately corrected resubmit succeed.
                     idem_token = str(uuid.uuid4())
                 error = no_access_text(e) if e.status == 403 else api.error_message(e)

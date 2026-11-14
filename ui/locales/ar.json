@@ -105,7 +105,6 @@
   "acct.closing_balance": "الرصيد الختامي",
   "acct.create": "يخلق",
   "acct.currency_base_hint": "عملة الشركة",
-  "acct.err_already_posted": "تم ترحيل هذا القيد مسبقاً بمبالغ مختلفة. راجع دفتر اليومية، ثم رحّل مرة أخرى إذا كان المقصود قيداً جديداً.",
   "acct.err_amounts_numeric": "أدخل مبالغ المدين والدائن أرقامًا، مثل 120.50.",
   "acct.err_currency_unknown": "{currency} ليست عملة يعرفها Celerp. استخدم رمز عملة من ثلاثة أحرف مثل USD أو EUR أو THB.",
   "acct.err_rate_positive": "أدخل سعر صرف أكبر من صفر.",

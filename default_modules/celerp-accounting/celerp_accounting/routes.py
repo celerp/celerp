@@ -22,7 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
-from celerp.events.engine import emit_event, write_period_lock
+from celerp.events.engine import (
+    emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
+)
 from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
@@ -1803,6 +1805,18 @@ class ManualJECreate(BaseModel):
     idempotency_token: str
 
 
+# The request fields a retry under the same token may change; the token is bound to every
+# other field of the request (keyed_event).
+_NOT_FINGERPRINTED = {"idempotency_token"}
+
+
+def _manual_entry_answer(event) -> dict:
+    """What creating a manual entry answers: the entry as its event posted it, so the same
+    request sent again answers exactly what the first did."""
+    data = event.data or {}
+    return {"je_id": event.entity_id, **{name: data.get(name) for name in ("ts", "memo", "entries", "je_type", "status")}}
+
+
 class ManualJEVoidPayload(BaseModel):
     reason: str | None = None
     # When the entry sits in a locked period, the open date its reversal posts on;
@@ -1838,6 +1852,11 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
+    # The token is bound to the whole request: sent again unchanged it answers with the
+    # entry it posted (even once the period is locked), with any change it is refused.
+    request = payload.model_dump(mode="json", exclude=_NOT_FINGERPRINTED)
+    if (stored := await keyed_event(session, company_id, f"je:manual:{payload.idempotency_token}:c", request)) is not None:
+        return _manual_entry_answer(stored)
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
@@ -1909,11 +1928,10 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail=t(
                 "acct.err_je_bank_currency", account=line["account"], currency=currency))
 
-    je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
         session,
         company_id=company_id,
-        entity_id=je_id,
+        entity_id=f"je:manual:{uuid.uuid4()}",
         entity_type="journal_entry",
         event_type="acc.journal_entry.created",
         data={
@@ -1924,47 +1942,16 @@ async def create_manual_journal_entry(
         location_id=None,
         source="manual",
         idempotency_key=f"je:manual:{payload.idempotency_token}:c",
-        metadata_={},
+        metadata_={"request": request_fingerprint(request)},
     )
     if getattr(created, "was_deduped", False):
-        # The token was already used: emit_event returned the original event
-        # instead of inserting. A byte-identical retry (double click, network
-        # replay) answers with the original entry; a DIFFERENT payload on the
-        # same token means the user edited and resubmitted a stale form, and a
-        # success response would describe amounts that were never posted.
-        orig = created.data or {}
-
-        def _norm(lines: list) -> list:
-            # Compare money as rounded Decimals so a byte-identical retry never
-            # trips on float representation differences across storage layers.
-            # The foreign amounts and the rate that converted them come along: two
-            # different rates can convert to the same base figures, and comparing
-            # only those would read a corrected rate as an identical retry and
-            # silently post nothing.
-            out = []
-            for l in lines or []:
-                amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
-                out.append((
-                    l.get("account"),
-                    round_money(amounts[0], base), round_money(amounts[1], base),
-                    l.get("fx_debit"), l.get("fx_credit"),
-                    (l.get("fx_currency") or "").upper(),
-                    to_decimal(l.get("fx_rate") or 0),
-                ))
-            return out
-
-        if (orig.get("ts") != payload.ts
-                or (orig.get("memo") or "") != (payload.memo or "")
-                or _norm(orig.get("entries")) != _norm(entries)):
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "idempotency_conflict", "message": t("acct.err_already_posted")},
-            )
-        je_id = created.entity_id
+        # A concurrent send of the same token committed first: the same request answers
+        # with its entry, any other is refused.
+        refuse_other_request((created.metadata_ or {}).get("request"), request)
     await emit_event(
         session,
         company_id=company_id,
-        entity_id=je_id,
+        entity_id=created.entity_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
         data={"ts": payload.ts},
@@ -1975,15 +1962,7 @@ async def create_manual_journal_entry(
         metadata_={},
     )
     await session.commit()
-
-    return {
-        "je_id": je_id,
-        "ts": payload.ts,
-        "memo": payload.memo,
-        "entries": entries,
-        "je_type": "manual",
-        "status": "posted",
-    }
+    return _manual_entry_answer(created)
 
 
 def _module_source(state: dict) -> dict | None:

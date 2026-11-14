@@ -105,7 +105,6 @@
   "acct.closing_balance": "Solde de clôture",
   "acct.create": "Créer",
   "acct.currency_base_hint": "Devise de la société",
-  "acct.err_already_posted": "Cette écriture a déjà été enregistrée avec des montants différents. Vérifiez le journal, puis enregistrez à nouveau si une nouvelle écriture est voulue.",
   "acct.err_amounts_numeric": "Saisissez les montants au débit et au crédit sous forme de nombres, par exemple 120.50.",
   "acct.err_currency_unknown": "{currency} n'est pas une devise reconnue par Celerp. Utilisez un code de devise à trois lettres comme USD, EUR ou THB.",
   "acct.err_rate_positive": "Saisissez un taux de change supérieur à zéro.",

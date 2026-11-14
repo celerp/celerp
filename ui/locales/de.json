@@ -105,7 +105,6 @@
   "acct.closing_balance": "Endsaldo",
   "acct.create": "Erstellen",
   "acct.currency_base_hint": "Unternehmenswährung",
-  "acct.err_already_posted": "Dieser Eintrag wurde bereits mit anderen Beträgen gebucht. Prüfen Sie das Journal und buchen Sie erneut, falls eine neue Buchung beabsichtigt ist.",
   "acct.err_amounts_numeric": "Geben Sie Soll- und Habenbeträge als Zahlen ein, zum Beispiel 120.50.",
   "acct.err_currency_unknown": "{currency} ist keine Währung, die Celerp kennt. Verwenden Sie einen dreistelligen Währungscode wie USD, EUR oder THB.",
   "acct.err_rate_positive": "Geben Sie einen Wechselkurs größer als null ein.",

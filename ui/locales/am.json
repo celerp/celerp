@@ -105,7 +105,6 @@
   "acct.closing_balance": "የመዝጊያ ቀሪ ሒሳብ",
   "acct.create": "ፍጠር",
   "acct.currency_base_hint": "የኩባንያው ምንዛሬ",
-  "acct.err_already_posted": "ይህ ግቤት ቀደም ብሎ በተለያዩ መጠኖች ተሰፍሯል። ጆርናሉን ይመልከቱ፣ አዲስ ግቤት ማድረግ ከፈለጉ እንደገና ያስፍሩ።",
   "acct.err_amounts_numeric": "የዴቢት እና የክሬዲት መጠኖችን እንደ ቁጥር ያስገቡ፣ ለምሳሌ 120.50።",
   "acct.err_currency_unknown": "{currency} Celerp የሚያውቀው ገንዘብ አይደለም። እንደ USD፣ EUR ወይም THB ያለ ባለሦስት ፊደል የገንዘብ ኮድ ይጠቀሙ።",
   "acct.err_rate_positive": "ከዜሮ የሚበልጥ የምንዛሪ ተመን ያስገቡ።",

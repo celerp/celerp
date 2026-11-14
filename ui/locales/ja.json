@@ -105,7 +105,6 @@
   "acct.closing_balance": "期末残高",
   "acct.create": "作成する",
   "acct.currency_base_hint": "自社通貨",
-  "acct.err_already_posted": "この仕訳は異なる金額ですでに登録されています。仕訳帳を確認し、新しい仕訳が必要な場合は再度登録してください。",
   "acct.err_amounts_numeric": "借方と貸方の金額は数値で入力してください(例: 120.50)。",
   "acct.err_currency_unknown": "{currency} は Celerp が認識できる通貨ではありません。USD、EUR、THB のような 3 文字の通貨コードを使ってください。",
   "acct.err_rate_positive": "0 より大きい為替レートを入力してください。",
