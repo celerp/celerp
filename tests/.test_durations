@@ -28846,5 +28846,7 @@
     "tests/test_l10n_packs.py::test_country_editor_takes_an_address_that_is_not_a_record[address2]": 0.011433469015173614,
     "tests/test_l10n_packs.py::test_lock_entry_not_an_object_is_unreadable_through_the_app": 0.2617451181868091,
     "tests/test_l10n_packs.py::test_other_country_is_accepted_when_the_lock_is_unreadable": 0.020158784231171012,
-    "tests/test_l10n_packs.py::test_pack_notice_names_countries_in_the_readers_language": 0.03535733593162149
+    "tests/test_l10n_packs.py::test_pack_notice_names_countries_in_the_readers_language": 0.03535733593162149,
+    "tests/test_l10n_packs.py::test_pack_matching_its_digest_without_the_pack_format_is_absent": 0.027587875025346875,
+    "tests/test_l10n_packs_script.py::test_l10n_packs_check_refuses[lock entry not an object]": 0.004931316943839192
 }

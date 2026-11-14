@@ -46,7 +46,9 @@ def _read_lock(root: Path) -> dict | None:
         lock = json.loads((root / LOCK_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return lock if isinstance(lock, dict) else None
+    if not isinstance(lock, dict):
+        return None
+    return lock if all(isinstance(e, dict) and isinstance(e.get("sha256"), str) for e in lock.values()) else None
 
 
 def _pack_files(root: Path) -> dict[str, Path]:

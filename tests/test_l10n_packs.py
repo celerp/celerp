@@ -11,6 +11,7 @@ country. Every test here runs on a copy of the committed fixture pack set.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import logging
 import os
@@ -165,6 +166,23 @@ def test_pack_digest_mismatch_is_absent(l10n_dir, caplog):
 
     path = l10n_dir / "packs" / "MY.json"
     path.write_bytes(path.read_bytes().replace(b"10.0", b"11.0", 1))
+    _reset()
+    with caplog.at_level(logging.ERROR):
+        assert "MY" not in tax_countries()
+    assert missing() == ("MY",)
+    assert "MY.json" in caplog.text
+
+
+def test_pack_matching_its_digest_without_the_pack_format_is_absent(l10n_dir, caplog):
+    from celerp.localization import missing
+    from celerp.tax_regimes import tax_countries
+
+    data = b'{"taxes": []}\n'
+    (l10n_dir / "packs" / "MY.json").write_bytes(data)
+    lock_path = l10n_dir / "packs.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["MY"]["sha256"] = hashlib.sha256(data).hexdigest()
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
     _reset()
     with caplog.at_level(logging.ERROR):
         assert "MY" not in tax_countries()

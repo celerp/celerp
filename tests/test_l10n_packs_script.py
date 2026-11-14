@@ -97,6 +97,8 @@ _CHECK_CASES = {
         (r / "packs" / "TH.json").read_bytes().replace(b"7.0", b"8.0", 1)), "sha256"),
     "extra file": (lambda r: shutil.copy(r / "packs" / "TH.json", r / "packs" / "ZZ.json"), "unexpected file"),
     "missing file": (lambda r: (r / "packs" / "AU.json").unlink(), "missing"),
+    "lock entry not an object": (lambda r: (r / "packs.lock.json").write_text(
+        json.dumps({"TH": "x"}), encoding="utf-8"), "unreadable"),
 }
 _VALIDATE_CASES = {
     "not normalized": (_not_normalized, "normalized"),

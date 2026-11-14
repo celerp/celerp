@@ -61,8 +61,11 @@ def packs() -> dict[str, dict]:
         if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
             log.error("Country pack %s does not match its digest in the lock", path.name)
             continue
-        pack = json.loads(data)
-        loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": pack["taxes"]}
+        try:
+            pack = json.loads(data)
+            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": pack["taxes"]}
+        except (ValueError, KeyError, TypeError) as exc:
+            log.error("Country pack %s does not have the pack format: %s", path.name, exc)
     return loaded
 
 
