@@ -6532,6 +6532,8 @@
   "notice.tax_seed.my-sst-6.body": "El SST del 6 % ya no está vigente. Malasia aplica ahora un impuesto sobre ventas del 10 % o 5 % a los bienes y un impuesto sobre servicios del 8 % o 6 % a los servicios. Cambie la fila SST 6 % en Configuración > Impuestos.",
   "notice.tax_seed.retired.title": "Impuesto a revisar: {taxes}",
   "notice.tax_seed.retired.body": "Sus impuestos guardados aún incluyen {taxes}, que las tasas vigentes de su país ya no usan de esta forma. Revíselo en Configuración > Impuestos. Sus impuestos guardados no se han modificado.",
+  "notice.location_default_cleared.title": "Ubicación predeterminada cambiada",
+  "notice.location_default_cleared.body": "Una actualización permite una sola ubicación predeterminada por empresa, así que {kept} sigue siendo la predeterminada. Ya no son predeterminadas: {cleared}. Para que otra ubicación sea la predeterminada, configúrela en Ubicaciones.",
   "notice.customs_freeze.title": "Los documentos de envío emitidos conservan los datos de los artículos",
   "notice.customs_freeze.body": "Para los documentos de envío emitidos antes de esta actualización, Celerp ha guardado los datos de los artículos que se muestran actualmente en ellos. Los cambios posteriores en los artículos ya no modificarán las copias emitidas. Es posible que estos datos difieran de los que tenían los artículos cuando se emitieron originalmente los documentos.",
   "migration.xero_attachments_later": "Los archivos adjuntos a facturas, facturas de proveedor y notas de crédito en Xero no están en la exportación. Cuando termine la importación, obtenlos de Xero en la página de resultados de la comprobación.",

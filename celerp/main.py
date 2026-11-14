@@ -342,6 +342,18 @@ async def _bring_data_current(app: FastAPI, *, modules_ready: bool) -> bool:
             "Country pack notice failed (non-fatal); companies are told at a later boot"
         )
 
+    # Tell each company whose extra default locations an upgrade cleared; non-fatal like the above.
+    try:
+        from celerp.db import LifecycleSessionLocal as _LocationSession
+        from celerp.services.location_default_notice import run_location_default_notice
+        async with _LocationSession() as _loc_sess:
+            await run_location_default_notice(_loc_sess)
+            await _loc_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Default location notice failed (non-fatal); companies are told at a later boot"
+        )
+
     app.state.data_current, app.state.held_back = True, None
     try:
         from celerp.db import LifecycleSessionLocal as _NoticeSession
