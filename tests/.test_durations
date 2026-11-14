@@ -28943,5 +28943,11 @@
     "tests/test_tax_rate_schema.py::test_tax_settings_read_the_default_flag_as_before[true-True]": 0.05809053801931441,
     "tests/test_tax_rate_schema.py::test_tax_settings_refuse_an_invalid_list_and_keep_the_saved_one[default flag a number other than 0 or 1-/companies/me/purchasing-taxes]": 0.06949601601809263,
     "tests/test_tax_rate_schema.py::test_tax_settings_refuse_an_invalid_list_and_keep_the_saved_one[default flag a number other than 0 or 1-/companies/me/taxes]": 0.07594158302526921,
-    "tests/test_tax_seed_notice.py::test_two_packs_retiring_the_same_id_are_told_apart": 0.03717649495229125
+    "tests/test_tax_seed_notice.py::test_two_packs_retiring_the_same_id_are_told_apart": 0.03717649495229125,
+    "tests/test_migrations/test_v5w6x7y8z9a0_one_default_location.py::test_a_company_that_cannot_be_told_stays_recorded_and_a_gone_location_is_not_named": 0.5376291598659009,
+    "tests/test_migrations/test_v5w6x7y8z9a0_one_default_location.py::test_a_company_whose_defaults_were_cleared_is_told_once": 0.3914286739891395,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/services/location_default_notice.py]": 0.004772008047439158,
+    "tests/test_tax_seed_notice.py::test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key": 0.0608424301026389,
+    "tests/test_tax_seed_notice.py::test_each_country_s_own_words_are_in_every_locale_under_its_country": 0.05238877108786255,
+    "tests/test_tax_seed_notice.py::test_two_countries_retiring_one_id_each_show_their_own_words": 0.025565379997715354
 }
