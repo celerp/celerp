@@ -144,6 +144,7 @@ class _Story:
 
     def charge(self, key) -> None:
         self.attempts[key] = "charged"
+        self.cloud.settle(*key, "succeeded")
         minor, context, request_key = self.amounts[key]
         self.payments.append((key[0], self.reference(key), minor, context, request_key))
         self.outcomes.append((key[0], key[1], "succeeded"))
@@ -154,6 +155,7 @@ class _Story:
 
     def fail(self, key) -> None:
         self.attempts[key] = "failed"
+        self.cloud.settle(*key, "failed", "2026-07-01T00:00:00+00:00")
         self.outcomes.append((key[0], key[1], "failed"))
 
 

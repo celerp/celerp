@@ -4,7 +4,8 @@
 
 Initial conditions per test: a newly registered company (its owner holds every permission)
 and a payer contact with an email address. Celerp Cloud is a stand-in (``cloud``) that records
-each request the app sends it and answers what the test sets; its deliveries (collection.binding,
+each request the app sends it and answers what the test sets, after refusing every attempt
+Celerp Cloud refuses (_Cloud.refusal); its deliveries (collection.binding,
 collection.attempt, invoice.payment) are handed to the app's delivery handlers directly, whose
 own sessions join the test's transaction. The collection protocol flag is 1 unless a test
 withdraws it. The business day is frozen per test.
@@ -30,13 +31,31 @@ pytestmark = pytest.mark.asyncio
 LINK = "https://cloud.test/consent/tok-1"
 
 
+# Celerp Cloud's states for an attempt that may still charge the card.
+_CLOUD_OPEN = frozenset({"prepared", "submitted", "processing", "requires_action", "unknown"})
+MAX_ATTEMPTS = 4  # Cloud's: the first attempt and three retries
+
+
 class _Cloud:
     """Celerp Cloud as the app sees it: ``calls`` holds (route, payload) per request; ``answers``
     maps a route's last segment to the (status, body) it answers, None for no readable answer,
-    or a callable of the payload."""
+    or a callable of the payload.
+
+    Whatever a test answers, a new attempt is first refused as Cloud refuses it, from the
+    invoice's attempts the stand-in holds (``attempts``: entity -> number -> request and state):
+    a number used with another request key (attempt_number_used) or another amount or currency
+    (request_key_reused); an attempt that may still charge (attempt_in_progress); an earlier one
+    that succeeded (invoice_paid) or could not be verified (outcome_unverifiable); a retry before
+    the last failure's retry time (before_retry_time); the attempt cap, cancelled attempts
+    included (retry_limit); another currency (currency_changed) or more than the first attempt
+    asked (amount_above_first_attempt). Cloud's answers, the app's cancels Cloud accepts and its
+    deliveries (``settle``) move each attempt's state."""
+
+    current: "_Cloud | None" = None
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
+        self.attempts: dict[str, dict[int, dict]] = {}
         self.answers: dict = {
             "setup-link": (200, {"link": LINK, "emailed": True}),
             "attempt": lambda p: (200, {"state": "submitted", "attempt_number": p["attempt_number"],
@@ -44,14 +63,120 @@ class _Cloud:
             "cancel": (200, {"state": "canceled"}),
             "revoke": (200, {"state": "revoked"}),
         }
+        _Cloud.current = self
+
+    def refusal(self, p: dict) -> str | None:
+        """Cloud's refusal of the attempt request ``p``, None when it takes it."""
+        from celerp_subscriptions import billing
+        made = self.attempts.get(p["entity_id"], {})
+        row = made.get(p["attempt_number"])
+        if row is not None:
+            if row["request_key"] != p["request_key"]:
+                return "attempt_number_used"
+            if (row["amount_minor"], row["currency"]) != (p["amount_minor"], p["currency"].lower()):
+                return "request_key_reused"
+            return None
+        earlier = [made[n] for n in sorted(made)]
+        if any(r["state"] in _CLOUD_OPEN for r in earlier):
+            return "attempt_in_progress"
+        if not earlier:
+            return None
+        if any(r["state"] == "succeeded" for r in earlier):
+            return "invoice_paid"
+        if any(r["state"] == "unverifiable" for r in earlier):
+            return "outcome_unverifiable"
+        retry_at = earlier[-1].get("retry_at")
+        if retry_at is not None and datetime.fromisoformat(retry_at) > billing.now():
+            return "before_retry_time"
+        if len(earlier) >= MAX_ATTEMPTS:
+            return "retry_limit"
+        if earlier[0]["currency"] != p["currency"].lower():
+            return "currency_changed"
+        if p["amount_minor"] > earlier[0]["amount_minor"]:
+            return "amount_above_first_attempt"
+        return None
+
+    def settle(self, entity_id: str, n: int, state: str, retry_eligible_at: str | None = None) -> None:
+        """Attempt ``n`` of the invoice reached ``state`` at Cloud."""
+        row = self.attempts.get(entity_id, {}).get(n)
+        if row is not None:
+            row["state"] = state
+            if state == "failed":
+                row["retry_at"] = retry_eligible_at
+
+    def _attempt(self, p: dict, answer):
+        if refused := self.refusal(p):
+            return 409, {"detail": refused}
+        made = self.attempts.setdefault(p["entity_id"], {})
+        row = made.setdefault(p["attempt_number"], {
+            "request_key": p["request_key"], "amount_minor": p["amount_minor"],
+            "currency": p["currency"].lower(), "state": "prepared", "retry_at": None})
+        result = answer(p) if callable(answer) else answer
+        if result is not None and result[0] == 200:
+            self.settle(p["entity_id"], p["attempt_number"], result[1].get("state"),
+                        result[1].get("retry_eligible_at"))
+        elif result is not None and row["state"] == "prepared":
+            del made[p["attempt_number"]]  # refused by the test's answer: Cloud made nothing
+        return result
+
+    def _cancel(self, p: dict, answer):
+        result = answer(p) if callable(answer) else answer
+        made = self.attempts.get(p["entity_id"], {})
+        if result is not None and result[0] == 200 and result[1].get("state") == "canceled" and made:
+            self.settle(p["entity_id"], max(made), "canceled")
+        return result
 
     async def __call__(self, path: str, payload: dict):
         self.calls.append((path, payload))
-        answer = self.answers[path.rsplit("/", 1)[-1]]
+        route = path.rsplit("/", 1)[-1]
+        answer = self.answers[route]
+        if route == "attempt":
+            return self._attempt(payload, answer)
+        if route == "cancel":
+            return self._cancel(payload, answer)
         return answer(payload) if callable(answer) else answer
 
     def sent(self, route: str) -> list[dict]:
         return [p for path, p in self.calls if path == f"/billing/connect/collection/{route}"]
+
+
+def _request(n: int, amount: int = 3000, currency: str = "USD", key: str | None = None) -> dict:
+    return {"entity_id": "doc-1", "attempt_number": n, "request_key": key or f"collect:doc-1:{n}",
+            "amount_minor": amount, "currency": currency}
+
+
+# Each refusal of Cloud's attempt check: the attempts the invoice had at Cloud (number, state,
+# retry time), then the request refused, by Cloud's key.
+_REFUSALS = {
+    "attempt_number_used": ([(1, "failed", None)], _request(1, key="collect:doc-1:9")),
+    "request_key_reused": ([(1, "failed", None)], _request(1, amount=2000)),
+    "attempt_in_progress": ([(1, "processing", None)], _request(2)),
+    "invoice_paid": ([(1, "succeeded", None)], _request(2, amount=1000)),
+    "outcome_unverifiable": ([(1, "unverifiable", None)], _request(2)),
+    "before_retry_time": ([(1, "failed", "2026-07-04T00:00:00+00:00")], _request(2)),
+    "retry_limit": ([(1, "failed", None), (2, "canceled", None), (3, "failed", None), (4, "canceled", None)],
+                    _request(5)),
+    "currency_changed": ([(1, "failed", None)], _request(2, currency="EUR")),
+    "amount_above_first_attempt": ([(1, "canceled", None)], _request(2, amount=3001)),
+}
+
+
+@pytest.mark.parametrize("refusal", sorted(_REFUSALS))
+async def test_the_stand_in_cloud_refuses_each_attempt_cloud_refuses(monkeypatch, refusal):
+    """Every collection test's Cloud refuses what Celerp Cloud refuses, whatever the test answers,
+    so no test can pass on an attempt the real service would not take; the same history with an
+    attempt Cloud takes is answered as the test says."""
+    _at(monkeypatch, datetime(2026, 7, 3, tzinfo=timezone.utc))
+    fake = _Cloud()
+    history, asked = _REFUSALS[refusal]
+    for n, state, retry_at in history:
+        fake.attempts.setdefault("doc-1", {})[n] = {
+            "request_key": f"collect:doc-1:{n}", "amount_minor": 3000, "currency": "usd", "state": state,
+            "retry_at": retry_at}
+    assert await fake("/billing/connect/collection/attempt", asked) == (409, {"detail": refusal})
+    fresh = _Cloud()
+    status, body = await fresh("/billing/connect/collection/attempt", _request(1))
+    assert status == 200 and fresh.attempts["doc-1"][1]["state"] == "submitted"
 
 
 def stand_in(monkeypatch, session) -> _Cloud:
@@ -96,8 +221,11 @@ async def _bind(cid: str, payer: str, state: str = "active", **fields) -> bool:
 
 
 async def _attempt_outcome(cid: str, doc_id: str, n: int, state: str, **fields) -> bool:
-    """Cloud's collection.attempt delivery (X4) for attempt ``n`` of ``doc_id``."""
+    """Cloud's collection.attempt delivery (X4) for attempt ``n`` of ``doc_id``, which the stand-in
+    Cloud holds as the attempt's state."""
     from celerp.services import collection
+    if _Cloud.current is not None:
+        _Cloud.current.settle(doc_id, n, state, fields.get("retry_eligible_at"))
     return await collection.receive_attempt({
         "delivery_id": uuid.uuid4().hex, "company_id": cid, "entity_id": doc_id, "attempt_number": n,
         "state": state, "definitive": state in ("failed", "canceled"), "failure_code": None,
