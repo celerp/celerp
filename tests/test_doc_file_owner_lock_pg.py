@@ -38,9 +38,9 @@ async def test_a_file_change_waits_for_the_document_lock(committed_engine, entit
     async def writer_side() -> None:
         async with factory() as writer:
             await writer.execute(text("SET LOCAL lock_timeout = '200ms'"))
-            assert (await docs._get_file_owner(writer, company_id, entity_id)).entity_type == entity_type
+            assert (await docs._get_file_owner(writer, company_id, entity_id, entity_type)).entity_type == entity_type
             with pytest.raises(DBAPIError, match="lock"):
-                await docs._get_file_owner(writer, company_id, entity_id, for_update=True)
+                await docs._get_file_owner(writer, company_id, entity_id, entity_type, for_update=True)
             await writer.rollback()
 
     async with factory() as holder:

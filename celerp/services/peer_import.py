@@ -119,7 +119,7 @@ async def peer_batch(ctx, session: AsyncSession, records) -> dict | None:
     return await receive_records(session, ctx.peer, records)
 
 
-async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file,
+async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file, entity_type: str,
                        **fields) -> dict | None:
     """A document file sent with a connected company's key, recorded once under the sender's
     document and file ids: ``{"status": ...}``, or None for a signed-in user's upload, which
@@ -129,6 +129,8 @@ async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file,
             raise HTTPException(422, PEER_ONLY)
         return None
     from celerp.services.peer_attachments import receive_attachment
+    if entity_type != "doc":  # a connected company sends files to documents only
+        raise HTTPException(404, "Not found")
     if fields["source_file_id"] is None or fields["sha256_hex"] is None:
         raise HTTPException(422, "A connected company's file needs its file id and checksum.")
     grant = await _grant(session, ctx.peer)

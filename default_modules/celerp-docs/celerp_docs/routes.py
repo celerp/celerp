@@ -17,7 +17,7 @@ from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Annotated, ClassVar, Literal, NamedTuple
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator, model_serializer, model_validator
@@ -13606,13 +13606,24 @@ async def undo_receive_record(entity_id: str, company_id: str, user, session: As
 # ── Doc File Attachments ───────────────────────────────────────────────────────
 
 
-async def _get_file_owner(session, company_id, entity_id, *, for_update=False):
-    """Document attachments also belong to Lists rendered by the shared detail page."""
+# The record type each attachment route serves, by the name it is registered under: one
+# implementation per file operation, registered on /docs as "doc_files" and on /lists as "list_files".
+_FILE_ROUTE_TYPES = {"doc_files": "doc", "list_files": "list"}
+
+
+def _route_entity_type(request: Request) -> str:
+    """The record type the matched attachment route serves."""
+    return _FILE_ROUTE_TYPES[request.scope["route"].name]
+
+
+async def _get_file_owner(session, company_id, entity_id, entity_type: str, *, for_update=False):
+    """The record whose files a route works on, refused (404) unless it is of the type the route
+    serves, so a document's files are never reached through /lists nor a list's through /docs."""
     if for_update:
         row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None or row.entity_type not in {"doc", "list"}:
+    if row is None or row.entity_type != entity_type:
         raise HTTPException(status_code=404, detail=catalog_refusal("documents.document_not_found"))
     return row
 
@@ -13624,14 +13635,15 @@ def _get_doc_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
-@lists_router.post("/{entity_id}/files")
-@router.post("/{entity_id}/files")
+@lists_router.post("/{entity_id}/files", name="list_files")
+@router.post("/{entity_id}/files", name="doc_files")
 async def upload_doc_file(
     entity_id: str,
     file: UploadFile,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
+    entity_type: str = Depends(_route_entity_type),
     session: AsyncSession = Depends(get_session),
     auth: AuthContext = Depends(get_auth_context),
     source_file_id: str | None = Form(default=None, min_length=1, max_length=255),
@@ -13643,8 +13655,9 @@ async def upload_doc_file(
     file by its own ids, with the file's checksum (peer_import.receive_file)."""
     peer_fields = {"source_file_id": source_file_id, "sha256_hex": sha256_hex,
                    "document_tag": document_tag, "description": description}
-    if (peer := await receive_file(auth, session, entity_id, file, **peer_fields)) is not None:
+    if (peer := await receive_file(auth, session, entity_id, file, entity_type, **peer_fields)) is not None:
         return peer
+    await _get_file_owner(session, company_id, entity_id, entity_type)
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
@@ -13652,18 +13665,19 @@ async def upload_doc_file(
             raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
-        row = await _get_file_owner(session, company_id, entity_id, for_update=True)
+        row = await _get_file_owner(session, company_id, entity_id, entity_type, for_update=True)
         entry = await attach_file(session, company_id, row.entity_type, entity_id, meta, user.id)
     return {"event_id": entry.id, **meta}
 
 
-@lists_router.get("/{entity_id}/files/{file_id}")
-@router.get("/{entity_id}/files/{file_id}")
+@lists_router.get("/{entity_id}/files/{file_id}", name="list_files")
+@router.get("/{entity_id}/files/{file_id}", name="doc_files")
 async def download_doc_file(
     entity_id: str,
     file_id: str,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("view_documents"),
+    entity_type: str = Depends(_route_entity_type),
     session: AsyncSession = Depends(get_session),
 ):
     """Download a file attached to a doc (invoice, bill, etc.)."""
@@ -13671,7 +13685,7 @@ async def download_doc_file(
     from pathlib import Path
     from celerp.services.attachments import local_attachment_url_path
 
-    row = await _get_file_owner(session, company_id, entity_id)
+    row = await _get_file_owner(session, company_id, entity_id, entity_type)
     match = _get_doc_file(row.state.get("files", []), file_id)
 
     url = match.get("url", "")
@@ -13695,8 +13709,8 @@ async def download_doc_file(
     )
 
 
-@lists_router.patch("/{entity_id}/files/{file_id}/tag")
-@router.patch("/{entity_id}/files/{file_id}/tag")
+@lists_router.patch("/{entity_id}/files/{file_id}/tag", name="list_files")
+@router.patch("/{entity_id}/files/{file_id}/tag", name="doc_files")
 async def tag_doc_file(
     entity_id: str,
     file_id: str,
@@ -13704,9 +13718,10 @@ async def tag_doc_file(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
+    entity_type: str = Depends(_route_entity_type),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, entity_type, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -13726,8 +13741,8 @@ async def tag_doc_file(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@lists_router.patch("/{entity_id}/files/{file_id}/description")
-@router.patch("/{entity_id}/files/{file_id}/description")
+@lists_router.patch("/{entity_id}/files/{file_id}/description", name="list_files")
+@router.patch("/{entity_id}/files/{file_id}/description", name="doc_files")
 async def update_doc_file_description(
     entity_id: str,
     file_id: str,
@@ -13735,9 +13750,10 @@ async def update_doc_file_description(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
+    entity_type: str = Depends(_route_entity_type),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, entity_type, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -13757,17 +13773,18 @@ async def update_doc_file_description(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@lists_router.delete("/{entity_id}/files/{file_id}")
-@router.delete("/{entity_id}/files/{file_id}")
+@lists_router.delete("/{entity_id}/files/{file_id}", name="list_files")
+@router.delete("/{entity_id}/files/{file_id}", name="doc_files")
 async def delete_doc_file(
     entity_id: str,
     file_id: str,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
+    entity_type: str = Depends(_route_entity_type),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_file_owner(session, company_id, entity_id, for_update=True)
+    row = await _get_file_owner(session, company_id, entity_id, entity_type, for_update=True)
     f = _get_doc_file(row.state.get("files", []), file_id)
     entry = await emit_event(
         session,
