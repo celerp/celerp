@@ -691,9 +691,10 @@ async def test_after_four_attempts_collection_stops_and_tells_the_company(client
     assert await _told(session, doc["ref_id"])
 
 
-async def test_cancel_request_retried_until_acknowledged(client, session, monkeypatch, cloud):
+async def test_cancel_request_retried_until_acknowledged(client, session, monkeypatch, cloud, caplog):
     """A payment by hand while an attempt is open asks Cloud to cancel it, every pass until Cloud
-    answers."""
+    answers in a way it can read: no answer, or an answer naming no state it knows, is asked
+    again."""
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid, eid, _ = await _collecting(client, hd)
@@ -704,10 +705,15 @@ async def test_cancel_request_retried_until_acknowledged(client, session, monkey
     cloud.answers["cancel"] = None
     await tick(session, cid, "2026-07-02")
     await tick(session, cid, "2026-07-03")
-    cloud.answers["cancel"] = (200, {"state": "canceled"})
+    cloud.answers["cancel"] = (200, {"state": "voided"})
     await tick(session, cid, "2026-07-04")
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+    [c] = await _collection(session, eid)
+    assert (c["state"], c.get("cancel")) == ("requires_action", "queued")
+    cloud.answers["cancel"] = (200, {"state": "canceled"})
     await tick(session, cid, "2026-07-05")
-    assert [p["entity_id"] for p in cloud.sent("cancel")] == [doc["entity_id"]] * 3
+    await tick(session, cid, "2026-07-06")
+    assert [p["entity_id"] for p in cloud.sent("cancel")] == [doc["entity_id"]] * 4
     assert len(cloud.sent("attempt")) == 1
     [c] = await _collection(session, eid)
     assert c["state"] == "canceled"
