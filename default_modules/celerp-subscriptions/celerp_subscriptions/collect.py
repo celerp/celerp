@@ -19,6 +19,10 @@ what each pass does is one cell of TABLE (the invoice's phase x what the pass fi
 - an attempt Cloud may hold for more than its invoice owes now (a payment by hand, an
   amendment's credit) is cancelled and, once cancelled, followed by the next attempt for what
   the invoice owes then; one never asked for is made again for that amount;
+- no new charge is asked on an invoice while an earlier invoice of its agreement has a charge
+  unresolved that may take more than that invoice owes (with Cloud, succeeded and not on the
+  books, or kept among the unmatched payments):
+  the invoice shows which one it waits on, and is asked what it owes once that is resolved;
 - a failed attempt whose retry time has passed is followed by the next attempt for what the
   invoice owes then, or stops with the reason it may not go on;
 - Cloud no longer offering collection stops only new charge requests: cancels, retries of a
@@ -273,7 +277,7 @@ async def _ask(session, company_id, row, current, event, why):
 
 async def _stop(session, company_id, row, current, event, why):
     await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": why},
-                                 drop=("replace",))
+                                 drop=("replace", "waits"))
     return None
 
 
@@ -351,6 +355,9 @@ async def _attempt_request(session, company_id, row, current: dict) -> tuple[str
         return None
     if current.get("request") is not None:
         return "attempt", current["request"], True
+    if (other := await _charge_open_elsewhere(session, company_id, row)) is not None:
+        await collection.set_attempt(session, company_id, row, {"waits": other})
+        return None
     try:
         books = await payment_books(session, company_id, row.state)
     except ValueError:
@@ -362,8 +369,46 @@ async def _attempt_request(session, company_id, row, current: dict) -> tuple[str
         "attempt_number": current["attempt_number"], "request_key": current["request_key"],
         "amount_minor": current["amount_minor"], "currency": current["currency"],
         "payer_contact_id": agreement.get("contact_id"), "generation": generation, "context": books}
-    await collection.set_attempt(session, company_id, row, {"asked": True, "request": request})
+    await collection.set_attempt(session, company_id, row, {"asked": True, "request": request}, drop=("waits",))
     return "attempt", request, False
+
+
+async def _charge_open_elsewhere(session, company_id, row) -> str | None:
+    """The number of an earlier invoice of the same agreement whose card charge may take, or took,
+    more than that invoice owes now, or None. Cloud keeps one charge at a time per invoice only, so
+    an invoice is not asked while an earlier one of its agreement (an amendment's invoice waits on
+    the one its credit lowered) has such a charge unresolved: asked for and with Cloud (a cancel
+    refused included) or succeeded with its payment not arrived, for more than the invoice owes, or
+    with its payment kept among the unmatched payments, not yet recorded on an invoice nor
+    refunded. A charge for no more than its invoice owes holds nothing: whatever it takes, that
+    invoice keeps. Earlier is by when the invoice was made, so no two invoices wait on each other.
+    Read from what is stored on every pass, under a lock per agreement, so two passes never both
+    ask."""
+    from datetime import datetime, timezone
+    from sqlalchemy import func, tuple_
+    from celerp.modules.registry import _named_lock
+    tid = row.state.get("source_agreement")
+    if not tid:
+        return None
+    await _named_lock(session, f"collection:{company_id}:{tid}", "pg_advisory_xact_lock")
+    c, epoch = Projection.state["collection"], datetime(1970, 1, 1, tzinfo=timezone.utc)
+    others = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["source_agreement"].as_string() == tid,
+        tuple_(func.coalesce(Projection.created_at, epoch), Projection.entity_id)
+        < tuple_(row.created_at or epoch, row.entity_id),
+        c["state"].as_string().in_(sorted(collection.IN_FLIGHT | {"succeeded"}))
+    ).order_by(Projection.entity_id))).scalars().all()
+    for state in others:
+        current = state["collection"]
+        if current.get("kept"):
+            held = await collection.kept_unresolved(session, current["kept"])
+        else:
+            held = (current["state"] != "pending" or bool(current.get("asked"))) \
+                and current.get("amount_minor", 0) > (collection.outstanding_minor(state) or 0)
+        if held:
+            return state.get("ref_id") or state.get("doc_number") or ""
+    return None
 
 
 async def _attempted(session, company_id, row, payload: dict, answer, *, retry: bool) -> bool:

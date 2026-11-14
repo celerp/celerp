@@ -95,6 +95,9 @@ RANKS: dict[str, int] = {
     # Items (R6), then import batches (R7), the items' ledger rows and the outbound queue (R8).
     "row:projections": 60, "row:import_batches": 61, "row:ledger": 62, "row:outbound_queue": 63,
     "row:payment_recoveries": 64,
+    # An agreement's card charges (collect._charge_open_elsewhere): taken under the invoice's own
+    # row, before the attempt it decides is written.
+    "adv:collection": 60,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
     # A fetch's start takes its key before its row, which may not exist yet.

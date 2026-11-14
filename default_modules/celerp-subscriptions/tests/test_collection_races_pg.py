@@ -101,7 +101,7 @@ async def test_a_charge_paid_while_an_amendment_credits_its_invoice_is_never_cha
     Payment first: July is paid, the credit goes to the amendment's invoice, which is charged
     10.97, 40.97 in all and nothing unmatched. Amendment first: the credit is issued at once and
     lowers July to 13.55, so the 30.00 no longer fits it and is kept whole among the unmatched
-    payments for a person to place, and the amendment's invoice is charged its 27.42."""
+    payments for a person to place, and the amendment's invoice is not charged while it is there."""
     from celerp.models.payment_closure import UnmatchedPayment
     from celerp.services import payments
     async with _collecting(committed_engine, monkeypatch) as (client, pending, hd, cid, eid, july, factory,
@@ -138,7 +138,7 @@ async def test_a_charge_paid_while_an_amendment_credits_its_invoice_is_never_cha
         assert parked == [] and _charged(cloud, new) == [1097]
         assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 10.97)
     else:
-        assert parked == ["pi_race"] and _charged(cloud, new) == [2742]
+        assert parked == ["pi_race"] and _charged(cloud, new) == []
         assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
 
 

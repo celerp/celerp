@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "لم يُرسل الإيصال. حاول مجددًا.",
   "subscriptions.done_card_removed": "أُزيلت البطاقة. لن تُخصم منها مبالغ أخرى.",
   "collection.status_pending": "التحصيل معلّق",
+  "collection.status_waits": "التحصيل معلّق حتى تتم تسوية خصم البطاقة على {document} من الاتفاقية نفسها وتسجيله.",
   "collection.status_requires_action": "بانتظار تأكيد الدافع للخصم.",
   "collection.payer_action_link": "صفحة تأكيد الدافع",
   "collection.status_failed_retry": "فشل الخصم، إعادة المحاولة في {date}",

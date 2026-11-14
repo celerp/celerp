@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Không gửi được biên nhận. Hãy thử lại.",
   "subscriptions.done_card_removed": "Đã xóa thẻ. Sẽ không tiếp tục thu tiền từ thẻ này.",
   "collection.status_pending": "Đang chờ thu tiền",
+  "collection.status_waits": "Đang chờ thu tiền cho đến khi khoản trừ thẻ trên {document}, thuộc cùng thỏa thuận, được hoàn tất và ghi nhận.",
   "collection.status_requires_action": "Đang chờ người trả xác nhận khoản thu.",
   "collection.payer_action_link": "Trang xác nhận của người trả",
   "collection.status_failed_retry": "Thu tiền thất bại, thử lại vào {date}",

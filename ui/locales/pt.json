@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Comprovante não enviado. Tente novamente.",
   "subscriptions.done_card_removed": "Cartão removido. Nenhuma cobrança adicional será feita nele.",
   "collection.status_pending": "Cobrança pendente",
+  "collection.status_waits": "Cobrança pendente até que a cobrança no cartão de {document}, do mesmo contrato, seja liquidada e registrada.",
   "collection.status_requires_action": "Aguardando o pagador confirmar a cobrança.",
   "collection.payer_action_link": "Página de confirmação do pagador",
   "collection.status_failed_retry": "Cobrança falhou, nova tentativa em {date}",

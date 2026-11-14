@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "ደረሰኙ አልተላከም። እንደገና ይሞክሩ።",
   "subscriptions.done_card_removed": "ካርዱ ተወግዷል። ከእንግዲህ በዚህ ካርድ ላይ ክፍያ አይወሰድም።",
   "collection.status_pending": "ክፍያ መሰብሰብ በመጠባበቅ ላይ ነው",
+  "collection.status_waits": "ከተመሳሳይ ስምምነት የሆነው በ{document} ላይ ያለው የካርድ ክፍያ እስኪጠናቀቅና እስኪመዘገብ ድረስ ክፍያ መሰብሰብ በመጠባበቅ ላይ ነው።",
   "collection.status_requires_action": "ከፋዩ ክፍያውን እንዲያረጋግጥ በመጠባበቅ ላይ ነው።",
   "collection.payer_action_link": "የከፋዩ የማረጋገጫ ገጽ",
   "collection.status_failed_retry": "ክፍያው አልተሳካም፤ በ{date} እንደገና ይሞከራል",

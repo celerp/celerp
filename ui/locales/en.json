@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Receipt not sent. Try again.",
   "subscriptions.done_card_removed": "Card removed. Nothing more is charged to it.",
   "collection.status_pending": "Collection pending",
+  "collection.status_waits": "Collection pending until the card charge on {document}, from the same agreement, is settled and recorded.",
   "collection.status_requires_action": "Waiting for the payer to confirm the charge.",
   "collection.payer_action_link": "Payer's confirmation page",
   "collection.status_failed_retry": "Charge failed, retry on {date}",

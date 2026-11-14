@@ -6457,7 +6457,8 @@ def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
                     *((" ", A(t("collection.payer_action_link"), href=safe_url(url), target="_blank", rel="noopener"))
                       if url else ()))
     elif state in IN_FLIGHT:
-        text = t("collection.status_pending")
+        waits = collection.get("waits")
+        text = t("collection.status_waits", document=waits) if waits else t("collection.status_pending")
     elif state == "failed":
         at = collection.get("retry_eligible_at")
         text = sentence("collection.status_failed_retry", date=business_date_of(at, tz)) if at else t("collection.status_failed")

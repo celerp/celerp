@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Reçu non envoyé. Réessayez.",
   "subscriptions.done_card_removed": "Carte supprimée. Aucun autre débit ne sera effectué.",
   "collection.status_pending": "Prélèvement en attente",
+  "collection.status_waits": "Encaissement en attente jusqu'à ce que le débit de carte sur {document}, du même contrat, soit réglé et enregistré.",
   "collection.status_requires_action": "En attente de confirmation du débit par le payeur.",
   "collection.payer_action_link": "Page de confirmation du payeur",
   "collection.status_failed_retry": "Débit échoué, nouvelle tentative le {date}",

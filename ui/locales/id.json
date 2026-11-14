@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Tanda terima gagal dikirim. Coba lagi.",
   "subscriptions.done_card_removed": "Kartu dihapus. Tidak akan ada tagihan lagi pada kartu tersebut.",
   "collection.status_pending": "Penagihan tertunda",
+  "collection.status_waits": "Penagihan tertunda sampai tagihan kartu pada {document}, dari perjanjian yang sama, selesai dan dicatat.",
   "collection.status_requires_action": "Menunggu pembayar mengonfirmasi tagihan.",
   "collection.payer_action_link": "Halaman konfirmasi pembayar",
   "collection.status_failed_retry": "Tagihan gagal, coba lagi pada {date}",

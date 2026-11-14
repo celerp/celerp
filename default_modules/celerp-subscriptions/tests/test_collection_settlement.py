@@ -12,11 +12,12 @@ an invoice of 27.42 for the new terms: 30.00 - 16.45 + 27.42 = 40.97 is what the
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from agreement_kit import agreement, billed_docs, company_id, freeze_day, register, schedule, template, tick
-from test_collection import _attempt_outcome, _bind, _flag, _pay, _payer, cloud  # noqa: F401  (cloud: fixture)
+from test_collection import _at, _attempt_outcome, _bind, _flag, _pay, _payer, cloud  # noqa: F401  (cloud: fixture)
 
 pytestmark = pytest.mark.asyncio
 
@@ -108,17 +109,20 @@ async def test_a_late_charge_on_an_invoice_paid_by_hand_is_kept_whole_and_the_cr
     assert await _unmatched(session) == [("pi_next", 3000)]
 
 
-async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_a_person(
-        client, session, monkeypatch, cloud):
-    """The amendment's 16.45 credit is issued at once while July's 30.00 is with Cloud, so July owes
-    13.55 and the amendment's invoice is asked its 27.42. The 30.00 then succeeds: it no longer fits
-    July, so it is kept whole among the unmatched payments, the company is told once and July is not
-    asked its 13.55 while the 30.00 waits. A person
-    voids the credit note, records the 30.00 on July, restores the note and applies it to the
-    amendment's invoice, which then owes 10.97: 30.00 + 10.97 = 40.97, and the books stay balanced."""
-    from sqlalchemy import select
-    from celerp.models.notification import Notification
-    from celerp.services import payments
+def _waits_on(doc: dict, earlier: dict) -> bool:
+    """The invoice's collection page line says it waits for the charge on ``earlier``."""
+    from ui.components.encode import to_markup
+    from ui.i18n import t
+    from ui.routes.documents import _collection_status
+    return t("collection.status_waits", document=earlier["ref_id"]) in to_markup(
+        _collection_status(doc["collection"], "UTC"))
+
+
+async def _amended_while_july_is_with_cloud(client, session, monkeypatch, cloud):
+    """The owner's sequence: July's 30.00 is with Cloud, the amendment's 16.45 credit lowers July to
+    13.55 and Cloud refuses the cancel; no pass asks the amendment's 27.42 while the 30.00 is with
+    Cloud. (headers, company id, agreement id, July, the credit note, the amendment's invoice, July's
+    request)."""
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
     [sent] = cloud.sent("attempt")
     cloud.answers["cancel"] = (409, {"detail": "attempt_submitted"})
@@ -126,20 +130,39 @@ async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_
     assert r.status_code == 200, r.text
     note, new = r.json()["credit_note_id"], r.json()["invoice_id"]
     await tick(session, cid, "2026-07-15")
-    assert _asked(cloud, new) == [2742]
+    await tick(session, cid, "2026-07-16")
+    docs = await _docs(session, eid)
+    assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
+    assert docs[july]["collection"]["cancel"] == "refused"
+    assert _asked(cloud, new) == [] and _waits_on(docs[new], docs[july])
+    return hd, cid, eid, july, note, new, sent
+
+
+async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_a_person(
+        client, session, monkeypatch, cloud):
+    """The 30.00 then succeeds: it no longer fits July, so it is kept whole among the unmatched
+    payments, the company is told once, and neither July's 13.55 nor the amendment's invoice is asked
+    while it waits. A person voids the credit note, records the 30.00 on July, restores the note and
+    applies it to the amendment's invoice, which is then asked only its 10.97: 30.00 + 10.97 = 40.97,
+    and the books stay balanced."""
+    from sqlalchemy import select
+    from celerp.models.notification import Notification
+    from celerp.services import payments
+    hd, cid, eid, july, note, new, sent = await _amended_while_july_is_with_cloud(client, session, monkeypatch, cloud)
     delivery = {"company_id": cid, "entity_id": july, "reference": "pi_late", "amount_minor": 3000,
-                "currency": "USD", "paid_at": "2026-07-15T13:00:00+00:00", "managed": True,
+                "currency": "USD", "paid_at": "2026-07-16T13:00:00+00:00", "managed": True,
                 "context": sent["context"]}
     assert await payments.receive_payment(delivery)
     assert await payments.receive_payment(delivery)
-    await tick(session, cid, "2026-07-16")
+    await tick(session, cid, "2026-07-17")
     docs = await _docs(session, eid)
     assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (13.55, 27.42)
     assert await _unmatched(session) == [("pi_late", 3000)]
     told = (await session.execute(select(Notification.action_url).where(
         Notification.title == "Card payment pi_late not matched to an invoice"))).all()
     assert told == [("/settings/payments",)]
-    assert _asked(cloud, july) == [3000]
+    assert (_asked(cloud, july), _asked(cloud, new)) == ([3000], [])
+    assert _waits_on(docs[new], docs[july])
 
     assert (await client.post(f"/docs/{note}/void", headers=hd, json={})).status_code == 200
     r = await client.post("/payments/unmatched/record", headers=hd, json={"reference": "pi_late", "entity_id": july})
@@ -147,13 +170,29 @@ async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_
     assert (await client.post(f"/docs/{note}/unvoid", headers=hd, json={})).status_code == 200
     r = await client.post(f"/docs/{note}/apply-to-invoice", headers=hd, json={"target_doc_id": new, "amount": 16.45})
     assert r.status_code == 200, r.text
-    await tick(session, cid, "2026-07-17")
+    await tick(session, cid, "2026-07-18")
     docs = await _docs(session, eid)
     assert (docs[july]["amount_outstanding"], docs[note]["amount_outstanding"], docs[new]["amount_outstanding"]) \
         == (0, 0, 10.97)
     assert await _unmatched(session) == []
+    assert (_asked(cloud, july), _asked(cloud, new)) == ([3000], [1097])
     trial = (await client.get("/accounting/trial-balance", headers=hd)).json()
     assert trial["balanced"] is True and trial["total_debit"] > 0
+
+
+async def test_the_owner_example_when_the_late_charge_fails_asks_both_invoices_what_they_owe(
+        client, session, monkeypatch, cloud):
+    """The 30.00 fails instead: the amendment's invoice is asked its 27.42 at once and July's 13.55
+    rest at its retry time, as for any failed charge: 13.55 + 27.42 = 40.97."""
+    hd, cid, eid, july, note, new, sent = await _amended_while_july_is_with_cloud(client, session, monkeypatch, cloud)
+    eligible = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
+    assert await _attempt_outcome(cid, july, 1, "failed", retry_eligible_at=eligible.isoformat()) is True
+    _at(monkeypatch, eligible - timedelta(days=3))
+    await tick(session, cid, "2026-07-17")
+    assert (_asked(cloud, july), _asked(cloud, new)) == ([3000], [2742])
+    _at(monkeypatch, eligible)
+    await tick(session, cid, "2026-07-20")
+    assert (_asked(cloud, july), _asked(cloud, new)) == ([3000, 1355], [2742])
 
 
 async def test_an_amendment_after_a_successful_charge_charges_only_what_its_credit_leaves(
@@ -220,18 +259,20 @@ async def test_cloud_withdrawing_collection_still_cancels_a_charge_the_invoice_n
     assert c["state"] == "canceled"
 
 
-async def test_a_late_success_after_the_charge_was_cancelled_for_a_smaller_balance_is_taken(
+async def test_a_late_success_after_the_charge_was_cancelled_for_a_smaller_balance_holds_the_amendment(
         client, session, monkeypatch, cloud):
     """Cloud delivers the 30.00 as succeeded after the app queued its cancel for the amendment's credit:
     the outcome is recorded (a known outcome is not lost) and the amendment's invoice, its credit
-    issued at once, is asked its 27.42 without waiting for the July charge."""
+    issued at once, is not asked while the 30.00 Cloud took is not yet on the books."""
     hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
     cloud.answers["cancel"] = None
     new = (await _amend(client, monkeypatch, hd, eid)).json()["invoice_id"]
     await tick(session, cid, "2026-07-15")
     assert await _attempt_outcome(cid, july, 1, "succeeded") is True
     await tick(session, cid, "2026-07-16")
-    assert _asked(cloud, new) == [2742]
+    docs = await _docs(session, eid)
+    assert docs[july]["collection"]["state"] == "succeeded"
+    assert _asked(cloud, new) == [] and _waits_on(docs[new], docs[july])
 
 
 async def test_the_same_amend_request_key_with_another_quantity_is_refused(client, session, monkeypatch, cloud):

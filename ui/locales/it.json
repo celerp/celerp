@@ -7920,6 +7920,7 @@
   "subscriptions.receipt_not_resent": "Ricevuta non inviata. Riprova.",
   "subscriptions.done_card_removed": "Carta rimossa. Non verranno effettuati altri addebiti.",
   "collection.status_pending": "Riscossione in sospeso",
+  "collection.status_waits": "Incasso in sospeso finché l'addebito sulla carta di {document}, dello stesso contratto, non è saldato e registrato.",
   "collection.status_requires_action": "In attesa che il pagatore confermi l'addebito.",
   "collection.payer_action_link": "Pagina di conferma del pagatore",
   "collection.status_failed_retry": "Addebito non riuscito, nuovo tentativo il {date}",

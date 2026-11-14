@@ -40,7 +40,8 @@ BINDING_STATES = frozenset({"active", "revoked", "requires_action", "access_remo
 # "succeeded": the card was charged and its payment is on the way, or was kept among the
 # unmatched payments because the invoice could not take it ("kept": that payment's reference).
 # "charged": the attempt's own charge was recorded on the invoice while it was with Cloud; the
-# attempt ends when Cloud says it succeeded.
+# attempt ends when Cloud says it succeeded. "waits": the number of another invoice of the same
+# agreement whose unresolved charge keeps this attempt from being asked for, shown on the invoice.
 CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeeded", "failed", "canceled",
                           "unknown", "unverifiable"})
 # The attempt is with Cloud and may still charge the card.
@@ -193,7 +194,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
         drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
-              "kept", "charged"))
+              "kept", "charged", "waits"))
 
 
 def _instant(value) -> str | None | bool:
@@ -277,6 +278,21 @@ async def charge_kept(session, company_id, doc_id: str, reference: str) -> None:
     if current.get("state") in IN_FLIGHT | {"succeeded"} and not current.get("kept"):
         await set_attempt(session, company_id, row, {"state": "succeeded", "definitive": True, "kept": reference},
                           drop=("cancel",))
+
+
+async def kept_unresolved(session, reference: str) -> bool:
+    """Whether the online payment ``reference`` is still among the unmatched payments and not
+    refunded in full: money taken that no invoice shows yet."""
+    from sqlalchemy import case, func, select
+    from celerp.models.payment_closure import UnmatchedPayment, UnmatchedRefund
+    amount = await session.scalar(select(UnmatchedPayment.amount_minor).where(
+        UnmatchedPayment.reference == reference, UnmatchedPayment.recorded_company.is_(None)))
+    if amount is None:
+        return False
+    refunded = await session.scalar(select(func.coalesce(func.sum(case(
+        (UnmatchedRefund.transition == "reversed", -UnmatchedRefund.amount_minor),
+        else_=UnmatchedRefund.amount_minor)), 0)).where(UnmatchedRefund.reference == reference))
+    return refunded < amount
 
 
 async def _charge_ended(session, company_id, doc_row, current: dict) -> None:
