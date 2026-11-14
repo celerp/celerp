@@ -490,6 +490,12 @@ async def _serve(_app: FastAPI, held):
         yield
         return
 
+    # The permission each module's events are read with comes from admitting every installed
+    # module, which reads and parses their source. Settle it here, once the modules are loaded,
+    # so no ledger read admits modules inside a request and holds every other request meanwhile.
+    from celerp.modules.loader import event_read_permissions
+    event_read_permissions()
+
     data_current = await _bring_data_current(_app, modules_ready=bool(_enabled))
 
     if _enabled:

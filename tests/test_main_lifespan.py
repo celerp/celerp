@@ -303,6 +303,25 @@ async def test_the_modules_settle_nothing_while_the_projections_are_not_current(
     assert notify.await_args.args[1:3] == ("system", "An update step failed while Celerp started")
 
 
+@pytest.mark.asyncio
+async def test_boot_settles_the_permission_each_module_event_is_read_with(monkeypatch, tmp_path):
+    """The permission a module's events are read with comes from admitting every installed
+    module, which reads and parses their source. Boot settles it, so the first ledger read
+    after a start (a record's History, the dashboard's activity) admits nothing inside the
+    request, where it would hold every other request until it finished."""
+    from celerp.modules import loader
+    from celerp.services.activity_redaction import can_read_event
+
+    monkeypatch.setattr(loader, "module_search_path", lambda: str(tmp_path))  # a path no earlier read settled
+    await _boot_in_order(monkeypatch, AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+
+    def _admitted_in_a_request(*a, **k):
+        raise AssertionError("a ledger read admitted the installed modules")
+
+    monkeypatch.setattr(loader, "admit_modules", _admitted_in_a_request)
+    assert can_read_event("zz.unknown.recorded", {}, "admin")
+
+
 def _transactions_left_open(url) -> list[tuple]:
     """Client connections to ``url``'s database still inside a transaction, read on a
     blocking connection so nothing else on the event loop runs while it looks."""
