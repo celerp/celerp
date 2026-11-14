@@ -1350,8 +1350,8 @@ def _line_value(li: dict | None, currency: str | None) -> str:
     return " ".join(parts) or EMPTY
 
 
-def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str]]:
-    """(field, old, new) for each line added, removed or changed."""
+def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str, str]]:
+    """(key, field, old, new) for each line added, removed or changed."""
     old_by = {_line_key(li): li for li in (old or []) if isinstance(li, dict)}
     new_by = {_line_key(li): li for li in (new or []) if isinstance(li, dict)}
     out = []
@@ -1362,13 +1362,13 @@ def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str]]:
             continue
         li = n or o
         name = str(li.get("name") or li.get("sku") or t("th.item"))
-        out.append((f"{t('th.item')}: {name}", before, after))
+        out.append(("line_items", f"{t('th.item')}: {name}", before, after))
     return out
 
 
 def field_changes(data: dict, event_type: str, currency: str | None = None,
-                  category_names: dict | None = None) -> list[tuple[str, str, str]]:
-    """(field label, old value, new value) for every field an event changed, in the order stored.
+                  category_names: dict | None = None) -> list[tuple[str, str, str, str]]:
+    """(field key, field label, old value, new value) for every field an event changed, in the order stored.
     System fields, totals recomputed from the lines and raw ids beside their names are left out,
     as in the one-line summary; cost amounts the reader may not see never arrive (the API strips
     them). Empty when the event changed no field."""
@@ -1382,7 +1382,7 @@ def field_changes(data: dict, event_type: str, currency: str | None = None,
     for id_field, companion in _ID_FIELD_COMPANIONS.items():
         if id_field in fields and companion in fields:
             del fields[id_field]
-    rows: list[tuple[str, str, str]] = []
+    rows: list[tuple[str, str, str, str]] = []
     for key, change in fields.items():
         if key in _FIELD_DESCRIBERS:
             # A module's own field reads as that module names it (register_fields).
@@ -1392,7 +1392,7 @@ def field_changes(data: dict, event_type: str, currency: str | None = None,
             if text := _FIELD_DESCRIBERS[key](change if isinstance(change, dict) else {"new": change}):
                 label, sep, rest = text.partition(": ")
                 before, arrow, after = rest.partition(" → ")
-                rows.append((label, before, after) if sep and arrow else (text, EMPTY, EMPTY))
+                rows.append((key, label, before, after) if sep and arrow else (key, text, EMPTY, EMPTY))
             continue
         old, new = _change_old_new(change)
         if key == "line_items" and (isinstance(new, list) or isinstance(old, list)):
@@ -1400,7 +1400,7 @@ def field_changes(data: dict, event_type: str, currency: str | None = None,
             continue
         if (_blank(old) and _blank(new)) or old == new:
             continue
-        rows.append((_field_name(key), _history_value(key, old, currency, category_names),
+        rows.append((key, _field_name(key), _history_value(key, old, currency, category_names),
                      _history_value(key, new, currency, category_names)))
     return rows
 
@@ -1422,47 +1422,86 @@ def history_rows(ledger: list[dict], *, subject_entity_id: str | None = None, cu
                    if isinstance(data, dict) and _lifecycle_rows_spec(e, currency, category_names, deleted) is None
                    else [])
         if changes:
-            for n, (field, old, new) in enumerate(changes):
-                out.append({**base, "content": specs[0][0], "field": field, "old": old, "new": new,
+            for n, (key, field, old, new) in enumerate(changes):
+                out.append({**base, "content": specs[0][0], "field_key": key, "field": field, "old": old, "new": new,
                             "suffix": f"-f{n}" if n else "", "first": n == 0})
             continue
         for content, detail, suffix in specs:
-            out.append({**base, "content": content, "field": EMPTY, "old": EMPTY,
+            out.append({**base, "content": content, "field_key": "", "field": EMPTY, "old": EMPTY,
                         "new": detail or EMPTY, "suffix": suffix, "first": True})
     return out
 
 
-def filter_history(rows: list[dict], filters: dict | None) -> list[dict]:
-    """The rows whose event, field and who match the chosen filters (each blank = any)."""
+def history_query(filters: dict | None) -> dict:
+    """The ledger filters a History's URL filters ask for. An Event or Field choice may stand for
+    several keys that read the same (joined by commas); a Who choice is one maker."""
     filters = filters or {}
-    want = {"event": filters.get("hist_event"), "field": filters.get("hist_field"), "who": filters.get("hist_who")}
-    return [r for r in rows if all(not v or r[k] == v for k, v in want.items())]
+    query = {param: [k for k in filters[name].split(",") if k]
+             for name, param in (("hist_event", "event_type"), ("hist_field", "field")) if filters.get(name)}
+    return {**query, **({"who": [filters["hist_who"]]} if filters.get("hist_who") else {})}
 
 
-def _history_filters(rows: list[dict], filters: dict, filter_url: str, target: str | None) -> FT:
+def history_cursor(params) -> dict:
+    """The page a History URL asks for: ``{"before": id}``, ``{"after": id}``, or ``{}`` for the
+    newest (a value that is not a whole number reads as the newest)."""
+    for name in ("before", "after"):
+        value = str(params.get(name) or "")
+        if value.isdigit():
+            return {name: int(value)}
+    return {}
+
+
+def filter_history(rows: list[dict], filters: dict | None) -> list[dict]:
+    """A page's rows narrowed to the fields the Field filter names: the ledger already chose
+    the events by every filter, and an event may have changed other fields beside it."""
+    fields = set(history_query(filters).get("field") or ())
+    return [r for r in rows if r["field_key"] in fields] if fields else rows
+
+
+_NEVER_SHOWN_FIELDS = _SYSTEM_FIELDS | {"attachments", "preview_image_id"}
+
+
+def history_choices(facets: dict) -> dict[str, list[tuple[str, str]]]:
+    """The Event, Field and Who choices over a record's whole history (the ledger's facets), each
+    (value, label). Keys that read the same share one choice; an id field reads as its name."""
+    def grouped(keys, label) -> list[tuple[str, str]]:
+        groups: dict[str, list[str]] = {}
+        for k in keys:
+            groups.setdefault(label(k), []).append(k)
+        return sorted(((",".join(ks), lbl) for lbl, ks in groups.items()), key=lambda c: c[1].lower())
+
+    fields = [k for k in facets.get("fields") or () if k not in _NEVER_SHOWN_FIELDS]
+    who = [(m["actor_key"], actor_label(m)) for m in facets.get("actors") or ()]
+    return {
+        "hist_event": grouped(facets.get("event_types") or (), event_label),
+        "hist_field": grouped(fields, lambda k: _field_name(_ID_FIELD_COMPANIONS.get(k, k))),
+        "hist_who": sorted(((k, lbl) for k, lbl in who if k and lbl != EMPTY), key=lambda c: c[1].lower()),
+    }
+
+
+def _history_filters(choices: dict, filters: dict, filter_url: str, target: str | None) -> FT:
     """Event, Field and Who boxes, searchable since a record's history can name any number of
     each; picking one reloads the History with the choice in the URL. Only a pick (the box's
     hidden value) reloads, never the typed search text."""
-    def select(name: str, key: str, label_key: str) -> FT:
-        values = sorted({r[key] for r in rows if r[key] and r[key] != EMPTY})
+    def select(name: str, label_key: str) -> FT:
         return Label(
             Span(t(label_key), cls="form-label"),
-            searchable_select(name, [("", t("activity.filter_any")), *values],
+            searchable_select(name, [("", t("activity.filter_any")), *choices.get(name, ())],
                               value=filters.get(name) or "", aria_label=t(label_key),
                               cls_extra="form-input--sm"),
             cls="history-filter")
     htmx = {"hx_get": filter_url, "hx_target": target, "hx_swap": "outerHTML",
             "hx_trigger": "change[target.type === 'hidden']"} if target else {}
     return Form(
-        select("hist_event", "event", "th.event"),
-        select("hist_field", "field", "activity.th_field"),
-        select("hist_who", "who", "documents.th_who"),
+        select("hist_event", "th.event"),
+        select("hist_field", "activity.th_field"),
+        select("hist_who", "documents.th_who"),
         method="get", action=safe_url(filter_url), cls="history-filters",
         **({"onchange": "event.target.type === 'hidden' && this.submit()"} if not target else {}), **htmx)
 
 
 def history_table(ledger: list[dict], *, title: str | None = None, section_cls: str = "doc-section",
-                  rows: list[dict] | None = None, page_rows: list[dict] | None = None,
+                  rows: list[dict] | None = None, choices: dict | None = None,
                   filters: dict | None = None,
                   filter_url: str | None = None, filter_target: str | None = None,
                   max_display: int | None = None, history_url: str | None = None,
@@ -1472,18 +1511,18 @@ def history_table(ledger: list[dict], *, title: str | None = None, section_cls: 
                   docs_on: bool = False, show_header: bool = True) -> FT:
     """The History card every record shows: Date, Who, Event, Field, Old value, New value.
 
-    ``rows`` (from ``history_rows``, unfiltered) may be passed instead of ``ledger``; ``page_rows``
-    is then the filtered page to show, while the filter choices still come from every row. With ``filter_url`` the card offers Event, Field and Who filters kept
-    in the URL (``filter_target`` set: the card reloads in place; else the page reloads)."""
+    ``rows`` (from ``history_rows``, one page already filtered) may be passed instead of
+    ``ledger``. With ``filter_url`` and ``choices`` (from ``history_choices``) the card offers Event,
+    Field and Who filters kept in the URL (``filter_target`` set: the card reloads in place; else
+    the page reloads)."""
     filters = {k: v for k, v in (filters or {}).items() if k in HISTORY_FILTERS and v}
-    all_rows = rows if rows is not None else history_rows(
+    shown = rows if rows is not None else history_rows(
         ledger, subject_entity_id=subject_entity_id, currency=currency,
         category_names=category_names, deleted=deleted, docs_on=docs_on)
-    shown = page_rows if page_rows is not None else filter_history(all_rows, filters)
     visible = shown[:max_display] if max_display else shown
     header = section_header(title or t("documents.history"), icon_name="history") if show_header else ""
-    controls = _history_filters(all_rows, filters, filter_url, filter_target) \
-        if filter_url and (all_rows or filters) else ""
+    controls = _history_filters(choices, filters, filter_url, filter_target) \
+        if filter_url and choices is not None and (any(choices.values()) or filters) else ""
 
     def tr(r: dict) -> FT:
         attrs = {"id": f"evt-{r['id']}{r['suffix']}"} if r.get("id") is not None else {}

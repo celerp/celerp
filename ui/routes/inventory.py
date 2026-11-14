@@ -42,7 +42,7 @@ from ui.components.encode import (
     safe_url,
     THIS,
 )
-from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
+from ui.components.table import fmt_money, data_table, search_bar, pagination, per_page_value, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
 from celerp.services.ledger_display import run_reference
@@ -2055,35 +2055,33 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        try:
-            page = max(1, int(request.query_params.get("page", "1")))
-        except ValueError:
-            page = 1
-        per_page = 50
-        offset = (page - 1) * per_page
-        item, company, category_names = await asyncio.gather(
-            api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
-        # The item's whole history: the filters and their choices cover all of it, paged here.
-        activities = await api.entity_history(token, entity_id)
+        from urllib.parse import urlencode
+        from ui.components.activity import (
+            HISTORY_FILTERS, filter_history, history_choices, history_cursor, history_query, history_rows,
+            history_table,
+        )
+        from ui.components.table import cursor_pager
+        qp = request.query_params
+        sizes = (25, 50, 100)
+        per_page = min(per_page_value(qp.get("per_page"), 50), sizes[-1])
+        filters = {k: qp.get(k) for k in HISTORY_FILTERS if qp.get(k)}
+        # One page of the item's history, filtered by the ledger; the choices cover all of it.
+        item, company, category_names, (page, facets) = await asyncio.gather(
+            api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token),
+            api.entity_history(token, entity_id, history_query(filters), limit=per_page, cursor=history_cursor(qp)))
 
         currency = company.get("currency")
         name = item.get("name") or item.get("sku") or entity_id
 
-        from urllib.parse import urlencode
-        from ui.components.activity import HISTORY_FILTERS, filter_history, history_rows, history_table
-        filters = {k: request.query_params.get(k) for k in HISTORY_FILTERS if request.query_params.get(k)}
         deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
-        rows = history_rows(activities, subject_entity_id=entity_id, currency=currency,
-                            category_names=category_names, deleted=deleted_parents,
-                            docs_on=can_open(company, "celerp-docs"))
-        shown = filter_history(rows, filters)
-        total = len(shown)
-        table = history_table([], rows=rows, page_rows=shown[offset:offset + per_page], filters=filters,
+        rows = filter_history(history_rows(page["items"], subject_entity_id=entity_id, currency=currency,
+                                           category_names=category_names, deleted=deleted_parents,
+                                           docs_on=can_open(company, "celerp-docs")), filters)
+        table = history_table([], rows=rows, choices=history_choices(facets), filters=filters,
                               filter_url=f"/inventory/{entity_id}/history", section_cls="section",
                               show_header=False)
-        pages = max(1, (total + per_page - 1) // per_page)
-        pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history",
-                           extra_params=urlencode(filters)) if pages > 1 else ""
+        pager = cursor_pager(page, per_page, lambda cursor, l: f"/inventory/{entity_id}/history?"
+                             + urlencode({**cursor, "per_page": l, **filters}), page_sizes=sizes)
 
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.inventory"), "/inventory"),

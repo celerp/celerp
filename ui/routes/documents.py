@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 import math
@@ -4754,8 +4755,13 @@ def setup_routes(app):
         # CSS querySelectorAll. Use a safe slug for the DOM id.
         safe_id = entity_id.replace(":", "-").replace("/", "-")
         _DEFAULT_PER_PAGE = 10
+        _HISTORY_PAGE_SIZES = (10, 20, 50, 100)
         from urllib.parse import parse_qsl, urlencode, urlsplit
-        from ui.components.activity import HISTORY_FILTERS, filter_history, history_rows, history_table
+        from ui.components.activity import (
+            HISTORY_FILTERS, filter_history, history_choices, history_cursor, history_query, history_rows,
+            history_table,
+        )
+        from ui.components.table import cursor_pager
         qp = request.query_params
         # The filters ride in the document page's URL. The card's first load reads them from it
         # (HX-Current-URL); a filter or page change sends them along and pushes them back.
@@ -4763,23 +4769,20 @@ def setup_routes(app):
         page_params = dict(parse_qsl(current.query)) if current.path == page_path else {}
         filters = {k: (qp.get(k) if k in qp else page_params.get(k, "")) for k in HISTORY_FILTERS}
         filters = {k: v for k, v in filters.items() if v}
-        page = _page_number(request)
-        per_page = per_page_value(qp.get("per_page"), _DEFAULT_PER_PAGE)
-        offset = (page - 1) * per_page
-        # A document's whole history (filters and their choices cover all of it), paged here.
-        entries = await api.entity_history(token, entity_id)
-        category_names = await api.get_category_labels(token)
+        per_page = min(per_page_value(qp.get("per_page"), _DEFAULT_PER_PAGE), _HISTORY_PAGE_SIZES[-1])
+        # One page of the document's history, filtered by the ledger; the choices cover all of it.
+        (page, facets), category_names = await asyncio.gather(
+            api.entity_history(token, entity_id, history_query(filters), limit=per_page, cursor=history_cursor(qp)),
+            api.get_category_labels(token))
         # A Documents page: it opens only while the company can open Documents.
-        rows = history_rows(entries, category_names=category_names, docs_on=True)
-        shown = filter_history(rows, filters)
+        rows = filter_history(history_rows(page["items"], category_names=category_names, docs_on=True), filters)
         dom_id = f"doc-history-{safe_id}"
-        filter_qs = urlencode(filters)
-        footer = server_pager(
-            offset, per_page, len(shown),
-            lambda o, l: f"{page_path}/history?page={o // l + 1}&per_page={l}" + (f"&{filter_qs}" if filter_qs else ""),
-            page_sizes=(10, 20, 50, 100), hx_target=f"#{dom_id}",
+        footer = cursor_pager(
+            page, per_page,
+            lambda cursor, l: f"{page_path}/history?" + urlencode({**cursor, "per_page": l, **filters}),
+            page_sizes=_HISTORY_PAGE_SIZES, hx_target=f"#{dom_id}",
         )
-        card = history_table([], rows=rows, page_rows=shown[offset:offset + per_page], filters=filters,
+        card = history_table([], rows=rows, choices=history_choices(facets), filters=filters,
                              filter_url=f"{page_path}/history", filter_target=f"#{dom_id}",
                              footer=footer, section_id=dom_id)
         headers = {}

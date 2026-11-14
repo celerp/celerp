@@ -5,18 +5,21 @@ shows only the matching rows, with the choice kept in the URL. The item History 
 page, a document's History card reloads in place."""
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytestmark = pytest.mark.browser
 
 
-def _pick_field(page, value: str) -> None:
+def _pick_field(page, label: str) -> None:
     box = page.locator(".history-filter:has(input[name=hist_field]) .combobox-input")
     box.click()
-    box.fill(value[:3])
+    box.fill(label[:3])
     # Typing alone reloads nothing.
     assert "hist_field" not in page.url
-    page.locator(f".history-filter:has(input[name=hist_field]) .combobox-option[data-value='{value}']").click()
+    page.locator(".history-filter:has(input[name=hist_field]) .combobox-option").filter(
+        has_text=re.compile(f"^{re.escape(label)}$")).click()
 
 
 def _fields_shown(page) -> set[str]:

@@ -26,15 +26,14 @@ async def _demo(client, session):
 
 
 async def _events(client, headers) -> list[dict]:
-    out, offset = [], 0
+    out, cursor = [], {}
     while True:
-        r = await client.get("/ledger", params={"limit": 500, "offset": offset}, headers=headers)
+        r = await client.get("/ledger", params={"limit": 500, **cursor}, headers=headers)
         assert r.status_code == 200, r.text
-        page = r.json()["items"]
-        out += page
-        if len(page) < 500:
+        out += r.json()["items"]
+        if not r.json()["has_older"]:
             return out
-        offset += 500
+        cursor = {"before": out[-1]["id"]}
 
 
 def _of(events, prefixes) -> list[dict]:
@@ -57,7 +56,7 @@ async def test_a_role_without_financial_reports_reads_no_accounting_entry(client
         assert _of(seen, _ACCOUNTING) == []
         assert (await client.get(f"/ledger/{entries[0]['id']}", headers=headers)).status_code == 404
         r = await client.get("/ledger", params={"event_type": entries[0]["event_type"]}, headers=headers)
-        assert r.json() == {"items": [], "total": 0}
+        assert r.json()["items"] == [] and r.json()["total"] == 0
         assert not [t for t in await _activity(client, headers) if t.startswith(_ACCOUNTING)]
         total = (await client.get("/ledger", params={"limit": 1}, headers=headers)).json()["total"]
         assert total == len(seen)

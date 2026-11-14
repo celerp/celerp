@@ -3736,13 +3736,14 @@ class TestPhase2DeepPolish:
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": events, "total": 120})),
+            patch("ui.api_client.entity_history", new=AsyncMock(return_value=(
+                {"items": events[:50], "total": 120, "newer": 0, "has_older": True}, {"event_types": [], "fields": [], "actors": []}))),
         ):
             r = await ui_client.get("/inventory/gc:123/history")
         assert r.status_code == 200
         assert b"Ruby" in r.content and b"Back to item" in r.content
-        # total 120 > per_page 50 -> pager with a page-2 link.
-        assert b"page=2" in r.content
+        # 120 events, 50 a page: the older page reads from the last event shown.
+        assert b"before=49" in r.content and b"1-50 of 120" in r.content
 
     @pytest.mark.asyncio
     async def test_crm_contact_field_patch(self, ui_client):
@@ -14999,8 +15000,9 @@ class TestDocumentsOverhaul:
             {"event_type": "doc.finalized", "ts": "2026-03-21T14:30:00Z", "data": {}},
         ], "total": 2}
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)):
-            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1")
+        with patch("ui.api_client.entity_history", new=AsyncMock(return_value=(ledger_data, {"event_types": [], "fields": [], "actors": []}))), \
+             patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history")
         content = r.content.decode()
         assert "History" in content
         assert "Document created" in content
@@ -15010,8 +15012,9 @@ class TestDocumentsOverhaul:
     async def test_doc_detail_empty_history(self, ui_client):
         """Doc history endpoint shows empty state when no ledger entries."""
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1")
+        with patch("ui.api_client.entity_history", new=AsyncMock(return_value=({"items": [], "total": 0}, {"event_types": [], "fields": [], "actors": []}))), \
+             patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history")
         assert b"No activity recorded yet." in r.content
 
     @pytest.mark.asyncio

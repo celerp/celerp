@@ -2149,19 +2149,16 @@ async def list_ledger(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/ledger", params=p)).json()
 
 
-_HISTORY_BATCH = 500
-
-
-async def entity_history(token: str, entity_id: str) -> list[dict]:
-    """Every ledger entry of one record, newest first: walks the ledger by offset until its total,
-    so a history page and its filters cover the whole record however long it is."""
-    entries: list[dict] = []
-    while True:
-        resp = await list_ledger(token, {"entity_id": entity_id, "limit": _HISTORY_BATCH, "offset": len(entries)})
-        batch = resp.get("items", [])
-        entries.extend(batch)
-        if not batch or len(entries) >= resp.get("total", 0):
-            return entries
+async def entity_history(token: str, entity_id: str, query: dict, *, limit: int,
+                         cursor: dict) -> tuple[dict, dict]:
+    """One page of a record's history, newest first, read from ``cursor`` ({"before": id},
+    {"after": id} or {} for the newest) with the ledger filters ``query``; and the filter
+    choices over the record's whole history."""
+    async with _api_client(token) as c:
+        page, facets = await asyncio.gather(
+            c.get("/ledger", params={"entity_id": entity_id, "resolve": "true", "limit": limit, **cursor, **query}),
+            c.get("/ledger/facets", params={"entity_id": entity_id}))
+    return _raise(page).json(), _raise(facets).json()
 
 
 async def create_subscription(token: str, data: dict) -> dict:
