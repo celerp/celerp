@@ -15,6 +15,9 @@ def test_split_modes_and_collapse_at_phone_width(page, ui_server, action_item):
     page.set_viewport_size({'width': 390, 'height': 844})
     page.goto(f'{ui_server}/inventory/{action_item}', wait_until='domcontentloaded')
     actions = page.locator('#item-advanced-panel')
+    # The card opens expanded with manual split shown; it collapses and reopens from its header.
+    expect(actions.locator('[data-split-mode=manual]')).to_be_visible()
+    actions.locator('summary').click()
     expect(actions.locator('.split-mode')).not_to_be_visible()
     actions.locator('summary').click()
     expect(actions.locator('[data-split-mode=manual]')).to_be_visible()
@@ -31,7 +34,6 @@ def test_split_modes_and_collapse_at_phone_width(page, ui_server, action_item):
 @pytest.mark.parametrize('operation,status', [('expire', 'expired'), ('archive', 'archived'), ('revert-to-draft', 'draft')])
 def test_lifecycle_requires_confirmation(page, ui_server, api, action_item, operation, status):
     page.goto(f'{ui_server}/inventory/{action_item}', wait_until='domcontentloaded')
-    page.locator('#item-advanced-panel > summary').click()
     form = page.locator(f'form[hx-post="/api/items/{action_item}/{operation}"]')
     form.locator('button').click()
     expect(page.locator('dialog.confirm-dialog[open]')).to_be_visible()

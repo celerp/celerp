@@ -12,7 +12,6 @@ def item(api):
 def test_invalid_enter_has_no_split_request(page,ui_server,item,value):
     calls=[];page.on('request',lambda r:calls.append(r.url) if '/split-inline' in r.url else None)
     page.goto(f'{ui_server}/inventory/{item}',wait_until='domcontentloaded')
-    page.locator('#item-advanced-panel > summary').click()
     field=page.locator('[name=child_qty]').first
     field.fill(value);field.press('Enter')
     expect(field).to_be_focused()
@@ -22,7 +21,6 @@ def test_invalid_enter_has_no_split_request(page,ui_server,item,value):
 
 def test_valid_confirm_splits_and_preserves_total(page,ui_server,api,item):
     page.goto(f'{ui_server}/inventory/{item}',wait_until='domcontentloaded')
-    page.locator('#item-advanced-panel > summary').click()
     form=page.locator('form[data-validates-split]').first
     form.locator('[name=child_qty]').fill('3')
     expect(form.locator('.sp-total-qty')).to_have_text('10')
@@ -34,7 +32,6 @@ def test_valid_confirm_splits_and_preserves_total(page,ui_server,api,item):
 def test_invalid_batch_never_posts(page,ui_server,item,field,value):
     calls=[];page.on('request',lambda r:calls.append(r.url) if '/batch-split' in r.url else None)
     page.goto(f'{ui_server}/inventory/{item}',wait_until='domcontentloaded')
-    page.locator('#item-advanced-panel > summary').click()
     page.locator('.split-mode').select_option('batch')
     form=page.locator('form').filter(has=page.locator('[name=batch_count]'))
     form.locator('[name=batch_qty]').fill('2');form.locator('[name=batch_count]').fill('2')

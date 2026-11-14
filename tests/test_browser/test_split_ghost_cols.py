@@ -320,10 +320,10 @@ def test_piece_sync_03_no_pieces_column_without_weight(page, ui_server, api):
 # ---------------------------------------------------------------------------
 
 def _open_item_detail_split(page, ui_server, item_id: str) -> None:
-    """Open an item's detail page and wait for the shared split table card."""
+    """Open an item's detail page and wait for the shared split table card (the Actions card
+    opens expanded)."""
     page.goto(f"{ui_server}/inventory/{item_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "item detail page")
-    page.locator("#item-advanced-panel > summary").click()
     page.wait_for_selector(".action-card .split-preview-table", timeout=5000)
 
 
@@ -748,7 +748,6 @@ def test_toggle_allow_splitting_shows_card_no_reload(page, ui_server, api):
 
     page.goto(f"{ui_server}/inventory/{item['id']}", wait_until="domcontentloaded")
     _assert_no_crash(page, "item detail page (splitting disabled)")
-    page.locator("#item-advanced-panel > summary").click()
     page.wait_for_selector(".action-card--disabled", timeout=5000)
     assert page.locator(".action-card .split-preview-table").count() == 0, (
         "the disabled item must not show the split table before the toggle"
@@ -756,7 +755,6 @@ def test_toggle_allow_splitting_shows_card_no_reload(page, ui_server, api):
 
     url_before = page.url
     set_cell(page, "allow_splitting", "true", scope=".doc-section", kind="select")
-    page.locator("#item-advanced-panel > summary").click()
 
     page.wait_for_selector(".action-card .split-preview-table", timeout=5000)
     assert page.url == url_before, "the card must refresh in place with no navigation"
