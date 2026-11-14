@@ -38,7 +38,7 @@ BINDING_STATES = frozenset({"active", "revoked", "requires_action", "access_remo
 # Cloud's states for an attempt (collection.attempt), and the app's own: "pending" (asked
 # for, Cloud has not answered), "paid" (its charge is recorded on the invoice), "stopped".
 # "succeeded": the card was charged and its payment is on the way, or was kept among the
-# unmatched payments because the invoice could not take it.
+# unmatched payments because the invoice could not take it ("kept": that payment's reference).
 CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeeded", "failed", "canceled",
                           "unknown", "unverifiable"})
 # The attempt is with Cloud and may still charge the card.
@@ -191,7 +191,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
         drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
-              "held_by"))
+              "held_by", "kept"))
 
 
 def _instant(value) -> str | None | bool:
@@ -258,6 +258,19 @@ async def receive_attempt(payload: dict) -> bool:
         await apply_outcome(session, cid, row, found)
         await session.commit()
     return True
+
+
+async def charge_kept(session, company_id, doc_id: str, reference: str) -> None:
+    """An online charge for the invoice was kept among the unmatched payments: a succeeded
+    attempt's payment has arrived, so it can take no more money. Locks the document's row, after
+    the company and the unmatched payment as every writer of a payment does; the caller commits."""
+    from celerp.models.projections import Projection
+    row = await session.get(Projection, (company_id, doc_id), with_for_update=True, populate_existing=True)
+    if row is None:
+        return
+    current = row.state.get("collection") or {}
+    if current.get("state") == "succeeded" and not current.get("kept"):
+        await set_attempt(session, company_id, row, {"kept": reference})
 
 
 async def charge_recorded(session, company_id, doc_row) -> None:

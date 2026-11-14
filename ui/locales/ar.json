@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "أُغلق النزاع دون خصم أي أموال.",
   "notice.payment_dispute_not_recorded.title": "لم يُسجّل نزاع الدفع بالبطاقة على {document}",
   "notice.payment_dispute_not_recorded.body": "أبلغت Celerp Cloud عن النزاع {dispute} بقيمة {amount} على {document}، لكن تعذّر تسجيله: {reason} سجّل أي مبلغ جرى خصمه في قيد يومية. {status}",
+  "notice.payment_unmatched.title": "دفعة البطاقة {reference} غير مطابقة لفاتورة",
+  "notice.payment_unmatched.body": "سلّمت Celerp Cloud دفعة البطاقة {reference} بمبلغ {amount} للمستند {document}، لكن تعذّر تسجيلها على تلك الفاتورة، لذا تُحفظ مع المدفوعات غير المطابقة لفاتورة. لتسجيلها، افتح الإعدادات > المدفوعات.",
   "notice.payment_dispute_not_recorded.document": "لم تعد الفاتورة موجودة هنا.",
   "notice.payment_dispute_not_recorded.unmatched": "لا يزال الدفع ضمن المدفوعات غير المطابقة لفاتورة.",
   "notice.payment_dispute_not_recorded.payment": "لم يعد الدفع مرتبطًا بالفاتورة.",

@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "Le litige a été clôturé sans prélèvement d'argent.",
   "notice.payment_dispute_not_recorded.title": "Litige sur carte non enregistré pour {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud a signalé le litige {dispute} d'un montant de {amount} sur {document}, mais son enregistrement a échoué : {reason} Comptabilisez toute somme prélevée par une écriture. {status}",
+  "notice.payment_unmatched.title": "Paiement par carte {reference} non rapproché d'une facture",
+  "notice.payment_unmatched.body": "Celerp Cloud a transmis le paiement par carte {reference} de {amount} pour {document}, mais il n'a pas pu être enregistré sur cette facture : il est donc conservé avec les paiements non rapprochés d'une facture. Pour l'enregistrer, ouvrez Paramètres > Paiements.",
   "notice.payment_dispute_not_recorded.document": "la facture n'existe plus ici.",
   "notice.payment_dispute_not_recorded.unmatched": "le paiement se trouve encore parmi les paiements non rapprochés d'une facture.",
   "notice.payment_dispute_not_recorded.payment": "le paiement ne figure plus sur la facture.",

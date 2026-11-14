@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "Sengketa ditutup tanpa pengambilan uang.",
   "notice.payment_dispute_not_recorded.title": "Sengketa pembayaran kartu tidak tercatat pada {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud melaporkan sengketa {dispute} sebesar {amount} pada {document}, tetapi gagal dicatat: {reason} Catat uang yang diambil melalui jurnal. {status}",
+  "notice.payment_unmatched.title": "Pembayaran kartu {reference} tidak cocok dengan faktur",
+  "notice.payment_unmatched.body": "Celerp Cloud mengirim pembayaran kartu {reference} sebesar {amount} untuk {document}, tetapi pembayaran itu tidak dapat dicatat pada faktur tersebut, sehingga disimpan bersama pembayaran yang tidak cocok dengan faktur. Untuk mencatatnya, buka Pengaturan > Pembayaran.",
   "notice.payment_dispute_not_recorded.document": "faktur tidak lagi tersedia.",
   "notice.payment_dispute_not_recorded.unmatched": "pembayaran masih ada dalam pembayaran yang belum dicocokkan dengan faktur.",
   "notice.payment_dispute_not_recorded.payment": "pembayaran tidak lagi terhubung dengan faktur.",

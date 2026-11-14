@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "La contestazione è stata chiusa senza prelevare denaro.",
   "notice.payment_dispute_not_recorded.title": "Contestazione con carta non registrata su {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud ha segnalato la contestazione {dispute} di {amount} su {document}, ma non è stato possibile registrarla: {reason} Registra gli importi prelevati con una scrittura contabile. {status}",
+  "notice.payment_unmatched.title": "Pagamento con carta {reference} non abbinato a una fattura",
+  "notice.payment_unmatched.body": "Celerp Cloud ha consegnato il pagamento con carta {reference} di {amount} per {document}, ma non è stato possibile registrarlo su quella fattura, quindi è conservato tra i pagamenti non abbinati a una fattura. Per registrarlo, apri Impostazioni > Pagamenti.",
   "notice.payment_dispute_not_recorded.document": "la fattura non è più presente.",
   "notice.payment_dispute_not_recorded.unmatched": "il pagamento è ancora tra quelli non abbinati a una fattura.",
   "notice.payment_dispute_not_recorded.payment": "il pagamento non è più associato alla fattura.",

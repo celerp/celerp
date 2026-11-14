@@ -284,7 +284,9 @@ async def receive_payment(payload: dict) -> bool:
             await session.commit()
             return True
         # A reset waits for this lock; once it has deleted the company, the payment is unmatched.
-        row = await session.get(Projection, (cid, entity_id)) if cid and await _lock_company_of(session, cid) else None
+        live = bool(cid) and await _lock_company_of(session, cid)
+        row = await session.get(Projection, (cid, entity_id)) if live else None
+        document = ((row.state or {}).get("ref_id") or (row.state or {}).get("doc_number")) if row is not None else None
         if row is not None:
             kept = (await session.execute(delete(UnmatchedPayment).where(
                 UnmatchedPayment.reference == reference).returning(
@@ -308,12 +310,30 @@ async def receive_payment(payload: dict) -> bool:
                     raise
                 await session.rollback()
                 log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
+                live = await _lock_company_of(session, cid)  # the rollback let the company lock go
         from sqlalchemy.dialects.postgresql import insert
         await session.execute(insert(UnmatchedPayment).values(
             reference=reference, amount_minor=amount_minor, currency=currency,
             former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
+        if live:
+            if row is not None:
+                from celerp.services import collection
+                await collection.charge_kept(session, cid, entity_id, reference)
+            await _notify_unmatched(session, cid, document or entity_id, reference,
+                                    dispute_amount(amount_minor, currency))
         await session.commit()
     return True
+
+
+async def _notify_unmatched(session, cid: uuid.UUID, document: str, reference: str, amount: str) -> None:
+    """Tell the company once that an online payment it was sent is kept among the unmatched
+    payments, so a person records it on an invoice."""
+    from celerp.notifications import service as notification_service
+    params = {"reference": reference, "amount": amount, "document": document}
+    await notification_service.notify_once(
+        session, cid, "accounting", t("notice.payment_unmatched.title", "en", **params),
+        t("notice.payment_unmatched.body", "en", **params), action_url="/settings/payments",
+        i18n={"title": "notice.payment_unmatched.title", "body": "notice.payment_unmatched.body", "params": params})
 
 
 @_on_invoices

@@ -763,7 +763,8 @@ class DocCollection(BaseModel):
     cancel: str | None = None
     reason: str | None = None
     replace: bool | None = None  # cancelled for a smaller balance: the next attempt asks what is owed then
-    held_by: str | None = None  # the agreement's invoice whose charge is reconciled before this one is asked
+    held_by: str | None = None  # the invoice an amendment note of the agreement credits while it is held
+    kept: str | None = None  # the succeeded charge's payment, kept among the unmatched payments
 
 
 class PaymentBooks(BaseModel):

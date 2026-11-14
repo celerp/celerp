@@ -58,15 +58,14 @@ WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 #   failed          the attempt failed; the next one is due at its retry time (next_when_due)
 #   replace         Cloud cancelled an attempt because its invoice came to owe less
 #   succeeded       Cloud charged the card and the payment is not on the invoice yet: its delivery
-#                   pays the invoice what it owes and the rest the agreement's other open invoices
-#                   (routes_payments.record_stripe_charge), so every event waits for it
+#                   records it on the invoice whole, so every event waits for it
 #   settled         nothing left to do (canceled, unverifiable, paid, stopped)
 # Events: stop (stop_reason: the invoice is paid, credited or voided, the agreement left
 # collection, the card or the consenting member is gone), reduced / raised (the invoice owes
 # less / more than the attempt asks), off (Cloud no longer offers collection: only new charge
 # requests wait; cancels, retries of a request already sent and deliveries go on), held
-# (another invoice of the agreement has an attempt asking more than that invoice owes now, and
-# it may still charge: its outcome is reconciled first), none.
+# (an amendment note of the agreement is held while the charge of the invoice it credits may
+# still take money: this invoice is asked for once that note is issued), none.
 PHASES = ("new", "asked", "submitted", "processing", "requires_action", "unknown", "cancel_queued",
           "cancel_refused", "failed", "replace", "succeeded", "settled")
 EVENTS = ("stop", "reduced", "raised", "off", "held", "none")
@@ -105,8 +104,10 @@ def phase_of(current: dict) -> str:
 
 def may_charge(current: dict) -> bool:
     """Whether the attempt may still take money: asked, with Cloud, or charged and its payment
-    not recorded yet."""
-    return current.get("state") in collection.IN_FLIGHT | {"succeeded"} and phase_of(current) != "new"
+    not delivered yet (neither recorded nor kept among the unmatched payments)."""
+    if current.get("state") == "succeeded":
+        return not current.get("kept")
+    return current.get("state") in collection.IN_FLIGHT and phase_of(current) != "new"
 
 
 def require_sales(terms: dict) -> None:
@@ -274,17 +275,6 @@ async def _holder(session, company_id, row) -> str | None:
         covering = str(note.state.get("original_doc_id") or "")
         if covering and covering != row.entity_id:
             return (await doc_state(session, company_id, covering) or {}).get("ref_id") or covering
-    return None
-    others = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["source_agreement"].as_string() == agreement, Projection.entity_id != row.entity_id,
-        Projection.state["collection"]["state"].as_string().in_(sorted({*collection.IN_FLIGHT, "succeeded"})),
-    ).order_by(Projection.entity_id))).scalars().all()
-    for other in others:
-        attempt = other.state["collection"]
-        if phase_of(attempt) != "new" and (attempt.get("amount_minor") or 0) > (
-                collection.outstanding_minor(other.state) or 0):
-            return other.state.get("ref_id") or other.entity_id
     return None
 
 

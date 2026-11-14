@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "La disputa se cerró sin retirar dinero.",
   "notice.payment_dispute_not_recorded.title": "Disputa de tarjeta no registrada en {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud informó de la disputa {dispute} por {amount} en {document}, pero no se pudo registrar: {reason} Registre cualquier importe retirado mediante un asiento. {status}",
+  "notice.payment_unmatched.title": "Pago con tarjeta {reference} sin asignar a una factura",
+  "notice.payment_unmatched.body": "Celerp Cloud entregó el pago con tarjeta {reference} de {amount} para {document}, pero no se pudo registrar en esa factura, así que se guarda con los pagos sin asignar a una factura. Para registrarlo, abra Configuración > Pagos.",
   "notice.payment_dispute_not_recorded.document": "la factura ya no existe.",
   "notice.payment_dispute_not_recorded.unmatched": "el pago sigue entre los pagos sin conciliar con una factura.",
   "notice.payment_dispute_not_recorded.payment": "el pago ya no está en la factura.",

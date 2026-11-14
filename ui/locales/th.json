@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "ปิดข้อพิพาทโดยไม่มีการหักเงิน",
   "notice.payment_dispute_not_recorded.title": "ไม่ได้บันทึกข้อพิพาทการชำระผ่านบัตรสำหรับ {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud รายงานข้อพิพาท {dispute} จำนวน {amount} สำหรับ {document} แต่บันทึกไม่ได้: {reason} โปรดบันทึกเงินที่ถูกหักในสมุดรายวัน {status}",
+  "notice.payment_unmatched.title": "การชำระผ่านบัตร {reference} ไม่ได้จับคู่กับใบแจ้งหนี้",
+  "notice.payment_unmatched.body": "Celerp Cloud ส่งการชำระผ่านบัตร {reference} จำนวน {amount} สำหรับ {document} แต่ไม่สามารถบันทึกลงในใบแจ้งหนี้นั้นได้ จึงเก็บไว้กับการชำระเงินที่ไม่ได้จับคู่กับใบแจ้งหนี้ หากต้องการบันทึก ให้เปิด การตั้งค่า > การชำระเงิน",
   "notice.payment_dispute_not_recorded.document": "ใบแจ้งหนี้นี้ไม่มีอยู่แล้ว",
   "notice.payment_dispute_not_recorded.unmatched": "การชำระเงินยังอยู่ในรายการชำระที่จับคู่กับใบแจ้งหนี้ไม่ได้",
   "notice.payment_dispute_not_recorded.payment": "การชำระเงินไม่อยู่ในใบแจ้งหนี้นี้แล้ว",

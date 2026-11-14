@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "The dispute was closed without taking any money.",
   "notice.payment_dispute_not_recorded.title": "Card payment dispute not recorded on {document}",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud reported dispute {dispute} of {amount} on {document}, but it could not be recorded: {reason} Record any money taken in a journal entry. {status}",
+  "notice.payment_unmatched.title": "Card payment {reference} not matched to an invoice",
+  "notice.payment_unmatched.body": "Celerp Cloud delivered card payment {reference} of {amount} for {document}, but it could not be recorded on that invoice, so it is kept with the payments not matched to an invoice. To record it, open Settings > Payments.",
   "notice.payment_dispute_not_recorded.document": "the invoice is no longer here.",
   "notice.payment_dispute_not_recorded.unmatched": "the payment is still among the unmatched payments.",
   "notice.payment_dispute_not_recorded.payment": "the payment is no longer on the invoice.",

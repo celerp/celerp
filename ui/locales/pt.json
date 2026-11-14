@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "A contestação foi encerrada sem retirada de dinheiro.",
   "notice.payment_dispute_not_recorded.title": "Contestação de cartão não registrada em {document}",
   "notice.payment_dispute_not_recorded.body": "O Celerp Cloud informou a contestação {dispute} de {amount} em {document}, mas ela não pôde ser registrada: {reason} Registre qualquer dinheiro retirado em um lançamento contábil. {status}",
+  "notice.payment_unmatched.title": "Pagamento com cartão {reference} não associado a uma fatura",
+  "notice.payment_unmatched.body": "O Celerp Cloud entregou o pagamento com cartão {reference} de {amount} para {document}, mas não foi possível registrá-lo nessa fatura, por isso ele fica com os pagamentos não associados a uma fatura. Para registrá-lo, abra Configurações > Pagamentos.",
   "notice.payment_dispute_not_recorded.document": "a fatura não está mais aqui.",
   "notice.payment_dispute_not_recorded.unmatched": "o pagamento ainda está entre os pagamentos não vinculados a faturas.",
   "notice.payment_dispute_not_recorded.payment": "o pagamento não consta mais na fatura.",

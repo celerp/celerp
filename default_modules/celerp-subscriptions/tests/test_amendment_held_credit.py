@@ -32,9 +32,10 @@ async def _collect(session, cloud, cid, doc_id, ref, minor, day):
     [req] = [p for p in cloud.sent("attempt") if p["entity_id"] == doc_id and p["amount_minor"] == minor]
     assert await _attempt_outcome(cid, doc_id, req["attempt_number"], "succeeded") is True
     from celerp.services import payments
-    assert await payments.receive_payment({
-        "company_id": cid, "entity_id": doc_id, "reference": ref, "amount_minor": minor, "currency": "USD",
-        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": req["context"]})
+    delivery = {"company_id": cid, "entity_id": doc_id, "reference": ref, "amount_minor": minor, "currency": "USD",
+                "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": req["context"]}
+    assert await payments.receive_payment(delivery)
+    assert await payments.receive_payment(delivery)  # a replay changes nothing
 
 
 @pytest.mark.parametrize("answer", ["submitted", "processing", "requires_action", "unknown"])

@@ -7891,6 +7891,8 @@
   "documents.dispute_closed": "資金の引き落としなしで異議申立てが終了しました。",
   "notice.payment_dispute_not_recorded.title": "{document} のカード決済異議申立てを記録できませんでした",
   "notice.payment_dispute_not_recorded.body": "Celerp Cloud から {document} の {amount} に関する異議申立て {dispute} が通知されましたが、記録できませんでした: {reason} 引き落とされた金額は仕訳で記録してください。 {status}",
+  "notice.payment_unmatched.title": "カード決済 {reference} は請求書に照合されていません",
+  "notice.payment_unmatched.body": "Celerp Cloud から {document} に対するカード決済 {reference}（{amount}）が届きましたが、その請求書に記録できなかったため、請求書に照合されていない支払いとして保管されています。記録するには、設定 > 支払い を開いてください。",
   "notice.payment_dispute_not_recorded.document": "請求書が存在しなくなっています。",
   "notice.payment_dispute_not_recorded.unmatched": "支払が請求書未照合の支払一覧に残っています。",
   "notice.payment_dispute_not_recorded.payment": "支払がその請求書に紐付いていません。",
