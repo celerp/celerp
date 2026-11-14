@@ -18,11 +18,10 @@ so the restamp walker proves the revision by it. Forward-only data step.
 
 from __future__ import annotations
 
-import json
-
 import sqlalchemy as sa
 from alembic import op
 
+from celerp.json_text import dump_json
 from celerp.migrations._locks import lock_tables
 
 revision = "c4d1e7a2f9b3"
@@ -65,7 +64,7 @@ def _record(conn, found: dict) -> None:
     conn.execute(sa.text("""
         INSERT INTO system_runtime_state (id, value) VALUES (1, CAST(:v AS json))
         ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value
-    """), {"v": json.dumps(value)})
+    """), {"v": dump_json(value)})
 
 
 def downgrade() -> None:
