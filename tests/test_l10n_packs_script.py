@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.timeout(150)  # each session-script run may wait up to 120 s
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "l10n_packs.py"
 FIXTURE = REPO / "tests" / "fixtures" / "l10n"
