@@ -15,7 +15,8 @@ payments) at any point of an attempt, an amendment) under a seeded random story,
 Cloud that charges, fails or cancels each attempt it was asked for. After every step, each open invoice whose collection may go on has an
 attempt in progress, or its charge is on the way from Cloud, or the company was told why nothing
 is asked: its charge was kept among the unmatched payments, a charge on it succeeded and left it
-owing, or it came to owe again after its collection ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
+owing, the attempts Cloud takes for it were used up, or it came to owe again after its collection
+ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
 the next pass, so between passes its ended collection still counts; right after a pass it never
 does. No attempt is ever asked on an invoice a charge already succeeded on. And whenever an attempt is asked for, it and the invoice's other attempts Cloud may still
 charge, or charged and whose payment is on the way, never ask more than the invoice owes: the payer
@@ -194,7 +195,7 @@ async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) 
             continue
         if c.get("state") == "succeeded" and c.get("kept") and await _told(session, c["kept"]):
             continue
-        if c.get("state") == "stopped" and c.get("reason") in ("owes_again", "charged_once") \
+        if c.get("state") == "stopped" and c.get("reason") in ("owes_again", "charged_once", "attempts_used") \
                 and await _told(session, doc["ref_id"]):
             continue
         if c.get("state") == "succeeded" and story and any(p[0] == doc_id for p in story.payments):

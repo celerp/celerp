@@ -48,7 +48,10 @@ CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeed
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
 # The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
 STOP_REASONS = frozenset({"invoice_settled", "mode_manual", "no_card_on_file", "authorizer_lapsed", "collection_off",
-                          "nothing_to_charge", "no_books", "owes_again", "charged_once"})
+                          "nothing_to_charge", "no_books", "owes_again", "charged_once", "attempts_used"})
+# Cloud takes this many attempts per invoice, the first and its retries, cancelled ones included
+# (it refuses another as retry_limit): the app never asks one more.
+MAX_ATTEMPTS = 4
 CONSENT_TEXT_VERSION = "1"
 
 
@@ -186,10 +189,13 @@ async def set_attempt(session, company_id, doc_row, change: dict, *, drop: tuple
 
 async def open_attempt(session, company_id, doc_row, n: int) -> dict:
     """Make attempt ``n`` on the invoice for what it owes now, to be asked for after commit; a
-    document that owes nothing chargeable records why collection stopped instead."""
+    document that owes nothing chargeable records why collection stopped instead, and one whose
+    attempts Cloud takes are used up stops and tells the company to collect it by hand."""
     amount = outstanding_minor(doc_row.state)
     if amount is None:
         return await set_attempt(session, company_id, doc_row, {"state": "stopped", "reason": "nothing_to_charge"})
+    if n > MAX_ATTEMPTS:
+        return await stop_for_hand(session, company_id, doc_row, "attempts_used")
     return await set_attempt(session, company_id, doc_row, {
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
@@ -295,7 +301,7 @@ async def kept_unresolved(session, reference: str) -> bool:
     return refunded < amount
 
 
-async def stop_for_hand(session, company_id, doc_row, reason: str) -> None:
+async def stop_for_hand(session, company_id, doc_row, reason: str) -> dict:
     """Automatic collection on the invoice ends for ``reason`` (a STOP_REASONS key) while it still
     owes: the company is told once to collect the rest by hand, and collection stops with the
     reason. The caller holds the document's row lock and commits."""
@@ -312,8 +318,8 @@ async def stop_for_hand(session, company_id, doc_row, reason: str) -> None:
                       action_url=f"/docs/{doc_row.entity_id}",
                       i18n={"title": title, "body": body,
                             "params": {**params, "why": {"message": english["why"], "message_key": why_key}}})
-    await set_attempt(session, company_id, doc_row, {"state": "stopped", "reason": reason},
-                      drop=("cancel", "charged", "replace", "waits"))
+    return await set_attempt(session, company_id, doc_row, {"state": "stopped", "reason": reason},
+                             drop=("cancel", "charged", "replace", "waits"))
 
 
 async def _charge_ended(session, company_id, doc_row, current: dict) -> None:

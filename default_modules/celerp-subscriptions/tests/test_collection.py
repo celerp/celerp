@@ -613,6 +613,35 @@ async def test_no_retry_once_settled_or_back_to_manual(client, session, monkeypa
     assert c["state"] == "stopped" and c["reason"] == "mode_manual"
 
 
+async def test_after_four_attempts_collection_stops_and_tells_the_company(client, session, monkeypatch, cloud):
+    """Cloud takes four attempts per invoice, a cancelled one included (retry_limit). Attempts 1 and
+    2 fail; a 5.00 payment by hand gets attempt 2's retry, attempt 3, cancelled and replaced by
+    attempt 4 for 95.00, which fails too: no fifth attempt is asked, collection stops and the
+    company is told once to collect the 95.00 by hand."""
+    freeze_day(monkeypatch, "2026-07-01")
+    _at(monkeypatch, datetime(2026, 7, 20, tzinfo=timezone.utc))
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    doc_id, past = doc["entity_id"], "2026-07-02T00:00:00+00:00"
+    assert await _attempt_outcome(cid, doc_id, 1, "failed", retry_eligible_at=past)
+    await tick(session, cid, "2026-07-02")
+    assert await _attempt_outcome(cid, doc_id, 2, "failed", retry_eligible_at=past)
+    await tick(session, cid, "2026-07-03")
+    await _pay(client, hd, doc_id, 5.0)
+    for day in ("2026-07-04", "2026-07-05"):
+        await tick(session, cid, day)
+    assert await _attempt_outcome(cid, doc_id, 4, "failed", retry_eligible_at=past)
+    await tick(session, cid, "2026-07-06")
+    assert [(p["attempt_number"], p["amount_minor"]) for p in cloud.sent("attempt")] == [
+        (1, 10000), (2, 10000), (3, 10000), (4, 9500)]
+    [c] = await _collection(session, eid)
+    assert c["state"] == "stopped" and c["reason"] == "attempts_used"
+    from test_collection_open_rest import _told
+    assert await _told(session, doc["ref_id"])
+
+
 async def test_cancel_request_retried_until_acknowledged(client, session, monkeypatch, cloud):
     """A payment by hand while an attempt is open asks Cloud to cancel it, every pass until Cloud
     answers."""
