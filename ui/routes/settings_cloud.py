@@ -9,6 +9,7 @@ import json
 import logging
 from urllib.parse import urlparse
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from sqlalchemy.engine import URL, make_url
 from starlette.requests import Request
@@ -157,9 +158,9 @@ def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
     )
 
 
-def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
+def _feature_card(glyph, title: str, desc: str, lang: str = "en") -> FT:
     return Div(
-        Div(icon, cls="cloud-feature-card__icon"),
+        Div(glyph, cls="cloud-feature-card__icon"),
         Div(title, cls="cloud-feature-card__title"),
         Div(desc, cls="cloud-feature-card__desc"),
         cls="cloud-feature-card",
@@ -293,14 +294,14 @@ def _direct_plans(iid: str, lang: str = "en", catalog: dict | None = None) -> FT
         catalog, "ai_monthly", lang)
     return Div(
         Div(
-            _feature_card("🔗", t("cloud.feature_url_title", lang), t("cloud.feature_url_desc", lang), lang=lang),
-            _feature_card("💾", t("cloud.feature_backup_title", lang), t("cloud.feature_backup_desc", lang), lang=lang),
-            _feature_card("🤖", t("cloud.feature_ai_title", lang), t("cloud.feature_ai_desc", lang), lang=lang),
+            _feature_card(icon("link"), t("cloud.feature_url_title", lang), t("cloud.feature_url_desc", lang), lang=lang),
+            _feature_card(icon("hard-drive"), t("cloud.feature_backup_title", lang), t("cloud.feature_backup_desc", lang), lang=lang),
+            _feature_card(icon("bot"), t("cloud.feature_ai_title", lang), t("cloud.feature_ai_desc", lang), lang=lang),
             cls="cloud-features"),
         Div(
-            _feature_card("🛒", t("cloud.feature_website_title", lang), t("cloud.feature_website_desc", lang), lang=lang),
-            _feature_card("📊", t("cloud.feature_accounting_title", lang), t("cloud.feature_accounting_desc", lang), lang=lang),
-            _feature_card("💳", t("cloud.feature_payments_title", lang), t("cloud.feature_payments_desc", lang), lang=lang),
+            _feature_card(icon("shopping-cart"), t("cloud.feature_website_title", lang), t("cloud.feature_website_desc", lang), lang=lang),
+            _feature_card(icon("chart-column"), t("cloud.feature_accounting_title", lang), t("cloud.feature_accounting_desc", lang), lang=lang),
+            _feature_card(icon("credit-card"), t("cloud.feature_payments_title", lang), t("cloud.feature_payments_desc", lang), lang=lang),
             cls="cloud-features"),
         Div(
             Div(t("cloud.trial_head", lang), cls="cloud-trial-banner__head"),

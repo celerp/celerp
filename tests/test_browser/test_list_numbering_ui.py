@@ -37,7 +37,7 @@ def test_new_list_on_a_type_filtered_page_makes_that_type(page: Page, ui_server,
     page.goto(f"{ui_server}/lists?type=transfer")
     wait_for_topbar(page)
     with page.expect_navigation():
-        page.locator("button.btn--primary", has_text="New List").click()
+        page.locator("button.btn--primary", has_text="New Transfer Order").click()
     entity_id = page.url.rsplit("/", 1)[-1]
     state = fresh_company.get(f"/lists/{entity_id}").json()
     assert (state["list_type"], state["ref_id"]) == ("transfer", expected)

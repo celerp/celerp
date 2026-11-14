@@ -271,7 +271,7 @@ async def test_a_held_back_start_refuses_changes_until_a_start_brings_the_record
     assert await _stored(session, old["company_id"]) == before
 
     monkeypatch.setitem(slots._slots, "projection_handler", [*slots.get("projection_handler"), {
-        "prefix": "gadget.", "handler": f"{__name__}:assemble_gadget", "_module": "gadget"}])
+        "prefix": "gadget.", "handler": f"{__name__}:assemble_gadget", "permission": "view_inventory", "_module": "gadget"}])
     await pre366.start()
 
     assert (await _state(session, old["company_id"], "gadget:1"))["assembled"] is True

@@ -179,7 +179,7 @@ async def test_third_party_module_renders_canonical_row(ui_client, monkeypatch):
     body = r.text
     assert "Acme Result" in body
     assert "/acme/1" in body
-    assert "🔎" in body
+    assert 'class="search-result-icon"' in body and '<circle cx="11" cy="11" r="8"/>' in body  # the search icon
     assert "widget" in body
 
 

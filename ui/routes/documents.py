@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 import math
@@ -19,7 +20,8 @@ from starlette.responses import RedirectResponse
 from urllib.parse import parse_qsl, quote_plus, urlencode
 
 import ui.api_client as api
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
+from ui.components.activity import fmt_qty
 from ui.api_client import APIError, error_code, error_message
 from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
@@ -46,8 +48,9 @@ from celerp.services.permissions import missing_permission_text, role_has_permis
 from ui.components.import_access import can_import_documents
 from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
-from ui.components.activity import EVENT_TYPE_LABELS, activity_table
+from ui.components.activity import EVENT_TYPE_LABELS
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.cards import section_header
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
 from ui.components.encode import as_js, call, EVENT, html_response, js_value, raw_html, safe_url, THIS, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
@@ -496,7 +499,8 @@ def _enrich_doc_files(doc: dict) -> list[dict]:
     """Tag each file in a doc with its linked_ref and linked_url."""
     doc_id = doc.get("entity_id") or doc.get("id") or ""
     ref = doc.get("ref_id") or doc.get("doc_number") or ""
-    url = f"/docs/{doc_id}" if doc_id else ""
+    resource = "lists" if doc.get("entity_type") == "list" else "docs"
+    url = f"/{resource}/{doc_id}" if doc_id else ""
     return [{**f, "linked_ref": ref, "linked_url": url} for f in doc.get("files", [])]
 
 
@@ -538,6 +542,16 @@ _LIST_TYPES = list(_REG_LIST_TYPES)
 # shipping document share the document-type labels.
 _LIST_TYPE_LABEL_KEYS = {"quotation": "settings_sales.doc_type_quotation",
                          "shipping_doc": "settings_sales.doc_type_shipping_doc"}
+
+
+def _lists_page_heading(list_type: str | None, lang: str | None = None) -> str:
+    """The lists page heading: Quotations, or the type the page is filtered to (Stock Counts,
+    Transfer Order, ...), so a filtered page never calls its documents quotations."""
+    if not list_type or list_type == "quotation":
+        return t("page.lists", lang)
+    if list_type == "audit":
+        return t("nav.audits", lang)
+    return _list_type_label(list_type)
 
 
 def _list_type_label(list_type: str | None) -> str:
@@ -1129,7 +1143,7 @@ def _item_link_eye(entity_id: str, title: str | None = None) -> FT:
     active = bool(entity_id)
     if title is None:
         title = t("documents.view_item_details")
-    return A("👁", href=f"/inventory/{entity_id}" if active else "#",
+    return A(icon("eye"), href=f"/inventory/{entity_id}" if active else "#",
              target="_blank" if active else "",
              cls="item-link item-link--active" if active else "item-link item-link--inactive",
              data_name="item_link",
@@ -1166,7 +1180,7 @@ _DOC_TYPE_INTRO: dict[str, str] = {
 
 def _doc_type_intro(doc_type: str) -> FT:
     key = _DOC_TYPE_INTRO.get(doc_type)
-    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t(key)), cls="info-banner") if key else ""
+    return Div(Span(icon("info"), cls="info-banner-icon"), Span(t(key)), cls="info-banner") if key else ""
 
 
 _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
@@ -2729,7 +2743,7 @@ def setup_routes(app):
             except Exception:
                 chart_accounts = []
 
-        # History loaded lazily via HTMX GET /docs/{entity_id}/history
+        # History loaded lazily via HTMX GET {_base}/history
         ledger: list[dict] = []
 
         doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("external_id") or t("th.document")
@@ -4237,7 +4251,7 @@ def setup_routes(app):
                     "doc_type": doc_type,
                     "contact_name": contact_name,
                     "contact_id": contact_id,
-                    "date": p.get("payment_date") or p.get("recorded_at", "")[:10],
+                    "date": p.get("payment_date") or (p.get("recorded_at") or "")[:10],
                     "method": p.get("method", ""),
                     "bank_account": p.get("bank_account", ""),
                     "reference": p.get("reference", ""),
@@ -4639,8 +4653,9 @@ def setup_routes(app):
 
     # ── Doc file management (upload / delete / tag / description / download) ──
 
-    @app.post("/docs/{entity_id}/files")
     async def doc_upload_file(request: Request, entity_id: str):
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
+        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return files_session_expired()
@@ -4654,53 +4669,55 @@ def setup_routes(app):
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
         try:
-            await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
-            doc = await api.get_doc(token, entity_id)
+            await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag, **file_args)
+            doc = await (api.get_list(token, entity_id) if resource == "lists" else api.get_doc(token, entity_id))
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+        return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc))
 
-    @app.delete("/docs/{entity_id}/files/{file_id}")
     async def doc_delete_file(request: Request, entity_id: str, file_id: str):
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
+        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return files_session_expired()
         try:
-            await api.delete_doc_file(token, entity_id, file_id)
-            doc = await api.get_doc(token, entity_id)
+            await api.delete_doc_file(token, entity_id, file_id, **file_args)
+            doc = await (api.get_list(token, entity_id) if resource == "lists" else api.get_doc(token, entity_id))
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+        return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc))
 
-    @app.post("/docs/{entity_id}/files/{file_id}/tag")
     async def doc_tag_file(request: Request, entity_id: str, file_id: str):
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
+        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return files_session_expired()
         form = await request.form()
         document_tag = str(form.get("document_tag", "")).strip()
         try:
-            await api.tag_doc_file(token, entity_id, file_id, document_tag)
-            doc = await api.get_doc(token, entity_id)
+            await api.tag_doc_file(token, entity_id, file_id, document_tag, **file_args)
+            doc = await (api.get_list(token, entity_id) if resource == "lists" else api.get_doc(token, entity_id))
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+        return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc))
 
-    @app.post("/docs/{entity_id}/files/{file_id}/description")
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
+        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return files_session_expired()
         form = await request.form()
         description = str(form.get("description", "")).strip()
         try:
-            await api.patch_doc_file_description(token, entity_id, file_id, description)
-            doc = await api.get_doc(token, entity_id)
+            await api.patch_doc_file_description(token, entity_id, file_id, description, **file_args)
+            doc = await (api.get_list(token, entity_id) if resource == "lists" else api.get_doc(token, entity_id))
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+        return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc))
 
-    @app.get("/docs/{entity_id}/gl-impact")
     async def doc_gl_impact(request: Request, entity_id: str):
         from starlette.responses import Response as _R
         token = _token(request)
@@ -4721,9 +4738,13 @@ def setup_routes(app):
             )
         return _doc_gl_impact_section(data, entity_id, data.get("currency"))
 
-    @app.get("/docs/{entity_id}/history")
+    app.get("/docs/{entity_id}/gl-impact")(doc_gl_impact)
+    app.get("/lists/{entity_id}/gl-impact")(doc_gl_impact)
+
     async def doc_history_paginated(request: Request, entity_id: str):
         from starlette.responses import Response as _R
+        # Docs and Lists share this handler at both doors; the record's kind names the page it lives on.
+        page_path = f"/{'lists' if entity_id.startswith('list:') else 'docs'}/{entity_id}"
         token = _token(request)
         if not token:
             return _R("", status_code=401)
@@ -4734,61 +4755,58 @@ def setup_routes(app):
         # CSS querySelectorAll. Use a safe slug for the DOM id.
         safe_id = entity_id.replace(":", "-").replace("/", "-")
         _DEFAULT_PER_PAGE = 10
-        try:
-            page = _page_number(request)
-        except ValueError:
-            page = 1
-        per_page = per_page_value(request.query_params.get("per_page"), _DEFAULT_PER_PAGE)
-        offset = (page - 1) * per_page
-        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
-        entries = resp.get("items", []) if isinstance(resp, dict) else []
-        total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
-        category_names = await api.get_category_labels(token)
-        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, actor_label
-        EMPTY = "--"
-        def _row(e: dict):
-            display_text, url = _event_display(e)
-            event_cell = Td(A(display_text, href=safe_url(url), cls="table-link") if url else display_text)
-            ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
-            data = e.get("data") or {}
-            raw_type = str(e.get("event_type") or "")
-            # A Documents page: it opens only while the company can open Documents.
-            detail = detail_from_entry(data, raw_type, category_names=category_names, docs_on=True) if isinstance(data, dict) else ""
-            return Tr(event_cell, Td(ts_display), Td(actor_label(e)), Td(detail or EMPTY))
-        rows = [_row(e) for e in entries]
-        footer = server_pager(
-            offset, per_page, total,
-            lambda o, l: f"/docs/{entity_id}/history?page={o // l + 1}&per_page={l}",
-            page_sizes=(10, 20, 50, 100), hx_target=f"#doc-history-{safe_id}",
+        _HISTORY_PAGE_SIZES = (10, 20, 50, 100)
+        from urllib.parse import parse_qsl, urlencode, urlsplit
+        from ui.components.activity import (
+            HISTORY_FILTERS, filter_history, history_choices, history_cursor, history_query, history_rows,
+            history_table,
         )
-        if not entries and page == 1:
-            content = P(t("documents.no_activity_recorded"), cls="empty-state-msg")
-        else:
-            content = Table(
-                Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("documents.th_who")), Th(t("th.details")))),
-                Tbody(*rows),
-                cls="data-table",
-            )
-        return Div(
-            Div(Span("📜", cls="section-icon"), H3(t("documents.history"), cls="section-title"), cls="section-header"),
-            content,
-            footer,
-            id=f"doc-history-{safe_id}",
-            cls="doc-section",
+        from ui.components.table import cursor_pager
+        qp = request.query_params
+        # The filters ride in the document page's URL. The card's first load reads them from it
+        # (HX-Current-URL); a filter or page change sends them along and pushes them back.
+        current = urlsplit(request.headers.get("HX-Current-URL") or "")
+        page_params = dict(parse_qsl(current.query)) if current.path == page_path else {}
+        filters = {k: (qp.get(k) if k in qp else page_params.get(k, "")) for k in HISTORY_FILTERS}
+        filters = {k: v for k, v in filters.items() if v}
+        per_page = min(per_page_value(qp.get("per_page"), _DEFAULT_PER_PAGE), _HISTORY_PAGE_SIZES[-1])
+        # One page of the document's history, filtered by the ledger; the choices cover all of it.
+        (page, facets), category_names = await asyncio.gather(
+            api.entity_history(token, entity_id, history_query(filters), limit=per_page, cursor=history_cursor(qp)),
+            api.get_category_labels(token))
+        # A Documents page: it opens only while the company can open Documents.
+        rows = filter_history(history_rows(page["items"], category_names=category_names, docs_on=True), filters)
+        dom_id = f"doc-history-{safe_id}"
+        footer = cursor_pager(
+            page, per_page,
+            lambda cursor, l: f"{page_path}/history?" + urlencode({**cursor, "per_page": l, **filters}),
+            page_sizes=_HISTORY_PAGE_SIZES, hx_target=f"#{dom_id}",
         )
+        card = history_table([], rows=rows, choices=history_choices(facets), filters=filters,
+                             filter_url=f"{page_path}/history", filter_target=f"#{dom_id}",
+                             footer=footer, section_id=dom_id)
+        headers = {}
+        if "hist_event" in qp or "hist_field" in qp or "hist_who" in qp:
+            kept = {k: v for k, v in page_params.items() if k not in HISTORY_FILTERS}
+            query = urlencode({**kept, **filters})
+            headers["HX-Push-Url"] = page_path + (f"?{query}" if query else "")
+        return html_response(card, headers=headers)
 
-    @app.get("/docs/{entity_id}/files/_section")
+    app.get("/docs/{entity_id}/history")(doc_history_paginated)
+    app.get("/lists/{entity_id}/history")(doc_history_paginated)
+
     async def doc_files_section(request: Request, entity_id: str):
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
         token = _token(request)
         if not token:
             return files_session_expired()
         qp = request.query_params
         try:
-            doc = await api.get_doc(token, entity_id)
+            doc = await (api.get_list(token, entity_id) if resource == "lists" else api.get_doc(token, entity_id))
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
-            page=int(qp.get("page", "1") or "1"),
+        return _doc_files_section("list" if resource == "lists" else "doc", entity_id, _enrich_doc_files(doc),
+            page=_page_number(request),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),
             date_from=qp.get("date_from", ""),
@@ -4796,17 +4814,31 @@ def setup_routes(app):
             search=qp.get("search", ""),
         )
 
-    @app.get("/docs/{entity_id}/files/{file_id}/download")
     async def doc_download_file(request: Request, entity_id: str, file_id: str):
         from starlette.responses import Response as _R
+        resource = "lists" if request.url.path.startswith("/lists/") else "docs"
+        file_args = {"resource": resource} if resource == "lists" else {}
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            r = await api.download_doc_file(token, entity_id, file_id)
+            r = await api.download_doc_file(token, entity_id, file_id, **file_args)
         except APIError as e:
             return _action_error(e)
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
+
+    app.post("/docs/{entity_id}/files")(doc_upload_file)
+    app.post("/lists/{entity_id}/files")(doc_upload_file)
+    app.delete("/docs/{entity_id}/files/{file_id}")(doc_delete_file)
+    app.delete("/lists/{entity_id}/files/{file_id}")(doc_delete_file)
+    app.post("/docs/{entity_id}/files/{file_id}/tag")(doc_tag_file)
+    app.post("/lists/{entity_id}/files/{file_id}/tag")(doc_tag_file)
+    app.post("/docs/{entity_id}/files/{file_id}/description")(doc_patch_file_description)
+    app.post("/lists/{entity_id}/files/{file_id}/description")(doc_patch_file_description)
+    app.get("/docs/{entity_id}/files/_section")(doc_files_section)
+    app.get("/lists/{entity_id}/files/_section")(doc_files_section)
+    app.get("/docs/{entity_id}/files/{file_id}/download")(doc_download_file)
+    app.get("/lists/{entity_id}/files/{file_id}/download")(doc_download_file)
 
     @app.get("/lists")
     async def lists_page(request: Request):
@@ -4835,17 +4867,17 @@ def setup_routes(app):
         _settings = company.get("settings") or {}
         _new_url, _ = _new_list_target(list_type)
         if list_type == "audit":
-            _new_btn = A(t("documents.new_audit"), href=safe_url(_new_url), cls="btn btn--primary")
+            _new_btn = A(_new_list_label(list_type, lang), href=safe_url(_new_url), cls="btn btn--primary")
         elif list_type == "shipping_doc":
-            _new_btn = Button(t("page.new_shipping_doc"), hx_post=_new_url,
+            _new_btn = Button(_new_list_label(list_type, lang), hx_post=_new_url,
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
-            _new_btn = Button(t("page.new_list"), hx_post=_new_url, hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+            _new_btn = Button(_new_list_label(list_type, lang), hx_post=_new_url, hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
         export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
             Div(
                 list_page_header(
-                    t("page.lists", lang),
+                    _lists_page_heading(list_type, lang),
                     _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                     export_link,
                     A(import_icon(), t("btn.import"), href="/lists/import", cls="btn btn--secondary", data_import_hint=True) if role_has_permission(_settings, _role, "import_export_data") else "",
@@ -6115,6 +6147,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
             options=options,
             value=value,
             placeholder=t("documents.search_contacts"),
+            record_type="contact",
             search_url=f"/contacts/search-options?contact_type={contact_type}&field={field}",
             **save_attrs,
         ),
@@ -6330,7 +6363,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
 
     # Labels
     section_title = t("documents.credit_application") if is_credit_note else t("documents.payments")
-    section_icon = "\U0001f4b3" if is_credit_note else "\U0001f4b0"
+    section_icon = "credit-card"
     add_label = t(note["apply_title"]) if is_credit_note else (t("btn.record_payment") if is_bill else t("documents.receive_payment"))
 
     # Deleted payments are tombstoned in the doc, not removed; only voided ones
@@ -6351,7 +6384,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     history_rows = []
     for p in payments:
         voided = p.get("status") == "voided"
-        p_date = p.get("payment_date") or p.get("recorded_at", "")[:10]
+        p_date = p.get("payment_date") or (p.get("recorded_at") or "")[:10]
         p_method = p.get("method", "")
         p_bank = p.get("bank_account", "")
         p_ref = p.get("reference", "")
@@ -6376,7 +6409,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         elif p.get("unmatched") and is_operator:
             # Recorded here from the unmatched payments: taking it off puts it back on that list.
             void_cell = Td(Details(
-                Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.return_to_unmatched")),
+                Summary(icon("trash"), cls="btn btn--ghost btn--xs", title=t("documents.return_to_unmatched")),
                 Form(
                     Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
                     operation_key_input(),
@@ -6410,7 +6443,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 Span(t("documents.stripe_released"), cls="text-muted small") if p.get("stripe_released_at") else "",
                 refund_form,
                 Details(
-                    Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
+                    Summary(icon("trash"), cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
                     Form(
                         Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
                         operation_key_input(),
@@ -6491,7 +6524,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Form(
                         Div(
                             Div(Label(t(note["target_label"]), cls="form-label"),
-                                searchable_select("target_doc_id", [(oid, label) for oid, label, _owed in options],
+                                searchable_select("target_doc_id", [(oid, label) for oid, label, _owed in options], record_type="doc",
                                                   search_url=f"/docs/{entity_id}/credit-target-options"),
                                 cls="form-group"),
                             Div(Label(t("label.amount"), cls="form-label"),
@@ -6568,14 +6601,14 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         cls="form-row",
                     ),
                     operation_key_input(),
-                    Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
+                    Div(Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"), cls="form-actions"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
                 ),
                 cls="payment-form-section",
             )
 
     return Div(
-        Div(Span(section_icon, cls="section-icon"), H3(section_title, cls="section-title"), cls="section-header"),
+        section_header(section_title, icon_name=section_icon),
         history_table,
         summary_line,
         add_form,
@@ -7412,7 +7445,7 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
         *rows,
         Input(type="hidden", name="currency", value=doc.get("currency") or ""),
         Div(Label(t("documents.invoice_target"), cls="form-label"),
-            searchable_select("target_doc_id", options, value=""), cls="inline-form-row"),
+            searchable_select("target_doc_id", options, value="", record_type="doc"), cls="inline-form-row"),
         Div(id="draw-preview", hx_post=f"/docs/{entity_id}/invoice-lines/preview", hx_include="#draw-panel",
             hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen",
             **PREVIEW_ATTRS),
@@ -7614,7 +7647,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     subtotal_value = _pick("subtotal")
     discount_value = _pick("discount_amount") or 0
     currency = doc.get("currency") or "USD"
-    is_list = doc_type == "list"
+    is_list = doc.get("entity_type") == "list" or (doc_type == "list" and doc.get("entity_type") != "doc")
     # Lists use /lists/ endpoints; docs use /docs/
     _base = f"/lists/{entity_id}" if is_list else f"/docs/{entity_id}"
 
@@ -7956,7 +7989,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Dialog(
                     Div(
                         H3(t("btn.send"), cls="modal-dialog__title"),
-                        Button("✕", type="button",
+                        Button(icon("x"), type="button",
                                onclick="this.closest('dialog').close()",
                                cls="modal-dialog__close", aria_label=t("btn.close")),
                         cls="modal-dialog__header",
@@ -8091,7 +8124,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Dialog(
                 Div(
                     H3(t("btn.share"), cls="modal-dialog__title"),
-                    Button("✕", type="button",
+                    Button(icon("x"), type="button",
                            onclick="this.closest('dialog').close()",
                            cls="modal-dialog__close", aria_label=t("btn.close")),
                     cls="modal-dialog__header",
@@ -8754,7 +8787,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if doc_type in ("bill", "expense") and _ai_loaded:
             _ai_dropzone = [
                 Div(
-                    Div("✨", cls="ai-dropzone__icon"),
+                    Div(icon("sparkles"), cls="ai-dropzone__icon"),
                     Div(t("documents.ai_dropzone_text"), cls="ai-dropzone__text"),
                     Div(t("doc.powered_by_celerp_ai_operator"), cls="ai-dropzone__sub"),
                     cls="ai-dropzone",
@@ -8811,7 +8844,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # (_celerpApplyDefaultTaxes), which a removal on the page can change live.
             Template(_li_empty_row(None), id="line-row-tpl"),
             Div(
-                Span("📷", cls="scan-bar-icon"),
+                Span(icon("camera"), cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
                       cls="scan-bar-input", autocomplete="off", autofocus=False),
                 # Scans accumulate as a comma list (Enter appends a comma, never a request) and the
@@ -9443,11 +9476,12 @@ async function celerpAcSearch(input, field) {
         }
         const _expenseTypes = ['bill', 'purchase_order', 'consignment_in'];
         const _customLabel = _expenseTypes.includes(_CELERP_DOC_TYPE)
-            ? '✏ Use as expense: "' + q + '"'
-            : '✏ Use as custom entry: "' + q + '"';
+            ? 'Use as expense: "' + q + '"'
+            : 'Use as custom entry: "' + q + '"';
         const custom = document.createElement('div');
         custom.className = 'catalog-ac-option catalog-ac-option--custom';
-        custom.textContent = _customLabel;
+        custom.append(celerpFragment(_L.icon_pencil), ' ');
+        custom.append(document.createTextNode(_customLabel));
         custom.addEventListener('mousedown', e => {
             e.preventDefault();
             list.style.display = 'none';
@@ -9467,14 +9501,7 @@ async function celerpAcSearch(input, field) {
 // Fixed to the window so it escapes overflow:auto scroll containers. A fixed list cannot be
 // scrolled to: open it above the field when it does not fit below and there is more room above.
 function _celerpAcPlace(list, wrap) {
-    const rect = wrap.getBoundingClientRect();
-    list.style.position = 'fixed';
-    list.style.left = rect.left + 'px';
-    list.style.width = rect.width + 'px';
-    list.style.zIndex = '9999';
-    const below = window.innerHeight - rect.bottom;
-    const h = list.offsetHeight;
-    list.style.top = (h > below && rect.top > below ? rect.top - Math.min(h, rect.top) : rect.bottom) + 'px';
+    placeFieldPopup(list, wrap.querySelector('.catalog-ac-input') || wrap, 200);
 }
 function celerpAcBlur(input) {
     const list = input.parentElement.querySelector('.catalog-ac-list');
@@ -10469,7 +10496,7 @@ function _celerpShowReservedConflicts(conflicts) {
     closeBtn.type = 'button';
     closeBtn.className = 'modal-dialog__close';
     closeBtn.setAttribute('aria-label', _L.close);
-    closeBtn.textContent = '✕';
+    closeBtn.replaceChildren(celerpFragment(_L.icon_x));
     closeBtn.onclick = () => dlg.close();
     header.append(title, closeBtn);
     dlg.appendChild(header);
@@ -10859,7 +10886,7 @@ async function celerpCsvImport(input, entityId) {
                 "docId": entity_id or '',
                 "isDraft": str('true' if is_draft else 'false'),
                 "canEditLines": bool(can_edit_lines),
-                "labels": {'scanning': t('documents.scanning'), 'scan_error': t('documents.scan_error'), 'scan_add_btn': _scan_btn, 'scan_added': _scan_done, 'scan_run_committed': t('documents.scan_run_committed'), 'scan_reload_needed': t('documents.scan_reload_needed'), 'lookup_error': t('documents.lookup_error'), 'no_items_yet': t('documents.picker_no_items_yet'), 'view_item_details': t('documents.view_item_details'), 'no_linked_item': t('documents.no_linked_item'), 'view_in_catalog': t('documents.view_in_catalog'), 'view_reserving_document': t('documents.view_reserving_document'), 'discount': t('doc.discount'), 'discount_word': t('label.discount'), 'subtotal': t('doc.subtotal'), 'net_subtotal': t('documents.net_subtotal'), 'double_click_rename': t('documents.double_click_rename'), 'save_failed': t('documents.save_failed'), 'invalid_qty': t('documents.enter_a_number'), 'lines_unsaved': t('documents.lines_unsaved'), 'dup_on_doc': t('documents.duplicate_item_on_document'), 'reprice_failed': t('documents.reprice_failed'), 'reprice_partial_title': t('documents.reprice_partial_title'), 'reprice_partial_one': t('documents.reprice_partial_one'), 'reprice_partial_many': t('documents.reprice_partial_many'), 'reprice_missing_item_tip': t('documents.reprice_missing_item_tip'), 'import_failed': t('documents.import_failed'), 'allow_split_warn': t('documents.allow_split_warn'), 'reserved_conflict_title': t('documents.reserved_conflict_title'), 'close': t('btn.close'), 'is_reserved_on': t('documents.is_reserved_on'), 'another_document': t('documents.another_document'), 'reserved_conflict_hint': t('documents.reserved_conflict_hint'), 'keep_lines': t('documents.keep_lines'), 'remove_from_draft': t('documents.remove_from_draft'), 'rows_selected': t('documents.rows_selected'), 'no_lines_selected': t('documents.no_lines_selected'), 'no_inventory_labels': t('documents.no_inventory_items_labels'), **_line_skip_strings(), 'confirm_delete_lines': _count_forms('documents.confirm_delete_lines'), 'could_not_set_reserved': t('documents.could_not_set_reserved'), 'could_not_set_available': t('documents.could_not_set_available'), 'unexpected_error': t('error.unexpected_error_body')},
+                "labels": {'scanning': t('documents.scanning'), 'scan_error': t('documents.scan_error'), 'scan_add_btn': _scan_btn, 'scan_added': _scan_done, 'scan_run_committed': t('documents.scan_run_committed'), 'scan_reload_needed': t('documents.scan_reload_needed'), 'lookup_error': t('documents.lookup_error'), 'no_items_yet': t('documents.picker_no_items_yet'), 'view_item_details': t('documents.view_item_details'), 'no_linked_item': t('documents.no_linked_item'), 'view_in_catalog': t('documents.view_in_catalog'), 'view_reserving_document': t('documents.view_reserving_document'), 'discount': t('doc.discount'), 'discount_word': t('label.discount'), 'subtotal': t('doc.subtotal'), 'net_subtotal': t('documents.net_subtotal'), 'double_click_rename': t('documents.double_click_rename'), 'save_failed': t('documents.save_failed'), 'invalid_qty': t('documents.enter_a_number'), 'lines_unsaved': t('documents.lines_unsaved'), 'dup_on_doc': t('documents.duplicate_item_on_document'), 'reprice_failed': t('documents.reprice_failed'), 'reprice_partial_title': t('documents.reprice_partial_title'), 'reprice_partial_one': t('documents.reprice_partial_one'), 'reprice_partial_many': t('documents.reprice_partial_many'), 'reprice_missing_item_tip': t('documents.reprice_missing_item_tip'), 'import_failed': t('documents.import_failed'), 'allow_split_warn': t('documents.allow_split_warn'), 'reserved_conflict_title': t('documents.reserved_conflict_title'), 'close': t('btn.close'), 'is_reserved_on': t('documents.is_reserved_on'), 'another_document': t('documents.another_document'), 'reserved_conflict_hint': t('documents.reserved_conflict_hint'), 'keep_lines': t('documents.keep_lines'), 'remove_from_draft': t('documents.remove_from_draft'), 'rows_selected': t('documents.rows_selected'), 'no_lines_selected': t('documents.no_lines_selected'), 'no_inventory_labels': t('documents.no_inventory_items_labels'), **_line_skip_strings(), 'confirm_delete_lines': _count_forms('documents.confirm_delete_lines'), 'could_not_set_reserved': t('documents.could_not_set_reserved'), 'could_not_set_available': t('documents.could_not_set_available'), 'unexpected_error': t('error.unexpected_error_body'), 'icon_pencil': str(icon('pencil')), 'icon_x': str(icon('x'))},
                 "statusBadge": {k: {'label': t(v[0]), 'cls': v[1]} for k, v in _STATUS_BADGE.items()},
             })),
             cls="lines-section",
@@ -11266,7 +11293,7 @@ async function celerpCsvImport(input, entityId) {
             # The pencil sits just LEFT of the "Total:" label; the amount stays flush-right
             # (accounting format).
             Span(
-                (Button("✎", type="button", cls="btn-disc-edit",
+                (Button(icon("pencil"), type="button", cls="btn-disc-edit",
                         title=t("documents.add_edit_discount"), aria_label=t("documents.add_edit_discount"),
                         onclick="celerpOpenDiscount()") if _can_discount else ""),
                 Span(t("doc.total"), cls="total-label total-label--final"),
@@ -11337,7 +11364,7 @@ async function celerpCsvImport(input, entityId) {
 
     # Build contact detail rows - hide payment terms/outstanding for lists
     _contact_rows: list = [
-        Div(Span("👤", cls="section-icon"), H3(contact_label, cls="section-title"), cls="section-header"),
+        Div(Span(icon("user"), cls="section-icon"), H3(contact_label, cls="section-title"), cls="section-header"),
         Div(Div(t("doc.contact"), cls="form-label"), _cell("contact_id", contact_value), cls="form-group"),
         Div(Div(t("doc.company"), cls="form-label"), _cell("contact_company_name", doc.get("contact_company_name") or "--"), cls="form-group"),
         Div(Div(t("doc.address"), cls="form-label"), _cell("contact_billing_address", doc.get("contact_billing_address") or doc.get("contact_address")), cls="form-group"),
@@ -11411,7 +11438,10 @@ async function celerpCsvImport(input, entityId) {
                     cls="editable-cell editable-cell--locked") if is_draft
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
-            Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
+            # Sales documents carry the customer's reference; purchasing ones the vendor's own.
+            Div(Div(t("label.reference") + ":" if doc_type in ("purchase_order", "bill", "consignment_in", "debit_note")
+                    else t("doc.reference"), cls="meta-label"),
+                _cell("reference", doc.get("reference")), cls="meta-cell"),
             (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
                    href=safe_url(doc_href(doc["original_doc_id"]))),
@@ -11425,7 +11455,7 @@ async function celerpCsvImport(input, entityId) {
         # Company (left) + Contact/Ship To (right, stacked)
         Div(
             Div(
-                Div(Span("🏢", cls="section-icon"), H3(t("page.from"), cls="section-title"), cls="section-header"),
+                Div(Span(icon("building"), cls="section-icon"), H3(t("page.from"), cls="section-title"), cls="section-header"),
                 Div(Div(t("doc.company"), cls="form-label"), _cell("company_name", doc.get("company_name") or "--"), cls="form-group"),
                 Div(
                     Div(t("doc.address"), cls="form-label"),
@@ -11441,7 +11471,7 @@ async function celerpCsvImport(input, entityId) {
             Div(
                 Div(*_contact_rows, cls="doc-section"),
                 Div(
-                    Div(Span("🚚", cls="section-icon"), H3(t("page.ship_to"), cls="section-title"), cls="section-header"),
+                    Div(Span(icon("truck"), cls="section-icon"), H3(t("page.ship_to"), cls="section-title"), cls="section-header"),
                     Div(Div(t("doc.address"), cls="form-label"),
                         _cell("contact_shipping_address", doc.get("contact_shipping_address") or "--")
                         if not is_draft and not is_list else
@@ -11461,7 +11491,7 @@ async function celerpCsvImport(input, entityId) {
         # The draft carries EVERY field the printouts need (draft shows more, the
         # papers subtract), laid out as one unmissable grid.
         (Div(
-            Div(Span("📦", cls="section-icon"), H3(t("page.shipment"), cls="section-title"), cls="section-header"),
+            Div(Span(icon("package"), cls="section-icon"), H3(t("page.shipment"), cls="section-title"), cls="section-header"),
             P(t("shipment.section_hint"), cls="section-hint"),
             Div(*_shipment_fields(doc, entity_id, is_draft), cls="shipment-grid"),
             cls="doc-section",
@@ -11497,7 +11527,7 @@ async function celerpCsvImport(input, entityId) {
         # section below instead.
         ("" if is_no_money else Div(
             Div(
-                Div(Span("📄", cls="section-icon"), H3(t("page.terms_conditions"), cls="section-title"), cls="section-header"),
+                Div(Span(icon("file-text"), cls="section-icon"), H3(t("page.terms_conditions"), cls="section-title"), cls="section-header"),
                 *(_tc_dropdown(entity_id, doc, tc_templates or [], doc_type, is_draft) if is_draft and not is_list else [
                     Div(Div(t("doc.template"), cls="form-label"), P(doc.get("terms_template") or "--", cls="meta-value"), cls="form-group"),
                 ]),
@@ -11513,7 +11543,7 @@ async function celerpCsvImport(input, entityId) {
                 cls="doc-section doc-section--half",
             ),
             Div(
-                Div(Span("💬", cls="section-icon"), H3(t("page.note_to_customer"), cls="section-title"), cls="section-header"),
+                Div(Span(icon("message-square"), cls="section-icon"), H3(t("page.note_to_customer"), cls="section-title"), cls="section-header"),
                 Div(
                     Textarea(doc.get("customer_note") or "", name="customer_note", rows="4",
                              placeholder=t("documents.customer_note_placeholder"), cls="form-input",
@@ -11534,7 +11564,7 @@ async function celerpCsvImport(input, entityId) {
             ),
             Div(
                 Div(
-                    Div(Span("📝", cls="section-icon"), H3(t("page.internal_notes"), cls="section-title"), cls="section-header"),
+                    Div(Span(icon("notebook-pen"), cls="section-icon"), H3(t("page.internal_notes"), cls="section-title"), cls="section-header"),
                     _shared_notes_tab(
                         entity_id=entity_id,
                         notes=notes or [],
@@ -11550,7 +11580,7 @@ async function celerpCsvImport(input, entityId) {
                     id=f"notes-section-{_safe_id(entity_id)}",
                 ),
                 Div(
-                    Div(Span("🤝", cls="section-icon"), H3(t("page.sales_commissions"), cls="section-title"), cls="section-header"),
+                    Div(Span(icon("handshake"), cls="section-icon"), H3(t("page.sales_commissions"), cls="section-title"), cls="section-header"),
                     P(t("doc.commission_agent_and_fee_for_this_document_agent_m"), cls="section-hint"),
                     Div(Div(t("doc.commission_agent"), cls="form-label"), _cell("commission_contact_id", _resolve_contact_display(doc, "commission_contact_id")), cls="form-group"),
                     Div(Div(t("doc.commission"), cls="form-label"), _cell("commission_rate_pct", doc.get("commission_rate_pct")), cls="form-group"),
@@ -11565,18 +11595,18 @@ async function celerpCsvImport(input, entityId) {
             Summary(
                 H2(t("label.files"), cls="internal-section-title"),
             ),
-            _doc_files_section("doc", entity_id, _enrich_doc_files(doc)),
+            _doc_files_section("list" if is_list else "doc", entity_id, _enrich_doc_files(doc)),
             cls="doc-internal",
         ),
         # --- GL Impact section (accounting permission only) ---
         (Div(id=_gl_impact_dom_id(entity_id),
-             hx_get=f"/docs/{entity_id}/gl-impact",
+             hx_get=f"{_base}/gl-impact",
              hx_trigger="load",
              hx_swap="outerHTML")
          if role_has_permission(settings or {}, role, "view_financial_reports") else ""),
         # --- History / Activity section ---
         Div(id=f"doc-history-{entity_id.replace(':', '-').replace('/', '-')}",
-            hx_get=f"/docs/{entity_id}/history?page=1",
+            hx_get=f"{_base}/history?page=1",
             hx_trigger="load",
             hx_swap="outerHTML"),
         cls="doc-detail doc-detail--gc",
@@ -11601,58 +11631,83 @@ def _gl_entry_heading(entry: dict, doc_ref: str) -> str:
     return entry.get("memo") or doc_ref
 
 
+def _readable_date(value) -> str:
+    """An ISO date or timestamp as "28 Oct 2026", the month in the reader's language."""
+    text = str(value or "")[:10]
+    try:
+        y, m, d = (int(p) for p in text.split("-"))
+    except ValueError:
+        return text
+    return f"{d} {t(f'date.month_short_{m}')} {y}"
+
+
+def _gl_line_item(ln: dict) -> str:
+    """What a journal line is for: the item, its quantity and unit, never the entry's raw memo."""
+    if not ln.get("item"):
+        return EMPTY
+    qty = ln.get("quantity")
+    if qty is None:
+        return str(ln["item"])
+    unit = display_unit(ln.get("unit")) if ln.get("unit") else ""
+    return f"{ln['item']} \u00d7 {fmt_qty(qty)}{' ' + unit if unit else ''}"
+
+
 def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> FT:
-    """The journal entries a document posted, as the books hold them: one table per
-    entry, so each balances on its own and links back to the journal."""
+    """One document ledger table, retaining void lines but totalling live postings only."""
     entries = data.get("entries") or []
-    heading = Div(H3(t("documents.gl_impact"), cls="section-title"), cls="section-header")
+    heading = section_header(t("documents.gl_impact"), icon_name="book-open")
     if not entries:
         draft = str(data.get("status") or "").lower() == "draft" and data.get("doc_type") in _POSTING_DOC_TYPES
         key = ("documents.gl_impact_list_not_posted" if _list_behavior(data.get("list_type")).posts
                else "documents.gl_impact_not_posted" if draft else "documents.gl_impact_none")
         body = P(t(key), cls="empty-state-msg")
         return Div(heading, body, id=_gl_impact_dom_id(entity_id), cls="doc-section")
-    tables = []
-    # Newest first, as the Journal the headings link to lists them (the API answers oldest first).
-    for e in reversed(entries):
-        voided = e.get("status") == "void"
-        rows = []
-        for ln in e.get("lines") or []:
-            memo = e.get("memo") or ""
-            if ln.get("item"):
-                memo = f"{ln['item']} x {ln.get('quantity')}" if ln.get("quantity") is not None else str(ln["item"])
+    rows = []
+    debit_total = credit_total = Decimal(0)
+    # Newest first, as the Journal the entry links open lists them (the API answers oldest first).
+    for entry in reversed(entries):
+        voided = entry.get("status") == "void"
+        ref = str((entry.get("source_doc") or {}).get("doc_ref") or data.get("doc_ref") or "")
+        date = _readable_date(entry.get("ts"))
+        # What posted the entry and the document number, never an internal entry id; named once,
+        # on the entry's first line.
+        label = _gl_entry_heading(entry, ref) or t("documents.gl_impact_entry_for", ref=ref, date=date)
+        for n, line in enumerate(entry.get("lines") or []):
+            if not voided:
+                debit_total += Decimal(str(line.get("debit") or 0))
+                credit_total += Decimal(str(line.get("credit") or 0))
             rows.append(Tr(
-                Td(f"{ln.get('account')} {ln.get('name') or ''}".strip()),
-                Td(fmt_money(ln["debit"], currency) if ln.get("debit") else EMPTY, cls="cell--number"),
-                Td(fmt_money(ln["credit"], currency) if ln.get("credit") else EMPTY, cls="cell--number"),
-                Td(ln.get("party_name") or EMPTY),
-                Td(memo or EMPTY),
+                Td(ref or EMPTY, cls="gl-impact-source"),
+                Td(A(label, href="/accounting?q=" + quote_plus(ref or str(entry.get("je_id") or "")),
+                     cls="table-link") if n == 0 else "",
+                   cls="gl-impact-entry"),
+                Td(date or EMPTY),
+                Td(Span(t("documents.gl_impact_void").upper() if voided else t("documents.gl_impact_posted"),
+                        cls="badge badge--void" if voided else "badge badge--accepted")),
+                Td(f"{line.get('account') or ''} {line.get('name') or ''}".strip()),
+                Td(fmt_money(line["debit"], currency) if line.get("debit") else EMPTY, cls="cell--number"),
+                Td(fmt_money(line["credit"], currency) if line.get("credit") else EMPTY, cls="cell--number"),
+                Td(line.get("party_name") or EMPTY),
+                Td(_gl_line_item(line)),
+                cls="gl-impact-row--void" if voided else "gl-impact-row--posted",
             ))
-        doc_ref = str((e.get("source_doc") or {}).get("doc_ref") or "")
-        link = A(_gl_entry_heading(e, doc_ref), href="/accounting?q=" + quote_plus(doc_ref or str(e.get("je_id") or "")),
-                 cls="table-link")
-        tables.append(Div(
-            Div(link, Span(f" {e.get('ts') or ''}"),
-                Span(f" {t('documents.gl_impact_void')}", cls="badge") if voided else "", cls="gl-impact-entry"),
-            Table(
-                Thead(Tr(Th(t("documents.gl_impact_account")), Th(t("documents.gl_impact_debit"), cls="cell--number"),
-                         Th(t("documents.gl_impact_credit"), cls="cell--number"), Th(t("documents.gl_impact_party")),
-                         Th(t("documents.gl_impact_memo")))),
-                Tbody(*rows), cls="data-table"),
-            cls="gl-impact-block"))
-    return Div(heading, *tables, id=_gl_impact_dom_id(entity_id), cls="doc-section")
-
-
-def _doc_history_section(ledger: list[dict]) -> FT:
-    """Render a timeline of ledger events for a document. Legacy: used by non-paginated callers."""
-    return activity_table(
-        ledger,
-        title=t("documents.history"),
-        section_cls="doc-section",
-        icon="\U0001f4dc",
-        empty_msg=t("documents.no_activity_recorded"),
-        max_display=20,
+    balanced = debit_total == credit_total
+    table = Table(
+        Thead(Tr(Th(t("documents.gl_impact_source")), Th(t("acct.soa_kind_journal")), Th(t("th.date")),
+                 Th(t("th.status")), Th(t("documents.gl_impact_account")),
+                 Th(t("documents.gl_impact_debit"), cls="cell--number"),
+                 Th(t("documents.gl_impact_credit"), cls="cell--number"),
+                 Th(t("documents.gl_impact_party")), Th(t("th.item")))),
+        Tbody(*rows),
+        Tfoot(Tr(Td(t("th.total") + " (" + t("documents.gl_impact_posted") + ")", colspan="5"),
+                 Td(fmt_money(float(debit_total), currency), cls="cell--number"),
+                 Td(fmt_money(float(credit_total), currency), cls="cell--number"),
+                 Td(Span(t("documents.gl_impact_balanced" if balanced else "acct.out_of_balance"),
+                         cls="badge badge--accepted" if balanced else "badge badge--danger"), colspan="2"),
+                 cls="gl-impact-totals")),
+        cls="data-table doc-card-table",
     )
+    return Div(heading, Div(table, cls="table-scroll-wrap"), id=_gl_impact_dom_id(entity_id), cls="doc-section")
 
 
 # A status card: its label, colour, the list filter its link applies and how it reads its count
@@ -11835,13 +11890,25 @@ def _new_list_target(list_type: str) -> tuple[str, bool]:
     return f"/lists/create-blank?type={list_type}" if list_type in _LIST_TYPES else "/lists/create-blank", True
 
 
+def _new_list_label(list_type: str, lang: str | None = None) -> str:
+    """The New button on a lists page names the type it makes, so a page filtered to transfers
+    never offers a New Quotation that makes a transfer."""
+    if list_type == "audit":
+        return t("documents.new_audit", lang)
+    if list_type == "shipping_doc":
+        return t("page.new_shipping_doc", lang)
+    if not list_type or list_type == "quotation" or list_type not in _LIST_TYPES:
+        return t("page.new_list", lang)
+    return t("table.new_doc_type", lang, type=_list_type_label(list_type))
+
+
 def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None,
                 list_type: str = "") -> FT:
     if not lists:
         windowed = period_empty_text(period, lang)
         new_url, posts = _new_list_target(list_type)
         return Div(
-            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), new_url,
+            empty_state_cta(windowed or t("label.no_lists_yet", lang), _new_list_label(list_type, lang), new_url,
                             hx_post=posts, hint=t("lists.empty_hint", lang),
                             more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="list-table",

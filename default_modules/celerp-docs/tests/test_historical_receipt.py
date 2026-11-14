@@ -272,7 +272,7 @@ async def test_historical_deliveries_of_one_line_are_one_sold_lot_each(client, s
 
 @pytest.mark.asyncio
 async def test_a_sold_lot_is_stock_of_the_product_its_line_names_and_never_of_a_guess(client, session):
-    """RED before the change: the sold lot named no product, so Demand Planning took it for a
+    """RED before the change: the sold lot named no product, so Production Planning took it for a
     product of its own. A line whose item names no product (units split off under their own
     SKU) leaves its lot unlinked and the company is told once."""
     from celerp.models.notification import Notification

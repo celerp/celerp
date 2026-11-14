@@ -23,9 +23,9 @@ PLUGIN_MANIFEST = {
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
         "projection_handler": [
-            {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event"},
+            {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
         ],
         "search_provider": {
             "handler": "celerp_accounting.search:global_search",

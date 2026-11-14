@@ -15,6 +15,7 @@ import uuid
 import asyncio
 from datetime import date as _date
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, PlainTextResponse
@@ -495,7 +496,7 @@ def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
         # request fields, or a client could post amounts unrelated to the rate.
         Td("", cls="cell--number cell--muted je-base-debit je-fx-col"),
         Td("", cls="cell--number cell--muted je-base-credit je-fx-col"),
-        Td(Button("✕", type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
+        Td(Button(icon("x"), type="button", cls="btn btn--ghost btn--sm", title=t("btn.remove"),
                   onclick="celerpJeRemoveLine(this)")),
     )
 

@@ -22,6 +22,12 @@ async def _history(ui, eid: str) -> str:
     return BeautifulSoup((await ui.get(f"/docs/{eid}/history?per_page=100")).text, "html.parser").get_text(" ", strip=True)
 
 
+async def _history_cells(ui, eid: str) -> list[list[str]]:
+    """The History table's rows as cell texts: Date, Who, Event, Field, Old value, New value."""
+    soup = BeautifulSoup((await ui.get(f"/docs/{eid}/history?per_page=100")).text, "html.parser")
+    return [[td.get_text(" ", strip=True) for td in tr.find_all("td")] for tr in soup.select("tbody tr")]
+
+
 async def _changed_fields(ui, eid: str) -> list[dict]:
     """Each ``fields_changed`` the agreement's ledger holds, oldest first."""
     r = await ui.api.get("/ledger", params={"entity_id": eid, "limit": 200})
@@ -56,13 +62,16 @@ async def test_history_names_each_change_as_the_agreement_page_does(owner_ui, mo
     for raw in ("Generation Mode", "Auto Send", "Catchup Periods", "Consents", "Periods updated", "Billing Timing",
                 "Cancel At Period End", "auto_invoice", "manual_due", "True", "False", "→ arrears", "→ advance"):
         assert raw not in text, raw
-    timing = (t("subscriptions.timing_advance", "en"), t("subscriptions.timing_arrears", "en"))
-    assert f"{t('subscriptions.billing_timing', 'en')}: {timing[0]} → {timing[1]}" in text
-    mode = t("subscriptions.billing_mode", "en")
-    assert f"{mode}: {t('subscriptions.mode_manual_due', 'en')} → {t('subscriptions.mode_auto_invoice', 'en')}" in text
-    assert f"{t('subscriptions.auto_send', 'en')}: {t('settings.no', 'en')} → {t('settings.yes', 'en')}" in text
-    assert f"{t('subscriptions.stop_at_period_end', 'en')}: {t('settings.no', 'en')} → {t('settings.yes', 'en')}" in text
-    assert f"{t('subscriptions.catchup_window', 'en')}: 0 → 2" in text
+    changes = [r[3:] for r in await _history_cells(owner_ui, eid)]
+    no, yes = t("settings.no", "en"), t("settings.yes", "en")
+    for change in ([t("subscriptions.billing_timing", "en"), t("subscriptions.timing_advance", "en"),
+                    t("subscriptions.timing_arrears", "en")],
+                   [t("subscriptions.billing_mode", "en"), t("subscriptions.mode_manual_due", "en"),
+                    t("subscriptions.mode_auto_invoice", "en")],
+                   [t("subscriptions.auto_send", "en"), no, yes],
+                   [t("subscriptions.stop_at_period_end", "en"), no, yes],
+                   [t("subscriptions.catchup_window", "en"), "0", "2"]):
+        assert change in changes, (change, changes)
     assert t("subscriptions.consent_generation", "en", date="").strip() in text
     assert t("subscriptions.consent_generation_withdrawn", "en") in text
 
@@ -244,7 +253,9 @@ async def test_every_bill_path_records_only_what_changed(owner_ui, session, monk
     for eid in (manual, bulk, held):
         events = await _agreement_events(owner_ui, eid)
         assert not [e for e in events if _said_nothing(e)], (eid, [e["data"] for e in events if _said_nothing(e)])
-        assert "--" not in (await _history(owner_ui, eid)).split(), eid
+        # A row whose Field, Old value and New value are all empty says nothing.
+        silent = [r for r in await _history_cells(owner_ui, eid) if r[3:] == ["--", "--", "--"]]
+        assert not silent, (eid, silent)
     # The receipt still answers a repeated request with the first answer.
     again = await owner_ui.api.post(f"/subscriptions/{manual}/bill-early", json={"request_key": "early-1"})
     assert again.status_code == 200 and again.json() == early.json(), again.text
@@ -298,12 +309,11 @@ async def test_history_names_unattended_billing_as_automatic(owner_ui, session, 
     eid = await agreement(owner_ui.api, {}, start="2026-07-01")
     assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
     await tick(session, await company_id(owner_ui.api, {}), "2026-07-01")
-    soup = BeautifulSoup((await owner_ui.get(f"/docs/{eid}/history?per_page=100")).text, "html.parser")
-    rows = [[td.get_text(" ", strip=True) for td in tr.find_all("td")] for tr in soup.select("tbody tr")]
+    rows = await _history_cells(owner_ui, eid)
     automatic = t("activity.actor_automatic", "en")
     billed = [r for r in rows if "Billed" in " ".join(r)]
-    assert billed and all(r[2] == automatic for r in billed), rows
-    assert [r for r in rows if r[2] not in (automatic, "--")], rows  # the owner's own changes
+    assert billed and all(r[1] == automatic for r in billed), rows
+    assert [r for r in rows if r[1] not in (automatic, "--")], rows  # the owner's own changes
     items = (await owner_ui.api.get("/ledger", params={"entity_id": eid, "limit": 200, "resolve": "true"})).json()
     items = items["items"] if isinstance(items, dict) else items
     flags = {bool(e.get("actor_automatic")) for e in items if e["event_type"] != "doc.created"}

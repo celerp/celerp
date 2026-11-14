@@ -6,7 +6,7 @@ Demand on a product is, per order, what its physical lines ordered less what has
 and not taken back: a shipment reversed asks for it again, and service or freight lines ask
 for nothing. Lines naming a lot of the product are demand for that product. Supply is the
 stock on hand, which no longer includes what was sold, plus what open runs still have to
-give. Demand Planning and the work orders made when an invoice is posted read the same
+give. Production Planning and the work orders made when an invoice is posted read the same
 figures.
 """
 from __future__ import annotations

@@ -474,6 +474,21 @@ jobs:
       - name: Fail if the committed constraints are stale
         run: git diff --exit-code constraints.txt
 
+  # An English string changed with every translation left as it was never reaches the
+  # translators: it must be translated or queued in tests/i18n_pending_translation.json.
+  translations:
+    name: No stale translations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # the merge commit and the main it merges into
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compare with main
+        run: python scripts/check_stale_translations.py --base HEAD^1
+
   # The Intel macOS desktop build installs into an x86_64 bundled Python, where a
   # package with no x86_64 wheel fails. Runs on every PR so Test gates on it.
   mac-intel-deps:
@@ -594,7 +609,7 @@ jobs:
   # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, translations, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -638,6 +653,10 @@ jobs:
           fi
           if [ "${{ needs.constraints.result }}" != "success" ]; then
             echo "constraints.txt is stale (result: ${{ needs.constraints.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.translations.result }}" != "success" ]; then
+            echo "An English string changed with its translations left as before (result: ${{ needs.translations.result }})"
             exit 1
           fi
           if [ "${{ needs.mac-intel-deps.result }}" != "success" ] && [ "${{ needs.mac-intel-deps.result }}" != "skipped" ]; then

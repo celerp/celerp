@@ -88,5 +88,5 @@ async def test_writeoff_refusal_explains_next_step(client, session, auth):
     edit = await _set_cost(client, auth, lot, 50.0)
     assert edit.status_code == 409, edit.text
     detail = refusal_text(edit.json()["detail"])
-    assert "write-off" in detail and "journal entry" in detail, detail
+    assert "inventory adjustment" in detail and "journal entry" in detail, detail
     assert "verifiably" not in detail and "restated" not in detail, detail

@@ -77,7 +77,7 @@ _CASES = [(s, "mine") for s in sorted(_EXPECTED)] + [("reserved", "other"), ("re
 @pytest.mark.parametrize("status,holder", _CASES)
 async def test_planner_and_fulfillment_agree(client, session, auth, status, holder, where):
     """One order for five. The stock in ``status`` is either the line's own item (all five) or a
-    sibling lot of four beside one free unit on the line. Demand Planning counts it as covering
+    sibling lot of four beside one free unit on the line. Production Planning counts it as covering
     the order exactly when fulfillment can ship the order from it."""
     fg, lots = await _stocked(client, auth, *((5,) if where == "line" else (1, 4)))
     order = await _invoice(client, auth, (fg, 5))

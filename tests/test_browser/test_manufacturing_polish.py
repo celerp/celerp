@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Verify the review-pass polish: Components inventory filter (item 3) + split box one-line (item 4).
-Also covers: ESC-to-cancel on the Work In Progress inline editor + manufacturing UI screenshots."""
+Also covers: ESC-to-cancel on the Work Orders inline editor + manufacturing UI screenshots."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,7 +39,7 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     # Component rows are visually distinct (left accent class).
     assert page.locator("tr.data-row--component").count() >= 1
 
-    # /manufacturing: the Demand Planning board (lead column = item + qty to make).
+    # /manufacturing: the Production Planning board (lead column = item + qty to make).
     gold = api.post("/items", json={"status": "available", "sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
                                     "cost_total": 500, "inventory_type": "component"}).json()["id"]
     fg = api.post("/items", json={"status": "available", "sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
@@ -59,7 +59,7 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     assert "PL-MRING" in page.locator("#mfg-table").inner_text()
     # No category-tabs on the restructured page; it is now two separate pages.
     assert page.locator(".category-tabs").count() == 0, "category-tabs should be gone after restructure"
-    # Bulk-action toolbar and select-all are present on the Demand Planning page.
+    # Bulk-action toolbar and select-all are present on the Production Planning page.
     assert page.locator(".bulkbar").count() >= 1, ".bulkbar not found on /manufacturing"
     assert page.locator(".bulk-select-all").count() >= 1, ".bulk-select-all header checkbox not found"
     # Search narrows the board by product / SKU (new placeholder text).
@@ -96,7 +96,7 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
 
 
 def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
-    """Pressing ESC in the inline editor on the Work In Progress page restores the
+    """Pressing ESC in the inline editor on the Work Orders page restores the
     display chip without saving.
 
     Flow: create item + recipe -> build (planned) -> issue (in_progress) -> navigate to
@@ -126,7 +126,7 @@ def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
     state = api.get(f"/manufacturing/{run_id}").json()
     assert state["status"] == "in_progress", f"Expected in_progress, got: {state['status']}"
 
-    # Navigate to Work In Progress (the run is in_progress, so the default Active view shows it).
+    # Navigate to Work Orders (the run is in_progress, so the default Active view shows it).
     page.goto(f"{ui_server}/manufacturing/production",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
@@ -215,7 +215,7 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     # The _qty helper formats as "N unit" e.g. "5 piece"; "piece" should appear in the qty cells.
     assert "piece" in table_text.lower(), f"'piece' unit not visible in table: {table_text[:300]}"
 
-    # 5. Work In Progress page screenshot (canonical URL).
+    # 5. Work Orders page screenshot (canonical URL).
     page.goto(f"{ui_server}/manufacturing/production",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)

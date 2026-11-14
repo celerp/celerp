@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from tempfile import gettempdir
 
 import pytest
 
@@ -12,7 +13,7 @@ from .conftest import answer_confirms
 
 pytestmark = pytest.mark.browser
 
-SHOTS = Path("context/reviews/worksheet")
+SHOTS = Path(gettempdir()) / "celerp-inventory-files-batch06"
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="

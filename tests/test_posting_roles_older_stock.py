@@ -173,7 +173,7 @@ async def _marked(session, auth) -> bool:
 
 
 async def _placement(session, auth, part: str = "opening") -> dict | None:
-    """The entry placing older stock booked, if there was one: the opening stock it
+    """The entry placing opening inventory booked, if there was one: the opening stock it
     recognized, or (``part`` "transfer") what it moved between inventory accounts."""
     session.expire_all()
     rows = (await session.execute(select(Projection).where(
@@ -204,7 +204,7 @@ def _moved(je: dict) -> dict[str, tuple[float, float]]:
     return {e["account"]: (e["debit"], e["credit"]) for e in je["entries"]}
 
 
-# --- The owner's matrix: a native company's older stock is normalized once -------------
+# --- The owner's matrix: a native company's opening inventory is normalized once -------------
 
 
 async def test_all_old_purchased_stock_records_purchased_inventory_with_no_entry(session, client, auth):
@@ -621,11 +621,11 @@ async def _lock_notices(session, auth) -> list:
     session.expire_all()
     return list((await session.execute(select(Notification).where(
         Notification.company_id == auth["company_id"],
-        Notification.title == "Older stock waits for an open period"))).scalars().all())
+        Notification.title == "Opening inventory waits for an open period"))).scalars().all())
 
 
 async def test_an_upgrade_a_period_lock_holds_back_is_told_once_and_cleared_when_it_runs(session, client, auth):
-    """Older stock the upgrade could not place cannot be sold or moved until its account is
+    """Opening inventory the upgrade could not place cannot be sold or moved until its account is
     known: the company is told which lock holds it back and how to go on (move the lock),
     once however often it restarts, and the notice is taken off the bell once the upgrade
     runs."""
@@ -853,7 +853,7 @@ async def test_restored_stock_is_not_assumed_to_be_opening_stock_when_accounting
     assert await _net(session, auth, "1130-P", "1130-OB") == (30.0, 0.0)
 
 
-# --- Placed older stock sells from the account it was placed on ------------------------
+# --- Placed opening inventory sells from the account it was placed on ------------------------
 
 
 async def test_placed_older_stock_sells_from_the_account_it_was_placed_on(session, client, auth):

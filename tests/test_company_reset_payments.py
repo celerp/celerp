@@ -580,7 +580,7 @@ async def test_a_reset_refused_while_a_payment_settles_succeeds_once_it_has(real
 
 
 RECONNECT = ("Celerp lost access to your Stripe account, so payments already in progress can't be checked. "
-             "Use Reconnect Stripe in Web Access, Online Payments to finish checking them. Nothing was deleted.")
+             "Use Reconnect Stripe in Remote Access, Online Payments to finish checking them. Nothing was deleted.")
 SETTLING = ("A payment on one of this company's invoices is still being processed. "
             "Try again once it has finished. Nothing was deleted.")
 

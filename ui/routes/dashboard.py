@@ -12,7 +12,7 @@ from ui.api_client import APIError
 import asyncio
 
 from ui.components.demo_items import DEMO_ITEMS_FILTER, DEMO_ITEMS_URL
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.components.import_access import can_import_documents
 from ui.components.module_off import can_open
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
@@ -945,7 +945,7 @@ async def _demo_note(token: str, settings: dict, role: str) -> FT | str:
         return ""
     link = (A(t("dashboard.remove_demo_items"), href=DEMO_ITEMS_URL, id="remove-demo-items")
             if _role_has_permission(settings, role, "adjust_inventory") else "")
-    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
+    return Div(Span(icon("info"), cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
                cls="info-banner", id="demo-note")
 
 
@@ -1047,7 +1047,7 @@ def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
     if (has_business_type(company) or settings.get("finish_setup_dismissed")
             or not _role_has_permission(settings, role, "manage_company_lifecycle")):
         return ""
-    return Div(Span("ℹ️", cls="info-banner-icon"),
+    return Div(Span(icon("info"), cls="info-banner-icon"),
                A(t("dashboard.finish_setup"), href="/setup/company"),
                Button("×", type="button", cls="getting-started-dismiss info-banner-close",
                       title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
@@ -1063,7 +1063,7 @@ def _older_stock_banner(settings: dict, role: str) -> FT | str:
     if (not placed or settings.get("older_stock_banner_dismissed") == placed
             or not _role_has_permission(settings, role, "manage_accounting")):
         return ""
-    return Div(Span("ℹ️", cls="info-banner-icon"),
+    return Div(Span(icon("info"), cls="info-banner-icon"),
                Span(t("dashboard.older_stock_placed"), " ",
                     A(t("dashboard.older_stock_review"), href="/settings/accounting?tab=older-stock")),
                Button("×", type="button", cls="getting-started-dismiss info-banner-close",

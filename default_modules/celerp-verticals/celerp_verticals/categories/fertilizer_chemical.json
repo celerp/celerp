@@ -58,13 +58,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "batch_no",
-      "label": "Batch No.",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "expiry_date",
       "label": "Expiry Date",
       "type": "date",

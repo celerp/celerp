@@ -1515,6 +1515,7 @@ def _doc_item_lines(doc: dict, base: str) -> list[dict]:
         out.append({
             "item": line_label(li),
             "quantity": li.get("quantity"),
+            "unit": li.get("unit") or li.get("sell_by"),
             "unit_price": li.get("unit_price"),
             "fx_amount": to_stored_float(line_total),
             "amount": to_decimal(to_base(to_stored_float(line_total), rate, base)),
@@ -1558,6 +1559,7 @@ def _item_row(line: dict, side: str, doc_line: dict, amount: Decimal) -> dict:
         f"fx_{other}": None,
         "item": doc_line["item"],
         "quantity": doc_line["quantity"],
+        "unit": doc_line.get("unit"),
         "unit_price": doc_line["unit_price"],
     }
 

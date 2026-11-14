@@ -142,14 +142,26 @@ def _next_number(seq: dict, pattern: str, day: date) -> int:
     return int(seq.get("next") or 1)
 
 
+# The tokens Celerp fills in a numbering pattern, besides the sequence token ({#}, {##}, ...).
+_PATTERN_TOKENS = frozenset({"PREFIX", "YYYY", "YY", "MM", "DD"})
+
+
 def require_pattern(pattern: str) -> str:
-    """Return ``pattern`` when it numbers documents, else refuse it: it needs one sequence
-    token and only the tokens Celerp fills in."""
-    if not re.search(r"\{#+\}", pattern):
+    """Return ``pattern`` when it numbers documents, else refuse it. A pattern is text and
+    whole tokens: exactly one sequence token, any of the tokens Celerp fills in, and no curly
+    bracket outside a token, so every number it gives is filled in completely."""
+    pieces = re.split(r"(\{[^{}]*\})", pattern)
+    text, tokens = pieces[0::2], [piece[1:-1] for piece in pieces[1::2]]
+    sequence = [token for token in tokens if re.fullmatch(r"#+", token)]
+    if not sequence:
         raise Refused("documents.err_numbering_no_sequence_token", example="{####}")
-    unknown = re.findall(r"\{[^}]*\}", re.sub(r"\{(PREFIX|YYYY|YY|MM|DD|#+)\}", "", pattern))
+    unknown = [f"{{{token}}}" for token in tokens if token not in _PATTERN_TOKENS and token not in sequence]
     if unknown:
         raise Refused("documents.err_numbering_unknown_tokens", tokens=", ".join(unknown))
+    if len(sequence) > 1:
+        raise Refused("documents.err_numbering_many_sequence_tokens", example="{####}")
+    if any("{" in part or "}" in part for part in text):
+        raise Refused("documents.err_numbering_stray_brace", example="{YYYY}")
     return pattern
 
 
@@ -412,9 +424,11 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
     if pattern is not None:
         seq["pattern"] = require_pattern(pattern)
     if next_num is not None:
+        if next_num < 1:
+            raise Refused("documents.err_numbering_next_min")
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
-        seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
+        seq.update(next=next_num, year=day.year, month=day.month, day=day.day)
 
     # The counter's next number must be one a record can be stored under.
     _first_free({**settings, "sequences": {**sequences, doc_type: seq}}, doc_type, ())

@@ -301,3 +301,25 @@ async def test_concurrent_list_duplicates_get_distinct_numbers(committed_engine,
 
     copies = [st["ref_id"] for st in await _states(factory, company_id, "list") if st.get("source_list_id")]
     assert len(copies) == 2 and len(set(copies)) == 2, copies
+
+
+@pytest.mark.parametrize("doc_type", ("debit_note", "production_order", "subscription_invoice", "subscription_po"))
+async def test_concurrent_new_documents_of_each_newly_numbered_type_get_distinct_numbers(
+        committed_engine, monkeypatch, mounted_modules_running, doc_type):
+    from celerp_docs.routes import DocCreatePayload, create_doc
+    from test_helpers import mark_running
+
+    mark_running(monkeypatch, "celerp-subscriptions")
+    factory = _factory(committed_engine)
+    company_id, user_id = await _seed(factory)
+    user = types.SimpleNamespace(id=user_id)
+
+    async def create(s):
+        settings = dict((await s.get(Company, company_id)).settings or {})
+        return await create_doc(payload=DocCreatePayload(doc_type=doc_type), company_id=company_id, _=None,
+                                role="owner", settings=settings, user=user, session=s)
+
+    await _race(committed_engine, lambda s: _hold_first_call(monkeypatch, s, "commit"), create, create)
+
+    refs = [st["ref_id"] for st in await _states(factory, company_id, "doc") if st.get("doc_type") == doc_type]
+    assert len(refs) == 2 and len(set(refs)) == 2, refs

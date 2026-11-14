@@ -73,7 +73,7 @@ def notes_tab(
                 name="note",
                 placeholder=t("label.add_note_placeholder"),
                 rows="3",
-                cls="form-input",
+                cls="form-input note-input",
                 style="width:100%",
             ),
             cls="form-group",
@@ -117,7 +117,7 @@ def notes_tab(
                 ),
                 cls="note-header",
             ),
-            P(text, cls="note-text"),
+            P(text, cls="note-text", tabindex="0"),
             (Div(
                 Button(
                     t("btn.edit"),
@@ -156,7 +156,7 @@ def note_edit_form(
     safe_note_id = _safe_id(note_id)
     return Div(
         Form(
-            Textarea(current_text, name="note", rows="3", cls="form-input", style="width:100%"),
+            Textarea(current_text, name="note", rows="3", cls="form-input note-input", style="width:100%"),
             Div(
                 Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
                 Button(

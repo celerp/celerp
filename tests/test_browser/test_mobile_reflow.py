@@ -249,6 +249,23 @@ def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, wi
     assert len(seen) > len(_MAIN_PAGES), "no tab was swept"
 
 
+def test_the_inventory_toolbar_wraps_inside_a_phone_screen_in_german(page, ui_server, fresh_company):
+    """German gives the toolbar its longest labels; every action stays on screen."""
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": 320, "height": 740})
+        page.goto(f"{ui_server}/inventory", wait_until="load")
+        actions = "#inventory-toolbar-actions > *"
+        assert page.locator(actions).count() == 4
+        for i in range(4):
+            _on_screen(page, f"{actions} >> nth={i}", "inventory toolbar (de)")
+        doc_w = page.evaluate("document.documentElement.scrollWidth")
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert doc_w <= 320, f"inventory page is {doc_w}px wide on a 320px screen in German"
+
+
 @pytest.mark.parametrize("lang", ["en", "de"])
 @pytest.mark.parametrize("width", [320, 390])
 def test_the_alerts_panel_opens_inside_a_phone_screen(page, ui_server, fresh_company, width, lang):

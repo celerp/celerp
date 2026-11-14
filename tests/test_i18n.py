@@ -673,6 +673,22 @@ def test_mandated_accounting_terminology_applied():
     assert not wrong, f"Mandated accounting terminology not applied: {wrong}"
 
 
+# Names the English copy no longer uses: the settings page is Remote Access, the
+# stock placed at go-live is Opening inventory, a credit is a Credit Memo, a build for
+# stock is a Production Order and the planning board is Production Planning.
+_RETIRED_ENGLISH_TERMS = ("Web Access", "Older stock", "older stock", "credit note",
+                          "Credit Note", "Work In Progress", "Stock Order", "stock order",
+                          "Demand Planning")
+
+
+def test_english_uses_no_retired_term():
+    """No English string keeps a renamed term, so one screen never names a page or a
+    document two ways."""
+    en = _load_locale("en")
+    hits = {t: sorted(k for k, v in en.items() if t in v) for t in _RETIRED_ENGLISH_TERMS}
+    assert not {t: ks for t, ks in hits.items() if ks}
+
+
 # ---------------------------------------------------------------------------
 # Translation-integrity regressions: glossary-marker residue, punctuation-only
 # corruption, preserved technical literals, and Thai truncation. These guard the
@@ -859,7 +875,7 @@ def test_the_stripe_payment_states_are_worded_in_every_locale():
     assert en["pay.settings_disconnecting"] == "Stripe is disconnecting while existing payments finish."
     assert en["pay.settings_revoked"] == (
         "Celerp lost access to your Stripe account, so payments already in progress can't be checked. "
-        "Use Reconnect Stripe in Web Access, Online Payments to finish checking them.")
+        "Use Reconnect Stripe in Remote Access, Online Payments to finish checking them.")
     for code in _shipped_locales():
         loc = _load_locale(code)
         for key in ("pay.settings_disconnecting", "pay.settings_revoked", "pay.reconnect_stripe"):
@@ -982,7 +998,7 @@ _KNOWN_FIXES = [
     ("pt", "inventory.core_details", "Detalhes principais"),
     ("ja", "inventory.core_details", "基本情報"),
     ("ar", "page.ship_to", "الشحن إلى"),
-    ("th", "th.doc", "เอกสาร #"),
+    ("th", "th.doc", "เลขที่เอกสาร"),
 ]
 
 

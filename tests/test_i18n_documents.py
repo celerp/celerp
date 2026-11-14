@@ -22,7 +22,6 @@ from fasthtml.common import to_xml
 from ui import i18n
 from ui.routes.documents import (
     _item_status_badge_cell,
-    _doc_history_section,
     _payment_section,
 )
 import pytest
@@ -84,7 +83,8 @@ def test_status_badge_enum_display_label_translates():
 
 
 def test_history_section_chrome_translates():
-    html = to_xml(_doc_history_section([]))
+    from ui.components.activity import history_table
+    html = to_xml(history_table([]))
     assert "XX_HISTORY" in html
     assert "XX_NOACT" in html
 

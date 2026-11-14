@@ -7,13 +7,6 @@
   ],
   "fields": [
     {
-      "key": "origin_country",
-      "label": "Origin Country",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "grade",
       "label": "Grade",
       "type": "select",

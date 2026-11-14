@@ -124,7 +124,7 @@ async def test_apply_supplier_credit_refuses_other_supplier_currency_or_excess(c
     r = await _apply(client, auth, note, foreign, 10.0)
     assert r.status_code == 422 and "different currencies" in r.text, r.text
     r = await _apply(client, auth, note, same, 141.0)
-    assert r.status_code == 409 and "supplier credit note" in r.text, r.text
+    assert r.status_code == 409 and "vendor credit memo" in r.text, r.text
     assert (await _state(session, auth, same))["amount_outstanding"] == 200.0
 
 
@@ -337,7 +337,7 @@ async def test_debit_note_numbering_and_pdf_title(client, session, auth):
     await _finalize(client, auth, note)
     state = await _state(session, auth, note)
     assert state["ref_id"].startswith("SCN")
-    assert _doc_title(state).startswith(f"Supplier Credit Note {state['ref_id']}")
+    assert _doc_title(state).startswith(f"Vendor Credit Memo {state['ref_id']}")
 
 
 async def test_apply_picker_lists_only_open_same_party_targets(client, session, auth):

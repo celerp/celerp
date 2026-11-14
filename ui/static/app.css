@@ -229,6 +229,7 @@ a:hover { text-decoration: underline; }
 }
 .nav-link:hover { color: var(--c-text); background: var(--c-bg3); text-decoration: none; }
 .nav-link--active { color: var(--c-accent); border-left-color: var(--c-accent); background: rgba(14,165,122,0.08); }
+.nav-link__icon { display: inline-flex; margin-right: 6px; opacity: 0.8; }
 .sidebar-footer { margin-top: auto; padding-top: 36px; border-top: 1px solid var(--c-border); }
 .sidebar-empty { padding: 24px 16px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
 .sidebar-empty-title { font-size: 14px; font-weight: 600; color: var(--c-text); margin: 0; }
@@ -485,15 +486,17 @@ th.cell--number { font-family: inherit; }
 .posting-choices { table-layout: fixed; }
 .posting-choices select, .posting-choices .combobox-wrap { width: 100%; }
 
-/* Pencil icon affordance on hover — pure CSS, no extra HTML */
+/* Shared pencil icon on hover, with no extra HTML. */
 .cell--clickable:hover::after {
-  content: "✎";
+  content: "";
   position: absolute;
   right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 10px;
-  color: var(--c-accent);
+  width: 10px;
+  height: 10px;
+  background-color: var(--c-accent);
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M21.174%206.812a1%201%200%200%200-3.986-3.987L3.842%2016.174a2%202%200%200%200-.5.83l-1.321%204.352a.5.5%200%200%200%20.623.622l4.353-1.32a2%202%200%200%200%20.83-.497z%22%2F%3E%3Cpath%20d%3D%22m15%205%204%204%22%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
   opacity: 0.8;
   pointer-events: none;
 }
@@ -1164,6 +1167,9 @@ input[type="number"] { text-align: right; }
 }
 .combobox-input:focus { outline: none; border-color: var(--c-accent); }
 .combobox-list {
+  inset: auto;
+  margin: 0;
+  padding: 0;
   position: fixed;
   z-index: 9999;
   background: var(--c-bg2);
@@ -1174,7 +1180,6 @@ input[type="number"] { text-align: right; }
   max-width: 400px;
   overflow-y: auto;
   white-space: nowrap;
-  margin-top: 2px;
   display: none;
 }
 .combobox-list.open { display: block; }
@@ -2019,7 +2024,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 /* Line items section always allows dropdowns to overflow */
 .doc-section--lines { overflow: visible; }
 .doc-section .section-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--c-bg3); border-bottom: 1px solid var(--c-border); }
-.doc-section .section-icon { font-size: 14px; }
+.doc-section .section-icon { font-size: 14px; display: inline-flex; color: var(--c-text2); }
 .doc-section .section-title { font-size: 13px; font-weight: 600; color: var(--c-text); margin: 0; text-transform: none; letter-spacing: 0; }
 .doc-section .form-group { padding: 8px 14px; display: flex; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* A read-only value starts where the text of an editable cell does (its padding plus border). */
@@ -3587,7 +3592,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .info-banner-icon { flex: none; }
 .info-banner-close { margin-left: auto; flex: none; }
 
-/* ── Demand Planning board: coverage-status badges + Excel-style column filters ── */
+/* ── Production Planning board: coverage-status badges + Excel-style column filters ── */
 .badge--peg-covered { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
 .badge--peg-partial { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--peg-short { background: rgba(239,68,68,0.15); color: #dc2626; border: 1px solid rgba(239,68,68,0.3); }
@@ -3738,6 +3743,12 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .menu-icon { display: inline-flex; vertical-align: -0.125em; margin-inline-end: 0.5em; }
 .lang-switcher__globe { display: inline-flex; align-items: center; }
 .notif-bell-btn svg, .sidebar-toggle svg { display: block; }
+/* Icons drawn by ui.components.icons.icon sit on the text baseline like the glyphs they replaced. */
+svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
+.search-result-icon { color: var(--c-text2); margin-right: 2px; }
+.file-hero-star, .person-primary { color: var(--c-text2); display: inline-flex; }
+.file-hero-star--on, .person-primary { color: #d4af37; }
+.file-hero-star--on svg, .person-primary svg { fill: currentColor; }
 .menu-editor__row, .menu-editor__group-head { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--c-border); }
 .menu-editor__group-head { margin-top: 12px; }
 .menu-editor__group-head .settings-section-title { flex: 1; margin: 0; }
@@ -3747,3 +3758,42 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .menu-editor__move { display: inline-flex; gap: 4px; }
 /* The app's own confirmation (celerpConfirm in shell.py): the question, then Cancel and Confirm. */
 .confirm-dialog__question { margin: 0; white-space: pre-line; }
+
+/* History: one row per field change (ui.components.activity.history_table). */
+.history-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; padding: 8px 14px; align-items: flex-end; }
+.history-filter { display: flex; flex-direction: column; gap: 2px; min-width: 140px; }
+.history-table td.col-old, .history-table td.col-new { overflow-wrap: anywhere; }
+.history-table td.col-old, .history-table td.col-new, .history-table td.col-field { color: var(--c-text); }
+.history-table tr.history-row--cont td.col-when,
+.history-table tr.history-row--cont td.col-user,
+.history-table tr.history-row--cont td.col-event { color: var(--c-text2); }
+
+/* Document cards with a table (GL Impact, Related records, History): one header, the table
+   flush with the card, cells padded like the card's own rows. */
+.doc-section .doc-card-table, .doc-section .history-table { width: 100%; border: 0; border-radius: 0; }
+.doc-section .doc-card-table td, .doc-section .history-table td { padding: 6px 14px; font-size: 12px; }
+.doc-section .doc-card-table th, .doc-section .history-table th { padding: 6px 14px; text-align: center; }
+.doc-section .doc-card-table th.cell--number { text-align: right; }
+.doc-section .doc-card-subtitle { font-size: 12px; font-weight: 600; color: var(--c-text2); margin: 0; padding: 8px 14px 4px; }
+.doc-section .doc-card-group + .doc-card-group { border-top: 1px solid var(--c-border); }
+.doc-section .empty-state-msg { padding: 10px 14px; margin: 0; }
+.gl-impact-block + .gl-impact-block { border-top: 1px solid var(--c-border); }
+.gl-impact-entry { display: flex; align-items: center; gap: 8px; padding: 8px 14px 4px; font-size: 12px; font-weight: 600; }
+.gl-impact-totals td { font-weight: 600; border-top: 1px solid var(--c-border); background: var(--c-bg3); }
+
+/* Voided ledger lines stay readable and separate from the live totals. */
+.gl-impact-row--void { background: var(--c-bg3); }
+.gl-impact-row--void td:nth-child(5), .gl-impact-row--void td:nth-child(6),
+.gl-impact-row--void td:nth-child(7) { text-decoration: line-through; }
+.payment-form-section > .form-subtitle { padding: 0; }
+.payment-form-section .form-actions { display: flex; justify-content: flex-start; padding-top: 12px; }
+
+/* Record links sit beside the field and leave the options in their existing DOM scope. */
+.combobox-wrap[data-record-prefix] > .combobox-input { padding-right: 54px; }
+.combobox-record-link { position: absolute; right: 25px; top: 50%; transform: translateY(-50%); display: inline-flex; color: var(--c-accent); }
+.combobox-record-link[hidden] { display: none; }
+.note-text, .note-input, .doc-section textarea[name="customer_note"], .doc-section textarea[name="terms_text"] {
+  max-height: 12rem; overflow-y: auto; overflow-wrap: anywhere;
+}
+.note-input { resize: vertical; }
+@media print { .note-text { max-height: none; overflow: visible; } }

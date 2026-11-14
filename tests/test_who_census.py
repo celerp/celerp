@@ -3,7 +3,7 @@
 """Who a change reads as made by is decided in one place, over every reader and every
 unattended door who_census finds in the code.
 
-Only the producer (ledger_display._actor) and actor_label read the display keys, so every feed
+Only the producer (ledger_display._maker) and actor_label read the display keys, so every feed
 and History table shows the same "who". Every task started from the background_loop slot runs
 unattended, and every reader of the periodic_operation slot is reached only from such a task,
 so work nobody started by hand reads "Automatically". A new reader, loop start or door turns

@@ -39,10 +39,12 @@ PLUGIN_MANIFEST = {
             {
                 "prefix": "mp.",
                 "handler": "celerp.projections.handlers.marketplace:apply_marketplace_event",
+                "permission": "manage_integrations",
             },
             {
                 "prefix": "shop.sync.",
                 "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
+                "permission": "manage_integrations",
             },
         ],
         "catalog_channel": [

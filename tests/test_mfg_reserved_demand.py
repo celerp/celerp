@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Stock reserved to a document serves only that document.
 
-Fulfillment ships a reserved lot only from the document that reserved it, so Demand Planning
+Fulfillment ships a reserved lot only from the document that reserved it, so Production Planning
 counts it the same way: an order's own reserved stock covers that order first, no other order
 may take it, and stock reserved to a memo or any document that is not demand covers nothing.
 Only free stock and what open runs still have to give are shared out, soonest due first.

@@ -23,6 +23,10 @@ from ui.i18n import field_label_key
 # "Mixed", stored and displayed verbatim — no separate lowercase sentinel vs capitalized label.
 MIXED_VALUE = "Mixed"
 
+# Category presets in earlier releases kept a lot's weight (in grams) and origin under their own
+# attribute keys; the core fields own both now. The one mapping every reader goes through.
+LEGACY_CATEGORY_FIELDS: dict[str, str] = {"weight_g": "weight", "origin_country": "country_of_origin"}
+
 # Item amount fields hand-edited on the item surface, gated by the
 # edit_inventory_amounts permission. One source of truth, mirroring the
 # COST_ITEM_KEYS precedent in celerp.services.cost_visibility.

@@ -123,9 +123,15 @@ async def test_custom_without_an_interval_bills_every_30_days_as_on_2_8_0(client
 
 
 async def _set(session, old, name, **fields) -> None:
-    # A 2.8.0 template edited the way 2.8.0's generic field save stored it: its event and
-    # projection as 2.8.0 wrote them, with none of this release's checks on the way in.
-    cid, eid = old["company_id"], old["runs"][name]
+    # A 2.8.0 template edited the way 2.8.0's generic field save stored it.
+    await _set_doc(session, old, old["runs"][name], **fields)
+
+
+async def _set_doc(session, old, eid, **fields) -> None:
+    # A 2.8.0 document edited the way 2.8.0's generic field save stored it: its event and
+    # projection as 2.8.0 wrote them, with none of this release's checks on the way in. The
+    # event is what a projection rebuild on upgrade replays, so the edit survives it.
+    cid = old["company_id"]
     proj = await session.get(Projection, {"company_id": cid, "entity_id": eid})
     proj.state, proj.version = {**proj.state, **fields}, proj.version + 1
     await session.flush()  # this release's lock order: the projection row, then the ledger

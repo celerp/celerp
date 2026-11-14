@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
@@ -1013,7 +1014,7 @@ def _delete_dialog(module_name: str, label: str, has_prefix: bool, lang: str) ->
     header = Div(
         H3(t("modules.delete_options_title", lang, name=label),
            cls="modal-dialog__title"),
-        Button("✕", type="button", cls="modal-dialog__close",
+        Button(icon("x"), type="button", cls="modal-dialog__close",
                aria_label=t("btn.close", lang), onclick=_DISMISS_GATE_MODAL),
         cls="modal-dialog__header",
     )

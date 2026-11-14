@@ -74,10 +74,11 @@ _FILE_EVENTS = {
              "item.file.description_updated", "item.file.deleted"),
     "contact": ("crm.contact.file_attached", "crm.contact.file_tagged",
                 "crm.contact.file_description_updated", "crm.contact.file_deleted"),
+    "list": ("list.file_attached", "list.file_tagged", "list.file_description_updated", "list.file_deleted"),
     "doc": ("doc.file_attached", "doc.file_tagged",
             "doc.file_description_updated", "doc.file_deleted"),
 }
-_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs"}
+_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs", "list": "lists"}
 
 
 def _file_entry(event_type: str, entity_type: str, entity_id: str, file_id: str, **extra) -> dict:
@@ -91,7 +92,7 @@ def _file_entry(event_type: str, entity_type: str, entity_id: str, file_id: str,
     }
 
 
-@pytest.mark.parametrize("entity_type", ["item", "contact", "doc"])
+@pytest.mark.parametrize("entity_type", ["item", "contact", "doc", "list"])
 def test_file_event_activity_render_labels_and_links(entity_type):
     attached, tagged, described, deleted = _FILE_EVENTS[entity_type]
     seg, entity_id, file_id = _ENTITY_SEG[entity_type], f"{entity_type}:abc", "file-123"
@@ -108,7 +109,7 @@ def test_file_event_activity_render_labels_and_links(entity_type):
     assert f"/{seg}/{entity_id}/files/{file_id}/download" in html, f"{entity_type}: missing download link"
 
 
-@pytest.mark.parametrize("entity_type", ["item", "contact", "doc"])
+@pytest.mark.parametrize("entity_type", ["item", "contact", "doc", "list"])
 def test_deleted_file_event_has_no_live_link(entity_type):
     _, _, _, deleted = _FILE_EVENTS[entity_type]
     entity_id, file_id = f"{entity_type}:abc", "file-123"

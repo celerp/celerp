@@ -23,6 +23,11 @@ from ui.components.shell import base_shell, info_tip, page_header, page_title, t
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.manufacturing import _wc_table
+from ui.routes.settings import _check_permission
+from ui.routes.settings_sales import _numbering_content
+from ui.components.module_off import can_open
+
+_MANUFACTURING_DOC_TYPES = frozenset({"production_order"})
 
 
 def _mfg_settings(company: dict) -> dict:
@@ -107,6 +112,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         try:
             company = await api.get_company(token)
         except APIError:
@@ -122,6 +129,8 @@ def setup_routes(app):
             page_header(t("settings_manufacturing.page_header")),
             prefs,
             await _work_centers_section(token),
+            (await _numbering_content(token, _MANUFACTURING_DOC_TYPES)
+             if can_open(company, "celerp-manufacturing") else ""),
             title=page_title("settings_manufacturing.page_header"),
             nav_active="manufacturing",
             request=request,
@@ -132,6 +141,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         form = await request.form()
         require_issued = str(form.get("require_issued_before_complete") or "") in ("1", "on", "true")
         auto_create = str(form.get("auto_create_work_orders") or "") in ("1", "on", "true")

@@ -50,10 +50,10 @@ def _create_finalized_cn(api, inv_id: str, sku: str = "W-01", amount: float = 10
 
 
 # ---------------------------------------------------------------------------
-# CN-01: Credit Notes nav link is visible and shows translated label
+# CN-01: Credit Memos nav link is visible and shows translated label
 # ---------------------------------------------------------------------------
 def test_credit_notes_nav_link(page: Page, ui_server: str):
-    """CN-01: Credit Notes appears in sidebar with translated label (not raw key)."""
+    """CN-01: Credit Memos appears in sidebar with translated label (not raw key)."""
     page.goto(f"{ui_server}/docs?type=invoice", wait_until="domcontentloaded")
     cn_link = page.locator("a[href*='type=credit_note']")
     expect(cn_link).to_be_visible()
@@ -79,21 +79,21 @@ def test_create_blank_credit_note(api):
 
 
 # ---------------------------------------------------------------------------
-# CN-03: Create Credit Note button appears on paid invoice
+# CN-03: Create Credit Memo button appears on paid invoice
 # ---------------------------------------------------------------------------
 def test_create_credit_note_button_on_paid_invoice(page: Page, ui_server: str, api):
-    """CN-03: 'Create Credit Note' button visible on paid invoice."""
+    """CN-03: 'Create Credit Memo' button visible on paid invoice."""
     inv_id = _create_paid_invoice(api, sku="CN03-W", amount=80.0)
     page.goto(f"{ui_server}/docs/{inv_id}", wait_until="domcontentloaded")
-    btn = page.locator("button", has_text="Create Credit Note")
+    btn = page.locator("button", has_text="Create Credit Memo")
     expect(btn).to_be_visible()
 
 
 # ---------------------------------------------------------------------------
-# CN-04: Create Credit Note button NOT on final (unpaid) invoice
+# CN-04: Create Credit Memo button NOT on final (unpaid) invoice
 # ---------------------------------------------------------------------------
 def test_create_credit_note_button_absent_on_final_invoice(page: Page, ui_server: str, api):
-    """CN-04: 'Create Credit Note' button must NOT appear on final (unpaid) invoices."""
+    """CN-04: 'Create Credit Memo' button must NOT appear on final (unpaid) invoices."""
     inv_r = api.post("/docs", json={
         "doc_type": "invoice", "contact_id": "contact:test",
         "line_items": [{"name": "Item", "quantity": 1, "unit_price": 50}],
@@ -103,7 +103,7 @@ def test_create_credit_note_button_absent_on_final_invoice(page: Page, ui_server
     api.post(f"/docs/{inv_id}/finalize")
 
     page.goto(f"{ui_server}/docs/{inv_id}", wait_until="domcontentloaded")
-    btn = page.locator("button", has_text="Create Credit Note")
+    btn = page.locator("button", has_text="Create Credit Memo")
     expect(btn).to_have_count(0)
 
 

@@ -611,7 +611,7 @@ async def test_restore_refused_while_changes_are_paused_reads_as_a_sentence(ui, 
 
     r = await ui.post("/backup/restore/snap-1")
     page = _page(r)
-    assert UNKNOWN.refusal()["message"] in page
+    assert UNKNOWN.refusal()["message"].replace("Doctor", "System Health Check") in page
     assert "message_key" not in page
 
 

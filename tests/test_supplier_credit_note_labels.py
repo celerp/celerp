@@ -15,7 +15,7 @@ SCN = {"entity_id": "doc:SCN-1", "doc_number": "SCN-1", "doc_type": "debit_note"
 
 
 def _shows_supplier_credit_note(html: str) -> None:
-    assert "Supplier Credit Note" in html
+    assert "Vendor Credit Memo" in html
     assert "Debit Note" not in html
 
 

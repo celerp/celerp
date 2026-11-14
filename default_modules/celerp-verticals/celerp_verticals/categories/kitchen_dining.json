@@ -37,13 +37,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "pieces",
-      "label": "No. of Pieces (sets)",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "condition",
       "label": "Condition",
       "type": "select",

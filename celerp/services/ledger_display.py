@@ -51,16 +51,41 @@ def entry_ts(entry, settings: dict | None) -> str:
     return ts.astimezone(_zone(settings)).isoformat()
 
 
+def _maker(actor_id, automatic: bool, backup_name, actor_map: dict[str, str]) -> dict:
+    """Who made an entry, for display, and ``actor_key``: the same maker as the History's Who
+    filter names it ("auto", a user id, or "h:<name>" for a name a company backup carried)."""
+    if automatic:
+        return {"actor_name": actor_map.get(str(actor_id), ""), "actor_automatic": True, "actor_key": "auto"}
+    if actor_id and str(actor_id) in actor_map:
+        return {"actor_name": actor_map[str(actor_id)], "actor_key": str(actor_id)}
+    if not actor_id and backup_name:
+        return {"actor_name": str(backup_name), "actor_historical": True, "actor_key": f"h:{backup_name}"}
+    return {"actor_name": str(actor_id) if actor_id else "", "actor_key": str(actor_id) if actor_id else ""}
+
+
 def _actor(entry, actor_map: dict[str, str]) -> dict:
     metadata = entry.metadata_ if isinstance(entry.metadata_, dict) else {}
-    if metadata.get("automatic"):
-        return {"actor_name": actor_map.get(str(entry.actor_id), ""), "actor_automatic": True}
-    if entry.actor_id and str(entry.actor_id) in actor_map:
-        return {"actor_name": actor_map[str(entry.actor_id)]}
-    carried = metadata.get("backup_actor") or {}
-    if not entry.actor_id and isinstance(carried, dict) and carried.get("name"):
-        return {"actor_name": str(carried["name"]), "actor_historical": True}
-    return {"actor_name": str(entry.actor_id) if entry.actor_id else ""}
+    carried = metadata.get("backup_actor")
+    backup_name = carried.get("name") if isinstance(carried, dict) else None
+    return _maker(entry.actor_id, bool(metadata.get("automatic")), backup_name, actor_map)
+
+
+async def _actor_names(actor_ids, session) -> dict[str, str]:
+    if not actor_ids:
+        return {}
+    from celerp.models.company import User
+    return {str(uid): uname for uid, uname in (await session.execute(
+        select(User.id, User.name).where(User.id.in_(list(actor_ids))))).all()}
+
+
+async def actor_choices(makers, session) -> list[dict]:
+    """Every distinct maker of (actor id, automatic, backup name), as ``display_fields`` shows it."""
+    names = await _actor_names({a for a, _, _ in makers if a}, session)
+    found = {}
+    for actor_id, automatic, backup_name in makers:
+        maker = _maker(actor_id, bool(automatic), backup_name, names)
+        found.setdefault(maker["actor_key"], maker)
+    return [found[k] for k in sorted(found)]
 
 
 async def display_fields(rows, company_id, session) -> list[dict]:
@@ -74,15 +99,7 @@ async def display_fields(rows, company_id, session) -> list[dict]:
             )
         )).all():
             states[eid] = state or {}
-    actor_ids = list({r.actor_id for r in rows if r.actor_id})
-    actor_map: dict[str, str] = {}
-    if actor_ids:
-        from celerp.models.company import User
-        actor_map = {
-            str(uid): uname for uid, uname in (await session.execute(
-                select(User.id, User.name).where(User.id.in_(actor_ids))
-            )).all()
-        }
+    actor_map = await _actor_names({r.actor_id for r in rows if r.actor_id}, session)
     fields = []
     for r in rows:
         state = states.get(r.entity_id, {})

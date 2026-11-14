@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Production still to come counts once on Demand Planning.
+"""Production still to come counts once on Production Planning.
 
 What a run has received is already a lot on hand under the product. Only the rest of its
 expected output is still in progress, so supply is what is on hand plus, for each open run,

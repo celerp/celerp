@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -600,10 +601,10 @@ def _cloud_form() -> FT:
         current_lang())
 
     _features = [
-        ("🔗", t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
-        ("☁", t("setup.feature_backup_title"), t("setup.feature_backup_desc")),
-        ("🌐", t("setup.feature_web_title"), t("setup.feature_web_desc")),
-        ("✨", t("setup.feature_ai_title"), t("setup.feature_ai_desc")),
+        (icon("link"), t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
+        (icon("cloud"), t("setup.feature_backup_title"), t("setup.feature_backup_desc")),
+        (icon("globe"), t("setup.feature_web_title"), t("setup.feature_web_desc")),
+        (icon("sparkles"), t("setup.feature_ai_title"), t("setup.feature_ai_desc")),
     ]
     return Div(
         Div(

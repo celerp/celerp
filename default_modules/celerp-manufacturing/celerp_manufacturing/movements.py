@@ -3,7 +3,7 @@
 """Production run movements: the one implementation of Issue, Receive, Complete and Cancel,
 and of undoing each: Return, Undo receipt and Reopen.
 
-Every entry point (the run endpoints, one-tap build, Demand Planning, bulk actions and the
+Every entry point (the run endpoints, one-tap build, Production Planning, bulk actions and the
 invoice finalize hook) moves stock and value through these functions, in the caller's
 transaction.
 
