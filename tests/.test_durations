@@ -29867,5 +29867,11 @@
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[3]": 1.947814165148884,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_the_stand_in_cloud_cancels_by_attempt_number_as_cloud_does": 0.0033233819995075464,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_a_lifetime_sale_credited_back_in_full_makes_no_member": 2.5405585350235924,
-    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_standing_reads_the_oldest_bill_still_owing": 2.4536963109858334
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_standing_reads_the_oldest_bill_still_owing": 2.4536963109858334,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_an_attempt_kept_under_the_earlier_key_form_is_replayed_and_cancelled_with_it": 1.9174486598931253,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_two_companies_with_the_same_invoice_number_both_collect": 1.1197469499893486,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[11-applied_only]": 1.8131606259848922,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[11-every]": 3.1117323680082336,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[4026-applied_only]": 1.880746673909016,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[4026-every]": 3.2246794890379533
 }
