@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 import psycopg2
 import pytest
 
-from conftest_support import RefusedTestDatabase, TEST_DATABASE_VAR, opted_in_test_database
+from conftest_support import (
+    _RUN_VAR, _SESSION_VAR, RefusedTestDatabase, TEST_DATABASE_VAR, opted_in_test_database)
 from test_helpers import REPO_ROOT
 
 pytestmark = pytest.mark.process
@@ -46,10 +47,10 @@ def _local_test_url() -> str:
 def _import_conftest(env: dict[str, str], prelude: str = "",
                      code: str = "import conftest, os\nprint('URL', os.environ['DATABASE_URL'])\n",
                      ) -> subprocess.CompletedProcess:
-    """Run *code* (by default: import the root conftest) in a fresh process with exactly *env*
-    for the database variables."""
+    """Run *code* (by default: import the root conftest) in a fresh process, a run of its own,
+    with exactly *env* for the database variables."""
     base = {k: v for k, v in os.environ.items()
-            if k not in ("DATABASE_URL", TEST_DATABASE_VAR, "PYTEST_XDIST_WORKER")}
+            if k not in ("DATABASE_URL", TEST_DATABASE_VAR, "PYTEST_XDIST_WORKER", _RUN_VAR, _SESSION_VAR)}
     code = prelude + code
     return subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env={**base, **env},
                           capture_output=True, text=True, timeout=120)
