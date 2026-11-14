@@ -15,6 +15,12 @@ so no country data sits in core. It was written from the release before the move
 run in a worktree of that release with this file copied in. With the variable set, each case
 writes its leaves instead of comparing. The seed comparison needs the real packs (marker
 ``real_packs``: ``scripts/l10n_packs.py fetch`` first).
+
+That file is never rewritten: it is the proof that the packs as first extracted (versions in
+PIN_VERSIONS) seed what core did. A later pack version whose seeds change on purpose comes with
+its own expectation, tests/golden/l10n_seed_<code>_<version>.json (the leaves of that one code,
+as the write mode gives them), added by the change that moves the lock to it. Each country is
+compared with the file for the version its lock entry names; a version with neither fails.
 """
 from __future__ import annotations
 
@@ -26,7 +32,9 @@ from pathlib import Path
 
 import pytest
 
-GOLDEN = Path(__file__).resolve().parent / "golden" / "l10n_seed_pin.json"
+GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
+GOLDEN = GOLDEN_DIR / "l10n_seed_pin.json"
+PIN_VERSIONS = ("2026.1", "2026.2")
 CODES = ("TH", "SG", "MY", "PH", "ID", "VN", "AU", "NZ", "GB", "DE", "FR", "ES", "IT", "PT", "US", "CA",
          "MX", "IN", "JP", "AE", "SA", "ET")
 
@@ -50,8 +58,21 @@ def _leaves(value, path: str = ""):
         yield path, value
 
 
-def _golden() -> dict:
-    return json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.is_file() else {}
+def _golden(golden_dir: Path = GOLDEN_DIR) -> dict:
+    path = golden_dir / GOLDEN.name
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def expected_leaves(code: str, lock: dict, golden_dir: Path = GOLDEN_DIR) -> dict:
+    """The leaves a new company in ``code`` must have, for the pack version ``lock`` names."""
+    pin = _golden(golden_dir)
+    version = lock[code]["version"] if code in lock else None
+    if version is None or version in PIN_VERSIONS:
+        assert code in pin, f"no golden leaves for {code!r}"
+        return pin[code]
+    path = golden_dir / f"l10n_seed_{code}_{version}.json"
+    assert path.is_file(), f"no expected seeds for {code} at pack version {version}: add tests/golden/{path.name}"
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write(target: str, key: str, value) -> None:
@@ -101,8 +122,9 @@ async def test_l10n_seed_matches_pin_golden(client, code):
     if target:
         _write(target, code, leaves)
         return
-    expected = _golden().get(code)
-    assert expected is not None, f"no golden leaves for {code!r}"
+    from celerp.localization import _lock
+
+    expected = expected_leaves(code, _lock() or {})
     added = sorted(set(leaves) - set(expected))
     removed = sorted(set(expected) - set(leaves))
     changed = sorted(p for p in set(leaves) & set(expected) if leaves[p] != expected[p])
@@ -115,3 +137,26 @@ def test_chart_rows_unchanged():
     from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS
 
     assert _hash(DEFAULT_CHART_OF_ACCOUNTS) == _golden()["_chart"]
+
+
+def _golden_dir(tmp_path: Path) -> Path:
+    (tmp_path / GOLDEN.name).write_text(json.dumps({"TH": {"taxes[0].rate": "pin"}, "": {"currency": "none"}}),
+                                        encoding="utf-8")
+    (tmp_path / "l10n_seed_TH_2027.1.json").write_text(json.dumps({"taxes[0].rate": "later"}), encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize("version", PIN_VERSIONS)
+def test_a_pinned_pack_version_is_compared_with_the_pin(tmp_path, version):
+    golden = _golden_dir(tmp_path)
+    assert expected_leaves("TH", {"TH": {"version": version}}, golden) == {"taxes[0].rate": "pin"}
+    assert expected_leaves("", {"TH": {"version": version}}, golden) == {"currency": "none"}
+
+
+def test_a_later_pack_version_is_compared_with_its_own_expectation(tmp_path):
+    golden = _golden_dir(tmp_path)
+    assert expected_leaves("TH", {"TH": {"version": "2027.1"}}, golden) == {"taxes[0].rate": "later"}
+    pin = (golden / GOLDEN.name).read_bytes()
+    with pytest.raises(AssertionError, match=r"TH at pack version 2027\.2: add tests/golden/l10n_seed_TH_2027\.2\.json"):
+        expected_leaves("TH", {"TH": {"version": "2027.2"}}, golden)
+    assert (golden / GOLDEN.name).read_bytes() == pin

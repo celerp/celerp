@@ -621,6 +621,45 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
     assert after["currency"] == before["currency"]
 
 
+async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, session, monkeypatch):
+    """A company seeded from one pack version keeps its saved settings, byte for byte, after the
+    lock moves to a later version with other rates: through a start, its reads, and saving its
+    default location again in the same country."""
+    import hashlib
+
+    from sqlalchemy import text
+
+    from celerp.tax_regimes import get_regime
+
+    company_id = auth["company_id"]
+    loc = await _default_location(client, auth)
+    assert (await _patch_address(client, auth, loc["id"], {"country": "TH"}))["taxes_from"] == "TH"
+
+    async def raw() -> str:
+        session.expire_all()
+        return (await session.execute(text("SELECT CAST(settings AS text) FROM companies WHERE id = :c"),
+                                      {"c": company_id})).scalar_one()
+    before = await raw()
+
+    path = l10n_dir / "packs" / "TH.json"
+    pack = json.loads(path.read_text(encoding="utf-8"))
+    pack["version"] = "2099.1"
+    pack["taxes"][0]["rate"] = float(pack["taxes"][0]["rate"]) + 1
+    path.write_text(json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    lock_path = l10n_dir / "packs.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["TH"] = {**lock["TH"], "version": "2099.1", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+    _reset()
+    assert get_regime("TH")["taxes"] == pack["taxes"]
+
+    await _start(monkeypatch)
+    for read in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):
+        assert (await client.get(read, headers=auth["headers"])).status_code == 200
+    await _patch_address(client, auth, loc["id"], {"country": "TH", "city": "Bangkok"})
+    assert await raw() == before
+
+
 def test_tax_regimes_has_no_country_data():
     """Country tax material, retired rows included, lives in the packs; core keeps only the fallback."""
     source = (REPO / "celerp" / "tax_regimes.py").read_text(encoding="utf-8")
