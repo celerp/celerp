@@ -200,7 +200,10 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if getattr(entry, "was_deduped", False):
         return None
     from celerp.services.collection import charge_recorded
-    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
+    # A person's recording from the unmatched payments (its own idempotency key) is not Cloud's
+    # delivery of a charge for this invoice.
+    charge = None if idempotency_key else {"amount_minor": amount_minor, "currency": currency.upper(), "context": context}
+    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True), charge)
     return entry
 
 

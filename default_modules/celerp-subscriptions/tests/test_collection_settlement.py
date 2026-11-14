@@ -242,3 +242,48 @@ async def test_the_same_amend_request_key_with_another_quantity_is_refused(clien
     r = await _amend(client, monkeypatch, hd, eid, quantity=3, key=key)
     assert r.status_code == 409, r.text
     assert [a["line_items"][0]["quantity"] for a in (await template(client, hd, eid))["amendments"]] == [2]
+
+
+async def _delivered(cid: str, doc_id: str, reference: str, minor: int, context: dict, day: str) -> bool:
+    from celerp.services import payments
+    return await payments.receive_payment({
+        "company_id": cid, "entity_id": doc_id, "reference": reference, "amount_minor": minor, "currency": "USD",
+        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context})
+
+
+@pytest.mark.parametrize("when", ["submitted", "cancel_refused", "succeeded"])
+@pytest.mark.parametrize("door", ["placed", "payment_page"])
+async def test_a_payment_that_is_not_the_charge_never_gets_the_payer_charged_twice(
+        client, session, monkeypatch, cloud, door, when):
+    """While July's 30.00 is with Cloud (``submitted``, or after its cancel was refused) or Cloud has
+    said it succeeded and its payment is on the way (``succeeded``), another 10.00 online payment is
+    recorded on July: a person places one kept among the unmatched payments, or the payer pays it
+    on July's payment page. That payment is not the charge, so the charge's success does not end the
+    attempt: nothing more is asked of the payer, and the charge, arriving after, is kept whole
+    among the unmatched payments as it no longer fits."""
+    from celerp.services import payments
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    [sent] = cloud.sent("attempt")
+    if when == "succeeded":
+        assert await _attempt_outcome(cid, july, 1, "succeeded") is True
+    if door == "placed":
+        assert await _delivered(cid, f"doc:{uuid.uuid4().hex}", "pi_other", 1000, sent["context"], "2026-07-01")
+        await payments.record_unmatched_payment(session, uuid.UUID(cid), "pi_other", july)
+        await session.commit()
+    else:
+        assert await _delivered(cid, july, "pi_page", 1000, sent["context"], "2026-07-01")
+    assert (await _docs(session, eid))[july]["amount_outstanding"] == 20.0
+    if when == "cancel_refused":
+        cloud.answers["cancel"] = (409, {"detail": "attempt_submitted"})
+        await tick(session, cid, "2026-07-02")
+    if when != "succeeded":
+        assert await _attempt_outcome(cid, july, 1, "succeeded") is True
+    await tick(session, cid, "2026-07-03")
+    assert _asked(cloud, july) == [3000]
+    assert await _delivered(cid, july, "pi_charge", 3000, sent["context"], "2026-07-03")
+    await tick(session, cid, "2026-07-04")
+    doc = (await _docs(session, eid))[july]
+    assert _asked(cloud, july) == [3000]
+    assert (doc["amount_outstanding"], doc["collection"]["state"], doc["collection"].get("kept")) == (
+        20.0, "succeeded", "pi_charge")
+    assert ("pi_charge", 3000) in await _unmatched(session)
