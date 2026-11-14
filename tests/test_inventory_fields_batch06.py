@@ -117,3 +117,13 @@ async def test_new_item_keeps_weight_and_origin_in_core_fields(client):
     assert stored['weight'] == 10
     assert stored['country_of_origin'] == 'Thailand'
     assert not set(LEGACY_CATEGORY_FIELDS) & set(stored.get('attributes') or {})
+
+
+def test_folding_old_preset_values_leaves_the_event_data_as_recorded():
+    """The fold moves old keys on the projected lot only; the event it read keeps them, so a
+    rebuild that replays the same event folds it the same way again."""
+    from celerp_inventory.projections import apply_item_event
+    data = {'sku': 'OLD-2', 'name': 'Old rice bag', 'attributes': {'weight_g': '500', 'origin_country': 'Thailand'}}
+    state = apply_item_event({}, 'item.created', data)
+    assert state['weight'] == 500.0 and state['attributes'] == {'country_of_origin': 'Thailand'}
+    assert data['attributes'] == {'weight_g': '500', 'origin_country': 'Thailand'}
