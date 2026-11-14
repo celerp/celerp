@@ -8460,6 +8460,7 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
         *([Div(*module_item_actions, cls="actions-group", style="margin-top:0.5rem")] if module_item_actions else []),
         id="item-advanced-panel",
         collapsible=True,
+        open=True,
         icon_name="scissors",
         body_cls="recipe-block",
     )

@@ -87,7 +87,7 @@ def test_item_detail_pricing_tab_shows_sold_price(page, ui_server, api):
     page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body and "Traceback" not in body
-    card = page.locator(".detail-card:has-text('Sold price')")
+    card = page.locator(".doc-section:has-text('Sold price')")
     assert card.count() > 0, "Sold price card missing from a sold item's pricing tab"
     assert "432.1" in card.inner_text()
 
@@ -100,5 +100,5 @@ def test_item_detail_pricing_tab_omits_sold_price_when_available(page, ui_server
     item_id = r.json()["id"]
 
     page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
-    assert page.locator(".detail-card:has-text('Sold price')").count() == 0, \
+    assert page.locator(".doc-section:has-text('Sold price')").count() == 0, \
         "Sold price card must not appear for an item that has not been sold"
