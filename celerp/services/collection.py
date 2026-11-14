@@ -152,8 +152,12 @@ async def notify_access_removed(session, company_id) -> None:
 
 # ── an invoice's attempts ────────────────────────────────────────────────────
 
-def request_key(doc_id: str, n: int) -> str:
-    return f"collect:{doc_id}:{n}"
+def request_key(company_id, doc_id: str, n: int) -> str:
+    """The request key of attempt ``n`` on the company's invoice: the only place one is made.
+    Document numbers are each company's own and Cloud holds request keys unique per installation,
+    so the key names the company. An attempt keeps the key it was made with: every request and
+    cancel for it reads the key stored on its collection, never a new one."""
+    return f"collect:{company_id}:{doc_id}:{n}"
 
 
 def outstanding_minor(doc_state: dict) -> int | None:
@@ -197,7 +201,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
     if n > MAX_ATTEMPTS:
         return await stop_for_hand(session, company_id, doc_row, "attempts_used")
     return await set_attempt(session, company_id, doc_row, {
-        "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
+        "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(company_id, doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
         drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
               "kept", "charged", "waits"))

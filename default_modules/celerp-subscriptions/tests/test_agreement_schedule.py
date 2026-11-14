@@ -308,7 +308,7 @@ async def test_po_template_uses_period_engine_without_collection_or_deferral(cli
     assert doc["doc_type"] == "bill" and doc["source_agreement"] == eid  # a purchase order finalizes into a bill
     assert not any(k in doc for k in ("revenue_schedule", "deferral"))
     collect = (await session.execute(select(func.count()).select_from(LedgerEntry).where(
-        LedgerEntry.idempotency_key.like(f"collect:{doc['entity_id']}:%")))).scalar_one()
+        LedgerEntry.idempotency_key.like(f"collect:%{doc['entity_id']}:%")))).scalar_one()
     assert collect == 0
     assert (await claim_events(session, eid)) == [f"sub:{eid}:p0:purchase_order:r0"]
 

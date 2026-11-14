@@ -23,7 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 from agreement_kit import (
-    agreement, billed_docs, company_id, contact, freeze_day, member, register, revoke, schedule, template, tick,
+    agreement, billed_docs, company_id, contact, freeze_day, h, member, register, revoke, schedule, template, tick,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -43,9 +43,11 @@ class _Cloud:
     or a callable of the payload.
 
     Whatever a test answers, a new attempt is first refused as Cloud refuses it, from the
-    invoice's attempts the stand-in holds (``attempts``: entity -> number -> request and state):
-    a number used with another request key (attempt_number_used) or another amount or currency
-    (request_key_reused); an attempt that may still charge (attempt_in_progress); an earlier one
+    invoice's attempts the stand-in holds (``attempts``: (company id, entity) -> number -> request
+    and state; Cloud keeps each company's invoices apart): a number used with another request key
+    (attempt_number_used) or another amount or currency (request_key_reused); an attempt that may
+    still charge (attempt_in_progress); a request key any invoice of the installation already used
+    (request_key_reused, as Cloud holds request keys unique per installation); an earlier one
     that succeeded (invoice_paid) or could not be verified (outcome_unverifiable); a retry before
     the last failure's retry time (before_retry_time); the attempt cap, cancelled attempts
     included (retry_limit); another currency (currency_changed) or more than the first attempt
@@ -54,7 +56,7 @@ class _Cloud:
 
     A cancel names its attempt by number and request key, as Cloud requires: another key for the
     number is refused (attempt_number_used); an attempt Cloud has not seen is kept as cancelled
-    (``cancels``: entity -> number -> request key), answered canceled, and that attempt is answered
+    (``cancels``: (company id, entity) -> number -> request key), answered canceled, and that attempt is answered
     canceled when it arrives, charging nothing; an attempt that already ended is answered as it
     ended, whatever the test answers; otherwise the test's answer stands, and a cancel it accepts
     cancels that attempt only."""
@@ -63,8 +65,8 @@ class _Cloud:
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
-        self.attempts: dict[str, dict[int, dict]] = {}
-        self.cancels: dict[str, dict[int, str]] = {}
+        self.attempts: dict[tuple[str, str], dict[int, dict]] = {}
+        self.cancels: dict[tuple[str, str], dict[int, str]] = {}
         self.hold: set[str] = set()  # routes whose requests are held on the way (arrive)
         self.held: list[tuple[str, dict]] = []
         self.answers: dict = {
@@ -79,7 +81,7 @@ class _Cloud:
     def refusal(self, p: dict) -> str | None:
         """Cloud's refusal of the attempt request ``p``, None when it takes it."""
         from celerp_subscriptions import billing
-        made = self.attempts.get(p["entity_id"], {})
+        made = self.attempts.get(_invoice(p), {})
         row = made.get(p["attempt_number"])
         if row is not None:
             if row["request_key"] != p["request_key"]:
@@ -90,6 +92,8 @@ class _Cloud:
         earlier = [made[n] for n in sorted(made)]
         if any(r["state"] in _CLOUD_OPEN for r in earlier):
             return "attempt_in_progress"
+        if any(r["request_key"] == p["request_key"] for rows in self.attempts.values() for r in rows.values()):
+            return "request_key_reused"
         if not earlier:
             return None
         if any(r["state"] == "succeeded" for r in earlier):
@@ -107,29 +111,29 @@ class _Cloud:
             return "amount_above_first_attempt"
         return None
 
-    def settle(self, entity_id: str, n: int, state: str, retry_eligible_at: str | None = None) -> None:
-        """Attempt ``n`` of the invoice reached ``state`` at Cloud."""
-        row = self.attempts.get(entity_id, {}).get(n)
+    def settle(self, invoice: tuple[str, str], n: int, state: str, retry_eligible_at: str | None = None) -> None:
+        """Attempt ``n`` of the invoice (company id, entity) reached ``state`` at Cloud."""
+        row = self.attempts.get(invoice, {}).get(n)
         if row is not None:
             row["state"] = state
             if state == "failed":
                 row["retry_at"] = retry_eligible_at
 
     def _attempt(self, p: dict, answer):
-        held = self.cancels.get(p["entity_id"], {}).get(p["attempt_number"])
+        held = self.cancels.get(_invoice(p), {}).get(p["attempt_number"])
         if held is not None:
             return (200, _answer(p["attempt_number"], "canceled")) if held == p["request_key"] \
                 else (409, {"detail": "attempt_number_used"})
         if refused := self.refusal(p):
             return 409, {"detail": refused}
-        made = self.attempts.setdefault(p["entity_id"], {})
+        made = self.attempts.setdefault(_invoice(p), {})
         fresh = p["attempt_number"] not in made
         row = made.setdefault(p["attempt_number"], {
             "request_key": p["request_key"], "amount_minor": p["amount_minor"],
             "currency": p["currency"].lower(), "state": "prepared", "retry_at": None})
         result = answer(p) if callable(answer) else answer
         if result is not None and result[0] == 200:
-            self.settle(p["entity_id"], p["attempt_number"], result[1].get("state"),
+            self.settle(_invoice(p), p["attempt_number"], result[1].get("state"),
                         result[1].get("retry_eligible_at"))
         elif result is not None and fresh:
             del made[p["attempt_number"]]  # refused by the test's answer: Cloud made nothing
@@ -139,9 +143,9 @@ class _Cloud:
         n, key = p.get("attempt_number"), p.get("request_key")
         if type(n) is not int or n < 1 or not isinstance(key, str) or not key:
             return 422, {"detail": "attempt_number and request_key are required"}
-        row = self.attempts.get(p["entity_id"], {}).get(n)
+        row = self.attempts.get(_invoice(p), {}).get(n)
         if row is None:
-            held = self.cancels.setdefault(p["entity_id"], {}).setdefault(n, key)
+            held = self.cancels.setdefault(_invoice(p), {}).setdefault(n, key)
             result = (200, _answer(n, "canceled")) if held == key else (409, {"detail": "attempt_number_used"})
         elif row["request_key"] != key:
             result = 409, {"detail": "attempt_number_used"}
@@ -150,13 +154,13 @@ class _Cloud:
         else:
             result = answer(p) if callable(answer) else answer
             if result is not None and result[0] == 200 and result[1].get("state") == "canceled":
-                self.settle(p["entity_id"], n, "canceled")
+                self.settle(_invoice(p), n, "canceled")
             return result
         return None if answer is None else result  # Cloud took it; the test lost its answer
 
-    def charged(self, entity_id: str) -> int:
-        """What Cloud charged the invoice's card, in minor units."""
-        return sum(r["amount_minor"] for r in self.attempts.get(entity_id, {}).values() if r["state"] == "succeeded")
+    def charged(self, invoice: tuple[str, str]) -> int:
+        """What Cloud charged the card of the invoice (company id, entity), in minor units."""
+        return sum(r["amount_minor"] for r in self.attempts.get(invoice, {}).values() if r["state"] == "succeeded")
 
     async def __call__(self, path: str, payload: dict):
         self.calls.append((path, payload))
@@ -183,13 +187,21 @@ class _Cloud:
         return [p for path, p in self.calls if path == f"/billing/connect/collection/{route}"]
 
 
+def _invoice(p: dict) -> tuple[str, str]:
+    """The invoice a request names, as Cloud keys it: (company id, entity)."""
+    return str(p.get("company_id")), p["entity_id"]
+
+
+_DOC = ("co-1", "doc-1")
+
+
 def _answer(n: int, state: str) -> dict:
     """Cloud's answer naming attempt ``n`` and its state."""
     return {"state": state, "attempt_number": n, "failure_code": None, "retry_eligible_at": None}
 
 
 def _request(n: int, amount: int = 3000, currency: str = "USD", key: str | None = None) -> dict:
-    return {"entity_id": "doc-1", "attempt_number": n, "request_key": key or f"collect:doc-1:{n}",
+    return {"company_id": "co-1", "entity_id": "doc-1", "attempt_number": n, "request_key": key or f"collect:doc-1:{n}",
             "amount_minor": amount, "currency": currency}
 
 
@@ -218,13 +230,13 @@ async def test_the_stand_in_cloud_refuses_each_attempt_cloud_refuses(monkeypatch
     fake = _Cloud()
     history, asked = _REFUSALS[refusal]
     for n, state, retry_at in history:
-        fake.attempts.setdefault("doc-1", {})[n] = {
+        fake.attempts.setdefault(_DOC, {})[n] = {
             "request_key": f"collect:doc-1:{n}", "amount_minor": 3000, "currency": "usd", "state": state,
             "retry_at": retry_at}
     assert await fake("/billing/connect/collection/attempt", asked) == (409, {"detail": refusal})
     fresh = _Cloud()
     status, body = await fresh("/billing/connect/collection/attempt", _request(1))
-    assert status == 200 and fresh.attempts["doc-1"][1]["state"] == "submitted"
+    assert status == 200 and fresh.attempts[_DOC][1]["state"] == "submitted"
 
 
 def stand_in(monkeypatch, session) -> _Cloud:
@@ -274,7 +286,7 @@ async def _attempt_outcome(cid: str, doc_id: str, n: int, state: str, **fields) 
     Cloud holds as the attempt's state."""
     from celerp.services import collection
     if _Cloud.current is not None:
-        _Cloud.current.settle(doc_id, n, state, fields.get("retry_eligible_at"))
+        _Cloud.current.settle((cid, doc_id), n, state, fields.get("retry_eligible_at"))
     return await collection.receive_attempt({
         "delivery_id": uuid.uuid4().hex, "company_id": cid, "entity_id": doc_id, "attempt_number": n,
         "state": state, "definitive": state in ("failed", "canceled"), "failure_code": None,
@@ -536,12 +548,64 @@ async def test_collection_request_after_commit_only(client, session, monkeypatch
         await step(lambda: _same(session))
     [sent] = cloud.sent("attempt")
     assert sent["protocol"] == 2 and sent["company_id"] == cid and sent["entity_id"] == doc["entity_id"]
-    assert sent["attempt_number"] == 1 and sent["request_key"] == f"collect:{doc['entity_id']}:1"
+    assert sent["attempt_number"] == 1 and sent["request_key"] == f"collect:{cid}:{doc['entity_id']}:1"
     assert sent["amount_minor"] == await _outstanding_minor(session, doc) and sent["currency"] == doc["currency"]
     assert sent["payer_contact_id"] == payer and isinstance(sent["generation"], int)
     assert sent["context"]["deposit_account"]
     [doc] = await billed_docs(session, eid)
     assert doc["collection"]["state"] == "submitted"
+
+
+async def test_two_companies_with_the_same_invoice_number_both_collect(client, session, monkeypatch, cloud):
+    """Invoice numbers are each company's own, so two companies of one installation both issue
+    their first July invoice under one number; Cloud holds request keys unique per installation,
+    and both invoices' first attempts are taken and charged."""
+    freeze_day(monkeypatch, "2026-07-01")
+    cloud.answers["attempt"] = lambda p: (200, _answer(p["attempt_number"], "succeeded"))
+    first = await register(client)
+    r = await client.post("/companies", headers=first, json={"name": "Second company"})
+    assert r.status_code == 200, r.text
+    invoices = []
+    for hd in (first, h(r.json()["access_token"])):
+        cid, eid, _ = await _collecting(client, hd)
+        await tick(session, cid, "2026-07-01")
+        [row] = (await session.execute(select(Projection).where(
+            Projection.company_id == uuid.UUID(cid), Projection.entity_type == "doc",
+            Projection.state["source_agreement"].as_string() == eid))).scalars().all()
+        invoices.append((cid, dict(row.state, entity_id=row.entity_id)))
+    (a, doc_a), (b, doc_b) = invoices
+    assert a != b and doc_a["entity_id"] == doc_b["entity_id"]
+    for cid, doc in invoices:
+        assert cloud.charged((cid, doc["entity_id"])) == doc["collection"]["amount_minor"] > 0
+    assert len({p["request_key"] for p in cloud.sent("attempt")}) == 2
+
+
+async def test_an_attempt_kept_under_the_earlier_key_form_is_replayed_and_cancelled_with_it(
+        client, session, monkeypatch, cloud):
+    """An attempt asked for before request keys named the company keeps the key it was sent with:
+    after the update its retry sends the request first sent and its cancel names that key, which
+    Cloud matches to the attempt it holds."""
+    from celerp.services import collection
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid, eid, _ = await _collecting(client, hd)
+    current = collection.request_key
+    monkeypatch.setattr(collection, "request_key", lambda company_id, doc_id, n: f"collect:{doc_id}:{n}")
+    cloud.answers["attempt"] = None
+    await tick(session, cid, "2026-07-01")
+    monkeypatch.setattr(collection, "request_key", current)
+    [doc] = await billed_docs(session, eid)
+    earlier = f"collect:{doc['entity_id']}:1"
+    assert doc["collection"]["request_key"] == earlier
+    cloud.answers["attempt"] = lambda p: (200, {"state": "submitted", "attempt_number": p["attempt_number"]})
+    await tick(session, cid, "2026-07-02")
+    assert [p["request_key"] for p in cloud.sent("attempt")] == [earlier, earlier]
+    assert (await schedule(client, hd, eid, generation_mode="manual_due")).status_code == 200
+    await tick(session, cid, "2026-07-03")
+    assert [p["request_key"] for p in cloud.sent("cancel")] == [earlier]
+    assert cloud.attempts[cid, doc["entity_id"]][1]["state"] == "canceled"
+    [c] = await _collection(session, eid)
+    assert c["state"] == "canceled" and c["request_key"] == earlier
 
 
 @pytest.mark.parametrize("route", ["generate-due", "bulk", "bill-early"])
@@ -640,7 +704,7 @@ async def test_retry_requested_by_app_with_live_outstanding_only_after_eligible(
     await tick(session, cid, "2026-07-04")
     first, retry = cloud.sent("attempt")
     [doc] = await billed_docs(session, eid)
-    assert retry["attempt_number"] == 2 and retry["request_key"] == f"collect:{doc['entity_id']}:2"
+    assert retry["attempt_number"] == 2 and retry["request_key"] == f"collect:{cid}:{doc['entity_id']}:2"
     assert retry["amount_minor"] == await _outstanding_minor(session, doc) == first["amount_minor"] - 1000
 
 
@@ -764,25 +828,25 @@ async def test_the_stand_in_cloud_cancels_by_attempt_number_as_cloud_does(monkey
     ended answers as it ended; a cancel of attempt 1 leaves attempt 2 alone."""
     _at(monkeypatch, datetime(2026, 7, 3, tzinfo=timezone.utc))
     fake, url = _Cloud(), "/billing/connect/collection/"
-    cancel = {"entity_id": "doc-1", "attempt_number": 1, "request_key": "collect:doc-1:1"}
-    assert (await fake(url + "cancel", {"entity_id": "doc-1"}))[0] == 422
+    cancel = {"company_id": "co-1", "entity_id": "doc-1", "attempt_number": 1, "request_key": "collect:doc-1:1"}
+    assert (await fake(url + "cancel", {"company_id": "co-1", "entity_id": "doc-1"}))[0] == 422
     assert await fake(url + "cancel", cancel) == (200, _answer(1, "canceled"))
     assert await fake(url + "cancel", {**cancel, "request_key": "other"}) == (409, {"detail": "attempt_number_used"})
     assert await fake(url + "attempt", _request(1, key="other")) == (409, {"detail": "attempt_number_used"})
     assert await fake(url + "attempt", _request(1)) == (200, _answer(1, "canceled"))
-    assert fake.attempts.get("doc-1", {}) == {} and fake.charged("doc-1") == 0
+    assert fake.attempts.get(_DOC, {}) == {} and fake.charged(_DOC) == 0
     fresh = _Cloud()
     fresh.answers["attempt"] = lambda p: (200, _answer(p["attempt_number"], "succeeded"))
     await fresh(url + "attempt", _request(1))
     assert await fresh(url + "cancel", {**cancel, "request_key": "other"}) == (409, {"detail": "attempt_number_used"})
     assert await fresh(url + "cancel", cancel) == (200, _answer(1, "succeeded"))
-    assert fresh.charged("doc-1") == 3000
+    assert fresh.charged(_DOC) == 3000
     two = _Cloud()
-    two.attempts["doc-1"] = {1: {"request_key": "collect:doc-1:1", "amount_minor": 3000, "currency": "usd",
+    two.attempts[_DOC] = {1: {"request_key": "collect:doc-1:1", "amount_minor": 3000, "currency": "usd",
                                  "state": "canceled", "retry_at": None}}
     assert (await two(url + "attempt", _request(2)))[0] == 200
     assert await two(url + "cancel", cancel) == (200, _answer(1, "canceled"))
-    assert two.attempts["doc-1"][2]["state"] == "submitted"
+    assert two.attempts[_DOC][2]["state"] == "submitted"
 
 
 async def _late_answer(session, cid: str, doc_id: str, kind: str, payload: dict, answer) -> None:
@@ -815,20 +879,20 @@ async def test_a_cancel_that_reaches_cloud_before_its_attempt_holds(client, sess
     owed = await _outstanding_minor(session, (await billed_docs(session, eid))[0])
     cloud.hold = set()
     await tick(session, cid, "2026-07-02")
-    assert doc_id not in cloud.attempts  # Cloud has not seen attempt 1
+    assert (cid, doc_id) not in cloud.attempts  # Cloud has not seen attempt 1
     [cancel] = cloud.sent("cancel")
     assert (cancel["attempt_number"], cancel["request_key"]) == (1, cloud.sent("attempt")[0]["request_key"])
     [c] = await _collection(session, eid)
     assert (c["attempt_number"], c["state"], c["definitive"]) == (1, "canceled", True)
     [(first, answer)] = cloud.arrive()
-    assert answer == (200, _answer(1, "canceled")) and cloud.charged(doc_id) == 0
+    assert answer == (200, _answer(1, "canceled")) and cloud.charged((cid, doc_id)) == 0
     await _late_answer(session, cid, doc_id, "attempt", first, answer)
     await tick(session, cid, "2026-07-03")
     await tick(session, cid, "2026-07-04")
     assert [(p["attempt_number"], p["amount_minor"]) for p in cloud.sent("attempt")] == [(1, total), (2, owed)]
     assert cloud.calls.index(("/billing/connect/collection/cancel", cancel)) < [
         i for i, (path, p) in enumerate(cloud.calls) if path.endswith("/attempt") and p["attempt_number"] == 2][0]
-    assert cloud.charged(doc_id) == owed and cloud.charged(doc_id) + (total - owed) <= total
+    assert cloud.charged((cid, doc_id)) == owed and cloud.charged((cid, doc_id)) + (total - owed) <= total
     [c] = await _collection(session, eid)
     assert (c["attempt_number"], c["state"]) == (2, "succeeded")
 
@@ -859,7 +923,7 @@ async def test_a_duplicate_cancel_arriving_after_the_next_attempt_leaves_it_alon
     cloud.held = [held]
     [(late, answer)] = cloud.arrive()
     assert late["attempt_number"] == 1 and answer == (200, _answer(1, "canceled"))
-    assert cloud.attempts[doc_id][2]["state"] == "submitted"
+    assert cloud.attempts[cid, doc_id][2]["state"] == "submitted"
     await _pay(client, hd, doc_id, 5.0)
     cloud.hold = {"cancel"}
     await tick(session, cid, "2026-07-05")
@@ -867,7 +931,7 @@ async def test_a_duplicate_cancel_arriving_after_the_next_attempt_leaves_it_alon
     await _late_answer(session, cid, doc_id, "cancel", late, answer)
     [c] = await _collection(session, eid)
     assert (c["attempt_number"], c["state"], c["cancel"]) == (2, "submitted", "queued")
-    assert cloud.charged(doc_id) == 0
+    assert cloud.charged((cid, doc_id)) == 0
 
 
 @pytest.mark.parametrize("payment", ["after_the_answer", "before_the_answer"])
@@ -885,7 +949,7 @@ async def test_a_cancel_crossing_a_charge_that_succeeded_keeps_the_success(clien
     await tick(session, cid, "2026-07-01")
     [doc] = await billed_docs(session, eid)
     doc_id, [sent] = doc["entity_id"], cloud.sent("attempt")
-    cloud.settle(doc_id, 1, "succeeded")
+    cloud.settle((cid, doc_id), 1, "succeeded")
     await _pay(client, hd, doc_id, 10.0)
     paid = {"company_id": cid, "entity_id": doc_id, "reference": "pi_1", "amount_minor": sent["amount_minor"],
             "currency": sent["currency"], "paid_at": "2026-07-02T09:00:00+00:00", "managed": True,
@@ -910,7 +974,7 @@ async def test_a_cancel_crossing_a_charge_that_succeeded_keeps_the_success(clien
     assert (c["state"], c["kept"]) == ("succeeded", "pi_1")
     assert (await session.get(UnmatchedPayment, "pi_1")) is not None
     assert len(cloud.sent("attempt")) == 1 and len(cloud.sent("cancel")) == 1
-    assert cloud.charged(doc_id) == sent["amount_minor"]
+    assert cloud.charged((cid, doc_id)) == sent["amount_minor"]
 
 
 async def test_offsession_success_through_apply_doc_payment(client, session, monkeypatch, cloud):
