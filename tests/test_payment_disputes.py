@@ -193,6 +193,25 @@ async def test_an_inquiry_closed_with_a_warning_posts_nothing(real_engine, real_
     assert len(await _notices(real_engine, a)) == 2
 
 
+async def test_a_dispute_delivered_before_its_payment_waits_for_it(real_engine, real_client, monkeypatch):
+    """A step of a dispute that arrives before the payment it disputes is not taken, so Cloud
+    delivers it again; once the payment is recorded, the step posts and is told once."""
+    boss, a, b = await _harbor(real_engine)
+    invoice = await _invoice(real_client, real_engine, boss, a)
+    cloud = _DisputeCloud(monkeypatch, real_engine)
+    cloud.dispute(a, invoice, "funds_withdrawn", _at(3))
+    await cloud.deliver()
+    assert not cloud.deliveries[0]["acked"]
+    assert await _dispute_entries(real_engine, invoice) == [] and await _notices(real_engine, a) == []
+
+    cloud.pay(a, invoice, "pi_1", paid_at=PAID_AT, books=BOOKS)
+    await cloud.deliver()  # the step waits again, then the payment is recorded
+    await cloud.deliver()
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _dispute_entries(real_engine, invoice) == [("funds_withdrawn", "2026-09-04", WITHDRAWN)]
+    assert len(await _notices(real_engine, a)) == 1
+
+
 WITHDRAWN = {DISPUTED: Decimal("1070"), BANK: Decimal("-1070")}
 LOST = {LOSSES: Decimal("1070"), DISPUTED: Decimal("-1070")}
 REINSTATED = {DISPUTED: Decimal("-1070"), BANK: Decimal("1070")}
