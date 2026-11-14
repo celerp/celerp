@@ -292,3 +292,16 @@ async def test_opening_a_numbering_cell_for_an_unknown_doc_type_does_not_fail(ui
     with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])):
         r = await ui_client.get(url)
     assert r.status_code == 200 and "editable-cell" in r.text
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+async def test_tax_side_cell_takes_only_the_three_sides(ui_client, prefix, gname, pname):
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: _taxes())), \
+         patch(f"ui.api_client.{pname}", new=saved):
+        r = await ui_client.patch(f"/settings/{prefix}/0/tax_type", data={"value": "output"})
+        assert "cell-error" in r.text
+        saved.assert_not_awaited()
+        r = await ui_client.patch(f"/settings/{prefix}/0/tax_type", data={"value": "purchase"})
+        assert saved.await_args.args[1][0]["tax_type"] == "purchase"

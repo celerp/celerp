@@ -67,3 +67,8 @@ async def test_confirm_posts_records_the_api_accepts(monkeypatch, kind, csv_text
     [rec] = body.records
     assert rec.data["name"] == csv_text.splitlines()[1].split(",")[0]
     assert rec.data[field]
+
+
+@pytest.mark.parametrize("value,ok", [("sales", True), ("purchase", True), (" both ", True), ("output", False)])
+def test_tax_csv_side_is_one_of_the_three(value, ok):
+    assert si._tax_validate("tax_type", value) is ok
