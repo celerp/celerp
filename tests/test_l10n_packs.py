@@ -190,6 +190,23 @@ def test_pack_matching_its_digest_without_the_pack_format_is_absent(l10n_dir, ca
     assert "MY.json" in caplog.text
 
 
+def test_pack_retired_list_is_read_from_the_pack(l10n_dir):
+    """A pack's retired list is what the app reads; a pack without one retires nothing."""
+    from celerp.localization import packs
+
+    pack = json.loads((l10n_dir / "packs" / "TH.json").read_text(encoding="utf-8"))
+    pack["retired"] = [{"id": "th-vat-7-2099", "match": "any", "rows": [{"name": "VAT 7%", "rate": 7.0}]}]
+    data = (json.dumps(pack, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    (l10n_dir / "packs" / "TH.json").write_bytes(data)
+    lock_path = l10n_dir / "packs.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["TH"]["sha256"] = hashlib.sha256(data).hexdigest()
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    _reset()
+    assert packs()["TH"]["retired"] == pack["retired"]
+    assert packs()["AU"]["retired"] == []
+
+
 def test_pack_missing_is_absent_and_logged(l10n_dir, caplog):
     from celerp.localization import missing
     from celerp.tax_regimes import tax_countries
@@ -605,7 +622,7 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
 
 
 def test_tax_regimes_has_no_country_data():
-    """Country tax material lives in the packs; core keeps the fallback and its own history."""
+    """Country tax material, retired rows included, lives in the packs; core keeps only the fallback."""
     source = (REPO / "celerp" / "tax_regimes.py").read_text(encoding="utf-8")
     assert "TAX_REGIMES" not in source
     tree = ast.parse(source)
@@ -620,8 +637,7 @@ def test_tax_regimes_has_no_country_data():
                 for t in ([node.target] if isinstance(node, ast.AnnAssign) else node.targets)
                 if isinstance(t, ast.Name) and getattr(node, "value", None) is regimes[0]}
     assert assigned == {"DEFAULT_REGIME"}
-    assert any(isinstance(node, (ast.Assign, ast.AnnAssign)) and "RETIRED_SEED_ROWS" in ast.unparse(node).split("=")[0]
-               for node in tree.body)
+    assert "RETIRED_SEED_ROWS" not in source  # retired rows come from the packs too
 
 
 # ── The notice ───────────────────────────────────────────────────────────────

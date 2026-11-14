@@ -34,5 +34,17 @@
       "is_compound": false,
       "default_order": 0
     }
+  ],
+  "retired": [
+    {
+      "id": "my-sst-6",
+      "match": "any",
+      "rows": [
+        {
+          "name": "SST 6%",
+          "rate": 6.0
+        }
+      ]
+    }
   ]
 }

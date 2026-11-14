@@ -105,6 +105,17 @@ def _bad_currency(pack):
     pack["company_defaults"]["currency"] = "ZZZ"
 
 
+_RETIRED = {"id": "th-vat-7-2099", "match": "any", "rows": [{"name": "VAT 7%", "rate": 7.0}]}
+
+
+def _retired(**fields):
+    return _set("retired", [{**_RETIRED, **fields}])
+
+
+def _two_retired(pack):
+    pack["retired"] = [_RETIRED, {**_RETIRED, "rows": [{"name": "Exempt"}]}]
+
+
 _CHECK_CASES = {
     "bad digest": (lambda r: (r / "packs" / "TH.json").write_bytes(
         (r / "packs" / "TH.json").read_bytes().replace(b"7.0", b"8.0", 1)), "sha256"),
@@ -124,7 +135,27 @@ _VALIDATE_CASES = {
     "default flag not a bool": (lambda r: _rewrite(r, "TH", _row(is_default="yes")), "tax row 0 is invalid (is_default)"),
     "duplicate tax name": (lambda r: _rewrite(r, "TH", _duplicate_name), "duplicate tax name"),
     "company defaults not an object": (lambda r: _rewrite(r, "TH", _set("company_defaults", ["THB"])), "currency"),
+    "retired not a list": (lambda r: _rewrite(r, "TH", _set("retired", {"id": "th-x"})), "retired: "),
+    "retired match outside all and any": (lambda r: _rewrite(r, "TH", _retired(match="most")),
+                                          "retired row 0 is invalid (match)"),
+    "retired entry with no rows": (lambda r: _rewrite(r, "TH", _retired(rows=[])), "retired row 0 is invalid (rows)"),
+    "retired row with a field it cannot match": (lambda r: _rewrite(r, "TH", _retired(rows=[{"name": "VAT 7%", "tax_type": "sales"}])),
+                                                 "retired row 0 is invalid (rows)"),
+    "retired row default not a bool": (lambda r: _rewrite(r, "TH", _retired(rows=[{"name": "VAT 7%", "is_default": "yes"}])),
+                                       "retired row 0 is invalid (rows)"),
+    "retired row with a blank name": (lambda r: _rewrite(r, "TH", _retired(rows=[{"name": "  "}])),
+                                      "retired row 0 is invalid (rows)"),
+    "retired id not a plain id": (lambda r: _rewrite(r, "TH", _retired(id="TH x")), "retired row 0 is invalid (id)"),
+    "retired entry with an unknown field": (lambda r: _rewrite(r, "TH", _retired(note="x")), "retired row 0 is invalid (note)"),
+    "duplicate retired id": (lambda r: _rewrite(r, "TH", _two_retired), "duplicate retired id"),
+    "retired currency unknown": (lambda r: _rewrite(r, "TH", _retired(currency="ZZZ")), "retired row 0 currency"),
 }
+
+
+def test_l10n_packs_validate_takes_a_well_formed_retired_list(root):
+    _rewrite(root, "TH", _set("retired", [_RETIRED, {"id": "th-old", "match": "all", "currency": "THB",
+                                                       "rows": [{"name": "Exempt", "is_default": False}]}]))
+    assert _run("validate", str(root)) == (0, "")
 
 
 @pytest.mark.parametrize("case", list(_CHECK_CASES) + ["lock differs"] + list(_VALIDATE_CASES))

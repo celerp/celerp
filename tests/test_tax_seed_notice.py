@@ -16,9 +16,9 @@ from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 
-from test_tax_seeds import _OLD_ET
+from test_tax_seeds import _OLD_ET, old_retired, with_retired  # noqa: F401 - old_retired is a fixture
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("old_retired")]
 
 
 async def _company(session, *, sales: list[dict] | None = None, purchasing: list[dict] | None = None,
@@ -154,14 +154,37 @@ _REPLACEMENT = {"in-default-2025": "IGST 18%", "et-wht-2025": "3%", "et-tot-2025
 
 
 async def test_each_retired_seed_notice_names_its_rows_and_the_replacement():
-    from celerp.tax_regimes import RETIRED_SEED_ROWS
+    from celerp.tax_regimes import retired_taxes
     from ui.i18n import t
 
-    assert {entry["id"] for entry in RETIRED_SEED_ROWS} == set(_REPLACEMENT)
-    for entry in RETIRED_SEED_ROWS:
+    assert {entry["id"] for entry in retired_taxes()} == set(_REPLACEMENT)
+    for entry in retired_taxes():
         body = t(f"notice.tax_seed.{entry['id']}.body", "en")
         assert [row["name"] for row in entry["rows"] if row["name"] not in body] == [], entry["id"]
         assert _REPLACEMENT[entry["id"]] in body, entry["id"]
+
+
+async def test_a_retirement_only_a_pack_lists_tells_the_companies_holding_its_row(session, monkeypatch):
+    """A pack may retire a row core has no words for: the company still holding it is told, by the
+    row's name, and its taxes are left as they are; a company without the row is told nothing."""
+    from celerp.tax_regimes import get_regime
+
+    with_retired(monkeypatch, {"TH": [{"id": "th-vat-7-2099", "match": "any", "rows": [{"name": "VAT 7%", "rate": 7.0}]}]})
+    th = get_regime("TH")
+    holding = await _company(session, sales=th["taxes"], currency=th["currency"])
+    without = await _company(session, sales=[r for r in th["taxes"] if r["name"] != "VAT 7%"], currency=th["currency"])
+
+    await _run(session)
+    await _run(session)
+    notices = await _notices(session, holding)
+    assert set(notices) == {"retired"}
+    notice = notices["retired"]
+    assert notice.i18n == {"title": "notice.tax_seed.retired.title", "body": "notice.tax_seed.retired.body",
+                           "params": {"taxes": "VAT 7%"}}
+    assert "VAT 7%" in notice.title and "VAT 7%" in notice.body
+    assert notice.action_url == "/settings/sales?tab=taxes"
+    assert await _notices(session, without) == {}
+    assert (await session.get(Company, holding)).settings["taxes"] == th["taxes"]
 
 
 async def test_tax_seed_notice_links_purchasing_tab_for_purchasing_match(session):
@@ -306,7 +329,7 @@ async def test_saving_the_sales_list_fixed_moves_the_notice_link_to_the_purchasi
 
 async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client, monkeypatch):
     """Two notices raised by one save with the cap at one: the older is pruned in the same request,
-    and the one kept is the newer, raised second in RETIRED_SEED_ROWS order."""
+    and the one kept is the newer, raised second in the Ethiopia pack's retired list."""
     monkeypatch.setattr("celerp.notifications.service.MAX_PER_COMPANY", 1)
     h = await _register(client)
     assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200

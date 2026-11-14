@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,6 +250,47 @@ class TaxRatesPatch(BaseModel):
                 raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
             seen.add(key)
         return taxes
+
+
+class RetiredTaxRow(BaseModel):
+    """A row a retired entry matches: its name, as tax_name_key compares it, and each other field given."""
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    rate: FiniteFloat | None = None
+    is_default: StrictBool | None = None
+    is_compound: StrictBool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_given(cls, name: str) -> str:
+        if not tax_name_key(name):
+            raise ValueError("a retired row needs a name")
+        return name
+
+
+class RetiredTax(BaseModel):
+    """Rows an earlier release seeded that are no longer right, as a country pack lists them. A
+    company still holding them is told (services/tax_seed_notice.py), never changed. ``match`` is
+    "all" when a list must hold every row, "any" when one is enough; with ``currency`` set, only
+    a company whose books are in that currency holds the retired rows."""
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    match: Literal["all", "any"]
+    currency: str | None = None
+    rows: list[RetiredTaxRow] = Field(min_length=1)
+
+
+class CountryPackTaxes(TaxRatesPatch):
+    """A country pack's tax material: its tax list and the earlier rows it retires."""
+    retired: list[RetiredTax] = []
+
+    @field_validator("retired")
+    @classmethod
+    def _ids_unique(cls, retired: list[RetiredTax]) -> list[RetiredTax]:
+        ids = [entry.id for entry in retired]
+        if dupes := sorted({i for i in ids if ids.count(i) > 1}):
+            raise ValueError(f"duplicate retired id {', '.join(dupes)}")
+        return retired
 
 
 class PaymentTermsPatch(BaseModel):

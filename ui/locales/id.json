@@ -6530,6 +6530,8 @@
   "notice.tax_seed.ca-qst-compound.body": "QST 9,975% ditetapkan sebagai pajak majemuk, sehingga dihitung atas harga ditambah GST. Quebec menghitungnya atas harga sebelum GST. Atur Majemuk menjadi Tidak untuk QST 9,975% di Pengaturan > Pajak.",
   "notice.tax_seed.my-sst-6.title": "SST 6% Malaysia diganti",
   "notice.tax_seed.my-sst-6.body": "SST 6% tidak berlaku lagi. Malaysia kini mengenakan Sales Tax 10% atau 5% atas barang dan Service Tax 8% atau 6% atas jasa. Ubah baris SST 6% di Pengaturan > Pajak.",
+  "notice.tax_seed.retired.title": "Pajak yang perlu diperiksa: {taxes}",
+  "notice.tax_seed.retired.body": "Pajak tersimpan Anda masih memuat {taxes}, yang tidak lagi digunakan dalam bentuk ini oleh tarif pajak terbaru negara Anda. Periksa di Pengaturan > Pajak. Pajak tersimpan Anda tidak diubah.",
   "notice.customs_freeze.title": "Dokumen pengiriman yang diterbitkan menyimpan detail barangnya",
   "notice.customs_freeze.body": "Untuk dokumen pengiriman yang diterbitkan sebelum pembaruan ini, Celerp telah menyimpan detail barang yang saat ini ditampilkan pada dokumen tersebut. Perubahan barang di kemudian hari tidak lagi mengubah salinan yang telah diterbitkan. Detail ini mungkin berbeda dengan detail barang saat dokumen pertama kali diterbitkan.",
   "migration.xero_attachments_later": "File yang dilampirkan ke faktur, tagihan, dan nota kredit di Xero tidak ada dalam ekspor. Setelah impor selesai, ambil file tersebut dari Xero di halaman hasil pemeriksaan.",

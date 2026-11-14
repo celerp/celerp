@@ -6530,6 +6530,8 @@
   "notice.tax_seed.ca-qst-compound.body": "QST 9,975 % ist als zusammengesetzte Steuer eingestellt und wird daher auf den Preis einschließlich GST berechnet. In Québec wird sie auf den Preis vor GST berechnet. Stellen Sie für QST 9,975 % unter Einstellungen > Steuern „Zusammengesetzt“ auf „Nein“.",
   "notice.tax_seed.my-sst-6.title": "Malaysische SST von 6 % ersetzt",
   "notice.tax_seed.my-sst-6.body": "Die SST von 6 % gilt nicht mehr. Malaysia erhebt jetzt Sales Tax von 10 % oder 5 % auf Waren und Service Tax von 8 % oder 6 % auf Dienstleistungen. Ändern Sie den Eintrag SST 6 % unter Einstellungen > Steuern.",
+  "notice.tax_seed.retired.title": "Zu prüfende Steuer: {taxes}",
+  "notice.tax_seed.retired.body": "Ihre gespeicherten Steuern enthalten noch {taxes}. Die aktuellen Steuersätze für Ihr Land verwenden diesen Eintrag so nicht mehr. Prüfen Sie ihn unter Einstellungen > Steuern. Ihre gespeicherten Steuern wurden nicht geändert.",
   "notice.customs_freeze.title": "Ausgestellte Versanddokumente behalten ihre Artikelangaben",
   "notice.customs_freeze.body": "Für Versanddokumente, die vor diesem Update ausgestellt wurden, hat Celerp die derzeit darin angezeigten Artikelangaben gespeichert. Spätere Änderungen an Artikeln ändern die ausgestellten Exemplare nicht mehr. Diese Angaben können von den Artikelangaben zum ursprünglichen Ausstellungszeitpunkt abweichen.",
   "migration.xero_attachments_later": "Dateien, die in Xero an Rechnungen, Eingangsrechnungen und Gutschriften angehängt sind, sind nicht im Export enthalten. Rufen Sie sie nach Abschluss des Imports auf der Seite mit den Prüfergebnissen aus Xero ab.",

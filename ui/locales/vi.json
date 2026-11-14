@@ -6530,6 +6530,8 @@
   "notice.tax_seed.ca-qst-compound.body": "QST 9,975% đang được đặt là thuế tính chồng, nên được tính trên giá cộng GST. Quebec tính thuế này trên giá trước GST. Hãy đặt Tính chồng thành Không cho QST 9,975% trong Cài đặt > Thuế.",
   "notice.tax_seed.my-sst-6.title": "Malaysia đã thay thế mức SST 6%",
   "notice.tax_seed.my-sst-6.body": "SST 6% không còn hiệu lực. Malaysia hiện áp dụng thuế bán hàng 10% hoặc 5% đối với hàng hóa và thuế dịch vụ 8% hoặc 6% đối với dịch vụ. Hãy sửa dòng SST 6% trong Cài đặt > Thuế.",
+  "notice.tax_seed.retired.title": "Thuế cần kiểm tra: {taxes}",
+  "notice.tax_seed.retired.body": "Danh sách thuế đã lưu của bạn vẫn còn {taxes}, mà biểu thuế mới nhất của quốc gia bạn không còn dùng theo dạng này. Hãy kiểm tra trong Cài đặt > Thuế. Thuế đã lưu của bạn không bị thay đổi.",
   "notice.customs_freeze.title": "Chứng từ vận chuyển đã phát hành giữ nguyên chi tiết mặt hàng",
   "notice.customs_freeze.body": "Đối với chứng từ vận chuyển phát hành trước bản cập nhật này, Celerp đã lưu chi tiết mặt hàng đang hiển thị trên các chứng từ đó. Những thay đổi mặt hàng sau này sẽ không còn làm thay đổi bản đã phát hành. Những chi tiết được lưu có thể khác với thông tin mặt hàng tại thời điểm chứng từ được phát hành ban đầu.",
   "migration.xero_attachments_later": "Các tệp đính kèm hóa đơn, hóa đơn mua và giấy báo có trong Xero không có trong bản xuất. Khi quá trình nhập hoàn tất, hãy lấy chúng từ Xero trên trang kết quả kiểm tra.",

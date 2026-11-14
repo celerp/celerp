@@ -285,20 +285,12 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
     return None
 
 
-# Rows earlier seeds wrote that are no longer right. A company keeps the taxes it saved, so each
-# entry is told to the company as a notice (services/tax_seed_notice.py) and never changed for it.
-# An entry matches a tax list holding a row for each of its ``rows`` ("all") or for any one of them
-# ("any"); a row matches on its name (as tax_name_key) and every other field given. An entry naming
-# a ``currency`` is that country's: a company whose books are saved in another currency holds a row
-# of the same name from its own country's catalog, not the retired one.
-RETIRED_SEED_ROWS: tuple[dict, ...] = (
-    {"id": "in-default-2025", "match": "all",
-     "rows": ({"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True})},
-    {"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": ({"name": "WHT 2%", "rate": -2.0},)},
-    {"id": "et-tot-2025", "match": "any", "rows": ({"name": "TOT 2%"}, {"name": "TOT 10%"})},
-    {"id": "ca-qst-compound", "match": "any", "rows": ({"name": "QST 9.975%", "is_compound": True},)},
-    {"id": "my-sst-6", "match": "any", "rows": ({"name": "SST 6%", "rate": 6.0},)},
-)
+def retired_taxes() -> list[dict]:
+    """The rows earlier seeds wrote that are no longer right, as the loaded country packs list them
+    (each pack's ``retired``, in lock order; the RetiredTax schema in routers/companies.py). A
+    company keeps the taxes it saved, so each entry is told to it as a notice
+    (services/tax_seed_notice.py) and never changed for it."""
+    return [entry for pack in packs().values() for entry in pack["retired"]]
 
 
 def _row_matches(row: dict, want: dict) -> bool:
@@ -319,7 +311,7 @@ def _row_matches(row: dict, want: dict) -> bool:
 
 
 def retired_seed_rows(settings: dict) -> list[dict]:
-    """The RETIRED_SEED_ROWS entries a company's saved tax lists still hold, in that order, each
+    """The retired_taxes entries a company's saved tax lists still hold, in that order, each
     ``{"id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
     company saved are read: a purchasing list never saved is a copy of the sales list, not a
     second place to find the same row. An entry of another currency than the saved one is not
@@ -328,7 +320,7 @@ def retired_seed_rows(settings: dict) -> list[dict]:
     lists = {side: [r for r in rows if isinstance(r, dict)]
              for side, rows in saved.items() if isinstance(rows, list)}
     found, books = [], settings.get("currency")
-    for entry in RETIRED_SEED_ROWS:
+    for entry in retired_taxes():
         if books and entry.get("currency", books) != books:
             continue
         test = all if entry["match"] == "all" else any

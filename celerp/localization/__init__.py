@@ -49,7 +49,7 @@ def lock_codes() -> tuple[str, ...] | None:
 
 @lru_cache(maxsize=1)
 def packs() -> dict[str, dict]:
-    """``{code: {"currency", "taxes"}}`` for every lock entry whose pack matches its digest."""
+    """``{code: {"currency", "taxes", "retired"}}`` for every lock entry whose pack matches its digest."""
     loaded: dict[str, dict] = {}
     for code, entry in (_lock() or {}).items():
         path = _root() / "packs" / f"{code}.json"
@@ -63,7 +63,8 @@ def packs() -> dict[str, dict]:
             continue
         try:
             pack = json.loads(data)
-            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": pack["taxes"]}
+            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": pack["taxes"],
+                            "retired": pack.get("retired", [])}
         except (ValueError, KeyError, TypeError) as exc:
             log.error("Country pack %s does not have the pack format: %s", path.name, exc)
     return loaded

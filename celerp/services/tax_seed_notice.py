@@ -1,7 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Tell each company its saved taxes still hold a row an earlier seed wrote and that is no
-longer right (tax_regimes.RETIRED_SEED_ROWS).
+longer right, as the country packs list them (tax_regimes.retired_taxes). An entry has its own
+words when the catalogs carry them (``notice.tax_seed.<id>``); any other is told by the names of
+its rows.
 
 Runs at every startup, and for one company whenever its tax lists are saved, imported or its
 migration finishes. A company's taxes are its own, so this only reads them: each matched
@@ -25,7 +27,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services.list_behavior import DRAFT, FINALIZED, is_money_list
 from celerp.services.migrations import is_company_migration_staged
-from celerp.tax_regimes import RETIRED_SEED_ROWS, retired_seed_rows
+from celerp.tax_regimes import retired_seed_rows, retired_taxes
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -40,17 +42,29 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
     if await is_company_migration_staged(session, company_id):
         return
     found = {m["id"]: m["lists"] for m in retired_seed_rows(settings or {})}
-    for entry in RETIRED_SEED_ROWS:
-        key = f"notice.tax_seed.{entry['id']}"
-        title = t(f"{key}.title", "en")
-        lists = found.get(entry["id"])
-        if lists is None:
+    told: dict[str, tuple[set[str], dict]] = {}  # English title -> lists holding it, notice keys
+    for entry in retired_taxes():
+        notice = _notice_keys(entry)
+        lists, _ = told.setdefault(t(notice["title"], "en", **notice["params"]), (set(), notice))
+        lists |= found.get(entry["id"], set())
+    for title, (lists, notice) in told.items():
+        if not lists:
             await notification_service.clear_standing(session, company_id, _CATEGORY, title)
             continue
         await notification_service.notify_once(
-            session, company_id, _CATEGORY, title, t(f"{key}.body", "en"),
-            action_url=_TAX_TABS["sales" if "sales" in lists else "purchase"],
-            i18n={"title": f"{key}.title", "body": f"{key}.body", "params": {}})
+            session, company_id, _CATEGORY, title, t(notice["body"], "en", **notice["params"]),
+            action_url=_TAX_TABS["sales" if "sales" in lists else "purchase"], i18n=notice)
+
+
+def _notice_keys(entry: dict) -> dict:
+    """The notice's catalog keys and parameters: the entry's own words when the catalogs have
+    them, else the words for any retired row, naming its rows."""
+    key = f"notice.tax_seed.{entry['id']}"
+    if t(f"{key}.title", "en") != f"{key}.title":  # t gives the key back when no catalog has it
+        return {"title": f"{key}.title", "body": f"{key}.body", "params": {}}
+    names = ", ".join(row["name"] for row in entry["rows"])
+    return {"title": "notice.tax_seed.retired.title", "body": "notice.tax_seed.retired.body",
+            "params": {"taxes": names}}
 
 
 _LIST_NOTICE = "notice.list_tax_rule"

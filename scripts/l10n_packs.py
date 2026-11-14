@@ -39,6 +39,7 @@ DEFAULT_ROOT = REPO_ROOT / "celerp" / "localization"
 LOCK_NAME = "packs.lock.json"
 FORMAT = "celerp-localization"
 SCHEMA_VERSION = 1
+_ROW_NOUN = {"taxes": "tax", "retired": "retired"}
 CONTENTS_URL = "https://api.github.com/repos/{repo}/contents/pack/localization.json?ref={tag}"
 
 
@@ -104,32 +105,37 @@ def _pack_defects(code: str, data: bytes, locked: dict | None, tax_list, currenc
     taxes = pack.get("taxes")
     if not isinstance(taxes, list):
         return defects + [f"country {code}: taxes is not a list"]
+    material = {"taxes": taxes, **({"retired": pack["retired"]} if "retired" in pack else {})}
     try:
-        tax_list.model_validate({"taxes": taxes})
+        tax_list.model_validate(material)
     except ValueError as exc:  # pydantic's ValidationError
-        rows: dict[int, set[str]] = {}
+        rows: dict[tuple[str, int], set[str]] = {}
         for err in exc.errors():
-            loc = err["loc"][1:]  # past "taxes"
+            field, loc = err["loc"][0], err["loc"][1:]
             if loc and isinstance(loc[0], int):
-                rows.setdefault(loc[0], set()).add(str(loc[1]) if len(loc) > 1 else "row")
+                rows.setdefault((field, loc[0]), set()).add(str(loc[1]) if len(loc) > 1 else "row")
             else:
-                defects.append(f"country {code}: taxes: {err['msg'].removeprefix('Value error, ')}")
-        defects += [f"country {code}: tax row {i} is invalid ({', '.join(sorted(fields))})"
-                    for i, fields in sorted(rows.items())]
+                defects.append(f"country {code}: {field}: {err['msg'].removeprefix('Value error, ')}")
+        defects += [f"country {code}: {_ROW_NOUN[field]} row {i} is invalid ({', '.join(sorted(fields))})"
+                    for (field, i), fields in sorted(rows.items())]
+        return defects
+    for i, entry in enumerate(material.get("retired", [])):
+        if entry.get("currency") is not None and entry["currency"] not in currency_codes:
+            defects.append(f"country {code}: retired row {i} currency {entry['currency']!r} is not a known currency code")
     return defects
 
 
 def validate(root: Path, *, against_lock: bool = True) -> list[str]:
     """Each pack file's fields; with ``against_lock`` its version must equal its lock entry."""
     sys.path.insert(0, str(REPO_ROOT))
-    from celerp.routers.companies import TaxRatesPatch
+    from celerp.routers.companies import CountryPackTaxes
     from celerp.services.currencies import CURRENCY_CODES
 
     lock = _read_lock(root) or {}
     defects = []
     for code, path in _pack_files(root).items():
         locked = lock.get(code) if against_lock else None
-        defects += _pack_defects(code, path.read_bytes(), locked, TaxRatesPatch, CURRENCY_CODES)
+        defects += _pack_defects(code, path.read_bytes(), locked, CountryPackTaxes, CURRENCY_CODES)
     return defects
 
 

@@ -6620,6 +6620,8 @@
   "notice.tax_seed.ca-qst-compound.body": "QST 9.975% is set as compound, so it is charged on the price plus GST. Quebec charges it on the price before GST. Set Compound to No for QST 9.975% in Settings > Taxes.",
   "notice.tax_seed.my-sst-6.title": "Malaysia SST 6% replaced",
   "notice.tax_seed.my-sst-6.body": "SST 6% is no longer in force. Malaysia now charges Sales Tax at 10% or 5% on goods, and Service Tax at 8% or 6% on services. Change the SST 6% row in Settings > Taxes.",
+  "notice.tax_seed.retired.title": "Tax to check: {taxes}",
+  "notice.tax_seed.retired.body": "Your saved taxes still include {taxes}, which the latest tax rates for your country no longer use in this form. Check it in Settings > Taxes. Your saved taxes have not been changed.",
   "notice.customs_freeze.title": "Issued shipping documents keep their item details",
   "notice.customs_freeze.body": "For shipping documents issued before this update, Celerp has saved the item details currently shown on those documents. Future item changes will no longer change their issued copies. These details may differ from what the items showed when the documents were originally issued.",
   "account.gate_xero_attachments_benefit": "Sign in with your Celerp account to fetch the attachments from Xero.",

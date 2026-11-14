@@ -7,7 +7,7 @@
   "MY": {
     "version": "fixture",
     "schema_version": 1,
-    "sha256": "17c8f13bc7417447890232f49dcd69f8fe95918f1cd062e244d79896874e7e52"
+    "sha256": "1694b05c375535dbe55068b854c2c4f1b356395d7c0ebf096e8182013e55f321"
   },
   "AU": {
     "version": "fixture",
@@ -17,6 +17,6 @@
   "IN": {
     "version": "fixture",
     "schema_version": 1,
-    "sha256": "2f286c6f03f928d9a8b5be306c4b53cb81ed7efa17ca176408af64572061c07f"
+    "sha256": "5211832646f83bd7b85fe1e82b01e36348d9a7a5942ae9dd8185498559e80c23"
   }
 }

@@ -52,5 +52,21 @@
       "is_compound": false,
       "default_order": 1
     }
+  ],
+  "retired": [
+    {
+      "id": "in-default-2025",
+      "match": "all",
+      "rows": [
+        {
+          "name": "CGST 9%",
+          "is_default": true
+        },
+        {
+          "name": "SGST 9%",
+          "is_default": true
+        }
+      ]
+    }
   ]
 }

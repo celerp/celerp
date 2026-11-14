@@ -6530,6 +6530,8 @@
   "notice.tax_seed.ca-qst-compound.body": "La TVQ (QST) à 9,975 % est définie comme taxe composée : elle est donc calculée sur le prix augmenté de la TPS (GST). Au Québec, elle est calculée sur le prix avant TPS. Réglez « Composée » sur « Non » pour QST 9,975 % dans Paramètres > Taxes.",
   "notice.tax_seed.my-sst-6.title": "La SST de 6 % en Malaisie a été remplacée",
   "notice.tax_seed.my-sst-6.body": "La SST de 6 % n’est plus en vigueur. La Malaisie applique désormais une taxe sur les ventes de 10 % ou 5 % sur les biens, et une taxe sur les services de 8 % ou 6 % sur les services. Modifiez la ligne SST 6 % dans Paramètres > Taxes.",
+  "notice.tax_seed.retired.title": "Taxe à vérifier : {taxes}",
+  "notice.tax_seed.retired.body": "Vos taxes enregistrées contiennent encore {taxes}, que les derniers taux de votre pays n’utilisent plus sous cette forme. Vérifiez-la dans Paramètres > Taxes. Vos taxes enregistrées n’ont pas été modifiées.",
   "notice.customs_freeze.title": "Les documents d’expédition émis conservent les détails des articles",
   "notice.customs_freeze.body": "Pour les documents d’expédition émis avant cette mise à jour, Celerp a enregistré les détails des articles actuellement affichés sur ces documents. Les futures modifications des articles ne changeront plus leurs exemplaires émis. Ces détails peuvent différer de ceux affichés lors de l’émission initiale des documents.",
   "migration.xero_attachments_later": "Les fichiers joints aux factures, factures fournisseurs et avoirs dans Xero ne sont pas dans l'export. Une fois l'importation terminée, récupérez-les depuis Xero sur la page des résultats de vérification.",

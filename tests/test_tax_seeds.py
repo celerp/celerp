@@ -293,7 +293,44 @@ _OLD_IN = [
 ]
 
 
-def test_retired_seed_rows_matches_old_seeds():
+# The retired rows core listed before the country packs carried them, as they stood then. The
+# packs must keep telling the same companies the same things (golden), and a company is told,
+# never changed.
+OLD_CORE_RETIRED = {
+    "IN": [{"id": "in-default-2025", "match": "all",
+            "rows": [{"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True}]}],
+    "ET": [{"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": [{"name": "WHT 2%", "rate": -2.0}]},
+           {"id": "et-tot-2025", "match": "any", "rows": [{"name": "TOT 2%"}, {"name": "TOT 10%"}]}],
+    "CA": [{"id": "ca-qst-compound", "match": "any", "rows": [{"name": "QST 9.975%", "is_compound": True}]}],
+    "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%", "rate": 6.0}]}],
+}
+
+
+def with_retired(monkeypatch, retired: dict[str, list[dict]]) -> None:
+    """Read the loaded packs with ``retired`` as their retired lists (a country not loaded is added
+    with no taxes of its own), the way the app reads them."""
+    loaded = copy.deepcopy(tax_regimes.packs())
+    for code, entries in retired.items():
+        loaded.setdefault(code, {"currency": "", "taxes": [], "retired": []})["retired"] = copy.deepcopy(entries)
+    monkeypatch.setattr(tax_regimes, "packs", lambda: loaded)
+
+
+@pytest.fixture()
+def old_retired(monkeypatch):
+    with_retired(monkeypatch, OLD_CORE_RETIRED)
+
+
+def test_fixture_packs_carry_the_retired_rows_of_their_country():
+    assert {code: pack["retired"] for code, pack in packs().items() if pack["retired"]} == {
+        code: OLD_CORE_RETIRED[code] for code in ("IN", "MY")}
+
+
+@pytest.mark.real_packs
+def test_real_packs_retire_exactly_what_core_retired():
+    assert {code: pack["retired"] for code, pack in packs().items() if pack["retired"]} == OLD_CORE_RETIRED
+
+
+def test_retired_seed_rows_matches_old_seeds(old_retired):
     from celerp.tax_regimes import retired_seed_rows
 
     found = {m["id"]: m["lists"] for m in retired_seed_rows(_settings(_OLD_ET))}
@@ -339,7 +376,7 @@ def test_retired_seed_rows_finds_no_match_on_any_fresh_seed():
         assert retired_seed_rows(seeded) == [], country
 
 
-def test_a_retired_row_of_one_country_is_not_read_in_the_books_of_another():
+def test_a_retired_row_of_one_country_is_not_read_in_the_books_of_another(old_retired):
     from celerp.tax_regimes import retired_seed_rows
 
     old = _settings(_OLD_ET)
