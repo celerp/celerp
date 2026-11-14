@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from .inline_edit import ready
 
 pytestmark = pytest.mark.browser
 
@@ -138,12 +137,10 @@ def test_full_manufacturing_journey(page, ui_server, api):
             _t2.sleep(0.3)
         raise AssertionError(f"work order never reached {want}")
 
-    # The action select is swapped in with each transition and HTMX binds it a tick later; a
-    # change fired before then is lost, so act only once HTMX reports it bound.
+    # The action select is swapped in with each transition; act once the new one is on the page.
     def _act(action: str) -> None:
         sel = f"#production-block .wo-action-select:has(option[value='{action}'])"
         page.wait_for_selector(sel, timeout=8000)
-        ready(page, sel)
         page.locator(sel).first.select_option(value=action)
 
     _act("start")

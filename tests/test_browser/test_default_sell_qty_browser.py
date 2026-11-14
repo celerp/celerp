@@ -15,7 +15,7 @@ import pytest
 from playwright.sync_api import expect
 
 from .conftest import css_class
-from .inline_edit import ready, set_cell, settled
+from .inline_edit import set_cell, settled
 
 pytestmark = pytest.mark.browser
 
@@ -54,7 +54,6 @@ def _open_editor(page):
     page.dblclick(CELL)
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} input[name=value]")
     return box
 
 
@@ -185,7 +184,6 @@ def _category_editor(page, ui_server, api, category: str, slugs=("diamond", "dol
     page.dblclick('td[data-col="category"]')
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} input[name=value]")
     return gem, box
 
 
@@ -276,7 +274,6 @@ def test_a_refused_unit_change_keeps_the_qty_cell_and_says_what_to_change(page, 
     page.dblclick('td[data-col="quantity"] span.paired-secondary')
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} input[name=value]")
     box.fill("piece")
     box.press("Enter")
     error = page.locator('td[data-col="quantity"] .cell-error')
@@ -294,7 +291,6 @@ def test_sell_by_text_matching_several_units_says_to_pick_one_or_add_a_unit(page
     page.dblclick('td[data-col="quantity"] span.paired-secondary')
     box = page.locator(f"{EDITING} .combobox-input")
     box.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} input[name=value]")
     patches = _count_patches(page)
     box.fill("r")
     assert page.locator(f"{EDITING} .combobox-option:visible").count() > 1
@@ -345,7 +341,6 @@ def test_opening_a_multi_line_text_cell_and_leaving_keeps_the_line_break(page, u
     page.dblclick('td[data-col="notes"]')
     editor = page.locator(f"{EDITING} [name=value]")
     editor.wait_for(state="visible", timeout=4000)
-    ready(page, f"{EDITING} [name=value]")
     expect(editor).to_have_value(stored)  # the editor shows the line break
     patches: list[str] = []
     page.on("request", lambda req: req.method == "PATCH" and patches.append(req.url))

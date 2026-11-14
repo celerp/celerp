@@ -6,6 +6,12 @@
 // script source. Each function does one job a page asks for in several places.
 
 (function () {
+  // htmx wires up swapped-in content (triggers, autofocus) when it settles, 20 ms after the
+  // swap by default. In that gap an inline editor is on screen but deaf: a pick or a keystroke
+  // is dropped and the editor never saves. The app animates nothing on settle, so settle at once
+  // and every swapped element listens from the moment it appears.
+  htmx.config.defaultSettleDelay = 0;
+
   function byId(id) { return document.getElementById(id); }
 
   // ---------------------------------------------------------------- click-to-edit cells
