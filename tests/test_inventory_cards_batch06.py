@@ -29,14 +29,16 @@ def test_recipe_inputs_share_style_and_computed_total_is_an_output():
 
 
 def test_inventory_history_uses_shared_card_and_permission_redaction():
-    from copy import deepcopy
-    from celerp.services.activity_redaction import redact_entries_for_role
-    events = [{'id': 1, 'event_type': 'item.updated', 'entity_id': 'item:card',
-               'ts': '2026-11-07T03:00:00+00:00', 'actor_name': 'Owner',
-               'data': {'fields_changed': {'cost_price': {'old': 98765, 'new': 87654},
-                                            'name': {'old': 'Before', 'new': 'After'}}}}]
+    from datetime import datetime, timezone
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.activity_redaction import serialize_event
+    entry = LedgerEntry(id=1, event_type='item.updated', entity_id='item:card', entity_type='item',
+                        ts=datetime(2026, 11, 7, 3, tzinfo=timezone.utc),
+                        data={'fields_changed': {'cost_price': {'old': 98765, 'new': 87654},
+                                                 'name': {'old': 'Before', 'new': 'After'}}})
     for role, visible in [('operator', False), ('manager', True)]:
-        html = to_xml(_ledger_table(redact_entries_for_role(deepcopy(events), {}, role), 'item:card', 'THB'))
+        events = [{**serialize_event(entry, {}, role), 'actor_name': 'Owner'}]
+        html = to_xml(_ledger_table(events, 'item:card', 'THB'))
         card = BeautifulSoup(html, 'html.parser')
         assert card.select_one('.doc-section > .section-header')
         assert all(label in card.get_text() for label in ('Field', 'Old value', 'New value', 'Before', 'After'))

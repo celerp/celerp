@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """A role without view_inventory_costs reads no cost amount from the ledger, at any depth of an
 event's data: a line's cost inside a document's changed lines, a cost inside an item's changed
-attributes, a cost list inside a list. Every reader returns event data through the one walk
-(activity_redaction.event_data_for_role) over the one cost-key registry (is_cost_key)."""
+attributes, a cost list inside a list. Every reader returns events through the one serializer
+(activity_redaction.serialize_event) over the one cost-key registry (is_cost_key)."""
 from __future__ import annotations
 
 import json

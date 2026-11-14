@@ -216,21 +216,15 @@ async def search_activity(
 
 async def _hydrate_entries(rows, company_id: str, session, settings: dict | None = None, role: str | None = None) -> list[dict]:
     """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
-    from celerp.services.activity_redaction import event_data_for_role
-    from celerp.services.ledger_display import display_fields, entry_ts
+    from celerp.services.activity_redaction import serialize_event
+    from celerp.services.ledger_display import display_fields
 
     activities = []
     for e, shown in zip(rows, await display_fields(rows, company_id, session)):
-        data = event_data_for_role(e.event_type, e.data if isinstance(e.data, dict) else {}, settings, role)
         activities.append({
-            "ts": entry_ts(e, settings),
-            "event_type": e.event_type,
-            "entity_id": e.entity_id,
-            "entity_type": e.entity_type,
+            **serialize_event(e, settings, role),
             "name": shown["name"] or None,
             "entity_doc_type": shown["doc_type"],
             **{k: v for k, v in shown.items() if k.startswith("actor_")},
-            "data": data,
-            "metadata_": e.metadata_ if isinstance(e.metadata_, dict) else {},
         })
     return activities

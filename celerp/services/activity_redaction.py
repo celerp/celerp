@@ -6,8 +6,8 @@
 Cost (``cost_price`` / ``cost_total`` and any cost price list) is visible only to manager+
 everywhere else in the app (item detail, list, dashboard cost basis). The ledger/activity feeds must honour
 the same rule, enforced **server-side** so raw cost never ships to an under-threshold
-role. This is the single source of truth for that redaction, used by both the ledger
-router and the dashboard activity endpoints.
+role. This is the single source of truth for that redaction: every event leaves the server
+through :func:`serialize_event`, which redacts each of its JSON payloads (data and metadata).
 
 Every ledger reader (the event list, a single event, the dashboard activity and History)
 shows an event only to a role holding the permission it is read with: the one its module names
@@ -17,7 +17,10 @@ module owns.
 
 from __future__ import annotations
 
-from sqlalchemy import ARRAY, ColumnElement, Select, Text, bindparam, case, false, func, text, true
+from functools import cache
+
+from sqlalchemy import ARRAY, JSON, ColumnElement, Select, Text, bindparam, case, false, func, text, true
+from sqlalchemy import inspect as sa_inspect
 
 from celerp.events.schemas import ItemPricingSet
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS, COST_ITEM_KEYS
@@ -154,20 +157,37 @@ def redact_event_costs(event_type: str, data: dict) -> dict:
 
 
 def event_data_for_role(event_type: str, data, settings: dict | None, role: str | None):
-    """An event's data as this role reads it: whole for a role that sees costs, else redacted.
-    Every ledger reader returns event data through this."""
+    """One JSON payload of an event as this role reads it: whole for a role that sees costs, else
+    redacted."""
     return data if can_see_costs(settings, role) else redact_event_costs(event_type, data)
+
+
+@cache
+def _payload_columns() -> tuple[tuple[str, str], ...]:
+    """(attribute, column name) of every JSON column of a ledger entry: its data and its metadata,
+    and any JSON column added later."""
+    from celerp.models.ledger import LedgerEntry
+
+    return tuple((attr.key, attr.columns[0].name) for attr in sa_inspect(LedgerEntry).column_attrs
+                 if isinstance(attr.columns[0].type, JSON))
+
+
+def serialize_event(entry, settings: dict | None, role: str | None) -> dict:
+    """A ledger entry as this role reads it, every JSON payload (data, metadata) through the cost
+    redaction. Every reader that returns events (the ledger list and a record's History, a single
+    event, the dashboard activity and its search) serializes them here."""
+    from celerp.services.ledger_display import entry_ts
+
+    payloads = {}
+    for attr, name in _payload_columns():
+        value = getattr(entry, attr)
+        payloads[name] = event_data_for_role(entry.event_type, value if isinstance(value, dict) else {},
+                                             settings, role)
+    return {"id": entry.id, "entity_id": entry.entity_id, "entity_type": entry.entity_type,
+            "event_type": entry.event_type, "ts": entry_ts(entry, settings), **payloads}
 
 
 def fields_for_role(fields, settings: dict | None, role: str | None) -> list[str]:
     """Changed-field names as this role may filter or choose by: no cost field for a role that
     cannot see costs."""
     return list(fields) if can_see_costs(settings, role) else [f for f in fields if not is_cost_key(f)]
-
-
-def redact_entries_for_role(entries: list[dict], settings: dict | None, role: str | None) -> list[dict]:
-    """:func:`event_data_for_role` over serialized ledger entries carrying ``event_type`` and
-    ``data``."""
-    for e in entries:
-        e["data"] = event_data_for_role(str(e.get("event_type") or ""), e.get("data") or {}, settings, role)
-    return entries

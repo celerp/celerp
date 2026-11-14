@@ -14,9 +14,9 @@ from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import (
-    can_read_event, event_data_for_role, fields_for_role, readable_events, redact_entries_for_role,
+    can_read_event, fields_for_role, readable_events, serialize_event,
 )
-from celerp.services.ledger_display import actor_choices, display_fields, entry_ts, shown_in_history
+from celerp.services.ledger_display import actor_choices, display_fields, shown_in_history
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.company_lock import lock_company
 from ui.i18n import t
@@ -126,13 +126,7 @@ async def list_entries(
     shown = await display_fields(rows, company_id, session) if resolve and rows else [{} for _ in rows]
     items = [
         {
-            "id": r.id,
-            "entity_id": r.entity_id,
-            "entity_type": r.entity_type,
-            "event_type": r.event_type,
-            "data": r.data,
-            "metadata": r.metadata_ or {},
-            "ts": entry_ts(r, settings),
+            **serialize_event(r, settings, role),
             **({
                 "entity_name": f["name"],
                 "entity_doc_type": f["doc_type"],
@@ -141,7 +135,7 @@ async def list_entries(
         }
         for r, f in zip(rows, shown)
     ]
-    return {"items": redact_entries_for_role(items, settings, role), "total": total,
+    return {"items": items, "total": total,
             "newer": newer, "has_older": has_older}
 
 
@@ -175,16 +169,7 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id or not can_read_event(entry.event_type, settings, role):
         raise HTTPException(status_code=404, detail=t("error.record_not_found"))
-    data = event_data_for_role(entry.event_type, entry.data or {}, settings, role)
-    return {
-        "id": entry.id,
-        "entity_id": entry.entity_id,
-        "entity_type": entry.entity_type,
-        "event_type": entry.event_type,
-        "data": data,
-        "metadata": entry.metadata_ or {},
-        "ts": entry_ts(entry, settings),
-    }
+    return serialize_event(entry, settings, role)
 
 
 @router.post("/rebuild")
