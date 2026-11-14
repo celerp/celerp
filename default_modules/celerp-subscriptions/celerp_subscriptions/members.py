@@ -26,7 +26,6 @@ from celerp_subscriptions.search import _base_where
 
 MEMBERSHIP_CATEGORY = "membership"
 LIFETIME_TERM = "Lifetime"
-STANDINGS = ("current", "in_grace", "lapsed", "ended", "lifetime")
 
 
 def _settled(doc: dict) -> bool:

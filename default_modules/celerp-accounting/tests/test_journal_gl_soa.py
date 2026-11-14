@@ -237,6 +237,11 @@ async def test_manual_je_double_submit_dedupes(client):
     assert r1.json()["je_id"] == r2.json()["je_id"]
     entries = (await _journal(client, tok))["entries"]
     assert len([e for e in entries if e["je_id"] == r1.json()["je_id"]]) == 1
+    # A retry that arrives after its period was locked still answers with the entry it posted.
+    assert (await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-01-31"})).status_code == 200
+    r3 = await _post_manual_je(client, tok, _bal(25.0), token=shared)
+    assert r3.status_code == 200, r3.text
+    assert r3.json() == r1.json()
 
 
 # ---------------------------------------------------------------------------

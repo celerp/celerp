@@ -29856,5 +29856,8 @@
     "tests/test_migrations/test_backfills_run_once.py::test_every_data_backfill_runs_once_per_database[release_at_v5w6x7y8z9a0_tracked]": 2.425144654000178,
     "tests/test_migrations/test_backfills_run_once.py::test_every_data_backfill_runs_once_per_database[release_at_v5w6x7y8z9a0_untracked]": 2.1206308661494404,
     "tests/test_migrations/test_v5w6x7y8z9a0_backfill_invoice_items_at_sale.py::test_the_upgrade_records_what_each_issued_invoice_sold": 0.03914274391718209,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/v5w6x7y8z9a0_backfill_invoice_items_at_sale.py]": 0.004290659097023308
+    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/v5w6x7y8z9a0_backfill_invoice_items_at_sale.py]": 0.004290659097023308,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_membership_is_what_was_sold[item_made_lifetime_while_draft]": 1.5898679830133915,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_no_writer_rewrites_what_an_invoice_sold[data]": 0.33792708918917924,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_no_writer_rewrites_what_an_invoice_sold[fields_changed]": 0.35954205493908376
 }

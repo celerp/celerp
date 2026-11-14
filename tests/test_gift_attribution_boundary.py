@@ -36,7 +36,7 @@ async def _gift_setting(client, auth, category: str, gift: bool) -> None:
 
 
 def _lines(donor: str, gift: bool, **claims) -> list[dict]:
-    return [{"account": "1111", "debit": 100.0, "credit": 0.0},
+    return [{"account": "1111", "debit": 100.0, "credit": 0.0, "gift": True},
             {"account": ACCOUNT, "debit": 0.0, "credit": 100.0, "contact": donor, "gift": gift, **claims}]
 
 
@@ -106,6 +106,22 @@ async def test_a_new_entry_is_a_gift_by_the_company_rules_never_by_the_caller(cl
     donor = await _donor(client, auth, "Transfer Donor")
     await post(client, auth, session, donor, gift=not gift_account)
     assert await _history_total(client, auth, donor) == (100.0 if gift_account else 0.0)
+    assert await _stored_gift_lines(session, auth) == ([(ACCOUNT, donor)] if gift_account else [])
+
+
+async def _stored_gift_lines(session, auth) -> list[tuple[str, str | None]]:
+    """Every posted journal line stored as a gift, (account, contact): a line naming no party is
+    never one, whatever its caller wrote."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+
+    session.expire_all()
+    states = (await session.execute(select(Projection.state).where(
+        Projection.company_id == uuid.UUID(str(auth["company_id"])),
+        Projection.entity_type == "journal_entry"))).scalars().all()
+    return [(e["account"], e.get("contact")) for state in states for e in (state or {}).get("entries") or []
+            if e.get("gift")]
 
 
 async def test_an_unvoided_document_and_a_replayed_ledger_keep_the_gift_they_posted_with(client, auth, session):

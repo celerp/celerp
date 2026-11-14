@@ -192,35 +192,79 @@ async def test_an_amendment_bill_is_the_one_standing_reads(owner_ui, session, mo
     assert (await _members(api))[eid]["standing"] == "lapsed"
 
 
-@pytest.mark.parametrize("edit", ["lifetime_sale_then_item_changed", "item_made_lifetime_after_the_sale"])
+@pytest.mark.parametrize("edit", ["lifetime_sale_then_item_changed", "item_made_lifetime_after_the_sale",
+                                  "item_made_lifetime_while_draft"])
 async def test_lifetime_membership_is_what_was_sold(owner_ui, monkeypatch, edit):
-    """Lifetime is fixed by the item as it was sold: editing the item afterwards neither takes
-    lifetime from a member who bought it nor gives it to one who bought something else."""
+    """Lifetime is fixed by the item as it stood when the invoice was issued: editing the item
+    afterwards neither takes lifetime from a member who bought it nor gives it to one who bought
+    something else, and an edit while the invoice is a draft counts."""
     freeze_day(monkeypatch, "2026-03-01")
     api = owner_ui.api
     assert (await api.post("/companies/me/apply-preset", params={"vertical": "nonprofit"})).status_code == 200
-    sold_as_lifetime = edit == "lifetime_sale_then_item_changed"
+    sold_as_lifetime = edit != "item_made_lifetime_after_the_sale"
+    first = "Lifetime" if edit == "lifetime_sale_then_item_changed" else "Annual"
     r = await api.post("/items", json={
         "name": "Membership", "category": "membership", "sell_by": "piece", "inventory_type": "service",
-        "quantity": 0, "status": "available",
-        "attributes": {"membership_term": "Lifetime" if sold_as_lifetime else "Annual"}})
+        "quantity": 0, "status": "available", "attributes": {"membership_term": first}})
     assert r.status_code == 200, r.text
     item = r.json()["id"]
+
+    async def set_term(old: str, new: str) -> None:
+        r = await api.patch(f"/items/{item}", json={"fields_changed": {"attributes": {
+            "old": {"membership_term": old}, "new": {"membership_term": new}}}})
+        assert r.status_code == 200, r.text
+        r = await api.get(f"/items/{item}")
+        assert r.status_code == 200 and r.json().get("membership_term") == new, r.text
+
     who = await contact(api, {}, f"life-{uuid.uuid4().hex[:6]}@test.test")
     r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail", "total": 500.0,
                                       "line_items": [{"item_id": item, "name": "Membership", "quantity": 1,
                                                       "unit_price": 500.0, "line_total": 500.0}]})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
+    if edit == "item_made_lifetime_while_draft":
+        await set_term("Annual", "Lifetime")
     assert (await api.post(f"/docs/{doc}/finalize")).status_code == 200
     await _paid(api, doc, 500.0, "2026-03-02")
-    sold, now = ("Lifetime", "Annual") if sold_as_lifetime else ("Annual", "Lifetime")
-    r = await api.patch(f"/items/{item}", json={"fields_changed": {"attributes": {
-        "old": {"membership_term": sold}, "new": {"membership_term": now}}}})
-    assert r.status_code == 200, r.text
-    r = await api.get(f"/items/{item}")
-    assert r.status_code == 200 and r.json().get("membership_term") == now, r.text
+    sold = "Lifetime" if sold_as_lifetime else "Annual"
+    await set_term(sold, "Annual" if sold_as_lifetime else "Lifetime")
     assert (doc in await _members(api)) is sold_as_lifetime
+
+
+@pytest.mark.parametrize("how", ["data", "fields_changed"])
+async def test_no_writer_rewrites_what_an_invoice_sold(owner_ui, session, monkeypatch, how):
+    """What an issued invoice sold is written once, at issue: an event that names it, at the top
+    level or as a changed field, is passed on without it."""
+    from sqlalchemy import select
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    r = await api.post("/items", json={"name": "Membership", "category": "membership", "sell_by": "piece",
+                                       "inventory_type": "service", "quantity": 0, "status": "available",
+                                       "attributes": {"membership_term": "Lifetime"}})
+    assert r.status_code == 200, r.text
+    item = r.json()["id"]
+    who = await contact(api, {}, f"sold-{uuid.uuid4().hex[:6]}@test.test")
+    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail", "total": 50.0,
+                                      "line_items": [{"item_id": item, "name": "Membership", "quantity": 1,
+                                                      "unit_price": 50.0, "line_total": 50.0}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await api.post(f"/docs/{doc}/finalize")).status_code == 200
+    row = (await session.execute(select(Projection).where(Projection.entity_id == doc))).scalar_one()
+    sold = row.state["items_at_sale"]
+    assert sold == {item: {"category": "membership", "attributes": {"membership_term": "Lifetime"}}}
+    other = {item: {"category": "membership", "attributes": {"membership_term": "Annual"}}}
+    data = ({"items_at_sale": other, "fields_changed": {}} if how == "data"
+            else {"fields_changed": {"items_at_sale": {"old": sold, "new": other}}})
+    await emit_event(session, company_id=row.company_id, entity_id=doc, entity_type="doc",
+                     event_type="doc.updated", data=data, actor_id=None, location_id=None, source="test",
+                     idempotency_key=uuid.uuid4().hex)
+    await session.commit()
+    await session.refresh(row)
+    assert row.state["items_at_sale"] == sold
 
 
 async def test_page_scoped_labels_no_global_customer_swap(owner_ui, session, monkeypatch):

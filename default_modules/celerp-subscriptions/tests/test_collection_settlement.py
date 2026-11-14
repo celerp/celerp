@@ -176,6 +176,7 @@ async def test_the_owner_example_a_late_charge_after_the_amendment_is_placed_by_
         == (0, 0, 10.97)
     assert await _unmatched(session) == []
     assert (_asked(cloud, july), _asked(cloud, new)) == ([3000], [1097])
+    assert docs[july]["collection"]["state"] == "paid"  # the kept charge, once recorded, is July's own
     trial = (await client.get("/accounting/trial-balance", headers=hd)).json()
     assert trial["balanced"] is True and trial["total_debit"] > 0
 
