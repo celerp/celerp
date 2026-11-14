@@ -143,6 +143,68 @@ def test_l10n_packs_check_refuses(root, tmp_path, case):
     assert len(lines) == 1 and defect in lines[0], out
 
 
+# ── lock: the locked country set changes only by --add and --remove ─────────
+
+def _lock_bytes(root: Path) -> bytes:
+    return (root / "packs.lock.json").read_bytes()
+
+
+def _new_pack(root: Path, code: str) -> None:
+    pack = json.loads((root / "packs" / "TH.json").read_text(encoding="utf-8"))
+    pack["country"] = code
+    (root / "packs" / f"{code}.json").write_bytes((json.dumps(pack, ensure_ascii=False, indent=2) + "\n").encode())
+
+
+def test_lock_rewrites_the_same_set_unchanged(root):
+    before = _lock_bytes(root)
+    assert _run("lock", str(root)) == (0, "")
+    assert _lock_bytes(root) == before
+
+
+@pytest.mark.parametrize("gone", [CODES, ("AU",)], ids=["unfetched checkout", "partial checkout"])
+def test_lock_fails_when_a_locked_pack_file_is_missing(root, gone):
+    before = _lock_bytes(root)
+    for code in gone:
+        (root / "packs" / f"{code}.json").unlink()
+    code, out = _run("lock", str(root))
+    assert code != 0
+    assert [line for line in out.splitlines() if line] == [
+        f"country {c}: pack file missing (pass --remove {c} to take it out of the lock)" for c in CODES if c in gone]
+    assert _lock_bytes(root) == before
+
+
+def test_lock_adds_a_country_only_when_asked(root):
+    before = _lock_bytes(root)
+    _new_pack(root, "SG")
+    code, out = _run("lock", str(root))
+    assert code != 0 and out.strip() == "packs/SG.json: not in the lock (pass --add SG to lock it)"
+    assert _lock_bytes(root) == before
+    assert _run("lock", str(root), "--add", "SG") == (0, "")
+    lock = json.loads(_lock_bytes(root))
+    assert list(lock) == [*json.loads(before), "SG"]
+    assert _run("check", str(root)) == (0, "")
+
+
+def test_lock_removes_a_country_only_when_asked(root):
+    before = json.loads(_lock_bytes(root))
+    (root / "packs" / "AU.json").unlink()
+    assert _run("lock", str(root), "--remove", "AU") == (0, "")
+    assert list(json.loads(_lock_bytes(root))) == [c for c in before if c != "AU"]
+    assert _run("check", str(root)) == (0, "")
+
+
+@pytest.mark.parametrize("argv, defect", [
+    (("--add", "TH"), "country TH: already in the lock"),
+    (("--remove", "SG"), "country SG: not in the lock"),
+    (("--remove", "AU"), "packs/AU.json: not in the lock (pass --add AU to lock it)"),
+])
+def test_lock_refuses_a_change_that_does_not_fit(root, argv, defect):
+    before = _lock_bytes(root)
+    code, out = _run("lock", str(root), *argv)
+    assert code != 0 and out.strip() == defect, out
+    assert _lock_bytes(root) == before
+
+
 def _sources(codes=CODES) -> str:
     return json.dumps({code: f"acme-private/secret-{code.lower()}@v2026.9" for code in codes})
 

@@ -8,7 +8,8 @@ only ``packs.lock.json`` (country code to version, schema version and sha256).
     python scripts/l10n_packs.py fetch [root]              # download every locked pack, then check
     python scripts/l10n_packs.py check <root> [--lock F]   # each pack's sha256 equals the lock
     python scripts/l10n_packs.py validate <root>           # each pack's fields (app installed)
-    python scripts/l10n_packs.py lock <root>               # validate, then write the lock
+    python scripts/l10n_packs.py lock <root> [--add CC] [--remove CC]
+                                                           # validate, then write the lock
 
 ``fetch`` reads ``CELERP_L10N_SOURCES`` (JSON ``{"CC": "owner/repo@tag"}``) and
 ``CELERP_L10N_TOKEN``. It writes nothing unless every pack downloads, and its messages name
@@ -127,20 +128,35 @@ def validate(root: Path, *, against_lock: bool = True) -> list[str]:
     return defects
 
 
-def write_lock(root: Path) -> list[str]:
-    defects = validate(root, against_lock=False)
+def write_lock(root: Path, add: list[str] | tuple[str, ...] = (), remove: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """Validate, then write the lock for the locked country set, plus ``add``, minus ``remove``.
+
+    The set changes only by those two: a locked country whose pack file is missing fails (an
+    unfetched or partial checkout never shrinks the lock), and so does a pack file outside
+    the set. With no lock file yet, the set starts empty."""
+    path = root / LOCK_NAME
+    lock = _read_lock(root) if path.exists() else {}
+    if lock is None:
+        return [f"{LOCK_NAME}: unreadable"]
+    defects = [f"country {code}: already in the lock" for code in add if code in lock]
+    defects += [f"country {code}: not in the lock" for code in remove if code not in lock]
     if defects:
         return defects
+    order = [code for code in lock if code not in remove] + list(dict.fromkeys(add))
     files = _pack_files(root)
-    previous = [code for code in _read_lock(root) or {} if code in files]
-    order = previous + sorted(code for code in files if code not in previous)
-    lock = {}
+    defects = [f"country {code}: pack file missing (pass --remove {code} to take it out of the lock)"
+               for code in order if code not in files]
+    defects += [f"packs/{code}.json: not in the lock (pass --add {code} to lock it)" for code in files if code not in order]
+    defects = defects or validate(root, against_lock=False)
+    if defects:
+        return defects
+    new = {}
     for code in order:
         data = files[code].read_bytes()
         pack = json.loads(data)
-        lock[code] = {"version": pack["version"], "schema_version": pack["schema_version"],
-                      "sha256": hashlib.sha256(data).hexdigest()}
-    (root / LOCK_NAME).write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+        new[code] = {"version": pack["version"], "schema_version": pack["schema_version"],
+                     "sha256": hashlib.sha256(data).hexdigest()}
+    path.write_text(json.dumps(new, indent=2) + "\n", encoding="utf-8")
     return []
 
 
@@ -201,7 +217,10 @@ def main(argv: list[str]) -> int:
     check_parser.add_argument("root", type=Path)
     check_parser.add_argument("--lock", type=Path)
     commands.add_parser("validate").add_argument("root", type=Path)
-    commands.add_parser("lock").add_argument("root", type=Path)
+    lock_parser = commands.add_parser("lock")
+    lock_parser.add_argument("root", type=Path)
+    lock_parser.add_argument("--add", action="append", default=[], metavar="CC", help="lock a new country's pack")
+    lock_parser.add_argument("--remove", action="append", default=[], metavar="CC", help="take a country out of the lock")
     args = parser.parse_args(argv)
     if args.command == "fetch":
         defects = fetch(args.root)
@@ -210,7 +229,7 @@ def main(argv: list[str]) -> int:
     elif args.command == "validate":
         defects = validate(args.root)
     else:
-        defects = write_lock(args.root)
+        defects = write_lock(args.root, args.add, args.remove)
     for line in defects:
         print(line)
     return 1 if defects else 0
