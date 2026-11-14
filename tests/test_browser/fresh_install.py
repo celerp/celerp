@@ -60,10 +60,13 @@ def _wait_http(url: str, proc: subprocess.Popen, timeout: float = 60.0) -> None:
 # out, as the desktop app leaves it out, so this install loads only what a new install loads
 # whichever tests ran before it.
 MACHINE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT")
+# The country packs a release ships with: a checkout holds none until they are fetched, so the
+# install reads the set every other server of the suite reads (the root conftest names it).
+PACKS_ENV = "CELERP_L10N_DIR"
 
 
 def install_env() -> dict:
-    return {k: os.environ[k] for k in MACHINE_ENV if k in os.environ}
+    return {k: os.environ[k] for k in (*MACHINE_ENV, PACKS_ENV) if k in os.environ}
 
 
 class FreshInstall:
