@@ -204,3 +204,14 @@ def test_single_posted_entry_renders_one_table_with_balanced_totals():
     html=BeautifulSoup(to_xml(_doc_gl_impact_section(data,"doc:inv-1","USD")),"html.parser")
     assert len(html.select('table'))==1 and len(html.select('tbody tr'))==2
     assert 'Balanced' in html.select_one('tfoot').text
+
+
+def test_gl_item_without_a_quantity_shows_its_name_alone():
+    from ui.routes.documents import _gl_line_item
+    assert _gl_line_item({"item": "Widget"}) == "Widget"
+
+
+@pytest.mark.parametrize("value,expected", [("2026-10-28T09:15:00Z", "28 " + "{m} 2026"), ("", ""), ("pending", "pending")])
+def test_gl_entry_date_reads_as_a_date_or_as_it_came(value, expected):
+    from ui.routes.documents import _readable_date
+    assert _readable_date(value) == expected.format(m=t("date.month_short_10"))
