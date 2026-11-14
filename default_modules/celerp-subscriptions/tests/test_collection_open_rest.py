@@ -1,0 +1,256 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""An invoice a recorded card charge leaves owing is asked for the rest, and no open invoice that
+may be collected is ever left with nothing asked and nobody told.
+
+Initial conditions per test (as test_collection_settlement): a newly registered company, a payer
+with a card on file, an agreement on Bill and collect automatically for 30.00 a month from 1 July
+2026, and Celerp Cloud as a stand-in.
+
+The state-machine test drives one agreement through the app's real entry points (dispatcher
+passes, Cloud's attempt and payment deliveries in any order, payments by hand and their voids, an
+amendment) under a seeded random story, with a stand-in Cloud that charges, fails or cancels each
+attempt it was asked for. After every step, each open invoice whose collection may go on has an
+attempt in progress, or its charge is on the way from Cloud, or the company was told why nothing
+is asked: its charge was kept among the unmatched payments, or it came to owe again after its
+collection ended. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
+more (default 2) are drawn from COLLECTION_ORACLE_SEED, else at random. A failing case names its
+seed: COLLECTION_ORACLE_SEED=<seed> with COLLECTION_ORACLE_RANDOM=1 replays it.
+"""
+from __future__ import annotations
+
+import os
+import random
+import secrets
+import uuid
+
+import pytest
+from sqlalchemy import select
+
+from agreement_kit import tick
+from test_collection import _attempt_outcome, _pay, cloud  # noqa: F401  (cloud: fixture)
+from test_collection_settlement import _amend, _asked, _docs, _july
+
+pytestmark = pytest.mark.asyncio
+
+FIXED_SEEDS = [1, 2, 3, 5, 8, 13, 21, 34]
+RANDOM_COUNT = int(os.environ.get("COLLECTION_ORACLE_RANDOM", "2"))
+STEPS = 28
+
+
+async def _deliver(cid, doc_id, ref, minor, context, day="2026-07-05") -> bool:
+    from celerp.services import payments
+    return await payments.receive_payment({
+        "company_id": cid, "entity_id": doc_id, "reference": ref, "amount_minor": minor, "currency": "USD",
+        "paid_at": f"{day}T13:00:00+00:00", "managed": True, "context": context})
+
+
+async def _short_charge(client, session, monkeypatch, cloud, *, payment_first: bool):
+    """July 30.00. A 10.00 bank transfer is recorded by hand, so the 30.00 charge is replaced by one
+    for 20.00; the transfer is then voided (it bounced), so July owes 30.00 while the 20.00 is with
+    Cloud. The 20.00 succeeds and is recorded on July, its payment delivered before or after
+    Cloud's word that it succeeded: (headers, company id, agreement id, July)."""
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    await _pay(client, hd, july, 10.0)
+    for d in ("2026-07-02", "2026-07-03"):
+        await tick(session, cid, d)
+    assert _asked(cloud, july) == [3000, 2000]
+    sent = cloud.sent("attempt")[-1]
+    [hand] = [p for p in (await _docs(session, eid))[july]["payments"] if p.get("method") == "bank_transfer"]
+    r = await client.post(f"/docs/{july}/void-payment", headers=hd, json={"payment_index": hand["index"]})
+    assert r.status_code in (200, 201), r.text
+    await tick(session, cid, "2026-07-04")
+    steps = [lambda: _deliver(cid, july, "pi_20", 2000, sent["context"]),
+             lambda: _attempt_outcome(cid, july, sent["attempt_number"], "succeeded")]
+    for step in (steps if payment_first else steps[::-1]):
+        assert await step() is True
+    await tick(session, cid, "2026-07-05")
+    return hd, cid, eid, july
+
+
+@pytest.mark.parametrize("payment_first", [False, True], ids=["outcome-first", "payment-first"])
+async def test_a_recorded_charge_that_leaves_the_invoice_owing_asks_for_the_rest(
+        client, session, monkeypatch, cloud, payment_first):
+    hd, cid, eid, july = await _short_charge(client, session, monkeypatch, cloud, payment_first=payment_first)
+    doc = (await _docs(session, eid))[july]
+    assert doc["amount_outstanding"] == 10.0
+    assert _asked(cloud, july) == [3000, 2000, 1000]
+    assert doc["collection"]["state"] == "submitted" and doc["collection"]["attempt_number"] == 3
+
+
+async def test_the_rest_paid_by_hand_ends_the_collection(client, session, monkeypatch, cloud):
+    """The person then records July's last 10.00 by hand: July is paid, so the charge asked for it is
+    cancelled and nothing more is asked."""
+    hd, cid, eid, july = await _short_charge(client, session, monkeypatch, cloud, payment_first=False)
+    await _pay(client, hd, july, 10.0)
+    await tick(session, cid, "2026-07-06")
+    doc = (await _docs(session, eid))[july]
+    assert doc["amount_outstanding"] == 0
+    assert _asked(cloud, july) == [3000, 2000, 1000]
+    assert doc["collection"]["state"] in ("canceled", "stopped")
+
+
+# ── the state machine under seeded random stories ────────────────────────────
+
+class _Story:
+    """Cloud's side of each attempt, (invoice, attempt number) -> open, charged, failed or
+    canceled, and the deliveries it still owes the app."""
+
+    def __init__(self, rng: random.Random, cloud):
+        self.rng, self.cloud = rng, cloud
+        self.attempts: dict[tuple[str, int], str] = {}
+        self.amounts: dict[tuple[str, int], tuple[int, dict]] = {}
+        self.payments: list[tuple[str, str, int, dict]] = []
+        self.outcomes: list[tuple[str, int, str]] = []
+        cloud.answers["attempt"] = self._attempt
+        cloud.answers["cancel"] = self._cancel
+
+    def _attempt(self, p):
+        key = (p["entity_id"], p["attempt_number"])
+        self.attempts.setdefault(key, "open")
+        self.amounts[key] = (p["amount_minor"], p["context"])
+        state = self.rng.choice(["submitted", "processing", "requires_action", "unknown"])
+        return 200, {"state": state, "attempt_number": p["attempt_number"]}
+
+    def _cancel(self, p):
+        doc = p["entity_id"]
+        key = max((k for k in self.attempts if k[0] == doc), key=lambda k: k[1], default=None)
+        if key is None or self.attempts[key] == "canceled":
+            return 200, {"state": "canceled"}
+        if self.attempts[key] == "open" and self.rng.random() < 0.5:
+            self.attempts[key] = "canceled"
+            return 200, {"state": "canceled"}
+        return 409, {"detail": "attempt_submitted"}
+
+    def open(self) -> list[tuple[str, int]]:
+        return sorted(k for k, v in self.attempts.items() if v == "open")
+
+    def charge(self, key) -> None:
+        self.attempts[key] = "charged"
+        minor, context = self.amounts[key]
+        self.payments.append((key[0], f"pi_{key[0][-6:]}_{key[1]}", minor, context))
+        self.outcomes.append((key[0], key[1], "succeeded"))
+
+    def fail(self, key) -> None:
+        self.attempts[key] = "failed"
+        self.outcomes.append((key[0], key[1], "failed"))
+
+
+async def _told(session, name: str) -> bool:
+    """The company was told once of a notice naming ``name`` (a payment's reference or an invoice's number)."""
+    from celerp.models.notification import Notification
+    rows = (await session.execute(select(Notification.title).where(Notification.title.contains(name)))).all()
+    return len(rows) == 1
+
+
+async def _left_alone(session, cid, eid, story: _Story | None) -> list[str]:
+    """Each open invoice of the agreement whose collection may go on and that has no attempt in
+    progress, no charge on the way (``story``: still owed by Cloud) and nothing the company was told
+    of: a kept charge, or owing again after its collection ended."""
+    from celerp.services import collection
+    from celerp_subscriptions.collect import ACTIVE, stop_reason
+    session.expire_all()
+    alone = []
+    for doc_id, doc in (await _docs(session, eid)).items():
+        c = doc.get("collection") or {}
+        if doc.get("doc_type") != "invoice" or not c or await stop_reason(session, uuid.UUID(cid), doc) is not None:
+            continue
+        if c.get("state") in ACTIVE or (c.get("state") == "canceled" and c.get("replace") is True):
+            continue
+        if c.get("state") == "succeeded" and c.get("kept") and await _told(session, c["kept"]):
+            continue
+        if c.get("state") == "stopped" and c.get("reason") == "owes_again" and await _told(session, doc["ref_id"]):
+            continue
+        if c.get("state") == "succeeded" and story and any(p[0] == doc_id for p in story.payments):
+            continue
+        alone.append(f"{doc.get('ref_id')} owes {collection.outstanding_minor(doc)} collection {c}")
+    return alone
+
+
+async def _run_story(seed, client, session, monkeypatch, cloud):
+    rng = random.Random(seed)
+    hd, cid, eid, july = await _july(client, session, monkeypatch, cloud)
+    story = _Story(rng, cloud)
+    story.attempts[(july, 1)] = "open"
+    [first] = cloud.sent("attempt")
+    story.amounts[(july, 1)] = (first["amount_minor"], first["context"])
+    day, amended, trail = 1, False, []
+
+    async def step(name):
+        nonlocal day, amended
+        docs = await _docs(session, eid)
+        invoices = [d for d in docs.values() if d.get("doc_type") == "invoice"]
+        if name == "tick":
+            day += 1
+            await tick(session, cid, f"2026-07-{day:02d}")
+        elif name == "charge":
+            story.charge(rng.choice(story.open()))
+        elif name == "fail":
+            story.fail(rng.choice(story.open()))
+        elif name == "deliver_payment":
+            doc, ref, minor, context = story.payments.pop(rng.randrange(len(story.payments)))
+            assert await _deliver(cid, doc, ref, minor, context) is True
+        elif name == "deliver_outcome":
+            doc, n, state = story.outcomes.pop(rng.randrange(len(story.outcomes)))
+            fields = {"retry_eligible_at": "2026-07-01T00:00:00+00:00"} if state == "failed" else {}
+            assert await _attempt_outcome(cid, doc, n, state, **fields) is True
+        elif name == "hand_pay":
+            doc = rng.choice([d for d in invoices if (d.get("amount_outstanding") or 0) >= 1])
+            await _pay(client, hd, doc["entity_id"], min(float(doc["amount_outstanding"]), rng.choice([5.0, 10.0])))
+        elif name == "void_hand":
+            doc, p = rng.choice([(d, p) for d in invoices for p in d.get("payments") or []
+                                 if p.get("method") == "bank_transfer" and p.get("status") == "active"])
+            r = await client.post(f"/docs/{doc['entity_id']}/void-payment", headers=hd,
+                                  json={"payment_index": p["index"]})
+            assert r.status_code in (200, 201), r.text
+        elif name == "amend":
+            r = await _amend(client, monkeypatch, hd, eid)
+            assert r.status_code == 200, r.text
+            amended, day = True, 15
+
+    def enabled(docs) -> list[str]:
+        invoices = [d for d in docs.values() if d.get("doc_type") == "invoice"]
+        names = ["tick"] if day < 28 else []
+        names += ["charge", "charge", "fail"] if story.open() else []
+        names += ["deliver_payment", "deliver_payment"] if story.payments else []
+        names += ["deliver_outcome", "deliver_outcome"] if story.outcomes else []
+        names += ["hand_pay"] if any((d.get("amount_outstanding") or 0) >= 1 for d in invoices) else []
+        names += ["void_hand"] if any(p.get("method") == "bank_transfer" and p.get("status") == "active"
+                                      for d in invoices for p in d.get("payments") or []) else []
+        names += ["amend"] if not amended and day < 15 else []
+        return names
+
+    for _ in range(STEPS):
+        names = enabled(await _docs(session, eid))
+        if not names:
+            break
+        name = rng.choice(names)
+        trail.append(name)
+        await step(name)
+        alone = await _left_alone(session, cid, eid, story)
+        assert not alone, f"seed {seed} after {trail}: {alone}"
+    while story.outcomes or story.payments:
+        name = "deliver_payment" if story.payments else "deliver_outcome"
+        trail.append(name)
+        await step(name)
+    trail.append("tick")
+    await step("tick")
+    alone = await _left_alone(session, cid, eid, None)
+    assert not alone, f"seed {seed} after {trail}: {alone}"
+
+
+def _random_seed(i: int) -> int:
+    base = os.environ.get("COLLECTION_ORACLE_SEED")
+    return int(base) + i if base else secrets.randbelow(2**31)
+
+
+@pytest.mark.parametrize("seed", FIXED_SEEDS)
+async def test_no_open_invoice_is_left_with_nothing_asked_and_nobody_told(seed, client, session, monkeypatch, cloud):
+    await _run_story(seed, client, session, monkeypatch, cloud)
+
+
+@pytest.mark.parametrize("i", range(RANDOM_COUNT), ids=lambda i: f"random-{i}")
+async def test_random_stories_leave_no_open_invoice_alone(i, client, session, monkeypatch, cloud):
+    seed = _random_seed(i)
+    print(f"COLLECTION_ORACLE_SEED={seed}")
+    await _run_story(seed, client, session, monkeypatch, cloud)
