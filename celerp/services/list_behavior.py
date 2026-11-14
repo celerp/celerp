@@ -75,14 +75,14 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
         scan_finalized="noop", scan_unstocked="one", scan_sell_qty=True,  # as a quotation document
     ),
     "transfer": ListBehavior(
-        label="Transfer", money=False, finalize_label="Issue", finalize_milestone="issued_at",
+        label="Transfer Order", money=False, finalize_label="Issue", finalize_milestone="issued_at",
         # No closing terminal: a finalized transfer's action is "Move all to <location>", which moves
         # stock and stays finalized (repeatable). Handled in the UI/route, not as a close.
         terminal=(),
         scan_finalized="noop",
     ),
     "audit": ListBehavior(
-        label="Audit", money=False, extra_columns=("on_hand", "counted"),
+        label="Stock Count", money=False, extra_columns=("on_hand", "counted"),
         finalize_label="Finalize count", finalize_milestone="freeze_onhand",
         terminal=(TerminalAction(
             "adjust", "Adjust stock", "stock_adjusted",
@@ -94,7 +94,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
         # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
         # reconciliation. Each line names its destination expense/drawings account and a comment;
         # the terminal carves/disposes the stock and posts one journal entry.
-        label="Write-off", money=False, extra_columns=("qty_out", "account", "comment"),
+        label="Inventory Adjustment", money=False, extra_columns=("qty_out", "account", "comment"),
         finalize_label="Finalize", finalize_milestone=None,
         terminal=(TerminalAction(
             "write-off", "Write off stock", "written_off",
@@ -105,7 +105,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
     "shipping_doc": ListBehavior(
         # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)
         # and the Commercial Invoice (customs values + declaration, for cross-border carriers).
-        label="Shipping Document", money=False, customs=True, finalize_label="Issue",
+        label="Delivery Note", money=False, customs=True, finalize_label="Issue",
         finalize_milestone="issued_at", terminal=(), scan_finalized="noop",
     ),
 }

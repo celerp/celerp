@@ -25,7 +25,7 @@ from test_helpers import make_test_token
 
 ROOT = Path(__file__).resolve().parents[1]
 _CUSTOMER = {"contact_name": "Acme Trading", "contact_address": "1 Main Road", "contact_email": "buyer@acme.test"}
-_TITLES = {"quotation": "Quotation", "transfer": "Transfer", "audit": "Audit", "writeoff": "Write-off"}
+_TITLES = {"quotation": "Quotation", "transfer": "Transfer Order", "audit": "Stock Count", "writeoff": "Inventory Adjustment"}
 
 
 def _list(list_type: str | None, **extra) -> dict:
@@ -55,6 +55,15 @@ def test_each_list_type_prints_its_own_title(list_type, title):
 
 def test_every_list_type_has_a_print_title():
     assert LIST_PRINT_TITLES == {lt: b.label for lt, b in LIST_BEHAVIOR.items()}
+
+
+def test_each_list_type_prints_under_the_name_the_screen_shows():
+    """The print title is the English name the Lists page gives the type, so paper and screen
+    never call one document two different things."""
+    from ui.i18n import t
+    from ui.routes.documents import _LIST_TYPE_LABEL_KEYS
+    screen = {lt: t(_LIST_TYPE_LABEL_KEYS.get(lt, f"enum.list_type.{lt}"), "en") for lt in LIST_BEHAVIOR}
+    assert {lt: b.label for lt, b in LIST_BEHAVIOR.items()} == screen
 
 
 def test_a_list_without_a_type_prints_as_a_quotation():
