@@ -4742,8 +4742,8 @@ def setup_routes(app):
 
     async def doc_history_paginated(request: Request, entity_id: str):
         from starlette.responses import Response as _R
-        # Docs and Lists share this handler; each page's own door gives the page path to push.
-        page_path = f"/{'lists' if request.url.path.startswith('/lists/') else 'docs'}/{entity_id}"
+        # Docs and Lists share this handler at both doors; the record's kind names the page it lives on.
+        page_path = f"/{'lists' if entity_id.startswith('list:') else 'docs'}/{entity_id}"
         token = _token(request)
         if not token:
             return _R("", status_code=401)

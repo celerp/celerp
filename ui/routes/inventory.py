@@ -27,7 +27,7 @@ from ui.components.demo_items import DEMO_ITEMS_FILTER
 from ui.components.icons import icon, import_icon
 from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.cards import section_card, section_header
-from ui.components.item_fields import item_detail_schema
+from ui.components.item_fields import LEGACY_CORE_KEYS, core_field_key, item_detail_schema
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
@@ -8074,7 +8074,11 @@ def _effective_schema(
     global_keys = {f["key"] for f in global_schema}
 
     if active_cat:
-        extra = [f for f in (cat_schemas.get(active_cat) or []) if f["key"] not in global_keys]
+        cat_fields = cat_schemas.get(active_cat) or []
+        # An old preset field, now named by its core field, keeps the category's column.
+        shown = {f["key"]: f.get("show_in_table", True) for f in cat_fields if f["key"] in LEGACY_CORE_KEYS}
+        global_schema = [{**f, "show_in_table": shown[f["key"]]} if f["key"] in shown else f for f in global_schema]
+        extra = [f for f in cat_fields if f["key"] not in global_keys]
     else:
         # Union of all category schemas, deduped by key
         seen: set[str] = set(global_keys)
@@ -8117,7 +8121,7 @@ def _resolve_visible_cols(
     virtual_cols = {f["key"]: f for f in eff_schema if f.get("virtual")}
     result: list[str] = []
     seen: set[str] = set()
-    for col in base:
+    for col in map(core_field_key, base):
         if col in seen:
             continue
         result.append(col)

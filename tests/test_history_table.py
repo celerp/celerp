@@ -144,6 +144,24 @@ async def test_a_list_card_reads_and_pushes_the_list_page_url(ui_client):
     assert changed.headers["HX-Push-Url"] == "/lists/list:QUO-1?hist_event=x"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("door", ["/docs", "/lists"])
+@pytest.mark.parametrize("entity_id,page", [("list:QUO-1", "/lists/list:QUO-1"), ("doc:INV-1", "/docs/doc:INV-1")])
+async def test_history_pushes_the_page_of_the_record_kind_from_either_door(ui_client, door, entity_id, page):
+    """The pushed URL and the filters read from the page follow the record's kind, whichever door served it."""
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": _LEDGER, "total": 3})), \
+         patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})):
+        first = await ui_client.get(f"{door}/{entity_id}/history?page=1",
+                                    headers={"HX-Current-URL": f"http://ui{page}?hist_who=Ana"})
+        changed = await ui_client.get(f"{door}/{entity_id}/history?hist_event=x",
+                                      headers={"HX-Current-URL": f"http://ui{page}"})
+
+    assert '<td class="col-user">Noah</td>' not in first.text
+    assert f'hx-get="{page}/history' in first.text
+    assert changed.headers["HX-Push-Url"] == f"{page}?hist_event=x"
+
+
 def _paged_ledger(entries):
     async def list_ledger(token, params):
         offset, limit = int(params.get("offset", 0)), int(params.get("limit", 100))

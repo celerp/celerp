@@ -20,6 +20,22 @@ def test_old_preset_fields_never_add_a_second_editor():
     assert not set(LEGACY_CATEGORY_FIELDS) & set(keys)
 
 
+@pytest.mark.parametrize('prefs', [{}, {'packaged_food': ['sku', 'weight_g', 'origin_country']}])
+def test_a_category_that_showed_old_preset_columns_shows_their_core_fields(prefs):
+    """The list and its export keep the columns an earlier preset showed, now named by the core fields."""
+    from ui.routes.inventory import _effective_schema, _resolve_visible_cols
+    stored = [{'key': 'brand', 'label': 'Brand'}, {'key': 'weight_g', 'label': 'Weight (g)'},
+              {'key': 'origin_country', 'label': 'Origin Country'}]
+    cats = {'packaged_food': item_detail_schema([], stored, 'packaged_food')}
+    eff = _effective_schema(DEFAULT_ITEM_SCHEMA, cats, 'packaged_food')
+    cols = _resolve_visible_cols(eff, prefs, 'packaged_food', [])
+    assert {'weight', 'country_of_origin'} <= set(cols)
+    assert not set(LEGACY_CATEGORY_FIELDS) & set(cols)
+    assert [f['key'] for f in eff].count('country_of_origin') == 1
+    all_cols = _resolve_visible_cols(_effective_schema(DEFAULT_ITEM_SCHEMA, cats, ''), {}, '', [])
+    assert 'country_of_origin' not in all_cols  # the All view hides category columns, as before
+
+
 async def _legacy_item(client, headers, sku='OLD-1', **core):
     """An item as earlier releases stored it: the old preset keys under attributes."""
     response = await client.post('/items', headers=headers, json={

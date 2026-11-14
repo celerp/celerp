@@ -2,11 +2,21 @@
 from celerp_inventory.projections import LEGACY_CATEGORY_FIELDS
 from ui.i18n import t_or
 
+LEGACY_CORE_KEYS = frozenset(LEGACY_CATEGORY_FIELDS.values())
+
+
+def core_field_key(key: str) -> str:
+    """The field an old preset key's values now live in (the key itself for every other field)."""
+    return LEGACY_CATEGORY_FIELDS.get(key, key)
+
+
 def item_detail_schema(schema: list[dict], category_fields: list[dict], category: str) -> list[dict]:
-    """Core fields own their names; old preset aliases never add a second editor."""
-    result = [dict(f) for f in schema if f.get('key') not in LEGACY_CATEGORY_FIELDS]
-    existing = {f.get('key') for f in result}
-    result += [dict(f) for f in category_fields if f.get('key') not in existing and f.get('key') not in LEGACY_CATEGORY_FIELDS]
+    """Core fields own their names; an old preset field stands for its core field, never a second editor."""
+    result = []
+    for f in [*schema, *category_fields]:
+        key = core_field_key(f.get('key'))
+        if key not in {r.get('key') for r in result}:
+            result.append({**f, 'key': key})
     for field in result:
         key = field.get('key')
         if key == 'type' and category == 'packaged_food':
