@@ -46,6 +46,9 @@ async def test_create_and_edit_move_the_one_default(committed_engine):
         r = await client.patch(f"/companies/me/locations/{third}", headers=h, json={"is_default": True})
         assert r.status_code == 200 and r.json()["is_default"] is True, r.text
         assert await _defaults(factory, c["company_id"]) == ["Third"]
+        r = await client.patch(f"/companies/me/locations/{third}", headers=h, json={"is_default": False})
+        assert r.status_code == 200 and r.json()["is_default"] is False, r.text
+        assert await _defaults(factory, c["company_id"]) == []
 
 
 async def test_import_keeps_the_existing_default_or_sets_the_first(committed_engine):
@@ -65,6 +68,33 @@ async def test_import_keeps_the_existing_default_or_sets_the_first(committed_eng
                               json={"records": [{"name": "East"}, {"name": "West"}]})
         assert r.json()["created"] == 2, r.text
         assert await _defaults(factory, c["company_id"]) == ["East"]
+
+
+async def test_migration_import_keeps_the_existing_default_or_sets_the_first(committed_engine):
+    from types import SimpleNamespace
+
+    from celerp.importers.schema import CIFLocation
+    from celerp.services.migration_core_sink import _import_location
+
+    factory = _factory(committed_engine)
+    c = await _seed(factory)
+
+    async def _imported(name: str) -> None:
+        async with factory() as s:
+            context = SimpleNamespace(session=s, company_id=c["company_id"], run_id=uuid.uuid4())
+            _, problem = await _import_location(context, CIFLocation(
+                source_system="manager_io", source_type="Location", source_external_id=name, name=name))
+            assert problem is None
+            await s.commit()
+
+    await _imported("Harbour")
+    assert await _defaults(factory, c["company_id"]) == ["Main"]
+    async with factory() as s:
+        await s.execute(text("UPDATE locations SET is_default = false WHERE company_id = :c"),
+                        {"c": c["company_id"]})
+        await s.commit()
+    await _imported("Inland")
+    assert await _defaults(factory, c["company_id"]) == ["Inland"]
 
 
 async def test_two_default_creates_at_once_leave_one_default(committed_engine):
