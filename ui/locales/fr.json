@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "À jour",
   "enum.member_standing.in_grace": "En période de grâce",
   "enum.member_standing.lapsed": "Expiré",
+  "enum.member_standing.ended": "Terminé",
   "enum.member_standing.lifetime": "À vie",
   "category.membership": "Adhésion",
   "category.donation": "Don",

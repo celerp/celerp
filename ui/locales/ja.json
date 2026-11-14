@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "有効",
   "enum.member_standing.in_grace": "猶予期間中",
   "enum.member_standing.lapsed": "失効",
+  "enum.member_standing.ended": "終了",
   "enum.member_standing.lifetime": "終身",
   "category.membership": "会員契約",
   "category.donation": "寄付",

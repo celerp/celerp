@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "ปัจจุบัน",
   "enum.member_standing.in_grace": "อยู่ในระยะผ่อนผัน",
   "enum.member_standing.lapsed": "หมดอายุ",
+  "enum.member_standing.ended": "สิ้นสุดแล้ว",
   "enum.member_standing.lifetime": "ตลอดชีพ",
   "category.membership": "สมาชิกภาพ",
   "category.donation": "การบริจาค",

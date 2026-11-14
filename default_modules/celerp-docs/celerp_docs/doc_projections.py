@@ -200,6 +200,9 @@ def _status_without_receipts(state: dict) -> str:
 
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
+    if isinstance(data.get("items_at_sale"), dict):
+        # Written once, by the event that first issues an invoice (events.engine).
+        current["items_at_sale"] = data["items_at_sale"]
 
     if event_type == "doc.created":
         current.update({"entity_type": "doc", **data})

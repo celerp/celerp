@@ -357,11 +357,12 @@ def _sub_table(subs: list[dict], state: dict, any_exist: bool) -> FT:
 
 
 _STANDING_CSS = {"current": "badge--active", "in_grace": "badge--paused", "lapsed": "badge--void",
-                 "lifetime": "badge--active"}
+                 "ended": "badge--draft", "lifetime": "badge--active"}
 
 
 def _members_table(rows: list[dict]) -> FT:
-    """Members newest first: who, who pays, their standing and the bill or invoice it is read from."""
+    """Members newest first: who, who pays, their standing, the agreement's status and the bill
+    or invoice the standing is read from."""
     if not rows:
         return empty_state_cta(t("subscriptions.members_empty"), t("page.new_membership"),
                                "/subscriptions/new?direction=sales&kind=membership", hx_post=True)
@@ -373,13 +374,14 @@ def _members_table(rows: list[dict]) -> FT:
             Td(m.get("contact_name") or EMPTY),
             Td(Span(display_enum(m["standing"], "member_standing"),
                     cls=f"badge {_STANDING_CSS.get(m['standing'], 'badge--draft')}")),
+            Td(display_enum(m["status"], "subscription_status") if m.get("status") else EMPTY),
             Td(m.get("due_date") or EMPTY),
             Td(A(m.get("ref") or source, href=source)),
         )
 
     return _data_table(
         Thead(Tr(*[Th(t(k)) for k in ("subscriptions.member", "subscriptions.paid_by", "subscriptions.standing",
-                                       "th.due_date", "th.ref")])),
+                                       "th.status", "th.due_date", "th.ref")])),
         Tbody(*[_row(m) for m in rows]),
     )
 

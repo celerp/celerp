@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Aktif",
   "enum.member_standing.in_grace": "Dalam masa tenggang",
   "enum.member_standing.lapsed": "Kedaluwarsa",
+  "enum.member_standing.ended": "Berakhir",
   "enum.member_standing.lifetime": "Seumur hidup",
   "category.membership": "Keanggotaan",
   "category.donation": "Donasi",

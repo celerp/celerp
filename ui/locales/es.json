@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Vigente",
   "enum.member_standing.in_grace": "En período de gracia",
   "enum.member_standing.lapsed": "Vencido",
+  "enum.member_standing.ended": "Finalizado",
   "enum.member_standing.lifetime": "Vitalicio",
   "category.membership": "Membresía",
   "category.donation": "Donación",

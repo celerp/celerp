@@ -690,6 +690,34 @@ async def _judge_inbound(session, company_id, found: list[tuple[str, int | None]
             refuse_inbound(found, origin)
 
 
+ITEMS_AT_SALE = "items_at_sale"
+
+
+async def _stamp_items_at_sale(session, kwargs: dict) -> None:
+    """An invoice keeps each item's category and attributes as they stood when it was first
+    issued (``items_at_sale``), so what it sold reads the same however the item is edited
+    later. Only this boundary writes it: a caller's value is dropped, a document that already
+    holds one keeps it (a void and unvoid, an edit after issue), and a replay or restore copies
+    the stored event without coming here."""
+    data = {k: v for k, v in kwargs["data"].items() if k != ITEMS_AT_SALE}
+    if isinstance(data.get("fields_changed"), dict) and ITEMS_AT_SALE in data["fields_changed"]:
+        data["fields_changed"] = {k: v for k, v in data["fields_changed"].items() if k != ITEMS_AT_SALE}
+    kwargs["data"] = data
+    previous = await session.get(Projection, (kwargs["company_id"], kwargs["entity_id"]))
+    before = (previous.state or {}) if previous is not None else {}
+    if ITEMS_AT_SALE in before or (before.get("doc_type") not in (None, "invoice") and "doc_type" not in data):
+        return
+    after = ProjectionEngine._apply(before, kwargs["event_type"], data)
+    if after.get("doc_type") != "invoice" or (after.get("status") or "draft") in ("draft", "void"):
+        return
+    ids = {li["item_id"] for li in after.get("line_items") or [] if isinstance(li, dict) and li.get("item_id")}
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == kwargs["company_id"], Projection.entity_type == "item",
+        Projection.entity_id.in_(ids)))).all() if ids else []
+    data[ITEMS_AT_SALE] = {eid: {"category": (state or {}).get("category"),
+                                 "attributes": (state or {}).get("attributes") or {}} for eid, state in rows}
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
@@ -1014,6 +1042,9 @@ async def emit_event(
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
         _record_consignor_payable(kwargs, previous_item_state)
+
+    if kwargs.get("entity_type") == "doc":
+        await _stamp_items_at_sale(session, kwargs)
 
     if _UNATTENDED.get():
         kwargs["metadata_"] = {**(kwargs.get("metadata_") or {}), "automatic": True}

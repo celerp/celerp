@@ -44,6 +44,19 @@
       }
     },
     {
+      "text": "A membership that was cancelled, or whose term is over, is {ended} whatever its bills say. The {status} column shows where each agreement stands.",
+      "labels": {
+        "ended": "enum.member_standing.ended",
+        "status": "th.status"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
       "text": "Choose {new} to add a member.",
       "labels": {
         "new": "page.new_membership"

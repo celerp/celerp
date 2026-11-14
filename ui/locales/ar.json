@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "سارية",
   "enum.member_standing.in_grace": "ضمن مهلة السماح",
   "enum.member_standing.lapsed": "منتهية",
+  "enum.member_standing.ended": "انتهت",
   "enum.member_standing.lifetime": "مدى الحياة",
   "category.membership": "عضوية",
   "category.donation": "تبرع",

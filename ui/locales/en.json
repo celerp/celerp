@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Current",
   "enum.member_standing.in_grace": "In grace",
   "enum.member_standing.lapsed": "Lapsed",
+  "enum.member_standing.ended": "Ended",
   "enum.member_standing.lifetime": "Lifetime",
   "category.membership": "Membership",
   "category.donation": "Donation",

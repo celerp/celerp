@@ -143,6 +143,86 @@ async def test_lifetime_membership_one_time_invoice(owner_ui, monkeypatch):
     assert row["standing"] == "lifetime" and row["contact_id"] == who
 
 
+async def test_a_cancelled_or_expired_membership_reads_ended_and_a_void_one_is_not_listed(owner_ui, session, monkeypatch):
+    """Standing is read as of today from the agreement as well as its bill: a cancelled
+    membership, or one whose term ended, is no longer current however its last bill stands;
+    a voided agreement never made anyone a member. The table shows each agreement's status."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    cancelled, doc = await _membership(api, session)
+    await _paid(api, doc, 100.0, "2026-03-01")
+    ending, ending_doc = await _membership(api, session)
+    await _paid(api, ending_doc, 100.0, "2026-03-01")
+    r = await api.patch(f"/subscriptions/{ending}/schedule", json={"term_end": "2027-03-01"})
+    assert r.status_code == 200, r.text
+    assert (await api.post(f"/subscriptions/{cancelled}/cancel")).status_code == 200
+    voided, voided_doc = await _membership(api, session)
+    assert (await api.post(f"/docs/{voided_doc}/void", json={"reason": "Wrong amount"})).status_code == 200
+    r = await api.post(f"/docs/{voided}/void", json={"reason": "Entered by mistake", "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    rows = await _members(api)
+    assert voided not in rows
+    assert (rows[cancelled]["standing"], rows[cancelled]["status"]) == ("ended", "cancelled")
+    assert rows[ending]["standing"] == "current"
+    freeze_day(monkeypatch, "2027-03-01")
+    assert (await _members(api))[ending]["standing"] == "ended"
+    from ui.i18n import t
+
+    page = await owner_ui.get("/members")
+    assert page.status_code == 200
+    assert t("enum.member_standing.ended") in page.text and t("enum.subscription_status.cancelled") in page.text
+
+
+async def test_an_amendment_bill_is_the_one_standing_reads(owner_ui, session, monkeypatch):
+    """A paid membership raised mid-term bills the change on a new invoice; until that is
+    settled the member's standing follows it like any bill."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    eid, doc = await _membership(api, session, grace=14)
+    await _paid(api, doc, 100.0, "2026-03-01")
+    line = (await template(api, {}, eid))["line_items"][0]["line_id"]
+    freeze_day(monkeypatch, "2026-05-01")
+    r = await api.post(f"/subscriptions/{eid}/amend", json={
+        "effective": "2026-05-01", "quantities": {line: 2}, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    amendment = r.json()["invoice_id"]
+    row = (await _members(api))[eid]
+    assert (row["standing"], row["bill_id"]) == ("current", amendment)
+    freeze_day(monkeypatch, "2026-06-30")
+    assert (await _members(api))[eid]["standing"] == "lapsed"
+
+
+@pytest.mark.parametrize("edit", ["lifetime_sale_then_item_changed", "item_made_lifetime_after_the_sale"])
+async def test_lifetime_membership_is_what_was_sold(owner_ui, monkeypatch, edit):
+    """Lifetime is fixed by the item as it was sold: editing the item afterwards neither takes
+    lifetime from a member who bought it nor gives it to one who bought something else."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    assert (await api.post("/companies/me/apply-preset", params={"vertical": "nonprofit"})).status_code == 200
+    sold_as_lifetime = edit == "lifetime_sale_then_item_changed"
+    r = await api.post("/items", json={
+        "name": "Membership", "category": "membership", "sell_by": "piece", "inventory_type": "service",
+        "quantity": 0, "status": "available",
+        "attributes": {"membership_term": "Lifetime" if sold_as_lifetime else "Annual"}})
+    assert r.status_code == 200, r.text
+    item = r.json()["id"]
+    who = await contact(api, {}, f"life-{uuid.uuid4().hex[:6]}@test.test")
+    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail", "total": 500.0,
+                                      "line_items": [{"item_id": item, "name": "Membership", "quantity": 1,
+                                                      "unit_price": 500.0, "line_total": 500.0}]})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await api.post(f"/docs/{doc}/finalize")).status_code == 200
+    await _paid(api, doc, 500.0, "2026-03-02")
+    sold, now = ("Lifetime", "Annual") if sold_as_lifetime else ("Annual", "Lifetime")
+    r = await api.patch(f"/items/{item}", json={"fields_changed": {"attributes": {
+        "old": {"membership_term": sold}, "new": {"membership_term": now}}}})
+    assert r.status_code == 200, r.text
+    r = await api.get(f"/items/{item}")
+    assert r.status_code == 200 and r.json().get("membership_term") == now, r.text
+    assert (doc in await _members(api)) is sold_as_lifetime
+
+
 async def test_page_scoped_labels_no_global_customer_swap(owner_ui, session, monkeypatch):
     from ui.i18n import t
 

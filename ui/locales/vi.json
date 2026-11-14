@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Còn hiệu lực",
   "enum.member_standing.in_grace": "Trong thời gian gia hạn",
   "enum.member_standing.lapsed": "Hết hiệu lực",
+  "enum.member_standing.ended": "Đã kết thúc",
   "enum.member_standing.lifetime": "Trọn đời",
   "category.membership": "Tư cách hội viên",
   "category.donation": "Khoản quyên góp",

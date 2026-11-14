@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "ንቁ",
   "enum.member_standing.in_grace": "በእፎይታ ጊዜ ውስጥ",
   "enum.member_standing.lapsed": "ጊዜው ያለፈ",
+  "enum.member_standing.ended": "አብቅቷል",
   "enum.member_standing.lifetime": "የዕድሜ ልክ",
   "category.membership": "አባልነት",
   "category.donation": "ልገሳ",

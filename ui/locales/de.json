@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Gültig",
   "enum.member_standing.in_grace": "In der Nachfrist",
   "enum.member_standing.lapsed": "Abgelaufen",
+  "enum.member_standing.ended": "Beendet",
   "enum.member_standing.lifetime": "Lebenslang",
   "category.membership": "Mitgliedschaft",
   "category.donation": "Spende",

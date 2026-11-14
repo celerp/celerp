@@ -7755,6 +7755,7 @@
   "enum.member_standing.current": "Regular",
   "enum.member_standing.in_grace": "Em período de tolerância",
   "enum.member_standing.lapsed": "Vencido",
+  "enum.member_standing.ended": "Terminado",
   "enum.member_standing.lifetime": "Vitalício",
   "category.membership": "Associação",
   "category.donation": "Doação",
