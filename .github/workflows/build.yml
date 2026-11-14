@@ -72,10 +72,9 @@ jobs:
   # because signing credentials must not be exposed to PR workflows. A pull request
   # that changes how the Windows app is packaged or started also builds Windows,
   # with its DLL check and both boot smokes.
-  # packs: whether this run fetches the private country packs. Only a tag or a manual run does,
-  # and every job that reads the pack token then runs in the country-packs environment, whose
-  # secret is released only after an approval. Branch pushes and pull requests build with the
-  # packs left out and never see the token.
+  # packs: whether this run fetches the country packs. Only a tag or a manual run does, and
+  # every job that fetches them then runs in the country-packs environment. Branch pushes and
+  # pull requests build with the packs left out.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:

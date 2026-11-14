@@ -221,7 +221,7 @@ def fetch(root: Path) -> list[str]:
             fetched[code] = _download(PACK_REPO.format(cc=code.lower()), f"v{entry['version']}", token)
         except urllib.error.HTTPError as exc:
             defects.append(f"country {code}: fetch failed (HTTP {exc.code})")
-        except Exception:  # noqa: BLE001 - the text can carry the URL, which is private
+        except Exception:  # noqa: BLE001 - messages name the country only, never the URL
             defects.append(f"country {code}: fetch failed (network error)")
     defects += [f"country {code}: sha256 does not match the lock" for code, data in fetched.items()
                 if hashlib.sha256(data).hexdigest() != lock[code]["sha256"]]

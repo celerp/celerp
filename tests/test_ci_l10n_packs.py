@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The release machinery ships the country packs and never ships without them.
 
-The real packs sit in private repositories, so only runs that have the read token fetch them:
-pushes to main, tags and manual runs, each in a job of the country-packs environment (the token is
-that environment's secret). Each of those runs the real-pack golden (one workflow, called by the
+The real packs are fetched only by pushes to main, tags and manual runs, each in a job of the
+country-packs environment. Each of those runs the real-pack golden (one workflow, called by the
 others) and a build or release waits for it to pass. Pull requests and pushes to other branches
 never fetch and run the tests on the committed fixture pack set. Every artifact is built in a job
 that fetched the packs first, and checked against the committed lock after.
@@ -226,7 +225,7 @@ def _credential_events(workflow: dict) -> dict:
 
 
 def token_defects(workflow: dict) -> list[str]:
-    """Every way a workflow could hand the pack token to a run nobody approved."""
+    """Every way a workflow could fetch the packs outside a country-packs job on main, a tag or a manual run."""
     defects = []
     for name, job in _token_jobs(workflow).items():
         if job.get("uses") == GOLDEN:
@@ -251,8 +250,8 @@ def token_defects(workflow: dict) -> list[str]:
     return defects
 
 
-def test_pack_token_reaches_only_approved_runs():
-    """The token is read only in country-packs environment jobs, on a push to main, a tag or a manual run."""
+def test_packs_are_fetched_only_on_main_tags_and_manual_runs():
+    """The packs are fetched only in country-packs jobs, on a push to main, a tag or a manual run."""
     golden = _load("l10n-golden.yml")
     assert set(_events(golden)) == {"workflow_dispatch", "workflow_call"}
     [job] = golden["jobs"].values()
@@ -273,7 +272,7 @@ def test_pack_token_reaches_only_approved_runs():
      "reads the token on a push to a branch other than main"),
     (lambda w: w.update({"on": {"pull_request_target": None}}), "reads the token on a pull request"),
 ])
-def test_pack_token_check_catches_an_unapproved_run(change, defect):
+def test_pack_fetch_check_catches_a_run_outside_those(change, defect):
     workflow = copy.deepcopy(_load("l10n-golden.yml"))
     change(workflow)
     assert defect in token_defects(workflow)

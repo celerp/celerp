@@ -4,8 +4,8 @@
 against the lock by digest, validates their fields and writes the lock.
 
 ``fetch`` and ``check`` use the standard library only, so they run under a bare runner Python
-before anything is installed; ``fetch`` never prints a repository name, URL or tag (they are
-private), only the country and the HTTP status. The committed fixture pack set passes both
+before anything is installed; ``fetch`` never prints a repository name, URL or tag, only the
+country and the HTTP status. The committed fixture pack set passes both
 ``check`` and ``validate``, and the test session reads it from any working directory.
 """
 from __future__ import annotations

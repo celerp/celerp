@@ -3,8 +3,7 @@ name: Country pack golden
 # Fetches the real country packs, validates them and runs the tests marked real_packs.
 # It runs on a manual run and when ci.yml (push to main), build.yml or publish.yml (a tag or a
 # manual run) calls it; never on a pull request or a push to any other branch. The job runs in
-# the country-packs environment: the pack token is that environment's only secret and is
-# released only after an approval, so no code reaches it without someone approving the run.
+# the country-packs environment.
 on:
   workflow_dispatch:
   workflow_call:
@@ -12,7 +11,6 @@ on:
 jobs:
   golden:
     name: Real-pack golden
-    # A fork has no country-packs environment and no token.
     if: github.repository == 'celerp/celerp'
     environment: country-packs
     permissions:

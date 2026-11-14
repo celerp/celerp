@@ -18,7 +18,6 @@ jobs:
   build:
     needs: l10n-golden
     runs-on: ubuntu-latest
-    # The pack token is a secret of this environment, released only after an approval.
     environment: country-packs
     permissions:
       contents: read
