@@ -178,6 +178,80 @@ async def test_a_lifetime_sale_credited_back_in_full_makes_no_member(owner_ui, m
     assert doc not in await _members(api)
 
 
+async def _note(api, who: str, amount: float, *, against: str | None = None, item: str | None = None) -> str:
+    """An issued credit note for ``amount``: against the invoice ``against`` (original_doc_id) or
+    standalone, crediting the lifetime ``item`` (one, at ``amount``) or a general credit."""
+    line = {"item_id": item, "name": "Lifetime membership"} if item else {"name": "Goodwill credit"}
+    r = await api.post("/docs", json={
+        "doc_type": "credit_note", "contact_id": who, "price_list": "Retail", "total": amount,
+        "line_items": [{**line, "quantity": 1, "unit_price": amount, "line_total": amount}],
+        **({"original_doc_id": against} if against else {})})
+    assert r.status_code == 200, r.text
+    assert (await api.post(f"/docs/{r.json()['id']}/finalize")).status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _apply(api, note: str, invoice: str, amount: float) -> None:
+    r = await api.post(f"/docs/{note}/apply-to-invoice", json={
+        "target_doc_id": invoice, "amount": amount, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+
+
+# Each way credit reaches a lifetime sale of 500, given the partial amount p (0 < p < 500):
+# (what is credited, and whether its member stays lifetime).
+async def _linked_full(api, doc, item, who, p):
+    await _paid(api, doc, 500.0, "2026-03-02")
+    await _note(api, who, 500.0, against=doc, item=item)
+
+
+async def _linked_partial(api, doc, item, who, p):
+    await _note(api, who, p, against=doc)
+    await _paid(api, doc, 500.0 - p, "2026-03-02")
+
+
+async def _standalone_full(api, doc, item, who, p):
+    await _apply(api, await _note(api, who, 500.0), doc, 500.0)
+
+
+async def _standalone_partial(api, doc, item, who, p):
+    await _apply(api, await _note(api, who, p), doc, p)
+    await _paid(api, doc, 500.0 - p, "2026-03-02")
+
+
+async def _mixed(api, doc, item, who, p):
+    await _note(api, who, p, against=doc)
+    await _apply(api, await _note(api, who, 500.0 - p, item=item), doc, 500.0 - p)
+
+
+async def _unapplied(api, doc, item, who, p):
+    await _paid(api, doc, 500.0, "2026-03-02")
+    await _note(api, who, 500.0)
+
+
+_CREDIT_PATHS = {_linked_full: False, _linked_partial: True, _standalone_full: False, _standalone_partial: True,
+                 _mixed: False, _unapplied: True}
+
+
+@pytest.mark.parametrize("seed", [11, 4026])
+async def test_lifetime_reads_every_credit_note_that_credits_its_sale(owner_ui, monkeypatch, seed):
+    """Lifetime reads what credit notes credited back on the sale, however they reached it: a
+    note issued against the invoice or one issued on its own and applied to it, in full or in
+    part, or both; a note that names the lifetime item credits that quantity, one that does not
+    credits the sale pro rata to what it applies. Settled entirely by credit, the sale makes no
+    member; credited in part it still does; a note never applied to it changes nothing."""
+    import random
+    freeze_day(monkeypatch, "2026-03-01")
+    api, rng = owner_ui.api, random.Random(seed)
+    sales = {}
+    for path in _CREDIT_PATHS:
+        doc, item, who = await _lifetime_sale(api)
+        await path(api, doc, item, who, rng.randrange(1, 500) * 1.0)
+        sales[path.__name__] = doc
+    members = await _members(api)
+    assert {name: doc in members for name, doc in sales.items()} == {
+        path.__name__: kept for path, kept in _CREDIT_PATHS.items()}
+
+
 async def test_a_cancelled_or_expired_membership_reads_ended_and_a_void_one_is_not_listed(owner_ui, session, monkeypatch):
     """Standing is read as of today from the agreement as well as its bill: a cancelled
     membership, or one whose term ended, is no longer current however its last bill stands;

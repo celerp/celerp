@@ -10,8 +10,8 @@ lapsed. A later bill paid does not clear an earlier one still owing. When no bil
 (each paid or fully credited, or nothing billed yet) it reads current. A lifetime member is the
 contact of an issued invoice that sold a lifetime membership item (category ``membership``,
 attribute ``membership_term`` Lifetime, as the item stood when the invoice was issued: its
-``items_at_sale``), listed while that invoice is settled and the issued credit notes against it
-have not credited the lifetime quantity back in full.
+``items_at_sale``), listed while that invoice is settled and the credit notes issued against it
+or applied to it (credit_applications) have not credited the lifetime quantity back in full.
 """
 from __future__ import annotations
 
@@ -87,6 +87,7 @@ def _ended(agreement: dict, today: date) -> bool:
 
 
 async def _lifetime_rows(session: AsyncSession, company_id) -> list[dict]:
+    from celerp_docs.routes import credit_applications
     invoices = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string() == "invoice"))).all()
@@ -101,16 +102,18 @@ async def _lifetime_rows(session: AsyncSession, company_id) -> list[dict]:
     sold = {eid: (s, {i for i, at_sale in (s.get("items_at_sale") or {}).items() if lifetime(at_sale)})
             for eid, s in invoices if billing.bills(s) and _settled(s)}
     sold = {eid: (s, items) for eid, (s, items) in sold.items() if items}
-    notes = (await session.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["doc_type"].as_string() == "credit_note",
-        Projection.state["original_doc_id"].as_string().in_(list(sold))))).scalars().all() if sold else []
-    credited: dict[str, float] = {}
-    for n in notes:
-        if billing.bills(n):
-            eid = n["original_doc_id"]
-            credited[eid] = credited.get(eid, 0.0) + quantity(n, sold[eid][1])
-    issued = [(eid, s) for eid, (s, items) in sold.items() if quantity(s, items) - credited.get(eid, 0.0) > 0]
+    applications = await credit_applications(session, company_id, {eid: s for eid, (s, _) in sold.items()})
+
+    def credited(eid: str) -> float:
+        """The lifetime quantity the credit notes crediting the sale took back: a note naming the
+        lifetime item takes its quantity, one naming none takes the sale's pro rata to what it
+        credits, each by the share of the note that credits this sale."""
+        s, items = sold[eid]
+        total = float(s.get("total") or 0)
+        return sum(share * (quantity(note, items) or (
+            quantity(s, items) * float(note.get("total") or 0) / total if total > 0 else 0.0))
+            for note, share in applications[eid])
+    issued = [(eid, s) for eid, (s, items) in sold.items() if quantity(s, items) - credited(eid) > 1e-9]
     return [{"doc_id": eid, "ref": s.get("ref_id") or s.get("doc_number") or eid, "contact_id": s.get("contact_id"),
              "member_id": s.get("contact_id"), "member_name": s.get("contact_name") or "",
              "contact_name": s.get("contact_name") or "", "standing": "lifetime", "since": s.get("issue_date")}

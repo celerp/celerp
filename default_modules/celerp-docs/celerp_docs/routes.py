@@ -3508,6 +3508,38 @@ async def _issued_credit_note_rows(session, company_id, invoice_id: str,
             not in (None, "draft", "void")]
 
 
+async def credit_applications(session, company_id, invoices: dict[str, dict]) -> dict[str, list[tuple[dict, float]]]:
+    """Every issued credit note that credits each of ``invoices`` (entity id -> state), with the
+    share of the note it credits there: a note issued against the invoice (``original_doc_id``)
+    credits it whole; a note applied to it credits what its live applications on the invoice
+    (apply_credit_note's credit_note payments, voided ones left out) took over the note's total.
+    A note neither issued against nor applied to an invoice credits it nothing."""
+    linked = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string() == "credit_note",
+        Projection.state["original_doc_id"].as_string().in_(list(invoices))))).all() if invoices else []
+    applied = {doc_id: {} for doc_id in invoices}
+    for doc_id, state in invoices.items():
+        for p in state.get("payments") or []:
+            if (isinstance(p, dict) and p.get("method") == _NOTE_APPLICATIONS["credit_note"].target_method
+                    and p.get("status") != "voided" and p.get("source_doc_id")):
+                applied[doc_id][p["source_doc_id"]] = applied[doc_id].get(p["source_doc_id"], 0.0) + float(p["amount"])
+    wanted = {n for by_note in applied.values() for n in by_note}
+    notes = dict((await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(wanted)))).all()) if wanted else {}
+    out: dict[str, list[tuple[dict, float]]] = {doc_id: [] for doc_id in invoices}
+    for note_id, note in linked:
+        if note.get("status") not in (None, "draft", "void"):
+            out[note["original_doc_id"]].append((note, 1.0))
+    for doc_id, by_note in applied.items():
+        for note_id, amount in by_note.items():
+            note = notes.get(note_id) or {}
+            total = float(note.get("total") or 0)
+            if note.get("original_doc_id") != doc_id and note.get("status") not in (None, "draft", "void") and total > 0:
+                out[doc_id].append((note, amount / total))
+    return out
+
+
 async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note",
                               as_locked: bool = False) -> list[str]:
     """The numbers of the issued notes of ``note_type`` against a document."""
