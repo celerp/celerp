@@ -24,6 +24,7 @@ the other run's module check read it.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from celerp.config import settings
@@ -119,6 +120,20 @@ class TestWorkerLabel:
         assert child.startswith(f"{parent}-")
         assert resolve_worker_config(None, child, _TMP) != resolve_worker_config(None, parent, _TMP)
         assert resolve_worker_data_dir(None, child, _TMP) != resolve_worker_data_dir(None, parent, _TMP)
+
+    def test_a_nested_session_never_takes_a_sibling_worker_or_controller_label(self):
+        controller: dict[str, str] = {}
+        worker_label(controller)
+        gw1 = {**controller, "PYTEST_XDIST_WORKER": "gw1"}
+        parent = worker_label(gw1)
+        siblings = {parent.replace("-gw1", f"-{w}") for w in ("gw0", "gw2", "main")}
+        nested_controller = dict(gw1)  # a test on gw1 starts pytest -n 2
+        nested = worker_label(nested_controller)
+        nested_workers = [worker_label({**nested_controller, "PYTEST_XDIST_WORKER": w}) for w in ("gw0", "gw1")]
+        stripped = {k: v for k, v in gw1.items() if k != "PYTEST_XDIST_WORKER"}  # a child that drops PYTEST_*
+        labels = [nested, *nested_workers, worker_label(stripped)]
+        assert not set(labels) & (siblings | {parent})
+        assert all(label.endswith(f"-{os.getpid()}") for label in labels)
 
     def test_a_run_label_is_still_our_own_path(self):
         label = worker_label({"PYTEST_XDIST_WORKER": "gw0"})

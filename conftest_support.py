@@ -33,13 +33,17 @@ def worker_label(environ: MutableMapping[str, str]) -> str:
     A pytest that a test starts inherits that test's whole environment, run and worker
     included, so by those alone it was its parent: it recreated the parent's database empty
     under the parent's later tests, and its exit removed the parent's config and data
-    directory. So the label a session takes is recorded in *environ*, and a process that
-    finds its own label already taken there adds its process id.
+    directory. So the label a session takes is recorded in *environ*. A session is top-level
+    only when none is recorded, or when it is an xdist worker of a top-level controller
+    ("<run>-main"); any other session adds its process id. That covers a nested session's
+    own xdist workers and a child that dropped the worker variable, which by worker alone
+    were a sibling worker or the controller.
     """
     run = environ.setdefault(_RUN_VAR, uuid.uuid4().hex[:12])
-    label = f"{run}-{environ.get('PYTEST_XDIST_WORKER', 'main')}"
-    taken = environ.get(_SESSION_VAR, "")
-    if taken == label or taken.startswith(f"{label}-"):
+    worker = environ.get("PYTEST_XDIST_WORKER")
+    label = f"{run}-{worker or 'main'}"
+    taken = environ.get(_SESSION_VAR)
+    if taken and not (worker and taken == f"{run}-main"):
         label = f"{label}-{os.getpid()}"
     environ[_SESSION_VAR] = label
     return label
