@@ -24,7 +24,7 @@ PLUGIN_MANIFEST = {
             {"group": "Contacts", "key": "vendors", "href": "/contacts/vendors", "label": "Vendors", "label_key": "nav.vendors", "order": 41, "permission": "view_contacts"},
         ],
         "projection_handler": [
-            {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event"},
+            {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event", "permission": "view_contacts"},
         ],
         # Auto-run on every startup (incl. after a version upgrade): collapse legacy companies that
         # were seeded with two separate customer+vendor self-contacts into one both+is_self record.

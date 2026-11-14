@@ -415,7 +415,8 @@ _PROJECT = {"proj.py": "def apply(state, event_type, data):\n    return state\n"
 def _projecting_module(base, marker, *prefixes, folder: str | None = None):
     return _migrating_module(
         base, folder or f"acme-{_uid()}", marker, code=_PROJECT,
-        slots={"projection_handler": [{"prefix": p, "handler": "{inner}.proj:apply"}
+        slots={"projection_handler": [{"prefix": p, "handler": "{inner}.proj:apply",
+                                       "permission": "view_inventory"}
                                       for p in prefixes]})
 
 

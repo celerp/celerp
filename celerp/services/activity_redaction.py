@@ -9,14 +9,15 @@ the same rule, enforced **server-side** so raw cost never ships to an under-thre
 role. This is the single source of truth for that redaction, used by both the ledger
 router and the dashboard activity endpoints.
 
-The same feeds leave out a module's events from a role that cannot read that module: a
-module names the permission its events are read with on its ``projection_handler``
-contribution.
+Every ledger reader (the event list, a single event, the dashboard activity and History)
+shows an event only to a role holding the permission it is read with: the one its module names
+on its ``projection_handler`` contribution, enabled or not, or core's own for the events no
+module owns.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import Select
+from sqlalchemy import Select, case, false, true
 
 from celerp.events.schemas import ItemPricingSet
 from celerp.services.permissions import role_has_permission
@@ -32,21 +33,46 @@ _PRICING_AMOUNT_KEYS = frozenset(ItemPricingSet.model_fields) - {"price_type"}
 COST_DATA_KEYS = frozenset({"cost_price", "cost_total", "total_cogs", "cogs", "unit_cost"})
 
 
-def hidden_event_prefixes(settings: dict | None, role: str | None) -> list[str]:
-    """The event-type prefixes whose module's events this role cannot read."""
-    from celerp.modules import slots
+# The events no module owns, each read with the permission of the records it changes. The
+# longest prefix an event type starts with decides.
+_CORE_EVENT_PERMISSIONS = {
+    "sys.older_stock.": "view_inventory",
+    "sys.": "manage_company_settings",
+    "payment_batch.": "view_payments",
+    "line_action.": "view_documents",
+    "sub.": "view_subscriptions",
+    "bom.": "manage_manufacturing",
+}
+# An event that neither an installed module nor core names (a removed module's) is read by
+# those who manage the company.
+_UNOWNED_EVENT_PERMISSION = "manage_company_settings"
 
-    return [c["prefix"] for c in slots.get("projection_handler")
-            if c.get("permission") and not role_has_permission(settings, role or "", c["permission"])]
+
+def _event_permissions() -> list[tuple[str, str]]:
+    """(prefix, permission) for every known event prefix, longest first."""
+    from celerp.modules import slots
+    from celerp.modules.loader import event_read_permissions
+
+    found = {**_CORE_EVENT_PERMISSIONS, **event_read_permissions(),
+             **{c["prefix"]: c["permission"] for c in slots.get("projection_handler")}}
+    return sorted(found.items(), key=lambda kv: -len(kv[0]))
+
+
+def can_read_event(event_type: str, settings: dict | None, role: str | None) -> bool:
+    """Whether this role may read an event of ``event_type``."""
+    permission = next((perm for prefix, perm in _event_permissions() if event_type.startswith(prefix)),
+                      _UNOWNED_EVENT_PERMISSION)
+    return role_has_permission(settings, role or "", permission)
 
 
 def readable_events(stmt: Select, settings: dict | None, role: str | None) -> Select:
     """``stmt`` over ledger entries narrowed to the events this role can read."""
     from celerp.models.ledger import LedgerEntry
 
-    for prefix in hidden_event_prefixes(settings, role):
-        stmt = stmt.where(~LedgerEntry.event_type.startswith(prefix, autoescape=True))
-    return stmt
+    held = lambda perm: role_has_permission(settings, role or "", perm)  # noqa: E731
+    rules = [(LedgerEntry.event_type.startswith(prefix, autoescape=True), true() if held(perm) else false())
+             for prefix, perm in _event_permissions()]
+    return stmt.where(case(*rules, else_=true() if held(_UNOWNED_EVENT_PERMISSION) else false()))
 
 
 def can_see_costs(settings: dict | None, role: str | None) -> bool:

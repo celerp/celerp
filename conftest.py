@@ -337,6 +337,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "doc.",
             "handler": "celerp_docs.doc_projections:apply_documents_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -345,6 +346,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "list.",
             "handler": "celerp_docs.doc_projections:apply_documents_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -353,6 +355,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "received_doc.",
             "handler": "celerp_docs.received:apply_received_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -361,6 +364,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "item.",
             "handler": "celerp_inventory.projections:apply_item_event",
+            "permission": "view_inventory",
             "_module": "celerp-inventory",
         },
     },
@@ -369,6 +373,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "crm.contact.",
             "handler": "celerp_contacts.projections:apply_contact_event",
+            "permission": "view_contacts",
             "_module": "celerp-contacts",
         },
     },
@@ -377,6 +382,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "acc.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
@@ -400,6 +406,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "mfg.",
             "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+            "permission": "manage_manufacturing",
             "_module": "celerp-manufacturing",
         },
     },
@@ -424,6 +431,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "fa.",
             "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+            "permission": "view_fixed_assets",
             "_module": "celerp-fixed-assets",
         },
     },
@@ -461,6 +469,7 @@ if _crm_available:
         "contrib": {
             "prefix": "crm.deal.",
             "handler": "celerp_sales_funnel.projections:apply_deal_event",
+            "permission": "view_contacts",
             "_module": "celerp-sales-funnel",
         },
     })

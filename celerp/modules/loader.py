@@ -1259,6 +1259,23 @@ def _event_prefix_owners() -> dict[str, tuple[str, str]]:
             for prefix, name in claimed.items() if name in found}
 
 
+def event_read_permissions() -> dict[str, str]:
+    """Each installed module's projection prefix, enabled or not, with the permission its
+    events are read with, so a module that is turned off still keeps its events behind it."""
+    return dict(_installed_event_permissions(module_search_path()))
+
+
+@functools.lru_cache(maxsize=4)
+def _installed_event_permissions(search_path: str) -> tuple[tuple[str, str], ...]:
+    found: dict[str, dict] = {}
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        found.setdefault(manifest.get("name") or pkg.name, manifest)
+    return tuple((c["prefix"], c["permission"]) for manifest in found.values()
+                 for c in (manifest.get("slots") or {}).get("projection_handler") or []
+                 if isinstance(c, dict) and isinstance(c.get("prefix"), str) and isinstance(c.get("permission"), str))
+
+
 def _owner_of(event_type: str, owners: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
     """The owner of the one claimed prefix ``event_type`` starts with; claimed prefixes
     never overlap, so there is at most one."""
@@ -2739,7 +2756,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "item_action": _LABEL_KEYS,
     "pricing_action": _LABEL_KEYS,
     "category_schema": {"category": (_TEXT, True), "fields": ((list,), True)},
-    "projection_handler": {"prefix": (_TEXT, True)},
+    "projection_handler": {"prefix": (_TEXT, True), "permission": (_TEXT, True)},
     "search_provider": {"result_key": (_TEXT, True)},
     "doc_detail_actions": {},
     "doc_detail_badges": {},

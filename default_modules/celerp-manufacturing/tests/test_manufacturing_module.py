@@ -252,6 +252,7 @@ class TestProjectionEngineSlotDispatch:
         register("projection_handler", {
             "prefix": "mfg.",
             "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+            "permission": "manage_manufacturing",
             "_module": "celerp-manufacturing",
         })
         from celerp.projections.engine import ProjectionEngine
@@ -264,6 +265,7 @@ class TestProjectionEngineSlotDispatch:
         register("projection_handler", {
             "prefix": "item.",
             "handler": "celerp_inventory.projections:apply_item_event",
+            "permission": "view_inventory",
             "_module": "celerp-inventory",
         })
         from celerp.projections.engine import ProjectionEngine
@@ -297,6 +299,7 @@ class TestProjectionEngineSlotDispatch:
             register("projection_handler", {
                 "prefix": "item.",
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+                "permission": "view_inventory",
                 "_module": "test",
             })
             # Will call apply_manufacturing_event with item event → raises ValueError
@@ -317,7 +320,7 @@ class TestProjectionEngineSlotDispatch:
         """A malformed projection_handler contribution is logged and skipped; with nothing
         else applying the event, applying it is refused."""
         from celerp.modules.slots import register
-        register("projection_handler", {**contribution, "_module": "bad-module"})
+        register("projection_handler", {**contribution, "permission": "manage_manufacturing", "_module": "bad-module"})
         from celerp.projections.engine import ProjectionEngine
         with pytest.raises(ValueError, match=f"No enabled module applies {event_type}"):
             ProjectionEngine._apply({"x": 1}, event_type, data)

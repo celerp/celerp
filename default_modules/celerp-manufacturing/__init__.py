@@ -83,6 +83,7 @@ PLUGIN_MANIFEST = {
             {
                 "prefix": "mfg.",
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+                "permission": "manage_manufacturing",
             },
             # Historical bom.* events (the BOM entity was retired; recipes live on the item) are
             # not routed here: the kernel replays them (celerp.projections.retired).

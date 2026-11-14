@@ -11,7 +11,7 @@ from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import (
-    hidden_event_prefixes, readable_events, redact_entries_for_role, redact_event_costs,
+    can_read_event, can_see_costs, readable_events, redact_entries_for_role, redact_event_costs,
 )
 from celerp.services.ledger_display import display_fields, entry_ts
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -76,10 +76,8 @@ async def list_entries(
 @router.get("/{entry_id}")
 async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
-    if (entry is None or entry.company_id != company_id
-            or any(entry.event_type.startswith(p) for p in hidden_event_prefixes(settings, role))):
+    if entry is None or entry.company_id != company_id or not can_read_event(entry.event_type, settings, role):
         raise HTTPException(status_code=404, detail=t("error.record_not_found"))
-    from celerp.services.activity_redaction import can_see_costs
     data = entry.data if can_see_costs(settings, role) else redact_event_costs(entry.event_type, entry.data or {})
     return {
         "id": entry.id,

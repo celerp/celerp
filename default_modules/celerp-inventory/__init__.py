@@ -28,7 +28,7 @@ PLUGIN_MANIFEST = {
             {"group": "Inventory", "key": "audits", "href": "/lists?type=audit", "label": "Stock Counts", "label_key": "nav.audits", "order": 34, "permission": "view_inventory"},
         ],
         "projection_handler": [
-            {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},
+            {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event", "permission": "view_inventory"},
         ],
         "search_provider": {
             "handler": "celerp_inventory.search:global_search",

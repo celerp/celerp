@@ -35,9 +35,9 @@ PLUGIN_MANIFEST = {
         ],
         "background_loop": {"handler": "celerp_docs.periodic:loop"},
         "projection_handler": [
-            {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
-            {"prefix": "list.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
-            {"prefix": "received_doc.", "handler": "celerp_docs.received:apply_received_event"},
+            {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event", "permission": "view_documents"},
+            {"prefix": "list.", "handler": "celerp_docs.doc_projections:apply_documents_event", "permission": "view_documents"},
+            {"prefix": "received_doc.", "handler": "celerp_docs.received:apply_received_event", "permission": "view_documents"},
         ],
         "send_to_targets": [
             {"label_key": "settings.doc_type_invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},
