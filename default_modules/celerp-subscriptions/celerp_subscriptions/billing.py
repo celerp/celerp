@@ -970,8 +970,10 @@ async def charge_in_flight(session, company_id, doc_id: str) -> bool:
 async def release_held_notes(session, company_id) -> None:
     """Issue each amendment note held while the charge of the invoice it credits was in flight,
     once that charge can no longer take money, then apply what is left of it to its amendment's
-    document: a charge that paid the invoice in full leaves the whole note for the amendment, a
-    charge that failed leaves the invoice owing less. The person who made the amendment issues it."""
+    document, then to each later amendment's document of the same period (one made while the note
+    was held already took part of the first): a charge that paid the invoice in full leaves the
+    whole note for the amendments, a charge that failed leaves the invoice owing less. The person
+    who made the amendment issues it."""
     from celerp_docs.routes import finalize_document
     company = await session.get(Company, company_id)
     notes = (await session.execute(select(Projection).where(
@@ -985,12 +987,17 @@ async def release_held_notes(session, company_id) -> None:
         if not covering_id or await charge_in_flight(session, company_id, covering_id):
             continue
         agreement = await locked_agreement(session, company_id, tid)
-        [entry] = [a for a in amendments_of(agreement.state) if a.get("credit_note_id") == note.entity_id]
+        amendments = amendments_of(agreement.state)
+        [at] = [i for i, a in enumerate(amendments) if a.get("credit_note_id") == note.entity_id]
+        entry = amendments[at]
         actor = SimpleNamespace(id=uuid.UUID(entry["by"]) if entry.get("by") else None)
         await finalize_document(note.entity_id, company_id, actor, session, commit=False)
         await session.flush()
-        await _apply_left_over(session, company, note.entity_id, entry["invoice_id"], actor,
-                               f"held-note:{note.entity_id}:apply")
+        for later in amendments[at:]:
+            if later.get("period_index") == entry.get("period_index") and later.get("invoice_id"):
+                await _apply_left_over(session, company, note.entity_id, later["invoice_id"], actor,
+                                       f"held-note:{note.entity_id}:apply:{later['invoice_id']}")
+                await session.flush()
 
 
 async def _apply_left_over(session, company: Company, note_id: str, doc_id: str, actor, key: str) -> None:

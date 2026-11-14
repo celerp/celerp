@@ -69,3 +69,31 @@ async def test_the_charge_fails_the_credit_lowers_the_invoice_it_credits(client,
     docs = await _docs(session, eid)
     assert await _unmatched(session) == []
     assert (docs[july]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 0)
+
+
+async def test_a_held_credit_released_after_a_later_amendment_reaches_its_invoice(client, session, monkeypatch, cloud):
+    """A second amendment back to one seat on the 20th credits 19.35 of the first amendment's 27.42 and bills
+    11.61 while the first credit is still held. Once the 30.00 charge succeeds, the 16.45 settles the 8.07 the
+    first amendment's invoice still owes and its last 8.38 goes to the second's: the customer pays 3.23 more,
+    the agreement's net total of 33.23 less the 30.00, and no credit is left over."""
+    import uuid
+    from agreement_kit import freeze_day, template
+    hd, cid, eid, july, new, note = await _held(client, session, monkeypatch, cloud, "submitted")
+    freeze_day(monkeypatch, "2026-07-20")
+    line = (await template(client, hd, eid))["line_items"][0]["line_id"]
+    r = await client.post(f"/subscriptions/{eid}/amend", headers=hd, json={
+        "effective": "2026-07-20", "quantities": {line: 1}, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    last = r.json()["invoice_id"]
+    await tick(session, cid, "2026-07-20")
+    assert _asked(cloud, last) == []
+    await _collect(session, cloud, cid, july, "pi_j", 3000, "2026-07-20")
+    await tick(session, cid, "2026-07-21")
+    docs = await _docs(session, eid)
+    assert (docs[note]["amount_outstanding"], docs[new]["amount_outstanding"]) == (0, 0)
+    assert (_asked(cloud, new), _asked(cloud, last)) == ([], [323])
+    await _collect(session, cloud, cid, last, "pi_l", 323, "2026-07-21")
+    await tick(session, cid, "2026-07-22")
+    docs = await _docs(session, eid)
+    assert await _unmatched(session) == []
+    assert all(d["amount_outstanding"] == 0 for d in docs.values() if d["doc_type"] in ("invoice", "credit_note"))
