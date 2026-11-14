@@ -232,8 +232,13 @@ _CREDIT_PATHS = {_linked_full: False, _linked_partial: True, _standalone_full: F
                  _mixed: False, _unapplied: True}
 
 
+# Credit applied without any note issued against an invoice: each applied note is read on its own.
+_APPLIED_ONLY = (_standalone_full, _standalone_partial, _unapplied)
+
+
+@pytest.mark.parametrize("paths", [tuple(_CREDIT_PATHS), _APPLIED_ONLY], ids=["every", "applied_only"])
 @pytest.mark.parametrize("seed", [11, 4026])
-async def test_lifetime_reads_every_credit_note_that_credits_its_sale(owner_ui, monkeypatch, seed):
+async def test_lifetime_reads_every_credit_note_that_credits_its_sale(owner_ui, monkeypatch, seed, paths):
     """Lifetime reads what credit notes credited back on the sale, however they reached it: a
     note issued against the invoice or one issued on its own and applied to it, in full or in
     part, or both; a note that names the lifetime item credits that quantity, one that does not
@@ -243,13 +248,13 @@ async def test_lifetime_reads_every_credit_note_that_credits_its_sale(owner_ui, 
     freeze_day(monkeypatch, "2026-03-01")
     api, rng = owner_ui.api, random.Random(seed)
     sales = {}
-    for path in _CREDIT_PATHS:
+    for path in paths:
         doc, item, who = await _lifetime_sale(api)
         await path(api, doc, item, who, rng.randrange(1, 500) * 1.0)
         sales[path.__name__] = doc
     members = await _members(api)
     assert {name: doc in members for name, doc in sales.items()} == {
-        path.__name__: kept for path, kept in _CREDIT_PATHS.items()}
+        path.__name__: _CREDIT_PATHS[path] for path in paths}
 
 
 async def test_a_cancelled_or_expired_membership_reads_ended_and_a_void_one_is_not_listed(owner_ui, session, monkeypatch):
