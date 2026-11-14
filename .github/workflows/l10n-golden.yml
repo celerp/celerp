@@ -64,4 +64,5 @@ jobs:
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
-        run: pytest tests/ default_modules/*/tests/ -m real_packs -o addopts="" -q --no-cov
+        # The golden compares, never rewrites: a runner that sets the write switch gets it unset here.
+        run: env -u CELERP_L10N_GOLDEN_WRITE pytest tests/ default_modules/*/tests/ -m real_packs -o addopts="" -q --no-cov

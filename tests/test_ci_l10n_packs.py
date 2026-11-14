@@ -106,6 +106,7 @@ def test_check_golden_gate_hard():
     validate = next(i for i, s in enumerate(steps) if "l10n_packs.py validate" in str(s.get("run", "")))
     run = next(i for i, s in enumerate(steps) if "-m real_packs" in str(s.get("run", "")))
     assert install < fetch < validate < run
+    assert steps[run]["run"].startswith("env -u CELERP_L10N_GOLDEN_WRITE pytest ")
     assert steps[fetch]["with"] == {"token": SECRETS["CELERP_L10N_TOKEN"], "sources": SECRETS["CELERP_L10N_SOURCES"]}
 
     for path in sorted(WORKFLOWS.glob("*.yml")):

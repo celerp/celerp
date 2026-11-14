@@ -243,6 +243,23 @@ def test_real_packs_session_stops_without_packs(tmp_path):
     assert " passed" not in out and " failed" not in out
 
 
+@pytest.mark.process
+def test_fixture_session_stops_when_a_fixture_pack_does_not_load(tmp_path):
+    """Tests read AU's expectations through the pack reader; a fixture set missing AU stops the
+    session instead of letting them meet the generic fallback."""
+    root = tmp_path / "l10n"
+    shutil.copytree(FIXTURE, root)
+    (root / "packs" / "AU.json").unlink()
+    env = os.environ.copy()
+    env["CELERP_L10N_DIR"] = str(root)
+    done = _python("-m", "pytest", "-o", "addopts=", "-q", "-p", "no:cacheprovider",
+                   "tests/test_recon_default_bank_currency.py", cwd=REPO, env=env)
+    out = done.stdout + done.stderr
+    assert done.returncode == 4, out
+    assert f"fixture country packs do not load from {root}" in out
+    assert " passed" not in out and " failed" not in out
+
+
 _STUB_FETCH = """
 import io, runpy, sys, urllib.request
 fixture, target, script = sys.argv[1:4]
