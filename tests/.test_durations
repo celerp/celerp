@@ -29420,5 +29420,7 @@
     "tests/test_modules/test_event_read_permissions.py::test_a_module_claiming_inside_a_core_prefix_grants_nothing": 3.8776146781165153,
     "tests/test_modules/test_event_read_permissions.py::test_when_admission_fails_every_module_event_is_closed": 0.01045815902762115,
     "tests/test_ledger_cost_walk.py::test_activity_search_never_matches_a_cost_the_reader_cannot_see": 5.344757222919725,
-    "tests/test_ledger_cost_walk.py::test_random_nested_costs_never_match_a_search_by_a_role_without_costs": 11.769056836143136
+    "tests/test_ledger_cost_walk.py::test_random_nested_costs_never_match_a_search_by_a_role_without_costs": 11.769056836143136,
+    "tests/test_ledger_read_policy.py::test_the_kept_event_permissions_are_what_admitting_the_installed_modules_gives": 3.0213427068665624,
+    "tests/test_main_lifespan.py::test_boot_settles_the_permission_each_module_event_is_read_with": 0.02931940893176943
 }
