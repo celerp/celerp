@@ -875,7 +875,7 @@ async def change_posted_fund(session, company_id, record_id: str, change: Change
                 event_type="acc.journal_entry.created",
                 data={**data, "status": "posted", "entries": lines, **grant.header},
                 actor_id=actor, location_id=None, source="fund_change", idempotency_key=f"{key}:copy",
-                fund_grant=grant)
+                fund_grant=grant, keep_gifts=True)
             result = {"copies": {record_id: copy_id}}
         else:
             from celerp_docs.routes import write_fund_choices

@@ -188,7 +188,7 @@ async def add_account(session: AsyncSession, company_id, code: str, name: str, a
 
 
 async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *, restored: bool = False,
-                                actor_id=None, entity_id=None) -> None:
+                                keep_gifts: bool = False, actor_id=None, entity_id=None) -> None:
     """Check every line's account and write its immutable role snapshot in place.
 
     A line that names roles was chosen for them: its account must be the role's
@@ -200,8 +200,10 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
     still being migrated), such a line is left without a snapshot, so readers classify
     it by the scopes the company's roles are given later. A *restored* copy of an entry
     (an unvoid) keeps each line's snapshot as the original recorded it, so a line that
-    recorded none stays without one, never classified by today's roles. Then the fund
-    rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
+    recorded none stays without one, never classified by today's roles. Every line is then
+    classified gift or not by the company's rules (_stamp_named_gifts), unless the entry is a
+    restored copy or its writer passes ``keep_gifts`` (a document's posting, or a copy of posted
+    lines, whose answers these books gave). Then the fund rules (check_fund_rules), judged on the entry's content and on ``actor_id``, the user
     the event is emitted by, for the entry ``entity_id``.
     """
     entries = [e for e in (data.get("entries") or []) if isinstance(e, dict) and e.get("account")]
@@ -238,22 +240,26 @@ async def prepare_journal_entry(session: AsyncSession, company_id, data: dict, *
                         f"Account {code} has never been the {label} account.",
                         code=code, role=label),
                 )
-    if not restored and not data.get("record_id"):
+    if not (restored or keep_gifts):
         await _stamp_named_gifts(session, company_id, settings, entries)
     await check_fund_rules(session, company_id, data, entries, accounts,
                            restored=restored, actor_id=actor_id, entity_id=entity_id)
 
 
 async def _stamp_named_gifts(session: AsyncSession, company_id, settings: dict, entries: list[dict]) -> None:
-    """A gift taken straight into the books (a bank transfer posted by hand): every line of an entry
-    no record posts that names a contact is classified once, at posting, ``gift`` True when its
-    account is a gift income account then (the account a gift category or an item in one is
-    credited to) and False otherwise, as auto_je classifies a document's revenue lines. A copy of
-    a posted line carries its answer (copy_posted_lines), so later settings never reclassify it."""
+    """A gift taken straight into the books (a bank transfer posted by hand or imported): every line
+    of a new entry is classified once, at posting, by the company's rules, whatever ``gift`` the
+    caller wrote on it: a line naming a contact is a gift when its account is a gift income account
+    then (the account a gift category or an item in one is credited to), and a line naming none is
+    no gift, as auto_je classifies a document's revenue lines. A copy of a posted line carries its
+    answer (copy_posted_lines, written with ``keep_gifts``), so later settings never reclassify it."""
     from celerp.models.projections import Projection
     from celerp.services.recognition import gift_categories
 
-    named = [e for e in entries if e.get("contact") and "gift" not in e and not e.get("posted_from")]
+    for entry in entries:
+        if not entry.get("contact"):
+            entry.pop("gift", None)
+    named = [e for e in entries if e.get("contact")]
     if not named:
         return
     gifts = gift_categories(settings)

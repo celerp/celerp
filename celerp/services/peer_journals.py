@@ -353,14 +353,15 @@ async def _client_lines(session: AsyncSession, grant, journal: _Journal) -> list
 
 
 async def _post_client_journal(session: AsyncSession, grant, claim, data: dict, *, source_entity_id: str,
-                               source_revision: int, actor_id, fund_grant) -> None:
+                               source_revision: int, actor_id, fund_grant, keep_gifts: bool = False) -> None:
     """Post a client's journal at the firm under ``claim``: marked as the client's, by
-    ``actor_id`` (none for the sync) with the fund keys ``fund_grant`` lets it carry."""
+    ``actor_id`` (none for the sync) with the fund keys ``fund_grant`` lets it carry; a reversal
+    (``keep_gifts``) copies posted lines with the gift answers they posted with."""
     from celerp.services.peer_identity import commit_peer_revision
 
     company_id, key = grant.company_id, f"peer:je:{grant.source_company_id}:{claim.source_key}"
     source = "connector" if actor_id is None else "api"
-    await emit_event(session, origin=CLIENT_ORIGIN, fund_grant=fund_grant, company_id=company_id,
+    await emit_event(session, origin=CLIENT_ORIGIN, fund_grant=fund_grant, keep_gifts=keep_gifts, company_id=company_id,
                      entity_id=claim.target_id, entity_type="journal_entry",
                      event_type="acc.journal_entry.created", data=data, actor_id=actor_id,
                      location_id=None, source=source, idempotency_key=f"{key}:c", metadata_={})
@@ -448,7 +449,8 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         created, actor, fund_grant = await _standing(session, company_id, CLIENT_ORIGIN, source, created)
     try:
         await _post_client_journal(session, grant, claim, created, source_entity_id=source_entity_id,
-                                   source_revision=source_revision, actor_id=actor, fund_grant=fund_grant)
+                                   source_revision=source_revision, actor_id=actor, fund_grant=fund_grant,
+                                   keep_gifts=reverses is not None)
     except FundChoiceNeeded as exc:
         # Held for a firm user's choice (post_held): the placed lines and the journal
         # as sent, which the posting claims again; the client sends it on each sync till then.
@@ -929,7 +931,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
         raise HTTPException(422, period_locked_refusal(lock))
     memo = state.get("memo") or ""
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
-                     event_type="acc.journal_entry.created", data={
+                     event_type="acc.journal_entry.created", keep_gifts=True, data={
                          "memo": f"Reversal of {memo}" if memo else "Reversal", "ts": day,
                          "entries": copy_posted_lines(je_id, state.get("entries"), reverse=True),
                          **copied_header(state), "je_type": "manual", "status": "posted", "reverses": je_id},

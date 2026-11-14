@@ -269,7 +269,8 @@ async def _emit_auto_posted_je(
     on), and an entry that does not balance after rounding is refused, so producers build
     their lines to balance once rounded. *record_id* names the record the entry posts for
     (a document, a List, an item, an order; None for an entry of no record), so the boundary
-    judges the entry by where that record came from. *extra* adds fields the created event records
+    judges the entry by where that record came from; the gift answers on its lines (_stamp_gifts)
+    are the ones the boundary keeps. *extra* adds fields the created event records
     with the entry (a module journal's source and request hash). A line that moves nothing
     once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
@@ -303,6 +304,7 @@ async def _emit_auto_posted_je(
         source="auto_je",
         idempotency_key=idem_create,
         metadata_=metadata_,
+        keep_gifts=True,
     )
     await emit_event(
         session,
