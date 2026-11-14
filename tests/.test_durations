@@ -28949,5 +28949,6 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/services/location_default_notice.py]": 0.004772008047439158,
     "tests/test_tax_seed_notice.py::test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key": 0.0608424301026389,
     "tests/test_tax_seed_notice.py::test_each_country_s_own_words_are_in_every_locale_under_its_country": 0.05238877108786255,
-    "tests/test_tax_seed_notice.py::test_two_countries_retiring_one_id_each_show_their_own_words": 0.025565379997715354
+    "tests/test_tax_seed_notice.py::test_two_countries_retiring_one_id_each_show_their_own_words": 0.025565379997715354,
+    "tests/test_one_default_location_pg.py::test_making_a_default_takes_the_company_lock": 0.2642397021409124
 }
