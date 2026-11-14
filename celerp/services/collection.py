@@ -267,9 +267,7 @@ async def charge_kept(session, company_id, doc_id: str, reference: str) -> None:
     payment does; the caller commits."""
     from celerp.models.projections import Projection
     row = await session.get(Projection, (company_id, doc_id), with_for_update=True, populate_existing=True)
-    if row is None:
-        return
-    current = row.state.get("collection") or {}
+    current = (row.state.get("collection") or {}) if row is not None else {}  # deleted meanwhile: nothing to end
     if current.get("state") in IN_FLIGHT | {"succeeded"} and not current.get("kept"):
         await set_attempt(session, company_id, row, {"state": "succeeded", "definitive": True, "kept": reference},
                           drop=("cancel",))
