@@ -55,6 +55,7 @@ from celerp.tax_regimes import (
 )
 from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import require_phone
+from celerp.services.locations import make_default_location
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -69,11 +70,10 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 async def _default_location_country(session: AsyncSession, company_id) -> str:
-    """The country stored on the company's default location, "" when it names none."""
-    addresses = (await session.execute(
+    """The country stored on the company's one default location, "" when it names none."""
+    return _address_country((await session.execute(
         select(Location.address).where(Location.company_id == company_id, Location.is_default.is_(True))
-    )).scalars().all()
-    return next((_address_country(a) for a in addresses if _address_country(a)), "")
+    )).scalar_one_or_none())
 
 
 def _address_country(address) -> str:
@@ -774,11 +774,12 @@ async def create_location(
         name=payload.name,
         type=payload.type,
         address=payload.address,
-        is_default=payload.is_default,
+        is_default=False,
     )
     session.add(loc)
     await _flush_location(session, payload.name)
     if payload.is_default:
+        await make_default_location(session, company_id, loc)
         await _apply_default_location(session, company_id, before, payload.address)
     await session.commit()
     return {"id": str(loc.id)}
@@ -810,12 +811,11 @@ async def import_locations_batch(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     await lock_company(session, company_id)
-    existing = {
-        r.name
-        for r in (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
-    }
+    rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
+    existing = {r.name for r in rows}
+    # The first imported location becomes the default only when the company has none yet.
+    first: Location | None = None
     created = skipped = failed = 0
-    first = True
     for rec in payload.records:
         name = (rec.get("name") or "").strip()
         loc_type = (rec.get("type") or "warehouse").strip()
@@ -825,16 +825,13 @@ async def import_locations_batch(
         if name in existing:
             skipped += 1
             continue
-        session.add(Location(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            name=name,
-            type=loc_type,
-            is_default=first,
-        ))
+        loc = Location(id=uuid.uuid4(), company_id=company_id, name=name, type=loc_type, is_default=False)
+        session.add(loc)
+        first = first or loc
         existing.add(name)
         created += 1
-        first = False
+    if first is not None and not any(r.is_default for r in rows):
+        await make_default_location(session, company_id, first)
     await session.commit()
     return {"created": created, "skipped": skipped, "failed": failed}
 
@@ -872,15 +869,10 @@ async def patch_location(
         loc.address = payload.address
     if payload.type is not None:
         loc.type = payload.type
-    if payload.is_default is not None:
-        loc.is_default = payload.is_default
-        if payload.is_default:
-            # Clear default on all other locations for this company
-            others = (await session.execute(
-                select(Location).where(Location.company_id == company_id, Location.id != loc_uuid)
-            )).scalars().all()
-            for other in others:
-                other.is_default = False
+    if payload.is_default:
+        await make_default_location(session, company_id, loc)
+    elif payload.is_default is not None:
+        loc.is_default = False
     # Re-seed regime if this is (or is becoming) the default location with a country
     effective_default = payload.is_default if payload.is_default is not None else loc.is_default
     effective_address = payload.address if payload.address is not None else loc.address

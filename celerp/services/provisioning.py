@@ -25,6 +25,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import hash_password
 from celerp.services.company_lock import lock_company, locked_company
+from celerp.services.locations import make_default_location
 
 DEFAULT_LOCATION_NAME = "Head Office"
 DEFAULT_LOCATION_TYPE = "office"
@@ -166,7 +167,7 @@ async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) 
     default = next((loc for loc in locations if loc.is_default), None)
     if default is None and locations:
         default = locations[0]
-        default.is_default = True
+        await make_default_location(session, company_id, default)
     elif default is None:
         default = _default_location(company_id)
         session.add(default)

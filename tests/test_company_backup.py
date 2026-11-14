@@ -5523,3 +5523,29 @@ def test_overlapping_prefixes_have_one_owner_whatever_the_search_order(tmp_path,
     _bk_owner_module(roots["b"], "bb-widgets", "zz.widget.")
     monkeypatch.setenv("MODULE_DIR", ",".join(str(roots[k]) for k in order))
     assert modules_holding_events({"zz.widget.added", "zz.other"}) == {"aa-widgets"}
+
+
+async def test_restore_of_a_copy_with_two_default_locations_keeps_the_oldest(real_engine, real_client, tmp_path,
+                                                                              monkeypatch):
+    """A copy made before a company was held to one default location can mark two. The restored
+    company gets the older one as its default, and the restore still verifies the copy row by row."""
+    _bk_local(monkeypatch, tmp_path)
+    _, cid, tok = await _bk_setup(real_engine)
+    await _bk_sql(real_engine, "DROP INDEX uq_location_one_default")
+    try:
+        await _bk_sql(real_engine, "INSERT INTO locations (id, company_id, name, type, is_default, created_at) "
+                                   "VALUES (:id, :c, 'Newer default', 'warehouse', true, now() + interval '1 day')",
+                      id=uuid.uuid4(), c=cid)
+        data = await download(real_client, tok)
+    finally:
+        await _bk_sql(real_engine, "UPDATE locations SET is_default = false WHERE name = 'Newer default'")
+        await _bk_sql(real_engine, "CREATE UNIQUE INDEX uq_location_one_default ON locations (company_id) "
+                                   "WHERE is_default")
+    r = await restore(real_client, tok, data)
+    assert r.status_code == 201, r.text
+    restored = r.json()["company_id"]
+    assert restored != str(cid)
+    async with real_engine.connect() as conn:
+        rows = (await conn.execute(text("SELECT name FROM locations WHERE company_id = :c AND is_default"),
+                                   {"c": restored})).scalars().all()
+    assert rows == ["alpha-marker store"]

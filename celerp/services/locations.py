@@ -7,13 +7,17 @@ must be one of the company's own locations. Another company's location, or a val
 is not a location id at all, is refused with ``location.not_found``. ``emit_event`` applies
 it to every event it writes, so a route, import, batch, conversion or migration cannot
 place anything at a location the company does not hold.
+
+A company has at most one default location (a partial unique index holds it), and
+``make_default_location`` is the one way a location becomes the default: it clears the
+previous default in the same transaction, for a location created, edited, imported or restored.
 """
 from __future__ import annotations
 
 import uuid
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from celerp.accounting_roles import refusal
 from celerp.models.company import Location
@@ -81,3 +85,15 @@ def event_location_references(location_id, data: dict | None) -> list:
 async def require_event_locations(session, company_id, location_id, data: dict | None) -> None:
     for ref in event_location_references(location_id, data):
         await require_company_location(session, company_id, ref)
+
+
+async def make_default_location(session, company_id, location: Location) -> None:
+    """Make ``location`` the company's one default: clear the previous default, then mark this one,
+    in the caller's transaction. Callers hold the company's lock, so two of them run one after the other."""
+    await session.flush()
+    await session.execute(
+        update(Location).where(Location.company_id == company_id, Location.is_default.is_(True),
+                               Location.id != location.id).values(is_default=False)
+        .execution_options(synchronize_session="fetch"))
+    location.is_default = True
+    await session.flush()
