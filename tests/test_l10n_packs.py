@@ -776,3 +776,31 @@ async def test_pack_notice_failure_is_logged_and_boot_continues(monkeypatch, cap
     assert app.state.data_current is True
     failed = [r for r in caplog.records if "Country pack notice failed" in r.getMessage()]
     assert len(failed) == 1 and "notice table unreadable" in caplog.text
+
+
+async def test_a_failing_pack_notice_does_not_stop_company_creation(l10n_dir, session, monkeypatch, caplog):
+    """The new company's missing-pack notice is told in its own savepoint: when it fails, the
+    failure is logged and the company, its owner link and its default location are still made."""
+    import uuid
+
+    from sqlalchemy import text
+
+    from celerp.localization import notice
+    from celerp.models.company import Location, User
+    from celerp.services.provisioning import provision_additional_company
+
+    async def broken(s, company_id=None):
+        await s.execute(text("SELECT * FROM no_such_table"))
+
+    monkeypatch.setattr(notice, "sync_pack_notice", broken)
+    user = User(id=uuid.uuid4(), email=f"o-{uuid.uuid4().hex[:8]}@test.co", name="Owner", auth_hash="x",
+                is_active=True)
+    session.add(user)
+    await session.flush()
+    with caplog.at_level(logging.ERROR):
+        company = await provision_additional_company(session, user=user, company_name="Second Co")
+    await session.commit()
+    assert (await session.get(Company, company.id)) is not None
+    assert (await session.execute(select(Location.name).where(
+        Location.company_id == company.id, Location.is_default.is_(True)))).scalars().all() == ["Head Office"]
+    assert "Country pack notice failed" in caplog.text

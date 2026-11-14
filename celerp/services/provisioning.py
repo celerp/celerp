@@ -15,6 +15,7 @@ None of these commit; the caller owns the transaction.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 
@@ -79,12 +80,19 @@ def _default_location(company_id: uuid.UUID) -> Location:
 async def _fire_company_created(session: AsyncSession, company_id: uuid.UUID) -> None:
     # Module lifecycle hooks stay best-effort: fire_lifecycle logs a module error without
     # failing the caller's transaction. The new company is told of missing country packs
-    # here, as every company was at startup; no other company is written.
+    # here, as every company was at startup; no other company is written. Like at startup,
+    # a failing notice is logged and never stops the company being made: it runs in its own
+    # savepoint, so its failure rolls back only the notice.
     from celerp.localization.notice import sync_pack_notice
     from celerp.modules import slots
 
     await slots.fire_lifecycle("on_company_created", session=session, company_id=company_id)
-    await sync_pack_notice(session, company_id)
+    try:
+        async with session.begin_nested():
+            await sync_pack_notice(session, company_id)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Country pack notice failed (non-fatal); the company is told at a later boot")
 
 
 async def create_install_owner(session: AsyncSession, *, name: str, email: str, password: str) -> User:
