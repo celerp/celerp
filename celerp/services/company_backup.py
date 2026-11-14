@@ -69,7 +69,7 @@ from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label, modules_holding_events, unidentified_events
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
-from celerp.services import attachments, bootstrap, company_lifecycle, payments
+from celerp.services import attachments, bootstrap, company_lifecycle, location_default_notice, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services import company_backup_files as files
@@ -1604,8 +1604,9 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, column
     maps to it, so no restored row can name another company.
 
     A copy from an earlier version can mark more than one location default. Its locations are
-    written undefaulted, then the oldest it marked becomes the default (make_default_location);
-    the ids of the others are returned, for _verify to read them as the copy holds them."""
+    written undefaulted, then the oldest it marked becomes the default (make_default_location)
+    and the company is told which it kept and which it cleared (location_default_notice); the ids
+    of the others are returned, for _verify to read them as the copy holds them."""
     cols = ", ".join(db_catalog.ident(c) for c in columns)
     company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
         if "company_id" in columns else ""
@@ -1630,7 +1631,10 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, column
         select(Location).where(Location.company_id == company_id, Location.id.in_([uuid.UUID(d) for d in defaults]))
         .order_by(Location.created_at, Location.id).limit(1))).scalar_one()
     await make_default_location(session, company_id, kept)
-    return set(defaults) - {str(kept.id)}
+    cleared = [d for d in defaults if d != str(kept.id)]
+    if cleared:
+        await location_default_notice.tell(session, company_id, {"kept": str(kept.id), "cleared": cleared})
+    return set(cleared)
 
 
 async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, company_id,
