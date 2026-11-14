@@ -37,8 +37,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT = REPO_ROOT / "celerp" / "localization"
 LOCK_NAME = "packs.lock.json"
-FORMAT = "celerp-localization"
-SCHEMA_VERSION = 1
 _ROW_NOUN = {"taxes": "tax", "retired": "retired"}
 PACK_REPO = "celerp/celerp-l10n-{cc}"
 CONTENTS_URL = "https://api.github.com/repos/{repo}/contents/pack/localization.json?ref={tag}"
@@ -83,7 +81,7 @@ def check(root: Path, lock_file: Path | None = None) -> list[str]:
     return defects
 
 
-def _pack_defects(code: str, data: bytes, locked: dict | None, tax_list, currency_codes) -> list[str]:
+def _pack_defects(code: str, data: bytes, locked: dict | None, pack_schema) -> list[str]:
     try:
         pack = json.loads(data)
     except ValueError:
@@ -93,52 +91,37 @@ def _pack_defects(code: str, data: bytes, locked: dict | None, tax_list, currenc
     defects = []
     if data != normalized(pack):
         defects.append(f"country {code}: not in normalized form (two-space JSON, UTF-8, trailing newline)")
-    if pack.get("format") != FORMAT:
-        defects.append(f"country {code}: format is {pack.get('format')!r}, expected {FORMAT!r}")
-    if pack.get("schema_version") != SCHEMA_VERSION:
-        defects.append(f"country {code}: schema_version is {pack.get('schema_version')!r}, expected {SCHEMA_VERSION}")
     if pack.get("country") != code:
         defects.append(f"country {code}: country field is {pack.get('country')!r}")
     if locked is not None and pack.get("version") != locked.get("version"):
         defects.append(f"country {code}: version {pack.get('version')!r} differs from the lock's {locked.get('version')!r}")
-    company_defaults = pack.get("company_defaults")
-    currency = company_defaults.get("currency") if isinstance(company_defaults, dict) else None
-    if currency not in currency_codes:
-        defects.append(f"country {code}: currency {currency!r} is not a known currency code")
-    taxes = pack.get("taxes")
-    if not isinstance(taxes, list):
-        return defects + [f"country {code}: taxes is not a list"]
-    material = {"taxes": taxes, **({"retired": pack["retired"]} if "retired" in pack else {})}
     try:
-        tax_list.model_validate(material)
+        pack_schema.model_validate_json(data)
     except ValueError as exc:  # pydantic's ValidationError
         rows: dict[tuple[str, int], set[str]] = {}
         for err in exc.errors():
-            field, loc = err["loc"][0], err["loc"][1:]
-            if loc and isinstance(loc[0], int):
-                rows.setdefault((field, loc[0]), set()).add(str(loc[1]) if len(loc) > 1 else "row")
+            loc = err["loc"]
+            if len(loc) > 1 and loc[0] in _ROW_NOUN and isinstance(loc[1], int):
+                rows.setdefault((loc[0], loc[1]), set()).add(str(loc[2]) if len(loc) > 2 else "row")
             else:
-                defects.append(f"country {code}: {field}: {err['msg'].removeprefix('Value error, ')}")
+                where = ".".join(str(part) for part in loc) or "pack"
+                defects.append(f"country {code}: {where}: {err['msg'].removeprefix('Value error, ')}")
         defects += [f"country {code}: {_ROW_NOUN[field]} row {i} is invalid ({', '.join(sorted(fields))})"
                     for (field, i), fields in sorted(rows.items())]
-        return defects
-    for i, entry in enumerate(material.get("retired", [])):
-        if entry.get("currency") is not None and entry["currency"] not in currency_codes:
-            defects.append(f"country {code}: retired row {i} currency {entry['currency']!r} is not a known currency code")
     return defects
 
 
 def validate(root: Path, *, against_lock: bool = True) -> list[str]:
-    """Each pack file's fields; with ``against_lock`` its version must equal its lock entry."""
+    """Each pack file's fields (the CountryPack schema); with ``against_lock`` its version must
+    equal its lock entry."""
     sys.path.insert(0, str(REPO_ROOT))
-    from celerp.routers.companies import CountryPackTaxes
-    from celerp.services.currencies import CURRENCY_CODES
+    from celerp.routers.companies import CountryPack
 
     lock = _read_lock(root) or {}
     defects = []
     for code, path in _pack_files(root).items():
         locked = lock.get(code) if against_lock else None
-        defects += _pack_defects(code, path.read_bytes(), locked, CountryPackTaxes, CURRENCY_CODES)
+        defects += _pack_defects(code, path.read_bytes(), locked, CountryPack)
     return defects
 
 

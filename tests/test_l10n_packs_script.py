@@ -138,7 +138,7 @@ _VALIDATE_CASES = {
     "default flag the text false": (lambda r: _rewrite(r, "TH", _row(is_default="false")),
                                     "tax row 0 is invalid (is_default)"),
     "duplicate tax name": (lambda r: _rewrite(r, "TH", _duplicate_name), "duplicate tax name"),
-    "company defaults not an object": (lambda r: _rewrite(r, "TH", _set("company_defaults", ["THB"])), "currency"),
+    "company defaults not an object": (lambda r: _rewrite(r, "TH", _set("company_defaults", ["THB"])), "company_defaults: "),
     "retired not a list": (lambda r: _rewrite(r, "TH", _set("retired", {"id": "th-x"})), "retired: "),
     "retired match outside all and any": (lambda r: _rewrite(r, "TH", _retired(match="most")),
                                           "retired row 0 is invalid (match)"),
@@ -152,7 +152,7 @@ _VALIDATE_CASES = {
     "retired id not a plain id": (lambda r: _rewrite(r, "TH", _retired(id="TH x")), "retired row 0 is invalid (id)"),
     "retired entry with an unknown field": (lambda r: _rewrite(r, "TH", _retired(note="x")), "retired row 0 is invalid (note)"),
     "duplicate retired id": (lambda r: _rewrite(r, "TH", _two_retired), "duplicate retired id"),
-    "retired currency unknown": (lambda r: _rewrite(r, "TH", _retired(currency="ZZZ")), "retired row 0 currency"),
+    "retired currency unknown": (lambda r: _rewrite(r, "TH", _retired(currency="ZZZ")), "retired row 0 is invalid (currency)"),
 }
 
 

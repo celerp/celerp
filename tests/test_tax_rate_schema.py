@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A company's tax list has one shape wherever it comes from: the tax settings API checks it
-with the TaxRatesPatch schema and the country packs with its CountryPackTaxes form. A tax is
+with the TaxRatesPatch schema and the country packs with the CountryPack schema. A tax is
 for sales, purchases or both, its default flag is a true or false value (the API reads 0, 1 and
 "false" as it always has; a pack file must write true or false), and no two taxes of one list
 share a name (ignoring case and surrounding spaces). A row stored without a side, or with a

@@ -9,7 +9,7 @@ company.settings["currency"] when a default location with a known country is fir
 
 Each regime:
   currency: str          ISO 4217 code
-  taxes: list[dict]      a list the CountryPackTaxes schema in routers/companies.py accepts
+  taxes: list[dict]      a list the CountryPack schema in routers/companies.py accepts as a pack's taxes
 
 ``DEFAULT_REGIME`` is the fallback for an unknown or unset country.
 """

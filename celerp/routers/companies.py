@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +54,7 @@ from celerp.tax_regimes import (
     sales_taxes, tax_country, tax_name_key, with_taxes,
 )
 from celerp.services import company_lifecycle, nav_overrides
-from celerp.services.currencies import require_phone
+from celerp.services.currencies import CURRENCY_CODES, require_phone
 from celerp.services.locations import make_default_location
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
@@ -236,60 +236,102 @@ class TaxRate(BaseModel):
         return "both" if value is None or value == "" else value
 
 
+def _unique_tax_names(taxes: list) -> list:
+    """No two taxes of one list share a name, as tax_name_key compares them."""
+    seen: set[str] = set()
+    for tax in taxes:
+        key = tax_name_key(tax.name)
+        if key in seen:
+            raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
+        seen.add(key)
+    return taxes
+
+
 class TaxRatesPatch(BaseModel):
     """A whole tax list: no two of its taxes share a name, as tax_name_key compares them."""
     taxes: list[TaxRate]
 
-    @field_validator("taxes")
+    _names_unique = field_validator("taxes")(_unique_tax_names)
+
+
+def _named(name: str) -> str:
+    if not tax_name_key(name):
+        raise ValueError("a name is required")
+    return name
+
+
+def _known_currency(code: str) -> str:
+    if code not in CURRENCY_CODES:
+        raise ValueError(f"{code!r} is not a known currency code")
+    return code
+
+
+PackName = Annotated[str, AfterValidator(_named)]
+PackCurrency = Annotated[str, AfterValidator(_known_currency)]
+
+
+class _PackPart(BaseModel):
+    """A part of a country pack file. A pack writes only what it means: an unknown field, a value
+    of another type (no coercion) and a field written as null are refused, so every value that
+    passes means what its reader takes it to mean. A field left out takes its default; for a
+    retired row's match fields, left out means not compared."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="before")
     @classmethod
-    def _names_unique(cls, taxes: list[TaxRate]) -> list[TaxRate]:
-        seen: set[str] = set()
-        for tax in taxes:
-            key = tax_name_key(tax.name)
-            if key in seen:
-                raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
-            seen.add(key)
-        return taxes
+    def _no_nulls(cls, data):
+        if isinstance(data, dict) and (nulls := sorted(str(k) for k, v in data.items() if v is None)):
+            raise ValueError(f"{', '.join(nulls)} written as null (leave a field out instead)")
+        return data
 
 
-class RetiredTaxRow(BaseModel):
+class PackTaxRate(_PackPart):
+    """One tax of a country pack: the TaxRate fields, written as true, false, numbers and text."""
+    name: PackName
+    rate: FiniteFloat
+    tax_type: Literal[TAX_TYPES] = "both"
+    is_default: bool = False
+    description: str = ""
+    is_compound: bool = False
+    default_order: int = 0
+
+
+class RetiredTaxRow(_PackPart):
     """A row a retired entry matches: its name, as tax_name_key compares it, and each other field given."""
-    model_config = ConfigDict(extra="forbid")
-    name: str
+    name: PackName
     rate: FiniteFloat | None = None
-    is_default: StrictBool | None = None
-    is_compound: StrictBool | None = None
-
-    @field_validator("name")
-    @classmethod
-    def _name_given(cls, name: str) -> str:
-        if not tax_name_key(name):
-            raise ValueError("a retired row needs a name")
-        return name
+    is_default: bool | None = None
+    is_compound: bool | None = None
 
 
-class RetiredTax(BaseModel):
+class RetiredTax(_PackPart):
     """Rows an earlier release seeded that are no longer right, as a country pack lists them. A
     company still holding them is told (services/tax_seed_notice.py), never changed. ``match`` is
-    "all" when a list must hold every row, "any" when one is enough; with ``currency`` set, only
+    "all" when a list must hold every row, "any" when one is enough; with ``currency`` given, only
     a company whose books are in that currency holds the retired rows."""
-    model_config = ConfigDict(extra="forbid")
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
     match: Literal["all", "any"]
-    currency: str | None = None
+    currency: PackCurrency | None = None
     rows: list[RetiredTaxRow] = Field(min_length=1)
 
 
-class PackTaxRate(TaxRate):
-    """One tax of a country pack. A pack file writes its default flag as true or false; the
-    settings API keeps reading 0, 1 and "false" as it always has."""
-    is_default: StrictBool = False
+class PackCompanyDefaults(_PackPart):
+    currency: PackCurrency
 
 
-class CountryPackTaxes(TaxRatesPatch):
-    """A country pack's tax material: its tax list and the earlier rows it retires."""
+class CountryPack(_PackPart):
+    """A country pack file (scripts/l10n_packs.py validates each one with it before locking it).
+    ``version`` is a tag word, letters and digits joined by dots or hyphens, as fetch names the
+    pack's release ``v<version>``."""
+    format: Literal["celerp-localization"]
+    schema_version: Literal[1]
+    country: str = Field(pattern=r"^[A-Z]{2}$")
+    version: str = Field(pattern=r"^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$")
+    company_defaults: PackCompanyDefaults
     taxes: list[PackTaxRate]
     retired: list[RetiredTax] = []
+
+    _names_unique = field_validator("taxes")(_unique_tax_names)
 
     @field_validator("retired")
     @classmethod
