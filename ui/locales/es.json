@@ -1885,6 +1885,7 @@
   "field.barcode": "Código de barras",
   "field.location": "Ubicación",
   "activity.change.line_items": "Líneas editadas",
+  "activity.lines_reordered": "Líneas reordenadas",
   "activity.change.received_items": "Artículos recibidos actualizados",
   "activity.change.fulfilled_items": "Artículos procesados actualizados",
   "activity.change.taxes": "Impuestos actualizados",

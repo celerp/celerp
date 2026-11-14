@@ -1885,6 +1885,7 @@
   "field.barcode": "บาร์โค้ด",
   "field.location": "สถานที่จัดเก็บ",
   "activity.change.line_items": "แก้ไขรายการสินค้าแล้ว",
+  "activity.lines_reordered": "จัดลำดับรายการสินค้าใหม่แล้ว",
   "activity.change.received_items": "อัปเดตรายการที่รับแล้ว",
   "activity.change.fulfilled_items": "อัปเดตรายการที่จัดส่งแล้ว",
   "activity.change.taxes": "อัปเดตภาษีแล้ว",

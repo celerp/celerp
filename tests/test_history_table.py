@@ -68,9 +68,9 @@ def test_line_changes_name_the_item_and_show_quantity_and_price():
         "old": [{"line_id": "a", "name": "Ruby", "quantity": 1, "unit_price": 100}],
         "new": [{"line_id": "a", "name": "Ruby", "quantity": 2, "unit_price": 100},
                 {"line_id": "b", "name": "Pearl", "quantity": 3, "unit_price": 5}]}}}, "doc.updated", "USD")
-    assert [c[:2] for c in changes] == [("line_items", "Item: Ruby"), ("line_items", "Item: Pearl")]
-    assert changes[0][2].startswith("1 @") and changes[0][3].startswith("2 @")
-    assert changes[1][2] == "--"
+    assert [c[:2] for c in changes] == [("line_items", "Item 1: Ruby · Qty"), ("line_items", "Item 2: Pearl")]
+    assert changes[0][2:] == ("1", "2")
+    assert changes[1][2] == "--" and changes[1][3].startswith("3 @")
 
 
 def test_cost_fields_the_api_stripped_never_appear():

@@ -1885,6 +1885,7 @@
   "field.barcode": "Mã vạch",
   "field.location": "Vị trí",
   "activity.change.line_items": "Các dòng đã chỉnh sửa",
+  "activity.lines_reordered": "Đã sắp xếp lại các dòng",
   "activity.change.received_items": "Các mặt hàng đã nhận được đã cập nhật",
   "activity.change.fulfilled_items": "Các mặt hàng đã xuất được cập nhật",
   "activity.change.taxes": "Thuế đã cập nhật",

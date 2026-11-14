@@ -1885,6 +1885,7 @@
   "field.barcode": "الباركود",
   "field.location": "موقع",
   "activity.change.line_items": "تم تعديل الأسطر",
+  "activity.lines_reordered": "تمت إعادة ترتيب الأسطر",
   "activity.change.received_items": "تم تحديث العناصر المستلمة",
   "activity.change.fulfilled_items": "تم تحديث العناصر المُنفَّذة",
   "activity.change.taxes": "تم تحديث الضرائب",

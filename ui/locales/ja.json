@@ -1885,6 +1885,7 @@
   "field.barcode": "バーコード",
   "field.location": "位置",
   "activity.change.line_items": "編集された行",
+  "activity.lines_reordered": "行の順序を変更",
   "activity.change.received_items": "受領済み商品の更新",
   "activity.change.fulfilled_items": "出荷済み商品の更新",
   "activity.change.taxes": "税金が更新されました",

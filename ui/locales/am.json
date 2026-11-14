@@ -2058,6 +2058,7 @@
   "field.barcode": "ባርኮድ",
   "field.location": "ቦታ",
   "activity.change.line_items": "መስመሮች ተስተካክለዋል",
+  "activity.lines_reordered": "መስመሮች እንደገና ተደርድረዋል",
   "activity.change.received_items": "የተቀበሉት ዕቃዎች ተዘምነዋል",
   "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
   "activity.change.taxes": "ግብሮች ተዘምነዋል",

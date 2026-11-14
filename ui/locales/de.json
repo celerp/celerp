@@ -1886,6 +1886,7 @@
   "field.barcode": "Barcode",
   "field.location": "Standort",
   "activity.change.line_items": "Zeilen bearbeitet",
+  "activity.lines_reordered": "Zeilen neu angeordnet",
   "activity.change.received_items": "Eingegangene Artikel aktualisiert",
   "activity.change.fulfilled_items": "Ausgelieferte Artikel aktualisiert",
   "activity.change.taxes": "Steuern aktualisiert",

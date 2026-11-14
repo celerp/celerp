@@ -1885,6 +1885,7 @@
   "field.barcode": "kode batang",
   "field.location": "Lokasi",
   "activity.change.line_items": "Baris yang diedit",
+  "activity.lines_reordered": "Urutan baris diubah",
   "activity.change.received_items": "Barang yang diterima diperbarui",
   "activity.change.fulfilled_items": "Barang yang telah diproses diperbarui",
   "activity.change.taxes": "Pajak diperbarui",

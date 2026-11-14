@@ -13,6 +13,7 @@ from __future__ import annotations
 from ui.components.cards import section_header
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 from decimal import Decimal, InvalidOperation
 
@@ -22,7 +23,7 @@ from celerp.services.list_behavior import SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES
 from celerp.services.money import to_decimal
 from celerp.services.pricing import PRICE_LISTS_FALLBACK
 from celerp.services.units import line_receive_kind
-from celerp.tax_regimes import tax_entries
+from celerp.tax_regimes import tax_entries, tax_text
 from ui.i18n import t, get_lang, category_label, doc_type_label, field_label, price_list_label
 from ui.components.table import EMPTY, display_enum, fmt_money, fmt_rate, searchable_select
 from ui.components.deleted_items import deleted_label
@@ -682,9 +683,6 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None, docs_on
     if not isinstance(old, list) or not isinstance(new, list):
         return [], frozenset()
 
-    def _key(li):
-        return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
-
     from celerp_docs.doc_money import line_tax_rate
 
     def _rate(li) -> Decimal | None:
@@ -693,12 +691,10 @@ def _line_tax_change_summary(fields_changed: dict, currency: str | None, docs_on
         except (TypeError, ValueError, InvalidOperation):
             return None
 
-    old_by = {_key(li): li for li in old if isinstance(li, dict)}
+    old_by = {key: li for key, _, li in line_identities(old)}
     parts: list[str] = []
-    for li in new:
-        if not isinstance(li, dict):
-            continue
-        prev = old_by.get(_key(li))
+    for key, _, li in line_identities(new):
+        prev = old_by.get(key)
         if prev is None:  # added lines are reported by the line_items add/remove diff
             continue
         o_rate, n_rate = _rate(prev), _rate(li)
@@ -815,12 +811,23 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
             if k == "line_items" and isinstance(new, list):
-                def _li_key(li):
-                    return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
                 def _li_label(li):
                     name = li.get("name") or li.get("sku") or ""
                     qty = li.get("quantity")
                     return f"{name} ×{fmt_qty(qty)}" if qty is not None else name
+                def _li_changed_label(c: LineChange, skip) -> str:
+                    name = c.new.get("name") or c.new.get("sku") or ""
+                    fields = [f for f in c.fields if f not in skip]
+                    if not fields:
+                        return ""
+                    f = next((f for f in ("quantity", "unit_price", "price") if f in fields), fields[0])
+                    if f == "quantity":
+                        return f"{name} ×{fmt_qty(c.old.get(f))}→{fmt_qty(c.new.get(f))}"
+                    if f in ("unit_price", "price"):
+                        return (f"{name} {fmt_price(c.old.get(f), 'unit_price', currency)}"
+                                f"→{fmt_price(c.new.get(f), 'unit_price', currency)}")
+                    return (f"{name} {line_field_label(f)} {_line_field_value(f, c.old.get(f), currency)}"
+                            f"→{_line_field_value(f, c.new.get(f), currency)}")
                 def _li_added_label(li):
                     # Audit-facing: name the item TYPE, qty, and unit price at the moment it
                     # was added so an auditor sees e.g. "Stock: Widget ×3 @ $10.00".
@@ -838,26 +845,14 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
 
                 if isinstance(old, list):
                     # True diff: old and new both present
-                    old_by_key = {_li_key(li): li for li in old if isinstance(li, dict)}
-                    new_by_key = {_li_key(li): li for li in new if isinstance(li, dict)}
-                    added = [li for k2, li in new_by_key.items() if k2 not in old_by_key]
-                    removed = [_li_label(li) for k2, li in old_by_key.items() if k2 not in new_by_key]
-                    changed = []
-                    for k2, new_li in new_by_key.items():
-                        if k2 in old_by_key:
-                            old_li = old_by_key[k2]
-                            old_qty = old_li.get("quantity")
-                            new_qty = new_li.get("quantity")
-                            old_price = old_li.get("unit_price") or old_li.get("price")
-                            new_price = new_li.get("unit_price") or new_li.get("price")
-                            name = new_li.get("name") or new_li.get("sku") or ""
-                            if old_qty != new_qty:
-                                changed.append(f"{name} ×{fmt_qty(old_qty)}→{fmt_qty(new_qty)}")
-                            elif old_price != new_price:
-                                changed.append(
-                                    f"{name} {fmt_price(old_price, 'unit_price', currency)}"
-                                    f"→{fmt_price(new_price, 'unit_price', currency)}"
-                                )
+                    diff = line_diff(old, new)
+                    added = [c.new for c in diff.changes if c.kind == "added"]
+                    removed = [_li_label(c.old) for c in diff.changes if c.kind == "removed"]
+                    # A line tax change already reads in tax_parts, with the tax it charges.
+                    changed = [text for c in diff.changes if c.kind == "changed"
+                               if (text := _li_changed_label(c, _LINE_TAX_FIELDS if tax_parts else ()))]
+                    complex_labels += ([t("activity.lines_reordered")] if diff.reordered else []) \
+                        + ([t(_COMPLEX_LABELS[k])] if diff.unreadable else [])
                     parts = (
                         [t("activity.added", item=_li_added_label(li)) for li in added[:2]]
                         + [t("activity.changed", item=x) for x in changed[:2]]
@@ -1330,14 +1325,46 @@ _COMPLEX_CHANGE_KEYS = frozenset(f"activity.change.{k}" for k in (
     "line_items", "received_items", "fulfilled_items", "taxes", "addresses", "payments", "tc_items", "attributes"))
 
 
-def _line_key(li: dict) -> str:
-    return str(li.get("line_id") or li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or "")
+def line_identities(lines) -> list[tuple[str, int, dict]]:
+    """(identity, position, line) for each line of a stored ``line_items`` value: its line id,
+    or for a line without one (or repeating another's) its position, so two lines never share
+    an identity. Entries that are not lines are left out."""
+    out, seen = [], set()
+    for pos, li in enumerate(lines if isinstance(lines, list) else []):
+        if not isinstance(li, dict):
+            continue
+        lid = str(li.get("line_id") or "")
+        key = f"id:{lid}" if lid and f"id:{lid}" not in seen else f"pos:{pos}"
+        seen.add(key)
+        out.append((key, pos, li))
+    return out
 
 
-def _line_value(li: dict | None, currency: str | None) -> str:
-    """A line as the History shows it: quantity, unit price and tax rate."""
-    if not li:
+# Line fields read under the line table's own column headers; any other reads by _field_name.
+_LINE_FIELD_LABELS = {"quantity": "th.qty", "unit_price": "th.unit_price", "price": "th.price",
+                      "discount_pct": "th.disc", "tax_rate": "th.tax", "taxes": "th.tax",
+                      "line_total": "th.total", "account": "th.account", "description": "th.description",
+                      "name": "th.name", "sku": "th.sku", "unit": "th.unit", "weight": "th.weight"}
+_LINE_PERCENT_FIELDS = frozenset({"discount_pct", "tax_rate"})
+_LINE_TAX_FIELDS = frozenset({"tax_rate", "taxes"})
+# A line's item id fields, left out when the line's name or SKU changed with them.
+_LINE_ID_FIELDS = frozenset({"entity_id", "item_id"})
+
+
+def _line_field_value(key: str, value, currency: str | None) -> str:
+    if _blank(value):
         return EMPTY
+    if key in _LINE_PERCENT_FIELDS and not isinstance(value, (list, dict, bool)):
+        return f"{fmt_qty(value)}%"
+    if key == "taxes" and isinstance(value, list) and all(isinstance(x, dict) for x in value):
+        return ", ".join(f"{tax_text(x)} {fmt_qty(x.get('rate') or 0)}%" for x in value)
+    if key in QTY_FIELD_KEYS and not isinstance(value, (list, dict)):
+        return fmt_qty(value)
+    return _history_value(key, value, currency, None)
+
+
+def _line_value(li: dict, currency: str | None) -> str:
+    """A whole line, added or removed, as the History shows it: quantity, unit price and tax rate."""
     parts = []
     if li.get("quantity") is not None:
         unit = str(li.get("unit") or li.get("sell_by") or "").strip()
@@ -1346,23 +1373,79 @@ def _line_value(li: dict | None, currency: str | None) -> str:
     if price is not None:
         parts.append(f"@ {fmt_price(price, 'unit_price', currency)}")
     if li.get("tax_rate") not in (None, ""):
-        parts.append(f"({fmt_rate(li.get('tax_rate'))}%)")
+        parts.append(f"({fmt_qty(li.get('tax_rate'))}%)")
     return " ".join(parts) or EMPTY
 
 
-def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str, str]]:
-    """(key, field, old, new) for each line added, removed or changed."""
-    old_by = {_line_key(li): li for li in (old or []) if isinstance(li, dict)}
-    new_by = {_line_key(li): li for li in (new or []) if isinstance(li, dict)}
-    out = []
-    for key in [*new_by, *(k for k in old_by if k not in new_by)]:
-        o, n = old_by.get(key), new_by.get(key)
-        before, after = _line_value(o, currency), _line_value(n, currency)
-        if before == after:
+class LineChange(NamedTuple):
+    """One line's change: ``kind`` is added, removed or changed; ``pos`` its position (in the new
+    lines, or the old for a removed one); ``fields`` the stored fields a changed line changed."""
+    kind: str
+    pos: int
+    old: dict | None
+    new: dict | None
+    fields: tuple[str, ...] = ()
+
+
+class LineDiff(NamedTuple):
+    """What an edit did to a ``line_items`` value: each line's change, whether the kept lines
+    moved, and whether either side holds something that is not a line (shown only as a whole)."""
+    changes: list[LineChange]
+    reordered: bool
+    unreadable: bool
+
+
+def line_diff(old, new) -> LineDiff:
+    """Compare two stored ``line_items`` values line by line (by line_identities), every stored
+    field of a kept line, its line id aside. A line's item id is left out when its name or SKU
+    changed with it, as the name says it."""
+    old, new = (v if isinstance(v, list) else [] for v in (old, new))
+    if any(not isinstance(li, dict) for li in [*old, *new]):
+        return LineDiff([], False, old != new)
+    old_by = {key: (pos, li) for key, pos, li in line_identities(old)}
+    new_by = {key: (pos, li) for key, pos, li in line_identities(new)}
+    changes = []
+    for key, (pos, n) in new_by.items():
+        if key not in old_by:
+            changes.append(LineChange("added", pos, None, n))
             continue
-        li = n or o
-        name = str(li.get("name") or li.get("sku") or t("th.item"))
-        out.append(("line_items", f"{t('th.item')}: {name}", before, after))
+        o = old_by[key][1]
+        renamed = any(o.get(f) != n.get(f) for f in ("name", "sku"))
+        fields = tuple(f for f in dict.fromkeys([*o, *n])
+                       if f != "line_id" and not (renamed and f in _LINE_ID_FIELDS)
+                       and o.get(f) != n.get(f) and not (_blank(o.get(f)) and _blank(n.get(f))))
+        if fields:
+            changes.append(LineChange("changed", pos, o, n, fields))
+    changes += [LineChange("removed", pos, o, None) for key, (pos, o) in old_by.items() if key not in new_by]
+    reordered = [k for k in old_by if k in new_by] != [k for k in new_by if k in old_by]
+    return LineDiff(changes, reordered, False)
+
+
+def line_field_label(field: str) -> str:
+    """A line field's name, under the line table's own column header where it has one."""
+    return t(_LINE_FIELD_LABELS[field]) if field in _LINE_FIELD_LABELS else _field_name(field)
+
+
+def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str, str]]:
+    """(key, field, old, new) for each line added or removed and each field of a kept line that
+    changed; one summary row when the kept lines moved, and one when the value holds something
+    that is not a line."""
+    diff = line_diff(old, new)
+    out = []
+    for c in diff.changes:
+        li = c.new or c.old
+        label = f"{t('th.item')} {c.pos + 1}: {li.get('name') or li.get('sku') or EMPTY}"
+        if c.kind == "added":
+            out.append(("line_items", label, EMPTY, _line_value(c.new, currency)))
+        elif c.kind == "removed":
+            out.append(("line_items", label, _line_value(c.old, currency), EMPTY))
+        else:
+            out += [("line_items", f"{label} · {line_field_label(f)}", _line_field_value(f, c.old.get(f), currency),
+                     _line_field_value(f, c.new.get(f), currency)) for f in c.fields]
+    if diff.reordered:
+        out.append(("line_items", t("activity.lines_reordered"), EMPTY, EMPTY))
+    if diff.unreadable:
+        out.append(("line_items", t("activity.change.line_items"), EMPTY, EMPTY))
     return out
 
 

@@ -2132,6 +2132,7 @@
   "field.barcode": "Barcode",
   "field.location": "Location",
   "activity.change.line_items": "Lines edited",
+  "activity.lines_reordered": "Lines reordered",
   "activity.change.received_items": "Received items updated",
   "activity.change.fulfilled_items": "Fulfilled items updated",
   "activity.change.taxes": "Taxes updated",
