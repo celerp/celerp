@@ -222,7 +222,7 @@ async def test_donor_gifts_newest_first_and_statement_amounts_right_aligned(clie
     assert re.findall(r"2026-03-\d\d", html) == ["2026-03-01", "2026-03-31", "2026-03-20", "2026-03-12", "2026-03-05"]
     header = re.search(r"<th([^>]*)>%s</th>" % re.escape(t("label.amount")), html)
     assert header and "text-align: right" in header.group(1).replace("text-align:right", "text-align: right"), html
-    figures = re.findall(r"<td([^>]*)>[\d,.]+ \w{3}</td>", html)
+    figures = re.findall(r"<td([^>]*)>\$[\d,.]+</td>", html)
     assert len(figures) == 4 and all("right" in attrs for attrs in figures), html
 
 
@@ -364,3 +364,35 @@ async def test_donor_history_equals_gift_income_the_books_keep(client, auth, gif
         if not history == listed == stated == kept:
             wrong.append(f"{story}: history {history}, Donors page {listed}, statement {stated}, books {kept}")
     assert not wrong, "\n".join(wrong)
+
+
+@pytest.mark.parametrize(("currency", "gifts", "shown"), [
+    ("KWD", (12.345, 0.005), ("12.345", "0.005", "12.350")),
+    ("JPY", (1200, 35), ("1,200", "35", "1,235")),
+])
+async def test_statement_amounts_carry_the_books_currency_places(client, auth, monkeypatch, currency, gifts, shown):
+    """Each gift and the total on the statement email and its PDF show the places the books'
+    currency keeps: three for the Kuwaiti dinar, none for the yen, never a fixed two."""
+    import io
+    import re
+
+    import pypdf
+
+    r = await client.patch("/companies/me/books", headers=auth["headers"], json={"currency": currency})
+    assert r.status_code == 200, r.text
+    await _books(client, auth)
+    donor = await _donor(client, auth, "Kim Donor", "kim@test.test")
+    for amount, day in zip(gifts, ("2026-03-05", "2026-03-06")):
+        await _direct_gift(client, auth, donor, amount, day)
+    sent = _mailbox(monkeypatch)
+    r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True})
+    assert r.status_code == 200 and len(sent) == 1, r.text
+    cells = re.findall(r'<td style="text-align: right">([^<]*)</td>', sent[0]["html"])
+    figures = [re.search(r"[\d,]+(?:\.\d+)?", cell).group(0) for cell in cells]
+    assert sorted(figures) == sorted(shown), cells
+    pdf = await client.get(f"/donors/{donor}/statement.pdf", headers=auth["headers"], params=PERIOD)
+    assert pdf.status_code == 200, pdf.text
+    text = "\n".join(page.extract_text() or "" for page in pypdf.PdfReader(io.BytesIO(pdf.content)).pages)
+    for figure in shown:
+        assert re.search(r"(?<![\d.,])%s(?![\d])" % re.escape(figure), text), (figure, text)
+    assert not re.search(r"\d\.\d\d(?!\d)", text) if currency == "KWD" else ".00" not in text, text

@@ -36,6 +36,7 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.output.doc_print import fmt_money
 from celerp.services import email as email_service
 from celerp.services.account_roles import current_settings, merge_survivors
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -141,7 +142,7 @@ def _statement_html(company: str, row: dict, text: str, date_from: str, date_to:
     Headers are centered and the amount column right-aligned over its figures, inline because
     mail clients drop stylesheets."""
     def cells(day, source, amount):
-        return Tr(Td(day), Td(source), Td(f"{amount:,.2f} {currency}", style="text-align: right"))
+        return Tr(Td(day), Td(source), Td(fmt_money(amount, currency), style="text-align: right"))
 
     return str(to_markup(Div(
         P(_worded(text, row["name"])),
