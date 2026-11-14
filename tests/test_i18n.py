@@ -674,9 +674,11 @@ def test_mandated_accounting_terminology_applied():
 
 
 # Names the English copy no longer uses: the settings page is Remote Access, the
-# stock placed at go-live is Opening inventory, a credit is a Credit Memo.
+# stock placed at go-live is Opening inventory, a credit is a Credit Memo, a build for
+# stock is a Production Order and the planning board is Production Planning.
 _RETIRED_ENGLISH_TERMS = ("Web Access", "Older stock", "older stock", "credit note",
-                          "Credit Note", "Work In Progress")
+                          "Credit Note", "Work In Progress", "Stock Order", "stock order",
+                          "Demand Planning")
 
 
 def test_english_uses_no_retired_term():

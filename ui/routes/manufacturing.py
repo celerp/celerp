@@ -60,7 +60,7 @@ def _badge(status: str) -> FT:
 
 
 def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> FT:
-    """Status filter cards for the Work In Progress queue. 'Active' = planned+in_progress+on_hold
+    """Status filter cards for the Work Orders queue. 'Active' = planned+in_progress+on_hold
     (the default view). There is no 'All' card - we never show completed/cancelled and active runs
     together. Cards link within base_url (carrying the status) so the queue stays put when filtering."""
     _CARD_DEFS = [
@@ -476,7 +476,7 @@ def setup_routes(app):
 
     @app.get("/manufacturing")
     async def demand_planning(request: Request):
-        """Demand Planning board: one line per open demand document, with the product it needs and
+        """Production Planning board: one line per open demand document, with the product it needs and
         how well current supply (on hand + in progress) covers it. Document type is the main filter;
         the Status and For columns have Excel-style funnels. Tick lines and Make to start runs."""
         token = _token(request)
@@ -527,7 +527,7 @@ def setup_routes(app):
 
     @app.get("/manufacturing/production")
     async def work_in_progress(request: Request):
-        """Work In Progress: the production-run queue (issue components, then receive finished goods).
+        """Work Orders: the production-run queue (issue components, then receive finished goods).
         Status cards are the single filter; the default view is Active (planned/in_progress/on_hold)."""
         token = _token(request)
         if not token:

@@ -148,7 +148,7 @@ def demand_claim(state: dict, doc_id: str | None) -> str | None:
     """Can demand document ``doc_id`` consume this item? FREE_STOCK while the item is available
     (see is_item_available), OWN_RESERVED while it is reserved to ``doc_id``, and None in every
     other status: reserved to another document or to none, or not stock at all. The one rule
-    fulfillment draws by and Demand Planning counts supply by."""
+    fulfillment draws by and Production Planning counts supply by."""
     if is_item_available(state):
         return FREE_STOCK
     if (str(state.get("status") or "").lower() == "reserved" and doc_id

@@ -1,8 +1,8 @@
 {
   "id": "manufacturing.production",
-  "title": "Tracking work in progress",
+  "title": "Tracking work orders",
   "summary": "Advance production runs from issuing components to receiving finished goods.",
-  "keywords": ["work in progress", "production run", "wip", "issue", "receive", "manufacturing"],
+  "keywords": ["work orders", "work in progress", "production run", "wip", "issue", "receive", "manufacturing"],
   "routes": ["/manufacturing/production"],
   "permission": "manage_manufacturing",
   "order": 2,

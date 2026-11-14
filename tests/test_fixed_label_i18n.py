@@ -87,3 +87,12 @@ def test_manufacturing_sidebar_reads_german():
     assert labels == {"/manufacturing": "Produktionsplanung (MRP)", "/manufacturing/production": "Arbeitsaufträge",
                       "/docs?type=production_order": t("documents.page_stock_orders", "de")}
     assert "Stock Orders" not in labels.values()
+
+
+def test_every_module_sidebar_fallback_reads_as_the_english_catalog():
+    """The label written beside a sidebar entry's key is the English the catalog gives it, so a
+    renamed page never keeps its old name wherever the key is not resolved."""
+    stale = [f"{module}: {d['label'].value!r} vs {t(d['label_key'].value, 'en')!r}"
+             for module, d in _module_nav_entries()
+             if "label_key" in d and d["label"].value != t(d["label_key"].value, "en")]
+    assert not stale, stale

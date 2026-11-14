@@ -78,7 +78,7 @@ def test_active_nav_scrolled_into_view(page, ui_server):
 
 def test_wip_page_highlights_correct_nav_item(page, ui_server):
     """FIX-3: on /manufacturing/production the sidebar must highlight 'Work Orders',
-    NOT 'Demand Planning', and the active link must be within the sidebar's visible bounds."""
+    NOT 'Production Planning (MRP)', and the active link must be within the sidebar's visible bounds."""
     page.set_viewport_size({"width": 1440, "height": 900})
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector(".sidebar .nav-link--active", timeout=8000)
@@ -87,7 +87,7 @@ def test_wip_page_highlights_correct_nav_item(page, ui_server):
     active_text = active_link.inner_text().strip()
     assert active_text == "Work Orders", (
         f"Sidebar active nav link on /manufacturing/production should be 'Work Orders'; "
-        f"got: {active_text!r}. Was 'Demand Planning' highlighted instead (FIX-3 regression)?"
+        f"got: {active_text!r}. Was 'Production Planning (MRP)' highlighted instead (FIX-3 regression)?"
     )
 
     # The active link must be within the sidebar's visible vertical bounds (allow 1px rounding).

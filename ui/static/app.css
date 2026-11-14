@@ -3592,7 +3592,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .info-banner-icon { flex: none; }
 .info-banner-close { margin-left: auto; flex: none; }
 
-/* ── Demand Planning board: coverage-status badges + Excel-style column filters ── */
+/* ── Production Planning board: coverage-status badges + Excel-style column filters ── */
 .badge--peg-covered { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
 .badge--peg-partial { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--peg-short { background: rgba(239,68,68,0.15); color: #dc2626; border: 1px solid rgba(239,68,68,0.3); }

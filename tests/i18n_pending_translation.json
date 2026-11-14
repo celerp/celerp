@@ -69,6 +69,10 @@
       "en": "New Quotation",
       "params": []
     },
+    "btn.new_production_order": {
+      "en": "New Production Order",
+      "params": []
+    },
     "btn.new_supplier_credit_note": {
       "en": "New Vendor Credit Memo",
       "params": []
@@ -407,6 +411,10 @@
     },
     "documents.doc_list": {
       "en": "Quotation",
+      "params": []
+    },
+    "documents.doc_stock_order": {
+      "en": "Production Order",
       "params": []
     },
     "documents.err_apply_bill_currency_mismatch": {
@@ -1216,7 +1224,7 @@
       "params": []
     },
     "settings_manufacturing.auto_create_info": {
-      "en": "When on, finalizing a customer order or stock order automatically creates a work order for each manufacturable line - the production task pops up with no extra step. Best for make-to-order shops (e.g. restaurants). Leave off to create work orders manually from the order or on Production Planning.",
+      "en": "When on, finalizing a customer order or production order automatically creates a work order for each manufacturable line - the production task pops up with no extra step. Best for make-to-order shops (e.g. restaurants). Leave off to create work orders manually from the order or on Production Planning.",
       "params": []
     },
     "setup.feature_web_title": {

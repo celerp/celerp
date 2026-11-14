@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Orders that tie on due date are served oldest first, every time.
 
-Demand Planning gives free stock to the order due soonest, undated orders last. Orders that
+Production Planning gives free stock to the order due soonest, undated orders last. Orders that
 tie (both undated, or due the same day) are served in the order they were created, then by
 document id, whatever order the database happens to return them in. The board, Make selected
 and the work orders made when an invoice is posted all settle the same way.
