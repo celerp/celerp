@@ -6,6 +6,7 @@ from copy import deepcopy
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
+from celerp.services.field_schema import LEGACY_CATEGORY_FIELDS
 
 # Maps old weight_unit abbreviations to new unit names
 _WEIGHT_UNIT_MAP: dict[str, str] = {
@@ -102,11 +103,6 @@ def _normalize_attributes(current: dict) -> None:
         else:
             attrs[k] = val
     current["attributes"] = attrs
-
-
-# Category presets in earlier releases kept a lot's weight (in grams) and origin under their own
-# attribute keys; the core fields own both now. The one mapping every reader goes through.
-LEGACY_CATEGORY_FIELDS: dict[str, str] = {"weight_g": "weight", "origin_country": "country_of_origin"}
 
 
 def _fold_legacy_category_fields(current: dict) -> None:

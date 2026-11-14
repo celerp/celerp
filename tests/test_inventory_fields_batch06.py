@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fasthtml.common import to_xml
 from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA
-from celerp_inventory.projections import LEGACY_CATEGORY_FIELDS
+from celerp.services.field_schema import LEGACY_CATEGORY_FIELDS
 from ui.components.item_fields import item_detail_schema
 from ui.components.table import paired_display_cell
 from ui.i18n import field_label

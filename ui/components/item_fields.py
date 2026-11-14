@@ -1,5 +1,5 @@
 """The item detail field list: the base schema plus the category's own fields."""
-from celerp_inventory.projections import LEGACY_CATEGORY_FIELDS
+from celerp.services.field_schema import LEGACY_CATEGORY_FIELDS
 from ui.i18n import t_or
 
 LEGACY_CORE_KEYS = frozenset(LEGACY_CATEGORY_FIELDS.values())
