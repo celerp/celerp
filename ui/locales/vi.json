@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Chưa có hợp đồng phí giữ chỗ nào.",
   "subscriptions.none_in_view": "Không có thỏa thuận nào khớp với chế độ xem này. Hãy chọn trạng thái khác hoặc xóa tìm kiếm.",
   "subscriptions.members_empty": "Chưa có hội viên. Hãy thêm hạng hội viên rồi chọn Tư cách hội viên mới.",
-  "subscriptions.members_intro": "Trạng thái hội viên dựa trên hóa đơn mới nhất: còn hiệu lực cho tới khi đến hạn, trong thời gian ân hạn theo số ngày trong thỏa thuận, rồi hết hiệu lực. Hóa đơn đã thanh toán hoặc được ghi có toàn bộ sẽ khiến tư cách hội viên có hiệu lực trở lại. Tư cách hội viên đã hủy hoặc đã hết thời hạn sẽ hiển thị là đã kết thúc bất kể hóa đơn ra sao. Cột Trạng thái cho biết tình trạng của từng thỏa thuận.",
+  "subscriptions.members_intro": "Tình trạng của mỗi hội viên dựa trên hóa đơn cũ nhất còn chưa thanh toán: còn hiệu lực đến hạn thanh toán, trong thời gian ân hạn theo số ngày ân hạn của thỏa thuận, sau đó hết hạn. Thanh toán hóa đơn mới hơn không xóa được hóa đơn cũ hơn. Khi mọi hóa đơn đã được thanh toán hoặc ghi có toàn bộ, hội viên còn hiệu lực. Tư cách hội viên đã hủy, hoặc đã hết thời hạn, hiển thị là đã kết thúc bất kể hóa đơn ra sao. Hội viên trọn đời được liệt kê khi hóa đơn của họ đã thanh toán xong và tư cách hội viên trọn đời trên đó chưa bị ghi có hoàn lại toàn bộ. Cột Trạng thái cho biết tình trạng của từng thỏa thuận.",
   "subscriptions.paid_by": "Được thanh toán bởi",
   "subscriptions.standing": "Trạng thái hội viên",
   "enum.member_standing.current": "Còn hiệu lực",

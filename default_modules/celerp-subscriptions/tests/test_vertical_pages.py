@@ -119,11 +119,9 @@ async def test_members_standing_derived_from_balances_grace(owner_ui, session, m
     assert page.status_code == 200 and f"/subscriptions/{eid}" in page.text
 
 
-async def test_lifetime_membership_one_time_invoice(owner_ui, monkeypatch):
-    """A one-time invoice with a lifetime membership item lists its member as lifetime once
-    its balance is settled, and not before."""
-    freeze_day(monkeypatch, "2026-03-01")
-    api = owner_ui.api
+async def _lifetime_sale(api, extra: list[dict] = ()) -> tuple[str, str, str]:
+    """An issued one-time invoice selling one lifetime membership (500) plus ``extra`` lines:
+    (invoice, lifetime item, member)."""
     assert (await api.post("/companies/me/apply-preset", params={"vertical": "nonprofit"})).status_code == 200
     r = await api.post("/items", json={"name": "Lifetime membership", "category": "membership", "sell_by": "piece",
                                        "inventory_type": "service", "quantity": 0, "status": "available",
@@ -131,16 +129,53 @@ async def test_lifetime_membership_one_time_invoice(owner_ui, monkeypatch):
     assert r.status_code == 200, r.text
     item = r.json()["id"]
     who = await contact(api, {}, f"life-{uuid.uuid4().hex[:6]}@test.test")
+    lines = [{"item_id": item, "name": "Lifetime membership", "quantity": 1, "unit_price": 500.0, "line_total": 500.0},
+             *extra]
     # The invoice names its price list, so the line keeps its price rather than the contact's list's.
-    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail", "total": 500.0, "line_items": [
-        {"item_id": item, "name": "Lifetime membership", "quantity": 1, "unit_price": 500.0, "line_total": 500.0}]})
+    r = await api.post("/docs", json={"doc_type": "invoice", "contact_id": who, "price_list": "Retail",
+                                      "total": sum(li["line_total"] for li in lines), "line_items": lines})
     assert r.status_code == 200, r.text
     doc = r.json()["id"]
     assert (await api.post(f"/docs/{doc}/finalize")).status_code == 200
+    return doc, item, who
+
+
+async def _credit(api, invoice: str, who: str, lines: list[dict]) -> None:
+    """An issued credit note against ``invoice`` crediting ``lines``."""
+    r = await api.post("/docs", json={"doc_type": "credit_note", "original_doc_id": invoice, "contact_id": who,
+                                      "total": sum(li["line_total"] for li in lines), "line_items": lines})
+    assert r.status_code == 200, r.text
+    assert (await api.post(f"/docs/{r.json()['id']}/finalize")).status_code == 200, r.text
+
+
+async def test_lifetime_membership_one_time_invoice(owner_ui, monkeypatch):
+    """A one-time invoice with a lifetime membership item lists its member as lifetime once
+    its balance is settled, and not before."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    doc, _, who = await _lifetime_sale(api)
     assert doc not in await _members(api)
     await _paid(api, doc, 500.0, "2026-03-02")
     row = (await _members(api))[doc]
     assert row["standing"] == "lifetime" and row["contact_id"] == who
+
+
+async def test_a_lifetime_sale_credited_back_in_full_makes_no_member(owner_ui, monkeypatch):
+    """Lifetime holds only while the lifetime line is kept: credit notes against the invoice
+    that credit it back in full end it; crediting another line of the sale does not."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    pin = {"name": "Pin", "quantity": 1, "unit_price": 20.0, "line_total": 20.0}
+    kept, _, kept_who = await _lifetime_sale(api, [pin])
+    await _paid(api, kept, 520.0, "2026-03-02")
+    await _credit(api, kept, kept_who, [pin])
+    assert (await _members(api))[kept]["standing"] == "lifetime"
+    doc, item, who = await _lifetime_sale(api)
+    await _paid(api, doc, 500.0, "2026-03-02")
+    assert doc in await _members(api)
+    await _credit(api, doc, who, [{"item_id": item, "name": "Lifetime membership", "quantity": 1,
+                                   "unit_price": 500.0, "line_total": 500.0}])
+    assert doc not in await _members(api)
 
 
 async def test_a_cancelled_or_expired_membership_reads_ended_and_a_void_one_is_not_listed(owner_ui, session, monkeypatch):
@@ -190,6 +225,28 @@ async def test_an_amendment_bill_is_the_one_standing_reads(owner_ui, session, mo
     assert (row["standing"], row["bill_id"]) == ("current", amendment)
     freeze_day(monkeypatch, "2026-06-30")
     assert (await _members(api))[eid]["standing"] == "lapsed"
+
+
+async def test_standing_reads_the_oldest_bill_still_owing(owner_ui, session, monkeypatch):
+    """A newer bill paid does not clear an older one still owing: standing runs from the
+    oldest unpaid bill's due date and grace, and reads current once nothing is owed."""
+    freeze_day(monkeypatch, "2026-03-01")
+    api = owner_ui.api
+    eid, doc = await _membership(api, session, grace=14)
+    line = (await template(api, {}, eid))["line_items"][0]["line_id"]
+    freeze_day(monkeypatch, "2026-03-05")
+    r = await api.post(f"/subscriptions/{eid}/amend", json={
+        "effective": "2026-03-05", "quantities": {line: 2}, "request_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    amendment = r.json()["invoice_id"]
+    await _paid(api, amendment, float((await template(api, {}, amendment)).get("amount_outstanding") or 0), "2026-03-05")
+    freeze_day(monkeypatch, "2026-03-10")
+    row = (await _members(api))[eid]
+    assert (row["standing"], row["bill_id"]) == ("in_grace", doc)
+    freeze_day(monkeypatch, "2026-03-16")
+    assert (await _members(api))[eid]["standing"] == "lapsed"
+    await _paid(api, doc, float((await template(api, {}, doc))["amount_outstanding"]), "2026-03-16")
+    assert (await _members(api))[eid]["standing"] == "current"
 
 
 @pytest.mark.parametrize("edit", ["lifetime_sale_then_item_changed", "item_made_lifetime_after_the_sale",

@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Todavía no hay igualas.",
   "subscriptions.none_in_view": "Ningún acuerdo coincide con esta vista. Elija otro estado o borre la búsqueda.",
   "subscriptions.members_empty": "Todavía no hay miembros. Añada un nivel de membresía y después Nueva membresía.",
-  "subscriptions.members_intro": "El estado de cada miembro depende de su última factura: vigente hasta el vencimiento, en período de gracia durante los días previstos en el acuerdo y después vencido. Una factura pagada o abonada totalmente vuelve a indicar vigente. Una membresía cancelada, o cuyo plazo ha terminado, figura como finalizado sin importar sus facturas. La columna Estado muestra la situación de cada acuerdo.",
+  "subscriptions.members_intro": "La situación de cada miembro depende de su factura más antigua que siga sin pagar: al día hasta su vencimiento, en periodo de gracia durante los días de gracia del acuerdo y después caducada. Pagar una factura más reciente no salda una anterior. Cuando todas las facturas están pagadas o abonadas por completo, el miembro figura al día. Una membresía cancelada, o cuyo plazo ha terminado, figura como finalizada, digan lo que digan sus facturas. Un miembro vitalicio aparece en la lista mientras su factura esté saldada y la membresía vitalicia que incluye no se haya abonado por completo. La columna Estado muestra la situación de cada acuerdo.",
   "subscriptions.paid_by": "Pagado por",
   "subscriptions.standing": "Estado",
   "enum.member_standing.current": "Vigente",

@@ -1708,7 +1708,7 @@ def setup_routes(app) -> None:
 
     @app.get("/members")
     async def members_list(request: Request):
-        """Members and their standing, read from each membership's latest bill."""
+        """Members and their standing, read from each membership's oldest unpaid bill."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)

@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Nessun contratto a compenso periodico presente.",
   "subscriptions.none_in_view": "Nessun accordo corrisponde a questa vista. Scegli un altro stato o cancella la ricerca.",
   "subscriptions.members_empty": "Non ci sono ancora soci. Aggiungi un livello associativo, poi Nuova adesione associativa.",
-  "subscriptions.members_intro": "Lo stato di ogni socio dipende dall'ultima fattura: regolare fino alla scadenza, in tolleranza per i giorni previsti dall'accordo e poi scaduto. Una fattura pagata o interamente accreditata torna a indicare lo stato regolare. Un'adesione annullata, o il cui periodo è finito, risulta terminato qualunque cosa dicano le fatture. La colonna Stato mostra a che punto è ogni accordo.",
+  "subscriptions.members_intro": "Lo stato di ogni socio dipende dalla sua fattura più vecchia ancora non pagata: in regola fino alla scadenza, in periodo di tolleranza per i giorni previsti dall'accordo, poi scaduto. Pagare una fattura più recente non salda una più vecchia. Quando tutte le fatture sono pagate o accreditate per intero, il socio risulta in regola. Un'iscrizione annullata, o il cui periodo è terminato, risulta conclusa qualunque cosa dicano le sue fatture. Un socio a vita compare nell'elenco finché la sua fattura è saldata e l'iscrizione a vita che contiene non è stata accreditata per intero. La colonna Stato mostra a che punto è ogni accordo.",
   "subscriptions.paid_by": "Pagato da",
   "subscriptions.standing": "Stato",
   "enum.member_standing.current": "Regolare",

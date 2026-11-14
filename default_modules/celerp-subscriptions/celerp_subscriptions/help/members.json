@@ -1,7 +1,7 @@
 {
   "id": "subscriptions.members",
   "title": "Members and their standing",
-  "summary": "See each member's standing, from their latest bill.",
+  "summary": "See each member's standing, from their oldest unpaid bill.",
   "keywords": [
     "member",
     "membership",
@@ -29,7 +29,7 @@
       }
     },
     {
-      "text": "A member is {cur} until their latest bill falls due, {grace} for the agreement's {days} after that, then {lapsed}. Paying or fully crediting the bill makes them {cur} again.",
+      "text": "A member is {cur} until their oldest unpaid bill falls due, {grace} for the agreement's {days} after that, then {lapsed}. Paying a newer bill does not clear an older one. Once every bill is paid or fully credited they are {cur} again.",
       "labels": {
         "cur": "enum.member_standing.current",
         "grace": "enum.member_standing.in_grace",
@@ -48,6 +48,18 @@
       "labels": {
         "ended": "enum.member_standing.ended",
         "status": "th.status"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A {life} member is listed while the invoice that sold the lifetime membership is settled, until credit notes against it credit the lifetime membership back in full.",
+      "labels": {
+        "life": "enum.member_standing.lifetime"
       },
       "image": null,
       "capture": {

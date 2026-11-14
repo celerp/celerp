@@ -7749,7 +7749,7 @@
   "subscriptions.retainers_empty": "Aucun contrat d'honoraires forfaitaires pour le moment.",
   "subscriptions.none_in_view": "Aucun accord ne correspond à cette vue. Choisissez un autre statut ou effacez la recherche.",
   "subscriptions.members_empty": "Aucun membre pour le moment. Ajoutez un niveau d'adhésion, puis choisissez Nouvelle adhésion.",
-  "subscriptions.members_intro": "Le statut de chaque membre dépend de sa dernière facture : à jour jusqu'à l'échéance, en période de grâce durant les jours prévus par l'accord, puis expiré. Une facture payée ou intégralement créditée rétablit le statut à jour. Une adhésion annulée, ou dont la durée est écoulée, est indiquée comme terminé quelles que soient ses factures. La colonne Statut indique où en est chaque accord.",
+  "subscriptions.members_intro": "Le statut de chaque membre dépend de sa plus ancienne facture encore impayée : à jour jusqu'à l'échéance, en période de grâce pendant les jours de grâce prévus par l'accord, puis expiré. Payer une facture plus récente ne solde pas une plus ancienne. Lorsque toutes les factures sont payées ou entièrement créditées, le membre est à jour. Une adhésion résiliée, ou dont la durée est écoulée, apparaît comme terminée, quelles que soient ses factures. Un membre à vie figure dans la liste tant que sa facture est soldée et que l'adhésion à vie qu'elle contient n'a pas été entièrement remboursée par avoir. La colonne Statut indique où en est chaque accord.",
   "subscriptions.paid_by": "Payé par",
   "subscriptions.standing": "Statut",
   "enum.member_standing.current": "À jour",
