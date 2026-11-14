@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -37,13 +38,15 @@ from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
 from celerp.services.document_lines import strip_line_ids
+from celerp.services.money import document_line_amount, document_line_unit, round_money, to_stored_float
+from celerp.services.peer_lines import granted_from_stored
 from celerp.services.permissions import missing_permission, role_has_permission
 from celerp.services.record_quantities import template_label
 from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import (AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SCHEDULE_FIELDS, SKIPPED,
+from celerp_subscriptions.periods import (AUTO_MODES, BILLED, COLLECT_MODE, CLAIMED_STATES, RELEASED, SCHEDULE_FIELDS, SKIPPED,
                                           UNRESOLVED, TERMS, Schedule, ScheduleError, check_terms, shown, term_error)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
@@ -52,11 +55,14 @@ log = logging.getLogger(__name__)
 
 MODULE = "celerp-subscriptions"
 # Each unattended mode and the permission its authorizer must keep holding.
-MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
-MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents"}
+MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending",
+                   "collection": "automate_collection"}
+MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents",
+                            "collection": "record_payments"}
 # The settings each mode's consent covers: changing one while the mode runs is a new consent.
 # Automatic billing covers every setting its decision reads (unattended_due, outside_window).
-CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
+CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",),
+                 "collection": ("generation_mode",)}
 # The longest a send waits for the mail server, and the longest a send can take with recording its
 # answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server (send_state).
 TRANSPORT_TIMEOUT = timedelta(minutes=4)
@@ -229,6 +235,12 @@ def not_moved(state: dict) -> str | None:
     return t("subscriptions.not_moved_pending")
 
 
+# The agreement's records of its own billing, written through write_agreement: which document
+# billed each period, the bills a release let go, and the last billing failure. Setting them
+# changes nothing else in the agreement's state, and no revenue measure reads them (metrics).
+BILLING_RECORDS = frozenset({"periods", "released_bills", "billing_failure"})
+
+
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
                           drop: tuple[str, ...] = (), key: str | None = None, metadata: dict | None = None) -> None:
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
@@ -275,6 +287,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     needed = [m for m in choosing if m not in chosen or any(f in changes for f in CONSENT_TERMS[m])]
     await require_mode_permissions(session, company_id, actor_id,
                                    [*needed, *(m for m in entering_modes(before, merged) if m not in needed)])
+    if "collection" in needed:
+        from celerp_subscriptions.collect import require_collectable
+        await require_collectable(session, company_id, merged)
     kept = before.get("consents") or {}
     consents = {**{m: kept[m] for m in choosing if m in kept},
                 **{m: {"by": str(actor_id), "at": now_stamp()} for m in needed}}
@@ -306,6 +321,11 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
                    for k in touched}
         if refs := {k: await doc_ref(session, company_id, d) for k, d in claimed.items() if d}:
             fields["periods"]["refs"] = refs
+    if "beneficiary_contact_id" in changes:
+        # The member before and after by the name each contact had then, so History names them.
+        members = {fields["beneficiary_contact_id"]["old"], changes["beneficiary_contact_id"]} - {None}
+        if names := {c: n for c in members if (n := ((await doc_state(session, company_id, c)) or {}).get("name"))}:
+            fields["beneficiary_contact_id"]["names"] = names
     writing = _WRITING.set(entity_id)
     try:
         await emit_event(
@@ -324,9 +344,46 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
 AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"})
 
 
+async def _refuse_unknown_member(session, company_id, before: dict, after: dict) -> None:
+    """422 (subscriptions.err_beneficiary) when a write sets the member to anything but a contact
+    of the company; a member left as it was is not read again."""
+    member = after.get("beneficiary_contact_id")
+    if member is None or member == before.get("beneficiary_contact_id"):
+        return
+    row = await session.get(Projection, (company_id, member))
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=422, detail=catalog_refusal("subscriptions.err_beneficiary"))
+
+
+async def _check_payer_change(session, entry, before: dict, after: dict) -> None:
+    """A change of who pays (contact_id) an agreement that collects automatically, before or
+    after the change and whatever its status, by any writer: it needs the collection
+    permissions from the actor's role (403 naming the first missing), and it is refused (409
+    naming the invoice) while a card charge on one of the agreement's invoices may already be
+    with Cloud, since that charge, asked for again, goes to the card first asked. Later charges
+    read the payer for each new request and wait for the new payer's card (collect.stop_reason
+    no_card_on_file), so the earlier payer's card is never charged again."""
+    if before.get("contact_id") == after.get("contact_id") or (
+            "collection" not in (*configured_modes(before), *configured_modes(after))):
+        return
+    await require_mode_permissions(session, entry.company_id, entry.actor_id, ["collection"])
+    from celerp.services import collection
+    invoices = (await session.execute(select(Projection).where(
+        Projection.company_id == entry.company_id, Projection.entity_type == "doc",
+        Projection.state["source_agreement"].as_string() == entry.entity_id,
+        Projection.state["collection"]["state"].as_string().in_(sorted(collection.IN_FLIGHT)),
+    ).order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+    for row in invoices:
+        attempt = row.state.get("collection") or {}
+        if attempt.get("state") != "pending" or attempt.get("asked"):
+            raise HTTPException(status_code=409, detail=t(
+                "subscriptions.err_payer_change_in_flight", ref=row.state.get("ref_id") or row.entity_id))
+
+
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
-    building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
+    building no schedule (refuse_unbuildable_terms), and none changes who pays an agreement that
+    collects automatically without the checks of _check_payer_change. The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, finalize, revert, an import) is refused (409), except Unvoid,
     the only way out of void (write_agreement writes no status on a void agreement); so is any
@@ -341,6 +398,8 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
+    await _refuse_unknown_member(session, entry.company_id, transition.before or {}, transition.after)
+    await _check_payer_change(session, entry, transition.before or {}, transition.after)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     status, was = transition.after.get("status"), (transition.before or {}).get("status")
@@ -547,27 +606,79 @@ async def _billed_answer(session, company_id, k: int, schedule: Schedule, state:
     return await _result(session, company_id, doc_id, k, schedule, state, already_billed=True)
 
 
-async def bill_document(session, company: Company, tid: str, state: dict, schedule: Schedule, k: int) -> dict:
-    """The document period ``k`` of the agreement bills, as _bill creates it before its reference."""
-    kind = doc_kind(state)
+def amendments_of(state: dict, *, settled_outside: int | None = None) -> list[dict]:
+    """The agreement's amendments, oldest effective date first (one made later on the same day
+    after the earlier). With ``settled_outside``, those whose change period ``k`` already billed
+    through their own credit and debit documents are left out: billing that period again bills
+    the terms it was first billed on, and those documents keep the change."""
+    stored = state.get("amendments")
+    return [a for a in (stored if isinstance(stored, list) else [])
+            if isinstance(a, dict) and (settled_outside is None or a.get("period_index") != settled_outside)]
+
+
+def lines_on(state: dict, day: date, amendments: list[dict] | None = None) -> list[dict]:
+    """The agreement's lines in force on ``day``: those of the latest amendment effective by
+    then, else its own. Only mappings are lines."""
+    in_force = [a for a in (amendments_of(state) if amendments is None else amendments)
+                if str(a.get("effective")) <= day.isoformat()]
+    stored = in_force[-1].get("line_items") if in_force else state.get("line_items")
+    return [li for li in copy.deepcopy(stored if isinstance(stored, list) else []) if isinstance(li, dict)]
+
+
+def prorated(lines: list[dict], first: date, last: date, period_days: int, currency: str) -> list[dict]:
+    """``lines`` (each priced for a whole period of ``period_days``) for the days ``first`` to
+    ``last``: each line keeps its quantity and unit price, its total is its share of the days,
+    and it names those days as its service dates. A line whose amount cannot be read keeps it,
+    for the bill's own checks to refuse."""
+    days = (last - first).days + 1
+    service = {"service_start": first.isoformat(), "service_end": last.isoformat()}
+    out = []
+    for li in lines:
+        amount = document_line_amount(li, currency)
+        share = {} if amount is None else {"line_total": to_stored_float(round_money(amount * days / period_days, currency))}
+        out.append({**li, **share, **service})
+    return out
+
+
+def period_lines(state: dict, schedule: Schedule, k: int, currency: str) -> list[dict]:
+    """The lines period ``k`` bills. Amendments effective inside it split it into segments, each
+    billing the lines in force from its first day, prorated by its days of the period; with
+    none, the lines in force on its first day for the whole period."""
+    start, end = schedule.start(k), schedule.service_end(k)
+    amendments = amendments_of(state, settled_outside=k)
+    cuts = sorted({d for a in amendments if start < (d := date.fromisoformat(str(a["effective"]))) <= end})
+    if not cuts:
+        return [{**li, "service_start": start.isoformat(), "service_end": end.isoformat()}
+                for li in lines_on(state, start, amendments)]
+    starts = [start, *cuts]
+    ends = [*(d - timedelta(days=1) for d in cuts), end]
+    days = (end - start).days + 1
+    return [li for first, last in zip(starts, ends) for li in prorated(lines_on(state, first, amendments), first, last, days, currency)]
+
+
+def agreement_currency(state: dict, company: Company) -> str:
+    return state.get("currency") or (company.settings or {}).get("currency", "USD")
+
+
+async def agreement_document(session, company: Company, tid: str, state: dict, doc_type: str, lines: list[dict],
+                             service: dict) -> dict:
+    """A document the agreement issues of ``doc_type`` with ``lines`` (each already naming its
+    service dates), for its contact, in its currency and money terms, issued today, linked to
+    the agreement and period by ``service``. The document is a record of its own, so its lines
+    get ids of their own."""
     today = business_today((company.settings or {}).get("timezone"))
     contact_id = state.get("contact_id")
     contact = (await session.get(Projection, {"company_id": company.id, "entity_id": contact_id})) if contact_id else None
     contact_state = (contact.state or {}) if contact is not None and contact.entity_type == "contact" else {}
-    service = {"source_agreement": tid, "period_index": k,
-               "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
-    # Only mappings are lines: anything else stored holds none, which the bill's checks then refuse.
-    # The bill is a record of its own, so its lines get ids of their own.
-    stored = state.get("line_items")
-    lines = [{**li, **service} for li in strip_line_ids(copy.deepcopy(stored if isinstance(stored, list) else []))
-             if isinstance(li, dict)]
+    linked = {"source_agreement": service["source_agreement"], "period_index": service["period_index"]}
+    lines = [{**li, **linked} for li in strip_line_ids(lines)]
     auto_note = f"Auto-created from subscription template {template_label(state, tid)}"
     notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
     money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}
-    currency = money_inputs["currency"] = state.get("currency") or (company.settings or {}).get("currency", "USD")
+    currency = money_inputs["currency"] = agreement_currency(state, company)
     money = document_money(money_inputs, lines, currency, keep_unrated_tax=True)
     doc = {
-        "doc_type": kind, "contact_id": contact_id,
+        "doc_type": doc_type, "contact_id": contact_id,
         "contact_name": contact_state.get("name") or "", "contact_company_name": contact_state.get("company_name") or "",
         "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
         "notes": notes, **service,
@@ -575,6 +686,42 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
     if due := compute_due_date(today, state.get("payment_terms"), company):
         doc["due_date"] = due
     return doc
+
+
+async def bill_document(session, company: Company, tid: str, state: dict, schedule: Schedule, k: int) -> dict:
+    """The document period ``k`` of the agreement bills, as _bill creates it before its reference."""
+    service = {"source_agreement": tid, "period_index": k,
+               "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
+    lines = period_lines(state, schedule, k, agreement_currency(state, company))
+    return await agreement_document(session, company, tid, state, doc_kind(state), lines, service)
+
+
+async def issue_document(session, company: Company, tid: str, state: dict, doc: dict, actor, key: str) -> str:
+    """Create ``doc`` for the agreement under the idempotency ``key``, numbered and finalized,
+    with attempt 1 of its collection opened when it is an invoice of an agreement that collects
+    automatically: every invoice an agreement issues comes through here, so none skips its
+    collection. Caller holds the locks and commits."""
+    from celerp_docs.routes import finalize_document
+    from celerp_docs.sequences import claim_number, draft_counter
+
+    kind = doc["doc_type"]
+    # The template may predate a precision change; its units are checked on the document it makes.
+    await require_moving_fits_units(session, company.id, tid, "doc", doc, template=template_label(state, tid))
+    ref = await claim_number(session, company, draft_counter(kind))
+    doc_id = f"doc:{ref}"
+    doc = {**doc, "ref_id": ref, **resolve_document_terms(state, company.settings or {}, kind)}
+    if "customer_note" in state:
+        doc["customer_note"] = state.get("customer_note") or ""
+    await emit_event(session, fund_grant=granted_from_stored(doc["line_items"]),
+                     company_id=company.id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
+                     data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=key)
+    await session.flush()
+    await finalize_document(doc_id, company.id, actor, session, commit=False)
+    await session.flush()
+    if kind == "invoice" and state.get("generation_mode") == COLLECT_MODE:
+        from celerp.services.collection import open_attempt
+        await open_attempt(session, company.id, (await lock_projections(session, company.id, [doc_id]))[doc_id], 1)
+    return doc_id
 
 
 class BillRefused(HTTPException):
@@ -628,8 +775,6 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     checks) is a BillRefused. A billing ``request`` under its idempotency ``key`` keeps its
     answer on the claim's own event, for replay_result to repeat."""
     from celerp.accounting_roles import KeyedRefusal
-    from celerp_docs.routes import finalize_document
-    from celerp_docs.sequences import claim_number, draft_counter
 
     kind = doc_kind(state)
     entry = (state.get("periods") or {}).get(str(k)) or {}
@@ -639,18 +784,7 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         return earlier.entity_id
     try:
         doc = await bill_document(session, company, tid, state, schedule, k)
-        # The template may predate a precision change; its units are checked on the bill it makes.
-        await require_moving_fits_units(session, company_id, tid, "doc", doc, template=template_label(state, tid))
-        ref = await claim_number(session, company, draft_counter(kind))
-        doc_id = f"doc:{ref}"
-        doc = {**doc, "ref_id": ref, **resolve_document_terms(state, company.settings or {}, kind)}
-        if "customer_note" in state:
-            doc["customer_note"] = state.get("customer_note") or ""
-        await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
-                         data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=claim_key)
-        await session.flush()
-        await finalize_document(doc_id, company_id, actor, session, commit=False)
-        await session.flush()
+        doc_id = await issue_document(session, company, tid, state, doc, actor, claim_key)
     except (HTTPException, KeyedRefusal) as exc:
         raise BillRefused(state, tid, exc) from exc
     periods = periods_of(state)
@@ -712,6 +846,130 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
                          request=request, key=req)
     state = (await session.get(Projection, {"company_id": company_id, "entity_id": template_id})).state
     return await _result(session, company_id, doc_id, k, Schedule.from_state(state), state, already_billed=False)
+
+
+def amend_refusal(status_code: int, key: str, **params) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=catalog_refusal(f"subscriptions.{key}", **params))
+
+
+def amended_lines(current: list[dict], quantities: dict[str, float], currency: str) -> list[dict]:
+    """``current`` with each line named in ``quantities`` at its new quantity and the same unit
+    charge, so its total follows; a line whose unit charge cannot be read keeps none, for the
+    bill's own checks to refuse."""
+    out = []
+    for li in current:
+        if (line_id := li.get("line_id")) not in quantities:
+            out.append(li)
+            continue
+        qty = quantities[line_id]
+        unit = document_line_unit(li, currency)
+        changed = {k: v for k, v in li.items() if k != "line_total"}
+        out.append({**changed, "quantity": qty,
+                    **({} if unit is None else {"line_total": to_stored_float(round_money(unit * Decimal(str(qty)), currency))})})
+    return out
+
+
+async def amend(session: AsyncSession, company_id, tid: str, *, effective: date, quantities: dict[str, float],
+                request_key: str, actor) -> dict:
+    """Change line quantities from ``effective`` on. The agreement keeps each amendment as the
+    full set of lines in force from its date (lines_on), so every period from then bills them
+    (period_lines). A date inside the latest billed period settles the days from it to the
+    period's end (or the next amendment) at once: a credit note for the old terms against the
+    document that billed them, which it settles, and a document for the new terms, both linked
+    to the agreement and the period. A date before that period's start is refused, as is a
+    quantity below 0, a line the agreement does not have and a change that changes nothing. The
+    same ``request_key`` repeats the first answer; with a different request it is refused.
+    Caller commits."""
+    company = await locked_company(session, company_id)
+    key = f"amend:{tid}:{request_key}"
+    request = {"effective": effective.isoformat(), "quantities": quantities}
+    if (prior := await find_event_by_idempotency(session, company_id, key)) is not None:
+        if (prior.metadata_ or {}).get("request") != request:
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_request_key_reused"))
+        return prior.metadata_["result"]
+    proj = await locked_agreement(session, company_id, tid)
+    state = proj.state
+    refuse_ended(state, tid)
+    if state.get("status") == "draft":
+        raise amend_refusal(409, "err_amend_draft")
+    schedule = Schedule.from_state(state)
+    billed = max((k for k, p in schedule.periods.items() if p.get("state") == BILLED), default=None)
+    if billed is not None and effective < schedule.start(billed):
+        raise amend_refusal(409, "err_amend_before_billed", day=schedule.start(billed).isoformat())
+    if any(q < 0 for q in quantities.values()):
+        raise amend_refusal(422, "err_amend_quantity")
+    current = lines_on(state, effective)
+    if set(quantities) - {li.get("line_id") for li in current}:
+        raise amend_refusal(422, "err_amend_line")
+    if all(li.get("quantity") == quantities[li.get("line_id")] for li in current if li.get("line_id") in quantities):
+        raise amend_refusal(422, "err_amend_unchanged")
+    currency = agreement_currency(state, company)
+    new = amended_lines(current, quantities, currency)
+    day = effective.isoformat()
+    entry = {"effective": day, "line_items": new, "at": now_stamp(), "by": str(actor.id) if actor.id else None}
+    result = {"effective": day, "credit_note_id": None, "invoice_id": None}
+    if billed is not None and effective <= schedule.service_end(billed):
+        settled = await settle_amendment(session, company, tid, state, schedule, billed, effective, current, new,
+                                         actor, key)
+        entry.update(period_index=billed, **settled)
+        result.update(settled, credit_note_ref=await doc_ref(session, company_id, settled["credit_note_id"]),
+                      invoice_ref=await doc_ref(session, company_id, settled["invoice_id"]))
+    amendments = sorted([*amendments_of(state), entry], key=lambda a: str(a.get("effective")))
+    await write_agreement(session, company_id, tid, {"amendments": amendments}, actor.id, key=key,
+                          metadata={"request": request, "result": result})
+    return result
+
+
+async def settle_amendment(session, company: Company, tid: str, state: dict, schedule: Schedule, k: int,
+                           effective: date, old: list[dict], new: list[dict], actor, key: str) -> dict:
+    """Settle an amendment effective inside billed period ``k`` (see amend): its days run to the
+    period's service end or the day before the next amendment. The credit note credits the
+    document that billed those days on the old terms (the period's own, or an earlier
+    amendment's within the period), each line naming the line it credits."""
+    from celerp.accounting_roles import KeyedRefusal
+
+    day = effective.isoformat()
+    period_end = schedule.service_end(k)
+    later = [date.fromisoformat(str(a["effective"])) for a in amendments_of(state) if str(a.get("effective")) > day]
+    last = min([period_end, *(d - timedelta(days=1) for d in later)])
+    in_force = [a for a in amendments_of(state) if str(a.get("effective")) <= day]
+    settled_by = in_force[-1] if in_force and in_force[-1].get("period_index") == k else None
+    covering_id = settled_by["invoice_id"] if settled_by else schedule.periods[k]["doc_id"]
+    covering = await doc_state(session, company.id, covering_id) or {}
+    covered = [li for li in covering.get("line_items") or [] if isinstance(li, dict) and
+               str(li.get("service_start") or covering.get("service_start")) <= day
+               <= str(li.get("service_end") or covering.get("service_end"))]
+    days = (period_end - schedule.start(k)).days + 1
+    currency = agreement_currency(state, company)
+    service = {"source_agreement": tid, "period_index": k, "service_start": day, "service_end": last.isoformat()}
+    credits = [{**li, **({"source_line_id": covered[i].get("line_id")} if i < len(covered) else {})}
+               for i, li in enumerate(prorated(old, effective, last, days, currency))]
+    kind = doc_kind(state)
+    note_type = "credit_note" if kind == "invoice" else "debit_note"
+    try:
+        note = await agreement_document(session, company, tid, state, note_type, credits, service)
+        note_id = await issue_document(session, company, tid, state, {**note, "original_doc_id": covering_id},
+                                       actor, f"{key}:cn")
+        doc = await agreement_document(session, company, tid, state, kind, prorated(new, effective, last, days, currency),
+                                       service)
+        doc_id = await issue_document(session, company, tid, state, doc, actor, f"{key}:dn")
+        await _apply_left_over(session, company, note_id, doc_id, actor, f"{key}:apply")
+    except (HTTPException, KeyedRefusal) as exc:
+        raise BillRefused(state, tid, exc) from exc
+    return {"credit_note_id": note_id, "invoice_id": doc_id}
+
+
+async def _apply_left_over(session, company: Company, note_id: str, doc_id: str, actor, key: str) -> None:
+    """What the amendment's note has left once it settled its own document (all of it when that
+    was already paid) is applied to the amendment's new document, before anything is collected
+    on it: the same paired application a user makes by hand."""
+    from celerp_docs.routes import _payable_balance, apply_credit_note
+    note, doc = await doc_state(session, company.id, note_id) or {}, await doc_state(session, company.id, doc_id) or {}
+    amount = min(_payable_balance(note), _payable_balance(doc))
+    if amount > 0:
+        await apply_credit_note(session, company.id, note_id, doc_id, to_stored_float(amount),
+                                payment_date=note.get("issue_date"), actor_id=actor.id, source="subscription",
+                                idempotency_key=key)
 
 
 async def agreements(session: AsyncSession, company_id) -> list[Projection]:
@@ -810,18 +1068,23 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
                       limit: int = 24, before: int | None = None) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
-    the earlier documents waiting for history review, each with its candidate periods; and the
-    ones set aside as billing no period of their own. An ENDED agreement has no next bill date
-    and no oldest due row, and ``ended`` says why it bills nothing. A template not yet on a
+    the earlier documents waiting for history review, each with its candidate periods; the
+    ones set aside as billing no period of their own; and the number of each document a quantity
+    change issued (read now, so a renumbered document shows its current number). An ENDED
+    agreement, or one whose schedule is over (its term or the period it stops at has passed
+    with every period billed or skipped), has no next bill date and no oldest due row, and
+    ``ended`` says why it bills nothing. A template not yet on a
     schedule has none of these, and ``not_moved`` says why; an agreement whose stored terms
     build no schedule is refused (409) with the schedule's reason."""
     ended = t(_UNBILLABLE[state["status"]]) if state.get("status") in ENDED else None
     if not state.get("anchor_date"):
         return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [], "ended": ended,
-                "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
+                "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state), "amendment_refs": {}}
     if (exc := unscheduled(state)) is not None:
         raise schedule_refusal(409, exc) from exc
     schedule = Schedule.from_state(state)
+    if ended is None and schedule.ended(today):
+        ended = t("subscriptions.err_bill_ended")
     nxt = None if ended else schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
     replayable = await replayable_operations(session, company_id)
@@ -849,9 +1112,12 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
+    amendment_refs = {d: await doc_ref(session, company_id, d) for a in amendments_of(state)
+                      for d in (a.get("credit_note_id"), a.get("invoice_id")) if d}
     return {"next_bill_date": nxt.isoformat() if nxt else None, "ended": ended,
             "oldest_open_index": oldest_open, "oldest_due_row": oldest_due_row,
-            "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside}
+            "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside,
+            "amendment_refs": amendment_refs}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
@@ -1030,7 +1296,8 @@ def configured_modes(state: dict) -> list[str]:
     Send automatically on a manual agreement is not one of them."""
     if state.get("generation_mode") not in AUTO_MODES:
         return []
-    return ["generation", *(["sending"] if state.get("auto_send") else [])]
+    return ["generation", *(["sending"] if state.get("auto_send") else []),
+            *(["collection"] if state.get("generation_mode") == COLLECT_MODE else [])]
 
 
 def modes_in_force(state: dict) -> list[str]:
@@ -1146,6 +1413,8 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
     if held:
         await notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
     report.after_commit.append(_expire_attempts_for(company_id))
+    from celerp_subscriptions.collect import pass_for
+    report.after_commit.append(pass_for(company_id))
     return report
 
 

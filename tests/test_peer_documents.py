@@ -43,7 +43,7 @@ async def test_draft_document_uses_existing_importer_and_maps_dependencies(monke
         return f"{entity_type}:mapped"
     async def imported(session, company_id, user, role, settings, records, **kwargs):
         assert company_id == grant.company_id
-        assert user.id and role == "owner" and kwargs == {"upsert": True, "post_ledger": True}
+        assert user.id and role == "owner" and kwargs == {"origin": "connected_company", "upsert": True, "post_ledger": True}
         received.extend(records)
         return SimpleNamespace(records=[SimpleNamespace(status="created")])
     async def commit(*args, **kwargs):
@@ -203,12 +203,11 @@ async def test_issued_transition_finalizes_existing_draft_using_canonical_servic
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,kind", [
-    ("void", "invoice"), ("closed", "invoice"), ("final", "credit_note"),
-    ("sent", "bill"), ("paid", "memo"),
+    ("closed", "invoice"), ("final", "credit_note"), ("sent", "bill"), ("paid", "memo"),
 ])
 async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
     async def claim(*args, **kwargs):
-        return SimpleNamespace(replay=False, target_id="doc:target")
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     with pytest.raises(HTTPException) as e:
         await documents.receive_document(
@@ -216,6 +215,18 @@ async def test_unsafe_lifecycle_stays_deferred(monkeypatch, status, kind):
             source_revision=6,
             data={"doc_type": kind, "status": status})
     assert e.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_void_of_a_document_never_copied_is_skipped(monkeypatch):
+    """A void of a document these books never took (it was held, for a fund or anything
+    else) has nothing to void: it is skipped, so the hold it replaces clears."""
+    async def claim(*args, **kwargs):
+        return SimpleNamespace(replay=False, target_id="doc:target", mapping=None)
+    monkeypatch.setattr(documents, "claim_peer_revision", claim)
+    assert await documents.receive_document(
+        _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=6,
+        data={"doc_type": "invoice", "status": "void"}) == "skipped"
 
 
 
@@ -555,7 +566,7 @@ async def test_a_receiving_refusal_does_not_name_the_receiving_record(monkeypatc
         return SimpleNamespace(replay=False, target_id="doc:target")
     async def imported(*args, **kwargs):
         return SimpleNamespace(records=[SimpleNamespace(
-            status="failed", message="doc:target: The books are locked to 2026-09-30.")])
+            status="failed", message="doc:target: The books are locked to 2026-09-30.", fix=None)])
     monkeypatch.setattr(documents, "claim_peer_revision", claim)
     monkeypatch.setattr(import_service, "import_doc_records", imported)
     with pytest.raises(HTTPException) as refused:

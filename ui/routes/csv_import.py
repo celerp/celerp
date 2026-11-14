@@ -1613,18 +1613,25 @@ async def import_numbered(token: str, resource: str, records: list[dict], number
     """Send ``records`` to the ``resource`` batch import, each under the id of the one existing
     record with exactly its number, or a new id when there is none, so a re-imported row updates
     the record it matched. A row whose number several records already share is reported as an
-    error and not sent."""
+    error and not sent. A record's ``fund_choices`` ({"document": choice, "lines": {line number:
+    choice}}) go with the batch under the id it is sent with."""
     sendable: list[dict] = []
     errors: list[str] = []
+    fund_choices: dict = {"records": {}, "lines": {}}
     for rec in records:
+        chosen = rec.pop("fund_choices", None) or {}
         number = rec["data"][number_field]
         ids = await api.numbered_ids(token, resource, number, rec["data"].get("doc_type"))
         if len(ids) > 1:
             errors.append(t("msg.import_number_shared", number=number, count=len(ids)))
             continue
         rec["entity_id"] = ids[0] if ids else f"{prefix}:{uuid.uuid4()}"
+        if chosen.get("document"):
+            fund_choices["records"][rec["entity_id"]] = chosen["document"]
+        fund_choices["lines"].update({f"{rec['entity_id']}:{n}": v for n, v in (chosen.get("lines") or {}).items()})
         sendable.append(rec)
-    result = (await api.batch_import(token, f"/{resource}/import/batch", sendable, upsert=upsert)
+    result = (await api.batch_import(token, f"/{resource}/import/batch", sendable, upsert=upsert,
+                                     fund_choices=fund_choices if any(fund_choices.values()) else None)
               if sendable else {"created": 0, "skipped": 0})
     return {**result, "errors": errors + list(result.get("errors") or [])}
 

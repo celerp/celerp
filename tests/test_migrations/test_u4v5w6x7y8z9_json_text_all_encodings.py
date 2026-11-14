@@ -21,7 +21,7 @@ from celerp.json_text import SYNC_TEXT, dump_json
 from company_backup_support import member, owner, token
 from migration_support import auth, real_client  # noqa: F401
 from shipped_sources import shipped_sources
-from .conftest import run_migration_ops, throwaway_db, upgrade_to
+from .conftest import head_rev, run_migration_ops, throwaway_db, upgrade_to
 from .test_r1s2t3u4v5w6_projections_canonical_number_lookup import ENCODINGS
 from .test_s2t3u4v5w6x7_json_text_utf8 import BEFORE_STATE_INDEX, RELEASED_HEAD, THAI, _sql
 
@@ -188,7 +188,7 @@ def test_u4v5w6x7y8z9_rewrites_escapes_on_every_encoding(encoding, start):
         assert _sql(sync_url, "SELECT CAST(settings AS text) FROM companies WHERE slug = 'demo'") == [
             (dump_json({"company_address": THAI}),)]
         assert {k: arrow[k] for k in ("nul", "lone")} == {k: _arrow(sync_url)[k] for k in ("nul", "lone")}
-        assert _sql(sync_url, "SELECT version_num FROM alembic_version") == [("u4v5w6x7y8z9",)]
+        assert _sql(sync_url, "SELECT version_num FROM alembic_version") == [(head_rev(),)]
 
 
 @pytest.mark.parametrize("encoding", ENCODINGS)
@@ -266,7 +266,7 @@ async def test_get_docs_reads_every_row_after_u4v5w6x7y8z9(encoded_db, real_engi
     before, arrow = _stored(sync_url), _arrow(sync_url)
 
     await asyncio.to_thread(_migrate, async_url)
-    assert _sql(sync_url, "SELECT version_num FROM alembic_version") == [(REVISION.split("_")[0],)]
+    assert _sql(sync_url, "SELECT version_num FROM alembic_version") == [(head_rev(),)]
 
     user = await owner(real_engine)
     await member(real_engine, user, cid, "owner")

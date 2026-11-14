@@ -6,7 +6,8 @@ or list out of an existing one (duplicate, convert, buy a consignment).
 A copy is the source's parties and its lines, as a new draft. Each line keeps only what a user
 enters on a line, which the line save steps own (line_bodies): a count, an adjustment, a write-off,
 a draw or a receipt stays with the source line. The record keeps its contact, the currency its
-line prices are in, and its payment term, which sets the copy's due date; everything else (terms,
+line prices are in, its payment term, which sets the copy's due date, and where it came from
+and the fund chosen for it (peer_lines.copied_header; the door emits under granted_from_stored); everything else (terms,
 notes, commission, the From block, a List's location, custom fields) is for the user to fill on the
 copy. A conversion (conversion_of) also keeps the money the other side agreed to and a tax amount
 with no rate included (CONVERSION_KEYS), so it charges what was quoted. The door adds the new
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from celerp.services.business_time import business_date_of
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
+from celerp.services.peer_lines import copied_header
 from celerp_contacts.references import contact_snapshot
 from celerp_docs.doc_money import CONVERSION_KEYS
 from celerp_docs.line_bodies import LineItem, WriteoffLineBody
@@ -41,7 +43,7 @@ def copy_of(state: dict, settings: dict) -> dict:
     no term to follow there is no due date, never the source's own, set against its earlier issue date."""
     issued = business_date_of(None, (settings or {}).get("timezone"))
     due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(settings or {}))
-    return {**{k: state[k] for k in RECORD_KEYS if k in state},
+    return {**{k: state[k] for k in RECORD_KEYS if k in state}, **copied_header(state),
             "line_items": [copied_line(li) for li in state.get("line_items") or [] if isinstance(li, dict)],
             "status": "draft", "issue_date": issued, **({"due_date": due} if due else {})}
 

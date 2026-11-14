@@ -41,7 +41,7 @@ from celerp_fixed_assets.operations import (
     in_use,
     reverse_move,
 )
-from celerp_fixed_assets.store import _emit, _state
+from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
 from sqlalchemy import select
 
@@ -309,7 +309,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         (their_movement,) = await asset_movements(session, theirs, target["asset_id"])
         journals = [(company_id, latest["journal_id"]), (theirs, their_movement.get("journal_id"))]
         held_in = {company_id: books.currency, theirs: their_books.currency}
-        states = [(await _state(session, c, j), held_in[c]) for c, j in journals if j]
+        states = [(await _journal(session, c, j), held_in[c]) for c, j in journals if j]
         shown = {"number": asset["number"], "date": day, "company": name,
                  "journals": [_reversed_lines(je, currency) for je, currency in states
                               if je and je.get("status") == "posted"]}

@@ -27,12 +27,13 @@ from celerp.accounting_roles import (
     POSTING_ACCOUNTS_PATH,
     POSTING_ROLES_SCHEMA,
     POSTABLE_ROLES,
+    RECOGNIZE_FIELD,
     ROLE_GROUPS,
     ROLE_LABELS,
     ROLE_TYPES,
     SCHEMA_KEY,
     SCOPES_KEY,
-    SEEDED_TARGETS,
+    DEFAULT_CODES,
     SOURCE_CONTROLS_KEY,
     AccountRole,
     allowed_types,
@@ -101,6 +102,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add("inventory")
             if state.get("landed_costs"):
                 groups.add("landed_cost")
+            if state.get(RECOGNIZE_FIELD):
+                groups.add("recognition")
             continue
         if state.get("doc_type") == "consignment_in":
             groups.add("consignment")
@@ -266,7 +269,7 @@ def _proposals(chart: dict[str, dict], reserved: set[str]) -> dict[str, dict]:
     taken = set(chart) | reserved
     out: dict[str, dict] = {}
     for role in AccountRole:
-        base = SEEDED_TARGETS[role]
+        base = DEFAULT_CODES[role]
         code, n = base, 0
         while code in taken:
             n += 1

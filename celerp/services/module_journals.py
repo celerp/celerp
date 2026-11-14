@@ -25,12 +25,13 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from celerp.accounting_roles import refusal
 from celerp.models.projections import Projection
@@ -51,13 +52,15 @@ class JournalLine:
     with ``recognized_in``, by that posted journal (a bill line the module took over) or,
     as ``ledger_key(day)``, by the ledger to that day (a balance brought in at a cutover).
     Any other line is a new destination and must be an account the chart accepts for
-    new postings."""
+    new postings. ``fund_id`` is the fund the line carries (attribution rule P: the fund
+    of the object whose value it moves); None is the unrestricted group."""
     account: str
     debit: Decimal = Decimal(0)
     credit: Decimal = Decimal(0)
     role: str | None = None
     moves_recognized: bool = False
     recognized_in: str | None = None
+    fund_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -222,8 +225,15 @@ async def recognized_balances(session, company_id, module: str,
     if not days:
         query = query.where(Projection.entity_id.startswith(f"je:mod:{module}:", autoescape=True) | Projection.entity_id.in_(named))
     rows = (await session.execute(query)).all()
+    from celerp.services.auto_je import live_entries
+
     dated = {eid: str(state.get("ts") or "")[:10] for eid, state in rows}
     balances = dict.fromkeys(keys, Decimal(0))
+    # A line recognized in an entry Change fund replaced counts against the copy standing for it.
+    live = await live_entries(session, company_id, [
+        e.get("recognized_in") for eid, state in rows if eid.startswith(f"je:mod:{module}:")
+        for e in state.get("entries") or []
+        if isinstance(e, dict) and e.get("recognized_in") and not e["recognized_in"].startswith(LEDGER_PREFIX)])
 
     def add(key, entry):
         if key in balances:
@@ -241,6 +251,7 @@ async def recognized_balances(session, company_id, module: str,
         own = entity_id.startswith(f"je:mod:{module}:")
         for entry in state.get("entries") or []:
             account, source = entry.get("account"), entry.get("recognized_in")
+            source = live.get(source, source)
             if own:
                 add((account, source), entry)
             elif entity_id in named:
@@ -279,7 +290,10 @@ async def _check_accounts(session, company_id, module: str, lines: list[JournalL
 
 def _intent_hash(operation: str, date: str, lines: list[JournalLine], source: JournalSource, intent: dict) -> str:
     body = {"operation": operation, "date": date, "source": source.fields(), "intent": intent,
-            "lines": [{**asdict(ln), "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
+            # A line with no fund hashes without the field, so a journal stored before lines
+            # carried funds still matches its own retry.
+            "lines": [{**{k: v for k, v in asdict(ln).items() if k != "fund_id" or v},
+                       "debit": str(_amount(ln.debit)), "credit": str(_amount(ln.credit))}
                       for ln in lines]}
     return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -313,12 +327,14 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
             entry["account_roles"] = [ln.role]
         if ln.recognized_in:
             entry["recognized_in"] = ln.recognized_in
+        if ln.fund_id:
+            entry["fund_id"] = ln.fund_id
         entries.append(entry)
     from celerp.services.auto_je import _emit_auto_posted_je
 
     try:
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=source.entity_id,
             idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo=memo, entries=entries,
             metadata_={"module": module, "operation": operation}, ts=date,
             extra={"source": {"module": module, **source.fields()}, "intent_hash": intent_hash})
@@ -330,9 +346,13 @@ async def post_journal(session, *, company_id, user_id, module: str, key: str, o
 
 async def reverse_journal(session, *, company_id, user_id, module: str, key: str, operation: str,
                           reason: str, reversed_on: str | None = None) -> ReversedJournal:
-    """Void ``module``'s journal under ``key``; voiding it again returns it as it is."""
+    """Void ``module``'s journal under ``key``, at the entry standing for it (the copy Change
+    fund posted in its place, when it did: auto_je.current_entry); voiding it again returns
+    it as it is."""
+    from celerp.services.auto_je import current_entry
+
     _check_caller(module)
-    je_id = _je_id(module, key)
+    je_id = await current_entry(session, company_id, _je_id(module, key))
     op = _operation(module, operation)
     await _authorize(session, company_id, user_id, module, op)
     row = (await lock_projections(session, company_id, [je_id])).get(je_id)
@@ -353,8 +373,59 @@ async def reverse_journal(session, *, company_id, user_id, module: str, key: str
     return ReversedJournal(je_id, False)
 
 
-async def journal_status(session, *, company_id, module: str, key: str) -> str | None:
-    """The status of ``module``'s journal under ``key``, or None when it was never posted."""
+async def move_journal_funds(session, *, company_id, user_id, module: str, je_id: str, reason: str,
+                             relabel: Callable[[list[dict]], list[dict]]) -> str:
+    """Change fund moving a journal of ``module`` that carries a document's fund: the entry
+    standing for ``je_id`` (auto_je.current_entry) is voided naming its copy and posted again
+    as ``{je_id}:fund:{n}`` at its own date, keeping its memo, source and request hash, its
+    lines rewritten by ``relabel``. Runs only inside an open fund change (RuntimeError
+    otherwise), so the copy is judged with the action. Returns the id now standing for it;
+    a journal ``relabel`` leaves as it is, or one no longer posted, is left alone."""
+    from celerp.events.engine import emit_event
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.auto_je import _emit_auto_posted_je, current_entry
+    from celerp.services.journal_accounts import open_fund_change
+    from celerp.services.peer_lines import copy_posted_lines
+
     _check_caller(module)
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": _je_id(module, key)})
+    if open_fund_change(session) is None:
+        raise RuntimeError("A module journal moves funds only inside an open fund change")
+    live = await current_entry(session, company_id, je_id)
+    row = (await lock_projections(session, company_id, [live])).get(live)
+    state = dict(row.state or {}) if row is not None else {}
+    if state.get("status") != "posted":
+        return live
+    lines = copy_posted_lines(live, state.get("entries") or [], reverse=False)
+    moved = relabel(lines)
+    if moved == lines:
+        return live
+    root = live.split(":fund:", 1)[0]
+    taken = await session.scalar(select(func.count()).select_from(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id.startswith(f"{root}:fund:", autoescape=True)))
+    copy_id = f"{root}:fund:{taken + 1}"
+    created = await session.scalar(select(LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == live,
+        LedgerEntry.event_type == "acc.journal_entry.created").order_by(LedgerEntry.id.desc()).limit(1))
+    await emit_event(
+        session, company_id=company_id, entity_id=live, entity_type="journal_entry",
+        event_type="acc.journal_entry.voided", data={**je_void_data(reason, state), "replaced_by": copy_id},
+        actor_id=user_id, location_id=None, source="fund_change", idempotency_key=f"{live}:fund_void",
+        metadata_={"module": module, "operation": (created or {}).get("operation")})
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=copy_id,
+        record_id=(state.get("source") or {}).get("entity_id"), idem_create=f"{copy_id}:c",
+        idem_posted=f"{copy_id}:p", memo=state.get("memo") or "", entries=moved, ts=state.get("ts"),
+        metadata_={"module": module, "operation": (created or {}).get("operation"), "restores": live},
+        extra={"source": state.get("source"), "intent_hash": state.get("intent_hash")})
+    return copy_id
+
+
+async def journal_status(session, *, company_id, module: str, key: str) -> str | None:
+    """The status of the entry standing for ``module``'s journal under ``key`` (the copy
+    Change fund posted in its place, when it did), or None when it was never posted."""
+    from celerp.services.auto_je import current_entry
+
+    _check_caller(module)
+    row = await session.get(Projection, {"company_id": company_id,
+                                         "entity_id": await current_entry(session, company_id, _je_id(module, key))})
     return row.state.get("status") if row is not None else None

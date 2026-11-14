@@ -22,7 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
-from celerp.events.engine import emit_event, write_period_lock
+from celerp.events.engine import (
+    emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
+)
 from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
@@ -43,7 +45,8 @@ from celerp_accounting.chart_rules import (
     remove_account,
     trimmed_text,
 )
-from celerp_accounting.import_service import AccImportRecord
+from celerp_accounting.funds import post_fund_movement
+from celerp_accounting.import_service import AccImportRecord, ImportFundChoices
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
@@ -53,6 +56,7 @@ from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
+from celerp.services.peer_lines import UNRESTRICTED, held_accounts, waits_for_funds
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
 )
@@ -62,14 +66,16 @@ from celerp.services.peer_import import SourceRevision, peer_batch
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
-from celerp.services.journal_accounts import require_destinations
+from celerp.services.journal_accounts import (
+    YEAR_CLOSE, fund_account_balances, funds_by_id, hold_fund_ledger, pooled_split, require_destinations, split_lines_by_fund,
+)
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
     books_currency, checked_exchange_rate, currency_dp, line_moves, require_line_amount, round_money, split_to_base,
     to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import locked_authority, require_permission
-from celerp.schemas.numbers import FiniteFloat
+from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
@@ -95,6 +101,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1160", "name": "Asset Sale Clearing", "account_type": "asset", "parent_code": "1100"},
+    {"code": "1170", "name": "Disputed Payments", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000", "cash_flow_category": "investing"},
     {"code": "1210", "name": "Property, Plant and Equipment", "account_type": "asset", "parent_code": "1200"},
     {"code": "1220", "name": "Accumulated Depreciation", "account_type": "asset", "parent_code": "1200"},
@@ -109,6 +116,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "2130", "name": "Withholding Tax Payable", "account_type": "liability", "parent_code": "2100"},
     {"code": "2140", "name": "Accrued Expenses", "account_type": "liability", "parent_code": "2100"},
     {"code": "2150", "name": "Social Security Payable", "account_type": "liability", "parent_code": "2100"},
+    {"code": "2160", "name": "Deferred Revenue", "account_type": "liability", "parent_code": "2100"},
     {"code": "2200", "name": "Non-Current Liabilities", "account_type": "liability", "parent_code": "2000", "cash_flow_category": "financing"},
     {"code": "2210", "name": "Long-term Loans", "account_type": "liability", "parent_code": "2200"},
     # --- Equity ---
@@ -141,6 +149,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6800", "name": "Office Supplies", "account_type": "expense", "parent_code": "6000"},
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6940", "name": "Online Payment Fees", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6945", "name": "Payment Dispute Losses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
     {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
@@ -174,6 +183,7 @@ class AccountPatch(BaseModel):
 
 class AccBatchImportRequest(BaseModel):
     records: list[AccImportRecord] = Field(..., max_length=500)
+    fund_choices: ImportFundChoices | None = None
 
 
 class BatchImportResult(BaseModel):
@@ -282,6 +292,9 @@ _SEEDED_ANCHORS: dict[AccountRole, tuple[str, ...]] = {
     AccountRole.DISPOSAL_LOSS: ("6000", "6950"),
     AccountRole.IMPAIRMENT_LOSS: ("6000", "6400"),
     AccountRole.REVALUATION_SURPLUS: ("3000", "3200"),
+    AccountRole.DEFERRED_REVENUE: ("2100", "2110"),
+    AccountRole.DISPUTED_PAYMENTS: ("1100", "1120"),
+    AccountRole.PAYMENT_DISPUTE_LOSSES: ("6000", "6950"),
 }
 
 # Roles whose seeded account every seeded chart has always held, so the account found
@@ -300,12 +313,12 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
     never extended; its company chooses the account in Posting Accounts. An existing
     account is never changed. Returns the roles whose account was added or found as
     seeded, which the caller may then map to it."""
-    from celerp.accounting_roles import ROLES_KEY, SOURCE_CONTROLS_KEY, SEEDED_TARGETS
+    from celerp.accounting_roles import ROLES_KEY, SEEDED_TARGETS, chart_from_elsewhere
     from sqlalchemy import select as _select
 
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {}) if company is not None else {}
-    if company is None or SOURCE_CONTROLS_KEY in settings or settings.get("restored_backup"):
+    if company is None or chart_from_elsewhere(settings):
         return frozenset()
     mapped = settings.get(ROLES_KEY) or {}
     wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
@@ -801,7 +814,8 @@ async def batch_import_accounting(
     # Hold the company lock so two imports naming one entry cannot both see it as new,
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
-    outcome = await import_service.import_journal_records(session, company_id, user.id, body.records)
+    outcome = await import_service.import_journal_records(session, company_id, user.id, body.records,
+                                                         origin="file_import", fund_choices=body.fund_choices)
     await session.commit()
     return BatchImportResult(**outcome.route_counts())
 
@@ -1429,6 +1443,9 @@ async def _journal_payload(
             "memo": _je_memo(state.get("memo", ""), ref),
             "status": state.get("status"),
             "je_type": state.get("je_type"),
+            # Set on an entry that came from outside (an import, the accountant): once
+            # posted, its funds are changed with Change fund.
+            "origin": state.get("origin"),
             "void_reason": state.get("void_reason"),
             # Set on an entry voided out of a locked period and on its reversal row.
             "reversed_on": state.get("reversed_on"),
@@ -1776,6 +1793,9 @@ class ManualJELine(BaseModel):
     # transaction, and the books already store every posting in base currency.
     currency: str | None = None
     rate: FiniteFloat | None = None
+    # The fund the line belongs to; none puts it in the unrestricted group. The journal
+    # boundary judges it (check_fund_rules).
+    fund_id: str | None = None
 
 
 class ManualJECreate(BaseModel):
@@ -1783,6 +1803,18 @@ class ManualJECreate(BaseModel):
     memo: str = ""
     entries: list[ManualJELine]
     idempotency_token: str
+
+
+# The request fields a retry under the same token may change; the token is bound to every
+# other field of the request (keyed_event).
+_NOT_FINGERPRINTED = {"idempotency_token"}
+
+
+def _manual_entry_answer(event) -> dict:
+    """What creating a manual entry answers: the entry as its event posted it, so the same
+    request sent again answers exactly what the first did."""
+    data = event.data or {}
+    return {"je_id": event.entity_id, **{name: data.get(name) for name in ("ts", "memo", "entries", "je_type", "status")}}
 
 
 class ManualJEVoidPayload(BaseModel):
@@ -1814,12 +1846,17 @@ async def create_manual_journal_entry(
 ) -> dict:
     """Post a manual journal entry. Validates accounts and balance; the period
     lock is enforced by the event engine on the entry's date."""
-    await lock_company(session, company_id)
+    await hold_fund_ledger(session, company_id)  # before any row lock: a line may name a fund
     _require_iso_date(payload.ts or "", t("acct.field_entry_date"))
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
+    # The token is bound to the whole request: sent again unchanged it answers with the
+    # entry it posted (even once the period is locked), with any change it is refused.
+    request = payload.model_dump(mode="json", exclude=_NOT_FINGERPRINTED)
+    if (stored := await keyed_event(session, company_id, f"je:manual:{payload.idempotency_token}:c", request)) is not None:
+        return _manual_entry_answer(stored)
     await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
@@ -1866,6 +1903,8 @@ async def create_manual_journal_entry(
         # stores exactly what it stored before.
         if line.contact:
             stored["contact"] = line.contact
+        if line.fund_id:
+            stored["fund_id"] = line.fund_id
         entries.append(stored)
 
     if total_debit != total_credit:
@@ -1889,11 +1928,10 @@ async def create_manual_journal_entry(
             raise HTTPException(status_code=422, detail=t(
                 "acct.err_je_bank_currency", account=line["account"], currency=currency))
 
-    je_id = f"je:manual:{uuid.uuid4()}"
     created = await emit_event(
         session,
         company_id=company_id,
-        entity_id=je_id,
+        entity_id=f"je:manual:{uuid.uuid4()}",
         entity_type="journal_entry",
         event_type="acc.journal_entry.created",
         data={
@@ -1904,47 +1942,16 @@ async def create_manual_journal_entry(
         location_id=None,
         source="manual",
         idempotency_key=f"je:manual:{payload.idempotency_token}:c",
-        metadata_={},
+        metadata_={"request": request_fingerprint(request)},
     )
     if getattr(created, "was_deduped", False):
-        # The token was already used: emit_event returned the original event
-        # instead of inserting. A byte-identical retry (double click, network
-        # replay) answers with the original entry; a DIFFERENT payload on the
-        # same token means the user edited and resubmitted a stale form, and a
-        # success response would describe amounts that were never posted.
-        orig = created.data or {}
-
-        def _norm(lines: list) -> list:
-            # Compare money as rounded Decimals so a byte-identical retry never
-            # trips on float representation differences across storage layers.
-            # The foreign amounts and the rate that converted them come along: two
-            # different rates can convert to the same base figures, and comparing
-            # only those would read a corrected rate as an identical retry and
-            # silently post nothing.
-            out = []
-            for l in lines or []:
-                amounts = _line_amounts(l) or (Decimal(0), Decimal(0))
-                out.append((
-                    l.get("account"),
-                    round_money(amounts[0], base), round_money(amounts[1], base),
-                    l.get("fx_debit"), l.get("fx_credit"),
-                    (l.get("fx_currency") or "").upper(),
-                    to_decimal(l.get("fx_rate") or 0),
-                ))
-            return out
-
-        if (orig.get("ts") != payload.ts
-                or (orig.get("memo") or "") != (payload.memo or "")
-                or _norm(orig.get("entries")) != _norm(entries)):
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "idempotency_conflict", "message": t("acct.err_already_posted")},
-            )
-        je_id = created.entity_id
+        # A concurrent send of the same token committed first: the same request answers
+        # with its entry, any other is refused.
+        refuse_other_request((created.metadata_ or {}).get("request"), request)
     await emit_event(
         session,
         company_id=company_id,
-        entity_id=je_id,
+        entity_id=created.entity_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
         data={"ts": payload.ts},
@@ -1955,15 +1962,7 @@ async def create_manual_journal_entry(
         metadata_={},
     )
     await session.commit()
-
-    return {
-        "je_id": je_id,
-        "ts": payload.ts,
-        "memo": payload.memo,
-        "entries": entries,
-        "je_type": "manual",
-        "status": "posted",
-    }
+    return _manual_entry_answer(created)
 
 
 def _module_source(state: dict) -> dict | None:
@@ -2910,7 +2909,7 @@ async def create_bank_account(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await lock_company(session, company_id)
+    await hold_fund_ledger(session, company_id)  # before any row lock: its opening balance posts
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
     currency = payload.currency.upper()
@@ -3078,6 +3077,11 @@ async def patch_bank_account(
 # Transfers
 # ---------------------------------------------------------------------------
 
+class FundShare(BaseModel):
+    fund: str | None
+    amount: PositiveFloat
+
+
 class TransferCreate(BaseModel):
     from_bank_id: uuid.UUID
     to_bank_id: uuid.UUID
@@ -3091,6 +3095,9 @@ class TransferCreate(BaseModel):
     # What the destination account receives in its own currency, when it is kept in
     # another currency than both the source account and the books.
     to_amount: FiniteFloat | None = None
+    # Each fund's share of the amount, in the books' currency, replacing the split pro rata
+    # to what each fund holds on the source account.
+    allocation: list[FundShare] | None = None
 
 
 @router.post("/transfers")
@@ -3149,6 +3156,11 @@ async def create_transfer(
                 raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
             entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
                                      received, moved, debit=True)
+    moved = to_decimal(entries[0]["credit"])
+    allocation = None if payload.allocation is None else [
+        (share.fund, round_money(share.amount, base)) for share in payload.allocation]
+    entries = split_lines_by_fund(entries, await pooled_split(
+        session, company_id, from_bank.chart_account_code, moved, base, as_of=payload.date, allocation=allocation), base)
 
     await emit_event(
         session,
@@ -3239,9 +3251,10 @@ async def _lock_recon(
     db: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID, *, editable: bool,
 ) -> tuple[ReconciliationSession, BankAccount]:
     """The one way a reconciliation writer takes its locks, in the one order every path
-    uses: the company, then the session's bank account row, then the session itself,
-    read again as committed. An *editable* writer is refused on a completed session."""
-    await lock_company(db, company_id)
+    uses: the company and its fund ledger (a writer may post), then the session's bank
+    account row, then the session itself, read again as committed. An *editable* writer
+    is refused on a completed session."""
+    await hold_fund_ledger(db, company_id)
     recon = await _get_recon(db, session_id, company_id)
     bank = (await db.execute(
         select(BankAccount).where(BankAccount.id == recon.bank_account_id,
@@ -3439,6 +3452,34 @@ def _money_line(fields: dict, currency: str, rate: Decimal | None, amount: Decim
     return line
 
 
+async def _pooled_offsets(db: AsyncSession, company_id, bank: BankAccount, base: str, rate: Decimal | None,
+                          offsets: list[tuple[dict, Decimal]], *, inflow: bool, as_of: str,
+                          ) -> list[tuple[dict, Decimal]]:
+    """A statement line's *offsets* by fund (rule M/B). An offset moving value off an asset
+    (credited, the bank taking money in) or a liability (debited) moves a pooled balance:
+    with no fund it splits pro rata to what each fund holds there on *as_of* (pooled_split),
+    and a named fund is an explicit allocation, at most what that fund holds there. Every
+    other offset keeps the fund it names, none being the unrestricted group's."""
+    from celerp.services.money import allocate_pro_rata
+
+    kinds = dict((await db.execute(select(Account.code, Account.account_type).where(
+        Account.company_id == company_id, Account.code.in_({f["account"] for f, _ in offsets})))).all())
+    out: list[tuple[dict, Decimal]] = []
+    for fields, amount in offsets:
+        kind = kinds.get(fields["account"])
+        if not ((kind == "asset" and inflow) or (kind == "liability" and not inflow)):
+            out.append((fields, amount))
+            continue
+        based = round_money(amount if rate is None else amount * rate, base)
+        fund = fields.get("fund_id")
+        shares = await pooled_split(db, company_id, fields["account"], based, base, as_of=as_of,
+                                    allocation=[(fund, based)] if fund else None, credit=kind == "liability")
+        plain = {k: v for k, v in fields.items() if k != "fund_id"}
+        out += [({**plain, **({"fund_id": f} if f else {})}, part) for (f, _), part in
+                zip(shares, allocate_pro_rata(amount, [share for _, share in shares], bank.currency)) if part]
+    return out
+
+
 def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: list[tuple[dict, Decimal]],
                   *, inflow: bool) -> list[dict]:
     """Every line of an entry moving money on *bank*, the one way any writer builds it:
@@ -3446,14 +3487,23 @@ def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: l
     fields with its amount in the account's currency. Amounts are written in the
     account's currency, so the reconciliation always reads them; on an account kept in
     another currency than the books' they carry that amount and *rate* (``_bank_rate``),
-    and their books-currency amounts are converted once so the entry balances."""
+    and their books-currency amounts are converted once so the entry balances. Offsets
+    naming a fund (``fund_id``) get a bank line of their own carrying it, one per fund in
+    the order they first appear, so each fund balances on its own."""
     parts = [round_money(a, bank.currency) for _, a in offsets]
     based = parts if rate is None else split_to_base(parts, rate, base)
+    by_fund: dict[str | None, list] = {}
+    for (fields, _), part, b in zip(offsets, parts, based):
+        by_fund.setdefault(fields.get("fund_id"), []).append((fields, part, b))
     return [
-        _money_line({"account": bank.chart_account_code}, bank.currency, rate, sum(parts, Decimal(0)),
-                    sum(based, Decimal(0)), debit=inflow),
-        *(_money_line(fields, bank.currency, rate, part, b, debit=not inflow)
-          for (fields, _), part, b in zip(offsets, parts, based)),
+        line
+        for fund, rows in by_fund.items()
+        for line in (
+            _money_line({"account": bank.chart_account_code, **({"fund_id": fund} if fund else {})},
+                        bank.currency, rate, sum((p for _, p, _ in rows), Decimal(0)),
+                        sum((b for _, _, b in rows), Decimal(0)), debit=inflow),
+            *(_money_line(fields, bank.currency, rate, part, b, debit=not inflow) for fields, part, b in rows),
+        )
     ]
 
 
@@ -3462,24 +3512,31 @@ async def _je_entries_for_account(
 ) -> list[dict]:
     """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
-    ``_bank_line_amounts``)."""
+    ``_bank_line_amounts``). An entry's lines moving money the same way are one row, so
+    an entry split by fund reads as the single amount the bank moved."""
     base = await _base_currency(session, company_id)
-    result = []
+    rows: dict[tuple, dict] = {}
     for je_id, state, _ in await journal_rows(session, company_id):
         for entry in state.get("entries", []):
             if entry.get("account") == bank.chart_account_code:
                 if _line_amounts(entry) is None:
                     continue
                 amounts = _bank_line_amounts(bank, base, je_id, entry)
-                debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
-                result.append({
+                inflow = None if amounts is None else amounts[0] > amounts[1]
+                row = rows.setdefault((je_id, inflow), {
                     "je_id": je_id,
                     "ts": state.get("ts") or state.get("created_at") or "",
                     "memo": state.get("memo", ""),
-                    "debit": debit,
-                    "credit": credit,
-                    "amount": None if amounts is None else to_stored_float(round_money(amounts[0] - amounts[1], bank.currency)),
+                    "amounts": (Decimal(0), Decimal(0)),
                 })
+                row["amounts"] = None if amounts is None or row["amounts"] is None else (
+                    row["amounts"][0] + amounts[0], row["amounts"][1] + amounts[1])
+    result = []
+    for row in rows.values():
+        amounts = row.pop("amounts")
+        debit, credit = (to_stored_float(round_money(a, bank.currency)) for a in amounts) if amounts else (None, None)
+        result.append({**row, "debit": debit, "credit": credit, "amount": None if amounts is None else
+                       to_stored_float(round_money(amounts[0] - amounts[1], bank.currency))})
     refs = await _je_doc_refs(session, company_id, sorted({r["je_id"] for r in result}))
     for r in result:
         r["memo"] = _je_memo(r["memo"], refs.get(r["je_id"]))
@@ -3786,10 +3843,12 @@ class StmtLineCreatePayload(BaseModel):
     # this is the only chance to say which: nothing downstream can infer it.
     contact: str | None = None
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
+    # The fund the entry belongs to, both its lines; none puts it in the unrestricted group.
+    fund_id: str | None = None
 
 
 class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo, contact}]
+    splits: list[dict]  # [{account_code, amount, memo, contact, fund_id}]
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
@@ -4274,9 +4333,13 @@ async def create_je_from_line(
     offset = {"account": payload.account_code}
     if payload.contact:
         offset["contact"] = payload.contact
+    if payload.fund_id:
+        offset["fund_id"] = payload.fund_id
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
-                            [(offset, abs(to_decimal(sl.amount)))], inflow=sl.amount > 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [(offset, abs(to_decimal(sl.amount)))],
+                                    inflow=sl.amount > 0, as_of=entry_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount > 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -4345,13 +4408,17 @@ async def split_stmt_line(
         split = {"account": s["account_code"]}
         if s.get("contact"):
             split["contact"] = s["contact"]
+        if s.get("fund_id"):
+            split["fund_id"] = s["fund_id"]
         offsets.append((split, to_decimal(s.get("amount", 0))))
     if sum((a for _, a in offsets), Decimal(0)) != abs(to_decimal(sl.amount)):
         raise HTTPException(status_code=422, detail=t(
             "acct.err_split_total", total=_money_text(sum((a for _, a in offsets), Decimal(0)), bank.currency),
             amount=_money_text(abs(to_decimal(sl.amount)), bank.currency)))
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate), offsets, inflow=sl.amount >= 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, offsets, inflow=sl.amount >= 0, as_of=sl.line_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount >= 0)
     await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
@@ -4576,8 +4643,10 @@ async def write_off_difference(
     idem_p = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "p")
 
     base = await _base_currency(db, company_id)
-    entries = _bank_entries(bank, base, _bank_rate(bank, base, payload.rate),
-                            [({"account": account_code}, abs(remaining))], inflow=remaining > 0)
+    rate = _bank_rate(bank, base, payload.rate)
+    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [({"account": account_code}, abs(remaining))],
+                                    inflow=remaining > 0, as_of=recon.statement_date)
+    entries = _bank_entries(bank, base, rate, offsets, inflow=remaining > 0)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -5197,6 +5266,21 @@ class PeerHoldFix(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=64)
 
 
+class PeerFundChoices(BaseModel):
+    """``all`` the fund of the entry and of every line ``lines`` (line number -> choice) does
+    not choose for; a choice is a fund id or "unrestricted", and none is no choice."""
+    model_config = ConfigDict(extra="forbid")
+    all: str | None = Field(default=None, max_length=128)
+    lines: dict[str, str | None] = Field(default_factory=dict, max_length=1000)
+
+
+class PeerHeldFunds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int
+    choices: PeerFundChoices
+    request_key: str = Field(min_length=1, max_length=128)
+
+
 class PeerReviewAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     account: str = Field(min_length=1, max_length=64)
@@ -5211,20 +5295,43 @@ class PeerReview(BaseModel):
     answers: list[PeerReviewAnswer] = Field(default_factory=list, max_length=1000)
 
 
+async def _held_fund_lines(session: AsyncSession, company_id: uuid.UUID, items: list[dict]) -> None:
+    """Give each listed item held for funds ``fund_lines``: per line, the account it posts to
+    and that account's posted balance per fund id (UNRESTRICTED for the unrestricted group)
+    from the fund balance sheet's query, signed on the account's normal side as the ledger
+    reports it."""
+    held = [item for item in items if waits_for_funds(item.get("fix"))]
+    if not held:
+        return
+    types = dict((await session.execute(select(Account.code, Account.account_type).where(
+        Account.company_id == company_id))).all())
+    by_account: dict[str, dict[str, float]] = {}
+    for fund, accounts in (await fund_account_balances(session, company_id)).items():
+        for code, amount in accounts.items():
+            normal = amount if _is_debit_normal(types.get(code, "unknown")) else -amount
+            by_account.setdefault(code, {})[fund or UNRESTRICTED] = to_stored_float(normal)
+    for item in held:
+        item["fund_lines"] = [{"account": code, "balances": by_account.get(code, {}) if code else {}}
+                              for code in held_accounts(item["fix"])]
+
+
 @router.get("/peer/holds")
 async def peer_holds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Records a connected company sent that wait for one of their accounts to be fixed,
-    and the accounts sync added here, newest first; each added account says whether it
-    can still be removed, or why it can only be archived."""
+    """Records a connected company sent that wait for one of their accounts to be fixed or
+    for a fund on each line (each such line with its account's balance per fund), and the
+    accounts sync added here, newest first; each added account says whether it can still be
+    removed, or why it can only be archived."""
     added = await peer_accounts.added(session, company_id)
     for item in added:
         item["why"] = await removal_problem(session, company_id, item["code"])
         item["removable"] = item["why"] is None
-    return {"items": await peer_accounts.holds(session, company_id), "added": added}
+    items = await peer_accounts.holds(session, company_id)
+    await _held_fund_lines(session, company_id, items)
+    return {"items": items, "added": added}
 
 
 class PeerAddedAction(BaseModel):
@@ -5275,6 +5382,26 @@ async def fix_peer_hold(
     item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
     await session.commit()
     return {"ok": True}
+
+
+@router.post("/peer/holds/{item_id}/funds")
+async def post_peer_hold_funds(
+    item_id: str,
+    body: PeerHeldFunds,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Post a record held for funds (a journal from the accountant or the client, or a
+    connected company's document) with the fund chosen for it and each line; the posting is
+    judged as this user's, and nothing posts while it is refused."""
+    await locked_authority(session, company_id, user.id, ("manage_accounting",))
+    posted = await peer_journals.post_held(
+        session, company_id, item_id, revision=body.revision, every=body.choices.all,
+        lines=body.choices.lines, request_key=body.request_key, actor_id=user.id)
+    await session.commit()
+    return posted
 
 
 @router.get("/peer/review")
@@ -5371,103 +5498,99 @@ async def close_fiscal_year(
             f"start, the last year end on or before that date is {suggested}. To close that year, "
             f"enter {suggested}, or change Fiscal year start in Company Details.",
             value=year_end, year_end=suggested))
-    # Build account balances through the year-end date
-    posted = await journal_rows(session, company_id)
-    balances = _build_balances(posted, None, year_end)
+    settings = company.settings or {}
+    currency = books_currency(settings)
+    results = {code for code, kind in (await session.execute(
+        select(Account.code, Account.account_type).where(Account.company_id == company_id))).all()
+        if kind in ("revenue", "expense", "cogs")}
+    held = await fund_account_balances(session, company_id, as_of=year_end)
+    funds = await funds_by_id(session, company_id, {f for f in held if f})
 
-    # Get chart of accounts to determine account types
-    acct_rows = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id)
-        )
-    ).scalars().all()
-    acct_map = {a.code: a for a in acct_rows}
-
-    # Collect revenue (4xxx) and expense/COGS (5xxx, 6xxx) balances
+    # Each fund (None: the unrestricted group) closes on its own lines: whatever balance an
+    # income or expense account carries is reversed so it starts the new year at zero, and
+    # the fund's net income (balance = debit - credit, so negating it nets income less
+    # costs) goes to its own net assets: restricted net assets for a restricted fund,
+    # retained earnings otherwise. A profit is credited, a loss debited.
     closing_entries: list[dict] = []
+    net_assets: list[tuple[dict, AccountRole]] = []  # each fund's net income line, then its role
     net_income = Decimal("0")
-
-    for code, balance in balances.items():
-        acct = acct_map.get(code)
-        if not acct or acct.account_type not in ("revenue", "expense", "cogs"):
-            continue
-        if balance == 0:
-            continue
-        # Reverse whatever balance the account carries so it starts the new year at
-        # zero: debit a credit surplus (revenue), credit a debit surplus (costs).
-        closing_entries.append({"account": code, "debit": float(max(-balance, 0)), "credit": float(max(balance, 0))})
-        # balance = debit - credit, so credit-normal revenue arrives negative and
-        # debit-normal costs positive; negating both nets income minus costs.
-        net_income -= balance
+    for fund_id, by_account in held.items():
+        tag = {"fund_id": fund_id} if fund_id else {}
+        fund_net = Decimal("0")
+        for code in sorted(results & by_account.keys()):
+            balance = round_money(by_account[code], currency)
+            if not balance:
+                continue
+            closing_entries.append({"account": code, "debit": to_stored_float(max(-balance, Decimal(0))),
+                                    "credit": to_stored_float(max(balance, Decimal(0))), **tag})
+            fund_net -= balance
+        if fund_net:
+            restricted = (funds.get(fund_id or "") or {}).get("restricted")
+            closing_entries.append({"account": None, "debit": to_stored_float(max(-fund_net, Decimal(0))),
+                                    "credit": to_stored_float(max(fund_net, Decimal(0))), **tag})
+            net_assets.append((closing_entries[-1], AccountRole.RESTRICTED_NET_ASSETS if restricted
+                               else AccountRole.RETAINED_EARNINGS))
+        net_income += fund_net
 
     if not closing_entries:
         raise HTTPException(status_code=422, detail=t("acct.err_close_nothing"))
+    roles = await resolve_many(session, company_id, {role for _, role in net_assets})
+    for line, role in net_assets:
+        line["account"] = roles[role]
 
-    # Net income goes to the retained earnings account: a profit is credited, a
-    # loss debited.
-    net_float = float(net_income)
-    closing_entries.append({
-        "account": await resolve(session, company_id, AccountRole.RETAINED_EARNINGS),
-        "debit": abs(net_float) if net_float < 0 else 0.0,
-        "credit": net_float if net_float >= 0 else 0.0,
-    })
-
-    # Emit the closing JE. Cycle-aware: re-closing the same year after an
-    # unlock-edit cycle must post a NEW residual entry, not silently dedupe
-    # into the first close's keys and report success while posting nothing.
-    from celerp.events.engine import emit_event
-    from celerp.models.ledger import LedgerEntry
-    from celerp.services.je_keys import je_idempotency_key
-
-    _cycle = sum(
-        1 for k in (await session.execute(
-            select(LedgerEntry.idempotency_key).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.idempotency_key.startswith(f"je:{year_end}:fiscal.close", autoescape=True),
-            )
-        )).scalars().all()
-        if k.endswith(":c")
-    )
-    _cycle_tag = f":{_cycle}" if _cycle else ""
-    je_id = f"je:close:{year_end}{_cycle_tag}"
-    idem_create = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "c")
-    idem_posted = je_idempotency_key(year_end, f"fiscal.close{_cycle_tag}", "p")
-
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": f"Fiscal year close {year_end}", "entries": closing_entries, "ts": year_end},
-        actor_id=user.id,
-        location_id=None,
-        source="fiscal_close",
-        idempotency_key=idem_create,
-        metadata_={"trigger": "fiscal.close", "year_end": year_end},
-    )
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": year_end},
-        actor_id=user.id,
-        location_id=None,
-        source="fiscal_close",
-        idempotency_key=idem_posted,
-        metadata_={"trigger": "fiscal.close", "year_end": year_end},
-    )
-
+    # Cycle-aware: re-closing the same year after an unlock-edit cycle posts a NEW residual
+    # entry under the next cycle, never the first close's id answering with nothing posted.
+    cycle = len(await _year_closes(session, company_id, year_end))
+    je_id = f"je:close:{year_end}{f':{cycle}' if cycle else ''}"
+    await post_fund_movement(
+        session, company_id, je_id=je_id, kind=YEAR_CLOSE, entries=closing_entries,
+        ts=date.fromisoformat(year_end), reason=f"Fiscal year close {year_end}", actor=user.id,
+        details={"year_end": year_end})
     write_period_lock(company, year_end, user.id)
-
     await session.commit()
 
     return {
         "je_id": je_id,
         "year_end": year_end,
-        "net_income": net_float,
+        "net_income": to_stored_float(net_income),
         "entries_count": len(closing_entries),
         "lock_date": year_end,
     }
+
+
+async def _year_closes(session: AsyncSession, company_id: uuid.UUID, year_end: str) -> list[str]:
+    """The closes posted for ``year_end`` (je:close:<year end>, then :1, :2 for each re-close),
+    in cycle order."""
+    ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        (Projection.entity_id == f"je:close:{year_end}")
+        | Projection.entity_id.startswith(f"je:close:{year_end}:", autoescape=True)))).scalars().all()
+    return sorted(ids, key=lambda je: int(je.rsplit(":", 1)[1]) if je.count(":") > 2 else 0)
+
+
+class ReverseClosePayload(BaseModel):
+    reason: str = Field(min_length=1)
+
+
+@router.post("/close-year/{year_end}/reverse")
+async def reverse_year_close(
+    year_end: str,
+    payload: ReverseClosePayload,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    user: object = Depends(get_current_user),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo the latest close of ``year_end`` by its reversal on the year end, so every fund's
+    income and expense balances return. The year must be open again (unlocked) first.
+    Repeat-safe: the same reversal sent again answers with the reversal it posted; one with
+    another reason is refused."""
+    await locked_company(session, company_id)
+    closes = await _year_closes(session, company_id, year_end)
+    if not closes:
+        raise HTTPException(status_code=404, detail=catalog_refusal("accounting.close_not_found", year_end=year_end))
+    posted = await post_fund_movement(
+        session, company_id, request_key=f"reverse:{closes[-1]}", request=payload.model_dump(mode="json"),
+        kind=YEAR_CLOSE, reverses=closes[-1], ts=date.fromisoformat(year_end), reason=payload.reason, actor=user.id)
+    await session.commit()
+    return posted

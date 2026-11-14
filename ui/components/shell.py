@@ -929,10 +929,11 @@ function initCombobox(wrap) {
 document.addEventListener('DOMContentLoaded', function() {
   document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
-/* Re-init after HTMX swaps — search from document to handle outerHTML swaps */
-document.addEventListener('htmx:afterSettle', function(e) {
-  var root = (e.detail.elt && e.detail.elt.isConnected) ? e.detail.elt : document;
-  root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+/* Re-init after HTMX swaps. The whole document is searched: an outerHTML swap replaces the
+   element the request came from, and an afterend or beforebegin swap inserts beside it, so new
+   comboboxes are not always inside it. initCombobox skips one already set up. */
+document.addEventListener('htmx:afterSettle', function() {
+  document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
 /* Elements marked data-quiet-error surface their failure state themselves
@@ -2972,7 +2973,9 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
 def module_nav(settings: dict | None) -> list[dict]:
     """Nav entries of the modules running in this process that the company uses
     (uses_module on its settings), in display order. Anything that shows or links
-    to a module's pages asks this, so a module that is off leaves no trace."""
+    to a module's pages asks this, so a module that is off leaves no trace. An entry
+    naming "verticals" belongs to those business types only (settings["vertical"]):
+    Members is a nonprofit's page, not every subscriber's."""
     from celerp.modules.registry import uses_module
     try:
         from celerp.modules.slots import get as get_slot
@@ -2980,7 +2983,8 @@ def module_nav(settings: dict | None) -> list[dict]:
     except Exception:
         slot_items = []
     return [item for item in sorted(slot_items + _KERNEL_NAV, key=lambda x: x.get("order", 99))
-            if uses_module(settings, item.get("_module"))]
+            if uses_module(settings, item.get("_module"))
+            and ("verticals" not in item or (settings or {}).get("vertical") in item["verticals"])]
 
 
 def module_active(settings: dict | None, name: str) -> bool:

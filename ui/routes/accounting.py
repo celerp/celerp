@@ -22,7 +22,10 @@ from starlette.responses import RedirectResponse, PlainTextResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.currency import currency_options
-from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title
+from ui.components.funds import chosen_fund, fund_options, funds_in_use, journal_change_panel
+from celerp.services.peer_lines import UNRESTRICTED
+from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD, key_reused
+from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title, toast_header
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
@@ -32,7 +35,7 @@ from ui.components.report_kit import (
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
     journal_filter_qs, journal_filter_words, journal_filters, journal_print_subtitle,
-    journal_rows, journal_table, journal_void_toast,
+    FUND_CHANGE_PATH, JOURNAL_TABLE_ID, journal_rows, journal_table, journal_void_toast,
 )
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, empty_state_cta, fmt_money, party_options,
@@ -41,8 +44,10 @@ from ui.components.table import (
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
+from ui.routes.action_answers import _redrawn
 from ui.routes.documents import _action_error
 from ui.routes.financial_reports import MOVED_TABS, REPORTS, ledger_path, report_nav
+from ui.routes.recognition import PAGE as RECOGNITION_PAGE
 from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
@@ -121,7 +126,7 @@ def setup_routes(app):
             carried = ({"preset": preset} if preset and preset != "custom"
                        else {"from": d_from, "to": d_to})
             content = Div(
-                report_nav("journal", d_from or "", d_to or ""),
+                report_nav("journal", d_from or "", d_to or "", company),
                 _date_filter_bar("/accounting", d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company",
                                  extra_params=journal_filter_qs(filters)),
@@ -133,10 +138,14 @@ def setup_routes(app):
                 # Toolbar over the table, following the document-list pattern:
                 # creative actions left, export/print right.
                 Div(
-                    A(t("btn.new_entry"),
-                      href=safe_url(_href("/accounting/journal/new",
-                                 _date_params(d_from or "", d_to or ""))),
-                      cls="btn btn--primary"),
+                    Div(
+                        A(t("btn.new_entry"),
+                          href=safe_url(_href("/accounting/journal/new",
+                                     _date_params(d_from or "", d_to or ""))),
+                          cls="btn btn--primary"),
+                        A(t("page.revenue_recognition"), href=safe_url(RECOGNITION_PAGE), cls="btn btn--secondary"),
+                        cls="flex-row gap-sm",
+                    ),
                     action_bar("/accounting/print/journal", "/accounting/export/journal/csv",
                                params),
                     cls="flex-row flex-between mt-md mb-md",
@@ -145,7 +154,8 @@ def setup_routes(app):
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
                               params=params, select=True,
                               filtered=bool(data.get("filtered")),
-                              period=(d_from, d_to, "/accounting?preset=all")),
+                              period=(d_from, d_to, "/accounting?preset=all"),
+                              change_fund=await _changes_fund(request, token, company, data)),
             )
         except APIError as e:
             if e.status == 401:
@@ -191,8 +201,11 @@ def setup_routes(app):
         base_currency = ""
         contacts: list[dict] = []
         contacts_total = 0
+        funds: list[dict] | None = None
         try:
             accounts = (await api.get_chart(token)).get("items", [])
+            # With funds in use each line names its fund, Unrestricted until one is picked.
+            funds = await funds_in_use(token, _settings)
             base_currency = (await api.get_company(token)).get("currency") or ""
             # One page of parties to open on; typing searches the whole list
             # server-side, the same way the statement picker works.
@@ -216,7 +229,7 @@ def setup_routes(app):
             _journal_entry_form(accounts, ts, memo, lines, idem_token, error,
                                 date_from=date_from, date_to=date_to,
                                 base_currency=base_currency,
-                                contacts=contacts, contacts_total=contacts_total,
+                                contacts=contacts, contacts_total=contacts_total, funds=funds,
                                 date_hint=date_hint),
             title=page_title("page.accounting"),
             nav_active="accounting",
@@ -283,10 +296,11 @@ def setup_routes(app):
             contact = str(form.get(f"contact_{i}") or "").strip()
             currency = str(form.get(f"currency_{i}") or "").strip().upper()
             rate = str(form.get(f"rate_{i}") or "").strip()
+            fund = str(form.get(f"fund_{i}") or "").strip()
             if not (account or debit or credit or contact):
                 continue  # an untouched blank row carries no intent
             lines.append({"account": account, "debit": debit, "credit": credit,
-                          "contact": contact, "currency": currency, "rate": rate})
+                          "contact": contact, "currency": currency, "rate": rate, "fund": fund})
 
         error: str | None = None
         entries: list[dict] = []
@@ -298,7 +312,8 @@ def setup_routes(app):
                 {"account": l["account"], "debit": float(l["debit"] or 0), "credit": float(l["credit"] or 0),
                  **({"contact": l["contact"]} if l["contact"] else {}),
                  **({"currency": l["currency"]} if l["currency"] else {}),
-                 **({"rate": float(l["rate"])} if l["rate"] else {})}
+                 **({"rate": float(l["rate"])} if l["rate"] else {}),
+                 **({"fund_id": chosen_fund(l["fund"])} if chosen_fund(l["fund"]) else {})}
                 for l in lines
             ]
             if any(not (_math.isfinite(e["debit"]) and _math.isfinite(e["credit"])) for e in entries):
@@ -336,8 +351,8 @@ def setup_routes(app):
                     status_code=303)
             except APIError as e:
                 api.raise_if_signed_out(e)
-                if api.error_code(e) == "idempotency_conflict":
-                    # Same token, different payload: the original already posted.
+                if key_reused(e):
+                    # Same token, different request: the original already posted.
                     # A fresh token lets a deliberately corrected resubmit succeed.
                     idem_token = str(uuid.uuid4())
                 error = no_access_text(e) if e.status == 403 else api.error_message(e)
@@ -347,8 +362,19 @@ def setup_routes(app):
                                           idem_token=idem_token, error=error,
                                           date_from=d_from, date_to=d_to)
 
+    async def _changes_fund(request: Request, token: str, company: dict, data: dict) -> bool:
+        """Whether the journal offers Change fund on its posted entries from outside: to a user
+        who manages accounting, in a company with funds in use."""
+        settings = company.get("settings") or {}
+        return (any(e.get("origin") and e.get("status") == "posted" for e in data.get("entries") or [])
+                and role_has_permission(settings, _get_role(request), "manage_accounting")
+                and await funds_in_use(token, settings) is not None)
+
     async def _journal_void_answer(request: Request, token: str, result: dict):
-        """The answer to a void: the table it changed, its totals, and what happened.
+        return await _journal_answer(request, token, journal_void_toast(result))
+
+    async def _journal_answer(request: Request, token: str, headers: dict):
+        """The answer to a void or a fund change: the table it changed, its totals, and what happened.
 
         The figures are re-read from the API rather than adjusted here, so the totals
         over the rows cannot drift from the rows under them. They travel out of band
@@ -377,12 +403,76 @@ def setup_routes(app):
         table = journal_table(journal_rows(data, items=items), items=items,
                               currency=currency, params=params,
                               select=True, filtered=bool(data.get("filtered")),
-                              period=(d_from, d_to, f"{base}?preset=all"))
+                              period=(d_from, d_to, f"{base}?preset=all"),
+                              change_fund=not items and await _changes_fund(request, token, company, data))
         totals = _journal_totals(
             data, currency, oob=True,
             filter_words=journal_filter_words(filters, get_lang(request)),
             clear_href=_href(base, carried))
-        return html_response((table, totals), headers=journal_void_toast(result))
+        return html_response((table, totals), headers=headers)
+
+    async def _fund_change_panel(request: Request, token: str, je_id: str, *, kept=None, error: str | None = None,
+                                 fill: str = ""):
+        """Change fund's panel for ``je_id``, posting back to the journal view it opened from;
+        ``fill`` (a Set all pick) puts every line's select on that fund."""
+        settings = (await api.get_company(token)).get("settings") or {}
+        funds = await funds_in_use(token, settings)
+        if funds is None:
+            return _action_error(t("fund.not_enabled"))
+        data = await api.get_journal_funds(token, je_id)
+        if fill:
+            kept = {**dict(kept or {}), **{f"line_{line['n']}": fill for line in data.get("lines") or []}}
+        view = {k: v for k, v in request.query_params.items() if k != "je"}
+        return html_response(journal_change_panel(data, funds, _href(FUND_CHANGE_PATH, view), kept=kept, error=error))
+
+    @app.get(FUND_CHANGE_PATH)
+    async def journal_fund_change_panel(request: Request):
+        """Open Change fund under a posted journal from outside."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            return await _fund_change_panel(request, token, request.query_params.get("je", ""))
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return _action_error(e)
+
+    @app.post(FUND_CHANGE_PATH)
+    async def journal_fund_change(request: Request):
+        """Change fund on a posted journal from outside: the lines whose fund was changed, or with
+        Set all picked every line as the panel shows it, with the reason and the form's key. It
+        is voided and posted again on the new funds, and the journal is drawn again; a refusal
+        keeps the panel's choices. A Set all pick (``redraw``) only draws the panel again."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        je_id = str(form.get("je") or "")
+        if form.get("redraw"):
+            try:
+                return await _fund_change_panel(request, token, je_id, kept=form, fill=str(form.get("all") or ""))
+            except APIError as e:
+                api.raise_if_signed_out(e)
+                return _action_error(e)
+        try:
+            posted = await api.get_journal_funds(token, je_id)
+            changed = {str(line["n"]): str(form.get(f"line_{line['n']}"))
+                       for line in posted.get("lines") or []
+                       if form.get(f"line_{line['n']}")
+                       and (form.get("all") or form.get(f"line_{line['n']}") != line.get("fund"))}
+            body = {"expected_version": int(form.get("expected_version") or 0),
+                    "request_key": str(form.get(OPERATION_KEY_FIELD) or ""), "reason": str(form.get("reason") or ""),
+                    **({"all": str(form["all"])} if form.get("all") else {}), "lines": changed}
+            await api.change_journal_fund(token, je_id, body)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            try:
+                return await _fund_change_panel(request, token, je_id, kept=form, error=api.error_message(e))
+            except APIError:
+                return _action_error(e)
+        return await _redrawn(lambda: _journal_answer(request, token, {
+            "HX-Retarget": f"#{JOURNAL_TABLE_ID}", "HX-Reswap": "outerHTML",
+            **toast_header(t("fund.changed"), "success")}), said=t("fund.changed"))
 
     @app.post("/accounting/journal/bulk-void")
     async def journal_bulk_void(request: Request):
@@ -470,14 +560,18 @@ def _base_col(label: str, base_currency: str) -> str:
 
 
 def _je_line_row(idx: str, line: dict, acct_opts: list[tuple[str, str]],
-                 contact_opts: list[tuple[str, str]]) -> FT:
+                 contact_opts: list[tuple[str, str]], fund_opts: list[tuple[str, str]] | None = None) -> FT:
     esc = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+    fund_cell = (Td(searchable_select(f"fund_{idx}", fund_opts, value=line.get("fund") or UNRESTRICTED,
+                                      placeholder=EMPTY, aria_label=t("th.fund"), cls_extra="cell-input")),
+                 ) if fund_opts is not None else ()
     return Tr(
         Td(searchable_select(f"account_{idx}", acct_opts, value=line.get("account", ""),
                              placeholder=t("th.account"), cls_extra="cell-input")),
         Td(searchable_select(f"contact_{idx}", contact_opts, value=line.get("contact", ""),
                              placeholder=t("acct.je_line_party"), cls_extra="cell-input",
                              search_url=PARTY_SEARCH_URL)),
+        *fund_cell,
         Td(Input(type="number", name=f"debit_{idx}", value=line.get("debit", ""), step="any",
                  min="0", cls="cell-input", oninput="celerpJeTotals()",
                  onkeydown=esc), cls="cell--number"),
@@ -505,7 +599,8 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
                         date_from: str = "", date_to: str = "",
                         base_currency: str = "",
                         contacts: list[dict] | None = None,
-                        contacts_total: int = 0, date_hint: str | None = None) -> FT:
+                        contacts_total: int = 0, date_hint: str | None = None,
+                        funds: list[dict] | None = None) -> FT:
     acct_opts = [
         (a.get("code", ""), f"{a.get('code', '')} {a.get('name', '')}".strip())
         for a in accounts
@@ -514,7 +609,8 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
     contact_opts = party_options(contacts or [])
     if not lines:
         lines = [{}, {}]  # double-entry needs two sides, so start with two rows
-    rows = [_je_line_row(str(i), line, acct_opts, contact_opts) for i, line in enumerate(lines)]
+    fund_opts = fund_options(funds) if funds is not None else None
+    rows = [_je_line_row(str(i), line, acct_opts, contact_opts, fund_opts) for i, line in enumerate(lines)]
 
     any_fx = any(l.get("currency") for l in lines)
     form_js = """
@@ -718,11 +814,12 @@ if (document.readyState === 'loading') { document.addEventListener('DOMContentLo
                 open=any_fx,
             ),
             Div("", id="je-imbalance-note", cls="report-section"),
-            Template(_je_line_row("__IDX__", {}, acct_opts, contact_opts), id="je-line-tpl"),
+            Template(_je_line_row("__IDX__", {}, acct_opts, contact_opts, fund_opts), id="je-line-tpl"),
             Table(
                 Thead(Tr(
                     Th(t("th.account")),
                     Th(t("acct.je_line_party")),
+                    Th(t("th.fund")) if fund_opts is not None else None,
                     Th(t("th.debit"), cls="cell--number"),
                     Th(t("th.credit"), cls="cell--number"),
                     Th(t("th.currency"), cls="je-fx-col"),

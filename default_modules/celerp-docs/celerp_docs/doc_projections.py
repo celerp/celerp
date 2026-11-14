@@ -200,6 +200,9 @@ def _status_without_receipts(state: dict) -> str:
 
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
+    if isinstance(data.get("items_at_sale"), dict):
+        # Written once, by the event that first issues an invoice (events.engine).
+        current["items_at_sale"] = data["items_at_sale"]
 
     if event_type == "doc.created":
         current.update({"entity_type": "doc", **data})
@@ -289,6 +292,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["source_po_ref"] = data["source_po_ref"]
         if data.get("doc_type"):
             current["doc_type"] = data["doc_type"]
+    elif event_type == "doc.fund_changed":
+        # Change fund writes the document's new choices with doc.updated; this event records
+        # the change itself (reason, before and after) on the ledger.
+        pass
     elif event_type == "doc.voided":
         # A void of a document already void (older releases accepted one) changes nothing:
         # the status to restore stays the one it had before the first void.
@@ -468,10 +475,26 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
         current["status"] = payment_status(current, paid, outstanding)
+    elif event_type == "doc.collection":
+        current["collection"] = dict(data)
     elif event_type == "doc.payment.stripe_released":
         target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
         if target is not None:
             target["stripe_released_at"] = data["released_at"]
+    elif event_type == "doc.payment.disputed":
+        target = next((p for p in current.get("payments", []) if p.get("index") == data["payment_index"]), None)
+        if target is not None:
+            disputes = target.setdefault("disputes", {})
+            dispute = disputes.setdefault(data["dispute_id"], {"steps": []})
+            # A dispute stays decided: a step reported after its close changes neither.
+            decided = dispute.get("state") == "closed"
+            dispute.update(state="closed" if decided else data["state"],
+                           outcome=dispute.get("outcome") if decided else data.get("outcome"),
+                           amount_minor=data["amount_minor"], currency=data["currency"],
+                           steps=[*dispute["steps"], data["state"]])
+            dispute["posted"] = [*dispute.get("posted", []), *data.get("posted", [])]
+            if "funds_withdrawn" in data.get("posted", []):
+                dispute["withdrawn_minor"] = data["amount_minor"]
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]

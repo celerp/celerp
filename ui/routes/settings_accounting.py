@@ -15,16 +15,21 @@ import ui.api_client as api
 from ui.components.activity import actor_label
 from ui.components.currency import currency_options
 from ui.components.icons import import_icon
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.services.lot_origin import OLDER_STOCK_PATH
 from ui.components.table import (EMPTY, select_all_th, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
 
-from ui.components.posting_accounts import account_picker
+from ui.components.posting_accounts import (
+    INCOME_ACCOUNT_KINDS, INCOME_ACCOUNT_URL, account_picker, income_account_editor, income_account_state,
+    income_account_view,
+)
 from ui.components.operation_key import operation_key_attrs, operation_key_input, required_operation_key
 from ui.routes.accounting_import import ACCOUNT_TYPES, asset_register_target
+from ui.routes.recognition import setting_tab as recognition_setting_tab
+from ui.routes.settings_funds import funds_tab
 
 # The cash flow sections an account may be pinned to. The accounting API owns this
 # list (celerp_accounting.routes.CASH_FLOW_CATEGORIES) and validates against it; the
@@ -33,7 +38,7 @@ CASH_FLOW_CATEGORIES = ("operating", "investing", "financing")
 # The longest account code the API accepts (celerp_accounting.chart_rules.ACCOUNT_CODE_MAX),
 # mirrored the same way and asserted by the same kind of test.
 _ACCOUNT_CODE_MAX = 32
-from ui.routes.settings import _token, _check_permission
+from ui.routes.settings import _token, _check_permission, _get_role
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
 from ui.components.encode import as_js, call, EVENT, safe_url, THIS
@@ -53,6 +58,8 @@ def _accounting_settings_tabs(active: str) -> FT:
         ("period-lock", t("page.period_lock")),
         ("posting-accounts", t("posting.tab")),
         ("older-stock", t("older_stock.tab")),
+        ("funds", t("funds.title")),
+        ("recognition", t("page.revenue_recognition")),
     ]
     return Div(
         *[
@@ -133,10 +140,12 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
 
 
 def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None,
-                     lock_value: str | None = None) -> FT:
-    """The period lock tab, the element every lock and close response replaces; ``banner``
-    (a refusal or success) heads it, so the tab keeps its one id. ``lock_value`` is a refused
-    lock date the lock form keeps in place of the stored one."""
+                     reverse: dict | None = None, lock_value: str | None = None) -> FT:
+    """The period lock tab, the element every lock, close and reverse response replaces;
+    ``banner`` (a refusal or success) heads it, so the tab keeps its one id. ``reverse`` keeps
+    what a refused Reverse close typed; ``lock_value`` is a refused lock date the lock form keeps
+    in place of the stored one."""
+    reverse = reverse or {}
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
@@ -201,13 +210,33 @@ def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None =
             hx_target="#period-lock-content",
             hx_swap="outerHTML",
         ),
+        H3(t("settings_accounting.reverse_close_title"), cls="section-title mt-lg"),
+        P(t("settings_accounting.reverse_close_help"), cls="text-muted mb-md"),
+        Form(
+            Div(
+                Label(t("label.fiscal_year_end_date")),
+                Input(type="date", name="fiscal_year_end", value=reverse.get("fiscal_year_end", ""),
+                      required=True, cls="form-input max-w-md"),
+                cls="form-field",
+            ),
+            Div(
+                Label(t("label.reason")),
+                Input(type="text", name="reason", value=reverse.get("reason", ""), required=True,
+                      cls="form-input max-w-md"),
+                cls="form-field",
+            ),
+            Div(Button(t("btn.reverse_close"), type="submit", cls="btn btn--outline"), cls="form-actions mt-md"),
+            hx_post="/settings/accounting/close-year/reverse",
+            hx_target="#period-lock-content",
+            hx_swap="outerHTML",
+        ),
         id="period-lock-content",
         cls="settings-card",
     )
 
 
 async def _period_lock_refused(token: str, message: str, close_value: str = "",
-                               lock_value: str | None = None) -> FT:
+                               reverse: dict | None = None, lock_value: str | None = None) -> FT:
     """A refused lock or close: the banner above the period lock tab, so both forms stay
     and the refused form keeps the date entered. The lock is read as the tab's own render
     reads it; a failed read leaves the stored lock out rather than losing the forms."""
@@ -215,7 +244,8 @@ async def _period_lock_refused(token: str, message: str, close_value: str = "",
         lock_data = await api.get_period_lock(token)
     except Exception:
         lock_data = {}
-    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"), lock_value)
+    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"),
+                            reverse=reverse, lock_value=lock_value)
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -904,7 +934,62 @@ async def _validate_account(token: str, name: str, account_type: str,
     return None
 
 
+def _income_account_unusable(token: str | None, kind: str):
+    """The answer to an income account cell request that cannot be served: an unknown kind
+    (404) or a signed-out session. None when it can."""
+    if kind not in INCOME_ACCOUNT_KINDS:
+        return Response(status_code=404)
+    if not token:
+        return P(t("error.session_expired"), cls="cell-error")
+    return None
+
+
 def setup_routes(app):
+
+    @app.get(f"{INCOME_ACCOUNT_URL}/edit")
+    async def income_account_edit(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            code, _, chart = await income_account_state(token, kind, key)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        return income_account_editor(kind, key, code, chart)
+
+    @app.get(f"{INCOME_ACCOUNT_URL}/display")
+    async def income_account_display(request: Request, kind: str, key: str):
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+            cell = await income_account_view(token, kind, key, settings, _get_role(request))
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return P(error_message(e), cls="cell-error")
+        return cell if cell is not None else Response(status_code=404)
+
+    @app.patch(INCOME_ACCOUNT_URL)
+    async def income_account_save(request: Request, kind: str, key: str):
+        """Save the chosen income account ("" clears it) and show the cell, or keep the picker
+        open with the API's reason when it refuses the account."""
+        token = _token(request)
+        if (unusable := _income_account_unusable(token, kind)) is not None:
+            return unusable
+        code = str((await request.form()).get("value", "")).strip()
+        try:
+            if kind == "item":
+                await api.patch_item(token, key, {"income_account": code})
+            else:
+                await api.set_category_income_account(token, key, code or None)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            # The picker reopens over the chart as read now; a failed read reaches the app's handler.
+            _, _, chart = await income_account_state(token, kind, key)
+            return income_account_editor(kind, key, code, chart, error=error_message(e))
+        return await income_account_display(request, kind, key)
 
     @app.get("/settings/accounting")
     async def settings_accounting_page(request: Request):
@@ -960,6 +1045,20 @@ def setup_routes(app):
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
                 content = Div(P(str(e.detail), cls="error-banner"), cls="settings-card")
+        elif tab == "funds":
+            try:
+                content = await funds_tab(token)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(error_message(e), cls="error-banner"), cls="settings-card")
+        elif tab == "recognition":
+            try:
+                content = await recognition_setting_tab(token)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                content = Div(P(error_message(e), cls="error-banner"), cls="settings-card")
         else:
             content = _bank_accounts_tab(banks)
             tab = "bank-accounts"
@@ -1232,6 +1331,29 @@ def setup_routes(app):
         net = result.get("net_income", 0)
         msg = t("settings_accounting.fiscal_year_closed", date=fiscal_year_end, net=f"{net:,.2f}")
         return _period_lock_tab({"lock_date": result.get("lock_date")}, banner=P(msg, cls="success-banner mb-md"))
+
+    @app.post("/settings/accounting/close-year/reverse")
+    async def post_reverse_close(request: Request):
+        """Reverse the latest close of a year, headed by what it did; a refusal keeps what was typed."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        typed = {k: str(form.get(k) or "").strip() for k in ("fiscal_year_end", "reason")}
+        if not typed["fiscal_year_end"]:
+            return await _period_lock_refused(token, t("acct.fiscal_year_end_date_is_required"), reverse=typed)
+        try:
+            await api.reverse_year_close(token, typed["fiscal_year_end"], typed["reason"])
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return await _period_lock_refused(token, error_message(e), reverse=typed)
+        try:
+            lock_data = await api.get_period_lock(token)
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            lock_data = {}
+        return _period_lock_tab(lock_data, banner=P(t("settings_accounting.close_reversed", date=typed["fiscal_year_end"]),
+                                                    cls="success-banner mb-md"))
 
     @app.post("/settings/accounting/rules")
     async def create_rule(request: Request):

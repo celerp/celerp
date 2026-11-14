@@ -1454,10 +1454,10 @@ async def test_online_fees_post_to_the_chosen_account(client, session, payments_
         "/accounting/posting-accounts", headers=_h(tok))).json()["roles"]}
     assert roles["online_payment_fees"]["code"] == "6940"
     r = await client.post("/accounting/accounts", headers=_h(tok), json={
-        "code": "6945", "name": "Card fees", "account_type": "expense", "parent_code": "6000"})
+        "code": "6948", "name": "Card fees", "account_type": "expense", "parent_code": "6000"})
     assert r.status_code == 200, r.text
     r = await client.put("/accounting/posting-accounts/online_payment_fees", headers=_h(tok),
-                         json={"code": "6945"})
+                         json={"code": "6948"})
     assert r.status_code == 200, r.text
 
     fees = {"version": 1, "currency": "usd", "transaction_id": "txn_chosen",
@@ -1468,7 +1468,7 @@ async def test_online_fees_post_to_the_chosen_account(client, session, payments_
     journal = await session.get(Projection, (uuid.UUID(_company_id(tok)), f"je:auto:{eid}:online-fees:{token}"),
                                 populate_existing=True)
     fee_lines = [e for e in journal.state["entries"] if e["account"] != "1111"]
-    assert {e["account"] for e in fee_lines} == {"6945"}
+    assert {e["account"] for e in fee_lines} == {"6948"}
     assert all(e["account_roles"] == ["online_payment_fees"] for e in fee_lines)
 
 

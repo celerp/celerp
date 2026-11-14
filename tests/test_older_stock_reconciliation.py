@@ -52,7 +52,7 @@ _LOTS = [25000.0] * 4  # 100,000 of older stock
 async def _posted(session, auth, debit: str, credit: str, amount: float, memo: str) -> None:
     je = f"je:{uuid.uuid4()}"
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, record_id=None, idem_create=f"{je}:c",
         idem_posted=f"{je}:p", memo=memo, metadata_={"trigger": "manual"},
         entries=[{"account": debit, "debit": amount, "credit": 0.0},
                  {"account": credit, "debit": 0.0, "credit": amount}])

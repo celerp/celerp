@@ -141,11 +141,13 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 reference: str, amount_minor: int, currency: str,
                                 paid_at: datetime.datetime | None, context, managed: bool,
-                                idempotency_key: str | None = None):
+                                idempotency_key: str | None = None, request_key: str | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
     ``payments.receive_payment`` calls it, and ``payments.record_unmatched_payment``
     for one a person records on an invoice from the unmatched payments, under an
     *idempotency_key* of its own (each recording is one; the charge is *reference*).
+    *request_key* is the collection attempt's own key that Cloud delivers with a card
+    charge it collected; a page payment and a person's recording carry none.
 
     A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
     recorded on *context*, the books its payment page opened with
@@ -181,7 +183,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
-    from celerp_docs.routes import apply_doc_payment
+    from celerp_docs.routes import _get_doc, apply_doc_payment
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
             "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
             "method": "stripe", "reference": reference}
@@ -199,6 +201,9 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         raise
     if getattr(entry, "was_deduped", False):
         return None
+    from celerp.services.collection import charge_recorded
+    await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True),
+                          reference, request_key)
     return entry
 
 
@@ -351,6 +356,61 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
             f"Stripe is disconnected, so the online payment on {ref} is no longer linked to it. "
             "Record any refund of it here in Celerp.",
             action_url=f"/docs/{row.entity_id}", priority="high")
+    return True
+
+
+def _dispute_postings(steps, outcome: str | None, posted) -> list[str]:
+    """The DISPUTE_STEPS postings a dispute still owes, from where it stands after the
+    *steps* reported so far (any order, any missing) and its *outcome*, less those already
+    *posted*: the money is taken once Stripe withdrew, reinstated or decided it lost; given
+    back when it is reinstated or won (unless lost); lost when it is lost. A posting is never
+    undone, so a step contradicting one already posted adds nothing."""
+    lost = outcome == "lost"
+    back = not lost and (outcome == "won" or "funds_reinstated" in steps)
+    taken = lost or bool({"funds_withdrawn", "funds_reinstated"} & set(steps))
+    owed = [p for p, holds in (("funds_withdrawn", taken), ("funds_reinstated", taken and back),
+                               ("lost", taken and lost)) if holds]
+    settled = {"funds_reinstated", "lost"} & set(posted)
+    return [p for p in owed if p not in posted and not (p in ("funds_reinstated", "lost") and settled)]
+
+
+async def record_stripe_dispute(session, company_id, row: Projection, payment: dict, *, dispute_id: str,
+                                state: str, outcome: str | None, amount_minor: int, currency: str,
+                                occurred_at: datetime.datetime | None) -> bool:
+    """Record one step of a card dispute on the online *payment* of the locked document
+    *row*, and post what it adds to the money the dispute has moved (``_dispute_postings``):
+    the amount taken is the amount given back or lost, so Disputed payments always clears. The
+    payment and the invoice stay as they are. The company is told of each step, once.
+    Only ``payments.receive_dispute`` calls it, after checking the dispute belongs to
+    *payment*; the caller commits. False when the step was already recorded."""
+    from celerp.events.engine import emit_event
+    from celerp.notifications import service as notif_service
+    from celerp.services import auto_je
+
+    before = (payment.get("disputes") or {}).get(dispute_id) or {}
+    postings = _dispute_postings([*before.get("steps", ()), state], before.get("outcome") or outcome,
+                                 before.get("posted", ()))
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=row.entity_id, entity_type="doc",
+        event_type="doc.payment.disputed",
+        data={"payment_index": payment["index"], "reference": payment["reference"], "dispute_id": dispute_id,
+              "state": state, "outcome": outcome, "amount_minor": amount_minor, "currency": currency.lower(),
+              "occurred_at": occurred_at.isoformat() if occurred_at else None, "posted": postings},
+        actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
+        idempotency_key=f"stripe-dispute:{dispute_id}:{state}")
+    if getattr(entry, "was_deduped", False):
+        return False
+    moved = before.get("withdrawn_minor") or amount_minor
+    for posting in postings:
+        await auto_je.post_dispute_adjustment(
+            session, company_id=company_id, user_id=await _company_owner_id(session, company_id),
+            doc_id=row.entity_id, payment=payment, dispute_id=dispute_id, step=posting,
+            amount_minor=moved, currency=currency, occurred_at=occurred_at)
+    await notif_service.create_keyed(
+        session, company_id, "accounting", "notice.payment_dispute",
+        {"document": _doc_ref(row.state) or row.entity_id, "amount": pay.dispute_amount(amount_minor, currency),
+         "status": {"key": pay.dispute_status_key({"state": state, "outcome": outcome})}},
+        action_url=f"/docs/{row.entity_id}", priority="high")
     return True
 
 

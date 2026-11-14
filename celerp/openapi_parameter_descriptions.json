@@ -305,7 +305,8 @@
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
-    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned.",
+    "query:fund_choice": "Set to needed to list only the documents waiting for a fund choice."
   },
   "GET /docs/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
@@ -350,7 +351,8 @@
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
-    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned.",
+    "query:fund_choice": "Set to needed to list only the documents waiting for a fund choice."
   },
   "GET /docs/numbered": {
     "query:doc_type": "Document type to limit the match to, such as invoice or bill. Omit to match every type.",
@@ -382,7 +384,8 @@
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
-    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned.",
+    "query:fund_choice": "Set to needed to list only the documents waiting for a fund choice."
   },
   "GET /fixed-assets/api/assets": {
     "query:class_id": "Keeps only assets in this asset class.",
@@ -718,7 +721,8 @@
     "query:offset": "Number of matching records to skip before returning results.",
     "query:q": "Search text used to filter matching records.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
-    "query:review": "When true, return only agreements with earlier documents waiting for history review."
+    "query:review": "When true, return only agreements with earlier documents waiting for history review.",
+    "query:kind": "Only agreements of this kind: subscription, retainer or membership."
   },
   "OPTIONS /share/{token}": {
     "path:token": "Opaque public token identifying the shared or payment resource."
@@ -1611,5 +1615,102 @@
   "POST /subscriptions/{entity_id}/periods/{k}/unskip": {
     "path:entity_id": "Identifier of the requested Celerp record.",
     "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
+  },
+  "PATCH /accounting/funds/{fund_id}": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "POST /accounting/funds/{fund_id}/archive": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "POST /accounting/funds/{fund_id}/unarchive": {
+    "path:fund_id": "Identifier of the fund."
+  },
+  "PUT /companies/me/categories/{category_key}/income-account": {
+    "path:category_key": "Stable category key identifying the company category."
+  },
+  "GET /accounting/funds/activity": {
+    "query:date_from": "First day of the period, as YYYY-MM-DD.",
+    "query:date_to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /accounting/funds/balance-sheet": {
+    "query:as_of": "Cutoff date for the fund report; later postings are excluded."
+  },
+  "GET /accounting/funds/reconciliation": {
+    "query:as_of": "Cutoff date for the fund report; later postings are excluded."
+  },
+  "GET /accounting/journal/{entity_id}/funds": {
+    "path:entity_id": "Identifier of the journal entry."
+  },
+  "GET /accounting/recognition/roll-forward": {
+    "query:date_from": "First day of the period, as YYYY-MM-DD.",
+    "query:date_to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /docs/{entity_id}/fund-open": {
+    "path:entity_id": "Identifier of the document."
+  },
+  "GET /donors": {
+    "query:from": "First day of the period, as YYYY-MM-DD.",
+    "query:to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /donors/statements/preview": {
+    "query:from": "First day of the period, as YYYY-MM-DD.",
+    "query:to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /donors/{contact_id}/history": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:from": "First day of the period, as YYYY-MM-DD.",
+    "query:to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /donors/{contact_id}/statement.pdf": {
+    "path:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
+    "query:from": "First day of the period, as YYYY-MM-DD.",
+    "query:to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /subscriptions/metrics": {
+    "query:currency": "Currency code; only agreements billed in exactly this currency are counted.",
+    "query:from": "First day of the period, as YYYY-MM-DD.",
+    "query:to": "Last day of the period, as YYYY-MM-DD."
+  },
+  "GET /subscriptions/{entity_id}/collection": {
+    "path:entity_id": "Identifier of the subscription, retainer or membership agreement."
+  },
+  "POST /accounting/close-year/{year_end}/reverse": {
+    "path:year_end": "Last day of the closed fiscal year whose close is reversed, as YYYY-MM-DD."
+  },
+  "POST /accounting/funds/movements/{je_id}/reverse": {
+    "path:je_id": "Identifier of the fund movement's journal entry."
+  },
+  "POST /accounting/journal/{entity_id}/change-fund": {
+    "path:entity_id": "Identifier of the journal entry."
+  },
+  "POST /accounting/peer/holds/{item_id}/funds": {
+    "path:item_id": "Identifier of the held accounting synchronization item to resolve."
+  },
+  "POST /accounting/recognition/schedules/{schedule_id}/amend": {
+    "path:schedule_id": "Identifier of the revenue recognition schedule."
+  },
+  "POST /accounting/recognition/{month}/post": {
+    "path:month": "Month whose revenue recognition is posted, as YYYY-MM, such as 2026-09."
+  },
+  "POST /accounting/recognition/{month}/reverse": {
+    "path:month": "Month whose revenue recognition is reversed, as YYYY-MM, such as 2026-09."
+  },
+  "POST /docs/{entity_id}/change-fund": {
+    "path:entity_id": "Identifier of the document."
+  },
+  "POST /docs/{entity_id}/fund-choices": {
+    "path:entity_id": "Identifier of the document."
+  },
+  "POST /subscriptions/{entity_id}/amend": {
+    "path:entity_id": "Identifier of the subscription, retainer or membership agreement."
+  },
+  "POST /subscriptions/{entity_id}/collection/revoke": {
+    "path:entity_id": "Identifier of the subscription, retainer or membership agreement."
+  },
+  "POST /subscriptions/{entity_id}/collection/setup-link": {
+    "path:entity_id": "Identifier of the subscription, retainer or membership agreement."
+  },
+  "PUT /companies/me/categories/{category_key}/gift": {
+    "path:category_key": "Stable category key identifying the company category."
   }
 }

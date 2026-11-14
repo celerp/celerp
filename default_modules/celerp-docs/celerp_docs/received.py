@@ -463,12 +463,12 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
         if target.kind == "list":
             created = await create_list_record(
                 ListCreatePayload(list_type=target.type, **common, **fields),
-                company_id, role, settings, user, session, commit=False,
+                company_id, role, settings, user, session, commit=False, origin="shared_document",
             )
         else:
             created = await create_doc_record(
                 DocCreatePayload(doc_type=target.type, **common, **fields),
-                company_id, role, settings, user, session, commit=False,
+                company_id, role, settings, user, session, commit=False, origin="shared_document",
             )
         await _emit(session, company_id, rid, "received_doc.booked", {
             "target_id": created["id"],
@@ -525,11 +525,11 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
                 patch = DocPatch(fields_changed=changed, idempotency_key=patch_key, expected_version=version)
                 if kind.kind == "list":
                     patched = await write_list_patch(session, company_id, role, settings, user,
-                                                     booked["target_id"], patch)
+                                                     booked["target_id"], patch, origin="shared_document")
                 else:
                     await _refuse_synced(session, company_id, booked["target_id"])
                     patched = await write_doc_patch(session, company_id, role, settings, user,
-                                                    booked["target_id"], patch)
+                                                    booked["target_id"], patch, origin="shared_document")
                 version = patched["event_id"] or version
         await _emit(session, company_id, rid, "received_doc.draft_updated",
                     {"revision_seq": seq, "revision_digest": digest, "target_version": version},

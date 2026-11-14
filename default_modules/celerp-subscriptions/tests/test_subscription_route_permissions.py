@@ -20,10 +20,15 @@ from celerp_subscriptions.routes import _build_router
 VIEW = "view_subscriptions"
 EDIT = "edit_documents"
 BILL = "finalize_documents"
+# An amendment changes the agreement's lines and issues documents at once, so it needs both.
+AMEND = frozenset({EDIT, BILL})
 
-EXPECTED: dict[tuple[str, str], str] = {
+EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("GET", ""): VIEW,
+    ("GET", "/members"): VIEW,
     ("GET", "/due"): VIEW,
+    # Revenue figures are a financial report, not the agreements themselves.
+    ("GET", "/metrics"): "view_financial_reports",
     ("GET", "/catch-up"): VIEW,
     ("GET", "/summary"): VIEW,
     ("POST", "/summary/ack"): VIEW,
@@ -32,6 +37,7 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("POST", "/catch-up/run"): BILL,
     ("POST", "/{entity_id}/generate-due"): BILL,
     ("POST", "/{entity_id}/bill-early"): BILL,
+    ("POST", "/{entity_id}/amend"): AMEND,
     ("POST", "/{entity_id}/periods/{k}/skip"): BILL,
     ("POST", "/{entity_id}/periods/{k}/unskip"): BILL,
     ("POST", "/{entity_id}/periods/{k}/reopen"): BILL,
@@ -40,6 +46,10 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("POST", "/{entity_id}/history/{doc_id}/withdraw"): BILL,
     ("POST", "/{entity_id}/periods/{k}/send"): EDIT,
     ("PATCH", "/{entity_id}/schedule"): EDIT,
+    ("GET", "/{entity_id}/collection"): VIEW,
+    # Sending a payer a card setup link or removing their card is consent to charge it.
+    ("POST", "/{entity_id}/collection/setup-link"): "automate_collection",
+    ("POST", "/{entity_id}/collection/revoke"): "automate_collection",
     ("POST", "/{entity_id}/pause"): EDIT,
     ("POST", "/{entity_id}/resume"): EDIT,
     ("POST", "/{entity_id}/cancel"): EDIT,
@@ -66,7 +76,8 @@ def test_every_endpoint_requires_exactly_the_permission_declared_for_it():
         for method in sorted(getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}):
             found[(method, route.path)] = _declared_permissions(route)
     assert sorted(found) == sorted(EXPECTED), "an endpoint was added or removed without a permission decision"
-    wrong = {k: sorted(got) for k, got in found.items() if got != frozenset({EXPECTED[k]})}
+    wanted = {k: v if isinstance(v, frozenset) else frozenset({v}) for k, v in EXPECTED.items()}
+    wrong = {k: sorted(got) for k, got in found.items() if got != wanted[k]}
     assert not wrong, f"endpoints whose permission differs from the table: {wrong}"
 
 

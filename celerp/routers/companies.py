@@ -58,6 +58,8 @@ from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
+from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS, require_income_account
+from celerp.services.recognition import GIFT_CATEGORIES
 from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
 from ui.i18n import t
 
@@ -1305,6 +1307,20 @@ async def create_category(
     return {"ok": True, "key": key}
 
 
+def _move_category_settings(settings: dict, old: str, new: str | None) -> None:
+    """Carry what the books keep per category (its income account, whether it is a gift
+    category) from ``old`` to ``new``, or drop it with None."""
+    income_accounts = dict(settings.get(CATEGORY_INCOME_ACCOUNTS) or {})
+    if old in income_accounts:
+        code = income_accounts.pop(old)
+        if new:
+            income_accounts[new] = code
+        settings[CATEGORY_INCOME_ACCOUNTS] = income_accounts
+    gifts = list(settings.get(GIFT_CATEGORIES) or [])
+    if old in gifts:
+        settings[GIFT_CATEGORIES] = sorted({*(k for k in gifts if k != old), *([new] if new else [])})
+
+
 @router.patch("/me/categories/{category_key}")
 async def rename_category(
     category_key: str,
@@ -1343,6 +1359,7 @@ async def rename_category(
     display_names[new_key] = new_name
     display_names.pop(category_key, None)
     settings["category_display_names"] = display_names
+    _move_category_settings(settings, category_key, new_key)
     company.settings = settings
     rows = (await session.execute(
         select(Projection).where(
@@ -1397,11 +1414,86 @@ async def delete_category(
     display_names = dict(settings.get("category_display_names") or {})
     display_names.pop(category_key, None)
     settings["category_display_names"] = display_names
+    _move_category_settings(settings, category_key, None)
     company.settings = settings
     await session.commit()
     return {"ok": True}
 
 
+class CategoryIncomeAccount(BaseModel):
+    income_account: str | None = None
+
+
+@router.get("/me/category-income-accounts")
+async def get_category_income_accounts(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """The revenue account each category's sales are credited to, keyed by category; a
+    category without one is absent and its items sell on the sales revenue account."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    return dict(company.settings.get(CATEGORY_INCOME_ACCOUNTS) or {})
+
+
+@router.put("/me/categories/{category_key}/income-account")
+async def set_category_income_account(
+    category_key: str,
+    payload: CategoryIncomeAccount,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set (or with null clear) the revenue account the category's items are sold on
+    when an item names none of its own. Set-to-state: a repeat changes nothing."""
+    from celerp.services.field_schema import all_category_schemas
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    settings = dict(company.settings or {})
+    if category_key not in all_category_schemas(settings):
+        raise HTTPException(status_code=404, detail=t("company.err_category_not_found", name=category_key))
+    code = (payload.income_account or "").strip() or None
+    if code is not None:
+        await require_income_account(session, company_id, code)
+    income_accounts = dict(settings.get(CATEGORY_INCOME_ACCOUNTS) or {})
+    if income_accounts.get(category_key) != code:
+        if code is None:
+            income_accounts.pop(category_key, None)
+        else:
+            income_accounts[category_key] = code
+        settings[CATEGORY_INCOME_ACCOUNTS] = income_accounts
+        company.settings = settings
+    await session.commit()
+    return {"ok": True, "category": category_key, "income_account": code}
+
+
+
+class CategoryGift(BaseModel):
+    gift: bool
+
+
+@router.put("/me/categories/{category_key}/gift")
+async def set_category_gift(
+    category_key: str,
+    payload: CategoryGift,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Mark (or unmark) the category as one whose items are gifts: their sales never defer
+    revenue (celerp.services.recognition). Set-to-state: a repeat changes nothing."""
+    from celerp.services.field_schema import all_category_schemas
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    settings = dict(company.settings or {})
+    if category_key not in all_category_schemas(settings):
+        raise HTTPException(status_code=404, detail=t("company.err_category_not_found", name=category_key))
+    gifts = set(settings.get(GIFT_CATEGORIES) or ())
+    if (category_key in gifts) != payload.gift:
+        settings[GIFT_CATEGORIES] = sorted(gifts | {category_key} if payload.gift else gifts - {category_key})
+        company.settings = settings
+    await session.commit()
+    return {"ok": True, "category": category_key, "gift": payload.gift}
 
 
 @router.get("/me/column-prefs")

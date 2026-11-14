@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import unicodedata
 from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
@@ -23,61 +25,29 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
-from celerp_subscriptions.billing import ENDED, bills, send_written
-from celerp_subscriptions.periods import shown
+from celerp.accounting_roles import RECOGNIZE_FIELD
+from celerp.services.business_time import business_today
+from celerp_subscriptions.billing import ENDED, amendments_of, bills, doc_kind, lines_on, send_written
+from celerp_subscriptions.periods import BILLED, COLLECT_MODE, UNRESOLVED, shown
 from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
 from ui.api_client import APIError, error_message
-from ui.components.shell import base_shell, page_header, toast_header
-from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
+from ui.components.shell import base_shell, module_active, page_header, toast_header
+from ui.components.table import (EMPTY, breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value,
+                                 search_bar, searchable_select, status_cards)
 from ui.config import get_token as _token, get_role as _get_role
+from ui.routes.action_answers import _done, _redrawn, _refused, _refused_redrawn
 from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
-from ui.components.encode import as_js, html_response, to_markup
+from ui.components.encode import as_js, html_response, safe_url, to_markup
 
 logger = logging.getLogger(__name__)
 
 _PER_PAGE = 50
-
-
-def _refused(e: APIError):
-    """The API's refusal of an action, shown where the user is."""
-    api.raise_if_signed_out(e)
-    return _action_error(e)
-
-
-def _done(back: str, message: str, kind: str = "success") -> Response:
-    """An action that worked: go back to *back* and say what it did there."""
-    return Response(status_code=204, headers={"HX-Redirect": back, **toast_header(message, kind)})
-
-
-async def _redrawn(draw, fallback=None, said: str = ""):
-    """What a done action shows next, read after it: ``draw()``'s answer. When a read fails,
-    the action is still done: ``fallback()`` and ``said`` (what the action's own answer says)
-    with a warning that offers Try again, never a refusal."""
-    try:
-        return await draw()
-    except APIError as e:
-        api.raise_if_signed_out(e)
-        warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
-        return html_response(fallback() if fallback else (), headers=toast_header(warning, "warning"))
-
-
-async def _refused_redrawn(e: APIError, draw):
-    """A refused action whose control already shows the refused value: the refusal with every view
-    drawn again from what is stored (``draw()``'s markup). When that read fails, the refusal alone."""
-    refusal = _refused(e)
-    try:
-        views = await draw()
-    except APIError as read_error:
-        api.raise_if_signed_out(read_error)
-        return refusal
-    return html_response(views, headers={k: v for k, v in refusal.headers.items()
-                                        if k not in ("content-length", "content-type")})
 
 
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.
@@ -107,12 +77,15 @@ _STATUS_CSS = {
 # Billing actions carry the operation key as the request key, so a repeated click bills once.
 _BILLING_ACTIONS = ("generate-due", "bill-early")
 # The schedule fields the detail page edits, each with how its submitted text is read.
-_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int, "billing_timing": str,
+_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "trial_end": str, "custom_interval_days": int, "billing_timing": str,
                    "term_start": str, "term_end": str, "cancel_at_period_end": lambda v: v == "true",
-                   "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int}
+                   "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int,
+                   RECOGNIZE_FIELD: lambda v: v == "true", "kind": str, "beneficiary_contact_id": str,
+                   "grace_days": int}
 # What a schedule value that does not read as its type is told.
 _FIELD_ERRORS = {"custom_interval_days": "subscriptions.err_custom_days",
-                 "catchup_periods": "subscriptions.err_catchup_window"}
+                 "catchup_periods": "subscriptions.err_catchup_window",
+                 "grace_days": "subscriptions.err_grace_days"}
 # What each lifecycle action says it did; a billing action names its document and period.
 _ACTION_DONE = {"activate": "subscriptions.done_activated", "pause": "subscriptions.done_paused",
                 "resume": "subscriptions.done_resumed", "cancel": "subscriptions.done_cancelled"}
@@ -133,9 +106,11 @@ _SEND_BADGE = {"waiting": ("subscriptions.period_send_pending", "badge--warning"
                "sending": ("subscriptions.period_send_sending", "badge--warning"),
                "unconfirmed": ("subscriptions.period_send_unconfirmed", "badge--warning")}
 _MODES = ("manual_due", "auto_invoice")
-_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
+_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically", COLLECT_MODE: "subscriptions.bills_and_collects"}
 # The agreement keeps a consent only for a mode that runs, so each one kept is shown.
-_CONSENTS = ("generation", "sending")
+_CONSENTS = ("generation", "sending", "collection")
+# The card on file section's actions: the API's own path under /collection for each.
+_COLLECTION_ACTIONS = ("setup-link", "revoke")
 
 
 # A schedule or billing control saves on change; its answer is every element of the page
@@ -154,6 +129,7 @@ _FIELD_TEXT = {
     "frequency": ("th.frequency", lambda v: display_enum(v, "subscription_frequency")),
     "custom_interval_days": ("subscriptions.custom_interval_title", lambda v: str(v) if v else None),
     "anchor_date": ("label.first_bill_date", lambda v: v),
+    "trial_end": ("subscriptions.trial_end", lambda v: v),
     "start_date": ("label.start_date", lambda v: v),
     "billing_timing": ("subscriptions.billing_timing", lambda v: t(f"subscriptions.timing_{v}")),
     "term_start": ("subscriptions.term_start", lambda v: v),
@@ -162,7 +138,12 @@ _FIELD_TEXT = {
     "generation_mode": ("subscriptions.billing_mode", lambda v: t(f"subscriptions.mode_{v}")),
     "auto_send": ("subscriptions.auto_send", _yes_no),
     "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v)),
+    RECOGNIZE_FIELD: ("item.recognize_over_service_period", _yes_no),
+    "kind": ("subscriptions.kind", lambda v: t(f"subscriptions.kind_{v}")),
+    "beneficiary_contact_id": ("subscriptions.member", lambda v: v),
+    "grace_days": ("subscriptions.grace_days", lambda v: str(v)),
 }
+_KINDS = ("subscription", "retainer", "membership")
 
 
 def _label(field: str) -> str:
@@ -175,6 +156,13 @@ def _value_text(field: str, value) -> str | None:
 
 def _term_change(field: str):
     return lambda c: change_text(_label(field), _value_text(field, c.get("old")), _value_text(field, c.get("new")))
+
+
+def _member_change(c: dict) -> str | None:
+    """The member before and after, each by the name the change recorded (else its id)."""
+    names = c.get("names") or {}
+    return change_text(_label("beneficiary_contact_id"), names.get(c.get("old"), c.get("old")),
+                       names.get(c.get("new"), c.get("new")))
 
 
 def _consents_change(c: dict) -> str:
@@ -235,8 +223,17 @@ def _count_change(label: str):
     return describe
 
 
+def _amendments_change(c: dict) -> str | None:
+    """Each amendment the change added, by the day it takes effect."""
+    old = c.get("old") or []
+    return ", ".join(sentence("subscriptions.history_amended", day=a.get("effective"))
+                     for a in c.get("new") or [] if isinstance(a, dict) and a not in old) or None
+
+
 register_fields({
     **{f: _term_change(f) for f in _FIELD_TEXT},
+    "amendments": _amendments_change,
+    "beneficiary_contact_id": _member_change,
     "consents": _consents_change,
     "periods": _periods_change,
     "billing_failure": _billing_failure_change,
@@ -278,12 +275,12 @@ def _direction_tabs(direction: str, status: str = "") -> FT:
     return Nav(_tab(t("dashboard.sales"), "sales"), _tab(t("subscriptions.purchasing"), "purchasing"), cls="tab-nav")
 
 
-def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> FT:
+def _sub_status_cards(items: list[dict], state: dict) -> FT:
     counts: dict[str, int] = {}
     for it in items:
         s = it.get("status", "draft")
         counts[s] = counts.get(s, 0) + 1
-    base = f"/subscriptions?direction={direction}"
+    base, active_status = _list_base(state), state["status"]
     issued_total = sum(counts.get(s, 0) for s in ("active", "paused", "cancelled"))
     # Draft first, then All Issued, then lifecycle statuses
     cards = [
@@ -296,10 +293,22 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
     return Div(status_cards(cards, base, active_status or None, currency=None, show_all_card=False), id="sub-status-cards")
 
 
-def _data_table(*parts) -> FT:
+def _data_table(*parts, compact: bool = False) -> FT:
     """A data table in the scroll box every data table has, so a wide row scrolls inside it
-    instead of pushing the page wider than the screen."""
-    return Div(Table(*parts, cls="data-table"), cls="table-scroll-wrap")
+    instead of pushing the page wider than the screen. ``compact`` tightens the cell padding
+    for a matrix with a column per month."""
+    cls = "data-table data-table--compact" if compact else "data-table"
+    return Div(Table(*parts, cls=cls), cls="table-scroll-wrap")
+
+
+def _doc_links(docs) -> list:
+    """Links to documents, each named by its number, separated by commas: ``docs`` is
+    (document id, number) pairs."""
+    out: list = []
+    for doc_id, ref in docs:
+        out += [", "] if out else []
+        out.append(A(ref, href=f"/docs/{doc_id}"))
+    return out
 
 
 def _sentence_cell(*content, cls: str = "") -> FT:
@@ -308,13 +317,18 @@ def _sentence_cell(*content, cls: str = "") -> FT:
     return Td(*content, cls=f"cell--note {cls}".rstrip())
 
 
-def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
-    if not subs and review:
+def _sub_table(subs: list[dict], state: dict, any_exist: bool) -> FT:
+    """The table of one page of a list view; ``any_exist`` is whether the view's kind has any
+    agreement at all, so an empty view says nothing matches rather than that there are none."""
+    if not subs and state["review"]:
         return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
-                                   f"/subscriptions?direction={direction}"), id="sub-table")
+                                   _list_base(state)), id="sub-table")
+    if not subs and any_exist:
+        return Div(P(t("subscriptions.none_in_view"), cls="text-muted"), id="sub-table")
     if not subs:
-        return Div(empty_state_cta(t("label.no_subscription_templates_found"), t("page.new_subscription"),
-                                   f"/subscriptions/new?direction={direction}", hx_post=True), id="sub-table")
+        text = _LIST_TEXT[state["kind"]]
+        return Div(empty_state_cta(t(text["empty"]), t(text["new"]), text.get("form") or _new_url(state),
+                                   hx_post=not text.get("form")), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
@@ -342,13 +356,43 @@ def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
     )
 
 
-def _review_banner(items: list[dict], direction: str, review: bool) -> FT | str:
+_STANDING_CSS = {"current": "badge--active", "in_grace": "badge--paused", "lapsed": "badge--void",
+                 "ended": "badge--draft", "lifetime": "badge--active"}
+
+
+def _members_table(rows: list[dict]) -> FT:
+    """Members newest first: who, who pays, their standing, the agreement's status and the bill
+    or invoice the standing is read from."""
+    if not rows:
+        return empty_state_cta(t("subscriptions.members_empty"), t("page.new_membership"),
+                               "/subscriptions/new?direction=sales&kind=membership", hx_post=True)
+
+    def _row(m: dict) -> FT:
+        source = (f"/subscriptions/{m['entity_id']}" if m.get("entity_id") else f"/docs/{m['doc_id']}")
+        return Tr(
+            Td(m.get("member_name") or EMPTY),
+            Td(m.get("contact_name") or EMPTY),
+            Td(Span(display_enum(m["standing"], "member_standing"),
+                    cls=f"badge {_STANDING_CSS.get(m['standing'], 'badge--draft')}")),
+            Td(display_enum(m["status"], "subscription_status") if m.get("status") else EMPTY),
+            Td(m.get("due_date") or EMPTY),
+            Td(A(m.get("ref") or source, href=source)),
+        )
+
+    return _data_table(
+        Thead(Tr(*[Th(t(k)) for k in ("subscriptions.member", "subscriptions.paid_by", "subscriptions.standing",
+                                       "th.status", "th.due_date", "th.ref")])),
+        Tbody(*[_row(m) for m in rows]),
+    )
+
+
+def _review_banner(items: list[dict], state: dict) -> FT | str:
     """Names how many agreements wait for history review, with the filter that lists them."""
     n = sum(1 for i in items if i.get("history_review"))
-    if not n or review:
+    if not n or state["review"]:
         return ""
     return Div(t("subscriptions.review_banner", n=n), " ",
-               A(t("subscriptions.review_open"), href=f"/subscriptions?direction={direction}&review=1"),
+               A(t("subscriptions.review_open"), href=safe_url(f"{_list_base(state)}&review=1")),
                cls="flash flash--warning")
 
 
@@ -388,6 +432,7 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
                         style="width:80px", **attrs),
                   id="sub-custom-days", style="" if freq == "custom" else "display:none"),
             _date("anchor_date"),
+            _date("trial_end"),
             Label(_label("billing_timing"),
                   Select(*[Option(_value_text("billing_timing", m), value=m, selected=(m == timing)) for m in _TIMINGS],
                          name="value", hx_patch=f"{base}/billing_timing", **attrs)),
@@ -399,15 +444,64 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
                          name="value", hx_patch=f"{base}/cancel_at_period_end", **attrs)),
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
+        _kind_row(base, sub, attrs),
         id="sub-schedule", cls="mt-lg",
     )
 
 
+def _kind_row(base: str, sub: dict, attrs: dict) -> FT:
+    """What the agreement is (subscription, retainer or membership), the member a membership is
+    for and the days after a bill's due date a member stays in good standing. The member is
+    picked from every contact by search; choosing none clears it."""
+    kind = shown("kind", sub.get("kind"))
+    member = sub.get("beneficiary_contact_id") or ""
+    members = [("", EMPTY)] + ([(member, sub.get("beneficiary_name") or member)] if member else [])
+    return Div(
+        Label(_label("kind"),
+              Select(*[Option(_value_text("kind", k), value=k, selected=(k == kind)) for k in _KINDS],
+                     name="value", hx_patch=f"{base}/kind", **attrs)),
+        Label(_label("beneficiary_contact_id"),
+              searchable_select("value", members, value=member, aria_label=_label("beneficiary_contact_id"),
+                                search_url="/contacts/search-options?contact_type=all&add_new=0",
+                                hx_patch=f"{base}/beneficiary_contact_id", **_SCHEDULE_CONTROL)),
+        Label(_label("grace_days"),
+              Input(type="number", name="value", value=str(shown("grace_days", sub.get("grace_days"))), min="0",
+                    hx_patch=f"{base}/grace_days", style="width:80px", **attrs)),
+        style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center", cls="mt-sm",
+    )
+
+
+async def _with_member(token: str, sub: dict) -> dict:
+    """The agreement with its member's name for the page, else as it is (a member no longer
+    found shows by its id)."""
+    member = sub.get("beneficiary_contact_id")
+    if not member:
+        return sub
+    try:
+        return {**sub, "beneficiary_name": (await api.get_contact(token, member)).get("name")}
+    except APIError:
+        return sub
+
+
+async def _with_collection(token: str, entity_id: str, sub: dict) -> dict:
+    """A sales agreement with what Celerp Cloud offers for automatic collection and its payer's
+    card on file (``collection_view``); as it is when the read fails, so nothing is offered."""
+    if doc_kind(sub) != "invoice":
+        return sub
+    try:
+        return {**sub, "collection_view": await api.get_subscription_collection(token, entity_id)}
+    except APIError as e:
+        api.raise_if_signed_out(e)
+        return sub
+
+
 def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
-    """Shows the first bill date until a period is billed, then the next bill date; for an
-    agreement that has ended, why it bills nothing, and on a void one a link to its document's
-    page, where Unvoid is (every refusal on a void agreement names it)."""
-    billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
+    """Shows the first bill date until the agreement has billed (a billed period, or earlier
+    documents still waiting in history review), then the next bill date; for an agreement that
+    has ended, why it bills nothing, and on a void one a link to its document's page, where
+    Unvoid is (every refusal on a void agreement names it)."""
+    billed = bool(sub.get("history_review")) or any(
+        (e or {}).get("state") in (BILLED, UNRESOLVED) for e in (sub.get("periods") or {}).values())
     attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em"}
     if sub.get("ended"):
         unvoid = (" ", A(t("doc.unvoid"), href=f"/docs/{entity_id}")) if sub.get("status") == "void" else ()
@@ -420,10 +514,10 @@ def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
 
 
 def _with_schedule(sub: dict, schedule: dict) -> dict:
-    """The agreement as its page shows it: its own fields, its periods' next bill date, and why
-    it bills nothing once it has ended."""
+    """The agreement as its page shows it: its own fields, its periods' next bill date, why
+    it bills nothing once it has ended, and the modes whose authorization lapsed."""
     return {**sub, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved"),
-            "ended": schedule.get("ended")}
+            "ended": schedule.get("ended"), "automation": schedule.get("automation") or {}}
 
 
 def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
@@ -433,13 +527,19 @@ def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
             Span(*right, id="sub-actions-right", style="display:contents"))
 
 
-def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict) -> str:
+def _defers(settings: dict, sub: dict) -> bool:
+    """Whether the agreement's bills can recognize over their service period: a sales
+    agreement in a company that keeps its books."""
+    return doc_kind(sub) == "invoice" and module_active(settings, "celerp-accounting")
+
+
+def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict, defers: bool) -> str:
     """Every element showing the schedule, drawn from what the agreement stores, each swapped
     out of band by its id."""
-    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule, defers) if v != ""))
 
 
-def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
+def _schedule_views(entity_id: str, sub: dict, schedule: dict, defers: bool) -> list[FT]:
     """Every element of the agreement page that shows its schedule or billing settings: the
     actions with the bill date note and badge, the header's frequency and next bill date, the
     Schedule and Billing sections and the Periods table. The page draws each in its place and a
@@ -449,7 +549,7 @@ def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
     sub = _with_schedule(sub, schedule)
     return [*_action_groups(entity_id, sub, schedule), *subscription_meta_cells(sub),
             _schedule_section(entity_id, sub) if sub.get("status") not in ENDED else "",
-            _billing_section(entity_id, sub), _periods_table(entity_id, schedule)]
+            _billing_section(entity_id, sub, defers), _periods_table(entity_id, schedule)]
 
 
 def _pause_button(entity_id: str):
@@ -574,10 +674,7 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
             label = Span(label, " ", Span(t(key), cls=f"badge {badge}"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
         if r.get("released"):
-            earlier: list = []
-            for d in r["released"]:
-                earlier += [", "] if earlier else []
-                earlier.append(A(d["ref_id"], href=f"/docs/{d['doc_id']}"))
+            earlier = _doc_links((d["doc_id"], d["ref_id"]) for d in r["released"])
             doc = Div(doc, Div(t("subscriptions.period_earlier_bills"), " ", *earlier, cls="text-muted"))
         return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), _sentence_cell(doc),
                   Td(_period_actions(entity_id, r)))
@@ -636,6 +733,17 @@ _CHOSEN_ROWS_JS = """
     var f=e.detail.elt.closest('form[data-chosen-rows]');if(!f)return;
     e.detail.parameters.item=JSON.stringify(Array.prototype.map.call(
       f.querySelectorAll('.bulk-select:checked'),function(box){return box.value;}));});
+})();
+"""
+
+
+_QUANTITIES_JS = """
+(function(){
+  if(window.__celerpQuantities)return;window.__celerpQuantities=true;
+  document.addEventListener('htmx:configRequest',function(e){
+    var f=e.detail.elt.closest('form[data-quantities]');if(!f)return;var q={};
+    f.querySelectorAll('.amend-qty').forEach(function(box){q[box.dataset.line]=box.value;});
+    e.detail.parameters.quantities=JSON.stringify(q);});
 })();
 """
 
@@ -813,39 +921,162 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
 
 
 def _auto_badge(sub: dict) -> FT:
-    """The header badge naming an agreement that bills on its own; empty otherwise."""
-    key = _MODE_BADGE.get(sub.get("generation_mode") or "")
+    """The header badge naming an agreement that bills on its own, or that its automatic
+    billing stopped when the authorization lapsed; empty otherwise. One whose collection
+    alone lapsed still bills on its own, so it reads as billing automatically."""
+    mode = sub.get("generation_mode") or ""
     attrs = {"id": "sub-auto-badge"}
-    return Span(t(key), cls="badge badge--active", **attrs) if key else Span(**attrs)
+    if mode not in _MODE_BADGE:
+        return Span(**attrs)
+    lapsed = sub["automation"].get("lapsed") or []
+    if "generation" in lapsed:
+        return Span(t("subscriptions.summary_billing_lapsed"), cls="badge badge--paused", **attrs)
+    key = _MODE_BADGE["auto_invoice" if "collection" in lapsed else mode]
+    return Span(t(key), cls="badge badge--active", **attrs)
 
 
-def _billing_section(entity_id: str, sub: dict) -> FT:
-    """How the agreement bills: by hand or on its own, whether it sends what it bills, and
-    how many past periods automatic billing may still bill after a gap. Each automatic
-    mode names when it was authorized; setting it back to manual undoes it."""
+def _yes_no_control(base: str, field: str, on: bool, attrs: dict) -> FT:
+    return Label(_label(field),
+                 Select(Option(_yes_no(False), value="false", selected=not on),
+                        Option(_yes_no(True), value="true", selected=on),
+                        name="value", hx_patch=f"{base}/{field}", **attrs))
+
+
+def _billing_section(entity_id: str, sub: dict, defers: bool) -> FT:
+    """How the agreement bills: by hand or on its own, whether it sends what it bills, how
+    many past periods automatic billing may still bill after a gap and, when its bills can
+    defer revenue (_defers), whether they recognize over their service period. Each
+    automatic mode names when it was authorized, or in its place that it does not run because
+    the authorization lapsed and how to authorize it again; setting it back to manual undoes it."""
     base = f"/subscriptions/{entity_id}/schedule"
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     mode = shown("generation_mode", sub.get("generation_mode"))
     consents = sub.get("consents") or {}
+    automation = sub["automation"]
+    offered = bool((sub.get("collection_view") or {}).get("offered"))
+    # Collect is offered while Cloud offers it, and stays shown on an agreement using it so it can be set back.
+    modes = (*_MODES, COLLECT_MODE) if offered or mode == COLLECT_MODE else _MODES
     return Div(
         H3(t("subscriptions.billing_heading")),
         Div(
             Label(_label("generation_mode"),
-                  Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in _MODES],
+                  Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in modes],
                          name="value", hx_patch=f"{base}/generation_mode", **attrs)),
-            Label(_label("auto_send"),
-                  Select(Option(_yes_no(False), value="false", selected=not sub.get("auto_send")),
-                         Option(_yes_no(True), value="true", selected=bool(sub.get("auto_send"))),
-                         name="value", hx_patch=f"{base}/auto_send", **attrs)),
+            _yes_no_control(base, "auto_send", bool(sub.get("auto_send")), attrs),
             Label(_label("catchup_periods"),
                   Input(type="number", name="value", min="0", max="12", value=str(shown("catchup_periods", sub.get("catchup_periods"))),
                         hx_patch=f"{base}/catchup_periods", style="width:80px", **attrs),
                   title=t("subscriptions.catchup_window_title")),
+            _yes_no_control(base, RECOGNIZE_FIELD, bool(sub.get(RECOGNIZE_FIELD)), attrs) if defers else "",
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
-        *[P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
+        *[P(automation["said"][c], cls="flash flash--warning") if c in (automation.get("lapsed") or ()) else
+          P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
           for c in _CONSENTS if (consents.get(c) or {}).get("at")],
+        _collection_card(entity_id, sub["collection_view"]) if offered else "",
         id="sub-billing", cls="mt-lg",
+    )
+
+
+def _card_text(binding: dict | None) -> str:
+    """The payer's card on file as the agreement page reads it."""
+    state = (binding or {}).get("state")
+    if state == "active":
+        brand = str(binding.get("card_brand") or "").replace("_", " ").title() or EMPTY
+        return t("subscriptions.card_on_file", brand=brand, last4=binding.get("card_last4") or EMPTY)
+    if state == "requires_action":
+        return t("subscriptions.card_needs_action")
+    if state == "access_removed":
+        return t("subscriptions.card_access_removed")
+    return t("subscriptions.no_card_on_file")
+
+
+def _collection_button(entity_id: str, label: str, action: str, fields: dict, **attrs) -> FT:
+    return Form(*[Input(type="hidden", name=k, value=v) for k, v in fields.items()],
+                Button(label, type="submit", cls="btn btn--secondary btn--sm", **attrs),
+                hx_post=f"/subscriptions/{entity_id}/collection/{action}", hx_target="#sub-collection",
+                hx_swap="outerHTML", cls="inline-form")
+
+
+def _setup_link_text(link: str) -> FT:
+    """A setup link to send the payer, ready to copy."""
+    return Div(P(t("subscriptions.setup_link_copy"), cls="text-muted"),
+               Input(type="text", value=link, readonly=True, cls="form-input", aria_label=t("subscriptions.setup_link_copy")))
+
+
+def _collection_card(entity_id: str, view: dict, link: str | None = None) -> FT:
+    """The payer's card on file for automatic collection: what Cloud last said of it and, when its
+    receipt was not emailed, so; Email or Copy a setup link where the payer puts a card on file
+    (``link``: the one just made, to copy), Email receipt again and Remove card for one on file.
+    A removed card comes back only by the payer putting a card on file again from a new link."""
+    binding = view.get("binding") or {}
+    active = binding.get("state") == "active"
+    return Div(
+        H4(t("subscriptions.collection_heading")),
+        P(_card_text(binding)),
+        P(t("subscriptions.receipt_not_sent"), cls="text-muted") if active and binding.get("receipt_sent") is False else "",
+        Div(_collection_button(entity_id, t("subscriptions.btn_email_setup_link"), "setup-link", {"delivery": "email"}),
+            _collection_button(entity_id, t("subscriptions.btn_copy_setup_link"), "setup-link", {"delivery": "copy"}),
+            *([_collection_button(entity_id, t("subscriptions.btn_email_receipt"), "setup-link",
+                                  {"delivery": "email", "resend_receipt": "true"}),
+               _collection_button(entity_id, t("subscriptions.btn_remove_card"), "revoke", {},
+                                  hx_confirm=t("subscriptions.remove_card_confirm"))] if active else []),
+            style="display:flex;gap:0.5rem;flex-wrap:wrap"),
+        _setup_link_text(link) if link else "",
+        id="sub-collection", cls="mt-md",
+    )
+
+
+def _quantity_text(value) -> str:
+    return EMPTY if value is None else f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _quantities_section(entity_id: str, sub: dict, today, doc_refs: dict[str, str]) -> FT | str:
+    """Each line's quantity in force today, a box for its new quantity and the date the change
+    takes effect (today unless chosen), and the changes made so far, newest first, each with the
+    documents that settled the days already billed, each by its number (``doc_refs``, the
+    periods answer's ``amendment_refs``). The boxes post as the one ``quantities``
+    field (a JSON object of line id to quantity), so a long agreement stays under the form's
+    field limit. A change is undone by changing the quantity
+    back from the same date."""
+    lines = [li for li in lines_on(sub, today) if li.get("line_id")]
+    if not lines:
+        return ""
+    by_id = {li["line_id"]: li.get("description") or EMPTY for li in lines}
+
+    def _line_row(li: dict) -> FT:
+        qty = _quantity_text(li.get("quantity"))
+        return Tr(Td(li.get("description") or EMPTY), Td(qty, cls="cell--number"),
+                  Td(Input(type="number", value=qty, min="0", step="any", data_line=li["line_id"],
+                           cls="form-input form-input--inline amend-qty", style="width:90px"), cls="cell--number"))
+
+    def _change_row(a: dict) -> FT:
+        shown_lines = ", ".join(f"{by_id.get(li.get('line_id'), li.get('description') or EMPTY)}: "
+                                f"{_quantity_text(li.get('quantity'))}" for li in a.get("line_items") or [])
+        docs = _doc_links((d, doc_refs.get(d) or d) for d in (a.get("credit_note_id"), a.get("invoice_id")) if d)
+        return Tr(Td(sentence("subscriptions.amend_from", day=a.get("effective"))), Td(shown_lines or EMPTY),
+                  _sentence_cell(*docs) if docs else Td(EMPTY))
+
+    changes = list(reversed(amendments_of(sub)))
+    return Div(
+        H3(t("subscriptions.quantities_heading")),
+        P(t("subscriptions.quantities_hint"), cls="text-muted"),
+        Form(
+            operation_key_input(),
+            _data_table(Thead(Tr(Th(t("th.description")), Th(t("subscriptions.th_quantity_now"), cls="cell--number"),
+                                 Th(t("subscriptions.th_quantity_new"), cls="cell--number"))),
+                        Tbody(*[_line_row(li) for li in lines])),
+            Div(Label(t("subscriptions.amend_effective"),
+                      Input(type="date", name="effective", value=today.isoformat(), required=True,
+                            cls="form-input form-input--inline")),
+                Button(t("btn.change_quantities"), type="submit", cls="btn btn--primary btn--sm"),
+                cls="form-actions"),
+            Script(_QUANTITIES_JS),
+            hx_post=f"/subscriptions/{entity_id}/amend", hx_swap="none", data_quantities=True,
+        ),
+        _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.quantity")), Th(t("th.document")))),
+                    Tbody(*[_change_row(a) for a in changes])) if changes else "",
+        id="sub-quantities", cls="mt-lg",
     )
 
 
@@ -923,13 +1154,14 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
     return catch_up, summary, errors
 
 
-async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False) -> list[dict]:
+async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False,
+                          kind: str = "") -> list[dict]:
     """Read every server page, without silently truncating large agreement sets."""
     items: list[dict] = []
     offset = 0
     while True:
         params = {"limit": 1000, "offset": offset, **({"direction": direction} if direction else {}),
-                  **({"review": "true"} if review else {})}
+                  **({"review": "true"} if review else {}), **({"kind": kind} if kind else {})}
         resp = await api.list_subscriptions(token, params)
         batch = resp if isinstance(resp, list) else resp.get("items", [])
         items.extend(batch)
@@ -938,16 +1170,132 @@ async def _all_agreements(token: str, direction: str | None = None, *, review: b
             return items
 
 
-def _list_state(params) -> dict:
-    """What a list view of agreements shows, from its query params: the list page's URL, or the
-    page an action was taken from."""
+# The pages that list agreements, by the kind they list ("" lists every kind), and their words.
+# Members lists standing, not agreements, so it has its own page.
+# Subscribers makes its agreements through its New subscriber form (_subscriber_form), so its New
+# button and empty state lead there.
+_LIST_PATHS = {"": "/subscriptions", "retainer": "/retainers", "subscription": "/subscribers"}
+_LIST_TEXT = {"": {"new": "page.new_subscription", "empty": "label.no_subscription_templates_found"},
+              "retainer": {"new": "page.new_retainer", "empty": "subscriptions.retainers_empty", "title": "nav.retainers"},
+              "subscription": {"new": "page.new_subscriber", "empty": "subscriptions.subscribers_empty",
+                               "title": "nav.subscribers", "form": "#new-subscriber"}}
+# A SaaS plan is a service item in this category; a subscriber's seats are its line's quantity.
+PLAN_CATEGORY = "saas_plan"
+# The most seats one subscriber can have: past it a seats count is a typing slip, and a long
+# enough one cannot be stored as a line quantity at all.
+MOST_SEATS = 1_000_000
+
+
+def _list_state(params, path: str = "/subscriptions") -> dict:
+    """What a list view of agreements shows, from its path and query params: the list page's URL,
+    or the page an action was taken from."""
     try:
         page = max(int(params.get("page", 1)), 1)
     except (TypeError, ValueError):
         page = 1
-    return {"direction": params.get("direction") or "sales", "status": params.get("status", ""), "q": params.get("q", ""),
+    kind = next(k for k, p in _LIST_PATHS.items() if p == path)
+    return {"direction": "sales" if kind else params.get("direction") or "sales", "kind": kind,
+            "status": params.get("status", ""), "q": params.get("q", ""),
             "review": params.get("review", "") in {"1", "true"}, "page": page,
             "per_page": per_page_value(params.get("per_page"), _PER_PAGE)}
+
+
+def _list_base(state: dict) -> str:
+    """The list page's own URL, without its status, search or page."""
+    return f"{_LIST_PATHS[state['kind']]}?direction={state['direction']}"
+
+
+def _new_url(state: dict) -> str:
+    """Where the list page's New button posts: a draft of the kind the page lists."""
+    return f"/subscriptions/new?{urlencode({'direction': state['direction'], **({'kind': state['kind']} if state['kind'] else {})})}"
+
+
+def _new_button(state: dict, cls: str) -> FT:
+    """The list page's New action: a link to its form when it has one, else a blank draft."""
+    text = _LIST_TEXT[state["kind"]]
+    if text.get("form"):
+        return A(t(text["new"]), href=safe_url(text["form"]), cls=cls)
+    return Button(t(text["new"]), hx_post=_new_url(state), hx_swap="none", cls=cls)
+
+
+async def _plans(token: str) -> list[dict]:
+    """Every SaaS plan item, read page by page so none is left out."""
+    items: list[dict] = []
+    while True:
+        resp = await api.list_items(token, {"category": PLAN_CATEGORY, "status": "all", "limit": 500,
+                                            "offset": len(items)})
+        batch = resp.get("items", [])
+        items.extend(batch)
+        if len(batch) < 500 or len(items) >= resp.get("total", 0):
+            return items
+
+
+def _subscriber_form(plans: list[dict], state: dict) -> FT:
+    """New subscriber: the contact, the plan, its seats and an optional trial end, which is the
+    first bill date."""
+    label = lambda key, field: Label(t(key), field, cls="form-label")
+    return Form(
+        H3(t("page.new_subscriber")),
+        Div(
+            label("th.contact", searchable_select("contact_id", [], aria_label=t("th.contact"),
+                                                  search_url="/contacts/search-options?contact_type=customer&add_new=0")),
+            label("subscriptions.plan", searchable_select(
+                "plan_id", [(p.get("id") or p.get("entity_id", ""), p.get("name") or p.get("sku") or "") for p in plans],
+                aria_label=t("subscriptions.plan"))),
+            label("subscriptions.seats", Input(type="number", name="seats", value="1", min="1", step="1",
+                                               cls="form-input", style="width:80px")),
+            label("subscriptions.trial_end", Input(type="date", name="trial_end", cls="form-input")),
+            Button(t("page.new_subscriber"), type="submit", cls="btn btn--primary"),
+            style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end",
+        ),
+        P(t("subscriptions.new_subscriber_hint"), cls="text-muted"),
+        id="new-subscriber", cls="card mt-sm", hx_post=_new_url(state), hx_swap="none",
+    )
+
+
+async def _subscriber_draft(token: str, form) -> dict | str:
+    """The draft New subscriber makes: the plan as its one line at the plan's price on the
+    company's default list, the seats as its quantity, and the trial end as its first bill
+    date. Why not, worded for the reader, when the seats are blank, not a whole number of at
+    least one or more than MOST_SEATS, or no plan is chosen or the item is not a SaaS plan."""
+    seats = (form.get("seats") or "").strip()
+    if not seats:
+        return t("subscriptions.err_seats_blank")
+    # Any script's digits count; read as plain digits without leading zeros before the size check,
+    # so a long string is never handed to int().
+    digits = "".join(str(unicodedata.decimal(c)) for c in seats).lstrip("0") if seats.isdecimal() else ""
+    if not digits:
+        return t("subscriptions.err_seats", seats=seats)
+    if len(digits) > len(str(MOST_SEATS)) or int(digits) > MOST_SEATS:
+        return t("subscriptions.err_seats_too_many", most=f"{MOST_SEATS:,}")
+    plan_id = (form.get("plan_id") or "").strip()
+    if not plan_id:
+        return t("subscriptions.err_no_plan")
+    plan = await api.get_item(token, plan_id)
+    if plan.get("category") != PLAN_CATEGORY:
+        return t("subscriptions.err_not_plan", name=plan.get("name") or plan_id)
+    from celerp.services.pricing import resolve_price
+
+    line = {"entity_id": plan_id, "sku": plan.get("sku"), "description": plan.get("name") or "",
+            "quantity": int(digits), "unit": plan.get("sell_by"),
+            "unit_price": resolve_price(plan, await api.get_default_price_list(token))}
+    trial = (form.get("trial_end") or "").strip()
+    return {"contact_id": form.get("contact_id") or None, "line_items": [line],
+            **({"trial_end": trial, "anchor_date": trial} if trial else {})}
+
+
+def _plans_table(plans: list[dict], counts: dict[str, int], price_list: str, currency: str | None) -> FT:
+    from celerp.services.pricing import resolve_price
+
+    def _row(p: dict) -> FT:
+        pid = p.get("id") or p.get("entity_id", "")
+        return Tr(Td(A(p.get("name") or p.get("sku") or pid, href=f"/inventory/{pid}")),
+                  Td(fmt_money(resolve_price(p, price_list), currency), cls="cell--number"),
+                  Td(str(counts.get(pid, 0)), cls="cell--number"), cls="data-row")
+
+    return _data_table(Thead(Tr(Th(t("subscriptions.plan")), Th(price_list, cls="cell--number"),
+                                Th(t("nav.subscribers"), cls="cell--number"))),
+                       Tbody(*[_row(p) for p in plans]))
 
 
 def _listed(items: list[dict], state: dict) -> list[dict]:
@@ -963,8 +1311,8 @@ def _list_views(all_items: list[dict], state: dict) -> tuple[FT, FT, int]:
     """The status cards and the table of one page of a list view, and how many rows it has in all."""
     listed = _listed(all_items, state)
     page, per_page = state["page"], state["per_page"]
-    return (_sub_status_cards(all_items, state["status"], state["direction"]),
-            _sub_table(listed[(page - 1) * per_page: page * per_page], state["direction"], state["review"]), len(listed))
+    return (_sub_status_cards(all_items, state),
+            _sub_table(listed[(page - 1) * per_page: page * per_page], state, bool(all_items)), len(listed))
 
 
 async def _agreements(token: str, direction: str | None = None) -> dict[str, dict]:
@@ -983,6 +1331,93 @@ def _catch_up_items(form) -> list[dict]:
         if eid and k.lstrip("-").isdigit():
             items.append({"entity_id": eid, "period_index": int(k)})
     return items
+
+
+REVENUE_PAGE = "/revenue"
+_MONTH_COLUMNS = (("subscriptions.th_mrr", "mrr"), ("subscriptions.th_arr", "arr"),
+                  ("subscriptions.th_new", "new_mrr"), ("subscriptions.th_expansion", "expansion_mrr"),
+                  ("subscriptions.th_contraction", "contraction_mrr"), ("subscriptions.th_churned", "churned_mrr"))
+_DEFINITIONS = ("def_mrr", "def_arr", "def_active", "def_movement", "def_logo_churn", "def_revenue_churn", "def_currency")
+
+
+def _percent(share: float | None) -> str:
+    """A share as a percent with at most one decimal: 0.5 is 50%, None is the empty mark."""
+    if share is None:
+        return EMPTY
+    return f"{share * 100:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _revenue_filter(params: QueryParams) -> FT:
+    """The range and currency, sent in the URL."""
+    return Form(
+        Label(t("subscriptions.metrics_from"), Input(type="date", name="from", value=params.get("from", ""),
+                                                      cls="date-input")),
+        Label(t("subscriptions.metrics_to"), Input(type="date", name="to", value=params.get("to", ""),
+                                                    cls="date-input")),
+        Label(t("label.currency"), Input(type="text", name="currency", value=params.get("currency", ""),
+                                         maxlength="3", placeholder=t("subscriptions.metrics_currency_all"))),
+        Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
+        action=REVENUE_PAGE, method="get", cls="date-custom-form",
+    )
+
+
+def _months_table(data: dict) -> FT:
+    """One row per month end, newest first."""
+    cur = data["currency"]
+    head = Tr(Th(t("subscriptions.th_month")), *[Th(t(k), cls="cell--number") for k, _ in _MONTH_COLUMNS[:2]],
+              Th(t("subscriptions.th_active"), cls="cell--number"),
+              *[Th(t(k), cls="cell--number") for k, _ in _MONTH_COLUMNS[2:]],
+              Th(t("subscriptions.th_logo_churn"), cls="cell--number"),
+              Th(t("subscriptions.th_revenue_churn"), cls="cell--number"))
+
+    def _row(m: dict) -> FT:
+        money = [Td(fmt_money(m[f], cur), cls="cell--number") for _, f in _MONTH_COLUMNS]
+        return Tr(Td(m["month"]), *money[:2], Td(str(m["active"]), cls="cell--number"), *money[2:],
+                  Td(_percent(m["logo_churn"]), cls="cell--number"),
+                  Td(_percent(m["revenue_churn"]), cls="cell--number"), cls="data-row")
+
+    return _data_table(Thead(head), Tbody(*[_row(m) for m in reversed(data["months"])]))
+
+
+def _cohorts_table(data: dict) -> FT:
+    """Each start month, newest first, with its size beneath it, and the share still active and
+    their MRR at each month end. Size sits under the month, as MRR sits under the share, so the
+    default twelve months fit the page; a longer range scrolls inside the table."""
+    cohorts, cur = data["cohorts"], data["currency"]
+    width = max(len(c["active"]) for c in cohorts)
+    head = Tr(Th(Div(t("subscriptions.th_cohort")), Div(t("subscriptions.th_cohort_size"), cls="text-muted")),
+              *[Th(t("subscriptions.th_month_n", n=i + 1), cls="cell--number") for i in range(width)])
+
+    def _row(c: dict) -> FT:
+        cells = [Td(Div(_percent(n / c["size"])), Div(fmt_money(mrr, cur), cls="text-muted"), cls="cell--number")
+                 for n, mrr in zip(c["active"], c["mrr"])]
+        cells += [Td("", cls="cell--number")] * (width - len(cells))
+        return Tr(Td(Div(c["month"]), Div(str(c["size"]), cls="text-muted")), *cells, cls="data-row")
+
+    return _data_table(Thead(head), Tbody(*[_row(c) for c in reversed(cohorts)]), compact=True)
+
+
+def _not_converted(data: dict) -> list[FT]:
+    return [P(t("subscriptions.metrics_not_converted", month=m["month"], count=len(m["not_converted"])),
+              cls="flash flash--warning") for m in data["months"] if m["not_converted"]]
+
+
+def _definitions() -> FT:
+    return Div(H3(t("subscriptions.definitions_heading")),
+               *[P(t(f"subscriptions.{k}"), cls="text-muted") for k in _DEFINITIONS])
+
+
+def _revenue_body(data: dict, *, filtered: bool) -> list[FT]:
+    """The tables, or the empty state when no subscription counted in any month of the range.
+    Filtered to one currency, an empty range shows its zeros: other currencies may have revenue."""
+    if not filtered and not any(m["active"] or m["not_converted"] for m in data["months"]):
+        return [empty_state_cta(t("subscriptions.revenue_empty"), t("page.new_subscriber"),
+                                "/subscribers#new-subscriber")]
+    body = [*_not_converted(data), _months_table(data)]
+    if data["cohorts"]:
+        body += [H3(t("subscriptions.cohorts_heading")), P(t("subscriptions.cohorts_hint"), cls="text-muted"),
+                 _cohorts_table(data)]
+    return body
 
 
 def setup_routes(app) -> None:
@@ -1022,10 +1457,10 @@ def setup_routes(app) -> None:
             answer = _due_results(result, await _agreements(token), str(form[FIELD]))
             # Run from the list: its cards and rows show what the run changed.
             page = urlsplit(request.headers.get("HX-Current-URL", ""))
-            if page.path != "/subscriptions":
+            if page.path not in _LIST_PATHS.values():
                 return answer
-            state = _list_state(QueryParams(page.query))
-            listed = await _all_agreements(token, state["direction"], review=state["review"])
+            state = _list_state(QueryParams(page.query), page.path)
+            listed = await _all_agreements(token, state["direction"], review=state["review"], kind=state["kind"])
             cards, table, _ = _list_views(listed, state)
             return answer, cards(hx_swap_oob="true"), table(hx_swap_oob="true")
         return await _redrawn(draw, lambda: _due_results(result, {}, str(form[FIELD])))
@@ -1159,32 +1594,36 @@ def setup_routes(app) -> None:
 
     # --- List page ---
 
-    @app.get("/subscriptions")
-    async def subscriptions_list(request: Request, direction: str = "sales", status: str = "", review: bool = False):
+    async def list_page(request: Request, path: str):
+        """An agreement list page: every agreement on one side (/subscriptions), or those of one kind
+        (/retainers), with its own title, New button and empty state."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
-        state = _list_state(request.query_params)
+        state = _list_state(request.query_params, path)
+        direction, status, review, kind = state["direction"], state["status"], state["review"], state["kind"]
         q, page, per_page = state["q"], state["page"], state["per_page"]
-        all_items = await _all_agreements(token, direction, review=review)
+        all_items = await _all_agreements(token, direction, review=review, kind=kind)
         cards, table, total = _list_views(all_items, state)
         side = "sales" if direction == "sales" else "purchasing"
-        title = t(f"nav.subscriptions_{side}")
+        nav_key = f"subscriptions_{side}" if not kind else path.lstrip("/")
+        text = _LIST_TEXT[kind]
+        title = t(text.get("title") or f"nav.subscriptions_{side}")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
                                              "review": "1" if review else ""}.items() if v})
         can_import = await _check_permission(request, "import_export_data") is None
         catch_up, summary, banner_errors = await _held_and_unread(token)
+        search_url = "/subscriptions/search?" + urlencode({k: v for k, v in {
+            "direction": direction, "status": status, "review": "1" if review else "", "kind": kind}.items() if v})
 
         content = Div(
             page_header(
                 title,
                 search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
-                           url=f"/subscriptions/search?direction={direction}&status={status}{'&review=1' if review else ''}",
-                           label=t(f"subscriptions.search_{side}")),
-                Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
-                       hx_swap="none", cls="btn btn--primary"),
+                           url=search_url, label=t(f"subscriptions.search_{side}")),
+                _new_button(state, "btn btn--primary"),
                 Button(t("btn.generate_all_due"), hx_get=f"/subscriptions/due?direction={direction}",
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
@@ -1192,42 +1631,135 @@ def setup_routes(app) -> None:
             ),
             *_list_banners(catch_up, summary),
             *[Div(error, cls="flash flash--warning") for error in banner_errors],
-            _review_banner(all_items, direction, review),
+            _review_banner(all_items, state),
             Div(id="sub-due-panel", data_esc_clear="1"),
             _PANEL_ESC_JS,
+            _subscriber_form(await _plans(token), state) if text.get("form") else "",
             cards,
             table,
-            pagination(page, total, per_page, "/subscriptions", extra),
+            pagination(page, total, per_page, path, extra),
             cls="page-content",
         )
-        return await base_shell(content, title=title, request=request,
-                          nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
+        return await base_shell(content, title=title, request=request, nav_active=nav_key)
+
+    @app.get("/subscriptions")
+    async def subscriptions_list(request: Request):
+        return await list_page(request, "/subscriptions")
+
+    @app.get("/retainers")
+    async def retainers_list(request: Request):
+        return await list_page(request, "/retainers")
+
+    @app.get("/subscribers")
+    async def subscribers_list(request: Request):
+        return await list_page(request, "/subscribers")
+
+    @app.get("/plans")
+    async def plans_page(request: Request):
+        """SaaS plans: each plan item with its price on the default price list and how many
+        active or paused agreements bill it."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
+            return r
+        title = t("nav.plans")
+        try:
+            plans = await _plans(token)
+            price_list = await api.get_default_price_list(token)
+            agreements = await _all_agreements(token, "sales", kind="subscription")
+        except APIError as exc:
+            api.raise_if_signed_out(exc)
+            body = Div(error_message(exc), cls="flash flash--warning")
+        else:
+            counts: dict[str, int] = {}
+            for a in agreements:
+                if a.get("status") in ("active", "paused"):
+                    for pid in {li.get("item_id") for li in a.get("line_items") or []}:
+                        counts[pid] = counts.get(pid, 0) + 1
+            currency = (await _get_company(token)).get("currency")
+            body = (_plans_table(plans, counts, price_list, currency) if plans else
+                    empty_state_cta(t("subscriptions.plans_empty"), t("page.new_plan"),
+                                    "/inventory/create-blank?type=plan", hx_post=True))
+        new_plan = Button(t("page.new_plan"), hx_post="/inventory/create-blank?type=plan", hx_swap="none",
+                          cls="btn btn--primary")
+        content = Div(page_header(title, new_plan), P(t("subscriptions.plans_hint"), cls="text-muted"), body,
+                      cls="page-content")
+        return await base_shell(content, title=title, request=request, nav_active="plans")
+
+    @app.get(REVENUE_PAGE)
+    async def revenue_page(request: Request):
+        """MRR, ARR, churn and cohorts of the sales subscriptions by month, with the definitions."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_financial_reports", page_view=True)):
+            return r
+        title = t("nav.revenue")
+        params = {k: v for k in ("from", "to", "currency") if (v := request.query_params.get(k))}
+        try:
+            body = _revenue_body(await api.subscriptions_metrics(token, params), filtered="currency" in params)
+        except APIError as exc:
+            api.raise_if_signed_out(exc)
+            body = [Div(error_message(exc), cls="flash flash--warning")]
+        content = Div(page_header(title), P(t("subscriptions.revenue_hint"), cls="text-muted"),
+                      _revenue_filter(request.query_params), *body, _definitions(), cls="page-content")
+        return await base_shell(content, title=title, request=request, nav_active="revenue")
+
+    @app.get("/members")
+    async def members_list(request: Request):
+        """Members and their standing, read from each membership's latest bill."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
+            return r
+        rows = (await api.subscriptions_members(token)).get("items") or []
+        title = t("nav.members")
+        content = Div(
+            page_header(title, Button(t("page.new_membership"),
+                                      hx_post="/subscriptions/new?direction=sales&kind=membership",
+                                      hx_swap="none", cls="btn btn--primary")),
+            P(t("subscriptions.members_intro"), cls="text-muted"),
+            _members_table(rows),
+            cls="page-content",
+        )
+        return await base_shell(content, title=title, request=request, nav_active="members")
 
     # --- Search (HTMX) ---
 
     @app.get("/subscriptions/search")
-    async def subscriptions_search(request: Request, direction: str = "sales", status: str = "", review: bool = False):
+    async def subscriptions_search(request: Request, kind: str = ""):
         token = _token(request)
         if not token:
             return Div(t("error.session_expired"), id="sub-table")
-        q = request.query_params.get("q", "")
+        state = _list_state(request.query_params, _LIST_PATHS.get(kind, "/subscriptions"))
         try:
-            items = await _all_agreements(token, direction, review=review)
+            items = await _all_agreements(token, state["direction"], review=state["review"], kind=state["kind"])
         except APIError as exc:
             api.raise_if_signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
-        return _sub_table(_listed(items, _list_state(request.query_params)), direction, review)
+        return _sub_table(_listed(items, state), state, bool(items))
 
     # --- Create blank draft → redirect to detail ---
 
     @app.post("/subscriptions/new")
-    async def create_subscription(request: Request, direction: str = "sales"):
+    async def create_subscription(request: Request, direction: str = "sales", kind: str = ""):
+        """A blank draft agreement; the Retainers and Members pages name its kind (the API refuses
+        one it does not know). Subscribers' New subscriber form names a subscription and sends
+        its plan, seats and trial (_subscriber_draft)."""
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = _DIRECTION_DOC_TYPE.get(direction, "subscription_invoice")
+        draft: dict | str = {}
         try:
-            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly"})
+            if kind == "subscription":
+                draft = await _subscriber_draft(token, await request.form())
+                if isinstance(draft, str):
+                    return _action_error(draft)
+            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly",
+                                                           **({"kind": kind} if kind else {}), **draft})
         except APIError as e:
             return _refused(e)
         doc_id = result.get("entity_id") or result.get("id") or ""
@@ -1304,7 +1836,7 @@ def setup_routes(app) -> None:
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        doc = _with_schedule(doc, schedule)
+        doc = _with_schedule(await _with_collection(token, entity_id, await _with_member(token, doc)), schedule)
         actions_left, actions_right = _action_groups(entity_id, doc, schedule)
 
         return await base_shell(
@@ -1331,7 +1863,8 @@ def setup_routes(app) -> None:
                 suppress_pdf=True,
             ),
             _schedule_section(entity_id, doc) if status not in ENDED else "",
-            _billing_section(entity_id, doc),
+            _quantities_section(entity_id, doc, business_today(tz), schedule.get("amendment_refs") or {}) if status in ("active", "paused") else "",
+            _billing_section(entity_id, doc, _defers(co_settings, doc)),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule, historical_page=period_before is not None),
             title=f"{type_label} {ref} - Celerp",
@@ -1340,6 +1873,68 @@ def setup_routes(app) -> None:
         )
 
     # --- Lifecycle actions ---
+
+    @app.post("/subscriptions/{entity_id}/amend")
+    async def subscription_amend_ui(request: Request, entity_id: str):
+        """The Quantities form: each line's new quantity from the effective date (billing.amend)."""
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        try:
+            posted = json.loads(str(form.get("quantities", "")))
+            quantities = {str(line): float(str(qty).strip()) for line, qty in posted.items()}
+        except (ValueError, AttributeError):
+            quantities = {"": math.nan}
+        if not all(math.isfinite(q) for q in quantities.values()):
+            return _action_error(t("subscriptions.err_amend_quantity"))
+        body = {"effective": str(form.get("effective", "")).strip(), "quantities": quantities,
+                "request_key": str(form.get(FIELD, "")).strip()}
+        try:
+            done = await api.amend_subscription(token, entity_id, body)
+        except APIError as e:
+            return _refused(e)
+        said = (sentence("subscriptions.done_amended_settled", day=done["effective"],
+                         credit_note=done["credit_note_ref"], document=done["invoice_ref"])
+                if done.get("credit_note_id") else sentence("subscriptions.done_amended", day=done["effective"]))
+        return _done(f"/subscriptions/{entity_id}", said)
+
+    @app.post("/subscriptions/{entity_id}/collection/{action}")
+    async def subscription_collection_ui(request: Request, entity_id: str, action: str):
+        """The card on file section's actions (_collection_card): Email or Copy setup link and
+        Email receipt again (setup-link), Remove card (revoke). A link not emailed is shown to copy."""
+        if action not in _COLLECTION_ACTIONS:
+            return Response(status_code=404)
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        back = f"/subscriptions/{entity_id}"
+        if action == "revoke":
+            try:
+                await api.revoke_subscription_card(token, entity_id)
+            except APIError as e:
+                return _refused(e)
+            return _done(back, t("subscriptions.done_card_removed"))
+        form = await request.form()
+        body = {"delivery": str(form.get("delivery", "")), "resend_receipt": form.get("resend_receipt") == "true"}
+        try:
+            done = await api.subscription_setup_link(token, entity_id, body)
+        except APIError as e:
+            return _refused(e)
+        if body["resend_receipt"]:
+            if done.get("receipt_sent"):
+                return _done(back, t("subscriptions.done_receipt_sent"))
+            return _done(back, t("subscriptions.receipt_not_resent"), "warning")
+        if body["delivery"] == "email" and done.get("emailed"):
+            return _done(back, t("subscriptions.done_setup_link_emailed"))
+        link = done["link"]
+        said = t("subscriptions.setup_link_not_emailed") if body["delivery"] == "email" else ""
+
+        async def draw():
+            card = _collection_card(entity_id, await api.get_subscription_collection(token, entity_id), link)
+            return html_response(card, headers=toast_header(said, "warning") if said else None)
+        return await _redrawn(draw, lambda: Div(H4(t("subscriptions.collection_heading")), _setup_link_text(link),
+                                                id="sub-collection", cls="mt-md"), said=said)
 
     @app.post("/subscriptions/{entity_id}/{action}")
     async def subscription_action_ui(request: Request, entity_id: str, action: str):
@@ -1421,9 +2016,15 @@ def setup_routes(app) -> None:
         # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value is not None else {})}
 
+        async def read() -> tuple[dict, str]:
+            """The agreement as stored and every view of its schedule drawn from it."""
+            sub = await _with_collection(token, entity_id, await _with_member(token, await api.get_subscription(token, entity_id)))
+            settings = (await api.get_company(token)).get("settings") or {}
+            return sub, _stored_schedule_views(entity_id, sub, await api.get_subscription_periods(token, entity_id),
+                                               _defers(settings, sub))
+
         async def stored():
-            return _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
-                                          await api.get_subscription_periods(token, entity_id))
+            return (await read())[1]
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:
@@ -1431,9 +2032,7 @@ def setup_routes(app) -> None:
             return await _refused_redrawn(e, stored)
 
         async def draw():
-            sub = await api.get_subscription(token, entity_id)
-            schedule = await api.get_subscription_periods(token, entity_id)
-            views = _stored_schedule_views(entity_id, sub, schedule)
+            sub, views = await read()
             # The version the save stored, for the page's next lines save, as a document's field saves hand it.
             version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):

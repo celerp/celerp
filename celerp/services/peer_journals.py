@@ -23,7 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import PERIOD_LOCK_PATH, period_locked_refusal
+from celerp.accounting_roles import PERIOD_LOCK_PATH, catalog_refusal, period_locked_refusal
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company
@@ -34,6 +34,7 @@ from celerp.services import journal_reversals, peer_access, peer_accounts, peer_
 from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.je_keys import je_void_data
+from celerp.services.peer_lines import copied_header, copy_posted_lines
 from celerp.services.posting_readiness import account_names
 from ui.i18n import available_langs, date_text, t
 
@@ -45,7 +46,11 @@ _CATEGORY = "integrations"
 _PAGE = 100
 # The delivery marks of the firm's journals the client fetched.
 INBOUND = "journals_in"
-_SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
+# Where a journal of the firm's comes from in the client's books (peer_lines.ORIGINS), and
+# why it waits there when those books use funds.
+ORIGIN = "accountant"
+CLIENT_ORIGIN = "client"
+WAITING_FOR_FUNDS = "Waiting for a fund on each line"
 
 
 # ---- shared ----------------------------------------------------------------------------
@@ -170,7 +175,9 @@ async def _caller_grant(session: AsyncSession, ctx):
 
 async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
     """The firm's own manual journal entries after ``after``, posted or voided, for the
-    client its key belongs to; never one that came from that client. A line naming a
+    client its key belongs to; never one that came from that client or another company
+    (``peer_origin``), and never the void of an entry Change fund replaced (``replaced_by``):
+    a fund change stays in these books, as fund ids never cross a company. A line naming a
     contact the client does not hold is held back with the reason. Each entry carries
     the firm's accounts its lines name, with their parents, for the client to place."""
     grant = await _caller_grant(session, ctx)
@@ -186,6 +193,8 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
         Projection.state["je_type"].as_string() == "manual",
         Projection.state["status"].as_string().in_(("posted", "void")),
         Projection.state["peer_source"].as_string().is_(None),
+        Projection.state["peer_origin"].as_string().is_(None),
+        Projection.state["replaced_by"].as_string().is_(None),
         Projection.entity_id.not_in(mapped),
     ).order_by(Projection.entity_id).limit(_PAGE))).all()
     contacts = dict((await session.execute(select(
@@ -198,8 +207,7 @@ async def journal_feed(session: AsyncSession, ctx, after: str = "") -> dict:
         state = state or {}
         held = None
         entries = []
-        for line in state.get("entries") or []:
-            line = dict(line)
+        for line in transport_lines(state.get("entries")):
             if line.get("contact"):
                 if line["contact"] not in contacts:
                     held = "A line names a contact your books do not hold."
@@ -243,6 +251,19 @@ class _Line(BaseModel):
     fx_rate: FiniteFloat | None = None
 
 
+# The line keys a journal carries between the firm and the client, either way; the fund a
+# line belongs to is each company's own.
+LINE_FIELDS = tuple(_Line.model_fields)
+# Sent on firm lines by releases before funds; carries no fund data, so it is dropped on arrival.
+LEGACY_LINE_KEY = "account_roles"
+
+
+def transport_lines(entries) -> list[dict]:
+    """A journal's lines as they travel: the keys LINE_FIELDS names that have a value."""
+    return [{k: line[k] for k in LINE_FIELDS if line.get(k) is not None}
+            for line in entries or [] if isinstance(line, dict)]
+
+
 class _Reverses(BaseModel):
     model_config = ConfigDict(extra="forbid")
     origin: str | None = Field(default=None, min_length=1, max_length=512)
@@ -271,7 +292,11 @@ class _Answered(BaseModel):
 
 
 async def _firm_journal(session: AsyncSession, company_id: uuid.UUID, je_id: str) -> dict | None:
-    row = await session.get(Projection, (company_id, je_id))
+    """A journal as it stands, read at its live entry: the copy Change fund posted in its
+    place, when it did (auto_je.current_entry)."""
+    from celerp.services.auto_je import current_entry
+
+    row = await session.get(Projection, (company_id, await current_entry(session, company_id, je_id)))
     return dict(row.state or {}) if row is not None and row.entity_type == "journal_entry" else None
 
 
@@ -327,13 +352,36 @@ async def _client_lines(session: AsyncSession, grant, journal: _Journal) -> list
     return entries
 
 
+async def _post_client_journal(session: AsyncSession, grant, claim, data: dict, *, source_entity_id: str,
+                               source_revision: int, actor_id, fund_grant, keep_gifts: bool = False) -> None:
+    """Post a client's journal at the firm under ``claim``: marked as the client's, by
+    ``actor_id`` (none for the sync) with the fund keys ``fund_grant`` lets it carry; a reversal
+    (``keep_gifts``) copies posted lines with the gift answers they posted with."""
+    from celerp.services.peer_identity import commit_peer_revision
+
+    company_id, key = grant.company_id, f"peer:je:{grant.source_company_id}:{claim.source_key}"
+    source = "connector" if actor_id is None else "api"
+    await emit_event(session, origin=CLIENT_ORIGIN, fund_grant=fund_grant, keep_gifts=keep_gifts, company_id=company_id,
+                     entity_id=claim.target_id, entity_type="journal_entry",
+                     event_type="acc.journal_entry.created", data=data, actor_id=actor_id,
+                     location_id=None, source=source, idempotency_key=f"{key}:c", metadata_={})
+    await emit_event(session, company_id=company_id, entity_id=claim.target_id,
+                     entity_type="journal_entry", event_type="acc.journal_entry.posted",
+                     data={"ts": data["ts"]}, actor_id=actor_id, location_id=None, source=source,
+                     idempotency_key=f"{key}:p", metadata_={})
+    await commit_peer_revision(session, grant=grant, claim=claim, entity_type="journal_entry",
+                               source_entity_id=source_entity_id, source_revision=source_revision)
+
+
 async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str,
                           source_revision: int, data: dict) -> str:
     """One manual journal entry of the client's, posted once in the firm's copy as the
     client posted it, its contacts the firm's own; a later revision that voids it voids
-    the firm's. A reversal of a journal of the firm's is listed in the firm view with Post
+    the firm's. In books that use funds it is refused with the funds fix, kept as a hold
+    until a firm user chooses a fund for each line (post_held). A reversal of a journal of the firm's is listed in the firm view with Post
     again, and reversing that reversal (Undo) removes it from the list. Also takes the
     client's answer to a journal of the firm's (``{"answer": ...}``)."""
+    from celerp.services.journal_accounts import FundChoiceNeeded
     from celerp.services.peer_identity import claim_peer_revision, commit_peer_revision, peer_identity
 
     try:
@@ -352,10 +400,13 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
     if claim.replay:
         return "skipped"
     if claim.mapping is not None:
-        state = await _firm_journal(session, company_id, claim.target_id) or {}
+        from celerp.services.auto_je import current_entry
+
+        live = await current_entry(session, company_id, claim.target_id)
+        state = await _firm_journal(session, company_id, live) or {}
         if journal.status == "void" and state.get("status") == "posted":
             await emit_event(
-                session, company_id=company_id, entity_id=claim.target_id,
+                session, company_id=company_id, entity_id=live,
                 entity_type="journal_entry", event_type="acc.journal_entry.voided",
                 data=je_void_data(f"Voided by {grant.label}", state), actor_id=None,
                 location_id=None, source="connector",
@@ -383,8 +434,7 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         # A reversal takes the lines it reverses back off the accounts they posted to here,
         # whatever the client's accounts and roles are now.
         reversed_state = origin or await _firm_journal(session, company_id, reverses) or {}
-        entries = [{_SWAPPED.get(k, k): v for k, v in line.items()}
-                   for line in reversed_state.get("entries") or []]
+        entries = copy_posted_lines(reverses, reversed_state.get("entries"), reverse=True)
         if sorted(_amount(e) for e in entries) != sorted(
                 _amount(line.model_dump()) for line in journal.entries):
             raise HTTPException(409, "The reversal does not match the journal it reverses.")
@@ -394,17 +444,20 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
                "status": "posted",
                "peer_source": {"journal": source_entity_id, "company": str(source)},
                **({"reverses": reverses} if reverses else {})}
-    key = f"peer:je:{source}:{claim.source_key}"
-    await emit_event(session, company_id=company_id, entity_id=claim.target_id,
-                     entity_type="journal_entry", event_type="acc.journal_entry.created",
-                     data=created, actor_id=None, location_id=None, source="connector",
-                     idempotency_key=f"{key}:c", metadata_={})
-    await emit_event(session, company_id=company_id, entity_id=claim.target_id,
-                     entity_type="journal_entry", event_type="acc.journal_entry.posted",
-                     data={"ts": journal.ts}, actor_id=None, location_id=None, source="connector",
-                     idempotency_key=f"{key}:p", metadata_={})
-    await commit_peer_revision(session, grant=grant, claim=claim, entity_type="journal_entry",
-                               source_entity_id=source_entity_id, source_revision=source_revision)
+    actor = fund_grant = None
+    if reverses is None:  # a reversal posts with the funds of the lines it reverses (rule V)
+        created, actor, fund_grant = await _standing(session, company_id, CLIENT_ORIGIN, source, created)
+    try:
+        await _post_client_journal(session, grant, claim, created, source_entity_id=source_entity_id,
+                                   source_revision=source_revision, actor_id=actor, fund_grant=fund_grant,
+                                   keep_gifts=reverses is not None)
+    except FundChoiceNeeded as exc:
+        # Held for a firm user's choice (post_held): the placed lines and the journal
+        # as sent, which the posting claims again; the client sends it on each sync till then.
+        exc.fix = {**exc.fix, "revision": source_revision, "ts": journal.ts, "memo": journal.memo or "",
+                   "client": grant.label, "entries": [{**e, "origin": CLIENT_ORIGIN} for e in entries],
+                   "journal": journal.model_dump(mode="json")}
+        raise
     where = dict(company_id=company_id, source_company_id=source, kind=peer_attention.REVERSAL,
                  entity_type="journal_entry")
     if origin is not None:
@@ -486,9 +539,12 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
                               firm_company: uuid.UUID, item: dict) -> _Placed:
     from celerp.services.journal_accounts import require_destinations
 
-    entries = [dict(line) for line in item.get("entries") or []]
+    entries = [{k: v for k, v in line.items() if k != LEGACY_LINE_KEY} for line in item.get("entries") or []]
     if item.get("held"):
         return _Placed(entries, str(item["held"]))
+    extra = next((key for line in entries for key in line if key not in LINE_FIELDS), None)
+    if extra is not None:
+        return _Placed(entries, catalog_refusal("posting.fund.key_not_taken", field=str(extra))["message"])
     lock = _lock_of(company.settings or {})
     day = _day(item.get("ts"))
     if day is None:
@@ -513,6 +569,20 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
     return _Placed(entries)
 
 
+async def _post(session: AsyncSession, company_id: uuid.UUID, je_id: str, data: dict, *,
+                actor_id, grant) -> None:
+    """Post a journal of the firm's as ``je_id``: marked as the accountant's, by ``actor_id``
+    (none for the sync) with the fund keys ``grant`` lets it carry."""
+    source = "connector" if actor_id is None else "api"
+    await emit_event(session, origin=ORIGIN, fund_grant=grant, company_id=company_id, entity_id=je_id,
+                     entity_type="journal_entry", event_type="acc.journal_entry.created", data=data,
+                     actor_id=actor_id, location_id=None, source=source, idempotency_key=f"{je_id}:c",
+                     metadata_={})
+    await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                     event_type="acc.journal_entry.posted", data={"ts": data["ts"]}, actor_id=actor_id,
+                     location_id=None, source=source, idempotency_key=f"{je_id}:p", metadata_={})
+
+
 def _answer_record(item: dict, declined: str | None) -> dict:
     return {"answer": {"journal": item["id"], "declined": declined and declined[:2000]}}
 
@@ -521,20 +591,30 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                              firm_company: uuid.UUID, item: dict) -> Fetched:
     """Post one journal of the firm's in the client's books once, with a notice naming its
     date, accounts, amounts and the firm; void it when the firm voids it; or decline it
-    with the reason, told once. The firm hears of a decline, and of a posting that
-    follows one, through the answer the caller sends (answered)."""
+    with the reason, told once. In books that use funds it is held until a local user
+    chooses a fund for each line (post_held). The firm hears of a decline, and of
+    a posting that follows one, through the answer the caller sends (answered)."""
     from celerp.db import get_session_ctx
+    from celerp.services.auto_je import current_entry
+    from celerp.services.journal_accounts import FundChoiceNeeded
 
     firm_je, revision = str(item.get("id") or ""), item.get("revision")
     if not firm_je or type(revision) is not int or revision < 1:
         raise ValueError("The accountant's journal could not be read")
     je_id = local_id(firm_company, firm_je)
     memo = str(item.get("memo") or "") or "Journal entry"
+    hold = dict(company_id=company_id, source_company_id=firm_company, entity_type="journals",
+                source_entity_id=firm_je)
     async with get_session_ctx() as session:
         held = (await delivery_marks(session, company_id, grant_id, INBOUND, [firm_je])).get(firm_je)
         existing = await session.get(Projection, (company_id, je_id))
         state = dict(existing.state or {}) if existing is not None else None
         if item.get("status") == "void":
+            if state is not None:
+                # The firm voids the entry standing for its journal: the copy Change fund
+                # posted in its place, when it did.
+                je_id = await current_entry(session, company_id, je_id)
+                state = await _firm_journal(session, company_id, je_id)
             if state is not None and state.get("status") == "posted":
                 # A reversal posted here before the firm's void arrived already cancels the
                 # entry; it is voided with it, so the entry is cancelled once.
@@ -556,6 +636,7 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                 status = "updated"
             else:
                 status = "skipped"
+            await peer_attention.clear(session, **hold)
             await mark(session, company_id=company_id, grant_id=grant_id, entity=INBOUND,
                        entity_id=firm_je, revision=revision, refused=None)
             await session.commit()
@@ -570,34 +651,36 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
             return Fetched("skipped", answer)
         company = await locked_company(session, company_id)
         placed = await _place_firm_journal(session, company, firm, firm_company, item)
-        reason = placed.reason
-        hold = dict(company_id=company_id, source_company_id=firm_company, entity_type="journals",
-                    source_entity_id=firm_je)
+        reason, fix, notice = placed.reason, placed.fix, "notice.peer_journal_declined"
+        entries = placed.entries
+        if reason is None:
+            sent = [dict(line) for line in entries]
+            data = {"memo": item.get("memo") or "", "ts": item["ts"], "entries": entries,
+                    "je_type": "manual", "status": "posted",
+                    "peer_origin": {"journal": firm_je, "firm": firm, "firm_company": str(firm_company),
+                                    "revision": revision}}
+            try:
+                data, actor, fund_grant = await _standing(session, company_id, ORIGIN, firm_company, data)
+                await _post(session, company_id, je_id, data, actor_id=actor, grant=fund_grant)
+            except FundChoiceNeeded as exc:
+                # The lines wait in the hold, as placed, for a local user's choice.
+                reason, notice = WAITING_FOR_FUNDS, "notice.peer_journal_needs_funds"
+                fix = {**exc.fix, "revision": revision, "ts": item["ts"], "memo": item.get("memo") or "",
+                       "firm": firm, "entries": [{**line, "origin": ORIGIN} for line in sent]}
         if reason is not None:
             # Read before the rollback, which expires every row the session holds.
             told = held is not None and held.refused == reason
             await session.rollback()
-            await _notify(session, company_id, "notice.peer_journal_declined", memo=memo,
+            await _notify(session, company_id, notice, memo=memo,
                           date=str(item.get("ts"))[:10], firm=firm, reason=reason,
                           action_url=LOCK_DATE if placed.locked else FROM_ACCOUNTANT)
-            if placed.fix is not None:
-                await peer_attention.record(session, **hold, label=memo, reason=reason, fix=placed.fix)
+            if fix is not None:
+                await peer_attention.record(session, **hold, label=memo, reason=reason, fix=fix)
             else:
                 await peer_attention.clear(session, **hold)
             await session.commit()
             return Fetched("skipped", None if told else _answer_record(item, reason), reason, placed.locked)
         await peer_attention.clear(session, **hold)
-        entries = placed.entries
-        data = {"memo": item.get("memo") or "", "ts": item["ts"], "entries": entries,
-                "je_type": "manual", "status": "posted",
-                "peer_origin": {"journal": firm_je, "firm": firm, "firm_company": str(firm_company),
-                                "revision": revision}}
-        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-                         event_type="acc.journal_entry.created", data=data, actor_id=None,
-                         location_id=None, source="connector", idempotency_key=f"{je_id}:c", metadata_={})
-        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-                         event_type="acc.journal_entry.posted", data={"ts": item["ts"]}, actor_id=None,
-                         location_id=None, source="connector", idempotency_key=f"{je_id}:p", metadata_={})
         lines = _lines_text(entries, await _names(session, company_id, entries))
         await _notify(session, company_id, "notice.peer_journal_posted", memo=memo,
                       date=str(item["ts"])[:10], lines=lines, firm=firm)
@@ -615,6 +698,100 @@ async def answered(company_id: uuid.UUID, grant_id: uuid.UUID, item: dict, decli
         await mark(session, company_id=company_id, grant_id=grant_id, entity=INBOUND,
                    entity_id=str(item["id"]), revision=item["revision"], refused=declined)
         await session.commit()
+
+
+async def chosen_entries(session: AsyncSession, company_id: uuid.UUID, sent: list[dict], *, every: str | None,
+                         lines: dict[str, str | None], source: str = "user"):
+    """A journal's lines as they travel (each marked with its origin) with the fund choices
+    of ``every`` (the entry's) and ``lines`` (line number -> choice; none is no choice), and
+    the grant that lets the entry carry them."""
+    from celerp.services.peer_lines import chosen_journal_lines
+
+    sent = [line for line in sent if isinstance(line, dict)]
+    keys, grant = await chosen_journal_lines(session, company_id, sent, every=every, lines=lines, source=source)
+    return [{**line, **chose} for line, chose in zip(transport_lines(sent), keys)], grant
+
+
+async def _standing(session: AsyncSession, company_id: uuid.UUID, origin: str, source_key, data: dict):
+    """``data`` (a journal arriving from ``origin``) with the connection's active standing
+    default as the choice of the entry and every line, the user who set it and the grant;
+    as it came, None and None without one."""
+    from celerp.services.peer_lines import connection_default
+
+    standing = await connection_default(session, company_id, origin, str(source_key))
+    if standing is None:
+        return data, None, None
+    entries, grant = await chosen_entries(session, company_id, [{**e, "origin": origin} for e in data["entries"]],
+                                          every=standing.fund, lines={}, source=standing.source)
+    return {**data, "entries": entries, **grant.header}, standing.set_by, grant
+
+
+async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, revision: int,
+                    every: str | None, lines: dict[str, str | None], request_key: str,
+                    actor_id) -> dict:
+    """Post a record held for funds with a local user's choices: on the client a journal of
+    the firm's, on the firm a client's journal (its hold keeps the journal as sent, claimed
+    again here under the live grant), and a connected company's document
+    (peer_documents.post_held_document). ``every`` is the entry's choice, and so of each line
+    ``lines`` (line number -> choice) does not choose for; a line choice of none is no
+    choice. The posting boundary judges it as ``actor_id`` posting it (a line nothing covers,
+    money moved between funds) and the hold stays while it refuses. ``request_key`` binds to
+    the whole request: the same request again answers with the entry it posted, any other is
+    refused (refuse_other_request). The caller holds the company lock and
+    commits."""
+    from sqlalchemy import or_
+
+    from celerp.events.engine import keyed_event, refuse_other_request, request_fingerprint
+    from celerp.services import peer_documents
+    from celerp.services.peer_identity import claim_peer_revision
+
+    request = {"item_id": str(item_id), "revision": revision, "every": every, "lines": lines}
+    chosen_doc = await keyed_event(session, company_id, peer_documents.held_choice_key(request_key), request)
+    if chosen_doc is not None:
+        return {"id": chosen_doc.entity_id}
+    posted = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        or_(Projection.state["peer_origin"]["request_key"].as_string() == request_key,
+            Projection.state["peer_source"]["request_key"].as_string() == request_key)).limit(1))).first()
+    if posted is not None:
+        origin = posted.state.get("peer_origin") or posted.state.get("peer_source") or {}
+        refuse_other_request(origin.get("request"), request)
+        return {"id": posted.entity_id}
+    bound = request_fingerprint(request)
+    item = await peer_accounts.held_item(session, company_id, item_id)
+    fix = item.fix
+    if fix.get("kind") == peer_documents.DOC_FUNDS:
+        return await peer_documents.post_held_document(
+            session, company_id, item, revision=revision, every=every, lines=lines,
+            request_key=request_key, request=bound, actor_id=actor_id)
+    if fix.get("kind") != "funds":
+        raise HTTPException(422, "This item is not fixed here.")
+    if revision != fix.get("revision"):
+        raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
+    entries, grant = await chosen_entries(session, company_id, fix.get("entries") or [], every=every, lines=lines)
+    data = {"memo": fix.get("memo") or "", "ts": fix["ts"], "entries": entries, "je_type": "manual",
+            "status": "posted", **grant.header}
+    if "journal" in fix:  # a client's journal at the firm
+        peer = await peer_access.live_grant(session, company_id, item.source_company_id, "journals")
+        claim = await claim_peer_revision(
+            session, grant=peer, entity_type="journal_entry", source_entity_id=item.source_entity_id,
+            source_revision=revision, data=fix["journal"])
+        if claim.replay or claim.mapping is not None:
+            raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
+        je_id = claim.target_id
+        data["peer_source"] = {"journal": item.source_entity_id, "company": str(item.source_company_id),
+                               "request_key": request_key, "request": bound}
+        await _post_client_journal(session, peer, claim, data, source_entity_id=item.source_entity_id,
+                                   source_revision=revision, actor_id=actor_id, fund_grant=grant)
+    else:
+        je_id = local_id(item.source_company_id, item.source_entity_id)
+        data["peer_origin"] = {"journal": item.source_entity_id, "firm": fix.get("firm"),
+                               "firm_company": str(item.source_company_id), "revision": revision,
+                               "request_key": request_key, "request": bound}
+        await _post(session, company_id, je_id, data, actor_id=actor_id, grant=grant)
+    await peer_attention.clear(session, company_id=company_id, source_company_id=item.source_company_id,
+                               entity_type=item.entity_type, source_entity_id=item.source_entity_id)
+    return {"id": je_id}
 
 
 async def apply_firm_lock(company_id: uuid.UUID, grant_id: uuid.UUID, body: dict | None) -> bool:
@@ -730,7 +907,12 @@ def reverse_day(settings: dict, original) -> tuple[str | None, str | None]:
 async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id: str) -> dict:
     """Reverse a journal the firm posted, or undo such a reversal by reversing it: one
     reversal each, posted on reverse_day, with a notice when it posts today instead of the
-    entry's own date. The reversal reaches the firm on the next sync. Commits."""
+    entry's own date. The reversal reaches the firm on the next sync. Commits. Asked from an
+    entry Change fund replaced, it reverses the copy standing in its place
+    (auto_je.current_entry), so the entry is reversed once whichever row it is asked from."""
+    from celerp.services.auto_je import current_entry
+
+    je_id = await current_entry(session, company_id, je_id)
     row = await session.get(Projection, (company_id, je_id))
     state = dict(row.state or {}) if row is not None and row.entity_type == "journal_entry" else None
     if state is None:
@@ -749,11 +931,10 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
         raise HTTPException(422, period_locked_refusal(lock))
     memo = state.get("memo") or ""
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
-                     event_type="acc.journal_entry.created", data={
+                     event_type="acc.journal_entry.created", keep_gifts=True, data={
                          "memo": f"Reversal of {memo}" if memo else "Reversal", "ts": day,
-                         "entries": [{_SWAPPED.get(k, k): v for k, v in line.items()}
-                                     for line in state.get("entries") or []],
-                         "je_type": "manual", "status": "posted", "reverses": je_id},
+                         "entries": copy_posted_lines(je_id, state.get("entries"), reverse=True),
+                         **copied_header(state), "je_type": "manual", "status": "posted", "reverses": je_id},
                      actor_id=actor_id, location_id=None, source="manual",
                      idempotency_key=f"{rid}:c", metadata_={})
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",

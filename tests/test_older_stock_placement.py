@@ -91,7 +91,7 @@ async def _written_down(session, auth, code: str, amount: float) -> None:
     no longer holds all the stock booked to it."""
     je = f"je:{uuid.uuid4()}"
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, idem_create=f"{je}:c",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id=je, record_id=None, idem_create=f"{je}:c",
         idem_posted=f"{je}:p", memo="Stock written down", metadata_={"trigger": "manual"},
         entries=[{"account": "3200", "debit": amount, "credit": 0.0},
                  {"account": code, "debit": 0.0, "credit": amount}])

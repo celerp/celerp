@@ -61,7 +61,7 @@ async def _item(client, auth, cost_total: float, qty: float) -> str:
 async def test_auto_je_lines_round_to_the_company_currency(session, currency, raw, stored):
     auth = await _company(session, currency)
     await auto_je._emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:auto:t:1",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:auto:t:1", record_id=None,
         idem_create=f"t:{uuid.uuid4()}", idem_posted=f"t:{uuid.uuid4()}", memo="Test",
         entries=[{"account": "1130-P", "debit": raw, "credit": 0.0},
                  {"account": "2110", "debit": 0.0, "credit": raw}],
@@ -76,7 +76,7 @@ async def test_auto_je_unbalanced_after_rounding_is_refused(session):
     auth = await _company(session, "USD")
     with pytest.raises(auto_je.UnbalancedJournalEntry):
         await auto_je._emit_auto_posted_je(
-            session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:auto:t:2",
+            session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:auto:t:2", record_id=None,
             idem_create=f"t:{uuid.uuid4()}", idem_posted=f"t:{uuid.uuid4()}", memo="Test",
             entries=[{"account": "1130-P", "debit": 0.005, "credit": 0.0},
                      {"account": "1130-FRT", "debit": 0.0, "credit": 0.0025},

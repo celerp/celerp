@@ -3,7 +3,8 @@
 
 from copy import deepcopy
 
-from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
+from celerp.accounting_roles import (
+    CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, INCOME_ACCOUNT_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, RECOGNIZE_FIELD)
 from celerp.services.money import round_basis
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 
@@ -56,6 +57,10 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # the inventory account the lot's value sits in, and for a consigned lot the account
     # its sale is owed to its consignor on and that consignor (celerp.accounting_roles)
     LOT_ACCOUNT_FIELD, CONSIGNOR_PAYABLE_FIELD, CONSIGNOR_FIELD,
+    # the revenue account the item's sales are credited to (journal_accounts.income_account_of)
+    INCOME_ACCOUNT_FIELD,
+    # whether the item's sales recognize over their service period (celerp.services.recognition)
+    RECOGNIZE_FIELD,
     # whether an archived or expired lot still holds its stock (celerp.services.lot_origin)
     ON_BOOKS_FIELD,
     # purchase side

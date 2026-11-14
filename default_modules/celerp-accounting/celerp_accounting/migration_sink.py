@@ -348,7 +348,7 @@ async def _import_journals(context: SinkContext, records: Sequence[CIFSourceReco
 
     async def write(ready: list[AccImportRecord]):
         return await import_service.import_journal_records(
-            context.session, context.company_id, context.user_id, ready,
+            context.session, context.company_id, context.user_id, ready, origin="migration",
         )
 
     return await import_prepared(prepared, write)

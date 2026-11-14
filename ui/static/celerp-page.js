@@ -203,6 +203,13 @@
     location.reload();
   }
 
+  // An inline panel's Cancel, or Escape on it (given ev), removes the element it sits in.
+  function celerpRemoveClosest(el, selector, ev) {
+    if (ev && ev.key !== 'Escape') return;
+    var box = el.closest(selector);
+    if (box) box.remove();
+  }
+
   window.celerpCellKey = celerpCellKey;
   window.celerpCellBlur = celerpCellBlur;
   window.celerpCellSaveOnBlur = celerpCellSaveOnBlur;
@@ -228,4 +235,5 @@
   window.celerpToastWhenReady = celerpToastWhenReady;
   window.celerpCopyField = celerpCopyField;
   window.celerpResetColumns = celerpResetColumns;
+  window.celerpRemoveClosest = celerpRemoveClosest;
 })();

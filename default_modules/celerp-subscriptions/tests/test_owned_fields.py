@@ -30,6 +30,7 @@ CALLER_KEYS = {
 SERVER_BUILT = {
     "celerp/events/engine.py::connector_upsert": "the primitive; each connector's caller is its own row here",
     "celerp/services/attachments.py::attach_file": "writes only the files list it builds",
+    "celerp/services/demo.py::follow_books_currency": "writes the books' currency onto the demo documents it seeded",
     "default_modules/celerp-admin/celerp_admin/routes.py::_check_inverted_doc_dates":
         "rewrites the issue and due dates of a document already stored",
     "default_modules/celerp-contacts/celerp_contacts/routes.py::merge_contacts_service":
@@ -51,14 +52,17 @@ SERVER_BUILT = {
     "default_modules/celerp-docs/celerp_docs/routes.py::_supplier_credit_for_return":
         "builds the supplier credit from the return",
     "default_modules/celerp-docs/celerp_docs/routes.py::reprice_doc": "writes the line prices it computes",
+    "default_modules/celerp-docs/celerp_docs/routes.py::write_fund_choices":
+        "writes only the fund choices require_fund_choices grants",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
-    "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::_follow_books_currency": "writes the currency",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py::_draft": "builds the sale draft from the asset",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/store.py::_emit": "the asset store's own events",
     "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py::emit": "the manufacturing movements it builds",
+    "default_modules/celerp-subscriptions/celerp_subscriptions/demo.py::seed_demo_agreements":
+        "seeds the demo agreements it builds",
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement": "the schedule, the owner",
-    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::_bill": "the schedule's own bill, the owner",
+    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::issue_document": "the schedule's own bill and an amendment's credit and debit documents, the owner",
 }
 # Every key a caller's data is refused for: what the schedule writes, the owned set and the removed fields.
 REFUSED = sorted((written_keys() - SCHEDULE_TERM_FIELDS - set(CALLER_KEYS)) | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS)
@@ -86,9 +90,12 @@ def test_every_writer_of_documents_checks_owned_fields_or_says_why_it_need_not()
 def test_the_copy_rule_keeps_no_owned_or_removed_field():
     """A record copied or converted from another (record_copy) keeps only the keys it names, and a
     bought consignment's bill adds its totals: none of them is a field the lifecycle or the
-    schedule owns, or one an earlier release kept on a template."""
-    kept = RECORD_KEYS | LINE_KEYS | CONVERSION_KEYS | set(DOC_TOTAL_FIELDS)
-    owned = kept & (LIFECYCLE_OWNED_FIELDS | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS)
+    schedule owns, or one an earlier release kept on a template. A line's own service period is
+    the caller's (a deferred line's, celerp.services.recognition.service_period); the period the
+    schedule writes on a bill's header stays owned."""
+    owned_fields = LIFECYCLE_OWNED_FIELDS | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS
+    owned = ((RECORD_KEYS | CONVERSION_KEYS | set(DOC_TOTAL_FIELDS)) & owned_fields) | (
+        LINE_KEYS & (owned_fields - {"service_start", "service_end"}))
     assert not owned, f"the copy rule keeps owned or removed fields: {sorted(owned)}"
 
 

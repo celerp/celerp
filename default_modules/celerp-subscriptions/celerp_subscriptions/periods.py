@@ -16,9 +16,16 @@ from datetime import date, timedelta
 
 FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 TIMINGS = frozenset({"advance", "arrears"})
-AUTO_MODES = frozenset({"auto_invoice"})
+# Bill and collect automatically: bills as automatic invoicing does and charges the payer's card
+# on file for each invoice through Celerp Cloud (celerp_subscriptions.collect).
+COLLECT_MODE = "auto_invoice_collect"
+AUTO_MODES = frozenset({"auto_invoice", COLLECT_MODE})
 GENERATION_MODES = frozenset({"manual_due"}) | AUTO_MODES
 MAX_INTERVAL_DAYS = 36500
+# What an agreement is to the business, which picks the page it is listed on: Subscriptions,
+# Retainers or Members. Set by the page that makes it; an agreement without one is a subscription.
+KINDS = frozenset({"subscription", "retainer", "membership"})
+MAX_GRACE_DAYS = 365
 CATCHUP_CAP = 12
 DUE_LIMIT = 500  # the most open periods one request walks through
 _MONTHS = {"monthly": 1, "quarterly": 3, "annually": 12}
@@ -52,11 +59,12 @@ SCHEDULE_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_
 # its page and History read it: an agreement made through Documents, an import or an earlier
 # release stores few of them. Every field a writer sets is named here.
 UNSET = {
-    "anchor_date": None, "start_date": None, "frequency": "monthly", "custom_interval_days": None,
+    "anchor_date": None, "trial_end": None, "start_date": None, "frequency": "monthly", "custom_interval_days": None,
     "billing_timing": "advance", "term_start": None, "term_end": None, "cancel_at_period_end": None,
     "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
     "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
-    "released_bills": {}, "resume_restarts": False,
+    "released_bills": {}, "resume_restarts": False, "recognize_over_service_period": False,
+    "kind": "subscription", "beneficiary_contact_id": None, "grace_days": 0, "amendments": [],
 }
 
 
@@ -78,8 +86,8 @@ class ScheduleError(ValueError):
 @dataclass(frozen=True)
 class Term:
     """What a stored schedule term must hold: a date (ISO text), one of ``choices``, a whole
-    number from ``low`` to ``high`` (an open end is unbounded), or a flag; ``key`` says why
-    when it does not."""
+    number from ``low`` to ``high`` (an open end is unbounded), a text or a flag; ``key`` says
+    why when it does not."""
     kind: str
     key: str
     choices: frozenset = frozenset()
@@ -98,6 +106,8 @@ class Term:
         if self.kind == "whole":
             return type(value) is int and (self.low is None or value >= self.low) \
                 and (self.high is None or value <= self.high)
+        if self.kind == "text":
+            return isinstance(value, str) and bool(value.strip())
         return type(value) is bool
 
 
@@ -106,6 +116,8 @@ class Term:
 # checks them all (check_terms), so every writer and reader holds the same rule.
 TERMS = {
     "anchor_date": Term("date", "subscriptions.err_schedule_date"),
+    # A trial ends where the first period starts: set, it is the anchor date (check_terms).
+    "trial_end": Term("date", "subscriptions.err_schedule_date"),
     "frequency": Term("choice", "subscriptions.err_schedule_frequency", choices=FREQUENCIES),
     "custom_interval_days": Term("whole", "subscriptions.err_custom_interval", low=1, high=MAX_INTERVAL_DAYS),
     "billing_timing": Term("choice", "subscriptions.err_schedule_timing", choices=TIMINGS),
@@ -115,6 +127,14 @@ TERMS = {
     "catchup_periods": Term("whole", "subscriptions.err_catchup_window", low=0, high=CATCHUP_CAP),
     "generation_mode": Term("choice", "subscriptions.err_generation_mode", choices=GENERATION_MODES),
     "auto_send": Term("flag", "subscriptions.err_auto_send"),
+    # Read by the books when a bill posts (celerp.services.recognition.deferred_line), not by
+    # the schedule, so changing it asks no consent (billing.CONSENT_TERMS).
+    "recognize_over_service_period": Term("flag", "recognition.err_flag_invalid"),
+    # Read by the pages and the member standing (routes.member_rows), not by the schedule, so
+    # changing them asks no consent either.
+    "kind": Term("choice", "subscriptions.err_kind", choices=KINDS),
+    "beneficiary_contact_id": Term("text", "subscriptions.err_beneficiary"),
+    "grace_days": Term("whole", "subscriptions.err_grace_days", low=0, high=MAX_GRACE_DAYS),
 }
 
 
@@ -126,7 +146,8 @@ def term_error(name: str, value) -> ScheduleError | None:
 
 def check_terms(state: dict) -> None:
     """ScheduleError naming the first stored term that does not hold what TERMS declares. Every
-    set term is checked; the custom interval is also required for a custom frequency."""
+    set term is checked; the custom interval is also required for a custom frequency, and a
+    trial end and a first bill date both set are the same day."""
     for name in TERMS:
         value = state.get(name)
         required = name == "custom_interval_days" and shown("frequency", state.get("frequency")) == "custom"
@@ -136,6 +157,8 @@ def check_terms(state: dict) -> None:
             raise exc
     if state.get("term_start") and state.get("term_end") and state["term_start"] >= state["term_end"]:
         raise ScheduleError("subscriptions.err_term_order")
+    if state.get("trial_end") and state.get("anchor_date") and state["trial_end"] != state["anchor_date"]:
+        raise ScheduleError("subscriptions.err_trial_first_bill", day=state["trial_end"])
 
 
 def _date(value) -> date:
@@ -310,5 +333,8 @@ class Schedule:
         return (today - self.anchor).days // stride
 
     def ended(self, today: date) -> bool:
-        """The term is over and no existing period is left open."""
-        return self.term_end is not None and today > self.term_end and self.oldest_open() is None
+        """The schedule is over (its term ended, or the period it stops at has ended) and no
+        existing period is left open."""
+        over = ((self.term_end is not None and today > self.term_end)
+                or (self.last is not None and today > self.end(self.last)))
+        return over and self.oldest_open() is None

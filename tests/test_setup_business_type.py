@@ -81,7 +81,7 @@ class TestSetupRender:
     def test_hidden_presets_not_offered(self):
         from ui.routes.setup import business_type_options
         values = [v for v, _ in business_type_options()]
-        assert "saas" not in values and "property_rental" not in values
+        assert "saas" in values and "property_rental" not in values
         assert values[-1] == "blank"
 
 
@@ -103,7 +103,7 @@ class TestSetupSubmit:
     @pytest.mark.parametrize("vertical, message", [
         ("", "Choose a business type to continue."),
         ("no_such_type", "Unknown business type"),
-        ("saas", "Unknown business type"),
+        ("property_rental", "Unknown business type"),
     ])
     async def test_missing_unknown_or_hidden_rejected_before_mutation(self, ui_client, vertical, message):
         ui_client.cookies.update(_authed())
@@ -209,7 +209,7 @@ class TestCompanyDetails:
             _details_patches(stack, "owner")
             r = await ui_client.get("/settings/company/vertical/edit")
         assert "combobox-input" in r.text
-        assert 'data-value="agricultural"' in r.text and 'data-value="saas"' not in r.text
+        assert 'data-value="saas"' in r.text and 'data-value="property_rental"' not in r.text
         assert "/settings/company/vertical/display" in r.text
 
     @pytest.mark.asyncio
@@ -241,7 +241,7 @@ class TestCompanyDetails:
         set_type = AsyncMock()
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.set_business_type", new=set_type):
-            r = await ui_client.patch("/settings/company/vertical", data={"value": "saas"})
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "property_rental"})
         assert "Unknown business type" in r.text
         set_type.assert_not_awaited()
 
@@ -353,9 +353,9 @@ class TestStoredTypeDisplay:
     async def test_hidden_stored_type_shows_its_label(self, ui_client):
         ui_client.cookies.update(_authed("owner"))
         with ExitStack() as stack:
-            _details_patches(stack, "owner", vertical="saas")
+            _details_patches(stack, "owner", vertical="property_rental")
             r = await ui_client.get("/finance/company-details")
-        assert "SaaS / Software" in r.text
+        assert "Property Rental" in r.text
 
     @pytest.mark.asyncio
     async def test_unknown_stored_type_shows_empty_marker(self, ui_client):
@@ -369,7 +369,7 @@ class TestStoredTypeDisplay:
     async def test_editor_opens_with_the_hidden_type_visible(self, ui_client):
         ui_client.cookies.update(_authed())
         with ExitStack() as stack:
-            _details_patches(stack, "owner", vertical="saas")
+            _details_patches(stack, "owner", vertical="property_rental")
             r = await ui_client.get("/settings/company/vertical/edit")
         text_input = re.search(r'<input[^>]*combobox-input[^>]*>', r.text).group(0)
-        assert 'value="SaaS / Software"' in text_input
+        assert 'value="Property Rental"' in text_input

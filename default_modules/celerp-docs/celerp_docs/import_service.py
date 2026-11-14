@@ -21,8 +21,9 @@ from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reaso
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.journal_accounts import require_line_destinations
+from celerp.services.journal_accounts import hold_fund_ledger, require_line_destinations
 from celerp.services.locations import require_ship_from
+from celerp.services.peer_lines import LINE_KEYS, ImportFundChoices, check_import_fund_choices
 from celerp_docs.doc_money import money_from_lines, refuse_unset_line_tax
 from celerp_docs.doc_projections import UNISSUED_STATUSES
 from celerp_docs.routes import (
@@ -48,6 +49,7 @@ from celerp_docs.routes import (
     schedule_fields_refusal,
     settle_imported_credit,
     write_doc_patch,
+    write_fund_choices,
 )
 
 DOC_CREATED = "doc.created"
@@ -61,8 +63,10 @@ async def import_doc_records(
     settings: dict,
     records: Sequence[DocImportRecord],
     *,
+    origin: str,
     upsert: bool = False,
     post_ledger: bool = True,
+    fund_choices: ImportFundChoices | None = None,
 ) -> ImportOutcome:
     """Create imported documents once per per-company idempotency key and entity.
 
@@ -70,7 +74,9 @@ async def import_doc_records(
     the normal document patch. Lifecycle permissions are checked for every record
     before the first write. Without `post_ledger`, an issued document is written
     without its normal accounting entry, for a caller that posts the entry the
-    source books carry instead.
+    source books carry instead. A document the batch creates takes the funds the import
+    screen chose for it and its lines (``fund_choices``) before it posts; one it updates or
+    skips keeps the choices it has.
     """
     outcome = ImportOutcome()
     keys = [r.idempotency_key for r in records]
@@ -91,6 +97,12 @@ async def import_doc_records(
             )
         )).scalars().all())
 
+    # An issued document posts its entry, which holds the fund ledger; the ledger ranks
+    # before the document rows the import writes, so it is taken first.
+    await hold_fund_ledger(session, company_id)
+    fund_choices = await check_import_fund_choices(
+        session, company_id, fund_choices,
+        {r.entity_id: len(li) if isinstance(li := r.data.get("line_items"), list) else 0 for r in records})
     company = await session.get(Company, company_id)
     base_currency = company.settings.get("currency", "USD") if company else "USD"
     # Fail authorization before the first row writes, so a mixed-status import cannot
@@ -136,14 +148,16 @@ async def import_doc_records(
         try:
             async with session.begin_nested():
                 if upserting:
-                    status = await _upsert_doc(session, company_id, user, role, settings, rec)
+                    status = await _upsert_doc(session, company_id, user, role, settings, rec, origin=origin)
                 else:
                     entry = await create_imported_doc(
                         session, company_id, user, role, settings, rec, base_currency, post_ledger=post_ledger,
+                        origin=origin, funds=fund_choices.of(rec.entity_id),
                     )
                     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}",
+                        fix=getattr(exc, "fix", None))
             continue
         existing_keys.add(rec.idempotency_key)
         existing_entities.add(rec.entity_id)
@@ -151,7 +165,7 @@ async def import_doc_records(
     return outcome
 
 
-async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportRecord) -> OutcomeStatus:
+async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportRecord, *, origin: str) -> OutcomeStatus:
     """Refresh an imported document's editable fields through the normal document edit."""
     row = await _get_doc(session, company_id, rec.entity_id)
     fields_changed = _doc_import_fields_changed(row.state, rec.data)
@@ -165,18 +179,20 @@ async def _upsert_doc(session, company_id, user, role, settings, rec: DocImportR
     result = await write_doc_patch(
         session, company_id, role, settings, user, rec.entity_id,
         DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem, expected_version=row.version),
+        origin=origin,
     )
     return "skipped" if result.get("event_id") is None else "updated"
 
 
 async def create_imported_doc(
     session, company_id, user, role: str, settings: dict, rec: DocImportRecord, base_currency: str, *,
-    post_ledger: bool,
+    post_ledger: bool, origin: str, funds: tuple[str | None, dict[str, str]] = (None, {}),
 ):
     """Write one imported document and, when it is issued into live books, what its import
     treatment books for it (import_treatment): nothing when the opening balances hold it,
-    otherwise the entries the app posts for it (_import_auto_je). Shared by the single and
-    batch imports; returns the doc.created entry."""
+    otherwise the entries the app posts for it (_import_auto_je). ``funds``: the document's
+    fund and its lines' own (by line number), chosen on the import screen and written before
+    anything posts. Shared by the single and batch imports; returns the doc.created entry."""
     from celerp.services import auto_je
 
     if (refused := schedule_fields_refusal(rec.data)) is not None:
@@ -209,6 +225,7 @@ async def create_imported_doc(
             data = await imported_opening_snapshot(session, company_id, data)
     entry = await emit_event(
         session,
+        origin=origin,
         company_id=company_id,
         entity_id=rec.entity_id,
         entity_type="doc",
@@ -223,8 +240,31 @@ async def create_imported_doc(
     )
     if getattr(entry, "was_deduped", False):
         return entry
+    data = await _chosen_funds(session, company_id, user, rec, data, *funds)
     await settle_imported_credit(session, company_id, user.id, entry.entity_id, data)
     if treatment == RECORD_NOW:
         await _import_auto_je(session, company_id, user, role, settings, entry.entity_id, data, received,
                               key=rec.idempotency_key, base_currency=base_currency)
     return entry
+
+
+async def _chosen_funds(session, company_id, user, rec: DocImportRecord, data: dict, document: str | None,
+                        lines: dict[str, str]) -> dict:
+    """``data`` (the document just created) with the funds chosen for it and its lines
+    written as the importing user's choice."""
+    if document is None and not lines:
+        return data
+    state = (await _get_doc(session, company_id, rec.entity_id)).state or {}
+    ids = [li.get("line_id") for li in state.get("line_items") or [] if isinstance(li, dict)]
+    entry = await write_fund_choices(
+        session, company_id, rec.entity_id, state, actor_id=user.id, idempotency_key=f"{rec.idempotency_key}:funds",
+        lines={ids[int(n) - 1]: value for n, value in lines.items()},
+        **({"document": document} if document is not None else {}))
+    if entry is None:
+        return data
+    written = entry.data["fields_changed"]
+    chosen = {**data, **{key: change["new"] for key, change in written.items() if key != "line_items"}}
+    if "line_items" in written:
+        chosen["line_items"] = [{**line, **{key: new.get(key) for key in LINE_KEYS}}
+                                for line, new in zip(data["line_items"], written["line_items"]["new"])]
+    return chosen

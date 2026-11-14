@@ -916,6 +916,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "line exists only where Documents wrote it, and the boot COGS backfill that may meet one "
         "fails without writing and retries at a later boot",
     ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
+    ("celerp/services/auto_je.py", "post_dispute_adjustment"): _PAYMENT_STEP,
     ("celerp/services/document_lines.py", "_memo_takes_by_line"):
         "reads what invoices took from a memo, and imports Documents only for a memo, which only "
         "Documents writes",
@@ -923,6 +924,13 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/payments.py", "_apply_release"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "record_unmatched_payment"): _PAYMENT_STEP,
     ("celerp/services/peer_documents.py", "receive_document"): _PEER,
+    ("celerp/services/peer_documents.py", "_choose_funds"): _PEER,
+    ("celerp/services/peer_lines.py", "outside_waiting"):
+        "imports Documents only while it runs in this process (is_running), and counts no "
+        "documents otherwise, since only Documents opens them for a fund choice",
+    ("celerp/services/peer_lines.py", "change_posted_fund"):
+        "imports Documents only for a document, which reaches it only through the Documents "
+        "module's own Change fund route; a journal's Change fund imports nothing",
     ("celerp/services/peer_documents.py", "_replay_receipts"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_receipt"): _PEER,
     ("celerp/services/peer_documents.py", "_replay_fulfilment"): _PEER,
@@ -936,7 +944,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
     **{(_DOCS_UI, name): _OWN_UI for name in (
         "_hold_refusal", "_physical_lots", "_drawable_lots", "_doc_line_actions",
         "_writeoff_account_choices", "_payment_section", "_doc_detail", "_line_skip_strings",
-        "_preview_confirm", "_lot_taken_text", "setup_routes")},
+        "_preview_confirm", "_lot_taken_text", "_doc_funds", "setup_routes")},
     **{(_DOCS_UI, name): "builds document lines from selected items; called only from Inventory's "
        "own bulk actions (ui/routes/inventory.py), so it runs only while Inventory runs"
        for name in ("_line_items_from_inventory", "_reorder_po_line")},

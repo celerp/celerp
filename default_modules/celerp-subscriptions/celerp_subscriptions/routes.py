@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -18,21 +19,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
+from celerp.schemas.numbers import FiniteFloat
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_subscriptions import billing, migration, summary
+from celerp_subscriptions import billing, collect, members, metrics, migration, summary
 from celerp_subscriptions.periods import (
-    AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
+    AUTO_MODES, BILLED, CLAIMED_STATES, KINDS, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
 
 BATCH_CAP = 50
 # Schedule terms that place the periods: fixed once any period is claimed.
-PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
+PLACING_FIELDS = ("anchor_date", "trial_end", "frequency", "custom_interval_days", "billing_timing")
 # What a template not yet on a schedule may change: the terms that let it move onto one.
 _MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
@@ -72,6 +74,12 @@ class RequestBody(BaseModel):
     period_index: int | None = None
 
 
+class AmendBody(BaseModel):
+    effective: date
+    quantities: dict[str, FiniteFloat] = Field(..., min_length=1)  # line id -> its quantity from ``effective``
+    request_key: str = Field(..., min_length=1, max_length=200)
+
+
 class EarlyBody(BaseModel):
     request_key: str = Field(..., min_length=1, max_length=200)
     period_index: int | None = None
@@ -104,8 +112,14 @@ class CatchUpBody(BaseModel):
     items: list[CatchUpItem] = Field(..., max_length=1000)
 
 
+class SetupLinkBody(BaseModel):
+    delivery: Literal["email", "copy"]
+    resend_receipt: bool = False
+
+
 class ScheduleBody(BaseModel):
     anchor_date: date | None = None
+    trial_end: date | None = None
     frequency: str | None = None
     custom_interval_days: int | None = None
     billing_timing: str | None = None
@@ -115,6 +129,10 @@ class ScheduleBody(BaseModel):
     catchup_periods: int | None = None
     generation_mode: str | None = None
     auto_send: bool | None = None
+    recognize_over_service_period: bool | None = None
+    kind: str | None = None
+    beneficiary_contact_id: str | None = None
+    grace_days: int | None = None
 
     @field_validator("anchor_date", "generation_mode", "frequency", "billing_timing", "catchup_periods", mode="before")
     @classmethod
@@ -186,6 +204,24 @@ async def _first_schedule(session, company_id, state: dict) -> dict:
         raise billing.schedule_refusal(422, exc) from exc
 
 
+async def activate_agreement(session, company_id, entity_id: str, user) -> dict:
+    """Promote the draft agreement to active on its first schedule (activate_subscription),
+    uncommitted; returns its state after. Refused (409) when it is not a draft or is a
+    template still waiting to move onto a schedule, and with the bill path's own refusal when
+    its first bill would be refused (billing.bill_refusal), so it stays a draft."""
+    company = await locked_company(session, company_id)
+    proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
+    billing.refuse_not_moved(proj.state, entity_id)
+    if proj.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
+    held = dict(proj.state)
+    changes = {"status": "active", **await _first_schedule(session, company_id, held)}
+    if (refused := await billing.bill_refusal(session, company, entity_id, held, changes, user)) is not None:
+        raise refused
+    await billing.write_agreement(session, company_id, entity_id, changes, user.id)
+    return {**held, **changes}
+
+
 async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
     """A template not yet on a schedule takes only its frequency and interval, and moves onto
     a schedule with them at once; 409 naming it and why while it still cannot."""
@@ -212,6 +248,7 @@ def _build_router() -> APIRouter:
         status: str | None = None,
         q: str | None = None,
         review: bool = False,
+        kind: str | None = None,
         limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -219,11 +256,24 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """List agreements, each with its derived next bill date (list_row); ``review`` keeps
-        those with earlier documents waiting for history review."""
+        those with earlier documents waiting for history review, ``kind`` those of one kind (an
+        agreement without one is a subscription)."""
+        if kind is not None and kind not in KINDS:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_kind"))
         items, total = await search_subscription_templates(
-            session, company_id, direction=direction, status=status, q=q, review=review, limit=limit, offset=offset
+            session, company_id, direction=direction, status=status, q=q, review=review, kind=kind,
+            limit=limit, offset=offset,
         )
         return {"items": [list_row(i) for i in items], "total": total}
+
+    @router.get("/members")
+    async def list_members(
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Every member and their standing today (members.member_rows)."""
+        return {"items": await members.member_rows(session, company_id, await company_today(session, company_id))}
 
     @router.get("/due")
     async def list_due(
@@ -233,6 +283,24 @@ def _build_router() -> APIRouter:
     ) -> dict:
         """Every active agreement with a period due today: what Generate due would bill."""
         return await billing.due_preview(session, company_id, await company_today(session, company_id))
+
+    @router.get("/metrics")
+    async def revenue_metrics(
+        start: date | None = Query(None, alias="from"),
+        end: date | None = Query(None, alias="to"),
+        currency: str | None = None,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_financial_reports"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """MRR, ARR, churn and cohorts of the sales agreements by month (metrics.revenue_metrics);
+        the range defaults to the 12 months to today."""
+        first, last = metrics.default_range(await company_today(session, company_id))
+        start, end = start or first, end or last
+        if (refused := metrics.range_refusal(start, end, currency)):
+            key, parameter = refused
+            raise billing.amend_refusal(422, key, parameter=parameter)
+        return await metrics.revenue_metrics(session, company_id, start, end, currency)
 
     @router.post("/generate-due")
     async def generate_all_due(
@@ -259,6 +327,7 @@ def _build_router() -> APIRouter:
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": False, "error": detail})
         await session.commit()
         answered = [r for r in results if r["ok"]]
+        await collect.ask_after_bill(session, company_id, [r["doc_id"] for r in answered])
         already = sum(1 for r in answered if r["already_billed"])
         return {"results": results, "billed": len(answered) - already, "already_billed": already,
                 "refused": len(results) - len(answered)}
@@ -316,6 +385,7 @@ def _build_router() -> APIRouter:
                 results.append({**row, "ok": False, "error": exc.detail,
                                 **await refused_period(session, company_id, item.entity_id, item.period_index)})
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [r["doc_id"] for r in results if r["ok"]])
         return {"results": results}
 
     @router.get("/summary", description=(
@@ -359,6 +429,26 @@ def _build_router() -> APIRouter:
         result = await billing.claim_period(session, company_id, entity_id, actor=user,
                                             request_key=body.request_key, period_index=body.period_index)
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [result["doc_id"]])
+        return result
+
+    @router.post("/{entity_id}/amend")
+    async def amend(
+        entity_id: str,
+        body: AmendBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        __: None = require_permission("finalize_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Change line quantities from an effective date (billing.amend); the invoice an
+        amendment issues on an agreement that collects automatically is charged once it commits."""
+        result = await billing.amend(session, company_id, entity_id, effective=body.effective,
+                                     quantities=body.quantities, request_key=body.request_key, actor=user)
+        await session.commit()
+        if result["invoice_id"]:
+            await collect.ask_after_bill(session, company_id, [result["invoice_id"]])
         return result
 
     @router.post("/{entity_id}/bill-early")
@@ -374,6 +464,7 @@ def _build_router() -> APIRouter:
         result = await billing.claim_period(session, company_id, entity_id, actor=user, early=True,
                                             period_index=body.period_index, request_key=body.request_key)
         await session.commit()
+        await collect.ask_after_bill(session, company_id, [result["doc_id"]])
         return result
 
     @router.get("/{entity_id}/periods")
@@ -384,12 +475,14 @@ def _build_router() -> APIRouter:
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """The agreement's periods, newest first, and its next bill date."""
+        """The agreement's periods, newest first, its next bill date and, as ``automation``,
+        what runs on its own now (summary.modes_answer)."""
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if proj is None or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
-        return await billing.period_list(session, company_id, proj.state, await company_today(session, company_id),
-                                         before=before)
+        return {**await billing.period_list(session, company_id, proj.state, await company_today(session, company_id),
+                                            before=before),
+                "automation": await summary.modes_answer(session, company_id, entity_id)}
 
     @router.post("/{entity_id}/periods/{k}/skip")
     async def skip_period(
@@ -490,6 +583,39 @@ def _build_router() -> APIRouter:
                               retry_by=user.id, attempt=body.attempt, again=body.again)
         return await summary.send_answer(session, company_id, entity_id, k)
 
+    @router.get("/{entity_id}/collection")
+    async def collection_view(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Whether Celerp Cloud offers automatic collection, and the payer's card on file."""
+        return await collect.view(session, company_id, entity_id)
+
+    @router.post("/{entity_id}/collection/setup-link")
+    async def collection_setup_link(
+        entity_id: str,
+        body: SetupLinkBody,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("automate_collection"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """The link where the payer puts a card on file, emailed or to copy; or the receipt of
+        the card on file emailed to the payer again."""
+        return await collect.setup_link(session, company_id, entity_id, body.delivery, body.resend_receipt)
+
+    @router.post("/{entity_id}/collection/revoke")
+    async def collection_revoke(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("automate_collection"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Withdraw the payer's card on file, so nothing more is charged to it."""
+        return await collect.revoke(session, company_id, entity_id, user.id)
+
     @router.patch("/{entity_id}/schedule")
     async def change_schedule(
         entity_id: str,
@@ -505,6 +631,8 @@ def _build_router() -> APIRouter:
         path first (billing.bill_refusal)."""
         sent = body.model_dump(include=body.model_fields_set)
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
+        if changes.get("trial_end") and "anchor_date" not in changes:
+            changes["anchor_date"] = changes["trial_end"]  # the first period starts when the trial ends
         company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if migration.is_legacy(proj.state):
@@ -753,16 +881,8 @@ def _build_router() -> APIRouter:
         template still waiting to move onto one; whoever presses it needs the permissions of any
         mode it brings into force (billing.write_agreement). A draft whose first bill the bill path
         refuses stays a draft (billing.bill_refusal)."""
-        company = await locked_company(session, company_id)
-        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
-        billing.refuse_not_moved(proj.state, entity_id)
-        if proj.state.get("status") != "draft":
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
-        changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
-        merged = {**proj.state, **changes}
-        if (refused := await billing.bill_refusal(session, company, entity_id, proj.state, changes, user)) is not None:
-            raise refused
-        await _write(session, company_id, entity_id, changes, user)
+        merged = await activate_agreement(session, company_id, entity_id, user)
+        await session.commit()
         return {"ok": True, "next_bill_date": next_bill_date(merged),
                 **await summary.modes_answer(session, company_id, entity_id)}
 

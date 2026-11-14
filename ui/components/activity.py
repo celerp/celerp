@@ -43,7 +43,7 @@ _EVENT_TYPES: tuple[str, ...] = (
     "item.consignment.bought", "item.inventory_on_books.recorded",
     "mfg.order.wip_opened", "mfg.order.wip_unresolved",
     "fa.class.created", "fa.class.updated", "fa.asset.created", "fa.asset.updated", "fa.asset.status",
-    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.maint.recorded", "fa.maint.status",
+    "fa.asset.financials", "fa.asset.moved", "fa.movement.recorded", "fa.movement.updated", "fa.maint.recorded", "fa.maint.status",
     "fa.asset.exception", "fa.reading.recorded", "fa.skip.recorded", "fa.skip.withdrawn",
     "fa.correction.requested", "fa.correction.applied", "fa.correction.withdrawn", "fa.correction.undone",
     "fa.review.recorded", "fa.review.status", "fa.recon.recorded",
@@ -53,14 +53,17 @@ _EVENT_TYPES: tuple[str, ...] = (
     "fa.maint.updated", "fa.reminder.created", "fa.reminder.changed",
     "doc.created", "doc.updated", "doc.finalized", "doc.paid", "doc.voided",
     "doc.sent", "doc.marked_sent", "doc.converted", "doc.converted_to_bill", "doc.lines_invoiced", "doc.lines_returned",
-    "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released",
+    "doc.collection", "doc.payment.received", "doc.payment.refunded", "doc.payment.refund_reversed", "doc.payment.stripe_released", "doc.payment.disputed",
     "doc.payment.voided", "doc.payment.deleted", "doc.received", "doc.fulfilled", "doc.partially_fulfilled",
     "doc.fulfillment_reversed", "doc.partially_reverted", "doc.line_received",
-    "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft",
+    "doc.line_returned", "doc.items_returned", "doc.shared", "doc.reverted_to_draft", "doc.fund_changed",
+    "fund.created", "fund.updated", "fund.archived", "fund.unarchived",
+    "rev_schedule.created", "rev_schedule.amended", "rev_schedule.fund_changed",
     "crm.contact.created", "crm.contact.updated", "crm.contact.merged", "crm.contact.tagged",
     "crm.contact.note_added", "crm.contact.note_updated", "crm.contact.note_removed",
     "crm.contact.person_added", "crm.contact.person_updated", "crm.contact.person_removed",
     "crm.contact.address_added", "crm.contact.address_updated", "crm.contact.address_removed",
+    "crm.contact.statement_sent", "crm.contact.collection_binding",
     "crm.deal.created", "crm.deal.updated", "crm.deal.stage_changed", "crm.deal.won",
     "crm.deal.lost", "crm.deal.deleted", "crm.deal.reopened",
     "memo.created", "memo.returned",
@@ -259,6 +262,7 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
     "acc.journal_entry.posted",
     "acc.journal_entry.voided",
+    "acc.journal_entry.fund_changed",
     "payment_batch.recorded",
     "line_action.recorded",
     "sys.migration.applied",
@@ -353,6 +357,15 @@ def change_text(label: str, old: str | None, new: str | None) -> str | None:
     so History never shows a change the page would not."""
     old, new = old or t("activity.none"), new or t("activity.none")
     return None if old == new else f"{label}: {old} → {new}"
+
+
+# A document's own fund choice is named, never by its raw fund id; who set it and why are the
+# choice's own record, not changed fields of their own.
+register_fields({
+    "fund_choice": lambda change: t("activity.changed", item=t("fund.document_label")),
+    "fund_choice_source": lambda change: None,
+    "fund_choice_reason": lambda change: None,
+})
 
 
 # ID fields that carry a raw entity-ID value; suppressed when a companion
@@ -857,6 +870,8 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
                                     f"{name} {fmt_price(old_price, 'unit_price', currency)}"
                                     f"→{fmt_price(new_price, 'unit_price', currency)}"
                                 )
+                            elif (old_li.get("fund_id") or None) != (new_li.get("fund_id") or None):
+                                changed.append(f"{name} {t('th.fund')}")
                     parts = (
                         [t("activity.added", item=_li_added_label(li)) for li in added[:2]]
                         + [t("activity.changed", item=x) for x in changed[:2]]

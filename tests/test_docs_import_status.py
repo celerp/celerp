@@ -66,7 +66,7 @@ class _Routes:
 def _screen(monkeypatch, client, auth) -> _Routes:
     from ui.routes import docs_import
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=auth["headers"], json={"records": records,
                                                                        "upsert": upsert})).json()
 
@@ -352,7 +352,7 @@ async def test_a_list_keeps_a_list_status_and_refuses_any_other(client, auth, mo
     """RED before the change: with status mapped, a list took any status the file gave."""
     from ui.routes import lists_import
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=auth["headers"], json={"records": records,
                                                                        "upsert": upsert})).json()
 

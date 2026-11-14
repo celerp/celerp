@@ -284,7 +284,9 @@ async def receive_payment(payload: dict) -> bool:
             await session.commit()
             return True
         # A reset waits for this lock; once it has deleted the company, the payment is unmatched.
-        row = await session.get(Projection, (cid, entity_id)) if cid and await _lock_company_of(session, cid) else None
+        live = bool(cid) and await _lock_company_of(session, cid)
+        row = await session.get(Projection, (cid, entity_id)) if live else None
+        document = ((row.state or {}).get("ref_id") or (row.state or {}).get("doc_number")) if row is not None else None
         if row is not None:
             kept = (await session.execute(delete(UnmatchedPayment).where(
                 UnmatchedPayment.reference == reference).returning(
@@ -296,7 +298,8 @@ async def receive_payment(payload: dict) -> bool:
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
                                             amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                            context=payload.get("context"), managed=managed)
+                                            context=payload.get("context"), managed=managed,
+                                            request_key=payload.get("request_key"))
                 if released_at is None:
                     await _apply_parked_refunds(session, cid, entity_id, reference)
                 else:
@@ -308,12 +311,30 @@ async def receive_payment(payload: dict) -> bool:
                     raise
                 await session.rollback()
                 log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
+                live = await _lock_company_of(session, cid)  # the rollback let the company lock go
         from sqlalchemy.dialects.postgresql import insert
         await session.execute(insert(UnmatchedPayment).values(
             reference=reference, amount_minor=amount_minor, currency=currency,
             former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
+        if live:
+            if row is not None:
+                from celerp.services import collection
+                await collection.charge_kept(session, cid, entity_id, reference)
+            await _notify_unmatched(session, cid, document or entity_id, reference,
+                                    dispute_amount(amount_minor, currency))
         await session.commit()
     return True
+
+
+async def _notify_unmatched(session, cid: uuid.UUID, document: str, reference: str, amount: str) -> None:
+    """Tell the company once that an online payment it was sent is kept among the unmatched
+    payments, so a person records it on an invoice."""
+    from celerp.notifications import service as notification_service
+    params = {"reference": reference, "amount": amount, "document": document}
+    await notification_service.notify_once(
+        session, cid, "accounting", t("notice.payment_unmatched.title", "en", **params),
+        t("notice.payment_unmatched.body", "en", **params), action_url="/settings/payments",
+        i18n={"title": "notice.payment_unmatched.title", "body": "notice.payment_unmatched.body", "params": params})
 
 
 @_on_invoices
@@ -482,6 +503,113 @@ async def _fee_not_recorded(cid, doc_id: str | None, document: str, fees: dict, 
     except Exception:
         log.exception("Could not record the notice for an unrecorded online fee")
         return False
+    return True
+
+
+# The steps of a card dispute Celerp Cloud delivers, in order, and the decisions a closed
+# one carries.
+DISPUTE_STATES = ("created", "funds_withdrawn", "funds_reinstated", "closed")
+DISPUTE_OUTCOMES = ("won", "lost", "warning_closed")
+
+
+def dispute_status_key(dispute: dict) -> str:
+    """The message key saying where a dispute (its ``state`` and ``outcome``) stands."""
+    state, outcome = dispute.get("state"), dispute.get("outcome")
+    if state == "closed" and outcome in ("won", "lost"):
+        return f"documents.dispute_{outcome}"
+    return f"documents.dispute_{state}"
+
+
+def dispute_amount(amount_minor: int, currency: str) -> str:
+    return f"{stripe_amount(amount_minor, currency):.{_stripe_exponent(currency)}f} {currency.upper()}"
+
+
+@_on_invoices
+async def receive_dispute(payload: dict) -> bool:
+    """Record a step of a customer's card dispute on the online payment it disputes
+    (``record_stripe_dispute``), on the invoice holding the payment. True once recorded,
+    or when it can never be: its company is gone (nobody to tell), or its invoice is gone,
+    does not hold the payment, or names another currency or more than the payment (the
+    company is told of each step, and nothing is written). False for a delivery without its
+    fields, a payment not received yet, or a posting account the company has not chosen
+    (raised in Posting accounts), so Cloud delivers it again."""
+    from datetime import timezone
+    from celerp.models.projections import Projection
+    from celerp.services.account_roles import PostingRoleError
+    from celerp.services.posting_readiness import notify_unmapped
+    from celerp_docs.routes_payments import record_stripe_dispute
+
+    if not isinstance(payload, dict):
+        return False
+    origin, doc_id, reference, dispute_id, state, outcome, amount_minor, currency = (
+        payload.get(k) for k in ("company_id", "entity_id", "reference", "dispute_id", "state", "outcome",
+                                 "amount_minor", "currency"))
+    occurred_at = _instant(payload.get("occurred_at"))
+    if (not isinstance(origin, str) or not _company(origin)
+            or not isinstance(doc_id, str) or not doc_id or len(doc_id) > 512
+            or not isinstance(reference, str) or not reference or len(reference) > 255
+            or not isinstance(dispute_id, str) or not 1 <= len(dispute_id) <= 128 or not dispute_id.isascii()
+            or not all(c.isalnum() or c in "_-" for c in dispute_id)
+            or state not in DISPUTE_STATES or outcome not in (*DISPUTE_OUTCOMES, None)
+            or (state == "closed") != (outcome is not None)
+            or not _counted(amount_minor) or amount_minor > 10**14
+            or not isinstance(currency, str) or len(currency) != 3 or not currency.isascii() or not currency.isalpha()
+            or (payload.get("occurred_at") is not None and occurred_at is None)):
+        return False
+    async with _own_session() as session:
+        home = await _recorded_on(session, reference)
+        if home is not None:
+            await _home_uses_documents(session, home)
+        cid, target_doc = home if home is not None else (_company(origin), doc_id)
+        if not await _lock_company_of(session, cid):
+            log.warning("Card dispute %s names a company that is not here", dispute_id)
+            return True
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == cid, Projection.entity_id == target_doc,
+            Projection.entity_type == "doc").with_for_update())).scalar_one_or_none()
+        state_of = (row.state or {}) if row is not None else {}
+        entries = [p for p in state_of.get("payments", [])
+                   if p.get("reference") == reference and p.get("method") == "stripe"]
+        payment = next((p for p in entries if p.get("status") == "active"), None)
+        parked = row is not None and not entries and await session.scalar(
+            select(UnmatchedPayment.reference).where(UnmatchedPayment.reference == reference)) is not None
+        if row is not None and not entries and not parked:
+            return False  # its payment is not here yet
+        problem = ("document" if row is None else "unmatched" if parked else "payment" if payment is None
+                   else "currency" if currency.upper() != str(payment.get("currency") or state_of.get("currency")
+                                                             or "").upper()
+                   else "amount" if stripe_amount(amount_minor, currency) > to_decimal(payment.get("amount") or 0)
+                   else None)
+        if problem is None:
+            try:
+                await record_stripe_dispute(
+                    session, cid, row, payment, dispute_id=dispute_id, state=state, outcome=outcome,
+                    amount_minor=amount_minor, currency=currency,
+                    occurred_at=occurred_at.astimezone(timezone.utc) if occurred_at else None)
+            except PostingRoleError as exc:
+                await session.rollback()
+                await notify_unmapped(session, cid, [p["params"]["role"] for p in exc.detail["params"]["problems"]])
+                await session.commit()
+                return False
+            await session.commit()
+            return True
+        document = state_of.get("ref_id") or state_of.get("doc_number") or target_doc
+        log.warning("Card dispute %s on %s not recorded: %s", dispute_id, document, problem)
+        from celerp.notifications import service as notification_service
+        # The step is in the notice, so each step of a dispute that cannot be recorded is told.
+        status = dispute_status_key({"state": state, "outcome": outcome})
+        params = {"document": document, "amount": dispute_amount(amount_minor, currency), "dispute": dispute_id,
+                  "reason": t(f"notice.payment_dispute_not_recorded.{problem}", "en"), "status": t(status, "en")}
+        keyed = {**params, "reason": {"message": params["reason"],
+                                      "message_key": f"notice.payment_dispute_not_recorded.{problem}"},
+                 "status": {"message": params["status"], "message_key": status}}
+        await notification_service.notify_once(
+            session, cid, "accounting", t("notice.payment_dispute_not_recorded.title", "en", **params),
+            t("notice.payment_dispute_not_recorded.body", "en", **params),
+            action_url=f"/docs/{target_doc}" if row is not None else None,
+            i18n={"title": "notice.payment_dispute_not_recorded.title",
+                  "body": "notice.payment_dispute_not_recorded.body", "params": keyed})
+        await session.commit()
     return True
 
 

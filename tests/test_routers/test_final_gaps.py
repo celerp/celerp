@@ -268,8 +268,9 @@ async def test_events_engine_integrity_error_reraise():
     mock_session.flush = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.add = MagicMock()
-    # No stored rows: the company and entity lookups find nothing.
+    # No stored rows: the company, its settings and entity lookups find nothing.
     mock_session.get = AsyncMock(return_value=None)
+    mock_session.scalar = AsyncMock(return_value=None)
     # emit_event awaits session.begin_nested() for one savepoint around the insert
     # and the projection write, and rolls it back when the insert fails.
     mock_session.begin_nested = AsyncMock(return_value=AsyncMock())

@@ -5,14 +5,22 @@
 from celerp.importers.sinks import register_sink
 from celerp.services.journal_accounts import ChartAccess, register_chart
 from celerp_accounting.chart_rules import chart_accounts, lock_accounts
+from celerp_accounting.donors import router as donors_router
+from celerp_accounting.fund_reports import router as fund_reports_router
+from celerp_accounting.funds import router as funds_router
 from celerp_accounting.import_service import add_posting_account
 from celerp_accounting.migration_sink import SINK
+from celerp_accounting.recognition import router as recognition_router
 from celerp_accounting.recon_guard import guard_journal_change
 from celerp_accounting.routes import router as accounting_router
 
 
 def setup_api_routes(app) -> None:
     app.include_router(accounting_router, prefix="/accounting", tags=["accounting"])
+    app.include_router(funds_router, prefix="/accounting", tags=["accounting"])
+    app.include_router(fund_reports_router, prefix="/accounting", tags=["accounting"])
+    app.include_router(recognition_router, prefix="/accounting", tags=["accounting"])
+    app.include_router(donors_router, prefix="/donors", tags=["donors"])
     register_sink(SINK)
     # The chart and the bank reconciliations as the core journal boundary and
     # posting-account choices see them.

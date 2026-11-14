@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import get_history
@@ -193,15 +193,19 @@ async def lock_company_for_deletion(session: AsyncSession, company_id) -> bool:
 
 
 async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:
-    """Lock the company, then the given Projection rows in entity-id order.
+    """Lock the company and its fund ledger, then the given Projection rows in entity-id order.
 
-    The one way to take row locks for a write: company first, then rows sorted by
-    entity id, so two writers sharing rows always meet in the same order. A caller
-    locking documents and items takes the documents in one call and the items in a
-    later one. populate_existing replaces any stale copy already in the session.
-    Ids with no row are absent from the result.
+    The one way to take row locks for a write: company first, then the fund ledger when
+    the company has funds turned on (journal_accounts.hold_fund_ledger: the posting that
+    follows holds it shared anyway, and it ranks before every projection row), then rows
+    sorted by entity id, so two writers sharing rows always meet in the same order. A
+    caller locking documents and items takes the documents in one call and the items in
+    a later one. populate_existing replaces any stale copy already in the session. Ids
+    with no row are absent from the result.
     """
-    await lock_company(session, company_id)
+    from celerp.services.journal_accounts import hold_fund_ledger
+
+    await hold_fund_ledger(session, company_id)
     want = sorted({str(e) for e in entity_ids if e})
     if not want:
         return {}
@@ -241,6 +245,36 @@ async def locked_company(session: AsyncSession, company_id) -> Company | None:
     if company is not None:
         note(session, "loaded", company.id)
     return company
+
+
+async def lock_fund_ledger(session: AsyncSession, company_id, *, shared: bool) -> None:
+    """Serialize every fund cap with the postings of the company.
+
+    A cap reads fund balances and then writes (a movement, the funds setting, a fund's
+    archive), so it holds the ledger exclusively: the company lock first, then the
+    company's fund advisory lock. Every posting in a company with funds holds the same
+    advisory lock shared, after the company lock, so no posting is between its check and
+    its commit while a cap runs, and postings never wait on each other. Both are held
+    until the transaction ends. Lock order: company lock, fund ledger lock, projection
+    rows, account share locks. SQLite writes one transaction at a time already."""
+    if not shared:
+        await lock_company(session, company_id)
+    await hold_fund_lock(session, company_id, shared=shared)
+
+
+async def hold_fund_lock(session: AsyncSession, company_id, *, shared: bool) -> None:
+    """The fund advisory lock of lock_fund_ledger alone, for a caller that already holds
+    the company lock (the event engine, which observes the company lock and never takes it
+    on another writer's behalf)."""
+    if session.get_bind().dialect.name == "postgresql":
+        verb = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+        await session.execute(text(f"SELECT {verb}(hashtextextended(:k, 0))"), {"k": f"funds:{company_id}"})
+    note(session, "funds", (str(company_id), shared))
+
+
+def holds_fund_ledger(session, company_id) -> bool:
+    """True when this transaction holds the company's fund ledger exclusively."""
+    return (str(company_id), False) in noted(session, "funds")
 
 
 def holds_company_lock(session, company_id) -> bool:

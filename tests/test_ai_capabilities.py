@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from celerp.ai import tools as ai_tools
-from celerp.services import cost_visibility, permissions
+from celerp.services import cost_visibility, journal_accounts, permissions
 from test_helpers import real_agent_app
 
 
@@ -376,24 +376,32 @@ def _namespace(fn, tree) -> dict:
     return namespace
 
 
-def _consulted(fn, seen: set | None = None) -> tuple[set[str], bool, set[str]]:
+def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[str], bool, set[str]]:
     """What ``fn`` and every Celerp function it calls consult of the caller's authority:
     the permission keys named to a permission primitive, whether field visibility is
     applied (``restricted_field_keys``), and each permission check whose key is not
-    written at the call (decided by data, so only every key covers it)."""
+    written at the call (decided by data, so only every key covers it).
+
+    The fund movement check (journal_accounts._authorize_movement) runs on every journal
+    entry emit_event posts, yet consults a role only inside an open movement grant, which
+    only a function entering ``fund_movement_grant`` opens. So it counts below such a
+    function and nowhere else: a capability that never opens a grant has its movements
+    refused before any role is read."""
     seen = set() if seen is None else seen
     fn = inspect.unwrap(fn)
     module = getattr(fn, "__module__", "") or ""
-    if fn in seen or not inspect.isfunction(fn) or not module.startswith(("celerp.", "celerp_")):
+    if ((fn, granted) in seen or not inspect.isfunction(fn) or not module.startswith(("celerp.", "celerp_"))
+            or (fn is journal_accounts._authorize_movement and not granted)):
         return set(), False, set()
-    seen.add(fn)
+    seen.add((fn, granted))
     tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     namespace = _namespace(fn, tree)
+    calls = [(node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    granted = granted or any(
+        inspect.unwrap(target) is inspect.unwrap(journal_accounts.fund_movement_grant)
+        for _, target in calls if target is not None)
     keys, visibility, opaque = set(), False, set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        target = _resolve(node.func, namespace)
+    for node, target in calls:
         if target is None:
             continue
         if getattr(target, "__module__", None) == permissions.__name__:
@@ -409,7 +417,7 @@ def _consulted(fn, seen: set | None = None) -> tuple[set[str], bool, set[str]]:
                     and target in (permissions.role_has_permission, permissions.assert_role_permission)):
                 opaque.add(f"{module}.{fn.__name__}: {ast.unparse(node)}")
         visibility |= target is cost_visibility.restricted_field_keys
-        found = _consulted(target, seen)
+        found = _consulted(target, seen, granted)
         keys |= found[0]
         visibility |= found[1]
         opaque |= found[2]
@@ -475,10 +483,23 @@ def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls()
     async def declared():
         return {"ok": _costs_helper({}, "owner"), "hidden": sorted(_visibility_helper("owner"))}
 
-    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared):
+    @app.get("/emits", operation_id="emits", openapi_extra={"x-celerp-agent": True})
+    async def emits():
+        from celerp.events.engine import emit_event
+        return await emit_event(None)
+
+    @app.get("/moves", operation_id="moves", openapi_extra={"x-celerp-agent": True})
+    async def moves():
+        from celerp_accounting.funds import post_fund_movement
+        return await post_fund_movement(None, None, ts=None, reason="", actor=None)
+
+    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared, emits, moves):
         fn.__module__ = "celerp.routers.agent_test"
     app.openapi_schema = None
     found = "\n".join(_undeclared(app))
+    # The movement check counts only under a function that opens a movement grant.
+    assert "emits:" not in found
+    assert "moves: declared [], consults [], by data ['celerp.services.journal_accounts._authorize_movement" in found
     assert "direct: declared [], consults ['view_contacts']" in found
     assert "helper: declared [], consults ['view_inventory_costs']" in found
     assert "helper: field visibility applied True, declared False" in found

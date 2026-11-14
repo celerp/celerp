@@ -81,21 +81,23 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 # What an agreement's schedule operations write (celerp-subscriptions): on a billed
 # document, the agreement and period it bills; on the agreement, its period claims, the
 # bills it let go, history review, the restart a template paused on an earlier release
-# owes, and the unattended modes with their consents. The module's owned_fields_census
+# owes, the unattended modes with their consents, whether its bills recognize over their
+# service period, and its amendments (line quantities from an effective date). The module's owned_fields_census
 # test reads every key it writes and fails on one missing here.
 SCHEDULE_OWNED_FIELDS: frozenset[str] = frozenset({
     "source_agreement", "period_index", "service_start", "service_end",
     "periods", "released_bills", "history_review", "history_set_aside", "resume_restarts",
-    "consents", "generation_mode", "auto_send", "billing_failure",
+    "consents", "generation_mode", "auto_send", "billing_failure", "recognize_over_service_period", "amendments",
 })
 # What an earlier release kept on a template instead of a schedule. Only data that release
 # wrote holds them, and moving the template onto a schedule removes them; no writer takes them.
 SCHEDULE_REMOVED_FIELDS: frozenset[str] = frozenset({"next_run_date", "generated_doc_ids"})
-# An agreement's schedule terms: changed only through its schedule, which checks them
-# against the periods already claimed. A draft may carry them when it is created.
+# An agreement's schedule terms, and what it is (its kind, member and grace days): changed only
+# through its schedule, which checks them against the periods already claimed. A draft may
+# carry them when it is created.
 SCHEDULE_TERM_FIELDS: frozenset[str] = frozenset({
-    "anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
-    "cancel_at_period_end", "catchup_periods",
+    "anchor_date", "trial_end", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
+    "cancel_at_period_end", "catchup_periods", "kind", "beneficiary_contact_id", "grace_days",
 })
 
 
@@ -147,6 +149,10 @@ NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purcha
 # removed from one through Revert to Draft, which voids that entry and posts the new total on
 # the next issue (routes.assert_finalized_edit).
 TOTAL_POSTED_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill", "credit_note", "debit_note"})
+
+# Documents whose lines post to a fund where funds are in use: those that post their total,
+# and a purchase order, whose receipts post by its lines.
+FUND_DOC_TYPES: frozenset[str] = TOTAL_POSTED_DOC_TYPES | {"purchase_order"}
 
 # Internal demand documents: not a sale/purchase, so excluded from revenue/AR/AP/sales accounting.
 # A production order is "invoice-to-self" demand that feeds the manufacturing queue.

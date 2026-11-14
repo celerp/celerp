@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line}: لا يوجد أصل مطابق.",
   "fixed_assets.err_sale_module_off": "{numbers}: فعّل وحدة الأصول الثابتة لبيع الأصل.",
   "fixed_assets.err_sale_not_here": "لا يُباع الأصل {number} على هذه الفاتورة. ابدأ البيع من صفحته لإنشاء مسودة فاتورة.",
-  "fixed_assets.err_credit_not_sold_there": "لم يُبع الأصل {number} بموجب الفاتورة {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "لم يُبع الأصل {number} بموجب الفاتورة {invoice}.",
+  "fixed_assets.err_line_other_fund": "هذا السطر على {line_fund}، بينما {number} على {asset_fund}. يحتفظ الأصل بالصندوق الذي اشتُري منه، لذا استخدم سطرًا على {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "اشتُري {number} عبر سطور ستصبح على صناديق مختلفة ({funds}). يحتفظ الأصل بصندوق واحد، لذا اختر الصندوق نفسه لجميع سطوره.",
+  "fixed_assets.err_change_fund_class_move": "نُقل {number} مع تغيير حساب {cls} بتاريخ {date}. تراجع عن تغيير الحساب، ثم غيّر الصندوق، وأعِد تغيير الحساب."
 }

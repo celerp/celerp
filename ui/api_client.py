@@ -28,6 +28,13 @@ _CONNECT_KEY = CONNECT_HEADER.lower().encode()
 _CALLER_KEY = CALLER_HEADER.lower().encode()
 
 
+def _segment(value: str) -> str:
+    """``value`` as one path segment: every reserved character escaped, and a segment of dots
+    (".", "..") escaped too, which the client would otherwise resolve into another path."""
+    quoted = quote(value, safe="")
+    return quoted.replace(".", "%2E") if quoted.strip(".") == "" else quoted
+
+
 class CallerMiddleware:
     """Pure ASGI middleware: records each request's caller, which every call into the local
     API names in CALLER_HEADER so the API's rate limits count the visitor, never the UI
@@ -485,8 +492,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
 # Generic helpers
 # ---------------------------------------------------------------------------
 
-async def batch_import(token: str, path: str, records: list[dict], upsert: bool = False) -> dict:
-    """POST a CIF batch import payload to an API path.
+async def batch_import(token: str, path: str, records: list[dict], upsert: bool = False,
+                       fund_choices: dict | None = None) -> dict:
+    """POST a CIF batch import payload to an API path, with the funds an import screen chose
+    for its records when given.
 
     This is intentionally generic so UI routes can reuse it for items/docs/lists/crm/etc.
     Timeout is set high (300s) because large batches involve many DB writes server-side.
@@ -494,7 +503,10 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
     rather than pinning an interactive slot a page fan-out needs.
     """
     async with _bulk_api_client(token, timeout=300.0) as c:
-        r = _raise(await c.post(path, json={"records": records, "upsert": upsert}))
+        payload = {"records": records, "upsert": upsert}
+        if fund_choices:
+            payload["fund_choices"] = fund_choices
+        r = _raise(await c.post(path, json=payload))
         return r.json()
 
 
@@ -940,6 +952,169 @@ async def get_company(token: str) -> dict:
         return _flatten_company(data)
 
 
+async def get_fund_waiting(token: str) -> dict:
+    """The outside records waiting for a fund choice: {count, held, documents}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/waiting")).json()
+
+
+async def choose_doc_funds(token: str, entity_id: str, body: dict) -> dict:
+    """Save fund choices on a document from outside: {expected_version, document, all, lines}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/fund-choices", json=body)).json()
+
+
+async def change_doc_fund(token: str, entity_id: str, body: dict) -> dict:
+    """Change fund on a posted document from outside: {expected_version, request_key, reason,
+    document, lines}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/change-fund", json=body)).json()
+
+
+async def get_journal_funds(token: str, je_id: str) -> dict:
+    """A journal's version and its lines by number, each with the fund it posted on."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal/{_segment(je_id)}/funds")).json()
+
+
+async def change_journal_fund(token: str, je_id: str, body: dict) -> dict:
+    """Change fund on a posted journal from outside: {expected_version, request_key, reason,
+    all, lines (line number from 1 -> fund)}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/journal/{_segment(je_id)}/change-fund", json=body)).json()
+
+
+async def list_funds(token: str) -> dict:
+    """The company's funds, archived ones included, by name."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds")).json()
+
+
+async def set_funds_setting(token: str, enabled: bool) -> dict:
+    """Turn funds on or off: {enabled}."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/funds/setting", json={"enabled": enabled})).json()
+
+
+async def create_fund(token: str, body: dict) -> dict:
+    """Add a fund: {request_key, name, restricted, purpose}; answers the fund."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/accounting/funds", json=body)).json()
+
+
+async def update_fund(token: str, fund_id: str, body: dict) -> dict:
+    """Rename a fund or change its purpose: {name, purpose}; answers the fund."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/accounting/funds/{_segment(fund_id)}", json=body)).json()
+
+
+async def archive_fund(token: str, fund_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{_segment(fund_id)}/archive")).json()
+
+
+async def unarchive_fund(token: str, fund_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{_segment(fund_id)}/unarchive")).json()
+
+
+async def list_release_spending(token: str) -> dict:
+    """The purpose spending a release from restriction can still name: {items}, newest first."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/release-spending")).json()
+
+
+async def move_funds(token: str, kind: str, body: dict) -> dict:
+    """Post a movement between funds: ``kind`` is transfer, release, reallocate or opening;
+    ``body`` carries its request_key, date, reason and the movement's own fields."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/{kind}", json=body)).json()
+
+
+async def get_fund_balance_sheet(token: str, params: dict) -> dict:
+    """Each asset and liability account by fund on ``as_of``, with each fund's net assets."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/balance-sheet", params=params)).json()
+
+
+async def get_fund_activity(token: str, params: dict) -> dict:
+    """Each fund's opening, received, spent, released, transferred and closing between
+    ``date_from`` and ``date_to``, with the period's movements and fund changes."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/activity", params=params)).json()
+
+
+async def get_fund_reconciliation(token: str, params: dict) -> dict:
+    """The funds against the company ledger on ``as_of``, with what does not agree."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/reconciliation", params=params)).json()
+
+
+async def reverse_fund_movement(token: str, je_id: str, body: dict) -> dict:
+    """Reverse a movement between funds: {date, reason}; a repeat answers the same reversal."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/funds/movements/{_segment(je_id)}/reverse", json=body)).json()
+
+
+async def get_recognition(token: str) -> dict:
+    """Every revenue recognition run by month (newest first), the document each schedule came
+    from, the summary and whether runs post automatically."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition")).json()
+
+
+async def get_recognition_roll_forward(token: str, params: dict) -> dict:
+    """The deferred revenue roll-forward between ``date_from`` and ``date_to``."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition/roll-forward", params=params)).json()
+
+
+async def get_recognition_setting(token: str) -> dict:
+    """Whether recognition posts automatically: {enabled, by, at, lapsed}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/recognition/setting")).json()
+
+
+async def set_recognition_setting(token: str, enabled: bool) -> dict:
+    """Turn automatic posting of recognition runs on or off."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/recognition/setting", json={"enabled": enabled})).json()
+
+
+async def post_recognition_month(token: str, month: str, post_on: str | None) -> dict:
+    """Post every outstanding run of ``month``; ``post_on`` is the first open day chosen for a locked month."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/recognition/{_segment(month)}/post",
+                                   json={"post_on": post_on})).json()
+
+
+async def reverse_recognition_month(token: str, month: str, reverse_on: str | None) -> dict:
+    """Reverse every posted run of ``month``; ``reverse_on`` is the first open day chosen for a locked month."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/recognition/{_segment(month)}/reverse",
+                                   json={"reverse_on": reverse_on})).json()
+
+
+async def reverse_year_close(token: str, fiscal_year_end: str, reason: str) -> dict:
+    """Reverse the latest close of the year ending ``fiscal_year_end``."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/close-year/{_segment(fiscal_year_end)}/reverse",
+                                   json={"reason": reason})).json()
+
+
+async def list_connection_defaults(token: str) -> dict:
+    """The standing fund of every connection records arrive through: {items}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/funds/connection-defaults")).json()
+
+
+async def set_connection_default(token: str, body: dict) -> dict:
+    """Set, change or clear a connection's standing fund:
+    {origin, source_key, value | null, expected_version, request_key}."""
+    async with _api_client(token) as c:
+        return _raise(await c.put("/accounting/funds/connection-defaults", json=body)).json()
+
+
 def role_from_company(company: dict) -> str:
     """Return the DB-authoritative current role from /companies/me."""
     return company.get("current_role") or ""
@@ -1374,7 +1549,7 @@ async def help_search(token: str, q: str, module: str | None = None) -> dict:
 async def help_read(token: str, page_id: str) -> dict:
     """One help page with its steps in the reader's language."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/help/page/{quote(page_id, safe='')}")).json()
+        return _raise(await c.get(f"/help/page/{_segment(page_id)}")).json()
 
 
 async def help_browse(token: str, module: str | None = None) -> dict:
@@ -1386,7 +1561,7 @@ async def help_browse(token: str, module: str | None = None) -> dict:
 async def help_image(token: str, page_id: str, step: str) -> bytes:
     """The WebP screenshot of one step of a help page."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/help/img/{quote(page_id, safe='')}/{quote(step, safe='')}")).content
+        return _raise(await c.get(f"/help/img/{_segment(page_id)}/{_segment(step)}")).content
 
 
 async def help_for_route(token: str, path: str) -> dict:
@@ -1420,7 +1595,7 @@ async def list_items(token: str, params: dict | None = None) -> dict:
 
 async def get_item(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/items/{entity_id}")).json()
+        return _raise(await c.get(f"/items/{_segment(entity_id)}")).json()
 
 
 # The server caps a single /items/metadata request at MAX_ITEMS_METADATA (5000)
@@ -1819,6 +1994,11 @@ async def record_payment(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/payment", json=data)).json()
 
 
+async def get_doc_fund_open(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/fund-open")).json()
+
+
 # ---------------------------------------------------------------------------
 # CRM / contacts
 # ---------------------------------------------------------------------------
@@ -2163,6 +2343,27 @@ async def subscription_action(token: str, entity_id: str, action: str, body: dic
         return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
 
 
+async def amend_subscription(token: str, entity_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/amend", json=body)).json()
+
+
+async def get_subscription_collection(token: str, entity_id: str) -> dict:
+    """Whether Celerp Cloud offers automatic collection, and the agreement payer's card on file."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/subscriptions/{entity_id}/collection")).json()
+
+
+async def subscription_setup_link(token: str, entity_id: str, body: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/collection/setup-link", json=body)).json()
+
+
+async def revoke_subscription_card(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/collection/revoke")).json()
+
+
 async def get_subscription_periods(token: str, entity_id: str, *, before: int | None = None) -> dict:
     """Returns one bounded page, newest period first, with an older-page cursor."""
     async with _api_client(token) as c:
@@ -2219,6 +2420,50 @@ async def run_subscriptions_catch_up(token: str, items: list[dict]) -> dict:
 async def subscriptions_summary(token: str, everything: bool = False) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/subscriptions/summary", params={"all": "true"} if everything else {})).json()
+
+
+async def subscriptions_metrics(token: str, params: dict) -> dict:
+    """Returns {currency, months, cohorts}: MRR, ARR, churn and cohorts by month."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/metrics", params=params)).json()
+
+
+async def subscriptions_members(token: str) -> dict:
+    """Returns {items: [...]}: every member with their standing today."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/subscriptions/members")).json()
+
+
+async def donor_statements_preview(token: str, date_from: str, date_to: str) -> dict:
+    """Returns {donors, wording}: each donor of the period with their gifts, email and whether
+    their statement under the current wording was sent."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/donors/statements/preview", params={"from": date_from, "to": date_to})).json()
+
+
+async def send_donor_statements(token: str, date_from: str, date_to: str, confirm: bool,
+                                resend: dict[str, str]) -> dict:
+    """Returns {results}: each donor's statement sent, skipped without an email, or failed;
+    *resend* maps each donor to send again to the number of the send it asks for."""
+    async with _api_client(token, timeout=60.0) as c:
+        return _raise(await c.post("/donors/statements/send", json={
+            "from": date_from, "to": date_to, "confirm": confirm, "resend": resend})).json()
+
+
+async def get_donor_wording(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/donors/statements/wording")).json()
+
+
+async def set_donor_wording(token: str, text: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.put("/donors/statements/wording", json={"text": text})).json()
+
+
+async def donor_statement_pdf(token: str, contact_id: str, date_from: str, date_to: str) -> bytes:
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.get(f"/donors/{_segment(contact_id)}/statement.pdf",
+                                  params={"from": date_from, "to": date_to})).content
 
 
 async def acknowledge_subscriptions_summary(token: str, keys: list[str]) -> dict:
@@ -3785,6 +4030,28 @@ async def delete_category(token: str, category_key: str) -> dict:
     return result
 
 
+async def get_category_income_accounts(token: str) -> dict:
+    """GET /companies/me/category-income-accounts: {category key: revenue account code}."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/companies/me/category-income-accounts")).json()
+
+
+async def set_category_income_account(token: str, category_key: str, code: str | None) -> dict:
+    """PUT /companies/me/categories/{key}/income-account: the account the category's items
+    sell on, or None to clear it."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/companies/me/categories/{_segment(category_key)}/income-account",
+                                  json={"income_account": code})).json()
+
+
+async def set_category_gift(token: str, category_key: str, gift: bool) -> dict:
+    """PUT /companies/me/categories/{key}/gift: whether the category's items are gifts (their
+    sales never defer revenue)."""
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/companies/me/categories/{_segment(category_key)}/gift",
+                                  json={"gift": gift})).json()
+
+
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
 
 async def get_period_lock(token: str) -> dict:
@@ -3800,7 +4067,7 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 async def journal_prefill(token: str, je_id: str) -> dict:
     """A new journal entry's fields copied from journal entry ``je_id``."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/accounting/journal-entries/{quote(je_id, safe='')}/prefill")).json()
+        return _raise(await c.get(f"/accounting/journal-entries/{_segment(je_id)}/prefill")).json()
 
 
 async def journals_from_accountant(token: str) -> list[dict]:
@@ -3810,23 +4077,29 @@ async def journals_from_accountant(token: str) -> list[dict]:
 
 async def reverse_from_accountant(token: str, je_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/journal-entries/{quote(je_id, safe='')}/reverse")).json()
+        return _raise(await c.post(f"/accounting/journal-entries/{_segment(je_id)}/reverse")).json()
 
 
 async def peer_holds(token: str) -> dict:
-    """GET records held for an account and the accounts sync added, newest first."""
+    """GET records held for an account or a fund on each line, and the accounts sync added, newest first."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/peer/holds")).json()
 
 
 async def fix_peer_hold(token: str, item_id: str, body: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/peer/holds/{quote(item_id, safe='')}/fix", json=body)).json()
+        return _raise(await c.post(f"/accounting/peer/holds/{_segment(item_id)}/fix", json=body)).json()
+
+
+async def post_peer_hold_funds(token: str, item_id: str, body: dict) -> dict:
+    """Post a record held for funds with the choices: {revision, choices: {all, lines}, request_key}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/peer/holds/{_segment(item_id)}/funds", json=body)).json()
 
 
 async def settle_added_account(token: str, item_id: str, action: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/peer/added/{quote(item_id, safe='')}",
+        return _raise(await c.post(f"/accounting/peer/added/{_segment(item_id)}",
                                    json={"action": action})).json()
 
 

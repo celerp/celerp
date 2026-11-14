@@ -96,7 +96,8 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "_build_balances"): "trial balance and balance sheet, books currency, every account",
     ("routes.py", "_journal_payload"): "the journal, books currency with each line's own currency beside it",
     ("routes.py", "journal_by_doc"): "one document's entries from the journal payload, totalled in books currency",
-    ("routes.py", "create_manual_journal_entry"): "a writer validating the lines it is given",
+    ("funds.py", "post_fund_movement"): "a reversal swapping the books-currency sides of the movement it undoes",
+    ("funds.py", "journal_funds"): "a journal's lines in the Change fund panel, books currency as the journal shows them",
     ("routes.py", "account_ledger"): "one account's ledger in books currency, with foreign amounts beside them",
     ("routes.py", "trial_balance"): "books currency, every account",
     ("routes.py", "general_ledger"): "books currency, every account",
@@ -109,8 +110,10 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "cash_flow"): "the cash flow statement, books currency over every cash account",
     ("routes.py", "matches"): "journal search matching a typed figure against books-currency amounts",
     ("routes.py", "_line_party"): "which side of a note application a control line is on, not how much",
-    ("routes.py", "_norm"):"retry comparison of a manual entry, base and foreign amounts both compared",
     ("migration_sink.py", "reconcile"): "migration totals against the source books, books currency",
+    ("donors.py", "donor_history"): "a donor's gifts as the gift income postings booked them, books currency",
+    ("fund_reports.py", "check_fund_reconciliation"): "each fund's balances against the ledger, books currency, every account",
+    ("recognition.py", "roll_forward"): "the deferred revenue accounts, books currency",
 }
 _AMOUNTS = {"debit", "credit", "fx_debit", "fx_credit"}
 _BANK_READING = {"_bank_amounts", "_bank_line_amounts"}

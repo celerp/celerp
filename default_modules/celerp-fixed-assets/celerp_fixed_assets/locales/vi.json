@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line}: không tồn tại tài sản này.",
   "fixed_assets.err_sale_module_off": "{numbers}: hãy bật phân hệ Tài sản cố định để bán tài sản.",
   "fixed_assets.err_sale_not_here": "{number} không được bán trên hóa đơn này. Hãy bắt đầu bán trên trang tài sản để tạo hóa đơn nháp.",
-  "fixed_assets.err_credit_not_sold_there": "{number} không được bán theo hóa đơn {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} không được bán theo hóa đơn {invoice}.",
+  "fixed_assets.err_line_other_fund": "Dòng này thuộc {line_fund} còn {number} thuộc {asset_fund}. Tài sản giữ nguyên quỹ được dùng khi mua, nên hãy dùng dòng thuộc {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} được mua bằng các dòng mà sau thay đổi sẽ thuộc những quỹ khác nhau ({funds}). Một tài sản chỉ thuộc một quỹ nên hãy chọn cùng quỹ cho mọi dòng.",
+  "fixed_assets.err_change_fund_class_move": "{number} đã được chuyển khi đổi tài khoản của {cls} vào {date}. Hãy hoàn tác việc đổi tài khoản, đổi quỹ, rồi đổi tài khoản lại."
 }

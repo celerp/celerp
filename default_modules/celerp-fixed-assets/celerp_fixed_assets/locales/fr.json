@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line} : cette immobilisation n'existe pas.",
   "fixed_assets.err_sale_module_off": "{numbers} : activez le module Immobilisations pour vendre une immobilisation.",
   "fixed_assets.err_sale_not_here": "{number} n'est pas vendu sur cette facture. Lancez la vente depuis sa page pour créer un brouillon de facture.",
-  "fixed_assets.err_credit_not_sold_there": "{number} n'a pas été vendu sur la facture {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} n'a pas été vendu sur la facture {invoice}.",
+  "fixed_assets.err_line_other_fund": "Cette ligne est sur {line_fund}, tandis que {number} est sur {asset_fund}. Une immobilisation conserve le fonds de son acquisition. Utilisez donc une ligne sur {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} a été acquis sur des lignes qui seraient affectées à des fonds différents ({funds}). Une immobilisation conserve un seul fonds : choisissez le même pour toutes ses lignes.",
+  "fixed_assets.err_change_fund_class_move": "{number} a été déplacé lors du changement de compte de {cls} le {date}. Annulez ce changement de compte, modifiez le fonds, puis refaites le changement de compte."
 }

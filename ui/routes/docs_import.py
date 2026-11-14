@@ -17,9 +17,10 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.services.money import document_line_amount
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
-from ui.components.table import EMPTY, breadcrumbs, display_enum, format_value
+from ui.components.table import EMPTY, breadcrumbs, display_enum, fmt_money, format_value, searchable_select
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
@@ -44,6 +45,7 @@ from ui.routes.csv_import import (
 from ui.i18n import t, get_lang
 from celerp.services.auto_je import IMPORTED_ISSUE_STATUSES
 from ui.components.encode import safe_url
+from ui.components.funds import fund_options
 
 
 _DOC_IMPORT_SPEC = CsvImportSpec(
@@ -92,7 +94,7 @@ def _group_documents(rows: list[dict]) -> OrderedDict:
             doc_map[key] = {
                 "doc_type": doc_type,
                 "doc_number": doc_number,
-                "date": str(r.get("date", "")).strip() or None,
+                "issue_date": str(r.get("date", "")).strip() or None,
                 "due_date": str(r.get("due_date", "")).strip() or None,
                 "contact_name": str(r.get("contact_name", "")).strip() or None,
                 "total": _number(r, "total") or 0.0,
@@ -200,7 +202,7 @@ def _prefilled(data: dict, opening: date | None) -> str:
     any document to be chosen. With no date to compare, none for a bill (the import refuses
     it until one is chosen) and Record it now for an invoice or credit note, as the import
     does when it is not told."""
-    given = data.get("date")
+    given = data.get("issue_date")
     dated = _iso_date(given)
     if given and dated is None:
         return ""
@@ -209,24 +211,21 @@ def _prefilled(data: dict, opening: date | None) -> str:
     return "" if data["doc_type"] == "bill" else "record_now"
 
 
-async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str:
+def _newest_first(docs: list[dict]) -> list[dict]:
+    return sorted(docs, key=lambda d: (_iso_date(d.get("issue_date")) is not None, _iso_date(d.get("issue_date")) or date.min),
+                  reverse=True)
+
+
+def _treatment_choice(docs: list[dict], opening: date | None, submitted) -> FT | str:
     """Per document that posts (a bill, invoice or credit note), newest first, how it enters
-    the books: what the user already chose when the review is shown again (``form``),
+    the books: what the user already chose when the review is shown again (``submitted``),
     otherwise pre-filled from the company's opening balance date. Empty when none posts."""
     from celerp.services.auto_je import imported_issue_kind
 
-    docs = [d for d in _group_documents(rows).values()
-            if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
+    docs = [d for d in docs if imported_issue_kind(d) in ("bill", "invoice", "credit_note")]
     if not docs:
         return ""
-    try:
-        opening = _iso_date((await api.get_company(token)).get("opening_balance_date"))
-    except APIError:
-        opening = None
-    submitted = form or {}
     known = {"", *(value for value, _ in _TREATMENTS)}
-    docs.sort(key=lambda d: (_iso_date(d.get("date")) is not None, _iso_date(d.get("date")) or date.min),
-              reverse=True)
 
     def _row(d: dict) -> FT:
         field = _TREATMENT_FIELD.format(**d)
@@ -234,7 +233,7 @@ async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str
         return Tr(
             Td(display_enum(d["doc_type"])),
             Td(d["doc_number"]),
-            Td(d.get("date") or EMPTY),
+            Td(d.get("issue_date") or EMPTY),
             Td(Select(
                 Option(EMPTY, value="", selected=chosen == ""),
                 *[Option(t(key), value=value, selected=chosen == value) for value, key in _TREATMENTS],
@@ -252,11 +251,88 @@ async def _treatment_choice(token: str, rows: list[dict], form=None) -> FT | str
         Table(
             Thead(Tr(Th(t("th.document_type")), Th(t("th.number")), Th(t("th.date")),
                      Th(t("docs_import.treatment_column")))),
-            Tbody(*[_row(d) for d in docs]),
+            Tbody(*[_row(d) for d in _newest_first(docs)]),
             cls="data-table",
         ),
         cls="mt-sm mb-sm",
     )
+
+
+# The form fields carrying the fund every imported document takes and a line's own fund.
+_FUND_ALL_FIELD = "fund_all"
+_FUND_LINE_FIELD = "fund_line:{doc_type}:{doc_number}:{line}"
+
+
+def _fund_fields(form, doc_type: str, doc_number: str, data: dict) -> dict | None:
+    """The fund choices ``form`` makes for one document, as the import sends them: the
+    document's (Set all imported documents) and each line's own by line number. None when
+    nothing is chosen."""
+    lines = {str(n): value for n in range(1, len(data["line_items"]) + 1)
+             if (value := str(form.get(_FUND_LINE_FIELD.format(doc_type=doc_type, doc_number=doc_number,
+                                                                 line=n)) or ""))}
+    document = str(form.get(_FUND_ALL_FIELD) or "") or None
+    return {"document": document, "lines": lines} if document or lines else None
+
+
+async def _fund_choice(token: str, docs: list[dict], company: dict, submitted) -> FT | str:
+    """With funds on, the fund the imported documents take (Set all imported documents) and
+    a Fund per document line, newest document first; a line left at -- takes its document's.
+    The options are Unrestricted and the active funds; a choice already made survives the
+    review being shown again. Empty with funds off, nothing to import, or no funds to read."""
+    from celerp.services.journal_accounts import funds_enabled
+
+    if not any(d["line_items"] for d in docs) or not funds_enabled(company.get("settings") or {}):
+        return ""
+    try:
+        funds = (await api.list_funds(token)).get("items") or []
+    except APIError:
+        return ""
+    options = [("", EMPTY), *fund_options(funds)]
+    known = {value for value, _ in options}
+
+    def _select(field: str, label: str) -> FT:
+        value = submitted.get(field)
+        return searchable_select(field, options, value=value if value in known else "", placeholder=EMPTY,
+                                 aria_label=label)
+
+    def _rows(d: dict) -> list[FT]:
+        return [Tr(
+            Td(display_enum(d["doc_type"])),
+            Td(d["doc_number"]),
+            Td(str(n)),
+            Td(line.get("description") or line.get("sku") or EMPTY),
+            Td(fmt_money(document_line_amount(line, d.get("currency") or company.get("currency")),
+                         company.get("currency")), cls="cell--number"),
+            Td(_select(_FUND_LINE_FIELD.format(line=n, **d), t("th.fund"))),
+        ) for n, line in enumerate(d["line_items"], 1)]
+
+    return Div(
+        H3(t("docs_import.fund_title")),
+        P(t("docs_import.fund_hint"), cls="import-hint"),
+        Label(t("docs_import.fund_set_all"), _select(_FUND_ALL_FIELD, t("docs_import.fund_set_all")),
+              cls="form-label"),
+        Table(
+            Thead(Tr(Th(t("th.document_type")), Th(t("th.number")), Th(t("th.line")), Th(t("th.item")),
+                     Th(t("label.amount"), cls="cell--number"), Th(t("th.fund")))),
+            Tbody(*[row for d in _newest_first(docs) for row in _rows(d)]),
+            cls="data-table",
+        ),
+        cls="mt-sm mb-sm",
+    )
+
+
+async def _review_fields(token: str, rows: list[dict], form=None) -> FT | str:
+    """The choices the review asks for inside the import form: how each document that posts
+    enters the books and, with funds on, the fund of each document and line."""
+    try:
+        company = await api.get_company(token)
+    except APIError:
+        company = {}
+    docs = list(_group_documents(rows).values())
+    submitted = form or {}
+    parts = [part for part in (_treatment_choice(docs, _iso_date(company.get("opening_balance_date")), submitted),
+                               await _fund_choice(token, docs, company, submitted)) if part]
+    return Div(*parts) if parts else ""
 
 
 # The address free-tier share links are published under.
@@ -748,7 +824,7 @@ def setup_routes(app):
                 revalidate_action="/docs/import/revalidate",
                 has_mapping=True,
                 upsert_label=t("docs_import.upsert_label"),
-                form_fields=await _treatment_choice(token, rows),
+                form_fields=await _review_fields(token, rows),
             ),
             title=page_title("docs_import.import_documents"),
             nav_active="docs",
@@ -785,7 +861,7 @@ def setup_routes(app):
             revalidate_action="/docs/import/revalidate",
             has_mapping=True,
             upsert_label=t("docs_import.upsert_label"),
-            form_fields=await _treatment_choice(token, rows, form),
+            form_fields=await _review_fields(token, rows, form),
         )
 
     @app.post("/docs/import/errors")
@@ -824,6 +900,7 @@ def setup_routes(app):
                 "data": data,
                 "source": "csv_import",
                 "idempotency_key": f"csv:doc:{doc_type}:{doc_number}".lower(),
+                "fund_choices": _fund_fields(form, doc_type, doc_number, data),
             })
 
         try:

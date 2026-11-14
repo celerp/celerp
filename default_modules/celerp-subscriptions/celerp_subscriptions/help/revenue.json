@@ -1,0 +1,73 @@
+{
+  "id": "subscriptions.revenue",
+  "title": "Recurring revenue, churn and cohorts",
+  "summary": "Follow MRR, ARR and churn at the end of each month.",
+  "keywords": [
+    "mrr",
+    "arr",
+    "churn",
+    "cohort",
+    "recurring revenue",
+    "metrics"
+  ],
+  "routes": [
+    "/revenue"
+  ],
+  "permission": "view_financial_reports",
+  "order": 7,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see MRR, ARR and churn for each month.",
+      "labels": {
+        "nav": "nav.revenue"
+      },
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Change {from} and {to} to see other months, or pick a {cur} to see only subscriptions in that currency.",
+      "labels": {
+        "from": "subscriptions.metrics_from",
+        "to": "subscriptions.metrics_to",
+        "cur": "label.currency"
+      },
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Under {coh}, each row groups the subscriptions that started in one month and shows how many are still active at each later month end.",
+      "labels": {
+        "coh": "subscriptions.cohorts_heading"
+      },
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "{defs}, at the end of the page, explains how each figure is worked out.",
+      "labels": {
+        "defs": "subscriptions.definitions_heading"
+      },
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.subscribers"
+  ]
+}

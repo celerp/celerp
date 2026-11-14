@@ -40,6 +40,12 @@ SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
+# The item-state field holding the revenue account the item's sales are credited to,
+# when it is not its category's or the sales revenue account (journal_accounts.income_account_of).
+INCOME_ACCOUNT_FIELD = "income_account"
+# The item-state flag that defers the item's sales: its lines credit deferred revenue and
+# recognize over their service period (celerp.services.recognition). Absent means off.
+RECOGNIZE_FIELD = "recognize_over_service_period"
 # The item-state field holding the account a consigned lot's sale is owed to the
 # consignor on, recorded when the lot is first sold. A consigned lot is not the
 # company's stock, so it has no inventory account until the company buys it.
@@ -103,6 +109,10 @@ class AccountRole(StrEnum):
     DISPOSAL_LOSS = "disposal_loss"
     IMPAIRMENT_LOSS = "impairment_loss"
     REVALUATION_SURPLUS = "revaluation_surplus"
+    RESTRICTED_NET_ASSETS = "restricted_net_assets"
+    DEFERRED_REVENUE = "deferred_revenue"
+    DISPUTED_PAYMENTS = "disputed_payments"
+    PAYMENT_DISPUTE_LOSSES = "payment_dispute_losses"
 
 
 R = AccountRole
@@ -142,6 +152,10 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.DISPOSAL_LOSS: "Loss on disposal of assets",
     R.IMPAIRMENT_LOSS: "Impairment of assets",
     R.REVALUATION_SURPLUS: "Revaluation surplus",
+    R.RESTRICTED_NET_ASSETS: "Restricted net assets",
+    R.DEFERRED_REVENUE: "Deferred revenue",
+    R.DISPUTED_PAYMENTS: "Disputed payments",
+    R.PAYMENT_DISPUTE_LOSSES: "Payment dispute losses",
 }
 
 _ASSET = frozenset({"asset"})
@@ -184,6 +198,10 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.DISPOSAL_LOSS: _EXPENSE,
     R.IMPAIRMENT_LOSS: _EXPENSE,
     R.REVALUATION_SURPLUS: frozenset({"equity"}),
+    R.RESTRICTED_NET_ASSETS: frozenset({"equity"}),
+    R.DEFERRED_REVENUE: frozenset({"liability"}),
+    R.DISPUTED_PAYMENTS: _ASSET,
+    R.PAYMENT_DISPUTE_LOSSES: _EXPENSE,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -229,7 +247,27 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.DISPOSAL_LOSS: "6980",
     R.IMPAIRMENT_LOSS: "6410",
     R.REVALUATION_SURPLUS: "3400",
+    R.DEFERRED_REVENUE: "2160",
+    R.DISPUTED_PAYMENTS: "1170",
+    R.PAYMENT_DISPUTE_LOSSES: "6945",
 }
+
+# Roles a seeded chart holds no account for: Celerp adds this account (code, name, parent)
+# and maps the role to it when the feature posting there is first turned on, never before.
+ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str]] = {
+    R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "3000"),
+}
+
+# The default code of every role: the seeded account, or the one added when turned on.
+DEFAULT_CODES: dict[AccountRole, str] = {
+    **SEEDED_TARGETS, **{role: account[0] for role, account in ADDED_WHEN_TURNED_ON.items()}}
+
+
+def chart_from_elsewhere(settings: dict) -> bool:
+    """Whether the company's chart came from outside Celerp (a migration's source books or a
+    restored backup), so an account carrying a default number proves nothing about it."""
+    return SOURCE_CONTROLS_KEY in settings or bool(settings.get("restored_backup"))
+
 
 # Landed-cost clearing role per landed-cost kind, and back.
 LANDED_ROLE_BY_KIND: dict[str, AccountRole] = {
@@ -266,8 +304,16 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
                      R.DISPOSAL_LOSS, R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS),
     "manufacturing": (R.WORK_IN_PROGRESS,),
     "consignment": (R.CONSIGNOR_PAYABLE,),
-    "online_payments": (R.ONLINE_PAYMENT_FEES,),
+    "online_payments": (R.ONLINE_PAYMENT_FEES, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES),
+    "funds": (R.RESTRICTED_NET_ASSETS,),
+    "recognition": (R.DEFERRED_REVENUE,),
 }
+
+# Roles whose accounts hold stock or its cost. Stock is always unrestricted: a journal
+# line on one of them never carries a restricted fund (journal_accounts.check_fund_rules).
+STOCK_ROLES: tuple[AccountRole, ...] = (
+    R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, R.COGS, R.WORK_IN_PROGRESS,
+    R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT, R.CONSIGNOR_PAYABLE)
 
 # Roles a company whose chart came from elsewhere (a migration or a restored backup)
 # never has mapped by default code: its chart predates the role, so an account that
@@ -275,7 +321,8 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
 UNGUESSED_ROLES: frozenset[AccountRole] = frozenset({
     R.INTANGIBLE_ASSETS, R.WORK_IN_PROGRESS, R.CONSIGNOR_PAYABLE, R.ACCUMULATED_DEPRECIATION, R.DEPRECIATION_EXPENSE,
     R.ASSETS_UNDER_CONSTRUCTION, R.ASSET_DISPOSAL_CLEARING, R.DISPOSAL_GAIN, R.DISPOSAL_LOSS,
-    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES})
+    R.IMPAIRMENT_LOSS, R.REVALUATION_SURPLUS, R.ONLINE_PAYMENT_FEES,
+    R.DEFERRED_REVENUE, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES})
 
 # Gain and loss pairs that may share one net account (then of either type) or be split
 # (gain revenue, loss expense).

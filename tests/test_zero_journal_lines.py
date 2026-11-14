@@ -70,7 +70,7 @@ async def test_no_automatic_entry_writes_a_line_that_moves_nothing(client, sessi
     _, company_id = await _company(client)
     je_id = f"je:auto:zero-{uuid.uuid4().hex[:8]}"
     await auto_je._emit_auto_posted_je(
-        session, company_id=company_id, user_id=None, je_id=je_id, idem_create=f"{je_id}:c",
+        session, company_id=company_id, user_id=None, je_id=je_id, record_id=None, idem_create=f"{je_id}:c",
         idem_posted=f"{je_id}:p", memo="Zero line", ts="2026-10-01", metadata_={},
         entries=[{"account": "1120", "debit": 10.0, "credit": 0.0},
                  {"account": "4100", "debit": 0.0, "credit": 10.0},

@@ -67,6 +67,48 @@ async def test_timing_and_term_are_set_from_the_page(owner_ui, monkeypatch):
     assert r.status_code == 200 and (await template(owner_ui.api, {}, eid)).get("term_end") is None
 
 
+async def test_recognize_over_the_service_period_is_set_from_the_page(owner_ui, monkeypatch):
+    """A sales agreement's Billing section sets whether its bills recognize over their service
+    period, saved and undone from its Yes/No; a purchase agreement has no such control."""
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    controls = _schedule_controls((await owner_ui.get(f"/subscriptions/{eid}")).text)
+    assert t("item.recognize_over_service_period", "en") in controls["recognize_over_service_period"]
+    for value, stored in (("true", True), ("false", False)):
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/recognize_over_service_period", data={"value": value})
+        assert r.status_code == 200 and not _toast(r), r.text[:300]
+        assert (await template(owner_ui.api, {}, eid))["recognize_over_service_period"] is stored
+    purchase = await agreement(owner_ui.api, {}, start="2026-03-01", doc_type="subscription_po")
+    assert "recognize_over_service_period" not in _schedule_controls((await owner_ui.get(f"/subscriptions/{purchase}")).text)
+
+
+async def test_kind_member_and_grace_days_are_set_from_the_page_and_named_in_history(owner_ui, monkeypatch):
+    """The agreement type, member and grace days save from the page; the page and History name
+    the member by name, and choosing none clears it."""
+    from test_history_and_lists import _history
+
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    r = await owner_ui.api.post("/crm/contacts", json={"name": "Ada Lovelace"})
+    assert r.status_code in (200, 201), r.text
+    member = r.json()["id"]
+    for field, value in (("kind", "membership"), ("beneficiary_contact_id", member), ("grace_days", "14")):
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/{field}", data={"value": value})
+        assert r.status_code == 200 and not _toast(r), (field, r.text[:300])
+        assert "Ada Lovelace" in r.text or field == "kind", field
+    state = await template(owner_ui.api, {}, eid)
+    assert (state["kind"], state["beneficiary_contact_id"], state["grace_days"]) == ("membership", member, 14)
+    assert "Ada Lovelace" in (await owner_ui.get(f"/subscriptions/{eid}")).text
+    r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/beneficiary_contact_id", data={"value": ""})
+    assert r.status_code == 200 and (await template(owner_ui.api, {}, eid)).get("beneficiary_contact_id") is None
+    text = await _history(owner_ui, eid)
+    label, none = t("subscriptions.member", "en"), t("activity.none", "en")
+    assert f"{label}: {none} → Ada Lovelace" in text and f"{label}: Ada Lovelace → {none}" in text, text
+    assert f"{t('subscriptions.grace_days', 'en')}: 0 → 14" in text
+    assert f"{t('subscriptions.kind', 'en')}: {t('subscriptions.kind_subscription', 'en')} → " \
+           f"{t('subscriptions.kind_membership', 'en')}" in text
+
+
 async def test_stop_at_period_end_is_set_and_undone_from_the_page(owner_ui, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
     eid = await agreement(owner_ui.api, {}, start="2026-01-01")

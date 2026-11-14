@@ -1,8 +1,7 @@
 {
   "name": "saas",
   "display_name": "SaaS / Software",
-  "hidden": true,
-  "hidden_reason": "Disabled pending payment collection (Stripe). Remove this flag to re-enable.",
+  "label_key": "enum.vertical_preset.saas",
   "license": "MIT",
   "categories": [
     "saas_plan",

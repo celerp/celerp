@@ -47,7 +47,7 @@ from celerp_fixed_assets.calc.engine import (
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.operations import MODULE, _dec, _move, conflict
 from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
-from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
+from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
@@ -120,8 +120,16 @@ async def _books(session, company_id) -> Books:
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.startswith(_JOURNAL, autoescape=True)))).all()
+    states = dict(rows)
     journals: dict[int, dict[int, dict]] = {}
     for entity_id, state in rows:
+        if ":fund:" in entity_id:
+            continue
+        # A run journal Change fund replaced stands as the copy it was replaced by.
+        seen = {entity_id}
+        while state.get("status") == "void" and state.get("replaced_by") in states.keys() - seen:
+            seen.add(state["replaced_by"])
+            state = states[state["replaced_by"]]
         month, cycle = entity_id.removeprefix(_JOURNAL).split(":")
         journals.setdefault(parse_period(month), {})[int(cycle)] = {"id": entity_id, **state}
     return Books(settings, records, journals)
@@ -340,9 +348,8 @@ class Charge:
                 if not str(c.get("journal_id")).startswith(_JOURNAL):
                     key = (c["journal_id"], c.get("line_index"))
                     net[key] = net.get(key, Decimal(0)) + _dec(c.get("amount"))
-        journals = {je for (je, _), amount in net.items() if amount}
-        for je in journals:
-            state = await _state(session, company_id, je)
+        for je in dict.fromkeys(je for (je, _), amount in net.items() if amount):
+            state = await _journal(session, company_id, je)
             if state is not None and state.get("status") == "void":
                 return True
         return False
@@ -416,20 +423,22 @@ async def _charges(session, company_id, books: Books, through: int, start: int) 
 
 
 def _lines(items: list[dict]):
-    """A month's journal: one debit per expense account, one credit per accumulated
-    depreciation account; each item learns the index of the credit line it is part of."""
+    """A month's journal: one debit per expense account and fund, one credit per accumulated
+    depreciation account and fund (each asset's own fund, rule P); each item learns the index
+    of the credit line it is part of."""
     from celerp.services.module_journals import JournalLine
 
-    debits: dict[str, Decimal] = {}
-    credits: dict[str, Decimal] = {}
+    debits: dict[tuple[str, str], Decimal] = {}
+    credits: dict[tuple[str, str], Decimal] = {}
     for it in items:
-        debits[it["expense"]] = debits.get(it["expense"], Decimal(0)) + it["amount"]
-        credits[it["accumulated"]] = credits.get(it["accumulated"], Decimal(0)) + it["amount"]
-    lines = [JournalLine(account=a, debit=v) for a, v in sorted(debits.items())]
-    index = {a: len(lines) + i for i, a in enumerate(sorted(credits))}
-    lines += [JournalLine(account=a, credit=v) for a, v in sorted(credits.items())]
+        debit, credit = (it["expense"], it["fund"] or ""), (it["accumulated"], it["fund"] or "")
+        debits[debit] = debits.get(debit, Decimal(0)) + it["amount"]
+        credits[credit] = credits.get(credit, Decimal(0)) + it["amount"]
+    lines = [JournalLine(account=a, debit=v, fund_id=f or None) for (a, f), v in sorted(debits.items())]
+    index = {key: len(lines) + i for i, key in enumerate(sorted(credits))}
+    lines += [JournalLine(account=a, credit=v, fund_id=f or None) for (a, f), v in sorted(credits.items())]
     for it in items:
-        it["line_index"] = index[it["accumulated"]]
+        it["line_index"] = index[(it["accumulated"], it["fund"] or "")]
     return lines
 
 
@@ -460,7 +469,8 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         for k, amount in c.postable():
             t = target.get(k, month)
             items[t].append({"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
-                             "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated, "catch_up": t != k})
+                             "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated,
+                             "fund": c.asset.get("fund_id"), "catch_up": t != k})
         by_month: dict[int, list[int]] = {}
         for k in c.held(month):
             by_month.setdefault(target.get(k, month), []).append(k)
@@ -619,7 +629,7 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         if changed:
             raise await operations.changed_since(session, company_id, changed, "run", lead=catalog_refusal(
                 "fixed_assets.err_run_not_reversible", month=label))
-        journals = [await _state(session, company_id, j) for j in record.get("journal_ids") or []]
+        journals = [await _journal(session, company_id, j) for j in record.get("journal_ids") or []]
         shown = {"month": label, "journals": [operations._reversed_lines(je, books.currency) for je in journals if je]}
         return shown, {"record": record}
 

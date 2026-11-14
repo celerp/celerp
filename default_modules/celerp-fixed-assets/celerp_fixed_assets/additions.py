@@ -106,6 +106,8 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         books = await runs._books(session, company_id)
         currency = books.currency
         funding = await _funding(session, company_id, body, cls["asset_account"], currency)
+        if funding["line"] and kind == "improvement":
+            await operations.same_fund(session, company_id, funding["line"], asset)
         day = _date(funding["day"], "The date")
         movements = await asset_movements(session, company_id, asset_id)
         disposal.check_date(books, asset, projections.live(movements), day, what="addition")
@@ -140,7 +142,8 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
             target = await _create_asset(
                 session, company_id, user_id, number=context["number"], name=context["name"],
                 class_id=asset["class_id"], status="active", available_date=day, op_key=op_key,
-                sources_=_sources(funding), policy=policy, parent_id=asset_id)
+                sources_=_sources(funding), policy=policy, parent_id=asset_id,
+                fund_id=funding["line"]["fund_id"] if funding["line"] else asset.get("fund_id"))
             number, name, created = context["number"], context["name"], [target]
         short = target.removeprefix("fa:asset:")
         count = int((await _state(session, company_id, target)).get("movement_count") or 0) + 1
@@ -288,7 +291,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         for number, a in zip(context["numbers"], context["allocations"]):
             new = await _create_asset(session, company_id, user_id, number=number, name=a["name"],
                                       class_id=a["cls"]["id"], status="active", available_date=day, op_key=op_key,
-                                      policy=a["policy"], placed_from=asset_id)
+                                      policy=a["policy"], placed_from=asset_id, fund_id=site.get("fund_id"))
             movements.append(await _move(session, company_id, user_id, new, kind="posted",
                                          operation="place_in_service", effective=day, posting=day,
                                          amounts={"cost": a["amount"]}, op_key=op_key, quantity=1,
