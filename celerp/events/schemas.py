@@ -851,6 +851,7 @@ class DocPaymentDisputed(BaseModel):
     amount_minor: int
     currency: str
     occurred_at: str | None = None
+    posted: list[str] = []  # the DISPUTE_STEPS postings this step made
 
 
 class DocPaymentVoided(BaseModel):

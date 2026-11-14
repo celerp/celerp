@@ -4616,13 +4616,6 @@ def _refundable(payment: dict, currency: str):
     return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
 
 
-def refund_left(state: dict, payment: dict):
-    """What a refund of *payment* may give back on the document *state*: what is left of
-    the payment, never more than the document has been paid."""
-    currency = str(state.get("currency") or "USD").upper()
-    return min(_refundable(payment, currency), round_money(state.get("amount_paid", 0) or 0, currency))
-
-
 @dataclass(frozen=True)
 class PaymentBooks:
     """The books a payment posted on, which every refund and void of it reverses: the
@@ -4742,7 +4735,7 @@ async def apply_payment_refund(session, company_id, entity_id: str, row: Project
     amount_d = round_money(amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail=t("documents.err_refund_amount_positive"))
-    left = refund_left(row.state, payment)
+    left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
     if amount_d > left:
         raise HTTPException(
             status_code=422,

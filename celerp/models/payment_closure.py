@@ -57,8 +57,7 @@ class PaymentRecovery(Base):
 
 class UnmatchedPayment(Base):
     """An online payment Celerp Cloud delivered that could not be recorded on its
-    invoice: the company or the invoice no longer exists, or the invoice refused it;
-    or the part of a charge no invoice of its agreement owed (reference ``<charge>:rest``).
+    invoice: the company or the invoice no longer exists, or the invoice refused it.
 
     Kept so the money received is never lost from view; recorded before Cloud is told
     the payment arrived. Not company data: it must outlive the company it names, so

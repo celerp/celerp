@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "ข้อพิพาทได้รับการตัดสินให้ลูกค้าชนะ เงินถูกย้ายไปบัญชีขาดทุนจากข้อพิพาทการชำระเงิน",
   "documents.dispute_closed": "ปิดข้อพิพาทโดยไม่มีการหักเงิน",
   "notice.payment_dispute_not_recorded.title": "ไม่ได้บันทึกข้อพิพาทการชำระผ่านบัตรสำหรับ {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud รายงานข้อพิพาท {dispute} จำนวน {amount} สำหรับ {document} แต่บันทึกไม่ได้: {reason} โปรดบันทึกเงินที่ถูกหักในสมุดรายวัน",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud รายงานข้อพิพาท {dispute} จำนวน {amount} สำหรับ {document} แต่บันทึกไม่ได้: {reason} โปรดบันทึกเงินที่ถูกหักในสมุดรายวัน {status}",
   "notice.payment_dispute_not_recorded.document": "ใบแจ้งหนี้นี้ไม่มีอยู่แล้ว",
   "notice.payment_dispute_not_recorded.unmatched": "การชำระเงินยังอยู่ในรายการชำระที่จับคู่กับใบแจ้งหนี้ไม่ได้",
   "notice.payment_dispute_not_recorded.payment": "การชำระเงินไม่อยู่ในใบแจ้งหนี้นี้แล้ว",

@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "The dispute was decided for the customer. The amount moved to Payment dispute losses.",
   "documents.dispute_closed": "The dispute was closed without taking any money.",
   "notice.payment_dispute_not_recorded.title": "Card payment dispute not recorded on {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud reported dispute {dispute} of {amount} on {document}, but it could not be recorded: {reason} Record any money taken in a journal entry.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud reported dispute {dispute} of {amount} on {document}, but it could not be recorded: {reason} Record any money taken in a journal entry. {status}",
   "notice.payment_dispute_not_recorded.document": "the invoice is no longer here.",
   "notice.payment_dispute_not_recorded.unmatched": "the payment is still among the unmatched payments.",
   "notice.payment_dispute_not_recorded.payment": "the payment is no longer on the invoice.",

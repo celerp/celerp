@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "Tranh chấp đã được giải quyết có lợi cho khách hàng. Số tiền được chuyển vào Lỗ do tranh chấp thanh toán.",
   "documents.dispute_closed": "Tranh chấp đã kết thúc mà không bị trừ tiền.",
   "notice.payment_dispute_not_recorded.title": "Chưa ghi nhận tranh chấp thanh toán thẻ trên {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud báo cáo tranh chấp {dispute} với số tiền {amount} trên {document}, nhưng không ghi nhận được: {reason} Hãy ghi nhận khoản tiền bị trừ bằng bút toán nhật ký.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud báo cáo tranh chấp {dispute} với số tiền {amount} trên {document}, nhưng không ghi nhận được: {reason} Hãy ghi nhận khoản tiền bị trừ bằng bút toán nhật ký. {status}",
   "notice.payment_dispute_not_recorded.document": "hóa đơn không còn tồn tại ở đây.",
   "notice.payment_dispute_not_recorded.unmatched": "khoản thanh toán vẫn nằm trong các khoản chưa khớp với hóa đơn.",
   "notice.payment_dispute_not_recorded.payment": "khoản thanh toán không còn gắn với hóa đơn.",

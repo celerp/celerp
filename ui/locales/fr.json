@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "Le litige a été tranché en faveur du client. Le montant a été transféré en Pertes sur litiges de paiement.",
   "documents.dispute_closed": "Le litige a été clôturé sans prélèvement d'argent.",
   "notice.payment_dispute_not_recorded.title": "Litige sur carte non enregistré pour {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud a signalé le litige {dispute} d'un montant de {amount} sur {document}, mais son enregistrement a échoué : {reason} Comptabilisez toute somme prélevée par une écriture.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud a signalé le litige {dispute} d'un montant de {amount} sur {document}, mais son enregistrement a échoué : {reason} Comptabilisez toute somme prélevée par une écriture. {status}",
   "notice.payment_dispute_not_recorded.document": "la facture n'existe plus ici.",
   "notice.payment_dispute_not_recorded.unmatched": "le paiement se trouve encore parmi les paiements non rapprochés d'une facture.",
   "notice.payment_dispute_not_recorded.payment": "le paiement ne figure plus sur la facture.",

@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "異議申立ては顧客に有利な結論となりました。金額は「支払異議申立てによる損失」に振り替えられました。",
   "documents.dispute_closed": "資金の引き落としなしで異議申立てが終了しました。",
   "notice.payment_dispute_not_recorded.title": "{document} のカード決済異議申立てを記録できませんでした",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud から {document} の {amount} に関する異議申立て {dispute} が通知されましたが、記録できませんでした: {reason} 引き落とされた金額は仕訳で記録してください。",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud から {document} の {amount} に関する異議申立て {dispute} が通知されましたが、記録できませんでした: {reason} 引き落とされた金額は仕訳で記録してください。 {status}",
   "notice.payment_dispute_not_recorded.document": "請求書が存在しなくなっています。",
   "notice.payment_dispute_not_recorded.unmatched": "支払が請求書未照合の支払一覧に残っています。",
   "notice.payment_dispute_not_recorded.payment": "支払がその請求書に紐付いていません。",

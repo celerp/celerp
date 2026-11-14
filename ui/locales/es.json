@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "La disputa se resolvió a favor del cliente. El importe pasó a Pérdidas por disputas de pago.",
   "documents.dispute_closed": "La disputa se cerró sin retirar dinero.",
   "notice.payment_dispute_not_recorded.title": "Disputa de tarjeta no registrada en {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud informó de la disputa {dispute} por {amount} en {document}, pero no se pudo registrar: {reason} Registre cualquier importe retirado mediante un asiento.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud informó de la disputa {dispute} por {amount} en {document}, pero no se pudo registrar: {reason} Registre cualquier importe retirado mediante un asiento. {status}",
   "notice.payment_dispute_not_recorded.document": "la factura ya no existe.",
   "notice.payment_dispute_not_recorded.unmatched": "el pago sigue entre los pagos sin conciliar con una factura.",
   "notice.payment_dispute_not_recorded.payment": "el pago ya no está en la factura.",

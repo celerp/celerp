@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "Der Streitfall wurde zugunsten des Kunden entschieden. Der Betrag wurde zu Verlusten aus Zahlungsstreitfällen umgebucht.",
   "documents.dispute_closed": "Der Streitfall wurde ohne Geldabzug geschlossen.",
   "notice.payment_dispute_not_recorded.title": "Kartenstreitfall für {document} nicht erfasst",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud meldete den Streitfall {dispute} über {amount} für {document}, er konnte jedoch nicht erfasst werden: {reason} Erfassen Sie abgezogene Beträge in einem Journaleintrag.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud meldete den Streitfall {dispute} über {amount} für {document}, er konnte jedoch nicht erfasst werden: {reason} Erfassen Sie abgezogene Beträge in einem Journaleintrag. {status}",
   "notice.payment_dispute_not_recorded.document": "die Rechnung ist nicht mehr vorhanden.",
   "notice.payment_dispute_not_recorded.unmatched": "die Zahlung befindet sich noch unter nicht zugeordneten Zahlungen.",
   "notice.payment_dispute_not_recorded.payment": "die Zahlung ist nicht mehr der Rechnung zugeordnet.",

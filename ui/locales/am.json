@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "ክርክሩ ለደንበኛው ጥቅም ተወስኗል። መጠኑ ወደ «ከክፍያ ክርክር የሚመጡ ኪሳራዎች» ተዛውሯል።",
   "documents.dispute_closed": "ገንዘብ ሳይወሰድ ክርክሩ ተዘግቷል።",
   "notice.payment_dispute_not_recorded.title": "በ{document} ላይ ያለው የካርድ ክፍያ ክርክር አልተመዘገበም",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud በ{document} ላይ የ{amount} የክርክር {dispute} መረጃ ልኳል፣ ነገር ግን መመዝገብ አልተቻለም፦ {reason} የተወሰደ ገንዘብ ካለ በጆርናል ግቤት ይመዝግቡ።",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud በ{document} ላይ የ{amount} የክርክር {dispute} መረጃ ልኳል፣ ነገር ግን መመዝገብ አልተቻለም፦ {reason} የተወሰደ ገንዘብ ካለ በጆርናል ግቤት ይመዝግቡ። {status}",
   "notice.payment_dispute_not_recorded.document": "የክፍያ መጠየቂያው ከእንግዲህ እዚህ የለም።",
   "notice.payment_dispute_not_recorded.unmatched": "ክፍያው አሁንም ካልተዛመዱ ክፍያዎች መካከል ነው።",
   "notice.payment_dispute_not_recorded.payment": "ክፍያው ከእንግዲህ በክፍያ መጠየቂያው ላይ የለም።",

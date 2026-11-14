@@ -7890,7 +7890,7 @@
   "documents.dispute_lost": "Sengketa diputuskan untuk kepentingan pelanggan. Jumlahnya dipindahkan ke Kerugian sengketa pembayaran.",
   "documents.dispute_closed": "Sengketa ditutup tanpa pengambilan uang.",
   "notice.payment_dispute_not_recorded.title": "Sengketa pembayaran kartu tidak tercatat pada {document}",
-  "notice.payment_dispute_not_recorded.body": "Celerp Cloud melaporkan sengketa {dispute} sebesar {amount} pada {document}, tetapi gagal dicatat: {reason} Catat uang yang diambil melalui jurnal.",
+  "notice.payment_dispute_not_recorded.body": "Celerp Cloud melaporkan sengketa {dispute} sebesar {amount} pada {document}, tetapi gagal dicatat: {reason} Catat uang yang diambil melalui jurnal. {status}",
   "notice.payment_dispute_not_recorded.document": "faktur tidak lagi tersedia.",
   "notice.payment_dispute_not_recorded.unmatched": "pembayaran masih ada dalam pembayaran yang belum dicocokkan dengan faktur.",
   "notice.payment_dispute_not_recorded.payment": "pembayaran tidak lagi terhubung dengan faktur.",

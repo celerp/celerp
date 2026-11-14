@@ -143,8 +143,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
                                 paid_at: datetime.datetime | None, context, managed: bool,
                                 idempotency_key: str | None = None):
     """Record a confirmed online charge as a payment on its invoice. Only
-    ``record_stripe_charge`` calls it, for each invoice a delivered charge pays, and
-    ``payments.record_unmatched_payment`` for one a person records on an invoice from the unmatched payments, under an
+    ``payments.receive_payment`` calls it, and ``payments.record_unmatched_payment``
+    for one a person records on an invoice from the unmatched payments, under an
     *idempotency_key* of its own (each recording is one; the charge is *reference*).
 
     A *managed* payment is Stripe's to manage (``stripe_receipt_references``): it is
@@ -202,79 +202,6 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     from celerp.services.collection import charge_recorded
     await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
     return entry
-
-
-async def record_stripe_charge(session, company_id, entity_id, doc_state, parts, *,
-                               reference: str, amount_minor: int, currency: str,
-                               paid_at: datetime.datetime | None, context, managed: bool) -> None:
-    """Record a confirmed online charge Celerp Cloud delivered for its invoice
-    (``payments.receive_payment``, which holds the company lock), split as *parts*
-    (``charge_parts``). A charge the invoice takes whole, or one on an invoice of no
-    agreement, is ``record_stripe_payment``; so is one no invoice can take any of (its
-    409). Otherwise each invoice of *parts* gets its part as a payment under the same
-    charge *reference*, in the caller's transaction, and the charge settles its own
-    invoice's attempt even when that invoice took none of it. *parts* empty: the charge
-    is already recorded, nothing is."""
-    if parts is None:
-        await record_stripe_payment(session, company_id, entity_id, doc_state, reference=reference,
-                                    amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                    context=context, managed=managed)
-        return
-    for row, part in parts:
-        await record_stripe_payment(session, company_id, row.entity_id, dict(row.state), reference=reference,
-                                    amount_minor=part, currency=currency, paid_at=paid_at, context=context,
-                                    managed=managed, idempotency_key=f"{reference}:{row.entity_id}")
-    if parts:
-        from celerp.services.collection import charge_recorded
-        from celerp_docs.routes import _get_doc
-        await charge_recorded(session, company_id, await _get_doc(session, company_id, entity_id, for_update=True))
-
-
-async def charge_parts(session, company_id, entity_id, doc_state, reference: str, amount_minor: int,
-                       currency: str) -> list[tuple[Projection, int]] | None:
-    """How a charge of *amount_minor* on the invoice *entity_id* splits when the invoice owes
-    less than it now (what it owes shrank after the charge was asked for: an amendment's
-    credit, a payment by hand): what the invoice owes, then the rest over its agreement's
-    other open invoices, oldest first. (document row, part) for each invoice that takes
-    some; what is left after them all no invoice owes. None when the invoice takes the
-    charge whole or belongs to no agreement, or when no invoice takes any of it; [] when
-    the charge is already recorded on one of them. Plain reads, no row locks: the caller
-    holds the company lock, which every writer of a document takes first."""
-    from celerp.services.collection import outstanding_minor
-    from celerp_docs.routes import PAYABLE_STATUSES
-    agreement = doc_state.get("source_agreement")
-    if not agreement:
-        return None
-
-    def owed(state: dict) -> int:
-        payable = (state.get("doc_type") in _PAYABLE_TYPES and state.get("status") in PAYABLE_STATUSES
-                   and str(state.get("currency") or "USD").upper() == currency.upper())
-        return (outstanding_minor(state) or 0) if payable else 0
-
-    if owed(doc_state) >= amount_minor:
-        return None
-    rows = {r.entity_id: r for r in (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc",
-        Projection.state["source_agreement"].as_string() == agreement).execution_options(
-            populate_existing=True))).scalars()}
-    if entity_id not in rows:
-        return None
-    if any(p.get("reference") == reference and p.get("status") != "deleted"
-           for row in rows.values() for p in row.state.get("payments", [])):
-        return []
-    parts, rest = [], amount_minor
-    for row in [rows[entity_id], *spill_order(r for i, r in rows.items() if i != entity_id)]:
-        if part := min(rest, owed(row.state)):
-            parts.append((row, part))
-            rest -= part
-    return parts or None
-
-
-def spill_order(rows) -> list[Projection]:
-    """The order a charge spills over an agreement's other open invoices after its own
-    (``charge_parts``), oldest first: the order its follow-ups reverse
-    (``payments.charge_reference_parts``)."""
-    return sorted(rows, key=lambda r: (str(r.state.get("issue_date") or ""), r.state.get("ref_id") or r.entity_id))
 
 
 async def recorded_payment_books(session, company_id, row: Projection, reference: str) -> dict | None:
@@ -398,12 +325,11 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
 
 
 async def record_stripe_release(session, company_id, row: Projection, *, reference: str,
-                                released_at: datetime.datetime, key: str) -> bool:
+                                released_at: datetime.datetime) -> bool:
     """Record on the document *row* that the online payment *reference* is no
     longer linked to Stripe: Stripe was disconnected, so it is refunded or voided
-    here from now on, for good. Only ``payments._apply_release`` calls it, for each
-    part of the charge (``payments.charge_reference_parts``) under that part's *key*;
-    the caller commits. The owner is told, once. False when
+    here from now on, for good. Only ``payments.receive_release`` and the
+    payment intake call it; the caller commits. The owner is told, once. False when
     the payment is not on the document; recording it again is a quiet True."""
     from celerp.events.engine import emit_event
     from celerp.notifications import service as notif_service
@@ -419,7 +345,7 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
         event_type="doc.payment.stripe_released",
         data={"payment_index": payment["index"], "reference": reference, "released_at": released_at.isoformat()},
         actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
-        idempotency_key=f"stripe-release:{key}")
+        idempotency_key=f"stripe-release:{reference}")
     if not getattr(entry, "was_deduped", False):
         ref = _doc_ref(row.state) or row.entity_id
         await notif_service.create(
@@ -430,26 +356,27 @@ async def record_stripe_release(session, company_id, row: Projection, *, referen
     return True
 
 
-def _dispute_posting(step: str, outcome: str | None, before: dict) -> str | None:
-    """The DISPUTE_STEPS posting a dispute's *step* makes after the steps *before*: the
-    money taken once, given back only when it was taken, and lost only when it was taken
-    and not given back; None when the step moves no money."""
-    taken = "funds_withdrawn" in before.get("steps", ())
-    if step == "funds_withdrawn":
-        return None if taken else step
-    if step == "funds_reinstated":
-        return step if taken and "funds_reinstated" not in before.get("steps", ()) else None
-    if step == "closed" and outcome == "lost" and taken and "funds_reinstated" not in before.get("steps", ()):
-        return "lost"
-    return None
+def _dispute_postings(steps, outcome: str | None, posted) -> list[str]:
+    """The DISPUTE_STEPS postings a dispute still owes, from where it stands after the
+    *steps* reported so far (any order, any missing) and its *outcome*, less those already
+    *posted*: the money is taken once Stripe withdrew, reinstated or decided it lost; given
+    back when it is reinstated or won (unless lost); lost when it is lost. A posting is never
+    undone, so a step contradicting one already posted adds nothing."""
+    lost = outcome == "lost"
+    back = not lost and (outcome == "won" or "funds_reinstated" in steps)
+    taken = lost or bool({"funds_withdrawn", "funds_reinstated"} & set(steps))
+    owed = [p for p, holds in (("funds_withdrawn", taken), ("funds_reinstated", taken and back),
+                               ("lost", taken and lost)) if holds]
+    settled = {"funds_reinstated", "lost"} & set(posted)
+    return [p for p in owed if p not in posted and not (p in ("funds_reinstated", "lost") and settled)]
 
 
 async def record_stripe_dispute(session, company_id, row: Projection, payment: dict, *, dispute_id: str,
                                 state: str, outcome: str | None, amount_minor: int, currency: str,
                                 occurred_at: datetime.datetime | None) -> bool:
     """Record one step of a card dispute on the online *payment* of the locked document
-    *row*, and post the money it moves (``auto_je.post_dispute_adjustment``): the amount
-    taken is the amount given back or lost, so Disputed payments always clears. The
+    *row*, and post what it adds to the money the dispute has moved (``_dispute_postings``):
+    the amount taken is the amount given back or lost, so Disputed payments always clears. The
     payment and the invoice stay as they are. The company is told of each step, once.
     Only ``payments.receive_dispute`` calls it, after checking the dispute belongs to
     *payment*; the caller commits. False when the step was already recorded."""
@@ -458,19 +385,20 @@ async def record_stripe_dispute(session, company_id, row: Projection, payment: d
     from celerp.services import auto_je
 
     before = (payment.get("disputes") or {}).get(dispute_id) or {}
+    postings = _dispute_postings([*before.get("steps", ()), state], before.get("outcome") or outcome,
+                                 before.get("posted", ()))
     entry = await emit_event(
         session, company_id=company_id, entity_id=row.entity_id, entity_type="doc",
         event_type="doc.payment.disputed",
         data={"payment_index": payment["index"], "reference": payment["reference"], "dispute_id": dispute_id,
               "state": state, "outcome": outcome, "amount_minor": amount_minor, "currency": currency.lower(),
-              "occurred_at": occurred_at.isoformat() if occurred_at else None},
+              "occurred_at": occurred_at.isoformat() if occurred_at else None, "posted": postings},
         actor_id=await _company_owner_id(session, company_id), location_id=None, source="stripe",
         idempotency_key=f"stripe-dispute:{dispute_id}:{state}")
     if getattr(entry, "was_deduped", False):
         return False
-    posting = _dispute_posting(state, outcome, before)
-    moved = amount_minor if posting == "funds_withdrawn" else before.get("withdrawn_minor")
-    if posting is not None:
+    moved = before.get("withdrawn_minor") or amount_minor
+    for posting in postings:
         await auto_je.post_dispute_adjustment(
             session, company_id=company_id, user_id=await _company_owner_id(session, company_id),
             doc_id=row.entity_id, payment=payment, dispute_id=dispute_id, step=posting,

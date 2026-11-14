@@ -179,21 +179,100 @@ async def test_dispute_deliveries_validated_at_app(real_engine, real_client, mon
                                   "currency": "usd"}) is False
 
 
-async def test_a_dispute_closed_without_money_taken_posts_nothing(real_engine, real_client, monkeypatch):
-    """Lost, or closed with a warning, before any money was taken: the steps are shown and the
-    company is told, and nothing moves, since nothing was ever taken to give back or lose."""
+async def test_an_inquiry_closed_with_a_warning_posts_nothing(real_engine, real_client, monkeypatch):
+    """An inquiry opened and closed with a warning takes no money: both steps are shown, the
+    company is told of each, and nothing moves."""
     a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
-    cloud.dispute(a, invoice, "created", _at(3))
-    cloud.dispute(a, invoice, "closed", _at(30), outcome="lost")
     cloud.dispute(a, invoice, "created", _at(5), dispute_id="dp_2")
     cloud.dispute(a, invoice, "closed", _at(31), outcome="warning_closed", dispute_id="dp_2")
     await cloud.deliver()
 
     assert all(d["acked"] for d in cloud.deliveries)
     assert await _dispute_entries(real_engine, invoice) == []
-    disputes = _payment(await _doc(real_engine, invoice))["disputes"]
-    assert (disputes["dp_1"]["outcome"], disputes["dp_2"]["outcome"]) == ("lost", "warning_closed")
-    assert len(await _notices(real_engine, a)) == 4
+    assert _payment(await _doc(real_engine, invoice))["disputes"]["dp_2"]["outcome"] == "warning_closed"
+    assert len(await _notices(real_engine, a)) == 2
+
+
+WITHDRAWN = {DISPUTED: Decimal("1070"), BANK: Decimal("-1070")}
+LOST = {LOSSES: Decimal("1070"), DISPUTED: Decimal("-1070")}
+REINSTATED = {DISPUTED: Decimal("-1070"), BANK: Decimal("1070")}
+
+
+@pytest.mark.parametrize("steps, expected", [
+    # A lost dispute took the money whether or not its withdrawal was reported, and in any order.
+    ([("created", 3, None), ("closed", 30, "lost")],
+     [("funds_withdrawn", "2026-10-01", WITHDRAWN), ("lost", "2026-10-01", LOST)]),
+    ([("created", 3, None), ("closed", 30, "lost"), ("funds_withdrawn", 4, None)],
+     [("funds_withdrawn", "2026-10-01", WITHDRAWN), ("lost", "2026-10-01", LOST)]),
+    ([("closed", 30, "lost"), ("created", 3, None), ("funds_withdrawn", 4, None), ("closed", 30, "lost")],
+     [("funds_withdrawn", "2026-10-01", WITHDRAWN), ("lost", "2026-10-01", LOST)]),
+    # Given back before its withdrawal arrived: taken and given back, Disputed payments clears.
+    ([("created", 3, None), ("funds_reinstated", 40, None), ("funds_withdrawn", 4, None), ("closed", 60, "won")],
+     [("funds_reinstated", "2026-10-11", REINSTATED), ("funds_withdrawn", "2026-10-11", WITHDRAWN)]),
+    # Won after its withdrawal with no reinstatement reported: the win gives the money back.
+    ([("created", 3, None), ("funds_withdrawn", 4, None), ("closed", 60, "won")],
+     [("funds_reinstated", "2026-10-31", REINSTATED), ("funds_withdrawn", "2026-09-05", WITHDRAWN)]),
+    # Won with no withdrawal: nothing was taken, nothing moves, then or when it arrives late.
+    ([("created", 3, None), ("closed", 60, "won")], []),
+    ([("created", 3, None), ("closed", 60, "won"), ("funds_withdrawn", 4, None)],
+     [("funds_reinstated", "2026-09-05", REINSTATED), ("funds_withdrawn", "2026-09-05", WITHDRAWN)]),
+], ids=["lost-no-withdrawal", "lost-before-withdrawal", "closed-first", "reinstated-before-withdrawal",
+        "won-no-reinstatement", "won-nothing-taken", "won-then-late-withdrawal"])
+async def test_a_dispute_posts_from_where_it_stands_in_any_order(steps, expected, real_engine, real_client,
+                                                                  monkeypatch):
+    """What a dispute has moved follows from every step reported so far, whatever order they
+    arrive in or whichever are missing: each delivery posts only what its step adds, a replay
+    posts nothing, Disputed payments clears once it is decided, and each step is told once."""
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    for state, day, outcome in steps:
+        cloud.dispute(a, invoice, state, _at(day), outcome=outcome)
+        await cloud.deliver()
+    cloud.deliveries[-1]["acked"] = False  # the acknowledgement was lost
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _dispute_entries(real_engine, invoice) == sorted(expected)
+    assert len(await _notices(real_engine, a)) == len({state for state, _, _ in steps})
+
+
+@pytest.mark.parametrize("outcome", ["lost", "won"])
+async def test_a_dispute_of_the_whole_charge_after_a_partial_refund_is_recorded(outcome, real_engine, real_client,
+                                                                                monkeypatch):
+    """The cardholder may dispute the whole charge after part of it was refunded, and Stripe takes
+    the whole disputed amount: it is recorded and posted in full."""
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    cloud.refund(a, invoice, "re_1", 50000, _at(1))
+    await cloud.deliver()
+    cloud.dispute(a, invoice, "created", _at(3))
+    cloud.dispute(a, invoice, "funds_withdrawn", _at(3))
+    if outcome == "won":
+        cloud.dispute(a, invoice, "funds_reinstated", _at(40))
+    cloud.dispute(a, invoice, "closed", _at(60), outcome=outcome)
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    pay = _payment(await _doc(real_engine, invoice))
+    assert (pay["refunded"], pay["disputes"]["dp_1"]["outcome"]) == (500.0, outcome)
+    assert await _dispute_entries(real_engine, invoice) == sorted([
+        ("funds_withdrawn", "2026-09-04", WITHDRAWN),
+        ("lost", "2026-10-31", LOST) if outcome == "lost" else ("funds_reinstated", "2026-10-11", REINSTATED)])
+    assert len(await _notices(real_engine, a)) == (4 if outcome == "won" else 3)
+
+
+async def test_a_dispute_past_the_charge_or_in_another_currency_is_told_at_every_step(real_engine, real_client,
+                                                                                      monkeypatch):
+    """A dispute that cannot be recorded tells the company at each step, so a later withdrawal,
+    reinstatement or close is never silent."""
+    a, invoice, cloud = await _paid_invoice(real_engine, real_client, monkeypatch)
+    for state, day, outcome in (("created", 3, None), ("funds_withdrawn", 4, None), ("closed", 60, "lost")):
+        cloud.dispute(a, invoice, state, _at(day), outcome=outcome, currency="eur")
+    await cloud.deliver()
+    cloud.deliveries[-1]["acked"] = False
+    await cloud.deliver()
+
+    assert all(d["acked"] for d in cloud.deliveries)
+    assert await _dispute_entries(real_engine, invoice) == []
+    assert len(await _notices(real_engine, a)) == 3
 
 
 async def test_a_dispute_whose_account_is_not_chosen_waits_and_posts_once_it_is(

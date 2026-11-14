@@ -483,9 +483,14 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if target is not None:
             disputes = target.setdefault("disputes", {})
             dispute = disputes.setdefault(data["dispute_id"], {"steps": []})
-            dispute.update(state=data["state"], outcome=data.get("outcome"), amount_minor=data["amount_minor"],
-                           currency=data["currency"], steps=[*dispute["steps"], data["state"]])
-            if data["state"] == "funds_withdrawn":
+            # A dispute stays decided: a step reported after its close changes neither.
+            decided = dispute.get("state") == "closed"
+            dispute.update(state="closed" if decided else data["state"],
+                           outcome=dispute.get("outcome") if decided else data.get("outcome"),
+                           amount_minor=data["amount_minor"], currency=data["currency"],
+                           steps=[*dispute["steps"], data["state"]])
+            dispute["posted"] = [*dispute.get("posted", []), *data.get("posted", [])]
+            if "funds_withdrawn" in data.get("posted", []):
                 dispute["withdrawn_minor"] = data["amount_minor"]
     elif event_type == "doc.converted":
         current["status"] = "converted"

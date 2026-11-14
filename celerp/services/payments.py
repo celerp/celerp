@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -246,12 +245,9 @@ async def receive_payment(payload: dict) -> bool:
     books its payment page opened with and the day it was paid (``managed``: Stripe
     manages it; one paid on a page opened before pages carried their books is the
     company's, see ``record_stripe_payment``), when the invoice can
-    take the whole charge. A charge larger than what an agreement's invoice owes now
-    pays it what it owes and the rest the agreement's other open invoices, oldest first;
-    only what none of them owes is kept among the unmatched payments, as a payment of
-    its own (``record_stripe_charge``). Otherwise the charge is kept among the unmatched
-    payments, whole (the company or the invoice no longer exists, no invoice owes any of
-    it, or the invoice refuses it, as it does a delivery without usable books). True once recorded
+    take the whole charge, otherwise among the unmatched payments, whole (the company
+    or the invoice no longer exists, the invoice is already paid, it owes less than
+    the charge, or it refuses it, as it does a delivery without usable books). True once recorded
     either way (Cloud is then told it arrived), False for a delivery that names no
     payment, or no whole positive amount in a named currency (``_counted``). Raises when nothing could be recorded, so Cloud delivers it again.
     Recording the same payment twice changes nothing.
@@ -265,7 +261,7 @@ async def receive_payment(payload: dict) -> bool:
     (``record_unmatched_payment``) stays there."""
     from fastapi import HTTPException
     from celerp.models.projections import Projection
-    from celerp_docs.routes_payments import charge_parts, record_stripe_charge
+    from celerp_docs.routes_payments import record_stripe_payment
     company_id, entity_id, reference = (str(payload.get(k) or "") for k in ("company_id", "entity_id", "reference"))
     amount_minor, currency = payload.get("amount_minor"), payload.get("currency")
     if not (company_id and entity_id and reference and _counted(amount_minor)
@@ -295,17 +291,12 @@ async def receive_payment(payload: dict) -> bool:
                     UnmatchedPayment.released_at, UnmatchedPayment.recorded_company))).first()
             if kept is not None and kept.recorded_company is not None:
                 raise _Moved(reference)
-            parts = await charge_parts(session, cid, entity_id, dict(row.state), reference, amount_minor, currency)
-            released_at = kept.released_at if kept is not None else None
-            if rest := amount_minor - sum(part for _row, part in parts) if parts else 0:
-                # The part of the charge no invoice owes, kept as a payment of its own.
-                await _keep_unmatched(session, rest_reference(reference), rest, currency, company_id, entity_id,
-                                      paid_at, released_at)
             await _lock_kept_refunds(session, reference)
+            released_at = kept.released_at if kept is not None else None
             try:
-                await record_stripe_charge(session, cid, entity_id, dict(row.state), parts, reference=reference,
-                                           amount_minor=amount_minor, currency=currency, paid_at=paid_at,
-                                           context=payload.get("context"), managed=managed)
+                await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
+                                            amount_minor=amount_minor, currency=currency, paid_at=paid_at,
+                                            context=payload.get("context"), managed=managed)
                 if released_at is None:
                     await _apply_parked_refunds(session, cid, entity_id, reference)
                 else:
@@ -317,23 +308,12 @@ async def receive_payment(payload: dict) -> bool:
                     raise
                 await session.rollback()
                 log.error("Invoice %s refused online payment %s: %s", entity_id, reference, exc.detail)
-        await _keep_unmatched(session, reference, amount_minor, currency, company_id, entity_id, paid_at)
+        from sqlalchemy.dialects.postgresql import insert
+        await session.execute(insert(UnmatchedPayment).values(
+            reference=reference, amount_minor=amount_minor, currency=currency,
+            former_company=company_id, document=entity_id, paid_at=paid_at).on_conflict_do_nothing())
         await session.commit()
     return True
-
-
-async def _keep_unmatched(session, reference: str, amount_minor: int, currency: str, company_id: str,
-                          entity_id: str, paid_at: datetime | None, released_at: datetime | None = None) -> None:
-    from sqlalchemy.dialects.postgresql import insert
-    await session.execute(insert(UnmatchedPayment).values(
-        reference=reference, amount_minor=amount_minor, currency=currency, former_company=company_id,
-        document=entity_id, paid_at=paid_at, released_at=released_at).on_conflict_do_nothing())
-
-
-def rest_reference(reference: str) -> str:
-    """The reference of the part of the charge *reference* no invoice owed, kept among the
-    unmatched payments as a payment of its own (``receive_payment``)."""
-    return f"{reference}:rest"
 
 
 @_on_invoices
@@ -529,13 +509,11 @@ async def receive_dispute(payload: dict) -> bool:
     (``record_stripe_dispute``), on the invoice holding the payment. True once recorded,
     or when it can never be: its company is gone (nobody to tell), or its invoice is gone,
     does not hold the payment, or names another currency or more than the payment (the
-    company is told, once, and nothing is written). A dispute of a charge split across
-    invoices (``charge_reference_parts``) is shared over their payments in reverse spill
-    order, each carrying no more than it holds; the rest's share, while it is among the
-    unmatched payments, is told to the company and not written. False for a delivery without its
+    company is told of each step, and nothing is written). False for a delivery without its
     fields, a payment not received yet, or a posting account the company has not chosen
     (raised in Posting accounts), so Cloud delivers it again."""
     from datetime import timezone
+    from celerp.models.projections import Projection
     from celerp.services.account_roles import PostingRoleError
     from celerp.services.posting_readiness import notify_unmapped
     from celerp_docs.routes_payments import record_stripe_dispute
@@ -561,38 +539,32 @@ async def receive_dispute(payload: dict) -> bool:
         home = await _recorded_on(session, reference)
         if home is not None:
             await _home_uses_documents(session, home)
-        if not await _lock_company_of(session, home[0] if home is not None else _company(origin)):
+        cid, target_doc = home if home is not None else (_company(origin), doc_id)
+        if not await _lock_company_of(session, cid):
             log.warning("Card dispute %s names a company that is not here", dispute_id)
             return True
-        parts = await charge_reference_parts(session, _company(origin), doc_id, reference)
-        rows = await _lock_parts(session, parts)
-        own = parts[0]
-        cid, target_doc, row = own.company, own.document, rows.get(own.document)
+        row = (await session.execute(select(Projection).where(
+            Projection.company_id == cid, Projection.entity_id == target_doc,
+            Projection.entity_type == "doc").with_for_update())).scalar_one_or_none()
         state_of = (row.state or {}) if row is not None else {}
-        if len(parts) == 1:
-            entries = [p for p in state_of.get("payments", [])
-                       if p.get("reference") == reference and p.get("method") == "stripe"]
-            payment = _stripe_payment(row, reference)
-            parked = row is not None and not entries and await session.scalar(
-                select(UnmatchedPayment.reference).where(UnmatchedPayment.reference == reference)) is not None
-            if row is not None and not entries and not parked:
-                return False  # its payment is not here yet
-            problem = "document" if row is None else "unmatched" if parked else "payment" if payment is None else None
-        else:
-            problem = None
-        if problem is None:
-            problem, shares = await _dispute_shares(session, parts, rows, dispute_id, amount_minor, currency)
+        entries = [p for p in state_of.get("payments", [])
+                   if p.get("reference") == reference and p.get("method") == "stripe"]
+        payment = next((p for p in entries if p.get("status") == "active"), None)
+        parked = row is not None and not entries and await session.scalar(
+            select(UnmatchedPayment.reference).where(UnmatchedPayment.reference == reference)) is not None
+        if row is not None and not entries and not parked:
+            return False  # its payment is not here yet
+        problem = ("document" if row is None else "unmatched" if parked else "payment" if payment is None
+                   else "currency" if currency.upper() != str(payment.get("currency") or state_of.get("currency")
+                                                             or "").upper()
+                   else "amount" if stripe_amount(amount_minor, currency) > to_decimal(payment.get("amount") or 0)
+                   else None)
         if problem is None:
             try:
-                for part, share in shares:
-                    if part.document is None:
-                        await _dispute_not_recorded(session, cid, row, target_doc, state_of, "unmatched",
-                                                    dispute_id, share, currency)
-                        continue
-                    await record_stripe_dispute(
-                        session, part.company, rows[part.document], _stripe_payment(rows[part.document], part.reference),
-                        dispute_id=part.qualify(dispute_id), state=state, outcome=outcome, amount_minor=share,
-                        currency=currency, occurred_at=occurred_at.astimezone(timezone.utc) if occurred_at else None)
+                await record_stripe_dispute(
+                    session, cid, row, payment, dispute_id=dispute_id, state=state, outcome=outcome,
+                    amount_minor=amount_minor, currency=currency,
+                    occurred_at=occurred_at.astimezone(timezone.utc) if occurred_at else None)
             except PostingRoleError as exc:
                 await session.rollback()
                 await notify_unmapped(session, cid, [p["params"]["role"] for p in exc.detail["params"]["problems"]])
@@ -600,56 +572,24 @@ async def receive_dispute(payload: dict) -> bool:
                 return False
             await session.commit()
             return True
-        await _dispute_not_recorded(session, cid, row, target_doc, state_of, problem, dispute_id, amount_minor, currency)
+        document = state_of.get("ref_id") or state_of.get("doc_number") or target_doc
+        log.warning("Card dispute %s on %s not recorded: %s", dispute_id, document, problem)
+        from celerp.notifications import service as notification_service
+        # The step is in the notice, so each step of a dispute that cannot be recorded is told.
+        status = dispute_status_key({"state": state, "outcome": outcome})
+        params = {"document": document, "amount": dispute_amount(amount_minor, currency), "dispute": dispute_id,
+                  "reason": t(f"notice.payment_dispute_not_recorded.{problem}", "en"), "status": t(status, "en")}
+        keyed = {**params, "reason": {"message": params["reason"],
+                                      "message_key": f"notice.payment_dispute_not_recorded.{problem}"},
+                 "status": {"message": params["status"], "message_key": status}}
+        await notification_service.notify_once(
+            session, cid, "accounting", t("notice.payment_dispute_not_recorded.title", "en", **params),
+            t("notice.payment_dispute_not_recorded.body", "en", **params),
+            action_url=f"/docs/{target_doc}" if row is not None else None,
+            i18n={"title": "notice.payment_dispute_not_recorded.title",
+                  "body": "notice.payment_dispute_not_recorded.body", "params": keyed})
         await session.commit()
     return True
-
-
-async def _dispute_shares(session, parts: list[ChargePart], rows: dict, dispute_id: str, amount_minor: int,
-                          currency: str) -> tuple[str | None, list[tuple[ChargePart, int]]]:
-    """(problem, shares) of a step of the dispute *dispute_id* over the parts of its charge,
-    in reverse spill order. A dispute a part already carries keeps the parts its first step
-    placed it on, so every step moves the money where it was taken (the rest's share, while
-    it is among the unmatched payments, is told again; a charge of one part carries it all).
-    A new one: as much of it as each part holds (``part_holds``). "currency" when a part's
-    payment is in another currency, "amount" when a new dispute is more than the whole
-    charge holds."""
-    held = {part: _stripe_payment(rows.get(part.document), part.reference) if part.document else None
-            for part in parts}
-    if any(payment is not None and currency.upper() != str(
-            payment.get("currency") or rows[part.document].state.get("currency") or "").upper()
-           for part, payment in held.items()):
-        return "currency", []
-    carried = [(part, amount_minor if len(parts) == 1 else step["amount_minor"])
-               for part, payment in reversed(held.items())
-               if payment is not None and (step := (payment.get("disputes") or {}).get(part.qualify(dispute_id)))]
-    if carried:
-        told = amount_minor - sum(share for _part, share in carried)
-        return None, [(part, told) for part in parts if part.document is None and told > 0] + carried
-    shares, left = [], amount_minor
-    for part in reversed(parts):
-        if share := min(left, await part_holds(session, part, rows, currency)):
-            shares.append((part, share))
-            left -= share
-    return ("amount", []) if left else (None, shares)
-
-
-async def _dispute_not_recorded(session, cid, row, target_doc: str, state_of: dict, problem: str, dispute_id: str,
-                                amount_minor: int, currency: str) -> None:
-    """Tell the company, once, that a dispute (or a part of one) was not recorded, and why."""
-    document = state_of.get("ref_id") or state_of.get("doc_number") or target_doc
-    log.warning("Card dispute %s on %s not recorded: %s", dispute_id, document, problem)
-    from celerp.notifications import service as notification_service
-    params = {"document": document, "amount": dispute_amount(amount_minor, currency), "dispute": dispute_id,
-              "reason": t(f"notice.payment_dispute_not_recorded.{problem}", "en")}
-    keyed = {**params, "reason": {"message": params["reason"],
-                                  "message_key": f"notice.payment_dispute_not_recorded.{problem}"}}
-    await notification_service.notify_once(
-        session, cid, "accounting", t("notice.payment_dispute_not_recorded.title", "en", **params),
-        t("notice.payment_dispute_not_recorded.body", "en", **params),
-        action_url=f"/docs/{target_doc}" if row is not None else None,
-        i18n={"title": "notice.payment_dispute_not_recorded.title",
-              "body": "notice.payment_dispute_not_recorded.body", "params": keyed})
 
 
 class _Moved(Exception):
@@ -732,222 +672,28 @@ def _instant(value) -> datetime | None:
     return instant if instant.utcoffset() is not None else None
 
 
-@dataclass(frozen=True)
-class ChargePart:
-    """One part a Stripe charge reference was recorded as (``charge_reference_parts``):
-    the payment *reference* (the charge's own, or ``<charge>:rest``) on the invoice
-    *document* of *company*, or *document* None for the rest while it is among the
-    unmatched payments, kept for the invoice *origin* (former company, document) the
-    charge was delivered for. *suffix* tells the part's own follow-ups apart from the
-    other parts' (``qualify``): None for the charge's own part. *recorded*: a person
-    recorded it there from the unmatched payments."""
-    reference: str
-    company: uuid.UUID
-    document: str | None
-    suffix: str | None
-    recorded: bool
-    origin: tuple[str, str] | None = None
-
-    def qualify(self, ident: str) -> str:
-        """The name a follow-up *ident* (a refund, a dispute, a release) takes on this part."""
-        return ident if self.suffix is None else f"{ident}:{self.suffix}"
-
-
-async def charge_reference_parts(session, cid, entity_id: str, reference: str) -> list[ChargePart]:
-    """The parts the Stripe charge *reference*, delivered for the invoice *entity_id* of
-    the company *cid*, was recorded as, in the order it spilled (``charge_parts``): its
-    invoice's part, each other invoice of the agreement holding a part of it
-    (``spill_order``), then its rest (``<reference>:rest``, kept among the unmatched
-    payments or recorded on an invoice by a person). A charge a person recorded on an
-    invoice from the unmatched payments is that one part. Every follow-up of a charge
-    reads its parts here; one that was never split is one part. Plain reads: the caller
-    holds the company lock, which every writer of a payment takes first."""
-    from celerp.models.projections import Projection
-    from celerp_docs.routes_payments import spill_order
-    home = await _recorded_on(session, reference)
-    if home is not None:
-        return [ChargePart(reference, home[0], home[1], None, True)]
-    parts = [ChargePart(reference, cid, entity_id, None, False)]
-    own = (await session.execute(select(Projection).where(
-        Projection.company_id == cid, Projection.entity_id == entity_id).execution_options(
-            populate_existing=True))).scalar_one_or_none() if cid else None
-    agreement = own.state.get("source_agreement") if own is not None and own.entity_type == "doc" else None
-    if agreement:
-        rows = (await session.execute(select(Projection).where(
-            Projection.company_id == cid, Projection.entity_type == "doc", Projection.entity_id != entity_id,
-            Projection.state["source_agreement"].as_string() == agreement).execution_options(
-                populate_existing=True))).scalars()
-        held = (r for r in rows if any(p.get("reference") == reference and p.get("status") != "deleted"
-                                       for p in r.state.get("payments", [])))
-        parts += [ChargePart(reference, cid, r.entity_id, r.entity_id, False) for r in spill_order(held)]
-    rest = await session.scalar(select(UnmatchedPayment).where(UnmatchedPayment.reference == rest_reference(reference)))
-    if rest is not None:
-        recorded = rest.recorded_company is not None
-        parts.append(ChargePart(rest.reference, uuid.UUID(rest.recorded_company) if recorded else cid,
-                                rest.recorded_document, "rest", recorded, (rest.former_company, rest.document)))
-    return parts
-
-
-async def part_holds(session, part: ChargePart, rows: dict, currency: str) -> int:
-    """What the part *part* of a charge still holds, in Stripe's units of *currency*: the
-    rest, while among the unmatched payments, its amount net of the refunds kept with it; a
-    part on an invoice (of *rows*, ``_lock_parts``), what a refund of its payment may give
-    back there (``refund_left``); never below zero. The one measure every follow-up of a
-    split charge is shared by (``_refund_shares``, ``_dispute_shares``)."""
-    from celerp_docs.routes import refund_left
-    if part.document is None:
-        kept = await session.scalar(select(UnmatchedPayment.amount_minor).where(
-            UnmatchedPayment.reference == part.reference))
-        return max((kept or 0) - await _kept_net(session, part.reference), 0)
-    payment = _stripe_payment(rows.get(part.document), part.reference)
-    return max(_minor(refund_left(rows[part.document].state, payment), currency), 0) if payment else 0
-
-
-async def _lock_parts(session, parts: list[ChargePart], *, lock: bool = True) -> dict[str, object]:
-    """The documents holding *parts*, {document id: row}, without the ones that are gone or
-    are not documents: locked, each company's in one call (``lock_projections``), or read
-    plainly (*lock* False) under the company lock, before the rest's rows are written
-    (unmatched payments and refunds rank before documents)."""
-    from celerp.models.projections import Projection
-    from celerp.services.company_lock import lock_projections
-    rows: dict[str, object] = {}
-    for company in dict.fromkeys(p.company for p in parts):
-        ids = [p.document for p in parts if p.company == company and p.document]
-        rows.update(await lock_projections(session, company, ids) if lock else {r.entity_id: r for r in (
-            await session.execute(select(Projection).where(Projection.company_id == company,
-                                                            Projection.entity_id.in_(ids)).execution_options(
-                populate_existing=True))).scalars()})
-    return {k: r for k, r in rows.items() if r.entity_type == "doc"}
-
-
-def _stripe_payment(row, reference: str) -> dict | None:
-    """The active Stripe payment *reference* on the document *row*, or None."""
-    return next((p for p in ((row.state or {}).get("payments", []) if row is not None else [])
-                 if p.get("reference") == reference and p.get("method") == "stripe"
-                 and p.get("status") == "active"), None)
-
-
-def _minor(amount, currency: str) -> int:
-    return int(to_decimal(amount).scaleb(_stripe_exponent(currency)))
-
-
-async def _kept_net(session, reference: str) -> int:
-    """What the refunds kept for the payment *reference* give back, net of their kept reversals."""
-    kept = (await session.execute(select(UnmatchedRefund.transition, func.sum(UnmatchedRefund.amount_minor)).where(
-        UnmatchedRefund.reference == reference).group_by(UnmatchedRefund.transition))).all()
-    return int(sum(total if transition == "applied" else -total for transition, total in kept))  # SUM is numeric
-
-
-async def _refund_shares(session, parts: list[ChargePart], rows: dict, refund: dict) -> list[tuple[ChargePart, int]]:
-    """How much of *refund* each part gives back, in reverse spill order: a refund as much
-    of what each part has left as it takes, a reversal what its refund took from each.
-    A charge of one part takes it whole (its invoice judges it). Raises the refusal of a
-    refund past what the whole charge has left, or of a reversal of no refund."""
-    from fastapi import HTTPException
-    from celerp.accounting_roles import refusal
-    from celerp.events.engine import find_event_by_idempotency
-    from celerp_docs.routes_payments import stripe_refund_key
-    amount, currency = refund["amount_minor"], refund["currency"]
-    if len(parts) == 1:
-        return [(parts[0], amount)]
-    shares, left = [], amount
-    for part in reversed(parts):
-        rid = part.qualify(refund["refund_id"])
-        if refund["transition"] == "applied":
-            share = min(left, await part_holds(session, part, rows, currency))
-        elif part.document is None:
-            share = await session.scalar(select(UnmatchedRefund.amount_minor).where(
-                UnmatchedRefund.refund_id == rid, UnmatchedRefund.cycle == refund["cycle"],
-                UnmatchedRefund.transition == "applied")) or 0
-        else:
-            applied = await find_event_by_idempotency(
-                session, part.company, stripe_refund_key(rid, refund["cycle"], "applied"))
-            share = _minor((applied.data or {}).get("amount") or 0, currency) if applied is not None else 0
-        if share:
-            shares.append((part, share))
-            left -= share
-    if refund["transition"] == "applied" and left:
-        raise HTTPException(status_code=422, detail=t(
-            "documents.err_refund_too_much", amount=float(stripe_amount(amount - left, currency)), currency=currency))
-    if refund["transition"] == "reversed" and not shares:
-        raise HTTPException(status_code=409, detail=refusal(
-            "pay.err_reversal_not_applied", "The refund being reversed was never applied."))
-    if left and shares:
-        raise HTTPException(status_code=422, detail=refusal(
-            "pay.err_reversal_mismatch", "The reversal does not match the refund it reverses."))
-    return shares
-
-
-async def _refund_done(session, parts: list[ChargePart], refund: dict) -> bool:
-    """Whether this change to a refund of a charge of several parts was already applied:
-    all of it is, in one transaction, so any part holding it tells. A charge of one part:
-    its invoice tells (``record_stripe_refund``)."""
-    from celerp.events.engine import find_event_by_idempotency
-    from celerp_docs.routes_payments import stripe_refund_key
-    if len(parts) == 1:
-        return False
-    for part in parts:
-        rid = part.qualify(refund["refund_id"])
-        if part.document is None:
-            if await session.get(UnmatchedRefund, (rid, refund["cycle"], refund["transition"])) is not None:
-                return True
-        elif await find_event_by_idempotency(
-                session, part.company, stripe_refund_key(rid, refund["cycle"], refund["transition"])) is not None:
-            return True
-    return False
-
-
-async def _keep_with_rest(session, refund: dict, share: dict) -> None:
-    """Keep the rest's *share* of *refund* with the rest. A refund kept until its charge
-    arrived turns its own kept row, locked before any document (``_lock_kept_refunds``),
-    into the share; any other is a new row, written before the documents are locked
-    (unmatched refunds rank before documents)."""
-    from sqlalchemy import update
-    from sqlalchemy.dialects.postgresql import insert
-    taken = await session.execute(update(UnmatchedRefund).where(
-        UnmatchedRefund.refund_id == refund["refund_id"], UnmatchedRefund.cycle == refund["cycle"],
-        UnmatchedRefund.transition == refund["transition"]).values(**share))
-    if not taken.rowcount:
-        await session.execute(insert(UnmatchedRefund).values(**share))
-
-
-async def _apply_refund(session, cid, entity_id: str, refund: dict) -> bool:
-    """Apply one change to a refund over the parts of its charge (``charge_reference_parts``,
-    ``_refund_shares``), under their documents' locks and in one savepoint, its kept refunds locked
-    first (_lock_kept_refunds): True once applied (or applied before), and then no longer kept. False,
-    with nothing applied, when the document is gone or a part refuses it (logged). A 5xx
-    raises. A refund of a payment a person recorded on the document from the
+async def _apply_refund(session, cid, entity_id: str, refund: dict, *, recorded: bool = False) -> bool:
+    """Apply one change to a refund on its document, under the document's lock and in a
+    savepoint, its kept refunds locked first (_lock_kept_refunds): True once applied (or applied before), and then no longer kept. False,
+    with nothing applied, when the document is gone or refuses it (logged). A 5xx
+    raises. A refund of a payment a person *recorded* on the document from the
     unmatched payments gives the money back on the books that payment was recorded on,
-    not the ones its payment page opened with. The rest's share, while the rest is among
-    the unmatched payments, is kept with it, applied when it is recorded on an invoice."""
+    not the ones its payment page opened with."""
     from fastapi import HTTPException
+    from celerp.services.company_lock import lock_projections
     from celerp_docs.routes_payments import record_stripe_refund, recorded_payment_books
     try:
         async with session.begin_nested():
-            # Refused, the savepoint lets the documents go again before the refund is kept.
-            parts = await charge_reference_parts(session, cid, entity_id, refund["reference"])
-            shares = [] if await _refund_done(session, parts, refund) else await _refund_shares(
-                session, parts, await _lock_parts(session, parts, lock=False), refund)
-            changes = [(part, {**refund, "refund_id": part.qualify(refund["refund_id"]), "reference": part.reference,
-                               "amount_minor": share}) for part, share in shares]
-            for part, change in changes:
-                if part.document is None:
-                    await _keep_with_rest(session, refund, {
-                        **change, "former_company": part.origin[0], "document": part.origin[1]})
-            rows = await _lock_parts(session, parts)
-            for part, change in changes:
-                if part.document is None:
-                    continue
-                row = rows.get(part.document)
-                if row is None:
-                    raise _NoDocument
-                if part.recorded:
-                    change["context"] = await recorded_payment_books(session, part.company, row, part.reference)
-                await record_stripe_refund(
-                    session, part.company, row, refund_id=change["refund_id"], cycle=change["cycle"],
-                    transition=change["transition"], reference=change["reference"],
-                    amount_minor=change["amount_minor"], currency=change["currency"],
-                    occurred_at=change["occurred_at"], context=change["context"])
+            # Refused, the savepoint lets the document go again before the refund is kept.
+            row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+            if row is None or row.entity_type != "doc":
+                raise _NoDocument
+            if recorded:
+                refund = {**refund, "context": await recorded_payment_books(session, cid, row, refund["reference"])}
+            await record_stripe_refund(
+                session, cid, row, refund_id=refund["refund_id"], cycle=refund["cycle"],
+                transition=refund["transition"], reference=refund["reference"], amount_minor=refund["amount_minor"],
+                currency=refund["currency"], occurred_at=refund["occurred_at"], context=refund["context"])
     except _NoDocument:
         return False
     except HTTPException as exc:
@@ -970,6 +716,7 @@ async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
     when a person recorded it on another invoice. One the document still refuses
     stays kept: one Stripe made after the payment stopped being linked to it, for good."""
     former_company, document = origin or (str(cid), entity_id)
+    recorded = origin is not None
     query = select(UnmatchedRefund).where(UnmatchedRefund.reference == reference,
                                           UnmatchedRefund.former_company == former_company,
                                           UnmatchedRefund.document == document)
@@ -980,7 +727,7 @@ async def _apply_parked_refunds(session, cid, entity_id: str, reference: str, *,
         await _apply_refund(session, cid, entity_id, {
             "refund_id": p.refund_id, "cycle": p.cycle, "transition": p.transition, "reference": p.reference,
             "amount_minor": p.amount_minor, "currency": p.currency, "occurred_at": p.occurred_at,
-            "context": p.context})
+            "context": p.context}, recorded=recorded)
 
 
 @_on_invoices
@@ -1010,7 +757,7 @@ async def receive_refund(payload: dict) -> bool:
             # A person recorded the payment on another invoice: the refund goes there.
             await _home_uses_documents(session, home)
             if (await _lock_recorded(session, reference, home) is not None
-                    and await _apply_refund(session, home[0], home[1], refund)):
+                    and await _apply_refund(session, home[0], home[1], refund, recorded=True)):
                 await _apply_parked_refunds(session, home[0], home[1], reference, origin=(company_id, entity_id))
                 await session.commit()
                 return True
@@ -1041,22 +788,16 @@ def _counted(value) -> bool:
 
 async def _apply_release(session, cid, entity_id: str, reference: str, released_at: datetime, *,
                          origin: tuple[str, str] | None = None) -> bool:
-    """Record that the payment *reference* is no longer linked to Stripe, on every
-    invoice holding a part of its charge (``charge_reference_parts``; the rest while it is
-    among the unmatched payments carries it already, from ``receive_release`` or
-    ``receive_payment``), then apply its kept refunds Stripe made before that, whenever they
-    arrived (``_apply_parked_refunds``). False when no invoice holds the payment."""
+    """Record that the payment *reference* on the document is no longer linked to
+    Stripe, then apply its kept refunds Stripe made before that, whenever they
+    arrived (``_apply_parked_refunds``). False when the document or the payment is
+    not there."""
+    from celerp.services.company_lock import lock_projections
     from celerp_docs.routes_payments import record_stripe_release
-    parts = await charge_reference_parts(session, cid, entity_id, reference)
-    rows = await _lock_parts(session, parts)
-    released = False
-    for part in parts:
-        row = rows.get(part.document)
-        if row is not None and await record_stripe_release(
-                session, part.company, row, reference=part.reference, released_at=released_at,
-                key=part.qualify(reference)):
-            released = True
-    if not released:
+    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+    if row is None or row.entity_type != "doc":
+        return False
+    if not await record_stripe_release(session, cid, row, reference=reference, released_at=released_at):
         return False
     await _apply_parked_refunds(session, cid, entity_id, reference, origin=origin)
     return True
@@ -1087,8 +828,6 @@ async def receive_release(payload: dict) -> bool:
                                       .values(released_at=func.coalesce(UnmatchedPayment.released_at, released_at))
                                       .returning(UnmatchedPayment.recorded_company,
                                                  UnmatchedPayment.recorded_document))).first()
-        await session.execute(update(UnmatchedPayment).where(UnmatchedPayment.reference == rest_reference(reference))
-                              .values(released_at=func.coalesce(UnmatchedPayment.released_at, released_at)))
         if (kept is not None and kept.recorded_company is not None) != (home is not None) or (
                 home is not None and (kept.recorded_company, kept.recorded_document) != (str(home[0]), home[1])):
             raise _Moved(reference)
