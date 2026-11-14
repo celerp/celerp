@@ -764,6 +764,7 @@ class DocCollection(BaseModel):
     reason: str | None = None
     replace: bool | None = None  # cancelled for a smaller balance: the next attempt asks what is owed then
     kept: str | None = None  # the succeeded charge's payment, kept among the unmatched payments
+    charged: bool | None = None  # a charge was recorded on the invoice while the attempt was with Cloud
 
 
 class PaymentBooks(BaseModel):

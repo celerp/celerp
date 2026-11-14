@@ -39,13 +39,15 @@ BINDING_STATES = frozenset({"active", "revoked", "requires_action", "access_remo
 # for, Cloud has not answered), "paid" (its charge is recorded on the invoice), "stopped".
 # "succeeded": the card was charged and its payment is on the way, or was kept among the
 # unmatched payments because the invoice could not take it ("kept": that payment's reference).
+# "charged": a charge was recorded on the invoice while the attempt was with Cloud; the attempt
+# ends when Cloud says it succeeded.
 CLOUD_STATES = frozenset({"submitted", "processing", "requires_action", "succeeded", "failed", "canceled",
                           "unknown", "unverifiable"})
 # The attempt is with Cloud and may still charge the card.
 IN_FLIGHT = frozenset({"pending", "submitted", "processing", "requires_action", "unknown"})
 # The app's own reasons an invoice's collection "stopped"; any other reason is Cloud's refusal key.
 STOP_REASONS = frozenset({"invoice_settled", "mode_manual", "no_card_on_file", "authorizer_lapsed", "collection_off",
-                          "nothing_to_charge", "no_books"})
+                          "nothing_to_charge", "no_books", "owes_again"})
 CONSENT_TEXT_VERSION = "1"
 
 
@@ -191,7 +193,7 @@ async def open_attempt(session, company_id, doc_row, n: int) -> dict:
         "state": "pending", "asked": False, "attempt_number": n, "request_key": request_key(doc_row.entity_id, n),
         "amount_minor": amount, "currency": (doc_row.state.get("currency") or "").upper()},
         drop=("request", "failure_code", "retry_eligible_at", "action_url", "cancel", "reason", "definitive", "replace",
-              "kept"))
+              "kept", "charged"))
 
 
 def _instant(value) -> str | None | bool:
@@ -225,9 +227,13 @@ async def apply_outcome(session, company_id, doc_row, found: dict) -> None:
     """Record Cloud's ``found`` outcome of the invoice's current attempt, from its answer or its
     delivery, whichever comes first. A definitive outcome is not replaced by a later one that is
     not, and an attempt the app already settled (paid, stopped) stays so. A definitive outcome
-    ends a cancel waiting for Cloud's answer: there is nothing left to cancel."""
+    ends a cancel waiting for Cloud's answer: there is nothing left to cancel. Success of an
+    attempt whose charge is already recorded on the invoice ends it (_charge_ended)."""
     current = doc_row.state.get("collection") or {}
     if (current.get("definitive") and not found["definitive"]) or current.get("state") in ("paid", "stopped"):
+        return
+    if found["state"] == "succeeded" and current.get("charged"):
+        await _charge_ended(session, company_id, doc_row, current)
         return
     await set_attempt(session, company_id, doc_row, {**found, "asked": True},
                       drop=("cancel",) if found["definitive"] else ())
@@ -273,8 +279,28 @@ async def charge_kept(session, company_id, doc_id: str, reference: str) -> None:
                           drop=("cancel",))
 
 
+async def _charge_ended(session, company_id, doc_row, current: dict) -> None:
+    """The attempt's money is recorded on the invoice, so the attempt is finished: paid when the
+    invoice owes nothing more, else followed by the next attempt for what it still owes, asked
+    for on the next pass."""
+    if is_open(doc_row.state):
+        await open_attempt(session, company_id, doc_row, current["attempt_number"] + 1)
+    else:
+        await set_attempt(session, company_id, doc_row, {"state": "paid"}, drop=("cancel", "charged"))
+
+
 async def charge_recorded(session, company_id, doc_row) -> None:
-    """An online charge was recorded on the invoice: an attempt with Cloud that it settles is paid."""
+    """An online charge was recorded on the invoice. Any attempt with Cloud or succeeded ends once
+    the invoice owes nothing, and one Cloud said succeeded ends on an invoice still owing
+    (_charge_ended), unless its own charge was kept among the unmatched payments (the charge
+    recorded may be that one, placed by a person; the kept notice stands). One still with Cloud on
+    an invoice still owing is marked ``charged`` and ends when Cloud says it succeeded; one never
+    asked for charged nothing, and the next pass makes it again for what is owed."""
     current = doc_row.state.get("collection") or {}
-    if current.get("state") in IN_FLIGHT | {"succeeded"} and not is_open(doc_row.state):
-        await set_attempt(session, company_id, doc_row, {"state": "paid"}, drop=("cancel",))
+    state = current.get("state")
+    if state not in IN_FLIGHT | {"succeeded"}:
+        return
+    if not is_open(doc_row.state) or (state == "succeeded" and not current.get("kept")):
+        await _charge_ended(session, company_id, doc_row, current)
+    elif state != "succeeded" and (state != "pending" or current.get("asked")):
+        await set_attempt(session, company_id, doc_row, {"charged": True})

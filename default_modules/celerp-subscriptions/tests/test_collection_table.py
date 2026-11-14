@@ -28,6 +28,7 @@ EXPECTED = {
     "failed": {**dict.fromkeys(collect.EVENTS, "next_when_due"), "off": "wait"},
     "replace": {**dict.fromkeys(collect.EVENTS, "next"), "off": "wait"},
     "succeeded": dict.fromkeys(collect.EVENTS, "wait"),
+    "ended": {**dict.fromkeys(collect.EVENTS, "tell"), "stop": "stop"},
     "settled": dict.fromkeys(collect.EVENTS, "wait"),
 }
 
@@ -40,7 +41,8 @@ COLLECTION = {
     "failed": {"state": "failed", "retry_eligible_at": "2026-07-01T00:00:00+00:00"},
     "replace": {"state": "canceled", "replace": True},
     "succeeded": {"state": "succeeded"},
-    "settled": {"state": "paid"},
+    "ended": {"state": "paid"},
+    "settled": {"state": "unverifiable"},
 }
 WHY = {"stop": "invoice_settled", "reduced": "amount_changed", "raised": None, "off": "collection_off", "none": None}
 
@@ -60,6 +62,7 @@ class _Pass:
             "collection": {"attempt_number": 1, "amount_minor": 3000, **current}})
         self.writes: list[dict] = []
         self.opened: list[int] = []
+        self.told: list[str] = []
 
         async def set_attempt(session, company_id, row, change, *, drop=()):
             self.writes.append(change)
@@ -78,6 +81,12 @@ class _Pass:
         async def event(session, company_id, row, current, phase):
             return "none", None  # what the pass finds once the cell's action made the next attempt
 
+        async def notify_once(session, company_id, category, title, body, **kw):
+            self.told.append(title)
+
+        from celerp.notifications import service
+        monkeypatch.setattr(service, "notify_once", notify_once)
+        monkeypatch.setattr(collection, "outstanding_minor", lambda state: 1000)
         monkeypatch.setattr(collection, "set_attempt", set_attempt)
         monkeypatch.setattr(collection, "open_attempt", open_attempt)
         monkeypatch.setattr(collect, "_attempt_request", attempt_request)
@@ -96,6 +105,7 @@ def _effect(action: str, event: str, n: int) -> tuple:
         "cancel": ("cancel", [{"cancel": "queued", "reason": WHY[event]}], []),
         "cancel_replace": ("cancel", [{"cancel": "queued", "reason": WHY[event], "replace": True}], []),
         "send_cancel": ("cancel", [], []),
+        "tell": (None, [{"state": "stopped", "reason": "owes_again"}], []),
         "next": (None, [{"state": "stopped", "reason": WHY[event]}], []) if event == "stop" else (
             "attempt", [], [n + 1]),
     }[action]
@@ -115,6 +125,7 @@ async def test_each_cell_does_what_its_action_says(monkeypatch, phase, event):
     step = await collect._ACTIONS[action](None, "cid", run.row, dict(run.row.state["collection"]), event, WHY[event])
     expected = _effect("next" if action == "next_when_due" else action, event, 1)
     assert ((step or (None,))[0], run.writes, run.opened) == expected
+    assert len(run.told) == (action == "tell")
 
 
 @pytest.mark.asyncio
@@ -130,9 +141,10 @@ async def test_a_failed_attempt_before_its_retry_time_waits(monkeypatch):
 @pytest.mark.parametrize("state", sorted({*collection.CLOUD_STATES, "pending", "paid", "stopped"}))
 @pytest.mark.parametrize("cancel", [None, "queued", "refused"])
 @pytest.mark.parametrize("flag", [False, True])
-def test_every_stored_collection_reads_as_one_phase(state, cancel, flag):
+@pytest.mark.parametrize("reason", [None, "invoice_settled", "mode_manual"])
+def test_every_stored_collection_reads_as_one_phase(state, cancel, flag, reason):
     """``flag`` is ``asked`` on a pending attempt and ``replace`` on a cancelled one."""
-    current = {"state": state, "cancel": cancel, "asked": flag, "replace": flag}
+    current = {"state": state, "cancel": cancel, "asked": flag, "replace": flag, "reason": reason}
     if state in collection.IN_FLIGHT | {"failed"} and cancel == "queued":
         expected = "cancel_queued"
     elif state in collection.IN_FLIGHT and cancel == "refused":
@@ -143,6 +155,8 @@ def test_every_stored_collection_reads_as_one_phase(state, cancel, flag):
         expected = state
     elif state == "canceled" and flag:
         expected = "replace"
+    elif state == "paid" or (state in ("stopped", "canceled") and reason == "invoice_settled"):
+        expected = "ended"
     else:
         expected = "settled"
     assert collect.phase_of(current) == expected

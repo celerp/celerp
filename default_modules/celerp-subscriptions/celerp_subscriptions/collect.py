@@ -22,7 +22,10 @@ what each pass does is one cell of TABLE (the invoice's phase x what the pass fi
 - a failed attempt whose retry time has passed is followed by the next attempt for what the
   invoice owes then, or stops with the reason it may not go on;
 - Cloud no longer offering collection stops only new charge requests: cancels, retries of a
-  request already sent and Cloud's deliveries go on until every outcome is known.
+  request already sent and Cloud's deliveries go on until every outcome is known;
+- an invoice whose collection ended because it was settled and that owes again (a payment by
+  hand voided, a refund) is never charged again on its own: the company is told once and its
+  collection stops with the reason.
 Cloud never retries on its own.
 """
 from __future__ import annotations
@@ -41,7 +44,8 @@ from ui.i18n import t
 log = logging.getLogger(__name__)
 
 # Collection states a pass may still act on, besides an attempt cancelled to be replaced
-# (``replace``): one Cloud cancelled because its invoice came to owe less than it asked.
+# (``replace``): one Cloud cancelled because its invoice came to owe less than it asked, and an
+# ended collection (``ended``) whose invoice awaits payment again.
 ACTIVE = frozenset({*collection.IN_FLIGHT, "failed"})
 # Cloud refusals of an attempt that pass: the same attempt is asked for again next pass.
 WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
@@ -58,13 +62,15 @@ WAIT = frozenset({"attempt_in_progress", "checkout_open", "before_retry_time"})
 #   replace         Cloud cancelled an attempt because its invoice came to owe less
 #   succeeded       Cloud charged the card and the payment is not on the invoice yet: its delivery
 #                   records it on the invoice whole, so every event waits for it
-#   settled         nothing left to do (canceled, unverifiable, paid, stopped)
+#   ended           paid, or stopped or cancelled because the invoice was settled: the invoice
+#                   may owe again, which is told, never charged on its own
+#   settled         nothing left to do (canceled, unverifiable, stopped for another reason)
 # Events: stop (stop_reason: the invoice is paid, credited or voided, the agreement left
 # collection, the card or the consenting member is gone), reduced / raised (the invoice owes
 # less / more than the attempt asks), off (Cloud no longer offers collection: only new charge
 # requests wait; cancels, retries of a request already sent and deliveries go on), none.
 PHASES = ("new", "asked", "submitted", "processing", "requires_action", "unknown", "cancel_queued",
-          "cancel_refused", "failed", "replace", "succeeded", "settled")
+          "cancel_refused", "failed", "replace", "succeeded", "ended", "settled")
 EVENTS = ("stop", "reduced", "raised", "off", "none")
 _WITH_CLOUD = {"stop": "cancel", "reduced": "cancel_replace", "raised": "wait", "off": "wait", "none": "wait"}
 TABLE: dict[tuple[str, str], str] = {
@@ -78,6 +84,7 @@ TABLE: dict[tuple[str, str], str] = {
     **{("failed", e): "wait" if e == "off" else "next_when_due" for e in EVENTS},
     **{("replace", e): "wait" if e == "off" else "next" for e in EVENTS},
     **{("succeeded", e): "wait" for e in EVENTS},
+    **{("ended", e): "stop" if e == "stop" else "tell" for e in EVENTS},
     **{("settled", e): "wait" for e in EVENTS},
 }
 
@@ -95,7 +102,15 @@ def phase_of(current: dict) -> str:
         return state
     if state in ("failed", "succeeded"):
         return state
-    return "replace" if state == "canceled" and current.get("replace") is True else "settled"
+    if state == "canceled" and current.get("replace") is True:
+        return "replace"
+    return "ended" if _ended(current) else "settled"
+
+
+def _ended(current: dict) -> bool:
+    """Whether the collection ended because its invoice was paid or settled."""
+    return current.get("state") == "paid" or (
+        current.get("state") in ("stopped", "canceled") and current.get("reason") == "invoice_settled")
 
 
 def require_sales(terms: dict) -> None:
@@ -142,13 +157,18 @@ def pass_for(company_id):
 
 
 def _in_progress(company_id, *where):
-    """The ids of the company's documents whose collection a pass may still act on."""
+    """The ids of the company's documents whose collection a pass may still act on: ACTIVE, an
+    attempt cancelled to be replaced, or an ended one (_ended) on an invoice awaiting payment."""
     from sqlalchemy import or_
+    from celerp.services.doc_balance import AWAITING_PAYMENT_STATUSES
     c = Projection.state["collection"]
+    state, reason = c["state"].as_string(), c["reason"].as_string()
     return select(Projection.entity_id).where(
         Projection.company_id == company_id, Projection.entity_type == "doc", *where,
-        or_(c["state"].as_string().in_(sorted(ACTIVE)),
-            (c["state"].as_string() == "canceled") & (c["replace"].as_boolean().is_(True)))
+        or_(state.in_(sorted(ACTIVE)),
+            (state == "canceled") & (c["replace"].as_boolean().is_(True)),
+            ((state == "paid") | (state.in_(("stopped", "canceled")) & (reason == "invoice_settled")))
+            & Projection.state["status"].as_string().in_(sorted(AWAITING_PAYMENT_STATUSES["invoice"])))
     ).order_by(Projection.entity_id)
 
 
@@ -232,7 +252,7 @@ async def _event(session, company_id, row, current: dict, phase: str) -> tuple[s
     if reason := await stop_reason(session, company_id, row.state):
         return "stop", reason
     owed, asks = collection.outstanding_minor(row.state), current.get("amount_minor")
-    if phase not in ("failed", "replace") and type(asks) is int and owed is not None and owed != asks:
+    if phase not in ("failed", "replace", "ended") and type(asks) is int and owed is not None and owed != asks:
         return ("reduced", "amount_changed") if owed < asks else ("raised", None)
     if not collection.offered():
         return "off", "collection_off"
@@ -262,6 +282,22 @@ async def _reopen(session, company_id, row, current, event, why):
     now, and decided again."""
     await collection.open_attempt(session, company_id, row, current["attempt_number"])
     return await _decide(session, company_id, row.entity_id)
+
+
+async def _tell(session, company_id, row, current, event, why):
+    """The invoice owes again after its collection ended: the company is told once, and
+    collection stops with the reason. The card is not charged again on its own, since what
+    reopened the invoice (a refund, a dispute, a payment voided) may be the payer's own doing."""
+    from celerp.notifications.service import notify_once
+    from celerp.services.payments import dispute_amount
+    params = {"document": row.state.get("ref_id") or row.entity_id,
+              "amount": dispute_amount(collection.outstanding_minor(row.state), row.state.get("currency") or "")}
+    title, body = "collection.owes_again_title", "collection.owes_again_body"
+    await notify_once(session, company_id, "accounting", t(title, "en", **params), t(body, "en", **params),
+                      action_url=f"/docs/{row.entity_id}", i18n={"title": title, "body": body, "params": params})
+    await collection.set_attempt(session, company_id, row, {"state": "stopped", "reason": "owes_again"},
+                                 drop=("replace",))
+    return None
 
 
 async def _queue_cancel(session, company_id, row, current, event, why):
@@ -299,7 +335,7 @@ async def _next_when_due(session, company_id, row, current, event, why):
 
 _ACTIONS = {"wait": _wait, "ask": _ask, "stop": _stop, "reopen": _reopen, "cancel": _queue_cancel,
             "cancel_replace": _cancel_replace, "send_cancel": _send_cancel, "next": _next,
-            "next_when_due": _next_when_due}
+            "next_when_due": _next_when_due, "tell": _tell}
 
 
 async def _attempt_request(session, company_id, row, current: dict) -> tuple[str, dict, bool] | None:

@@ -13,7 +13,9 @@ amendment) under a seeded random story, with a stand-in Cloud that charges, fail
 attempt it was asked for. After every step, each open invoice whose collection may go on has an
 attempt in progress, or its charge is on the way from Cloud, or the company was told why nothing
 is asked: its charge was kept among the unmatched payments, or it came to owe again after its
-collection ended. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
+collection ended. An invoice that comes to owe again outside a pass (a payment voided) is told by
+the next pass, so between passes its ended collection still counts; right after a pass it never
+does. The fixed seeds always run; COLLECTION_ORACLE_RANDOM
 more (default 2) are drawn from COLLECTION_ORACLE_SEED, else at random. A failing case names its
 seed: COLLECTION_ORACLE_SEED=<seed> with COLLECTION_ORACLE_RANDOM=1 replays it.
 """
@@ -143,10 +145,16 @@ async def _told(session, name: str) -> bool:
     return len(rows) == 1
 
 
-async def _left_alone(session, cid, eid, story: _Story | None) -> list[str]:
+def _ended(c: dict) -> bool:
+    return c.get("state") == "paid" or (c.get("state") in ("stopped", "canceled")
+                                        and c.get("reason") == "invoice_settled")
+
+
+async def _left_alone(session, cid, eid, story: _Story | None, *, passed: bool) -> list[str]:
     """Each open invoice of the agreement whose collection may go on and that has no attempt in
     progress, no charge on the way (``story``: still owed by Cloud) and nothing the company was told
-    of: a kept charge, or owing again after its collection ended."""
+    of: a kept charge, or owing again after its collection ended. Unless a pass just ran
+    (``passed``), an ended collection waits for the next pass to tell it."""
     from celerp.services import collection
     from celerp_subscriptions.collect import ACTIVE, stop_reason
     session.expire_all()
@@ -162,6 +170,8 @@ async def _left_alone(session, cid, eid, story: _Story | None) -> list[str]:
         if c.get("state") == "stopped" and c.get("reason") == "owes_again" and await _told(session, doc["ref_id"]):
             continue
         if c.get("state") == "succeeded" and story and any(p[0] == doc_id for p in story.payments):
+            continue
+        if _ended(c) and not passed:
             continue
         alone.append(f"{doc.get('ref_id')} owes {collection.outstanding_minor(doc)} collection {c}")
     return alone
@@ -227,7 +237,7 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         name = rng.choice(names)
         trail.append(name)
         await step(name)
-        alone = await _left_alone(session, cid, eid, story)
+        alone = await _left_alone(session, cid, eid, story, passed=name == "tick")
         assert not alone, f"seed {seed} after {trail}: {alone}"
     while story.outcomes or story.payments:
         name = "deliver_payment" if story.payments else "deliver_outcome"
@@ -235,7 +245,7 @@ async def _run_story(seed, client, session, monkeypatch, cloud):
         await step(name)
     trail.append("tick")
     await step("tick")
-    alone = await _left_alone(session, cid, eid, None)
+    alone = await _left_alone(session, cid, eid, None, passed=True)
     assert not alone, f"seed {seed} after {trail}: {alone}"
 
 
