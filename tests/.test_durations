@@ -29182,5 +29182,15 @@
     "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[contact]": 0.1221781859640032,
     "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[doc]": 0.006065909052267671,
     "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[item]": 0.005411377060227096,
-    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[list]": 0.005768292001448572
+    "tests/test_batch05_attachment_controls.py::test_shared_files_section_renders_file_picker_and_camera_input[list]": 0.005768292001448572,
+    "tests/test_doc_file_client_resource.py::test_a_refused_file_call_raises_the_api_error": 0.026048940955661237,
+    "tests/test_doc_file_client_resource.py::test_each_file_call_goes_to_its_resource_and_returns_the_reply[docs]": 0.003576416871510446,
+    "tests/test_doc_file_client_resource.py::test_each_file_call_goes_to_its_resource_and_returns_the_reply[lists]": 0.0031995620811358094,
+    "tests/test_doc_file_owner_lock_pg.py::test_a_file_change_waits_for_the_document_lock[doc-doc:INV-1-doc.created-data0]": 0.36375209502875805,
+    "tests/test_doc_file_owner_lock_pg.py::test_a_file_change_waits_for_the_document_lock[list-list:QUO-1-list.created-data1]": 0.33985116495750844,
+    "tests/test_history_hidden_rows.py::test_a_merged_lot_names_the_lot_it_went_into": 0.0027528960490599275,
+    "tests/test_history_hidden_rows.py::test_an_origin_row_shows_on_its_own_lot_only": 0.0022517109755426645,
+    "tests/test_history_hidden_rows.py::test_system_posting_entries_are_left_out": 0.0021779449889436364,
+    "tests/test_history_hidden_rows.py::test_the_steps_a_split_takes_on_its_own_are_left_out": 0.0021483548916876316,
+    "tests/test_inventory_fields_batch06.py::test_folding_old_preset_values_leaves_the_event_data_as_recorded": 0.002104831160977483
 }
