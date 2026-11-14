@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The release machinery ships the country packs and never ships without them.
 
-The real packs are fetched only by pushes to main, tags and manual runs, each in a job of the
-country-packs environment. Each of those runs the real-pack golden (one workflow, called by the
-others) and a build or release waits for it to pass. Pull requests and pushes to other branches
-never fetch and run the tests on the committed fixture pack set. Every artifact is built in a job
-that fetched the packs first, and checked against the committed lock after.
+The real packs are fetched only by pushes to main, tags and manual runs, in one job: the real-pack
+golden (one workflow, called by the others) in the country-packs environment. It uploads the packs
+it checked, and a build or release waits for it to pass, then downloads them and checks them
+against the committed lock. Pull requests and pushes to other branches never fetch and run the
+tests on the committed fixture pack set. Every artifact is built in a job that got the checked
+packs first, and checked against the committed lock after.
 """
 from __future__ import annotations
 
@@ -86,7 +87,7 @@ def pull_request_leaks(workflow: dict) -> list[str]:
 def test_check_golden_gate_hard():
     for name in ("ci.yml", "build.yml", "publish.yml"):
         job = _load(name)["jobs"]["l10n-golden"]
-        assert job["uses"] == GOLDEN and "secrets" not in job, name
+        assert job["uses"] == GOLDEN and job["secrets"] == "inherit", name
 
     allowed_skip = "(needs.l10n-golden.result == 'success' || (needs.setup-matrix.outputs.packs != 'true' && needs.l10n-golden.result == 'skipped'))"
     ci = _load("ci.yml")["jobs"]["test"]
@@ -106,12 +107,11 @@ def test_check_golden_gate_hard():
     assert "postgres" in job["services"]
     steps = job["steps"]
     install = next(i for i, s in enumerate(steps) if 'uv pip install --system -e ".[dev]" -c constraints.txt' in str(s.get("run", "")))
-    fetch = next(i for i, s in enumerate(steps) if s.get("uses") == ACTION)
+    fetch = next(i for i, s in enumerate(steps) if "l10n_packs.py fetch" in str(s.get("run", "")))
     validate = next(i for i, s in enumerate(steps) if "l10n_packs.py validate" in str(s.get("run", "")))
     run = next(i for i, s in enumerate(steps) if "-m real_packs" in str(s.get("run", "")))
     assert install < fetch < validate < run
     assert steps[run]["run"].startswith("env -u CELERP_L10N_GOLDEN_WRITE pytest ")
-    assert steps[fetch]["with"] == {"token": SECRETS["CELERP_L10N_TOKEN"]}
 
     for path in sorted(WORKFLOWS.glob("*.yml")):
         assert pull_request_leaks(_load(path.name)) == [], path.name
@@ -158,7 +158,7 @@ _ARTIFACT = r"python -m build|-m build\b|pip wheel|bdist_wheel|twine upload"
 
 
 def test_check_artifact_commands_fetch_packs():
-    """Every command that builds or uploads a wheel runs in a workflow job that fetched the packs first."""
+    """Every command that builds or uploads a wheel runs in a workflow job that got the checked packs first."""
     hits = subprocess.run(["git", "grep", "-n", "-E", _ARTIFACT, "--", ".", ":!tests", ":!docs",
                            ":!default_modules/*/tests"], cwd=ROOT, capture_output=True, text=True).stdout
     assert hits.strip(), "the release build command was not found"
@@ -226,17 +226,8 @@ def _credential_events(workflow: dict) -> dict:
 
 def token_defects(workflow: dict) -> list[str]:
     """Every way a workflow could fetch the packs outside a country-packs job on main, a tag or a manual run."""
-    defects = []
-    for name, job in _token_jobs(workflow).items():
-        if job.get("uses") == GOLDEN:
-            continue
-        env = str(job.get("environment"))
-        if env not in (ENVIRONMENT, f"${{{{ {PACKS} && '{ENVIRONMENT}' || '' }}}}"):
-            defects.append(f"{name}: not in the {ENVIRONMENT} environment")
-        for step in job.get("steps") or []:
-            if TOKEN in str(step) and (step.get("with") != {"token": "${{ secrets.CELERP_L10N_TOKEN }}"}
-                                       or (env != ENVIRONMENT and step.get("if") != PACKS)):
-                defects.append(f"{name}: reads the token outside the fetch step's guard")
+    defects = [f"{name}: not in the {ENVIRONMENT} environment" for name, job in _token_jobs(workflow).items()
+               if job.get("uses") != GOLDEN and job.get("environment") != ENVIRONMENT]
     if not _token_jobs(workflow):
         return defects
     events = _credential_events(workflow)
@@ -263,7 +254,7 @@ def test_packs_are_fetched_only_on_main_tags_and_manual_runs():
         workflow = _load(path.name)
         assert token_defects(workflow) == [], path.name
         readers += [f"{path.name}:{n}" for n, j in _token_jobs(workflow).items() if j.get("uses") != GOLDEN]
-    assert sorted(readers) == ["build.yml:build", "l10n-golden.yml:golden", "publish.yml:build"]
+    assert readers == ["l10n-golden.yml:golden"]
 
 
 @pytest.mark.parametrize("change, defect", [
@@ -280,9 +271,6 @@ def test_pack_fetch_check_catches_a_run_outside_those(change, defect):
 
 def test_pack_token_check_catches_a_branch_push_build():
     build = _load("build.yml")
-    build["jobs"]["build"]["steps"] = [dict(s, **({"if": GUARD} if s.get("uses") == ACTION else {}))
-                                       for s in build["jobs"]["build"]["steps"]]
-    build["jobs"]["build"]["environment"] = "${{ " + GUARD + " && 'country-packs' || '' }}"
     build["jobs"]["l10n-golden"]["if"] = GUARD
     assert "reads the token on a push to a branch other than main" in token_defects(build)
 

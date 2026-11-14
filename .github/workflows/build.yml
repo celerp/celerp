@@ -72,9 +72,9 @@ jobs:
   # because signing credentials must not be exposed to PR workflows. A pull request
   # that changes how the Windows app is packaged or started also builds Windows,
   # with its DLL check and both boot smokes.
-  # packs: whether this run fetches the country packs. Only a tag or a manual run does, and
-  # every job that fetches them then runs in the country-packs environment. Branch pushes and
-  # pull requests build with the packs left out.
+  # packs: whether this run ships the country packs. Only a tag or a manual run does: the golden
+  # fetches them in the country-packs environment and each build downloads and checks its
+  # artifact. Branch pushes and pull requests build with the packs left out.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -121,12 +121,12 @@ jobs:
     needs: setup-matrix
     if: needs.setup-matrix.outputs.packs == 'true'
     uses: ./.github/workflows/l10n-golden.yml
+    secrets: inherit
 
   build:
     needs: [prepare-release, setup-matrix, l10n-golden]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
     if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success' && (needs.l10n-golden.result == 'success' || (needs.setup-matrix.outputs.packs != 'true' && needs.l10n-golden.result == 'skipped'))
-    environment: ${{ needs.setup-matrix.outputs.packs == 'true' && 'country-packs' || '' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.matrix) }}
@@ -217,11 +217,9 @@ jobs:
           tar xz -f "$F" -C "electron/python-standalone/${{ matrix.standalone_dir }}"
           rm -f "$F"
 
-      - name: Fetch country packs
+      - name: Get the country packs
         if: needs.setup-matrix.outputs.packs == 'true'
         uses: ./.github/actions/l10n-packs
-        with:
-          token: ${{ secrets.CELERP_L10N_TOKEN }}
 
       - name: Install Python deps into standalone (arm64)
         if: matrix.os == 'macos-latest'

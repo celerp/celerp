@@ -1,16 +1,16 @@
-name: Fetch country packs
+name: Get the country packs
 description: >
-  Download every country pack at the version celerp/localization/packs.lock.json names and
-  check it against the lock (scripts/l10n_packs.py fetch).
-inputs:
-  token:
-    description: Read token for the country pack repositories
-    required: true
+  Download the country packs the real-pack golden fetched and validated in this run, and check
+  each against celerp/localization/packs.lock.json (scripts/l10n_packs.py check).
 runs:
   using: composite
   steps:
-    - name: Fetch and check the packs
+    - name: Download the packs
+      uses: actions/download-artifact@v8
+      with:
+        name: country-packs
+        path: celerp/localization/packs
+
+    - name: Check the packs against the lock
       shell: bash
-      env:
-        CELERP_L10N_TOKEN: ${{ inputs.token }}
-      run: python3 scripts/l10n_packs.py fetch
+      run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/l10n_packs.py check celerp/localization

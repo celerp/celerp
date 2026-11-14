@@ -595,6 +595,7 @@ jobs:
   l10n-golden:
     if: github.event_name != 'pull_request'
     uses: ./.github/workflows/l10n-golden.yml
+    secrets: inherit
 
   test:
     name: Test

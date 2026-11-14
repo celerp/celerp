@@ -3,7 +3,8 @@ name: Country pack golden
 # Fetches the real country packs, validates them and runs the tests marked real_packs.
 # It runs on a manual run and when ci.yml (push to main), build.yml or publish.yml (a tag or a
 # manual run) calls it; never on a pull request or a push to any other branch. The job runs in
-# the country-packs environment.
+# the country-packs environment and is the only job that fetches the packs: it uploads them as
+# the country-packs artifact, which the build jobs download and check against the lock.
 on:
   workflow_dispatch:
   workflow_call:
@@ -51,9 +52,9 @@ jobs:
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
 
       - name: Fetch country packs
-        uses: ./.github/actions/l10n-packs
-        with:
-          token: ${{ secrets.CELERP_L10N_TOKEN }}
+        env:
+          CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
+        run: python scripts/l10n_packs.py fetch
 
       - name: Validate country packs
         env:
@@ -66,3 +67,11 @@ jobs:
           CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         # The golden compares, never rewrites: a runner that sets the write switch gets it unset here.
         run: env -u CELERP_L10N_GOLDEN_WRITE pytest tests/ default_modules/*/tests/ -m real_packs -o addopts="" -q --no-cov
+
+      - name: Share the checked packs with the build jobs
+        uses: actions/upload-artifact@v7
+        with:
+          name: country-packs
+          path: celerp/localization/packs
+          if-no-files-found: error
+          retention-days: 1

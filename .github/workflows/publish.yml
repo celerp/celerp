@@ -14,11 +14,11 @@ on:
 jobs:
   l10n-golden:
     uses: ./.github/workflows/l10n-golden.yml
+    secrets: inherit
 
   build:
     needs: l10n-golden
     runs-on: ubuntu-latest
-    environment: country-packs
     permissions:
       contents: read
     steps:
@@ -50,10 +50,8 @@ jobs:
       # made months later gets the same packages. Pinning edits pyproject.toml,
       # which would make setuptools-scm read the tree as a dev build; the version
       # was verified against the tag above, so it is passed in explicitly.
-      - name: Fetch country packs
+      - name: Get the country packs
         uses: ./.github/actions/l10n-packs
-        with:
-          token: ${{ secrets.CELERP_L10N_TOKEN }}
 
       - name: Pin dependencies and build
         run: |
