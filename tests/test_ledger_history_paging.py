@@ -205,6 +205,40 @@ async def test_facets_follow_the_read_policy_and_need_a_record(client, session):
 
 
 @pytest.mark.asyncio
+async def test_the_entity_type_filter_reads_only_that_type(client, session):
+    owner, _, company_id, _ = await _setup(client, session)
+    from celerp.models.ledger import LedgerEntry
+    await _write(session, company_id, 2)
+    session.add(LedgerEntry(company_id=company_id, entity_id="doc:hist-paging", entity_type="doc",
+                            event_type="doc.updated", data={}, source="test",
+                            idempotency_key=f"paging-{uuid.uuid4()}"))
+    await session.flush()
+    from sqlalchemy import func
+    for kind in ("item", "doc"):
+        stored = (await session.execute(select(func.count()).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_type == kind))).scalar_one()
+        r = await client.get("/ledger", params={"entity_type": kind}, headers=owner)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["total"] == stored and {e["entity_type"] for e in body["items"]} == {kind}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("param", ["entity_id", "entity_type", "event_type", "field", "who"])
+async def test_a_filter_value_carrying_a_nul_byte_matches_nothing(client, session, param):
+    """The database never stores a NUL byte in text, so a filter value carrying one names nothing:
+    the read answers with an empty page instead of failing, for every filter and for the facets."""
+    owner, _, company_id, admin_id = await _setup(client, session)
+    await _write(session, company_id, 3, actor_id=admin_id)
+    for value in ("\x00", "name\x00", "h:\x00"):
+        body = await _page(client, owner, **{param: value})
+        assert (body["items"], body["total"], body["has_older"]) == ([], 0, False)
+    r = await client.get("/ledger/facets", params={"entity_id": f"{_ENTITY}\x00"}, headers=owner)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"event_types": [], "fields": [], "actors": []}
+
+
+@pytest.mark.asyncio
 async def test_a_large_history_page_is_fast(client, session):
     """A 5,000-event record: the newest page, a filtered page, a page near the oldest and the
     filter choices each cost one bounded query, whatever the record's length."""

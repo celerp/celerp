@@ -53,22 +53,29 @@ def _changes_any(fields: list[str]):
     return and_(func.json_typeof(changed) == "object", cast(changed, JSONB).has_any(array(fields)))
 
 
+def _named(values: list[str]) -> list[str]:
+    """The filter values that can name stored text: the database never stores a NUL byte in
+    text, so a value carrying one names nothing."""
+    return [v for v in values if "\x00" not in v]
+
+
 def _scope(stmt, company_id, settings, role, entity_id=None, entity_type=None,
            event_type=None, field=None, who=None):
     """``stmt`` narrowed to the company, the events this role can read and the given filters;
     a cost field is no filter for a role that cannot see costs."""
     stmt = readable_events(stmt.where(LedgerEntry.company_id == company_id), settings, role)
     if entity_id:
-        stmt = stmt.where(LedgerEntry.entity_id == entity_id)
+        stmt = stmt.where(LedgerEntry.entity_id.in_(_named([entity_id])))
     if entity_type:
-        stmt = stmt.where(LedgerEntry.entity_type == entity_type)
+        stmt = stmt.where(LedgerEntry.entity_type.in_(_named([entity_type])))
     if event_type:
-        stmt = stmt.where(LedgerEntry.event_type.in_(event_type))
+        stmt = stmt.where(LedgerEntry.event_type.in_(_named(event_type)))
     if field:
-        visible = field if can_see_costs(settings, role) else [f for f in field if f not in COST_DATA_KEYS]
+        visible = _named(field if can_see_costs(settings, role) else [f for f in field if f not in COST_DATA_KEYS])
         stmt = stmt.where(_changes_any(visible) if visible else false())
     if who:
-        stmt = stmt.where(or_(*(_who_matches(k) for k in who)))
+        keys = _named(who)
+        stmt = stmt.where(or_(*(_who_matches(k) for k in keys)) if keys else false())
     return stmt
 
 
