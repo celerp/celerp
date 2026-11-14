@@ -437,7 +437,7 @@ async def test_source_checkout_without_packs_offers_other_only(tmp_path, client,
         assert companies
         for cid in companies:
             [notice] = await _pack_notices(session, cid)
-            assert notice.i18n["params"] == {"countries": ", ".join(codes)}
+            assert notice.i18n["params"] == {"countries": list(codes)}
     finally:
         if saved is None:
             os.environ.pop("CELERP_L10N_DIR", None)
@@ -569,7 +569,7 @@ async def test_pack_notice_runs_without_enabled_modules(l10n_dir, client, sessio
     _drop(l10n_dir, "TH")
     await _start(monkeypatch)
     [notice] = await _pack_notices(session, company_id)
-    assert notice.i18n["params"] == {"countries": "TH"}
+    assert notice.i18n["params"] == {"countries": ["TH"]}
 
 
 async def test_pack_notice_failure_is_logged_and_boot_continues(monkeypatch, caplog):

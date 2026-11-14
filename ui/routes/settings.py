@@ -1674,9 +1674,10 @@ def setup_routes(app):
         loc = next((l for l in locations if l.get("id") == location_id), {})
         if field == "country":
             from ui.routes.setup import tax_country_options
+            country = _location_country(loc.get("address"))
             return Td(
                 searchable_select(
-                    "value", tax_country_options(), value=_location_country(loc.get("address")),
+                    "value", tax_country_options(country), value=country,
                     aria_label=t("label.country"), autofocus=True,
                     hx_patch=f"/settings/locations/{location_id}/{field}",
                     hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",

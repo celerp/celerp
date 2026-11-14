@@ -90,9 +90,12 @@ def company_setup_error(currency: str, vertical: str, country: str) -> tuple[str
     return None
 
 
-def tax_country_options() -> list[tuple[str, str]]:
-    """The countries Celerp has tax rates for, by name, then Other country (no country)."""
-    named = sorted(((code, country_name(code)) for code in tax_countries()), key=lambda o: o[1])
+def tax_country_options(current: str = "") -> list[tuple[str, str]]:
+    """The countries Celerp has tax rates for, by name, then Other country (no country).
+    ``current``, a stored country whose pack is missing, is listed by name too, so the control
+    reads as the value does; choosing it again is refused with the reason."""
+    codes = [*tax_countries(), *([current] if current and current not in tax_countries() else [])]
+    named = sorted(((code, country_name(code)) for code in codes), key=lambda o: o[1])
     return named + [("", t("setup.country_other"))]
 
 

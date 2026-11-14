@@ -56,13 +56,18 @@ def pack_missing(value: str | None) -> bool:
     return lock_codes() is None or code in missing()
 
 
-def country_name(value: str) -> str:
+def country_name(value: str, lang: str | None = None) -> str:
     """A country as people read it: the catalog name of a country code, else the value as
     written (an address may spell its country out)."""
     from ui.i18n import t
     key = f"country.{_code(value)}"
-    name = t(key)
+    name = t(key, lang)
     return value if name == key else name
+
+
+def country_names(codes, lang: str | None = None) -> str:
+    """Several countries as people read them, in one line."""
+    return ", ".join(country_name(code, lang) for code in codes)
 
 
 def missing_pack_refusal(value: str | None) -> str | None:
