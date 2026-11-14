@@ -285,3 +285,55 @@ def test_pack_token_check_catches_a_branch_push_build():
     build["jobs"]["build"]["environment"] = "${{ " + GUARD + " && 'country-packs' || '' }}"
     build["jobs"]["l10n-golden"]["if"] = GUARD
     assert "reads the token on a push to a branch other than main" in token_defects(build)
+
+
+ARTIFACT = "country-packs"
+PACKS_DIR = "celerp/localization/packs"
+
+
+def _steps_using(steps: list[dict], action: str) -> list[int]:
+    return [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(action + "@")]
+
+
+def test_pack_token_is_read_in_one_job_and_shared_as_a_checked_artifact():
+    """Only the protected golden job reads the pack token. It uploads the packs it fetched and
+    checked; every caller passes it the secrets, and every other job that needs the packs
+    downloads that artifact and checks it against packs.lock.json without the token."""
+    action_text = (ROOT / ".github" / "actions" / "l10n-packs" / "action.yml").read_text(encoding="utf-8")
+    assert "CELERP_L10N_TOKEN" not in action_text
+    holders, callers, users = [], [], []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        jobs = _load(path.name).get("jobs") or {}
+        golden_callers = {n for n, j in jobs.items() if j.get("uses") == GOLDEN}
+        for name, job in jobs.items():
+            if "CELERP_L10N_TOKEN" in str(job):
+                holders.append(f"{path.name}:{name}")
+            if name in golden_callers:
+                callers.append(path.name)
+                assert job.get("secrets") == "inherit", f"{path.name}:{name}"
+            if any(s.get("uses") == ACTION for s in job.get("steps") or []):
+                users.append(f"{path.name}:{name}")
+                assert golden_callers & set(_needs(job)), f"{path.name}:{name} does not wait for the golden"
+                assert "environment" not in job, f"{path.name}:{name}"
+    assert holders == ["l10n-golden.yml:golden"]
+    assert sorted(callers) == ["build.yml", "ci.yml", "publish.yml"]
+    assert sorted(users) == ["build.yml:build", "publish.yml:build"]
+
+    [golden] = _load("l10n-golden.yml")["jobs"].values()
+    assert golden["environment"] == ENVIRONMENT
+    steps = golden["steps"]
+    [fetch] = [i for i, s in enumerate(steps) if TOKEN in str(s)]
+    assert steps[fetch]["env"] == SECRETS and steps[fetch]["run"] == "python scripts/l10n_packs.py fetch"
+    [upload] = _steps_using(steps, "actions/upload-artifact")
+    assert fetch < upload
+    assert steps[upload]["with"] == {"name": ARTIFACT, "path": PACKS_DIR, "if-no-files-found": "error",
+                                     "retention-days": 1}
+
+    action = yaml.safe_load(action_text)
+    assert "inputs" not in action
+    steps = action["runs"]["steps"]
+    [download] = _steps_using(steps, "actions/download-artifact")
+    assert steps[download]["with"] == {"name": ARTIFACT, "path": PACKS_DIR}
+    [check] = [i for i, s in enumerate(steps) if "scripts/l10n_packs.py check" in str(s.get("run", ""))]
+    assert download < check
+    assert steps[check]["run"].endswith("scripts/l10n_packs.py check celerp/localization")
