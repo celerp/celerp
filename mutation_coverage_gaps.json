@@ -1453,6 +1453,12 @@
   "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  },
  {
+  "site": "celerp/notifications/service.py _notify_once execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Moves the keys of a notice told earlier to the keys it is told under now. Only the startup notices pass keys that change between releases, so no request reaches the move. Driven by tests/test_tax_seed_notice.py::test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key."
+ },
+ {
   "site": "celerp/services/migrations.py _run_locked execute",
   "count": 1,
   "class": "not reached from a route",
