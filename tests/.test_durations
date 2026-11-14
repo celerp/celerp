@@ -28797,7 +28797,6 @@
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collect_mode_needs_its_permission_its_consent_and_a_card_on_file": 0.522355362016242,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_deliveries_validated_at_app": 0.4500815930077806,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_is_for_sales_agreements_only": 0.44429206498898566,
-    "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[1.0]": 0.37528722098795697,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[1]": 0.42029024905059487,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[2]": 0.36723732500104234,
     "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[None]": 0.3613581759855151,
@@ -29859,5 +29858,14 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/v5w6x7y8z9a0_backfill_invoice_items_at_sale.py]": 0.004290659097023308,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_membership_is_what_was_sold[item_made_lifetime_while_draft]": 1.5898679830133915,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_no_writer_rewrites_what_an_invoice_sold[data]": 0.33792708918917924,
-    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_no_writer_rewrites_what_an_invoice_sold[fields_changed]": 0.35954205493908376
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_no_writer_rewrites_what_an_invoice_sold[fields_changed]": 0.35954205493908376,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_a_cancel_crossing_a_charge_that_succeeded_keeps_the_success[after_the_answer]": 2.1997012950014323,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_a_cancel_crossing_a_charge_that_succeeded_keeps_the_success[before_the_answer]": 2.136328640859574,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_a_cancel_that_reaches_cloud_before_its_attempt_holds": 2.383150749024935,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_a_duplicate_cancel_arriving_after_the_next_attempt_leaves_it_alone": 2.867031693109311,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[2.0]": 2.2897730879485607,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_collection_protocol_version_mismatch_fails_closed[3]": 1.947814165148884,
+    "default_modules/celerp-subscriptions/tests/test_collection.py::test_the_stand_in_cloud_cancels_by_attempt_number_as_cloud_does": 0.0033233819995075464,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_a_lifetime_sale_credited_back_in_full_makes_no_member": 2.5405585350235924,
+    "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_standing_reads_the_oldest_bill_still_owing": 2.4536963109858334
 }
