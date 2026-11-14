@@ -7437,6 +7437,8 @@
   "documents.err_numbering_no_sequence_token": "Adicione ao padrão um token de sequência como {example}.",
   "documents.err_numbering_next_min": "O próximo número deve ser 1 ou maior.",
   "documents.err_numbering_unknown_tokens": "O Celerp não reconhece estes tokens no padrão: {tokens}.",
+  "documents.err_numbering_many_sequence_tokens": "Use apenas um token de sequência como {example} no padrão.",
+  "documents.err_numbering_stray_brace": "Cada chave no padrão deve fazer parte de um token completo como {example}.",
   "documents.err_numbering_unknown_type": "'{value}' não é um tipo de documento. Use um destes: {types}.",
   "documents.err_numbering_prefix_braces": "Um prefixo não pode conter chaves.",
   "documents.err_number_too_long": "Um número pode ter no máximo {max} caracteres. Este tem {length}.",

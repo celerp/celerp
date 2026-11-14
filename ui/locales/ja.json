@@ -7437,6 +7437,8 @@
   "documents.err_numbering_no_sequence_token": "パターンに {example} などの連番トークンを追加してください。",
   "documents.err_numbering_next_min": "次の番号は 1 以上にしてください。",
   "documents.err_numbering_unknown_tokens": "パターン内の次のトークンは Celerp で認識できません: {tokens}。",
+  "documents.err_numbering_many_sequence_tokens": "パターンには {example} などの連番トークンを 1 つだけ使用してください。",
+  "documents.err_numbering_stray_brace": "パターン内の波かっこは、{example} のような完全なトークンの一部である必要があります。",
   "documents.err_numbering_unknown_type": "'{value}' は書類の種類ではありません。次のいずれかを使用してください: {types}。",
   "documents.err_numbering_prefix_braces": "接頭辞に波括弧は使用できません。",
   "documents.err_number_too_long": "番号は最大 {max} 文字までです。この番号は {length} 文字あります。",

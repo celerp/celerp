@@ -204,6 +204,33 @@ async def test_yearly_reset_uses_company_timezone(monkeypatch, client, session, 
 
 
 @pytest.mark.parametrize('dtype', TYPES)
+async def test_monthly_reset_is_at_the_company_midnight(monkeypatch, client, session, auth, dtype):
+    c = await locked_company(session, auth['company_id'])
+    c.settings = {**c.settings, 'timezone': 'Asia/Bangkok'}
+    await session.commit()
+    await _configure(client, auth, dtype, prefix='MB', pattern=DEFAULT_PATTERN, next=10)
+    freeze(monkeypatch, datetime(2026, 11, 30, 16, 59, 59, tzinfo=timezone.utc))  # 23:59:59 in Bangkok
+    assert await _issue(client, auth, dtype) == 'MB-2611-0010'
+    freeze(monkeypatch, datetime(2026, 11, 30, 17, 0, 0, tzinfo=timezone.utc))  # midnight in Bangkok
+    assert await _issue(client, auth, dtype) == 'MB-2612-0001'
+
+
+@pytest.mark.parametrize('dtype', TYPES)
+async def test_a_typed_pattern_is_saved_exactly_when_it_is_well_formed(client, session, auth, dtype):
+    from test_services.test_sequences import pattern_is_valid, random_patterns
+    patterns = random_patterns(4280 + TYPES.index(dtype), 60) + ['{PREFIX}-{####}', '{##}-{####}', '{YY}}-{##}']
+    for pattern in patterns:
+        before = await _settings(session, auth)
+        r = await _configure(client, auth, dtype, pattern=pattern)
+        assert r.status_code in (200, 422), (pattern, r.text)
+        assert (r.status_code == 200) == pattern_is_valid(pattern), (pattern, r.text)
+        if r.status_code == 200:
+            assert (await _view(client, auth, dtype))['pattern'] == pattern
+        else:
+            assert await _settings(session, auth) == before
+
+
+@pytest.mark.parametrize('dtype', TYPES)
 async def test_duplicate_number_cannot_be_issued(client, session, auth, dtype):
     first = await _issue(client, auth, dtype)
     c = await locked_company(session, auth['company_id'])

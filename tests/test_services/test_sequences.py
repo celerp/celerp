@@ -102,6 +102,65 @@ def test_a_pattern_with_an_unknown_token_is_refused():
     assert _refusal_key(require_pattern, "{##}-{INVALID}") == "documents.err_numbering_unknown_tokens"
 
 
+@pytest.mark.parametrize("pattern,key", [
+    ("{##}-{####}", "documents.err_numbering_many_sequence_tokens"),
+    ("{PREFIX-{####}", "documents.err_numbering_stray_brace"),
+    ("{YY}}-{####}", "documents.err_numbering_stray_brace"),
+    ("{{####}", "documents.err_numbering_stray_brace"),
+    ("{####}-{MM", "documents.err_numbering_stray_brace"),
+    ("{##}-{}", "documents.err_numbering_unknown_tokens"),
+])
+def test_a_malformed_pattern_is_refused_by_what_is_wrong(pattern, key):
+    assert _refusal_key(require_pattern, pattern) == key
+
+
+_TOKENS = ("PREFIX", "YYYY", "YY", "MM", "DD")
+# Pieces a typed pattern is made of: whole tokens, half tokens, lone brackets and plain text.
+PATTERN_PIECES = ("{", "}", "{####}", "{#}", "{##}", "{PREFIX}", "{YYYY}", "{YY}", "{MM}", "{DD}",
+                  "{BOGUS}", "{}", "{yy}", "{#X}", "-", "/", "A", "#", "PREFIX", " ", "{YY", "MM}", "\u00e4")
+
+
+def pattern_is_valid(pattern: str) -> bool:
+    """Reference reading of a pattern, written apart from require_pattern: scan left to right;
+    a "{" opens a token that must close before any other "{", a "}" outside a token is
+    malformed, a token is a known name or only "#"s, and exactly one is the sequence."""
+    i, sequence = 0, 0
+    while i < len(pattern):
+        if pattern[i] == "}":
+            return False
+        if pattern[i] == "{":
+            end = pattern.find("}", i)
+            if end < 0 or "{" in pattern[i + 1:end]:
+                return False
+            inner = pattern[i + 1:end]
+            if inner and set(inner) == {"#"}:
+                sequence += 1
+            elif inner not in _TOKENS:
+                return False
+            i = end + 1
+        else:
+            i += 1
+    return sequence == 1
+
+
+def random_patterns(seed: int, count: int) -> list[str]:
+    import random
+    rng = random.Random(seed)
+    return ["".join(rng.choice(PATTERN_PIECES) for _ in range(rng.randint(0, 7))) for _ in range(count)]
+
+
+@pytest.mark.parametrize("seed", range(4270, 4275))
+def test_a_pattern_is_accepted_exactly_when_it_is_well_formed(seed):
+    patterns = random_patterns(seed, 2000)
+    assert sum(map(pattern_is_valid, patterns)) > 100  # the sample reaches both outcomes
+    for pattern in patterns:
+        try:
+            accepted = require_pattern(pattern) == pattern
+        except Refused:
+            accepted = False
+        assert accepted == pattern_is_valid(pattern), pattern
+
+
 def test_valid_patterns_are_accepted():
     for pattern in ("{YY}{MM}-{##}", "{PREFIX}-{YYYY}-{####}", "{DD}/{MM}/{YY}-{###}"):
         assert require_pattern(pattern) == pattern
