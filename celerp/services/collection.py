@@ -261,16 +261,18 @@ async def receive_attempt(payload: dict) -> bool:
 
 
 async def charge_kept(session, company_id, doc_id: str, reference: str) -> None:
-    """An online charge for the invoice was kept among the unmatched payments: a succeeded
-    attempt's payment has arrived, so it can take no more money. Locks the document's row, after
-    the company and the unmatched payment as every writer of a payment does; the caller commits."""
+    """An online charge for the invoice was kept among the unmatched payments: the attempt's
+    payment has arrived, so it succeeded (whatever Cloud last told) and can take no more money.
+    Locks the document's row, after the company and the unmatched payment as every writer of a
+    payment does; the caller commits."""
     from celerp.models.projections import Projection
     row = await session.get(Projection, (company_id, doc_id), with_for_update=True, populate_existing=True)
     if row is None:
         return
     current = row.state.get("collection") or {}
-    if current.get("state") == "succeeded" and not current.get("kept"):
-        await set_attempt(session, company_id, row, {"kept": reference})
+    if current.get("state") in IN_FLIGHT | {"succeeded"} and not current.get("kept"):
+        await set_attempt(session, company_id, row, {"state": "succeeded", "definitive": True, "kept": reference},
+                          drop=("cancel",))
 
 
 async def charge_recorded(session, company_id, doc_row) -> None:

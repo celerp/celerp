@@ -191,11 +191,11 @@ async def test_e2e4_saas_subscriber_collected_from_a_card_on_file(owner_ui, sess
     credit, debit = docs[r.json()["credit_note_id"]], docs[r.json()["invoice_id"]]
     assert (credit["total"], debit["total"]) == (16.0, 26.67)
     assert credit["original_doc_id"] == september["entity_id"]
-    # September is paid, so the 16.00 credit is applied to the new invoice, which leaves 10.67; that
-    # is not charged while September's card charge is not reconciled: the operator voids the payment
-    # by hand and records the parked charge on September instead, and the 10.67 is charged.
+    # September is paid and its late card charge is kept among the unmatched payments, so it can take
+    # nothing more: the 16.00 credit is applied to the new invoice at once, which leaves 10.67 to charge.
+    # The operator voids the payment by hand and records the parked charge on September instead.
     assert debit["amount_outstanding"] == 10.67
-    assert debit["collection"]["held_by"] == september["ref_id"]
+    assert not (debit.get("collection") or {}).get("held_by")
     [by_hand] = [p for p in september["payments"] if p.get("method") == "bank_transfer"]
     r = await api.post(f"/docs/{september['entity_id']}/void-payment", json={"payment_index": by_hand["index"]})
     assert r.status_code == 200, r.text

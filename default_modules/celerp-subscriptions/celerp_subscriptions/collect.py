@@ -105,8 +105,10 @@ def phase_of(current: dict) -> str:
 def may_charge(current: dict) -> bool:
     """Whether the attempt may still take money: asked, with Cloud, or charged and its payment
     not delivered yet (neither recorded nor kept among the unmatched payments)."""
+    if current.get("kept"):
+        return False
     if current.get("state") == "succeeded":
-        return not current.get("kept")
+        return True
     return current.get("state") in collection.IN_FLIGHT and phase_of(current) != "new"
 
 
