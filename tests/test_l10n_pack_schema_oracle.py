@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from celerp.routers.companies import CountryPack
 from celerp.services.currencies import CURRENCY_CODES
 from test_l10n_packs_script import FIXTURE, _run
 
@@ -174,3 +175,26 @@ def test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_vali
         else:
             assert (root / "packs.lock.json").read_bytes() == before, where
     assert seen == {True, False}, "every seed meets both valid and invalid packs"
+
+
+@pytest.mark.parametrize("value", [None, "  "], ids=["null", "blank"])
+def test_a_null_or_blank_value_in_any_field_is_judged_as_the_format_says(tmp_path, value):
+    """The random cases reach a given field only now and then; this writes the value into every
+    field of the pack in turn, the optional ones (a retired row's match fields, a retired entry's
+    currency) included."""
+    root = tmp_path / "l10n"
+    shutil.copytree(FIXTURE, root)
+    paths = [p for p in _paths(_base()) if p]
+    for path in paths:
+        pack = _base()
+        _parent(pack, path)[path[-1]] = value
+        _write(root, pack)
+        code, out = _run("validate", str(root))
+        assert (code == 0) == reference_valid(pack, "TH"), f"validate {code} {out!r} with {path} = {value!r}"
+    assert len(paths) > 40
+
+
+def test_a_valid_pack_reads_back_exactly_as_written():
+    """The schema checks a pack without changing a value it gives."""
+    pack = _base()
+    assert CountryPack.model_validate(pack).model_dump(exclude_unset=True) == pack
