@@ -72,10 +72,15 @@ jobs:
   # because signing credentials must not be exposed to PR workflows. A pull request
   # that changes how the Windows app is packaged or started also builds Windows,
   # with its DLL check and both boot smokes.
+  # packs: whether this run fetches the private country packs. Only a tag or a manual run does,
+  # and every job that reads the pack token then runs in the country-packs environment, whose
+  # secret is released only after an approval. Branch pushes and pull requests build with the
+  # packs left out and never see the token.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
+      packs: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -114,15 +119,15 @@ jobs:
           fi
 
   l10n-golden:
-    if: github.event_name != 'pull_request'
+    needs: setup-matrix
+    if: needs.setup-matrix.outputs.packs == 'true'
     uses: ./.github/workflows/l10n-golden.yml
-    secrets:
-      CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
 
   build:
     needs: [prepare-release, setup-matrix, l10n-golden]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
-    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success' && (needs.l10n-golden.result == 'success' || (github.event_name == 'pull_request' && needs.l10n-golden.result == 'skipped'))
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success' && (needs.l10n-golden.result == 'success' || (needs.setup-matrix.outputs.packs != 'true' && needs.l10n-golden.result == 'skipped'))
+    environment: ${{ needs.setup-matrix.outputs.packs == 'true' && 'country-packs' || '' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.matrix) }}
@@ -214,7 +219,7 @@ jobs:
           rm -f "$F"
 
       - name: Fetch country packs
-        if: github.event_name != 'pull_request'
+        if: needs.setup-matrix.outputs.packs == 'true'
         uses: ./.github/actions/l10n-packs
         with:
           token: ${{ secrets.CELERP_L10N_TOKEN }}
@@ -740,7 +745,7 @@ jobs:
           esac
           PYTHONPATH="$RES/app" "$PY" scripts/check_packaged_modules.py \
             "$RES/app/default_modules" --lock default_modules/first_party.lock.json
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          if [ "${{ needs.setup-matrix.outputs.packs }}" = "true" ]; then
             PYTHONPATH="$RES/app" "$PY" scripts/l10n_packs.py check \
               "$RES/app/celerp/localization" --lock celerp/localization/packs.lock.json
           fi

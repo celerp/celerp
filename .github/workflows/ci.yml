@@ -595,8 +595,6 @@ jobs:
   l10n-golden:
     if: github.event_name != 'pull_request'
     uses: ./.github/workflows/l10n-golden.yml
-    secrets:
-      CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
 
   test:
     name: Test

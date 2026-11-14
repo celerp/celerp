@@ -1,25 +1,22 @@
 name: Country pack golden
 
 # Fetches the real country packs, validates them and runs the tests marked real_packs.
-# Runs on every push to a branch of this repository and on a manual run, and is called by
-# ci.yml, build.yml and publish.yml on their own events except pull_request. It never runs on
-# a pull request: the packs are private and a pull request's code must never see the token.
-# Branches whose push already calls it (main from ci.yml, develop and bugfix from build.yml)
-# are left out of the push trigger so a push runs it once.
+# It runs on a manual run and when ci.yml (push to main), build.yml or publish.yml (a tag or a
+# manual run) calls it; never on a pull request or a push to any other branch. The job runs in
+# the country-packs environment: the pack token is that environment's only secret and is
+# released only after an approval, so no code reaches it without someone approving the run.
 on:
-  push:
-    branches-ignore: [main, develop, bugfix]
   workflow_dispatch:
   workflow_call:
-    secrets:
-      CELERP_L10N_TOKEN:
-        required: true
 
 jobs:
   golden:
     name: Real-pack golden
-    # A fork's own pushes run in the fork, which has no token to read the packs.
+    # A fork has no country-packs environment and no token.
     if: github.repository == 'celerp/celerp'
+    environment: country-packs
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
 

@@ -14,12 +14,14 @@ on:
 jobs:
   l10n-golden:
     uses: ./.github/workflows/l10n-golden.yml
-    secrets:
-      CELERP_L10N_TOKEN: ${{ secrets.CELERP_L10N_TOKEN }}
 
   build:
     needs: l10n-golden
     runs-on: ubuntu-latest
+    # The pack token is a secret of this environment, released only after an approval.
+    environment: country-packs
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:

@@ -3,10 +3,11 @@
 """The release machinery ships the country packs and never ships without them.
 
 The real packs sit in private repositories, so only runs that have the read token fetch them:
-pushes to any branch of this repository, tags and manual runs. Each of those runs the real-pack
-golden (one workflow, also called by the others) and a build or release waits for it to pass.
-Pull requests, forks included, never fetch and run the tests on the committed fixture pack set. Every artifact is
-built in a job that fetched the packs first, and checked against the committed lock after.
+pushes to main, tags and manual runs, each in a job of the country-packs environment (the token is
+that environment's secret). Each of those runs the real-pack golden (one workflow, called by the
+others) and a build or release waits for it to pass. Pull requests and pushes to other branches
+never fetch and run the tests on the committed fixture pack set. Every artifact is built in a job
+that fetched the packs first, and checked against the committed lock after.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,7 +24,13 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 GOLDEN = "./.github/workflows/l10n-golden.yml"
 ACTION = "./.github/actions/l10n-packs"
 GUARD = "github.event_name != 'pull_request'"
-SHELL_GUARD = 'if [ "${{ github.event_name }}" != "pull_request" ]; then'
+# build.yml also runs on branch pushes, so it fetches only on a tag or a manual run (one output).
+PACKS = "needs.setup-matrix.outputs.packs == 'true'"
+PACKS_EVENTS = "${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}"
+GUARDS = (GUARD, PACKS)
+SHELL_GUARD = 'if [ "${{ needs.setup-matrix.outputs.packs }}" = "true" ]; then'
+ENVIRONMENT = "country-packs"
+TOKEN = "secrets.CELERP_L10N_TOKEN"
 SECRETS = {"CELERP_L10N_TOKEN": "${{ secrets.CELERP_L10N_TOKEN }}"}
 PACKS_CHECK = "--lock celerp/localization/packs.lock.json"
 
@@ -63,15 +71,15 @@ def pull_request_leaks(workflow: dict) -> list[str]:
     leaks = []
     for name, job in (workflow.get("jobs") or {}).items():
         job_if = str(job.get("if", ""))
-        if job.get("uses") == GOLDEN and GUARD not in job_if:
+        if job.get("uses") == GOLDEN and not any(g in job_if for g in GUARDS):
             leaks.append(f"{name}: calls the golden")
         for i, step in enumerate(job.get("steps") or []):
             step_if = job_if + " " + str(step.get("if", ""))
             run = str(step.get("run", ""))
-            if step.get("uses") == ACTION and GUARD not in step_if:
+            if step.get("uses") == ACTION and not any(g in step_if for g in GUARDS):
                 leaks.append(f"{name} step {i}: fetches")
             for call in ("l10n_packs.py fetch", "l10n_packs.py check"):
-                if call in run and GUARD not in step_if and not _shell_guarded(run, call):
+                if call in run and not any(g in step_if for g in GUARDS) and not _shell_guarded(run, call):
                     leaks.append(f"{name} step {i}: {call}")
     return leaks
 
@@ -79,10 +87,9 @@ def pull_request_leaks(workflow: dict) -> list[str]:
 def test_check_golden_gate_hard():
     for name in ("ci.yml", "build.yml", "publish.yml"):
         job = _load(name)["jobs"]["l10n-golden"]
-        assert job["uses"] == GOLDEN, name
-        assert job["secrets"] == SECRETS, name
+        assert job["uses"] == GOLDEN and "secrets" not in job, name
 
-    allowed_skip = "(needs.l10n-golden.result == 'success' || (github.event_name == 'pull_request' && needs.l10n-golden.result == 'skipped'))"
+    allowed_skip = "(needs.l10n-golden.result == 'success' || (needs.setup-matrix.outputs.packs != 'true' && needs.l10n-golden.result == 'skipped'))"
     ci = _load("ci.yml")["jobs"]["test"]
     assert "l10n-golden" in _needs(ci)
     verify = "\n".join(str(step.get("run", "")) for step in ci["steps"])
@@ -95,13 +102,7 @@ def test_check_golden_gate_hard():
     assert "l10n-golden" in _needs(publish["jobs"]["build"])
 
     golden = _load("l10n-golden.yml")
-    events = _events(golden)
-    assert set(events) == {"workflow_call", "push", "workflow_dispatch"}  # never pull_request(_target)
-    # A push runs it once: the branches whose push workflows call it are left out of its own trigger.
-    callers = {b for name in ("ci.yml", "build.yml") for b in _events(_load(name))["push"].get("branches", [])}
-    assert set(events["push"]["branches-ignore"]) == callers and "branches" not in events["push"]
     assert golden["jobs"]["golden"]["if"] == "github.repository == 'celerp/celerp'"
-    assert set(_events(golden)["workflow_call"]["secrets"]) == set(SECRETS)
     [job] = golden["jobs"].values()
     assert "postgres" in job["services"]
     steps = job["steps"]
@@ -117,6 +118,7 @@ def test_check_golden_gate_hard():
         assert pull_request_leaks(_load(path.name)) == [], path.name
 
     unguarded = _load("build.yml")
+    assert unguarded["jobs"]["setup-matrix"]["outputs"]["packs"] == PACKS_EVENTS
     for step in unguarded["jobs"]["build"]["steps"]:
         if step.get("uses") == ACTION:
             step.pop("if")
@@ -203,3 +205,84 @@ def test_pull_request_leak_check_reads_a_copy():
     workflow = copy.deepcopy(_load("ci.yml"))
     workflow["jobs"]["extra"] = {"uses": GOLDEN}
     assert pull_request_leaks(workflow) == ["extra: calls the golden"]
+
+
+def _token_jobs(workflow: dict) -> dict[str, dict]:
+    """Every job that reads the pack token itself or runs the golden (which reads it)."""
+    return {name: job for name, job in (workflow.get("jobs") or {}).items()
+            if job.get("uses") == GOLDEN or TOKEN in str(job)}
+
+
+def _credential_events(workflow: dict) -> dict:
+    """The events under which a workflow's token-reading jobs can run, after each job's own guard."""
+    events = dict(_events(workflow))
+    guards = {str(job.get("if", "")) + str(job.get("environment", "")) for job in _token_jobs(workflow).values()}
+    if guards and all(GUARD in g or PACKS in g for g in guards):
+        events.pop("pull_request", None)
+        events.pop("pull_request_target", None)
+    if guards and all(PACKS in g for g in guards):
+        events["push"] = {"tags": (events.get("push") or {}).get("tags", [])}
+    return events
+
+
+def token_defects(workflow: dict) -> list[str]:
+    """Every way a workflow could hand the pack token to a run nobody approved."""
+    defects = []
+    for name, job in _token_jobs(workflow).items():
+        if job.get("uses") == GOLDEN:
+            continue
+        env = str(job.get("environment"))
+        if env not in (ENVIRONMENT, f"${{{{ {PACKS} && '{ENVIRONMENT}' || '' }}}}"):
+            defects.append(f"{name}: not in the {ENVIRONMENT} environment")
+        for step in job.get("steps") or []:
+            if TOKEN in str(step) and (step.get("with") != {"token": "${{ secrets.CELERP_L10N_TOKEN }}"}
+                                       or (env != ENVIRONMENT and step.get("if") != PACKS)):
+                defects.append(f"{name}: reads the token outside the fetch step's guard")
+    if not _token_jobs(workflow):
+        return defects
+    events = _credential_events(workflow)
+    push = events.get("push") or {}
+    if {"pull_request", "pull_request_target"} & set(events):
+        defects.append("reads the token on a pull request")
+    if not set(push) <= {"branches", "tags"} or not set(push.get("branches", [])) <= {"main"}:
+        defects.append("reads the token on a push to a branch other than main")
+    if not set(events) <= {"push", "workflow_dispatch", "workflow_call"}:
+        defects.append(f"reads the token on {sorted(set(events) - {'push', 'workflow_dispatch', 'workflow_call'})}")
+    return defects
+
+
+def test_pack_token_reaches_only_approved_runs():
+    """The token is read only in country-packs environment jobs, on a push to main, a tag or a manual run."""
+    golden = _load("l10n-golden.yml")
+    assert set(_events(golden)) == {"workflow_dispatch", "workflow_call"}
+    [job] = golden["jobs"].values()
+    assert job["environment"] == ENVIRONMENT and job["permissions"] == {"contents": "read"}
+    assert _load("publish.yml")["jobs"]["build"]["permissions"] == {"contents": "read"}
+    readers = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        assert "CELERP_L10N_SOURCES" not in path.read_text(encoding="utf-8"), path.name
+        workflow = _load(path.name)
+        assert token_defects(workflow) == [], path.name
+        readers += [f"{path.name}:{n}" for n, j in _token_jobs(workflow).items() if j.get("uses") != GOLDEN]
+    assert sorted(readers) == ["build.yml:build", "l10n-golden.yml:golden", "publish.yml:build"]
+
+
+@pytest.mark.parametrize("change, defect", [
+    (lambda w: w["jobs"]["golden"].pop("environment"), "golden: not in the country-packs environment"),
+    (lambda w: w.update({"on": {"push": {"branches-ignore": ["main"]}}}),
+     "reads the token on a push to a branch other than main"),
+    (lambda w: w.update({"on": {"pull_request_target": None}}), "reads the token on a pull request"),
+])
+def test_pack_token_check_catches_an_unapproved_run(change, defect):
+    workflow = copy.deepcopy(_load("l10n-golden.yml"))
+    change(workflow)
+    assert defect in token_defects(workflow)
+
+
+def test_pack_token_check_catches_a_branch_push_build():
+    build = _load("build.yml")
+    build["jobs"]["build"]["steps"] = [dict(s, **({"if": GUARD} if s.get("uses") == ACTION else {}))
+                                       for s in build["jobs"]["build"]["steps"]]
+    build["jobs"]["build"]["environment"] = "${{ " + GUARD + " && 'country-packs' || '' }}"
+    build["jobs"]["l10n-golden"]["if"] = GUARD
+    assert "reads the token on a push to a branch other than main" in token_defects(build)
