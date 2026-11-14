@@ -9,8 +9,9 @@ it to every event it writes, so a route, import, batch, conversion or migration 
 place anything at a location the company does not hold.
 
 A company has at most one default location (a partial unique index holds it), and
-``make_default_location`` is the one way a location becomes the default: it clears the
-previous default in the same transaction, for a location created, edited, imported or restored.
+``make_default_location`` is the one way a location becomes the default: under the company's
+lock it clears the previous default in the same transaction, for a location created, edited,
+imported or restored.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from sqlalchemy import select, update
 
 from celerp.accounting_roles import refusal
 from celerp.models.company import Location
+from celerp.services.company_lock import lock_company
 
 # The event-data keys that name a local location. ``from_location_id`` is history the
 # writer reads from the item itself, so it is never a caller's choice.
@@ -89,7 +91,9 @@ async def require_event_locations(session, company_id, location_id, data: dict |
 
 async def make_default_location(session, company_id, location: Location) -> None:
     """Make ``location`` the company's one default: clear the previous default, then mark this one,
-    in the caller's transaction. Callers hold the company's lock, so two of them run one after the other."""
+    in the caller's transaction. Taken under the company's lock (already held by a caller that
+    read the locations under it), so two of them run one after the other."""
+    await lock_company(session, company_id)
     await session.flush()
     await session.execute(
         update(Location).where(Location.company_id == company_id, Location.is_default.is_(True),

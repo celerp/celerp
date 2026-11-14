@@ -74,6 +74,7 @@ async def test_migration_import_keeps_the_existing_default_or_sets_the_first(com
     from types import SimpleNamespace
 
     from celerp.importers.schema import CIFLocation
+    from celerp.services.company_lock import lock_company
     from celerp.services.migration_core_sink import _import_location
 
     factory = _factory(committed_engine)
@@ -81,6 +82,8 @@ async def test_migration_import_keeps_the_existing_default_or_sets_the_first(com
 
     async def _imported(name: str) -> None:
         async with factory() as s:
+            # The migration runner holds the company's lock before the sink writes.
+            await lock_company(s, c["company_id"])
             context = SimpleNamespace(session=s, company_id=c["company_id"], run_id=uuid.uuid4())
             _, problem = await _import_location(context, CIFLocation(
                 source_system="manager_io", source_type="Location", source_external_id=name, name=name))
@@ -124,11 +127,14 @@ async def test_the_database_refuses_a_second_default(committed_engine):
 
 async def test_default_location_country_reads_the_one_default(committed_engine):
     from celerp.routers.companies import _default_location_country
+    from celerp.services.company_lock import lock_company
     from celerp.services.locations import make_default_location
 
     factory = _factory(committed_engine)
     c = await _seed(factory)
     async with factory() as s:
+        # Company first, then its locations, as every location writer.
+        await lock_company(s, c["company_id"])
         loc = Location(id=uuid.uuid4(), company_id=c["company_id"], name="Bangkok", type="warehouse",
                        address={"country": "TH"}, is_default=False)
         s.add(loc)
@@ -139,3 +145,21 @@ async def test_default_location_country_reads_the_one_default(committed_engine):
         await make_default_location(s, c["company_id"], main)
         assert await _default_location_country(s, c["company_id"]) == ""
         await s.rollback()
+
+
+async def test_making_a_default_takes_the_company_lock(committed_engine):
+    """The helper takes the company's lock itself, so a caller that did not take it first still
+    clears and marks the default one writer at a time."""
+    from celerp.services.company_lock import holds_company_lock
+    from celerp.services.locations import make_default_location
+
+    factory = _factory(committed_engine)
+    c = await _seed(factory)
+    async with factory() as s:
+        main = (await s.execute(select(Location).where(
+            Location.company_id == c["company_id"], Location.name == "Main"))).scalar_one()
+        assert not holds_company_lock(s, c["company_id"])
+        await make_default_location(s, c["company_id"], main)
+        assert holds_company_lock(s, c["company_id"])
+        await s.commit()
+    assert await _defaults(factory, c["company_id"]) == ["Main"]
