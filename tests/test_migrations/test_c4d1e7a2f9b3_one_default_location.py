@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 from .conftest import run_migration_ops, throwaway_db, upgrade_to
 
 PREVIOUS = "u4v5w6x7y8z9"
-REVISION = "v5w6x7y8z9a0"
+REVISION = "c4d1e7a2f9b3"
 
 
 def _company(conn, name: str) -> uuid.UUID:
