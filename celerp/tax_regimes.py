@@ -9,7 +9,7 @@ company.settings["currency"] when a default location with a known country is fir
 
 Each regime:
   currency: str          ISO 4217 code
-  taxes: list[dict]      matches the TaxRate schema in routers/companies.py
+  taxes: list[dict]      a list the TaxRatesPatch schema in routers/companies.py accepts
 
 ``DEFAULT_REGIME`` is the fallback for an unknown or unset country.
 """
@@ -19,6 +19,9 @@ import copy
 
 from celerp.localization import lock_codes, missing, packs
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
+
+# The sides a tax is for; a row stored without one, or with a blank one, is for both.
+TAX_TYPES = ("sales", "purchase", "both")
 
 DEFAULT_REGIME: dict = {
     "currency": "USD",
@@ -249,15 +252,15 @@ def unreadable_tax(value) -> str | None:
     return next((tax_text(entry) for entry in value if not isinstance(entry, dict)), None)
 
 
-def _tax_name_key(name) -> str:
+def tax_name_key(name) -> str:
     """A tax name as a lookup key: the same name in another case or with spaces around it
     is the same tax."""
     return str(name or "").strip().casefold()
 
 
 def holds_tax(taxes: list[dict], name: str) -> bool:
-    """Whether the tax list holds a tax named ``name`` (as _tax_name_key)."""
-    return any(_tax_name_key(x.get("name")) == _tax_name_key(name) for x in taxes)
+    """Whether the tax list holds a tax named ``name`` (as tax_name_key)."""
+    return any(tax_name_key(x.get("name")) == tax_name_key(name) for x in taxes)
 
 
 def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> str | None:
@@ -268,7 +271,7 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
     purchase, and a sale has no output tax to net it against."""
     side = doc_side(doc_type)
     other = sales_taxes(settings) if side == "purchase" else purchasing_taxes(settings)
-    sides = {_tax_name_key(x.get("name")): x.get("tax_type") or "both"
+    sides = {tax_name_key(x.get("name")): x.get("tax_type") or "both"
              for x in [*other, *side_taxes(settings, doc_type)]}
     for tax in applied:
         code = str(tax.get("code") or "").strip()
@@ -276,7 +279,7 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
             rate = float(tax.get("rate") or 0)
         except (TypeError, ValueError):
             rate = 0.0  # an unreadable rate is refused where the money is computed
-        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(_tax_name_key(code), "both")
+        tax_side = "purchase" if side == "sales" and rate < 0 else sides.get(tax_name_key(code), "both")
         if tax_side not in (side, "both"):
             return code or f"{rate:g}%"
     return None
@@ -285,7 +288,7 @@ def misplaced_tax(settings: dict, doc_type: str | None, applied: list[dict]) -> 
 # Rows earlier seeds wrote that are no longer right. A company keeps the taxes it saved, so each
 # entry is told to the company as a notice (services/tax_seed_notice.py) and never changed for it.
 # An entry matches a tax list holding a row for each of its ``rows`` ("all") or for any one of them
-# ("any"); a row matches on its name (as _tax_name_key) and every other field given. An entry naming
+# ("any"); a row matches on its name (as tax_name_key) and every other field given. An entry naming
 # a ``currency`` is that country's: a company whose books are saved in another currency holds a row
 # of the same name from its own country's catalog, not the retired one.
 RETIRED_SEED_ROWS: tuple[dict, ...] = (
@@ -302,7 +305,7 @@ def _row_matches(row: dict, want: dict) -> bool:
     """Whether a stored tax row is the retired row ``want`` describes."""
     for field, value in want.items():
         if field == "name":
-            if _tax_name_key(row.get("name")) != _tax_name_key(value):
+            if tax_name_key(row.get("name")) != tax_name_key(value):
                 return False
         elif field == "rate":
             try:

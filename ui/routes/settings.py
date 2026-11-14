@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
-from celerp.tax_regimes import country_name, missing_pack_refusal, pack_missing, tax_country
+from celerp.tax_regimes import TAX_TYPES, country_name, missing_pack_refusal, pack_missing, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -304,7 +304,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             value = str(form.get("value", ""))
             if field in _TAX_BOOL_FIELDS and value.strip().lower() not in _YES_NO:
                 return P(t("settings.value_must_be_yes_or_no"), cls="cell-error")
-            if field == "tax_type" and value not in {"sales", "purchase", "both"}:
+            if field == "tax_type" and value not in TAX_TYPES:
                 return P(t("error.invalid_tax_type", value=repr(value)), cls="cell-error")
             if field == "rate":
                 try:

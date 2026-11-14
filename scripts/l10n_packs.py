@@ -73,7 +73,7 @@ def check(root: Path, lock_file: Path | None = None) -> list[str]:
     return defects
 
 
-def _pack_defects(code: str, data: bytes, locked: dict | None, tax_rate, currency_codes) -> list[str]:
+def _pack_defects(code: str, data: bytes, locked: dict | None, tax_list, currency_codes) -> list[str]:
     try:
         pack = json.loads(data)
     except ValueError:
@@ -91,33 +91,39 @@ def _pack_defects(code: str, data: bytes, locked: dict | None, tax_rate, currenc
         defects.append(f"country {code}: country field is {pack.get('country')!r}")
     if locked is not None and pack.get("version") != locked.get("version"):
         defects.append(f"country {code}: version {pack.get('version')!r} differs from the lock's {locked.get('version')!r}")
-    currency = (pack.get("company_defaults") or {}).get("currency")
+    company_defaults = pack.get("company_defaults")
+    currency = company_defaults.get("currency") if isinstance(company_defaults, dict) else None
     if currency not in currency_codes:
         defects.append(f"country {code}: currency {currency!r} is not a known currency code")
     taxes = pack.get("taxes")
     if not isinstance(taxes, list):
-        defects.append(f"country {code}: taxes is not a list")
-        taxes = []
-    for i, row in enumerate(taxes):
-        try:
-            tax_rate.model_validate(row)
-        except ValueError as exc:  # pydantic's ValidationError
-            fields = sorted({str(err["loc"][0]) if err["loc"] else "row" for err in exc.errors()})
-            defects.append(f"country {code}: tax row {i} is invalid ({', '.join(fields)})")
+        return defects + [f"country {code}: taxes is not a list"]
+    try:
+        tax_list.model_validate({"taxes": taxes})
+    except ValueError as exc:  # pydantic's ValidationError
+        rows: dict[int, set[str]] = {}
+        for err in exc.errors():
+            loc = err["loc"][1:]  # past "taxes"
+            if loc and isinstance(loc[0], int):
+                rows.setdefault(loc[0], set()).add(str(loc[1]) if len(loc) > 1 else "row")
+            else:
+                defects.append(f"country {code}: taxes: {err['msg'].removeprefix('Value error, ')}")
+        defects += [f"country {code}: tax row {i} is invalid ({', '.join(sorted(fields))})"
+                    for i, fields in sorted(rows.items())]
     return defects
 
 
 def validate(root: Path, *, against_lock: bool = True) -> list[str]:
     """Each pack file's fields; with ``against_lock`` its version must equal its lock entry."""
     sys.path.insert(0, str(REPO_ROOT))
-    from celerp.routers.companies import TaxRate
+    from celerp.routers.companies import TaxRatesPatch
     from celerp.services.currencies import CURRENCY_CODES
 
     lock = _read_lock(root) or {}
     defects = []
     for code, path in _pack_files(root).items():
         locked = lock.get(code) if against_lock else None
-        defects += _pack_defects(code, path.read_bytes(), locked, TaxRate, CURRENCY_CODES)
+        defects += _pack_defects(code, path.read_bytes(), locked, TaxRatesPatch, CURRENCY_CODES)
     return defects
 
 

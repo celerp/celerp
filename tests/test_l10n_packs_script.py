@@ -90,6 +90,14 @@ def _bad_row(pack):
     pack["taxes"][0]["rate"] = "seven"
 
 
+def _row(**fields):
+    return lambda pack: pack["taxes"][0].update(fields)
+
+
+def _duplicate_name(pack):
+    pack["taxes"].append({**pack["taxes"][1], "name": " " + pack["taxes"][0]["name"].lower()})
+
+
 def _bad_currency(pack):
     pack["company_defaults"]["currency"] = "ZZZ"
 
@@ -109,6 +117,10 @@ _VALIDATE_CASES = {
     "schema_version not 1": (lambda r: _rewrite(r, "TH", _set("schema_version", 2)), "schema_version"),
     "unknown currency": (lambda r: _rewrite(r, "TH", _bad_currency), "currency"),
     "invalid tax row": (lambda r: _rewrite(r, "TH", _bad_row), "tax row"),
+    "tax side outside the three": (lambda r: _rewrite(r, "TH", _row(tax_type="output")), "tax row 0 is invalid (tax_type)"),
+    "default flag not a bool": (lambda r: _rewrite(r, "TH", _row(is_default="yes")), "tax row 0 is invalid (is_default)"),
+    "duplicate tax name": (lambda r: _rewrite(r, "TH", _duplicate_name), "duplicate tax name"),
+    "company defaults not an object": (lambda r: _rewrite(r, "TH", _set("company_defaults", ["THB"])), "currency"),
 }
 
 

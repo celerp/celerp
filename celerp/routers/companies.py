@@ -10,11 +10,11 @@ import re
 import uuid
 from datetime import date
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +50,8 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import (
-    TAXES_SEEDED_FOR, configured, get_regime, missing_pack_refusal, pack_missing, purchasing_taxes, sales_taxes, tax_country, with_taxes,
+    TAX_TYPES, TAXES_SEEDED_FOR, configured, get_regime, missing_pack_refusal, pack_missing, purchasing_taxes,
+    sales_taxes, tax_country, tax_name_key, with_taxes,
 )
 from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import require_phone
@@ -219,17 +220,36 @@ class ColumnPrefsPatch(BaseModel):
 
 
 class TaxRate(BaseModel):
+    """One tax of a company's list, as the settings API and the country packs both take it."""
     name: str
     rate: FiniteFloat  # percentage, e.g. 7.0
-    tax_type: str = "both"  # sales|purchase|both
-    is_default: bool = False
+    tax_type: Literal[TAX_TYPES] = "both"
+    is_default: StrictBool = False
     description: str = ""
     is_compound: bool = False
     default_order: int = 0
 
+    @field_validator("tax_type", mode="before")
+    @classmethod
+    def _unset_side_is_both(cls, value):
+        # Every reader of a stored list takes a missing or blank side as both.
+        return "both" if value is None or value == "" else value
+
 
 class TaxRatesPatch(BaseModel):
+    """A whole tax list: no two of its taxes share a name, as tax_name_key compares them."""
     taxes: list[TaxRate]
+
+    @field_validator("taxes")
+    @classmethod
+    def _names_unique(cls, taxes: list[TaxRate]) -> list[TaxRate]:
+        seen: set[str] = set()
+        for tax in taxes:
+            key = tax_name_key(tax.name)
+            if key in seen:
+                raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
+            seen.add(key)
+        return taxes
 
 
 class PaymentTermsPatch(BaseModel):
@@ -1532,7 +1552,7 @@ async def import_taxes_batch(
             res.errors.append(f"{name}: Invalid rate")
             continue
 
-        if tax_type not in {"sales", "purchase", "both"}:
+        if tax_type not in TAX_TYPES:
             res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
             continue
 
@@ -1802,7 +1822,7 @@ async def import_purchasing_taxes_batch(
             res.errors.append(f"{name}: Invalid rate")
             continue
         tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        if tax_type not in {"sales", "purchase", "both"}:
+        if tax_type not in TAX_TYPES:
             res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
             continue
         is_default_raw = r.get("is_default", False)
