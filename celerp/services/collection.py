@@ -311,11 +311,8 @@ async def charge_recorded(session, company_id, doc_row, charge: dict | None) -> 
     state = current.get("state")
     if state not in IN_FLIGHT | {"succeeded"}:
         return
-    if not is_open(doc_row.state):
+    own = _own_charge(current, charge)
+    if not is_open(doc_row.state) or (own and state == "succeeded"):
         await _charge_ended(session, company_id, doc_row, current)
-    elif not _own_charge(current, charge):
-        return
-    elif state == "succeeded":
-        await _charge_ended(session, company_id, doc_row, current)
-    elif state != "pending" or current.get("asked"):
+    elif own and (state != "pending" or current.get("asked")):
         await set_attempt(session, company_id, doc_row, {"charged": True})
