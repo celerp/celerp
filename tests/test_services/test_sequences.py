@@ -145,10 +145,14 @@ def test_update_sequence_resets_next():
     assert _row(c, "invoice")["next"] == 1
 
 
-def test_update_sequence_min_next_is_1():
+@pytest.mark.parametrize("value", [0, -5])
+def test_update_sequence_refuses_a_next_number_below_1(value):
     c = _company()
-    update_sequence(c, "invoice", next_num=-5)
-    assert _row(c, "invoice")["next"] == 1
+    before = _row(c, "invoice")
+    with pytest.raises(Refused) as exc:
+        update_sequence(c, "invoice", next_num=value)
+    assert exc.value.detail["message_key"] == "documents.err_numbering_next_min"
+    assert _row(c, "invoice") == before
 
 
 def test_expand_pattern_with_dd():
