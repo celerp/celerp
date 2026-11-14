@@ -1261,38 +1261,51 @@ def _event_prefix_owners() -> dict[str, tuple[str, str]]:
 
 def event_read_permissions() -> dict[str, str]:
     """The permission each module event prefix is read with, enabled or not, so a module
-    that is turned off keeps its events behind it. Only a module that passes admission
-    names one, and only for a prefix no other installed module claims an overlapping
-    prefix of; every other module event falls to the company-admin default."""
+    that is turned off keeps its events behind it. A module names one when this process
+    admitted it (the admission its load made) or when it is Celerp's own (its content
+    matches the first-party lock, which every default module is admitted with), and only
+    for a prefix no other installed module claims an overlapping prefix of; every other
+    module event falls to the company-admin default. No module is admitted or parsed
+    again for it."""
     search_path = module_search_path()
     if search_path not in _event_permissions:
-        _event_permissions[search_path] = _admitted_event_permissions(search_path)
+        _event_permissions[search_path] = _trusted_event_permissions()
     return dict(_event_permissions[search_path])
 
 
-# Admitting every installed module reads and parses their source, so the result is kept
-# per module search path for the life of the process.
+# Kept per module search path until the next load, which changes which modules are admitted.
 _event_permissions: dict[str, tuple[tuple[str, str], ...]] = {}
 
 
-def _admitted_event_permissions(search_path: str) -> tuple[tuple[str, str], ...]:
-    found: dict[str, dict] = {}
+def _trusted_event_permissions() -> tuple[tuple[str, str], ...]:
+    found: dict[str, tuple[Path, dict]] = {}
     for pkg in _installed_packages():
         manifest = read_manifest(pkg)
-        found.setdefault(manifest.get("name") or pkg.name, manifest)
-    try:
-        admitted = admit_modules(search_path, set(found)).admitted
-    except ModuleLoadError:
-        log.exception("Module admission failed; module events are read by company admins only")
-        return ()
-    claims = [(m.name, c) for m in admitted for c in m.manifest["slots"].get("projection_handler", [])]
+        found.setdefault(manifest.get("name") or pkg.name, (pkg, manifest))
+    claims = [(name, c) for name, manifest in _trusted_manifests(found)
+              for c in manifest["slots"].get("projection_handler", [])]
     claims += [(c["_module"], c) for c in get_slot("projection_handler") if c.get("_module") in CORE_FOLDED]
-    prefixes = [(name, c["prefix"]) for name, manifest in found.items()
+    prefixes = [(name, c["prefix"]) for name, (_pkg, manifest) in found.items()
                 for c in (manifest.get("slots") or {}).get("projection_handler") or []
                 if isinstance(c, dict) and isinstance(c.get("prefix"), str)]
     prefixes += [(name, c["prefix"]) for name, c in claims if name in CORE_FOLDED]
     return tuple((c["prefix"], c["permission"]) for name, c in claims if "permission" in c
                  and not any(other != name and projection_prefixes_overlap(c["prefix"], p) for other, p in prefixes))
+
+
+def _trusted_manifests(found: dict[str, tuple[Path, dict]]):
+    """(name, validated manifest) of each installed module this process admitted, or
+    whose copy is first-party; a module neither admitted nor first-party has none."""
+    for name, (pkg, _manifest) in found.items():
+        if name in CORE_FOLDED:
+            continue
+        if name in _admitted:
+            yield name, _admitted[name].manifest
+        elif is_first_party(pkg):
+            try:
+                yield name, _declared_manifest(pkg)
+            except ModuleLoadError:
+                log.exception("Module %r has an unreadable manifest; its events are read by company admins only", name)
 
 
 def _owner_of(event_type: str, owners: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
@@ -1426,6 +1439,7 @@ def load_all(
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
+    _event_permissions.clear()
     _module_routes.clear()
     _module_dirs = tuple(e.strip() for e in str(module_dir).split(",") if e.strip())
     # Every core table is on the metadata before any module code runs, so a table
@@ -1943,6 +1957,7 @@ def _deactivate(name: str, reason: str) -> set[str]:
         _load_errors[gone] = why
         _admitted.pop(gone, None)
         unregister_module_slots(gone)
+    _event_permissions.clear()
     _drop_tables(set(out))
     clear_registry()
     for manifest in _loaded:

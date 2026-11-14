@@ -140,8 +140,21 @@ def test_every_projection_handler_names_the_permission_its_events_are_read_with(
 
 
 def test_the_kept_event_permissions_are_what_admitting_the_installed_modules_gives():
-    """No earlier test leaves a result computed under doctored admission or slots (a mocked
-    boot admits no modules): what every ledger read uses equals a fresh admission."""
-    from celerp.modules.loader import _admitted_event_permissions, event_read_permissions, module_search_path
+    """What every ledger read uses, worked out from boot's admission and the first-party
+    lock, equals a fresh admission of every installed module."""
+    from celerp.modules import loader
+    from celerp.modules.slots import get as get_slot, projection_prefixes_overlap
 
-    assert event_read_permissions() == dict(_admitted_event_permissions(module_search_path()))
+    found = {}
+    for pkg in loader._installed_packages():
+        manifest = loader.read_manifest(pkg)
+        found.setdefault(manifest.get("name") or pkg.name, manifest)
+    admitted = loader.admit_modules(loader.module_search_path(), set(found)).admitted
+    claims = [(m.name, c) for m in admitted for c in m.manifest["slots"].get("projection_handler", [])]
+    claims += [(c["_module"], c) for c in get_slot("projection_handler") if c.get("_module") in loader.CORE_FOLDED]
+    prefixes = [(name, c["prefix"]) for name, manifest in found.items()
+                for c in (manifest.get("slots") or {}).get("projection_handler") or []]
+    prefixes += [(name, c["prefix"]) for name, c in claims if name in loader.CORE_FOLDED]
+    fresh = {c["prefix"]: c["permission"] for name, c in claims if "permission" in c
+             and not any(other != name and projection_prefixes_overlap(c["prefix"], p) for other, p in prefixes)}
+    assert fresh and loader.event_read_permissions() == fresh

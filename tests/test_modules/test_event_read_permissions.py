@@ -1,6 +1,6 @@
-"""Which roles read a module's ledger events: the permission comes only from a module that
-passes admission and is the sole claimant of the event prefix; anything else falls to the
-company-admin default."""
+"""Which roles read a module's ledger events: the permission comes only from a module this
+process admitted (or a first-party copy) that is the sole claimant of the event prefix;
+anything else falls to the company-admin default."""
 from __future__ import annotations
 
 import pytest
@@ -30,8 +30,9 @@ _DEFAULT_READERS = {"owner", "admin"}
 _EDIT_DOCUMENT_READERS = {"owner", "admin", "manager", "operator"}
 
 
-def test_a_sole_admitted_claimant_names_its_events_permission_even_when_disabled(_modules):
-    _projecting(_modules, "acmea.")
+def test_a_sole_admitted_claimant_names_its_events_permission(_modules):
+    pkg = _projecting(_modules, "acmea.")
+    loader.load_all(str(_modules), {pkg.name})
     assert loader.event_read_permissions()["acmea."] == "edit_documents"
     assert _readers("acmea.order.placed") == _EDIT_DOCUMENT_READERS
 
@@ -61,15 +62,23 @@ def test_a_module_claiming_inside_a_core_prefix_grants_nothing(_modules):
     assert _readers("mpz.order.placed") == _DEFAULT_READERS
 
 
-def test_when_admission_fails_every_module_event_is_closed(_modules, monkeypatch):
-    _projecting(_modules, "acmef.", "edit_documents")
+def test_a_loaded_module_names_its_events_permission_without_being_admitted_again(_modules, monkeypatch):
+    pkg = _projecting(_modules, "acmef.", "edit_documents")
+    assert [m["name"] for m in loader.load_all(str(_modules), {pkg.name})] == [pkg.name]
 
-    def failing(*_a, **_k):
-        raise loader.ModuleLoadError("broken")
+    def _admitted_again(*_a, **_k):
+        raise AssertionError("the module was admitted again")
 
-    monkeypatch.setattr(loader, "admit_modules", failing)
-    assert loader.event_read_permissions() == {}
-    assert _readers("acmef.recorded") == _DEFAULT_READERS
+    for name in ("admit_modules", "_admission_checks", "_check_dynamic_writes"):
+        monkeypatch.setattr(loader, name, _admitted_again)
+    assert loader.event_read_permissions()["acmef."] == "edit_documents"
+    assert _readers("acmef.recorded") == _EDIT_DOCUMENT_READERS
+
+
+def test_a_third_party_module_this_process_did_not_admit_names_nothing(_modules):
+    _projecting(_modules, "acmeg.", "edit_documents")
+    assert "acmeg." not in loader.event_read_permissions()
+    assert _readers("acmeg.recorded") == _DEFAULT_READERS
 
 
 def test_a_module_from_before_read_permissions_loads_and_its_events_stay_closed(_modules):

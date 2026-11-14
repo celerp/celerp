@@ -304,22 +304,21 @@ async def test_the_modules_settle_nothing_while_the_projections_are_not_current(
 
 
 @pytest.mark.asyncio
-async def test_boot_settles_the_permission_each_module_event_is_read_with(monkeypatch, tmp_path):
-    """The permission a module's events are read with comes from admitting every installed
-    module, which reads and parses their source. Boot settles it, so the first ledger read
-    after a start (a record's History, the dashboard's activity) admits nothing inside the
-    request, where it would hold every other request until it finished."""
+async def test_the_first_ledger_read_after_a_boot_admits_no_module_again(monkeypatch):
+    """The permission a module's events are read with comes from the admission boot already
+    made and the first-party lock, so neither boot nor the first ledger read after it (a
+    record's History, the dashboard's activity) admits or parses the installed modules again."""
     from celerp.modules import loader
-    from celerp.services.activity_redaction import can_read_event
 
-    monkeypatch.setattr(loader, "module_search_path", lambda: str(tmp_path))  # a path no earlier read settled
+    monkeypatch.setattr(loader, "_event_permissions", {})  # nothing settled by an earlier read
     await _boot_in_order(monkeypatch, AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
 
-    def _admitted_in_a_request(*a, **k):
-        raise AssertionError("a ledger read admitted the installed modules")
+    def _admitted_again(*a, **k):
+        raise AssertionError("a ledger read admitted the installed modules again")
 
-    monkeypatch.setattr(loader, "admit_modules", _admitted_in_a_request)
-    assert can_read_event("zz.unknown.recorded", {}, "admin")
+    monkeypatch.setattr(loader, "admit_modules", _admitted_again)
+    monkeypatch.setattr(loader, "_admission_checks", _admitted_again)
+    assert loader.event_read_permissions()["je."] == "view_financial_reports"
 
 
 def _transactions_left_open(url) -> list[tuple]:
