@@ -134,6 +134,9 @@ class TestWorkerLabel:
         labels = [nested, *nested_workers, worker_label(stripped)]
         assert not set(labels) & (siblings | {parent})
         assert all(label.endswith(f"-{os.getpid()}") for label in labels)
+        serial: dict[str, str] = {}  # a run with no xdist workers; its child has no worker either
+        worker_label(serial)
+        assert worker_label(dict(serial)).endswith(f"-{os.getpid()}")
 
     def test_a_run_label_is_still_our_own_path(self):
         label = worker_label({"PYTEST_XDIST_WORKER": "gw0"})
