@@ -106,26 +106,51 @@ def _normalize_attributes(current: dict) -> None:
     current["attributes"] = attrs
 
 
-def _fold_legacy_category_fields(current: dict) -> None:
-    """Move old preset values onto their core fields (in place); a value the core field already
-    holds wins. Applied on every event, so a rebuild folds existing lots and a client still
-    writing an old key lands on the core field. A weight that is not a finite number (text, true,
-    nan, an infinity, a number too large for a float) stays where it is."""
-    attrs = current.get("attributes")
-    if not attrs or not LEGACY_CATEGORY_FIELDS.keys() & attrs.keys():
+def _written(event_type: str, data: dict) -> dict:
+    """The fields an event writes, with their new values. An edit or a CSV upsert names each
+    field it sets or clears; a create or snapshot gives a value only where it carries one."""
+    if event_type == "item.updated":
+        changed = data.get("fields_changed") or {}
+        out = {k: c.get("new") for k, c in changed.items() if k != "attributes" and isinstance(c, dict)}
+        whole = (changed.get("attributes") or {}).get("new") if isinstance(changed.get("attributes"), dict) else None
+        out.update({k: v for k, v in (whole or {}).items() if v not in (None, "")})
+        return out
+    if event_type in {"item.created", "item.snapshot", "item.patched"}:
+        attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+        given = {**data, **attrs}
+        return given if event_type == "item.patched" else {k: v for k, v in given.items() if v not in (None, "")}
+    return {}
+
+
+def _fold_legacy_category_fields(current: dict, written: dict) -> None:
+    """Land an event's write of an old preset key on its core field (in place), as the event is
+    applied: a later write or clear of the old key updates or clears the core field. A core
+    field the same event writes wins over the old key in it. A weight that is not a finite number
+    (text, true, nan, an infinity, a number too large for a float) stays in the attributes as
+    given; an empty old key never stays."""
+    attrs = dict(current.get("attributes") or {})
+    if not LEGACY_CATEGORY_FIELDS.keys() & (written.keys() | attrs.keys()):
         return
-    attrs = dict(attrs)
     for old, core in LEGACY_CATEGORY_FIELDS.items():
-        value = attrs.get(old)
-        if core == "weight":
-            if value not in (None, "") and current.get("weight") in (None, ""):
-                weight = coerce_price(value)
-                if weight is None:
-                    continue
-                current["weight"], current["weight_unit"] = weight, "gram"
-        elif value not in (None, "") and attrs.get(core) in (None, ""):
-            attrs[core] = value
+        if old not in written:
+            if old in attrs and attrs[old] in (None, ""):
+                attrs.pop(old)
+            continue
         attrs.pop(old, None)
+        value = written[old]
+        if core in written:
+            continue
+        if value in (None, ""):
+            if core == "weight":
+                current.pop("weight", None)
+            else:
+                attrs.pop(core, None)
+        elif core != "weight":
+            attrs[core] = value
+        elif (weight := coerce_price(value)) is not None:
+            current["weight"], current["weight_unit"] = weight, "gram"
+        else:
+            attrs[old] = value
     current["attributes"] = attrs
 
 
@@ -436,7 +461,7 @@ def _stamp_status_doc(current: dict, data: dict) -> None:
 
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = _apply_item_event(state, event_type, data)
-    _fold_legacy_category_fields(current)
+    _fold_legacy_category_fields(current, _written(event_type, data))
     _keep_on_books(state, current, event_type, data)
     return current
 
