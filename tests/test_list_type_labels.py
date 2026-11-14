@@ -12,7 +12,7 @@ from fasthtml.common import to_xml
 from ui.routes.documents import _list_type_options
 
 _DE = {"quotation": "Angebot", "transfer": "Umlagerungsauftrag", "audit": "Inventur",
-       "writeoff": "Bestandskorrektur", "shipping_doc": "Lieferschein"}
+       "writeoff": "Bestandsanpassung", "shipping_doc": "Lieferschein"}
 
 
 @pytest.fixture
