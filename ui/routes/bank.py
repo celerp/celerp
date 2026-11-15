@@ -17,6 +17,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components import bank_groups as BG
+from ui.components.funds import chosen_fund, funds_in_use
 from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title
 from ui.components.table import EMPTY
 from ui.config import get_token as _token
@@ -43,10 +44,13 @@ def _view(value: str | None) -> str:
     return value if value in BG.VIEWS else "open"
 
 
-async def _answer_options(token: str, bank_id: str) -> list[tuple[str, str]]:
+async def _choices(token: str, bank_id: str) -> tuple[list[tuple[str, str]], list[dict] | None]:
+    """What the answer and split forms offer: the answers, and the funds when the company
+    has funds turned on."""
     chart = (await api.get_chart(token)).get("items", [])
     banks = (await api.get_bank_accounts(token)).get("items", [])
-    return BG.answer_options(chart, banks, bank_id)
+    funds = await funds_in_use(token, (await api.get_company(token)).get("settings") or {})
+    return BG.answer_options(chart, banks, bank_id), funds
 
 
 async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "", bulk_outcome: str | None = None,
@@ -65,7 +69,7 @@ async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "",
         BG.search_form(bank_id, view, q),
         BG.bulk_toolbar(bank_id, cur, view, q, bulk_outcome, undo_ids),
         BG.group_table(table, bank_id, cur),
-        *BG.panel_templates(bank, await _answer_options(token, bank_id)),
+        *BG.panel_templates(bank, *await _choices(token, bank_id)),
         Details(Summary(t("bank.drop_another")), BG.drop_zone(bank_id), cls="screen-only"),
         id="bank-body", data_bank=bank_id)
 
@@ -361,27 +365,32 @@ def setup_routes(app):
         form = await request.form()
         line_id, kind = str(form.get("line_id", "")), str(form.get("form", "answer"))
         bank = await api.get_bank_account(token, bank_id)
-        options = await _answer_options(token, bank_id)
+        options, funds = await _choices(token, bank_id)
         rate = str(form.get("rate", "")).strip()
         if kind == "split":
-            parts = [(str(c).strip(), str(a).strip()) for c, a in zip(form.getlist("account_code"),
-                                                                       form.getlist("amount"))]
-            parts = [(c, a) for c, a in parts if c or a]
+            codes, amounts = form.getlist("account_code"), form.getlist("amount")
+            picked = form.getlist("fund") or [""] * len(codes)
+            parts = [(str(c).strip(), str(a).strip(), str(f)) for c, a, f in zip(codes, amounts, picked)]
+            parts = [(c, a, f) for c, a, f in parts if c or a]
 
             def again(error: str) -> FT:
-                return BG.split_form(bank, options, line_id=line_id, parts=parts, rate=rate, error=error)
-            if not parts or not all(c for c, _a in parts):
+                return BG.split_form(bank, options, funds, line_id=line_id, parts=parts, rate=rate, error=error)
+            if not parts or not all(c for c, _a, _f in parts):
                 return again(t("reconciliation.split.account_required"))
-            decision = {"kind": "post", "splits": [{"account_code": c, "amount": a or 0} for c, a in parts]}
+            decision = {"kind": "post", "splits": [
+                {"account_code": c, "amount": a or 0, **({"fund_id": fund} if (fund := chosen_fund(f)) else {})}
+                for c, a, f in parts]}
         else:
             answer, contact = str(form.get("answer", "")), str(form.get("contact", "")).strip()
+            fund = str(form.get("fund", ""))
 
             def again(error: str) -> FT:
-                return BG.answer_form(bank, options, line_id=line_id,
-                                      values={"answer": answer, "contact": contact, "rate": rate}, error=error)
+                return BG.answer_form(bank, options, funds, line_id=line_id, error=error,
+                                      values={"answer": answer, "contact": contact, "fund": fund, "rate": rate})
             head, _, rest = answer.partition(":")
             if head == "post" and rest:
-                decision = {"kind": "post", "account_code": rest}
+                decision = {"kind": "post", "account_code": rest,
+                            **({"fund_id": chosen} if (chosen := chosen_fund(fund)) else {})}
             elif head == "transfer" and rest:
                 decision = {"kind": "transfer", "target_bank_id": rest}
             elif answer in ("cash", "suspense", "no_entry"):

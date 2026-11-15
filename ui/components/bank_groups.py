@@ -18,6 +18,7 @@ from celerp.accounting_roles import account_label
 from celerp.output.doc_print import money_step
 from ui.components.attrs import hx_vals
 from ui.components.encode import EVENT, THIS, call
+from ui.components.funds import UNRESTRICTED, fund_options
 from ui.components.shell import flash
 from ui.components.table import EMPTY, PARTY_SEARCH_URL, display_enum, searchable_select
 from ui.i18n import t
@@ -315,8 +316,23 @@ def answer_options(chart: list[dict], banks: list[dict], bank_id: str) -> list[t
                    ("no_entry", t("bank.answer_no_entry"))]
 
 
-def answer_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = "", values: dict | None = None,
-                error: str = "") -> FT:
+def _fund_pick(funds: list[dict] | None, value: str = "") -> FT | None:
+    """The Fund choice of an entry posted from a line, Unrestricted until a fund is picked;
+    none when the company has no funds turned on."""
+    if funds is None:
+        return None
+    return Div(searchable_select("fund", fund_options(funds), value=value or UNRESTRICTED, placeholder=EMPTY,
+                                 aria_label=t("th.fund")), cls="searchable-select")
+
+
+def _fund_hint(funds: list[dict] | None) -> FT | None:
+    """Left at Unrestricted, money moved off a balance the funds share is split among the
+    funds holding it, not put on one."""
+    return P(t("recon.fund_hint"), cls="form-hint") if funds is not None else None
+
+
+def answer_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
+                values: dict | None = None, error: str = "") -> FT:
     values = values or {}
     bank_id = bank["id"]
     return Form(
@@ -329,6 +345,8 @@ def answer_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = ""
         Label(t("bank.contact_label"), cls="form-label"),
         Div(searchable_select("contact", [], value=values.get("contact", ""), search_url=PARTY_SEARCH_URL,
                               aria_label=t("bank.contact_label")), cls="searchable-select"),
+        Label(t("th.fund"), cls="form-label") if funds is not None else None,
+        _fund_pick(funds, values.get("fund", "")), _fund_hint(funds),
         rate_input(bank, value=values.get("rate", "")),
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
@@ -337,13 +355,13 @@ def answer_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = ""
         cls="bank-panel", data_form="answer", onkeydown=_remove_on_escape("form"))
 
 
-def split_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = "",
-               parts: list[tuple[str, str]] | None = None, rate: str = "", error: str = "") -> FT:
-    """The parts of one line, each an account and a positive amount in the bank's minor
-    unit; blank rows are dropped."""
+def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
+               parts: list[tuple[str, str, str]] | None = None, rate: str = "", error: str = "") -> FT:
+    """The parts of one line, each an account, a positive amount in the bank's minor unit
+    and, with funds turned on, its fund; blank rows are dropped."""
     bank_id, currency = bank["id"], bank.get("currency")
     accounts = [(v.split(":", 1)[1], label) for v, label in options if v.startswith("post:")]
-    parts = list(parts or []) + [("", "")] * max(0, 3 - len(parts or []))
+    parts = list(parts or []) + [("", "", "")] * max(0, 3 - len(parts or []))
     return Form(
         Input(type="hidden", name="line_id", value=line_id), Input(type="hidden", name="form", value="split"),
         _key_input(),
@@ -353,7 +371,9 @@ def split_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = "",
                   cls="searchable-select"),
               Input(type="number", name="amount", value=amount, min="0", step=money_step(currency), cls="form-input",
                     aria_label=t("label.amount")),
-              cls="bank-split__part") for code, amount in parts],
+              _fund_pick(funds, fund),
+              cls="bank-split__part") for code, amount, fund in parts],
+        _fund_hint(funds),
         rate_input(bank, value=rate),
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
@@ -375,9 +395,9 @@ def ask_panel(bank_id: str) -> FT:
         cls="bank-panel", data_panel="ask", onkeydown=_remove_on_escape("[data-panel=ask]"))
 
 
-def panel_templates(bank: dict, options: list[tuple[str, str]]) -> tuple:
-    return (Template(answer_form(bank, options), id="bank-tpl-answer"),
-            Template(split_form(bank, options), id="bank-tpl-split"),
+def panel_templates(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None) -> tuple:
+    return (Template(answer_form(bank, options, funds), id="bank-tpl-answer"),
+            Template(split_form(bank, options, funds), id="bank-tpl-split"),
             Template(ask_panel(bank["id"]), id="bank-tpl-ask"))
 
 
