@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "No se pudo importar este contacto: {reason}",
   "contacts.err_delete_linked": "Estos contactos no se pueden eliminar mientras documentos, listas u oportunidades los mencionen: {records}.",
   "documents.err_stripe_books_unreadable": "Celerp no puede saber en qué libros se registró este pago de Stripe, así que no se puede reembolsar ni anular aquí. Registra el reembolso con un asiento de diario.",
-  "pay.err_refund_not_linked_to_stripe": "El pago ya no está vinculado a Stripe."
+  "pay.err_refund_not_linked_to_stripe": "El pago ya no está vinculado a Stripe.",
+  "pay.err_books_bad_rate": "Los libros del pago tienen un tipo de cambio que no se puede usar."
 }

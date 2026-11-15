@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "Ce contact n'a pas pu être importé : {reason}",
   "contacts.err_delete_linked": "Ces contacts ne peuvent pas être supprimés tant que des documents, listes ou affaires les mentionnent : {records}.",
   "documents.err_stripe_books_unreadable": "Celerp ne peut pas savoir dans quels livres ce paiement Stripe a été enregistré : il ne peut donc pas être remboursé ni annulé ici. Enregistrez plutôt le remboursement par une écriture de journal.",
-  "pay.err_refund_not_linked_to_stripe": "Le paiement n'est plus lié à Stripe."
+  "pay.err_refund_not_linked_to_stripe": "Le paiement n'est plus lié à Stripe.",
+  "pay.err_books_bad_rate": "Les livres du paiement portent un taux de change inutilisable."
 }

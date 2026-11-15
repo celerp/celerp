@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "Dieser Kontakt konnte nicht importiert werden: {reason}",
   "contacts.err_delete_linked": "Diese Kontakte können nicht gelöscht werden, solange Dokumente, Listen oder Deals sie nennen: {records}.",
   "documents.err_stripe_books_unreadable": "Celerp kann nicht erkennen, in welchen Büchern diese Stripe-Zahlung erfasst wurde, daher kann sie hier nicht erstattet oder storniert werden. Erfassen Sie die Erstattung stattdessen mit einer Journalbuchung.",
-  "pay.err_refund_not_linked_to_stripe": "Die Zahlung ist nicht mehr mit Stripe verknüpft."
+  "pay.err_refund_not_linked_to_stripe": "Die Zahlung ist nicht mehr mit Stripe verknüpft.",
+  "pay.err_books_bad_rate": "Die Bücher der Zahlung enthalten einen unbrauchbaren Wechselkurs."
 }

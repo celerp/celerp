@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "This contact couldn't be imported: {reason}",
   "contacts.err_delete_linked": "These contacts can't be deleted while documents, lists or deals name them: {records}.",
   "documents.err_stripe_books_unreadable": "Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be refunded or voided here. Record the refund with a journal entry instead.",
-  "pay.err_refund_not_linked_to_stripe": "The payment is no longer linked to Stripe."
+  "pay.err_refund_not_linked_to_stripe": "The payment is no longer linked to Stripe.",
+  "pay.err_books_bad_rate": "The payment's books carry an unusable exchange rate."
 }

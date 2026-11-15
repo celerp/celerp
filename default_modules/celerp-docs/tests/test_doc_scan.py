@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
+from celerp.accounting_roles import catalog_refusal
 
 from celerp.services.list_behavior import LIST_TYPES
 from celerp_docs.sequences import _PREFIX_BY_DOC_TYPE
@@ -516,7 +517,7 @@ async def test_doc_scan_writer_refusal_commits_nothing(client, monkeypatch):
     import celerp.events.engine as engine
 
     def _refuse(*_a, **_k):
-        raise HTTPException(status_code=409, detail="refused by the writer")
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.duplicate_item_on_document"))
 
     t = await _register(client)
     await _item(client, t, "WR")

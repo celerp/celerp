@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "นำเข้าผู้ติดต่อนี้ไม่ได้: {reason}",
   "contacts.err_delete_linked": "ลบผู้ติดต่อเหล่านี้ไม่ได้ขณะที่ยังมีเอกสาร รายการ หรือดีลระบุถึงอยู่: {records}",
   "documents.err_stripe_books_unreadable": "Celerp ไม่สามารถระบุได้ว่าการชำระเงิน Stripe นี้บันทึกไว้ในสมุดบัญชีใด จึงคืนเงินหรือยกเลิกที่นี่ไม่ได้ ให้บันทึกการคืนเงินด้วยรายการบันทึกบัญชีแทน",
-  "pay.err_refund_not_linked_to_stripe": "การชำระเงินนี้ไม่ได้เชื่อมโยงกับ Stripe แล้ว"
+  "pay.err_refund_not_linked_to_stripe": "การชำระเงินนี้ไม่ได้เชื่อมโยงกับ Stripe แล้ว",
+  "pay.err_books_bad_rate": "สมุดบัญชีของการชำระเงินนี้มีอัตราแลกเปลี่ยนที่ใช้ไม่ได้"
 }

@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "ይህ እውቂያ ሊገባ አልቻለም፦ {reason}",
   "contacts.err_delete_linked": "ሰነዶች፣ ዝርዝሮች ወይም ስምምነቶች እስከሚጠቅሷቸው ድረስ እነዚህ እውቂያዎች ሊሰረዙ አይችሉም፦ {records}።",
   "documents.err_stripe_books_unreadable": "Celerp ይህ የStripe ክፍያ በየትኛው መዝገብ እንደተመዘገበ ሊያውቅ አይችልም፤ ስለዚህ እዚህ ተመላሽ ሊደረግ ወይም ሊሰረዝ አይችልም። በምትኩ ተመላሹን በጆርናል ግቤት ይመዝግቡ።",
-  "pay.err_refund_not_linked_to_stripe": "ክፍያው ከእንግዲህ ከStripe ጋር አልተገናኘም።"
+  "pay.err_refund_not_linked_to_stripe": "ክፍያው ከእንግዲህ ከStripe ጋር አልተገናኘም።",
+  "pay.err_books_bad_rate": "የክፍያው መዝገብ ጥቅም ላይ ሊውል የማይችል የምንዛሪ ተመን ይዟል።"
 }

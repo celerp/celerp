@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "Kontak ini tidak dapat diimpor: {reason}",
   "contacts.err_delete_linked": "Kontak ini tidak dapat dihapus selama dokumen, daftar, atau kesepakatan menyebutnya: {records}.",
   "documents.err_stripe_books_unreadable": "Celerp tidak dapat mengetahui pembukuan mana yang mencatat pembayaran Stripe ini, jadi pembayaran ini tidak dapat dikembalikan atau dibatalkan di sini. Catat pengembalian dana dengan entri jurnal sebagai gantinya.",
-  "pay.err_refund_not_linked_to_stripe": "Pembayaran ini sudah tidak terhubung ke Stripe."
+  "pay.err_refund_not_linked_to_stripe": "Pembayaran ini sudah tidak terhubung ke Stripe.",
+  "pay.err_books_bad_rate": "Buku pembayaran ini memuat kurs yang tidak dapat digunakan."
 }

@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "Không thể nhập liên hệ này: {reason}",
   "contacts.err_delete_linked": "Không thể xóa các liên hệ này khi tài liệu, danh sách hoặc giao dịch vẫn ghi tên họ: {records}.",
   "documents.err_stripe_books_unreadable": "Celerp không xác định được khoản thanh toán Stripe này đã được ghi vào sổ sách nào, nên không thể hoàn tiền hoặc hủy tại đây. Hãy ghi nhận khoản hoàn tiền bằng một bút toán nhật ký.",
-  "pay.err_refund_not_linked_to_stripe": "Khoản thanh toán không còn liên kết với Stripe."
+  "pay.err_refund_not_linked_to_stripe": "Khoản thanh toán không còn liên kết với Stripe.",
+  "pay.err_books_bad_rate": "Sổ sách của khoản thanh toán này có tỷ giá không thể sử dụng."
 }

@@ -133,7 +133,7 @@ async def test_bulk_delete_contacts_draft_doc_blocks(client):
 
     r2 = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
     assert r2.status_code == 422
-    detail = r2.json()["detail"]
+    detail = refusal_text(r2.json()["detail"])
     assert "invoice" in detail.lower()
 
 
@@ -152,7 +152,7 @@ async def test_bulk_delete_error_lists_doc_types(client):
 
     r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
     assert r.status_code == 422
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "invoice" in detail.lower()
     assert "bill" in detail.lower()
 

@@ -8244,5 +8244,6 @@
   "contacts.err_import_refused": "تعذّر استيراد جهة الاتصال هذه: {reason}",
   "contacts.err_delete_linked": "لا يمكن حذف جهات الاتصال هذه ما دامت مستندات أو قوائم أو صفقات تذكرها: {records}.",
   "documents.err_stripe_books_unreadable": "لا يستطيع Celerp معرفة الدفاتر التي سُجّلت عليها دفعة Stripe هذه، لذا لا يمكن ردّها أو إلغاؤها هنا. سجّل الاسترداد بقيد يومية بدلاً من ذلك.",
-  "pay.err_refund_not_linked_to_stripe": "لم تعد الدفعة مرتبطة بـ Stripe."
+  "pay.err_refund_not_linked_to_stripe": "لم تعد الدفعة مرتبطة بـ Stripe.",
+  "pay.err_books_bad_rate": "تحمل دفاتر هذا الدفع سعر صرف لا يمكن استخدامه."
 }

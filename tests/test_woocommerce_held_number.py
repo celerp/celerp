@@ -229,7 +229,7 @@ async def test_import_as_refuses_an_order_it_cannot_name(store, order_id, status
 async def test_import_as_answers_the_reason_an_order_still_waits(store, monkeypatch):
     """When the sync Import as runs leaves the order waiting, the person gets the reason
     it waits on, not a number."""
-    from ui.i18n import refusal_text
+    from ui.i18n import refusal_text, t
 
     await store.hold("doc:WOO-1001", _HOLDERS["draft"])
     [entry] = await store.sync()
@@ -287,7 +287,8 @@ async def test_import_as_never_imports_an_order_changed_since_review(store):
     async with ui_signed_in(store.tok) as ui:
         r = await import_as(ui, entry["signature"], _CHANGED)
         assert r.status_code == 409, r.text
-        assert refusal_text(r.json()["detail"]) == t("connectors.import_as_order_changed", next="WOO-1001-2")
+        assert refusal_text(r.json()["detail"]) == t("connectors.err_order_still_refused",
+                                                     reason=t("connectors.import_as_order_changed", next="WOO-1001-2"))
         assert await store.created() == (0, None)
         [again] = await store.attention()
         assert _asks_again(again), again

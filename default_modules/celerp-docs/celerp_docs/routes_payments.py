@@ -133,9 +133,14 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
         raise HTTPException(status_code=422, detail=refusal(
             "pay.err_no_books", "The payment carries no books to record it on."))
     try:
-        timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
-    except ValueError as exc:
+        timezone = business_timezone(books["timezone"]).key
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
+    try:
+        rate = checked_exchange_rate(books["rate"])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=refusal(
+            "pay.err_books_bad_rate", "The payment's books carry an unusable exchange rate.")) from exc
     return books["deposit_account"], timezone, books["base_currency"].upper(), rate
 
 

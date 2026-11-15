@@ -106,7 +106,7 @@ async def test_trigger_failure(auth_client, monkeypatch):
     )
     r = await auth_client.post("/backup/trigger")
     assert r.status_code == 422, f"Expected 422 so UI can show real error. Got {r.status_code}: {r.text[:100]}"
-    assert "pg_dump" in r.json()["detail"]
+    assert "pg_dump" in refusal_text(r.json()["detail"])
     # No HX-Trigger on failure
     assert "HX-Trigger" not in r.headers
 
@@ -465,7 +465,7 @@ async def test_export_local_returns_422_when_pg_dump_fails(auth_client, monkeypa
     r = await auth_client.get("/backup/export")
     # 422 is the contract: the route caught the error and surfaced a detail
     assert r.status_code == 422
-    assert "pg_dump" in r.json()["detail"]
+    assert "pg_dump" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -480,7 +480,7 @@ async def test_export_cloud_returns_422_when_reassembly_fails(auth_client, monke
     )
     r = await auth_client.get("/backup/export/abc-123")
     assert r.status_code == 422
-    assert "pg_dump" in r.json()["detail"]
+    assert "pg_dump" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
