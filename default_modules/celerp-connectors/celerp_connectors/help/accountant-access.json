@@ -18,6 +18,12 @@
       "labels": {"grants": "accountant_access.active_grants"},
       "image": null,
       "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which firms can send entries, or to create, renew or revoke a pairing link. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/accountant-access", "selector": "main", "actions": []}
     }
   ],
   "related": ["connectors.connect-store"]

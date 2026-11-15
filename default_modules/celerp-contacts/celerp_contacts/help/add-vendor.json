@@ -18,6 +18,12 @@
       "labels": {"new": "contacts.new_vendor"},
       "image": null,
       "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add or update vendors, add a note, a person or an address, tag or merge contacts. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/contacts/vendors", "selector": "main", "actions": []}
     }
   ],
   "related": ["contacts.add-customer", "contacts.settings"]

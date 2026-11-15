@@ -18,6 +18,12 @@
       "labels": {"add": "btn._add"},
       "image": null,
       "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to list, add, change or delete label templates. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/labels", "selector": "main", "actions": []}
     }
   ],
   "related": ["labels.print-labels"]

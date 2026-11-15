@@ -18,6 +18,12 @@
       "labels": {"audits": "nav.audits"},
       "image": null,
       "capture": {"route": "/lists?type=audit", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant what was sold, archived or disposed of, or to restore an item or start a stock audit. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
     }
   ],
   "related": ["inventory.add-item", "inventory.settings"]

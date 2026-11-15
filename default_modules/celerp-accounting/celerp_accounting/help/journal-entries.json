@@ -18,6 +18,12 @@
       "labels": {"new": "btn.new_entry"},
       "image": null,
       "capture": {"route": "/accounting", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to find entries, record a manual journal entry or void one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/accounting", "selector": "main", "actions": []}
     }
   ],
   "related": ["accounting.financial-reports", "accounting.reconcile", "accounting.settings"]

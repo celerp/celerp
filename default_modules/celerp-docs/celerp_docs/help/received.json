@@ -18,6 +18,12 @@
       "labels": {"imp": "received.import_shared"},
       "image": null,
       "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to list what was received, book a received document into your records or mark it reconciled. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
     }
   ],
   "related": ["docs.purchasing-documents"]

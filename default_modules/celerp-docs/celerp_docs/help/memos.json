@@ -42,6 +42,12 @@
       "labels": {},
       "image": null,
       "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to create a memo, mark lines shipped or available, invoice lines or close the memo. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
     }
   ],
   "related": ["docs.sales-documents", "docs.payments"]

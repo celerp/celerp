@@ -18,6 +18,12 @@
       "labels": {"quick": "page.quick_links"},
       "image": null,
       "capture": {"route": "/dashboard", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant about these figures or recent activity, such as what was sold this week or who changed a record.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/dashboard", "selector": "main", "actions": []}
     }
   ],
   "related": ["dashboard.getting-started"]

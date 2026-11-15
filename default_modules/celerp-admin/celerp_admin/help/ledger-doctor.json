@@ -24,6 +24,12 @@
       "labels": {"checks": "doctor.record_checks"},
       "image": null,
       "capture": {"route": "/doctor", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to run the record check for you. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/doctor", "selector": "main", "actions": []}
     }
   ],
   "related": []

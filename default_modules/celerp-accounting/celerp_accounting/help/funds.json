@@ -192,6 +192,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant to create or archive a fund, move money between funds, release restricted money or read a fund report. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

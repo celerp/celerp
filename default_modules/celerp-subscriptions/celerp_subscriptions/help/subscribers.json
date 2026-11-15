@@ -61,6 +61,16 @@
           }
         ]
       }
+    },
+    {
+      "text": "You can also ask the assistant to change a subscriber's seats, pause or cancel a subscription. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/subscribers",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

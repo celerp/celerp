@@ -24,6 +24,12 @@
       "labels": {"ask": "help.ask_ai"},
       "image": null,
       "capture": {"route": "/help", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant a question in your own language: it searches these help pages, reads the one that fits and answers from it.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/help", "selector": "main", "actions": []}
     }
   ],
   "related": []

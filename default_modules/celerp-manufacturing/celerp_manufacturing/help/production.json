@@ -18,6 +18,12 @@
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
       "image": null,
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant how a work order stands, or to start, hold, issue materials to, receive or complete it. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     }
   ],
   "related": ["manufacturing.demand-planning", "manufacturing.settings"]

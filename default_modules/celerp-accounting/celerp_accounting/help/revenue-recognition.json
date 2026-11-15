@@ -117,6 +117,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant what is still deferred, to post a month's recognition or to reverse one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/inventory?inventory_type=service",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

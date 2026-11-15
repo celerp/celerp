@@ -79,6 +79,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant which members are in good standing or overdue, or to send, skip or reopen a period. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

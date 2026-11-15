@@ -18,6 +18,12 @@
       "labels": {"browse": "settings.browse_library"},
       "image": null,
       "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add categories from an industry preset, one at a time or a whole preset. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/inventory?tab=categories", "selector": "main", "actions": []}
     }
   ],
   "related": ["verticals.business-type"]

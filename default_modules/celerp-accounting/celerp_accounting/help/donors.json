@@ -64,6 +64,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant who gave in a period, for one donor's history, or to prepare and send donor statements. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/donors",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": []

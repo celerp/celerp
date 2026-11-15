@@ -18,6 +18,12 @@
       "labels": {},
       "image": null,
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant when the last backup ran, to list your backups or to start one now. It shows each change as a card and makes it only when you confirm. Restoring a backup stays with you on this page.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     }
   ],
   "related": ["backup.local-backup"]

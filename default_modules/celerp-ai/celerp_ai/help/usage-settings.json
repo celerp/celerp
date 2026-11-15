@@ -18,6 +18,12 @@
       "labels": {},
       "image": null,
       "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The assistant works with the permissions of the person asking, so each role's settings decide what it can read and which changes it can propose for them.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai/settings", "selector": "main", "actions": []}
     }
   ],
   "related": ["ai.ask-questions"]

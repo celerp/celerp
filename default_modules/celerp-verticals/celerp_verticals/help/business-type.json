@@ -18,6 +18,12 @@
       "labels": {"hint": "setup.business_type_hint"},
       "image": null,
       "capture": {"route": "/setup/company", "selector": ".auth-container", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to set your business type. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/setup/company", "selector": "main", "actions": []}
     }
   ],
   "related": ["verticals.category-library"]

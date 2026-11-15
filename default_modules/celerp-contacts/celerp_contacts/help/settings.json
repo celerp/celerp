@@ -12,6 +12,12 @@
       "labels": {"title": "settings_contacts.page_header", "prices": "page.price_lists", "tags": "page.tags", "defaults": "settings_contacts.tab_defaults"},
       "image": null,
       "capture": {"route": "/settings/contacts", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the payment terms, price lists, tags or contact defaults. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/contacts", "selector": "main", "actions": []}
     }
   ],
   "related": ["contacts.add-customer", "contacts.add-vendor"]

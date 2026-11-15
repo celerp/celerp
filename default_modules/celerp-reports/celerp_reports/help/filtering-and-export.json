@@ -12,6 +12,12 @@
       "labels": {"month": "filter.this_month"},
       "image": null,
       "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant for a report over any period, such as what customers owed at the end of last month.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
     }
   ],
   "related": ["reports.operational-reports", "accounting.financial-reports"]

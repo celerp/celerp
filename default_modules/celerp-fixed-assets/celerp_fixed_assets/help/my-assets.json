@@ -12,6 +12,12 @@
       "labels": {"mine": "nav.my_assets"},
       "image": null,
       "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which assets are in your care, to confirm you still hold one, or to report a problem with one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/mine", "selector": "main", "actions": []}
     }
   ],
   "related": ["fixed-assets.register"]

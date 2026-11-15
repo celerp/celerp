@@ -18,6 +18,12 @@
       "labels": {"matrix": "settings.role_permissions_reference"},
       "image": null,
       "capture": {"route": "/settings/general?tab=users", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add a staff member, change a member's role or adjust what a role can do. It shows each change as a card and makes it only when you confirm. A member it adds gets a generated password, shown once on the card after you confirm, so pass it on before you leave the card.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=users", "selector": "main", "actions": []}
     }
   ],
   "related": ["core.companies", "core.settings"]

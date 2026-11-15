@@ -18,6 +18,12 @@
       "labels": {"intake": "fixed_assets.register_from_bills", "add": "fixed_assets.add_asset"},
       "image": null,
       "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add an asset, take one in from a bill line or update an asset's details. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
     }
   ],
   "related": ["fixed-assets.depreciation-and-disposals", "fixed-assets.settings"]

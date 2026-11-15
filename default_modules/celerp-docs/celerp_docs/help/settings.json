@@ -18,6 +18,12 @@
       "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "terms": "page.terms_conditions", "numbering": "settings_sales.tab_numbering"},
       "image": null,
       "capture": {"route": "/settings/purchasing", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the taxes, terms and conditions or numbering for sales or purchasing. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/sales", "selector": "main", "actions": []}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

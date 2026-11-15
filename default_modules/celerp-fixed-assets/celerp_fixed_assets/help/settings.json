@@ -12,6 +12,12 @@
       "labels": {"title": "fixed_assets.settings_title"},
       "image": null,
       "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the run schedule or the convention, or to add or edit an asset class. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/fixed-assets", "selector": "main", "actions": []}
     }
   ],
   "related": ["fixed-assets.register", "fixed-assets.depreciation-and-disposals"]

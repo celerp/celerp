@@ -65,6 +65,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant to read these figures for you, such as recurring revenue this month or churn over the last quarter.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/revenue",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

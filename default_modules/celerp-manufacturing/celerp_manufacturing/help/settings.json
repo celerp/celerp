@@ -24,6 +24,12 @@
       "labels": {"wc": "settings_manufacturing.add_work_center"},
       "image": null,
       "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add, change or remove a work center, or set the default one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/manufacturing", "selector": "main", "actions": []}
     }
   ],
   "related": ["manufacturing.production"]

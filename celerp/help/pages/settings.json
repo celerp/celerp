@@ -12,6 +12,12 @@
       "labels": {"settings": "nav.settings", "confirm": "settings.confirm_password", "menu": "settings_menu.title"},
       "image": null,
       "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the company's details or what the side menu offers. It shows each change as a card and makes it only when you confirm. Changing your own password stays with you on this page.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
     }
   ],
   "related": ["core.companies", "core.users"]

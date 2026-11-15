@@ -18,6 +18,12 @@
       "labels": {"pnl": "acct.tab_pnl"},
       "image": null,
       "capture": {"route": "/reports/pnl", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to read these reports for you, such as the profit for last quarter, the cash position at month end or the balance of one account.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/reports", "selector": "main", "actions": []}
     }
   ],
   "related": ["accounting.journal-entries", "reports.operational-reports"]

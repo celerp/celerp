@@ -12,6 +12,12 @@
       "labels": {"hdr": "subscriptions_import.hdr_import", "dl": "btn.download_template"},
       "image": null,
       "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which subscriptions are due or how many are active; importing a file stays with you on this page.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/subscriptions/import", "selector": "main", "actions": []}
     }
   ],
   "related": ["subscriptions.overview"]

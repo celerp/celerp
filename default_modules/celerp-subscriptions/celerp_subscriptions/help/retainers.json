@@ -49,6 +49,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant to generate the retainer invoices that are due, bill one early or skip a period. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/retainers",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

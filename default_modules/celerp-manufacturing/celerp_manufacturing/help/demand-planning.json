@@ -24,6 +24,12 @@
       "labels": {"so": "documents.page_stock_orders"},
       "image": null,
       "capture": {"route": "/docs?type=production_order", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     }
   ],
   "related": ["manufacturing.production", "manufacturing.settings"]

@@ -37,6 +37,16 @@
         "selector": "main",
         "actions": []
       }
+    },
+    {
+      "text": "You can also ask the assistant which plans you offer, who is on each, or to change a subscription's price or quantity. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/plans",
+        "selector": "main",
+        "actions": []
+      }
     }
   ],
   "related": [

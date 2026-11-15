@@ -24,6 +24,12 @@
       "labels": {"all": "status.all_issued"},
       "image": null,
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
     }
   ],
   "related": ["subscriptions.import"]

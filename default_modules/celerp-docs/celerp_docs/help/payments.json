@@ -12,6 +12,12 @@
       "labels": {"pay": "nav.payments"},
       "image": null,
       "capture": {"route": "/payments", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to record a payment against a document, refund or void one, or match an online payment that found no invoice. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/payments", "selector": "main", "actions": []}
     }
   ],
   "related": ["docs.sales-documents", "docs.purchasing-documents"]

@@ -18,6 +18,12 @@
       "labels": {"clients": "firm_view.title"},
       "image": null,
       "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which companies you can open, or for the companies your firm looks after and how each one stands.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
     }
   ],
   "related": ["core.users", "core.settings"]

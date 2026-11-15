@@ -18,6 +18,12 @@
       "labels": {"title": "page.import_inventory", "dl": "btn.download_template"},
       "image": null,
       "capture": {"route": "/inventory/import", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant a spreadsheet to import: it previews the rows and shows the import as a card that runs only when you confirm. It can also export your items for you.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
     }
   ],
   "related": ["inventory.add-item"]

@@ -18,6 +18,12 @@
       "labels": {"add": "btn.add_item"},
       "image": null,
       "capture": {"route": "/inventory", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to find items, add an item or change items' prices, status or location, many at once if you like. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
     }
   ],
   "related": ["inventory.import-export", "inventory.stock-views"]

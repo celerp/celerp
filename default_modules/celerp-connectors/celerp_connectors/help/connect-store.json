@@ -24,6 +24,12 @@
       "labels": {},
       "image": null,
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to run a sync now, show what a sync would change, or set which way a connection syncs. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     }
   ],
   "related": ["connectors.accountant-access"]

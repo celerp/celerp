@@ -18,6 +18,12 @@
       "labels": {"download": "settings.download_backup", "import": "btn.import_backup"},
       "image": null,
       "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant for a backup file of your company to download; restoring one stays with you on this page.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/system-recovery", "selector": "main", "actions": []}
     }
   ],
   "related": ["backup.cloud-backup"]

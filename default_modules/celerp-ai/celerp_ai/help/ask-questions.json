@@ -24,6 +24,12 @@
       "labels": {"plan": "msg.get_the_ai_plan"},
       "image": null,
       "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The assistant works in every part of Celerp your role can open: ask it to find records, explain a figure or prepare changes, and it opens the tools that area needs. One request can cover several changes, such as repricing many items at once, and each comes back as a card for you to confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
     }
   ],
   "related": ["ai.review-proposals", "ai.usage-settings"]
