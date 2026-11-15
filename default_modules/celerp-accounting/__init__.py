@@ -13,11 +13,11 @@ PLUGIN_MANIFEST = {
     "ui_routes": "celerp_accounting.ui_routes",
     "slots": {
         "nav": [
-            {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "permission": "manage_accounting"},
+            {"group": "Finance", "key": "accounting", "href": "/accounting", "help": "accounting.journal-entries", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "settings_help": "accounting.settings", "permission": "manage_accounting"},
             # The financial reports live under /reports but ship with this module,
             # so they stay reachable when the reports module is not installed.
-            {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
-            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
+            {"group": "Finance", "key": "reports", "href": "/reports", "help": "accounting.financial-reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
+            {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "help": "accounting.reconcile", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},
