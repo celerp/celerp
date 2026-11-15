@@ -62,7 +62,7 @@ async def test_a_key_imported_again_with_a_different_run_is_refused(client, sess
     out = await _import(client, auth, changed)
 
     assert (out["created"], out["skipped"]) == (0, 0)
-    assert out["keys"] == ["mfg.key_reused"], out
+    assert out["keys"] == ["mfg.key_reused_run"], out
     assert await _count(session, auth, entity_type="mfg_order") == 1
     assert await _state(session, auth, "mfg:imp-1") == before
 
@@ -74,8 +74,8 @@ async def test_one_key_twice_in_a_file_imports_once(client, session, auth):
     other_id = await _import(client, auth, _record("mfg:c", "k-c", raw, made), _record("mfg:d", "k-c", raw, made))
 
     assert (same["created"], same["skipped"], same["errors"]) == (1, 1, [])
-    assert differs["created"] == 1 and differs["keys"] == ["mfg.key_reused"], differs
-    assert other_id["created"] == 1 and other_id["keys"] == ["mfg.key_reused"], other_id
+    assert differs["created"] == 1 and differs["keys"] == ["mfg.key_reused_run"], differs
+    assert other_id["created"] == 1 and other_id["keys"] == ["mfg.key_reused_run"], other_id
     assert (await _state(session, auth, "mfg:b"))["inputs"][0]["item_id"] == raw
     assert await _count(session, auth, entity_type="mfg_order") == 3
 
@@ -86,7 +86,7 @@ async def test_a_key_used_by_another_door_is_not_imported_over(client, session, 
 
     out = await _import(client, auth, _record("mfg:imp-x", "shared", raw, made))
 
-    assert out["created"] == 0 and out["keys"] == ["mfg.key_reused"], out
+    assert out["created"] == 0 and out["keys"] == ["mfg.key_reused_run"], out
     assert await _count(session, auth, entity_type="mfg_order") == 1
 
 
