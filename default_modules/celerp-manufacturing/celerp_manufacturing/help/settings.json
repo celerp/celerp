@@ -6,6 +6,7 @@
   "routes": ["/settings/manufacturing"],
   "permission": "manage_manufacturing",
   "order": 3,
+  "checked": "ef1a5df10587dbef3d49fb9bdbe398aa178a50e97c3f3378c2f7c46ebecb3ca3",
   "steps": [
     {
       "text": "Open {settings} from the gear link on the Manufacturing group to set company-wide rules.",

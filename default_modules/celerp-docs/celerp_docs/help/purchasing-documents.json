@@ -6,6 +6,7 @@
   "routes": ["/docs?type=purchase_order", "/docs?type=bill", "/docs?type=debit_note", "/docs?type=consignment_in"],
   "permission": "view_documents",
   "order": 2,
+  "checked": "a9d518c86c8436dae092b9075428fc0ca348c8f620b8fadf08b5ad44b1f4685f",
   "steps": [
     {
       "text": "The sidebar groups purchasing documents into {po}, {bill}, {scn} and {ci}. Each opens the same document list filtered to that type.",

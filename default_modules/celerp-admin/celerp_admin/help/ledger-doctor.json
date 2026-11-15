@@ -6,6 +6,7 @@
   "routes": ["/doctor"],
   "permission": "manage_company_settings",
   "order": 1,
+  "checked": "51fa90727c204fb9b18c82aa01b1455c6dbe6dfd4e19474d25206a6bded35959",
   "steps": [
     {
       "text": "Open {doctor} from the sidebar. It never changes anything: everything here is a read-only report.",

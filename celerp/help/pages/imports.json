@@ -6,6 +6,7 @@
   "routes": ["/setup/new-company/migrate", "/setup/new-company", "/setup/new-company/fresh", "/migrations/{run_id}", "/migrations/{run_id}/verify", "/migrations/{run_id}/complete", "/migrations/{run_id}/discard"],
   "permission": "manage_company_settings",
   "order": 6,
+  "checked": "73d37c5bee1c01405a604c0798d0ef983baee37937172b7a9b8015181b974696",
   "steps": [
     {
       "text": "To add a company, open {title}: {fresh} creates an empty company you set up step by step, and {move} brings a company's books over from another accounting system.",

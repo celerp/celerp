@@ -6,6 +6,7 @@
   "routes": ["/settings/labels", "/settings/labels/{tmpl_id}"],
   "permission": "manage_labels",
   "order": 2,
+  "checked": "d91299737f37047087f4863302d7fbc84a13bd24f6dbc7a6e3c05274afddd579",
   "steps": [
     {
       "text": "Open {lbl} from Inventory Settings to see the {tmpl} list.",

@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/reminders"],
   "permission": "view_fixed_assets",
   "order": 10,
+  "checked": "de96a2b1335adcc37794fa14e81935f186b4306a765788ddfd6af5e2467520fd",
   "steps": [
     {
       "text": "{title} lists the reminders set on your assets that fall due soon, with {over} ones first. Click an asset to open it.",

@@ -1,11 +1,12 @@
 {
   "id": "core.accounting-sync-accounts",
-  "title": "Sync accounts",
+  "title": "Giving an account to synced records",
   "summary": "Give an account to the records a connected company sent, and review the accounts sync added.",
   "keywords": ["sync", "accounts", "accountant", "connected company", "mapping"],
   "routes": ["/accounting/sync-accounts"],
   "permission": "manage_accounting",
   "order": 7,
+  "checked": "67f507c01d58d8f6d4148d9eab8a7ecf3f8b7367d7999a4327db822ec622b15e",
   "steps": [
     {
       "text": "{title} lists the records a connected company sent that wait for an account, the accounts sync added here, and a new client's accounts to review. Choose an account for each, or {none} when all is in order.",

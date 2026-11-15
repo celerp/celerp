@@ -6,6 +6,7 @@
   "routes": ["/accounting/import/chart"],
   "permission": "manage_accounting",
   "order": 8,
+  "checked": "020b52b851ad873f0425f493977063ad45201db15204e932dab82754e953703e",
   "steps": [
     {
       "text": "On {title}, upload a spreadsheet of accounts and match its columns. {hint}",

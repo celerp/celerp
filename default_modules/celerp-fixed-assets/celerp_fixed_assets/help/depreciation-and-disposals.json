@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/runs", "/fixed-assets/move", "/fixed-assets/dispose", "/fixed-assets/assets/{entity_id}/dispose", "/fixed-assets/assets/{entity_id}/move", "/fixed-assets/assets/{entity_id}/sell", "/fixed-assets/runs/{month}"],
   "permission": "manage_accounting",
   "order": 2,
+  "checked": "dbf4583887adf3e999c907b5f5cfb428cd5cbd6492cbe9e2801aecaa66c5633f",
   "steps": [
     {
       "text": "Open {runs} to run a month's depreciation; each run shows its journal before it posts.",

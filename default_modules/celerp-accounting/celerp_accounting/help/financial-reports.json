@@ -6,6 +6,7 @@
   "routes": ["/reports", "/reports/pnl", "/reports/balance-sheet", "/reports/trial-balance", "/reports/general-ledger", "/reports/cash-flow", "/reports/ledger/{account_code}", "/reports/extended-journal", "/reports/statement", "/reports/opening-tie-out"],
   "permission": "view_financial_reports",
   "order": 2,
+  "checked": "847675eedfdcd14367b61369a201906d8c58a56fd7616c6ba892a55bdacd4943",
   "steps": [
     {
       "text": "Open {rep} from the sidebar for a list of every report.",

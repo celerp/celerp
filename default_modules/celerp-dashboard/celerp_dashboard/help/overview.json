@@ -6,6 +6,7 @@
   "routes": ["/dashboard"],
   "permission": "view_dashboards",
   "order": 1,
+  "checked": "d2fc32324b4b23af6af2a9a79f034cfc0204eff52e55c37708fdcd587f09e6f3",
   "steps": [
     {
       "text": "Open {dashboard} from the sidebar. The cards at the top show the numbers your company's business type cares about most, such as stock value and receivables.",

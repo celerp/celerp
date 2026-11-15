@@ -1,11 +1,12 @@
 {
   "id": "core.modules",
-  "title": "Modules",
+  "title": "Turning modules on and off",
   "summary": "Turn modules on or off, and find more in the marketplace.",
   "keywords": ["modules", "marketplace", "features", "turn on", "install"],
   "routes": ["/modules"],
   "permission": "manage_company_settings",
   "order": 8,
+  "checked": "f93631b114356c5a23bff3335a5a28ae7153248361b33d8d6c595f5a344bd7da",
   "steps": [
     {
       "text": "{title} lists the modules this company can use. Turn one on to add its screens to the side menu, or off to hide them; turning a module off keeps its records.",

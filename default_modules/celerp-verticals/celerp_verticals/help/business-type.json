@@ -6,6 +6,7 @@
   "routes": ["/setup/company", "/setup/activating"],
   "permission": null,
   "order": 1,
+  "checked": "cba86f6f7f92ac67f6602fe24448fdb80c1ee6817ebaea85080665f218369316",
   "steps": [
     {
       "text": "Choose {label} on the setup screen; search if your trade is not in the short list.",

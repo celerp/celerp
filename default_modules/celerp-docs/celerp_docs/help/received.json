@@ -6,6 +6,7 @@
   "routes": ["/docs/received", "/docs/received/{rid}"],
   "permission": "view_documents",
   "order": 4,
+  "checked": "5749e6649593f8f33096f4e442a9f6d89f1e2208802b7e61d1d5c26278a8b8f1",
   "steps": [
     {
       "text": "Open {recv} from the sidebar. {hint}",

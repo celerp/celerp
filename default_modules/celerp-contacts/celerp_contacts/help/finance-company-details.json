@@ -6,6 +6,7 @@
   "routes": ["/finance/company-details"],
   "permission": "manage_company_settings",
   "order": 5,
+  "checked": "174792f5c82acf9fd45b3e2b46861e0fc673801ed64b604173eb002885d8a363",
   "steps": [
     {
       "text": "{title} holds your own company's contact record. {hint}",

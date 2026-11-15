@@ -18,6 +18,7 @@
   ],
   "permission": "manage_accounting",
   "order": 7,
+  "checked": "156d1fe0fa34af229b863fd135499bd501cc809b7bfa0ffce5e6ff3be523b334",
   "steps": [
     {
       "text": "Revenue you invoice for a service that runs over time is first held as deferred revenue, then recognized month by month over the service period. To start, turn on {flag} on the item, then give each invoice line for it a service start and end.",

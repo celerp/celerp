@@ -6,6 +6,7 @@
   "routes": ["/settings/sales", "/settings/purchasing"],
   "permission": "manage_module_settings",
   "order": 6,
+  "checked": "53d1f9b4486f8919a72cd0eb60105e960e09c73494341b349f5da7cb87574ff3",
   "steps": [
     {
       "text": "On {title}, the tabs cover {taxes}, {terms}, {numbering} and {lines} for sales documents.",

@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/corrections", "/fixed-assets/corrections/{correction_id}"],
   "permission": "manage_accounting",
   "order": 6,
+  "checked": "a276ca9f92162c479645a92163c6fb011599640a5c3691a54e353865d5553ed9",
   "steps": [
     {
       "text": "{title} lists the changes made with Correct on an asset's page, newest first. A correction someone requested waits here until a person who can post applies it.",

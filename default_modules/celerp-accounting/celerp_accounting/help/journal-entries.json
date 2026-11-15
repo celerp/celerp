@@ -6,6 +6,7 @@
   "routes": ["/accounting", "/accounting/journal/new"],
   "permission": "manage_accounting",
   "order": 1,
+  "checked": "19790e6f24003bbed23dd60ace9f1f8777994f7122090d3e64413226b08f63ba",
   "steps": [
     {
       "text": "Open {acct} from the sidebar to see every posted entry for the period.",

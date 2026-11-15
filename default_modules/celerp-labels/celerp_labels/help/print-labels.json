@@ -6,6 +6,7 @@
   "routes": ["/labels/print-list", "/labels/print-source"],
   "permission": "manage_labels",
   "order": 1,
+  "checked": "d4379593e693dbf735063c7365c2b79024a6aebea77643b96933c17400049470",
   "steps": [
     {
       "text": "Selecting items in {inv} opens the print screen, titled {print}, with those items ready to print.",

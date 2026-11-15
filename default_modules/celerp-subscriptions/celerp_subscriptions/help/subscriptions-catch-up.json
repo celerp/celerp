@@ -1,11 +1,12 @@
 {
   "id": "subscriptions.catch-up",
-  "title": "Billing waiting for review",
+  "title": "Reviewing billing that was held back",
   "summary": "Bill or skip the periods automatic billing held back.",
   "keywords": ["catch up", "billing", "held back", "skip", "overdue periods"],
   "routes": ["/subscriptions/catch-up"],
   "permission": "view_subscriptions",
   "order": 8,
+  "checked": "fdc693e44bd090fac2393d55bc964fbe398fc5475b735d84e4e9141a19006002",
   "steps": [
     {
       "text": "{title} lists the periods automatic billing held back because each is further behind than its agreement's catch-up window. Bill the ticked periods, or skip them with a reason; each agreement bills its oldest period first.",

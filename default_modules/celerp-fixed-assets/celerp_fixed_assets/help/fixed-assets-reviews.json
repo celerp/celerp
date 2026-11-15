@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/reviews"],
   "permission": "view_fixed_assets",
   "order": 11,
+  "checked": "5b50b61faf0c2d70fda22baf2733f43126d01b7b19d59f39c04dc89d8d32dd68",
   "steps": [
     {
       "text": "{title} lists the assets whose impairment review falls due, with {over} ones first. Open an asset to revalue or impair it.",

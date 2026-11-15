@@ -6,6 +6,7 @@
   "routes": ["/settings/import/locations", "/settings/import/taxes", "/settings/import/payment-terms"],
   "permission": "manage_module_settings",
   "order": 10,
+  "checked": "c28bb5f4b95589bbad24e03ee9c4e387443a06fab2d3ab5c37cc9ab74453be64",
   "steps": [
     {
       "text": "{title} adds locations from a spreadsheet. {hint}",

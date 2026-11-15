@@ -6,6 +6,7 @@
   "routes": ["/lists", "/lists/{entity_id}", "/lists/import"],
   "permission": "view_documents",
   "order": 3,
+  "checked": "8b029312f1ae90856d31e0137ba74e4a1dc1ffa762862c77c7d217221a8dea09",
   "steps": [
     {
       "text": "Open {lists} from the sidebar, then click {new} to start a draft.",

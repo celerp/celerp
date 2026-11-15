@@ -6,6 +6,7 @@
   "routes": ["/settings/fixed-assets", "/fixed-assets/classes/{class_id}/apply", "/fixed-assets/classes/{class_id}/fix-account", "/fixed-assets/classes/{class_id}/revalue"],
   "permission": "manage_module_settings",
   "order": 3,
+  "checked": "99cb6e8d67edc73ace90fb9b7d1fac30316b6d71b806896cc2a6d823a8535bf6",
   "steps": [
     {
       "text": "On {title}, set the run schedule and convention, and add or archive asset classes.",

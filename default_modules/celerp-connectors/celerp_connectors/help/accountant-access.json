@@ -6,6 +6,7 @@
   "routes": ["/settings/accountant-access"],
   "permission": "manage_integrations",
   "order": 2,
+  "checked": "6c9bc210dcad839567453cb9481d0fc6e6a6ff1ab875b0ce33b371ccd321c475",
   "steps": [
     {
       "text": "Open {title} from Settings. {hint}",

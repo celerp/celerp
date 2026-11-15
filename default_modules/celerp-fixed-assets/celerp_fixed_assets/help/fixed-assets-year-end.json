@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/year-end", "/fixed-assets/year-end/print"],
   "permission": "manage_accounting",
   "order": 14,
+  "checked": "4037576bca6c309907fbfc6e7c3593f642bc6e18dece514696719bf67b619f37",
   "steps": [
     {
       "text": "{title} lists what to check before the year closes, for the {year} you choose. Each item links to its fix; mark it Noted to keep a record while it stays open, or Accepted with a reason. The year closes once every item is accepted.",

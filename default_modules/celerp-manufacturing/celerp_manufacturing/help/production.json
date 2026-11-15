@@ -6,6 +6,7 @@
   "routes": ["/manufacturing/production", "/manufacturing/runs/{run_id}/reconcile"],
   "permission": "manage_manufacturing",
   "order": 2,
+  "checked": "06a6773d67ff9aa55d1dc99ed305842689bfe07b3f6e63f6acdfc7e4c832ecfd",
   "steps": [
     {
       "text": "Open {wip} from the sidebar to see production runs on the floor.",

@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/tax-books"],
   "permission": "view_fixed_assets",
   "order": 13,
+  "checked": "4a5f1bdec5bd2229a01e5695d960236081750aa3b9c1e9674c10a1dd3e8ad5de",
   "steps": [
     {
       "text": "{title} shows the tax value of each asset under a tax regime, year by year. A category or election set here changes the open years only, and these figures never post to the ledger.",

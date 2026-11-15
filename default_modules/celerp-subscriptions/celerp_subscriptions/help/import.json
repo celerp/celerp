@@ -6,6 +6,7 @@
   "routes": ["/subscriptions/import"],
   "permission": "import_export_data",
   "order": 2,
+  "checked": "35eca1ea22bb1cbd30472e6a914fe20183e5f10bde19a344195811118c86d9ea",
   "steps": [
     {
       "text": "On the {hdr} screen, choose {dl} for the column layout, or upload your own file directly.",

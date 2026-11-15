@@ -14,6 +14,7 @@
   ],
   "permission": "view_payments",
   "order": 5,
+  "checked": "f20504a00a3d75f204d23c4c2df23b889082012066e8b243101f591fcfc10916",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see each donor's gifts in the period, net of refunds.",

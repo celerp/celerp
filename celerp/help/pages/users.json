@@ -6,6 +6,7 @@
   "routes": ["/settings/general?tab=users", "/settings/users/new"],
   "permission": "manage_users",
   "order": 4,
+  "checked": "32fc87f938aa226744c39654c078cddeb4a0a5150ecdaecbbdb65b1995063225",
   "steps": [
     {
       "text": "On the Users tab in Global Config, use {create} to add a teammate with a name, email, temporary password and role.",

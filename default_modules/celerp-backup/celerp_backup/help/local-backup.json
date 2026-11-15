@@ -6,6 +6,7 @@
   "routes": ["/settings/system-recovery"],
   "permission": null,
   "order": 2,
+  "checked": "7fe9967d6755f7eac5e3e7bd667117f01a6f5f022bab4683c985ecb8ddc5a4d5",
   "steps": [
     {
       "text": "Open {recovery} from the installation owner's account; its {local} section works with no Celerp Connect subscription.",

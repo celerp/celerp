@@ -6,6 +6,7 @@
   "routes": ["/fixed-assets/import", "/fixed-assets/import/draft/{ref}", "/fixed-assets/imports/{batch_id}", "/import/asset-register"],
   "permission": "manage_accounting",
   "order": 7,
+  "checked": "3e68257f697b44fb8d54d23cd1df877047f8058e151763b563355b765bc643e6",
   "steps": [
     {
       "text": "On {title}, upload your asset register and match its columns. Each row is checked before anything is created; fix a row or upload a corrected file.",
