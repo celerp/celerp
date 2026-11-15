@@ -39,7 +39,7 @@ from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
-from celerp.accounting_roles import field_refusal, refusal, refusal_detail
+from celerp.accounting_roles import catalog_refusal, field_refusal, refusal, refusal_detail
 from celerp.importers.adapters.base import (
     Artifact,
     MigrationDecisions,
@@ -1124,7 +1124,7 @@ async def finalize(session: AsyncSession, run: MigrationRun, posting_accounts: d
         raise
     except ScanError as exc:  # the source is gone, changed, or no longer reads: nothing to finish against
         await session.rollback()
-        raise MigrationError(409, str(exc)) from None
+        raise MigrationError(409, catalog_refusal("error.refusal_as_written", text=str(exc))) from None
     except Exception:
         await session.rollback()
         logger.exception("Migration %s could not be finalized", run_id)

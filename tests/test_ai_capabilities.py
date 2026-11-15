@@ -8,7 +8,6 @@ import hashlib
 import importlib.util
 import inspect
 import re
-import sys
 import textwrap
 from typing import Annotated
 
@@ -332,17 +331,26 @@ def _namespace(fn, tree) -> dict:
             name = node.module or ""
             if node.level:
                 name = importlib.util.resolve_name("." * node.level + name, fn.__module__.rpartition(".")[0])
-            module = sys.modules.get(name)
+            module = _imported(name)
             for alias in node.names:
                 # `is None`, not truthiness: an imported name may be an SQL column, which refuses bool().
                 found = getattr(module, alias.name, None)
                 namespace[alias.asname or alias.name] = (
-                    found if found is not None else sys.modules.get(f"{name}.{alias.name}"))
+                    found if found is not None else _imported(f"{name}.{alias.name}"))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 name = alias.name if alias.asname else alias.name.split(".")[0]
-                namespace[alias.asname or name] = sys.modules.get(name)
+                namespace[alias.asname or name] = _imported(name)
     return namespace
+
+
+def _imported(name: str):
+    """The module an in-body import names, imported now: what it resolves to must not
+    depend on whether an earlier test happened to import it first."""
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
 
 
 def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[str], bool, set[str]]:

@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+from celerp.importers.results import message_text
 from test_helpers import register_admin
 from ui.i18n import t
 
@@ -160,7 +161,8 @@ async def test_internal_sinks_share_domain_import_services(client, session, monk
     }]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0 and t("error.contacts_not_found", "en", names="contact:missing") in body["errors"][0]
+    assert body["created"] == 0 and body["errors"][0]["params"]["refusal"]["message_key"] == "error.contacts_not_found"
+    assert t("error.contacts_not_found", "en", names="contact:missing") in message_text(body["errors"][0])
     assert calls == ["import_journal_records"]
     receivable = CIFAccount(
         **_PROVENANCE, source_type="Account", source_external_id="acct-ar", code="1100",

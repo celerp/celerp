@@ -5394,7 +5394,7 @@ async def fix_peer_hold(
     return {"ok": True}
 
 
-@router.post("/peer/holds/{item_id}/funds", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key"}, summary="Post a record held by the accountant sync once its funds are chosen.")
+@router.post("/peer/holds/{item_id}/funds", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "finalize_documents", "fulfill_documents", "record_payments", "set_inventory_prices", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Post a record held by the accountant sync once its funds are chosen.")
 async def post_peer_hold_funds(
     item_id: str,
     body: PeerHeldFunds,
