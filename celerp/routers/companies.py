@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal, refusal_detail
+from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import failure_reason
@@ -354,7 +354,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))
-            except ValueError as exc:
+            except Refused as exc:
                 raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         require_phone(payload.settings.get("phone"))
         company.settings = merged
@@ -2506,6 +2506,7 @@ async def buy_module(body: _BuyBody) -> dict:
     """Start a purchase: ask the relay for a Stripe Checkout URL for this module.
     The UI opens it in the browser, then polls the license. Installation owner only."""
     import httpx
+    from celerp.gateway.state import cloud_refusal
     url, jwt = await _relay_creds()
     payload: dict = {"slug": body.slug, "kind": body.kind}
     if body.custom_text:
@@ -2515,8 +2516,7 @@ async def buy_module(body: _BuyBody) -> dict:
                          json=payload,
                          headers={"Authorization": f"Bearer {jwt}"})
     if r.status_code != 200:
-        raise HTTPException(status_code=r.status_code,
-                            detail=_json_dict(r).get("detail") or t("company.err_checkout_failed"))
+        raise HTTPException(status_code=r.status_code, detail=cloud_refusal(r, "company.err_checkout_failed"))
     body_json = _json_dict(r)
     if not body_json:
         raise HTTPException(status_code=502, detail=t("company.err_checkout_bad_reply"))
@@ -2588,7 +2588,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     import httpx
 
-    from celerp.gateway.state import relay_error_detail
+    from celerp.gateway.state import cloud_refusal
     from celerp.modules import marketplace_stage
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
 
@@ -2603,7 +2603,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
-                    detail=relay_error_detail(r, t("company.err_download_refused")))
+                    detail=cloud_refusal(r, "company.err_download_refused"))
             answer = _install_answer(_json_dict(r), body.slug)
             if answer is None:
                 raise HTTPException(status_code=502, detail=t("error.relay_bad_reply"))
@@ -2612,7 +2612,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
-                    detail=relay_error_detail(d, "The module download failed. Try again."))
+                    detail=cloud_refusal(d, "company.err_module_download_failed"))
             data = d.content
     except HTTPException:
         raise

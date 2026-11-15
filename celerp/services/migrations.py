@@ -97,6 +97,7 @@ from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults, hold_owner
 from ui.i18n import current_lang, set_lang, t
+from celerp.accounting_roles import Refused
 
 logger = logging.getLogger(__name__)
 
@@ -205,18 +206,18 @@ def validate_prepared_by(value) -> str | None:
 
 def _cutover_date(scan: store.ScanSession, value) -> date:
     if value is None or value == "":
-        raise ValueError(t("migration.err_choose_cutover"))
+        raise Refused("migration.err_choose_cutover")
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
-        raise ValueError(t("migration.err_cutover_format"))
+        raise Refused("migration.err_cutover_format")
     try:
         chosen = date.fromisoformat(value)
     except ValueError:
-        raise ValueError(t("migration.err_cutover_format")) from None
+        raise Refused("migration.err_cutover_format") from None
     start, end = scan.scan.period_start, scan.scan.period_end
     if start is not None and chosen < start:
-        raise ValueError(t("migration.err_cutover_before_start", date=start.isoformat()))
+        raise Refused("migration.err_cutover_before_start", date=start.isoformat())
     if end is not None and chosen > end:
-        raise ValueError(t("migration.err_cutover_after_end", date=end.isoformat()))
+        raise Refused("migration.err_cutover_after_end", date=end.isoformat())
     return chosen
 
 

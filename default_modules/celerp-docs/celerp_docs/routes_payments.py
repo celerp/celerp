@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole, refusal, refusal_detail
+from celerp.accounting_roles import AccountRole, Refused, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -182,7 +182,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             "pay.err_no_paid_time", "The payment carries no time it was paid."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     from celerp_docs.routes import _get_doc, apply_doc_payment
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
@@ -304,7 +304,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
             "The refund carries other books than its payment was recorded on."))
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     await books_currency_still(session, company_id, base)
     day = business_date_at(occurred_at, timezone)
@@ -439,7 +439,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
         raise HTTPException(status_code=409, detail=t("documents.err_pay_not_payable"))
     try:
         amount = pay.to_stripe_amount(_outstanding(state), currency)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     try:
         await require_online_deposit_account(session, company_id, books["deposit_account"])

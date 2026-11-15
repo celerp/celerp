@@ -24,7 +24,7 @@ from fastapi import HTTPException
 from celerp.ai import deadlines, jobs
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.gateway.state import relay_http_url, relay_session_headers, with_relay_client
-from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ def _build_user_content(
                 "text": f"Attached file: {f.get('filename')} (file_id {f.get('file_id')})",
             })
         else:
-            raise ValueError(t("error.ai_file_type"))
+            raise Refused("error.ai_file_type")
 
     if text:
         parts.append({"type": "text", "text": text})

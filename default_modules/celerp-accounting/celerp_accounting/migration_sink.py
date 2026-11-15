@@ -58,7 +58,7 @@ from celerp_accounting.routes import (
     _line_amounts,
     _line_party,
 )
-from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 ACCOUNT = "account"
 JOURNAL = "journal_entry"
@@ -314,7 +314,7 @@ def _next_code(account_type: str, taken: set[str]) -> str:
         for n in range(root + step, root + 1000, step):
             if str(n) not in taken:
                 return str(n)
-    raise ValueError(t("chart.no_free_account_number", account_type=account_type))
+    raise Refused("chart.no_free_account_number", account_type=account_type)
 
 
 def _free_code(code: str, taken: set[str]) -> str:

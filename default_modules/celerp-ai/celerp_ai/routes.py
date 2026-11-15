@@ -59,6 +59,7 @@ from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import refusal_text, t
 from ui.components.encode import inert_media_type
+from celerp.accounting_roles import Refused
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -412,7 +413,7 @@ class ConversationQueryRequest(BaseModel):
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
         if not self.query.strip() and not self.file_ids:
-            raise ValueError(t("ai.question_or_file_required"))
+            raise Refused("ai.question_or_file_required")
         return self
 
 

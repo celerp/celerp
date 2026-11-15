@@ -133,7 +133,7 @@ def _validate_shipment_values(values: dict) -> None:
     for field, allowed in _SHIPMENT_ENUM_FIELDS.items():
         v = values.get(field)
         if v and v not in allowed:
-            raise ValueError(t("documents.err_incoterms_invalid" if field == "incoterms" else "documents.err_export_reason_invalid", value=v))
+            raise Refused("documents.err_incoterms_invalid" if field == "incoterms" else "documents.err_export_reason_invalid", value=v)
 
 
 def _calendar_date(v: str | None) -> str | None:
@@ -3290,7 +3290,7 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
     try:
         await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
                                          cycle_tag=tag, ts=None, trigger=trigger)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
 
@@ -4245,7 +4245,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 session, company_id=company_id, user_id=user.id, doc_id=entity_id,
                 cycle_tag=f"unvoid-{entry.id}", ts=None, trigger="doc.unvoided",
             )
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
@@ -5940,7 +5940,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             base_currency = settings.get("currency", "USD")
             try:
                 rate_known = doc_rate(row.state, base_currency) is not None
-            except ValueError as exc:
+            except Refused as exc:
                 raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
             if rate_known:
                 cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty,
@@ -9590,7 +9590,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         _new_lines = _new_values.get("line_items")
     try:
         _validate_shipment_values(_new_values)
-    except ValueError as e:
+    except Refused as e:
         raise HTTPException(status_code=422, detail=refusal_detail(e))
     if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
@@ -11511,7 +11511,7 @@ async def _fulfill_lines_impl(
                 cycle_tag=_fulfill_tag,
                 ts=fulfillment_date, trigger="doc.fulfilled",
             )
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
@@ -11800,7 +11800,7 @@ async def _reverse_whole_lines(
                 cycle_tag=f"reverse-{int(state.get('fulfill_cycle') or 0)}:l{_lines}",
                 ts=reversal_date, trigger="doc.fulfillment_reversed",
             )
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. A line drawn from a memo went out on
@@ -13849,7 +13849,7 @@ async def upload_doc_file(
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.

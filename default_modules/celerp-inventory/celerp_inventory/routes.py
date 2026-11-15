@@ -3795,7 +3795,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     parent_weight = parent_qty if weight_type and stored_weight is not None else stored_weight
     parent_pieces = parent_qty if pieces_type and stored_pieces is not None else stored_pieces
     if sell_by in unit_map and exceeds_precision(child_qty, int(unit_map[sell_by].get("decimals") or 0)):
-        raise ValueError(t("inventory.split_too_precise", qty=f"{child_qty:g}", unit=sell_by))
+        raise Refused("inventory.split_too_precise", qty=f"{child_qty:g}", unit=sell_by)
 
     if weight_type and child_weight is None:
         child_weight = child_qty
@@ -3807,7 +3807,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
         raise ValueError("for piece-sold items child_pieces must equal child_qty")
     if child_pieces is not None and float(child_pieces) != int(float(child_pieces)):
-        raise ValueError(t("inventory.split_pieces_not_whole"))
+        raise Refused("inventory.split_pieces_not_whole")
     ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
 
     # What the mother keeps of each measure: the difference when both sides are known,
@@ -3818,16 +3818,16 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         if child_weight is not None:
             weight_after = round(parent_weight - child_weight, 10)
             if weight_after < 0:
-                raise ValueError(t("inventory.split_weight_exceeds_lot",
-                                    weight=f"{child_weight:g}", lot_weight=f"{parent_weight:g}"))
+                raise Refused("inventory.split_weight_exceeds_lot",
+                                    weight=f"{child_weight:g}", lot_weight=f"{parent_weight:g}")
         fields_changed["weight"] = {"old": parent.state.get("weight"), "new": weight_after}
     pieces_after: int | None = None
     if parent_pieces is not None:
         if ch_pieces is not None:
             pieces_after = _to_int_pieces(parent_pieces) - ch_pieces
             if pieces_after < 0:
-                raise ValueError(t("inventory.split_pieces_exceeds_lot",
-                                    pieces=ch_pieces, lot_pieces=f"{parent_pieces:g}"))
+                raise Refused("inventory.split_pieces_exceeds_lot",
+                                    pieces=ch_pieces, lot_pieces=f"{parent_pieces:g}")
         fields_changed["pieces"] = {"old": stored_pieces, "new": pieces_after}
 
     # The split child is the same product as the parent: it KEEPS the parent SKU and is

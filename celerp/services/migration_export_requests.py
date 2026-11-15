@@ -29,8 +29,8 @@ from celerp.services.company_handoff_links import spaces_object_url
 from celerp.services.company_handoff_sender import cloud_json, decode_key, encode_key
 from ui.i18n import t
 
-ACCOUNT_NEEDED = "Sign in to a free Celerp account to email an export checklist."
-UNCONFIRMED = "Could not confirm the export checklist. Retry the same step"
+ACCOUNT_NEEDED = "migration.export_request_account_needed"
+UNCONFIRMED = "migration.export_request_unconfirmed"
 CLOSED = ("revoked", "expired")
 _TEXT_MAX = 160
 _EMAIL_MAX = 320

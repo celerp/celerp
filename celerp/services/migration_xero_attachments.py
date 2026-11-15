@@ -95,8 +95,8 @@ def _maker():
 
 
 async def _cloud(method: str, path: str, **kw) -> dict:
-    return await cloud_json(method, path, unconfirmed=t("migration.xero_att_unconfirmed"),
-                            account_needed=t("migration.xero_att_account_needed"), **kw)
+    return await cloud_json(method, path, unconfirmed="migration.xero_att_unconfirmed",
+                            account_needed="migration.xero_att_account_needed", **kw)
 
 
 async def close_at_relay(cloud_id: str | None) -> None:

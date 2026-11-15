@@ -82,7 +82,7 @@ async def test_fetch_context_raises_when_relay_requires_update():
                new=AsyncMock(return_value=True)), \
          respx.mock:
         respx.get("https://relay.test/tokens/xero/context").mock(return_value=httpx.Response(426))
-        with pytest.raises(ConnectorUpgradeRequired, match="Update Celerp to continue syncing Xero."):
+        with pytest.raises(ConnectorUpgradeRequired, match="Update Celerp to keep syncing Xero."):
             await fetch_context("co-1", "xero")
 
 

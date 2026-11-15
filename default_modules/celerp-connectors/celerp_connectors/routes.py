@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal, refusal_detail
+from celerp.accounting_roles import Refused, refusal, refusal_detail
 from celerp.connectors.base import SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES, PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
@@ -121,6 +121,11 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
         raise HTTPException(status_code=402, detail=str(exc)) from exc
 
 
+# The message key for each reason an execution refuses that carries no message of its own.
+_EXECUTION_REFUSAL_KEYS = {"direction_off": "connectors.fail_direction", "relay_unavailable": "error.relay_unreachable",
+                           "not_connected": "error.connector_not_connected"}
+
+
 @contextlib.contextmanager
 def _execution_refusals(connector):
     """A person's connector work refused by its execution, as the answer they see."""
@@ -137,9 +142,9 @@ def _execution_refusals(connector):
     except ExecutionRefused as exc:
         if exc.detail:
             raise HTTPException(status_code=409, detail=exc.detail) from exc
-        key = {"direction_off": "connectors.fail_direction", "relay_unavailable": "error.relay_unreachable",
-               "not_connected": "error.connector_not_connected"}.get(exc.reason, "connectors.err_first_sync_needed")
-        raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
+        raise HTTPException(status_code=409, detail=t(
+            _EXECUTION_REFUSAL_KEYS.get(exc.reason, "connectors.err_first_sync_needed"),
+            service=connector.display_name)) from exc
     except ConnectorUpgradeRequired as exc:
         raise HTTPException(status_code=426, detail=str(exc)) from exc
     except ConnectRequired as exc:
@@ -209,7 +214,7 @@ async def _manual_sync(session: AsyncSession, company_id, connector, entity: str
             return await run_sync(connector, company_id, entity, purpose="manual_sync")
     except HTTPException:
         raise
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=400, detail=refusal_detail(exc))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector.name, entity)
@@ -827,7 +832,7 @@ async def _set_order_reconciled(
     except WooCommerceReconciliationChanged as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=_order_changed()) from exc
-    except ValueError as exc:
+    except Refused as exc:
         await session.rollback()
         raise HTTPException(status_code=404, detail=refusal_detail(exc)) from exc
     await session.commit()

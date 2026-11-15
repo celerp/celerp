@@ -42,6 +42,7 @@ from celerp.accounting_roles import (
 )
 from celerp.models.company import Company
 from celerp.models.projections import Projection
+from celerp.accounting_roles import Refused
 
 
 class PostingRoleError(HTTPException):
@@ -176,9 +177,9 @@ def source_control(settings: dict | None, role) -> str:
     codes = source_controls(settings, role)
     label = ROLE_LABELS[AccountRole(role)].lower().removeprefix("accounts ")
     if not codes:
-        raise ValueError(t("posting.source_control_missing", role=label))
+        raise Refused("posting.source_control_missing", role=label)
     if len(codes) > 1:
-        raise ValueError(t("posting.source_control_ambiguous", role=label, codes=", ".join(codes)))
+        raise Refused("posting.source_control_ambiguous", role=label, codes=", ".join(codes))
     return codes[0]
 
 

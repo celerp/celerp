@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal_detail
+from celerp.accounting_roles import Refused, refusal_detail
 from celerp.db import get_session
 from celerp.services.attachments import attach_file, local_attachment_url_path, storing
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -74,7 +74,7 @@ async def store_file(session, company_id, user_id, asset_id: str, file: UploadFi
     async with storing(session, company_id) as store:
         try:
             meta = await store.upload(file)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=413, detail=refusal_detail(exc)) from None
         ((_, state),) = await _locked_assets(session, company_id, [asset_id])
         if also is not None:
@@ -94,7 +94,7 @@ async def store_on_assets(session, company_id, user_id, asset_ids: list[str], fi
             await file.seek(0)
             try:
                 meta = await store.upload(file)
-            except ValueError as exc:
+            except Refused as exc:
                 raise HTTPException(status_code=413, detail=refusal_detail(exc)) from None
             await attach_file(session, company_id, ENTITY_TYPE, asset_id, meta, user_id, source="fixed_assets",
                               document_tag=tag)

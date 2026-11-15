@@ -35,7 +35,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal_detail
+from celerp.accounting_roles import Refused, refusal_detail
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.downloads import content_disposition
@@ -126,7 +126,7 @@ async def _validate_share_link(link: str) -> str:
     token, with the bundle download at ``<page>/bundle``."""
     try:
         page = await validate_public_base_url(link, reject_query=True, reject_fragment=True)
-    except ValueError as exc:
+    except Refused as exc:
         raise HTTPException(status_code=400, detail=refusal_detail(exc)) from exc
     token = urlsplit(page).path.rsplit("/", 1)[-1]
     if not token:

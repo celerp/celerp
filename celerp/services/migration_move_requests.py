@@ -22,8 +22,8 @@ from celerp.services.company_handoff_sender import cloud_json
 from celerp.services.migration_export_requests import required_email, required_text
 from ui.i18n import t
 
-ACCOUNT_NEEDED = "Sign in to a free Celerp account to ask us to move a client."
-UNCONFIRMED = "Could not confirm the move request. Retry the same step"
+ACCOUNT_NEEDED = "migration.move_account_needed"
+UNCONFIRMED = "migration.move_unconfirmed"
 NO_SET = "Add the export files on this page first, then ask us to move this client."
 UPLOAD_S = 600
 

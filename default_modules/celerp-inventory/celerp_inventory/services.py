@@ -1650,10 +1650,10 @@ async def set_external_link_state(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     current = external_link_for_state(row.state or {}, platform)
     if not current:
-        raise ValueError(t("inventory.err_store_not_linked", platform=platform))
+        raise Refused("inventory.err_store_not_linked", platform=platform)
     if expected_identity is not None and external_identity_key(platform, current) != expected_identity:
         raise ExternalLinkConflictError(t("inventory.err_store_product_changed"))
     updated = dict(current)
@@ -1685,7 +1685,7 @@ async def set_external_link(
         with_for_update=True, populate_existing=True,
     )
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     state = dict(row.state or {})
     if expected_sku is not None and normalize_sku(state.get("sku")) != normalize_sku(expected_sku):
         raise ExternalLinkConflictError(t("inventory.err_sku_changed_while_running"))
@@ -1895,7 +1895,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     cid = uuid.UUID(str(company_id))
     row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise ValueError(t("inventory.err_items_not_found"))
+        raise Refused("inventory.err_items_not_found")
     state = row.state or {}
 
     catalog_item_id = state.get("catalog_item_id")
@@ -1908,7 +1908,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
             or parent.entity_type != "item"
             or not _is_structural_product_anchor_state(parent.state or {})
         ):
-            raise ValueError(t("inventory.err_product_link_missing"))
+            raise Refused("inventory.err_product_link_missing")
         return parent
 
     parent_item_id = state.get("parent_item_id")
@@ -1941,8 +1941,8 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
 
     sku = normalize_sku(state.get("sku"))
     if not sku:
-        raise ValueError(t("inventory.err_no_sku_for_product"))
-    raise ValueError(t("inventory.err_sku_not_one_product", sku=state.get("sku")))
+        raise Refused("inventory.err_no_sku_for_product")
+    raise Refused("inventory.err_sku_not_one_product", sku=state.get("sku"))
 
 
 def _is_explicit_catalog_anchor_state(state: dict) -> bool:

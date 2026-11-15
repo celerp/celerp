@@ -145,7 +145,7 @@ async def test_firm_view_copies_not_opened_and_unreadable(real_client, real_engi
 
     async def copies(company_id):
         if str(company_id) == practice_id:
-            raise sender.HandoffSendError("Company copy activity is unavailable")
+            raise sender.HandoffSendError("handoff.activity_unavailable")
         return [
             {"id": str(uuid.uuid4()), "status": "sent", "company_opened": False,
              "recipient": "owner@client.example", "sent_at": "2026-10-10T09:00:00+00:00",
@@ -163,7 +163,7 @@ async def test_firm_view_copies_not_opened_and_unreadable(real_client, real_engi
     assert items == [("copy_not_opened", "owner@client.example"), ("copy_expired", "--")], items
     practice = _row(view, "Firm Practice")
     assert practice["attention"] == []
-    assert practice["unavailable"] == ["Company copy activity is unavailable"]
+    assert practice["unavailable"] == ["Company copy activity is unavailable."]
     assert copy_id != practice_id
 
 

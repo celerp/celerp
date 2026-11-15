@@ -36,6 +36,7 @@ from celerp.ai import jobs, llm, service
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
 from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 log = logging.getLogger(__name__)
 
@@ -222,9 +223,9 @@ async def create_batch_job(
                               conversation_id=conversation_id, query=query, file_ids=tuple(file_ids))
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
-        raise ValueError(t("ai.attach_one_file"))
+        raise Refused("ai.attach_one_file")
     if len(file_ids) > MAX_BATCH_FILES:
-        raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
+        raise Refused("error.batch_too_many", max=MAX_BATCH_FILES)
     job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
     await jobs.lock_for_ai(session, company_id)
     session.add(job)

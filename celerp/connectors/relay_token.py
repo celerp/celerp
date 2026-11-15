@@ -154,10 +154,10 @@ async def fetch_context(
         raise RelayUnavailable(str(exc)) from exc
     if r.status_code == 426:
         from celerp.connectors.registry import get as get_connector
+        from ui.i18n import t
 
         raise ConnectorUpgradeRequired(
-            f"Update Celerp to continue syncing {get_connector(connector_name).display_name}."
-        )
+            t("error.connector_update_needed", service=get_connector(connector_name).display_name))
     if r.status_code == 402 and connector_name in _CONNECT_PAUSES:
         from ui.i18n import t
         from celerp.connectors.registry import service_name

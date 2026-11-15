@@ -65,7 +65,7 @@ async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_
         assert method == "POST"
         if path == f"/handoffs/{first_copy}/new-link":
             raise company_handoff_sender.HandoffRefused(
-                "This copy is no longer stored. Use Resend to send a new copy", 410)
+                "error.cloud_said", status_code=410, reason="This copy is no longer stored. Use Resend to send a new copy")
         assert path in (f"/handoffs/{first_copy}/revoke", f"/handoffs/{first_copy}/restore")
         return {"id": first_copy}
 
@@ -176,7 +176,7 @@ async def test_send_form_remembers_firm(real_engine, real_client, monkeypatch, t
 
     async def send(**kwargs):
         if refuse:
-            raise company_handoff_sender.HandoffSendError("Delivery not confirmed")
+            raise company_handoff_sender.HandoffSendError("handoff.copy_unconfirmed")
         await kwargs["export"](tmp_path / "source.celerp-company")
         return {"id": str(uuid.uuid4()), "link": "synthetic-link"}
 

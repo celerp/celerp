@@ -34,6 +34,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from celerp.config import settings
 from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 _NONCE_BYTES = 12
 _TAG_BYTES = 16
@@ -146,9 +147,9 @@ def _parse_key(b64_key: str) -> bytes:
     try:
         key = base64.b64decode(b64_key)
     except Exception as exc:
-        raise ValueError(t("error.backup_key_invalid")) from exc
+        raise Refused("error.backup_key_invalid") from exc
     if len(key) != 32:
-        raise ValueError(t("error.backup_key_invalid"))
+        raise Refused("error.backup_key_invalid")
     return key
 
 
@@ -338,8 +339,8 @@ def check_restore_target(database_url: str) -> None:
     (``_UNSUPPORTED_OBJECTS``); read-only."""
     names = _psql(database_url, _UNSUPPORTED_OBJECTS)
     if names:
-        raise ValueError(t("system_recovery.restore_target_unsupported",
-                           names="; ".join(name for name in names.split("\n") if name)))
+        raise Refused("system_recovery.restore_target_unsupported",
+                           names="; ".join(name for name in names.split("\n") if name))
 
 
 def _psql(database_url: str, sql: str) -> str:
@@ -358,9 +359,9 @@ def check_free_space(dump_path: Path) -> None:
     need = dump_path.stat().st_size * _SCRIPT_PER_DUMP_BYTE + _FREE_SPACE_FLOOR
     free = shutil.disk_usage(dump_path.parent).free
     if free < need:
-        raise ValueError(t(
+        raise Refused(
             "backup.not_enough_free_space",
-            need_mb=-(-need >> 20), free_mb=free >> 20, path=str(dump_path.parent)))
+            need_mb=-(-need >> 20), free_mb=free >> 20, path=str(dump_path.parent))
 
 
 def check_backup_dump(dump_path: Path, database_url: str,
@@ -374,7 +375,7 @@ def check_backup_dump(dump_path: Path, database_url: str,
     lines = [line for line in _text(listing).splitlines() if line and not line.startswith(";")]
     other = [line.split(" ", 3)[3] for line in lines if not _BACKUP_ENTRY.match(line)]
     if other:
-        raise ValueError(t("backup.unrestorable_objects", source=source, objects="; ".join(other)))
+        raise Refused("backup.unrestorable_objects", source=source, objects="; ".join(other))
     _check_extensions(sorted({match[1] for match in map(_EXTENSION_ENTRY.match, lines) if match}),
                       database_url, source)
     _check_server_objects(dump_path, database_url, source)
@@ -433,7 +434,7 @@ def _check_server_objects(dump_path: Path, database_url: str, source: str) -> No
              for name, table, names in policies if absent.intersection(names)]
     found += [f"{kind} {name}" for kind, name in missing if kind != "role"]
     if found:
-        raise ValueError(t("backup.missing_server_objects", source=source, objects="; ".join(found)))
+        raise Refused("backup.missing_server_objects", source=source, objects="; ".join(found))
 
 
 def check_database_extensions(database_url: str) -> None:
@@ -445,7 +446,7 @@ def check_database_extensions(database_url: str) -> None:
 
 def _check_extensions(extensions: list[str], database_url: str, source: str) -> None:
     if extensions and (blocked := _psql(database_url, _UNINSTALLABLE_EXTENSIONS.format(" ".join(extensions)))):
-        raise ValueError(t("backup.uninstallable_extensions", source=source, extensions=", ".join(blocked.split())))
+        raise Refused("backup.uninstallable_extensions", source=source, extensions=", ".join(blocked.split()))
 
 
 def restore_tools() -> tuple[str, str]:
