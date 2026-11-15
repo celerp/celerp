@@ -460,7 +460,7 @@ class ShareCreateBody(BaseModel):
     expires_at: str | None = None
 
 
-@router.get("/docs/{entity_id}/share/state", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether a document or list has a working share link.")
+@router.get("/docs/{entity_id}/share/state", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Show whether a document or list has a working share link.")
 async def share_state(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),

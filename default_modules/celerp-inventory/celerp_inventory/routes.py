@@ -1664,13 +1664,34 @@ _SUGGESTION_FIELDS = frozenset({
 })
 
 
-@router.get("/field-values", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the distinct values used in one item field, such as every brand or color in stock.")
+async def _visible_flats(session: AsyncSession, company_id, flats: list[dict], role: str, settings: dict) -> list[dict]:
+    """Flattened items as this role sees them. Each item's own category schema decides its
+    fields, exactly as GET /items/{id} does with a single item: one shared schema would
+    leak a field restricted in one category but visible in another."""
+    from celerp.services.field_schema import get_effective_field_schema
+
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+    by_category: dict = {}
+    for flat in flats:
+        by_category.setdefault(flat.get("category"), []).append(flat)
+    visible: list[dict] = []
+    for category, group in by_category.items():
+        field_schema = await get_effective_field_schema(session, company_id, category=category)
+        visible += apply_item_visibility(group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts)
+    return visible
+
+
+@router.get("/field-values", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["edit_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="List the distinct values used in one item field, such as every brand or color in stock.")
 async def get_field_values(
     field: str,
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Return sorted distinct non-empty values for a categorical item field.
+    """Return sorted distinct non-empty values for a categorical item field, read from the
+    items as this role sees them: a field the role cannot see has no values.
 
     Allowed fields:
     - Fields in _SUGGESTION_FIELDS (core categorical fields)
@@ -1695,10 +1716,9 @@ async def get_field_values(
     seen: set[str] = set()
     found_in_known_fields = field in _SUGGESTION_FIELDS
     _price_config = await get_price_config(session, company_id)
-    for row in rows:
-        if row.entity_id in demo_eids:
-            continue
-        flat = flatten_item(row.state, row.entity_id, price_config=_price_config)
+    flats = [flatten_item(row.state, row.entity_id, price_config=_price_config)
+             for row in rows if row.entity_id not in demo_eids]
+    for flat in await _visible_flats(session, company_id, flats, role, settings):
         val = flat.get(field)
         if val and str(val).strip():
             seen.add(str(val).strip())
@@ -1713,7 +1733,7 @@ async def get_field_values(
     return {"values": sorted(seen)}
 
 
-@router.get("/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the item categories in use.")
+@router.get("/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "the category names item and purchase forms pick from, as the company category schemas are"}, summary="List the item categories in use.")
 async def list_item_categories(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1753,7 +1773,6 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     the result (no error, no fabricated entry).
     """
     from celerp.models.company import Location
-    from celerp.services.field_schema import get_effective_field_schema
 
     # pydantic rejects an empty or over-max list with 422 before this runs; dedup
     # so a repeated id resolves once.
@@ -1782,12 +1801,8 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     # flatten_item's qty_each derivation, exactly as GET /items/{id} does per item.
     units = await read_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
-    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
-
-    flats: list[dict] = []
-    for row in rows:
-        flat = flatten_item(
+    flats = [
+        flatten_item(
             row.state, row.entity_id,
             location_id=str(row.location_id) if row.location_id else None,
             location_name=loc_names.get(row.location_id) if row.location_id else None,
@@ -1796,27 +1811,11 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             price_config=price_config,
             unit_map=unit_map,
         )
-        flats.append(flat)
-
-    # Group by the item's own category and apply the per-category effective schema
-    # once per distinct category, exactly as GET /items/{id} does with a single
-    # item. A single shared schema (or category=None) would leak a field restricted
-    # in one category but visible in another.
-    by_category: dict = {}
-    for flat in flats:
-        by_category.setdefault(flat.get("category"), []).append(flat)
-
+        for row in rows
+    ]
     versions = {row.entity_id: row.version for row in rows}
-    result: dict = {}
-    for category, group in by_category.items():
-        field_schema = await get_effective_field_schema(session, company_id, category=category)
-        filtered = apply_item_visibility(
-            group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
-        )
-        for flat in filtered:
-            result[flat["id"]] = {**flat, "_version": versions[flat["id"]]}
-
-    return {"items": result}
+    visible = await _visible_flats(session, company_id, flats, role, settings)
+    return {"items": {flat["id"]: {**flat, "_version": versions[flat["id"]]} for flat in visible}}
 
 
 # ── Import routes ─────────────────────────────────────────────────────────────
@@ -3202,7 +3201,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
     return {"event_id": entry.id}
 
 
-@router.get("/{entity_id}/split-preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show what splitting an inventory item into smaller lots would produce, before anything is changed.")
+@router.get("/{entity_id}/split-preview", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True}, summary="Show what splitting an inventory item into smaller lots would produce, before anything is changed.")
 async def split_preview(
     entity_id: str,
     child_sku: str | None = None,
