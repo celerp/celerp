@@ -1133,7 +1133,12 @@ def _retryable_action_result(result: dict) -> bool:
         status = int(result.get("status") or 0)
     except (TypeError, ValueError):
         status = 0
-    return status == 0 or status in {408, 425, 429} or status >= 500
+    if status == 0:
+        # The executor's own refusal (a missing file, a bad argument) came before anything
+        # was sent; only a timeout or an answer that never came leaves the outcome open.
+        code = (result.get("error") or {}).get("code")
+        return code in (None, "capability_timeout")
+    return status in {408, 425, 429} or status >= 500
 
 
 def _action_error(result: dict) -> dict | None:
@@ -1211,12 +1216,14 @@ async def confirm_action(
     (``continued_job_id``). An action that is no longer pending, whose outcome is
     unknown (without ``run_again``), or whose module is not enabled, is 409.
     """
+    # The action run may roll the session back, which expires the user row: read its id once.
+    user_id = user.id
     from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     outcome = await _run_confirmed_action(
         request, session, compile_agent_capabilities(
-        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role)),
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
         run_again=body.run_again,
     )
     error = outcome.get("error") or {}
@@ -1225,7 +1232,7 @@ async def confirm_action(
         raise HTTPException(status_code=409, detail=error)
     outcome["continued_job_id"] = await _continue_request(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        company_id=company_id, user_id=user.id, auth=auth)
+        company_id=company_id, user_id=user_id, auth=auth)
     return outcome
 
 
@@ -1243,16 +1250,17 @@ async def dismiss_action(
     """Persist dismissal of one proposal so it stays gone after reload; when another
     card of the message completed, the request carries on (``continued_job_id``)."""
     from celerp.ai.conversations import dismiss_tool_call
+    user_id = user.id
     dismissed = await dismiss_tool_call(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user_id,
     )
     if not dismissed:
         raise _conflict("action_not_pending", "ai.action_not_pending")
     await session.commit()
     continued = await _continue_request(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        company_id=company_id, user_id=user.id, auth=auth)
+        company_id=company_id, user_id=user_id, auth=auth)
     return {"dismissed": True, "tool_call_id": body.tool_call_id, "continued_job_id": continued}
 
 
@@ -1361,9 +1369,11 @@ async def confirm_all(
     ``after_previous``) the rest of that group stays pending with the reason; other
     groups keep running. An unknown outcome never runs and counts as a failure.
     """
+    # The action run may roll the session back, which expires the user row: read its id once.
+    user_id = user.id
     from celerp.ai.conversations import get_conversation, get_message, note_pending, pending_actions
     from celerp.ai.tools import compile_agent_capabilities, gates_of_caller, keyed_error
-    conv = await get_conversation(session, conversation_id, company_id, user.id)
+    conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msg = await get_message(session, body.message_id, conversation_id)
@@ -1376,7 +1386,7 @@ async def confirm_all(
     groups = _action_groups(open_records)
 
     capabilities = compile_agent_capabilities(
-        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role))
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user_id, role))
     results = []
     stopped: dict[int, str] = {}
     for tool_call_id in ids:
@@ -1393,7 +1403,7 @@ async def confirm_all(
         outcome = await _run_confirmed_action(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
-            tool_call_id=tool_call_id, company_id=company_id, user_id=user.id,
+            tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
         )
         results.append(outcome)
         if not outcome["ok"] and group is not None:
@@ -1406,7 +1416,7 @@ async def confirm_all(
     failed = len(results) - completed - attention
     continued = await _continue_request(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        company_id=company_id, user_id=user.id, auth=auth)
+        company_id=company_id, user_id=user_id, auth=auth)
     return {
         "results": results, "completed": completed,
         "failed": failed, "attention": attention, "continued_job_id": continued,

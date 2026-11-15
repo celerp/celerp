@@ -554,6 +554,21 @@ def tools_open_when_called(monkeypatch):
     monkeypatch.setattr(service, "_parse_call", _opening)
 
 
+@pytest.fixture
+def model_answers_unscripted_runs(monkeypatch):
+    """For tests that confirm a card outside their scripted model: the request then
+    carries on as a job after the test's script is gone, and that run gets a plain
+    answer instead of reaching the AI service."""
+    from celerp.ai import service
+    from celerp.ai.llm import ModelResult
+
+    async def _answer(*_a, **_kw):
+        return ModelResult(message={"role": "assistant", "content": "Done."}, model_used="test-model",
+                           usage={"total_tokens": 1}, reservation_id=None, remaining=None)
+
+    monkeypatch.setattr(service, "complete", _answer)
+
+
 @pytest.fixture(autouse=True)
 def _mutation_census(request):
     """One write-observer record per test, kept for the census file

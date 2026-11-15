@@ -33,7 +33,7 @@ from test_action_outcomes import (
 )
 from test_workflows import ScriptedModel, _new_conversation, _op, agent_caps, ai_session, xlsx_upload  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("tools_open_when_called")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
 
 _USERS = "/companies/me/users"
 _LOCATIONS = "/companies/me/locations"
@@ -51,7 +51,7 @@ def _fixed_secret():
 
 async def _propose_user(client, headers, caps, email: str):
     op = _op(caps, "POST", _USERS)
-    assert "password" not in caps[op]["input_schema"]["properties"]["body"].get("properties", {})
+    assert "password" not in caps[op]["tool"]["function"]["parameters"]["properties"]["body"].get("properties", {})
     return await _propose(client, headers, ScriptedModel(
         _call(op, {"body": {"email": email, "name": "New teammate", "role": "operator"}}, "user1")))
 
@@ -165,7 +165,7 @@ async def _contact(client, headers) -> str:
 
 async def _propose_upload(client, headers, caps, contact_id, file_id):
     op = _op(caps, "POST", "/crm/contacts/{contact_id}/files")
-    assert "file" not in caps[op]["input_schema"]["properties"].get("body", {}).get("properties", {})
+    assert "file" not in caps[op]["tool"]["function"]["parameters"]["properties"].get("body", {}).get("properties", {})
     return await _propose(client, headers, ScriptedModel(
         _call(op, {"path": {"contact_id": contact_id}, "file_ids": [file_id]}, "up1")))
 
@@ -264,7 +264,7 @@ async def test_confirm_resumes_the_request(client, session, agent_caps, ai_sessi
         assert r.status_code == 200, r.text
         job_id = r.json()["continued_job_id"]
         state = await settled_question(client, admin, conv_id, job_id)
-    assert state["state"] == "done"
+    assert state["state"] == "answered"
     assert "Annex" in str(model.seen[-1])
     assert "The annex is set up." in state["message"]["content"]
 
@@ -315,7 +315,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
     ctx = await perm_setup(client, session)
     op = _op(agent_caps, "POST", "/items/bulk/expire")
     ids = [str(uuid.uuid4()) for _ in range(3)]
-    field = next(iter(agent_caps[op]["input_schema"]["properties"]["body"]["properties"]))
+    field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
     conv_id, message_id, call_id = await _propose(client, ctx["admin_h"], ScriptedModel(
         _call(op, {"body": {field: ids}}, "bx1")))
     card = await _record(session, message_id, call_id)
@@ -326,7 +326,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
 async def test_bulk_tool_refuses_an_empty_selection(client, session, agent_caps, ai_session):
     ctx = await perm_setup(client, session)
     op = _op(agent_caps, "POST", "/items/bulk/expire")
-    field = next(iter(agent_caps[op]["input_schema"]["properties"]["body"]["properties"]))
+    field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
     model = ScriptedModel(_call(op, {"body": {field: []}}, "be1"), lambda _m: text_result("Nothing chosen."))
     conv_id = await _new_conversation(client, ctx["admin_h"])
     with patch("celerp.ai.service.complete", model):

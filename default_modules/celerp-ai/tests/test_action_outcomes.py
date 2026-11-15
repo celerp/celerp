@@ -35,9 +35,18 @@ from test_helpers import asked_in_thread, perm_setup
 from _fixtures import tool_call, tool_result
 from test_workflows import ScriptedModel, _new_conversation, _op, agent_caps, ai_session  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("tools_open_when_called")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
 
 _LOCATIONS = "/companies/me/locations"
+# Location names are unique, so a create sent again after a run that did reach the
+# route comes back with this refusal.
+_NAME_TAKEN = "company.err_location_name_taken"
+
+
+def _name_taken(answer: dict) -> bool:
+    """Whether the card's answer, or one record of a for-each card, is that refusal."""
+    errors = [answer.get("error") or {}] + [o.get("error") or {} for o in (answer.get("data") or {}).get("outcomes", [])]
+    return any(e.get("message_key") == _NAME_TAKEN for e in errors)
 _CHECK_SCREEN = "/settings/inventory"
 
 
@@ -155,9 +164,11 @@ async def test_keyed_retry_reuses_the_key(client, session, agent_caps, ai_sessio
     key, so the company ends with one fund and the second answer equals the first."""
     ctx = await perm_setup(client, session)
     admin = ctx["admin_h"]
+    on = await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})
+    assert on.status_code == 200, on.text
     before = await _fund_count(client, admin)
     op = _op(agent_caps, "POST", "/accounting/funds")
-    assert "request_key" not in agent_caps[op]["input_schema"]["properties"]["body"].get("properties", {})
+    assert "request_key" not in agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"].get("properties", {})
     conv_id, message_id, call_id = await _propose(client, admin, ScriptedModel(
         _call(op, {"body": {"name": "Building fund"}}, "fund1")))
 
@@ -217,8 +228,9 @@ async def test_unkeyed_ambiguous_claim_shows_outcome_unknown(client, session, ag
 
 @pytest.mark.asyncio
 async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai_session):
-    """Run again on an unknown record runs exactly once more, under a new identity;
-    the done record then refuses a second Run again."""
+    """Run again on an unknown record runs exactly once more, under a new identity, and
+    the card takes the route's own answer: the first run did add the location, so the
+    route refuses the same name again. The ended record then refuses a second Run again."""
     ctx = await perm_setup(client, session)
     admin = ctx["admin_h"]
     before = await _location_count(client, admin)
@@ -234,14 +246,14 @@ async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai
     with patch.object(ai_tools, "execute_agent_capability", _counting(identities)):
         again = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
         assert again.status_code == 200, again.text
-        assert again.json()["ok"] is True
+        assert _name_taken(again.json()), again.text
         twice = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
     assert twice.status_code == 409
     assert twice.json()["detail"]["code"] == "action_not_pending"
     assert len(identities) == 2
     assert identities[1] != identities[0] and identities[1].startswith(identities[0])
-    assert (await _record(session, message_id, call_id))["status"] == "completed"
-    assert await _location_count(client, admin) == before + 2
+    assert (await _record(session, message_id, call_id))["status"] == "failed"
+    assert await _location_count(client, admin) == before + 1
 
 
 @pytest.mark.asyncio
@@ -271,8 +283,9 @@ async def test_unknown_in_pending_dismiss_and_dependent_stop(client, session, ag
     with patch.object(ai_tools, "execute_agent_capability", _counting(identities)):
         again = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
     assert again.status_code == 200, again.text
+    assert _name_taken(again.json()), again.text
     assert len(identities) == 3
-    assert await _location_count(client, admin) == before + 3
+    assert await _location_count(client, admin) == before + 2
 
 
 _SOURCES = ("stale_claim", "lost_answer", "for_each_record")
@@ -333,4 +346,5 @@ async def test_ambiguous_outcome_never_reruns_without_run_again(
         r = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
     assert r.status_code == 200, r.text
     assert len(calls) == 1
-    assert await _location_count(client, admin) == ran + 1
+    assert _name_taken(r.json()), r.text
+    assert await _location_count(client, admin) == ran
