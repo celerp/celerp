@@ -30,6 +30,7 @@ from starlette.background import BackgroundTask
 
 from celerp.accounting_roles import Refused, refusal_detail
 from celerp.db import get_session
+from celerp.error_body import error_response
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.modules import requirements
 from celerp.modules.importer import MAX_ARCHIVE_BYTES, ModuleImportError, install_from_zip
@@ -47,27 +48,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/company-backups", tags=["company-backups"])
 
-MODULES_UNAVAILABLE = ("This company copy needs modules that cannot run here: {labels}. "
-                       "Import them, or choose another company copy. Nothing was restored.")
-CONSENT_NEEDED = ("These modules come from outside Celerp. Confirm that you want to turn them on: {labels}. "
-                  "Nothing was restored.")
 _BOOTSTRAP = "bootstrap"
 _START_COMPANY = "start_company"
 
 
-def _error(exc: cb.BackupError, stage: Path | None = None, **extra) -> JSONResponse:
+def _error(request: Request, exc: cb.BackupError, stage: Path | None = None, **extra) -> Response:
     """The refusal, with any *extra* fields. Unless the owner can put it right and go on,
     the upload is deleted."""
     if stage is not None and exc.code is None:
         files.discard_stage(stage)
-    content: dict = {"detail": exc.detail, **extra}
+    fields: dict = dict(extra)
     if exc.code is not None:
-        content["code"] = exc.code
+        fields["code"] = exc.code
     if isinstance(exc, cb.StalePreview):
-        content["plan"] = exc.plan.public()
+        fields["plan"] = exc.plan.public()
     if isinstance(exc, cb.ModulesRequired):
-        content["modules"] = exc.modules.public()
-    return JSONResponse(status_code=exc.status_code, content=content)
+        fields["modules"] = exc.modules.public()
+    return error_response(request, exc.status_code, exc.detail, **fields)
 
 
 # ── Download ─────────────────────────────────────────────────────────────────
@@ -83,7 +80,7 @@ async def _provenance(session: AsyncSession, ctx: AuthContext, run_id: uuid.UUID
 
 
 @router.get("/download", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/company-backup/download"}, summary="Download a backup file of the current company.")
-async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = Depends(user_owner),
+async def download_backup(request: Request, run_id: uuid.UUID | None = None, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)):
     """Back up the company the session is on and serve the file, deleted once sent."""
     provenance = await _provenance(session, ctx, run_id) if run_id is not None else None
@@ -95,7 +92,7 @@ async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = De
     try:
         await cb.export_company_snapshot(ctx.company_id, dest, provenance=provenance)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
     return FileResponse(dest, media_type="application/octet-stream", filename=filename,
                         background=BackgroundTask(dest.unlink, missing_ok=True))
 
@@ -110,7 +107,7 @@ class SendCompanyHandoff(BaseModel):
 
 
 @router.post("/send-handoff", openapi_extra=agent_excluded("secret"))
-async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
+async def send_handoff(request: Request, payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
                        session: AsyncSession = Depends(get_session)):
     try:
         secret = sender.decode_key(payload.key)
@@ -128,7 +125,7 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
             recipient=payload.recipient, reply_to=payload.reply_to, note=payload.note,
         ))
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
     await asyncio.to_thread(files.remember_sender, payload.firm_name, payload.reply_to)
     return sent
 
@@ -252,17 +249,17 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession, mode: str =
         raise
 
 
-async def _staged(session: AsyncSession, owner: str, token: str, ctx: AuthContext | None, mode: str):
+async def _staged(request: Request, session: AsyncSession, owner: str, token: str, ctx: AuthContext | None, mode: str):
     """The preview of an upload already staged, checked again."""
     stage = _uploaded(owner, token)
     user_id, company_id = (ctx.user.id, ctx.company_id) if ctx is not None else (None, None)
     try:
         return await _preview(session, stage, token, mode, user_id, company_id)
     except cb.BackupError as exc:
-        return _error(exc, stage)
+        return _error(request, exc, stage)
 
 
-async def _prepare(owner: str, token: str, consent: list[str], *, open_: OpenIn | None = None,
+async def _prepare(request: Request, owner: str, token: str, consent: list[str], *, open_: OpenIn | None = None,
                    session: AsyncSession | None = None, ctx: AuthContext | None = None,
                    mode: str = "settings") -> JSONResponse:
     """Turn on the modules a staged backup needs, then restart Celerp to load them. Bundled
@@ -273,22 +270,22 @@ async def _prepare(owner: str, token: str, consent: list[str], *, open_: OpenIn 
     try:
         backup = await asyncio.to_thread(cb.read_backup, stage)
     except cb.BackupError as exc:
-        return _error(exc, stage)
+        return _error(request, exc, stage)
     modules = cb.requirement_plan(backup)
     confirmed = None
     if open_ is not None and ctx is not None:
         plan = await cb.plan_existing_restore(session, backup, mode, ctx.user.id, ctx.company_id)
         if plan.fingerprint != open_.plan_fingerprint:
-            return _error(cb.StalePreview(plan))
+            return _error(request, cb.StalePreview(plan))
         confirmed = plan.confirmed
     try:
         restart = await asyncio.to_thread(requirements.prepare, modules, consent=frozenset(consent))
     except requirements.RequirementsBlocked as exc:
-        return JSONResponse(status_code=409, content={"detail": MODULES_UNAVAILABLE.format(labels=exc),
-                                                      "code": "modules_unavailable"})
+        return error_response(request, 409, t("company_backup.err_modules_unavailable", labels=str(exc)),
+                              code="modules_unavailable")
     except requirements.ConsentRequired as exc:
-        return JSONResponse(status_code=409, content={"detail": CONSENT_NEEDED.format(labels=exc),
-                                                      "code": "consent_required"})
+        return error_response(request, 409, t("company_backup.err_consent_needed", labels=str(exc)),
+                              code="consent_required")
     except OSError:
         logger.exception("Could not turn on the modules a company backup needs")
         raise HTTPException(status_code=503, detail=t("company_backup.err_modules_not_saved")) from None
@@ -300,7 +297,7 @@ async def _prepare(owner: str, token: str, consent: list[str], *, open_: OpenIn 
     return JSONResponse(status_code=202, content={"restart": True, "restarting": requirements.schedule_restart()})
 
 
-async def _import_module(file: UploadFile, session: AsyncSession, owner: str, token: str,
+async def _import_module(request: Request, file: UploadFile, session: AsyncSession, owner: str, token: str,
                          ctx: AuthContext | None, mode: str):
     """Install a module the staged backup needs through the module importer, as the Modules
     page does; it lands turned off. Returns the staged backup's preview, checked again."""
@@ -312,7 +309,7 @@ async def _import_module(file: UploadFile, session: AsyncSession, owner: str, to
         await asyncio.to_thread(install_from_zip, data)
     except ModuleImportError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return await _staged(session, owner, token, ctx, mode)
+    return await _staged(request, session, owner, token, ctx, mode)
 
 
 def _restored(result: cb.RestoreResult, tokens: dict, **extra) -> JSONResponse:
@@ -351,34 +348,34 @@ class RestoreIn(UploadIn):
 
 
 @router.post("/read", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*", "x-celerp-agent-check": "/settings/restore-backup"}, summary="Read an uploaded company backup and show what it holds, without restoring anything.")
-async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
+async def read_backup(request: Request, file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
                       handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
     try:
         return await _read(file, str(ctx.user.id), session, mode, ctx.user.id, ctx.company_id,
                            handoff_copy_id, handoff_proof)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
 
 
 @router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show the backup a staged company was made from.")
-async def staged_backup(upload_token: str, mode: RestoreMode = "settings", ctx: AuthContext = Depends(user_owner),
+async def staged_backup(request: Request, upload_token: str, mode: RestoreMode = "settings", ctx: AuthContext = Depends(user_owner),
                         session: AsyncSession = Depends(get_session)):
-    return await _staged(session, str(ctx.user.id), upload_token, ctx, mode)
+    return await _staged(request, session, str(ctx.user.id), upload_token, ctx, mode)
 
 
 @router.post("/prepare", openapi_extra=agent_excluded("installation"))
-async def prepare_modules(payload: OwnerPrepareIn, ctx: AuthContext = Depends(user_owner),
+async def prepare_modules(request: Request, payload: OwnerPrepareIn, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)):
-    return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent, open_=payload.open,
+    return await _prepare(request, str(ctx.user.id), payload.upload_token, payload.consent, open_=payload.open,
                           session=session, ctx=ctx, mode=payload.mode)
 
 
 @router.post("/import-module", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*", "x-celerp-agent-check": "/settings/restore-backup"}, summary="Add an uploaded module package that a read backup needs.")
-async def import_module(file: UploadFile = File(...), upload_token: str = Form(...),
+async def import_module(request: Request, file: UploadFile = File(...), upload_token: str = Form(...),
                         mode: RestoreMode = Form("settings"), ctx: AuthContext = Depends(user_owner),
                         session: AsyncSession = Depends(get_session)):
-    return await _import_module(file, session, str(ctx.user.id), upload_token, ctx, mode)
+    return await _import_module(request, file, session, str(ctx.user.id), upload_token, ctx, mode)
 
 
 @router.post("/discard", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/restore-backup"}, summary="Drop an uploaded backup that was read but not restored.")
@@ -391,7 +388,7 @@ async def discard_upload(payload: UploadIn, ctx: AuthContext = Depends(user_owne
 
 
 @router.post("/restore", openapi_extra=agent_excluded("switch"))
-async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
+async def restore_backup(request: Request, payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
                          session: AsyncSession = Depends(get_session)):
     """Restore a staged backup as the preview showed it and switch the caller to the company:
     a new one, or the one it was already restored as. Repeating a restore that finished,
@@ -410,7 +407,7 @@ async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_own
                                               company_name=payload.company_name,
                                               retain_peer_identities=files.staged_handoff(stage) is not None)
         except cb.BackupError as exc:
-            return _error(exc, stage)
+            return _error(request, exc, stage)
         files.finish_stage(stage, result.company_id)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
                                                     expected_snonce=ctx.snonce))
@@ -426,7 +423,7 @@ class ReplaceUploadIn(ReplaceIn, UploadIn):
 
 
 @router.post("/replace", openapi_extra=agent_excluded("company"))
-async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends(user_owner),
+async def replace_with_copy(request: Request, payload: ReplaceUploadIn, ctx: AuthContext = Depends(user_owner),
                             session: AsyncSession = Depends(get_session)):
     """Replace the caller's company of the same lineage with a staged copy of it, as the
     preview offered, once its owner typed its name; a backup of it is kept first. Switches
@@ -452,10 +449,10 @@ async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends
             # finishes the follow-up.
             files.finish_stage(stage, exc.company_id)
             await session.refresh(ctx.user)
-            return _error(exc, **await issue_token_pair(session, user=ctx.user, company_id=exc.company_id,
+            return _error(request, exc, **await issue_token_pair(session, user=ctx.user, company_id=exc.company_id,
                                                         expected_snonce=ctx.snonce))
         except cb.BackupError as exc:
-            return _error(exc, stage)
+            return _error(request, exc, stage)
         files.finish_stage(stage, result.company_id)
         await session.refresh(ctx.user)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
@@ -469,27 +466,27 @@ async def kept_backups(ctx: AuthContext = Depends(user_owner)):
 
 
 @router.get("/kept/{kept_id}/download", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/settings/saved-copies/{kept_id}/download"}, summary="Download one kept backup of this company.")
-async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)):
+async def download_kept_backup(request: Request, kept_id: str, ctx: AuthContext = Depends(user_owner)):
     try:
         path = await cb.kept_backup(ctx.company_id, kept_id)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
     return FileResponse(path, media_type="application/octet-stream",
                         filename=f"{ctx.company.slug}-before-replace{cb.EXTENSION}")
 
 
 @router.delete("/kept/{kept_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Delete one kept backup of this company.")
-async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
+async def delete_kept_backup(request: Request, kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
     """Delete a kept backup. Not undoable: it is the file itself, so the page asks first."""
     try:
         await cb.forget_kept_backup(ctx.company_id, kept_id)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
     return Response(status_code=204)
 
 
 @router.post("/kept/{kept_id}/replace", openapi_extra=agent_excluded("company"))
-async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext = Depends(user_owner),
+async def restore_kept_backup(request: Request, kept_id: str, payload: ReplaceIn, ctx: AuthContext = Depends(user_owner),
                               session: AsyncSession = Depends(get_session)):
     """Undo a replace: put a kept backup back in place of this company, the same way, so
     the version it replaces is kept in turn."""
@@ -503,7 +500,7 @@ async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext
             path, mode="settings", user_id=user_id, current_company_id=company_id,
             plan_fingerprint=None, typed_name=payload.company_name)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
     files.discard_kept(lineage, kept_id)
     await session.refresh(ctx.user)
     return _restored(result, await issue_token_pair(session, user=ctx.user, company_id=result.company_id,
@@ -511,7 +508,7 @@ async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext
 
 
 @router.post("/reactivate", openapi_extra=agent_excluded("switch"))
-async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
+async def reactivate_restored(request: Request, payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
                               session: AsyncSession = Depends(get_session)):
     """Reactivate the deactivated company a staged backup was already restored as, instead
     of restoring a copy, and switch the caller to it. Connectors its deactivation
@@ -529,7 +526,7 @@ async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(use
                                                 current_company_id=ctx.company_id,
                                                 plan_fingerprint=payload.plan_fingerprint)
         except cb.BackupError as exc:
-            return _error(exc, stage)
+            return _error(request, exc, stage)
         files.finish_stage(stage, done.company_id)
         company_id, name, reconnect = done.company_id, done.company_name, done.connectors_to_reconnect
         outcome = cb.REACTIVATED if done.reactivated else cb.OPENED_EXISTING
@@ -553,22 +550,22 @@ async def bootstrap_read(request: Request, file: UploadFile = File(...),
         return await _read(file, _BOOTSTRAP, session, handoff_copy_id=handoff_copy_id,
                            handoff_proof=handoff_proof)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
 
 
 @router.get("/bootstrap/staged", openapi_extra=agent_excluded("session"))
-async def bootstrap_staged(upload_token: str, session: AsyncSession = Depends(get_session)):
+async def bootstrap_staged(request: Request, upload_token: str, session: AsyncSession = Depends(get_session)):
     """The upload token was issued against the setup code and names one private upload,
     so showing or deleting that upload needs nothing more."""
     await ensure_not_bootstrapped(session)
-    return await _staged(session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
+    return await _staged(request, session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
 
 
 @router.post("/bootstrap/prepare", openapi_extra=agent_excluded("session"))
-async def bootstrap_prepare(payload: PrepareIn, session: AsyncSession = Depends(get_session),
+async def bootstrap_prepare(request: Request, payload: PrepareIn, session: AsyncSession = Depends(get_session),
                             x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
-    return await _prepare(_BOOTSTRAP, payload.upload_token, payload.consent)
+    return await _prepare(request, _BOOTSTRAP, payload.upload_token, payload.consent)
 
 
 @router.post("/bootstrap/import-module", openapi_extra=agent_excluded("session"))
@@ -577,7 +574,7 @@ async def bootstrap_import_module(request: Request, file: UploadFile = File(...)
                                   session: AsyncSession = Depends(get_session),
                                   x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
-    return await _import_module(file, session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
+    return await _import_module(request, file, session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
 
 
 @router.post("/bootstrap/discard", status_code=204, openapi_extra=agent_excluded("session"))
@@ -605,10 +602,10 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     sign them in. Repeating it with the same account opens the same company."""
     from celerp.credentials import issue_token_pair_by_id
     required = bootstrap.verify_setup_code(x_setup_code)
-    errors: dict[str, str] = {}
+    errors: list[dict] = []
     name, email = owner_account(payload.name, payload.email, payload.password, errors)
     if errors:
-        raise HTTPException(status_code=422, detail=errors)
+        raise HTTPException(status_code=422, detail={"errors": errors})
     account = {"name": name, "email": email, "password": payload.password}
     stage = _stage(_BOOTSTRAP, payload.upload_token)
     if not stage.is_file():
@@ -623,7 +620,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
                                           company_name=payload.company_name, caller=request_caller(request),
                                           retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
-        return _error(exc, stage)
+        return _error(request, exc, stage)
     files.finish_stage(stage, result.company_id)
     response = _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                               expected_snonce=None))
@@ -645,7 +642,7 @@ async def start_company_read(request: Request, file: UploadFile = File(...), ema
         return await _read(file, str(user.id), session, _START_COMPANY, user.id,
                            handoff_copy_id=handoff_copy_id, handoff_proof=handoff_proof)
     except cb.BackupError as exc:
-        return _error(exc)
+        return _error(request, exc)
 
 
 class StartCompanyRestoreIn(BaseModel):
@@ -672,7 +669,7 @@ async def start_company_restore(request: Request, payload: StartCompanyRestoreIn
                                           company_name=payload.company_name,
                                           retain_peer_identities=files.staged_handoff(stage) is not None)
     except cb.BackupError as exc:
-        return _error(exc, stage)
+        return _error(request, exc, stage)
     files.finish_stage(stage, result.company_id)
     return _restored(result, await issue_token_pair_by_id(session, result.user_id, result.company_id,
                                                           expected_snonce=None))

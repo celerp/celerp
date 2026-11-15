@@ -421,6 +421,15 @@ def refusal_detail(exc: Exception):
     return getattr(exc, "detail", str(exc))
 
 
+def field_refusal(field: str, text) -> dict:
+    """The refusal of one form ``field``: ``text`` (a t() text or a ``refusal``) as the
+    refusal it reads as, naming the field. A form refused field by field answers a list of
+    them under ``errors``."""
+    from celerp.error_body import as_refusal
+
+    return {**as_refusal(text), "field": field}
+
+
 def no_account_chosen() -> dict:
     """The refusal for setting a posting account with none chosen."""
     return refusal("posting.choose_account", "Choose an account.")

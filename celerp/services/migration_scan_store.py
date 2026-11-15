@@ -304,15 +304,19 @@ def _per_file_limit(adapter: SourceAdapter | None) -> int:
     return max((spec.max_bytes for a in adapters for spec in a.artifact_specs), default=0)
 
 
-async def _read_text(chunks: AsyncIterator[bytes], too_long: str | None = None,
-                     limit: int = _SOURCE_KEY_MAX) -> str:
-    """A short text field, refused with *too_long* (or as an unknown source) past *limit* bytes."""
+async def _read_text(chunks: AsyncIterator[bytes], too_long: str, limit: int = _SOURCE_KEY_MAX) -> str:
+    """A short text field, refused with *too_long* past *limit* bytes."""
     data = b""
     async for chunk in chunks:
         data += chunk
         if len(data) > limit:
-            raise ScanStoreError(422, too_long or t("migration.err_source_unavailable"))
+            raise ScanStoreError(422, too_long)
     return data.decode("utf-8", errors="replace").strip()
+
+
+async def _read_field(chunks: AsyncIterator[bytes]) -> str:
+    """A short form field (a source key, a draft token), refused as an unknown source past its limit."""
+    return await _read_text(chunks, t("migration.err_source_unavailable"))
 
 
 async def _stream_file(part: UploadPart, path: Path, *, per_file: int, remaining: int) -> Artifact:
@@ -347,17 +351,17 @@ async def _receive(files: AsyncIterable[UploadPart], directory: Path) -> _Upload
     total = 0
     async for part in files:
         if part.name == "source":
-            key = await _read_text(part.chunks)
+            key = await _read_field(part.chunks)
             if key:
                 upload.adapter = registry.get_adapter(key)
                 if upload.adapter is None:
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
         elif part.name == "draft":
-            upload.draft = await _read_text(part.chunks)
+            upload.draft = await _read_field(part.chunks)
         elif part.name == "remove":
-            upload.remove.add(await _read_text(part.chunks))
+            upload.remove.add(await _read_field(part.chunks))
         elif part.name == "check":
-            upload.check_only = await _read_text(part.chunks) == "1"
+            upload.check_only = await _read_field(part.chunks) == "1"
         elif part.name == "files" and part.filename:
             if len(artifacts) >= MAX_ARTIFACTS:
                 raise ScanStoreError(413, t("migration.err_too_many_files", count=MAX_ARTIFACTS))
@@ -543,7 +547,7 @@ async def create_several(files: AsyncIterable[UploadPart], *, owner: ScanOwner) 
         received: list[Artifact | tuple[str, ScanStoreError]] = []
         async for part in files:
             if part.name == "source":
-                source = await _read_text(part.chunks)
+                source = await _read_field(part.chunks)
                 if source and registry.get_adapter(source) is None:
                     raise ScanStoreError(422, t("migration.err_source_unavailable"))
             elif part.name == "prepared_by":

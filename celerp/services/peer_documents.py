@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
-from celerp.importers.results import message_text
+from celerp.importers.results import kept_refusal
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.services import peer_access, peer_accounts, peer_attention
@@ -312,11 +312,8 @@ async def receive_document(
         ):
             # The import's own reason, such as a locked period, tells the owner what to change.
             message = outcome.records[0].message if len(outcome.records) == 1 else None
-            refused = HTTPException(409, message["params"]["refusal"] if isinstance(message, dict)
-                                    and message.get("message_key") == "import.record_refused"
-                                    else t("error.refusal_as_written",
-                                           text=message_text(message).removeprefix(f"{claim.target_id}: "))
-                                    if message else t("peer.err_receiving_document_needs_review"))
+            refused = HTTPException(409, kept_refusal(message, claim.target_id) if message
+                                    else t("peer.err_receiving_document_needs_review"))
             refused.fix = outcome.records[0].fix if len(outcome.records) == 1 else None
             raise refused
         if posting is not None:

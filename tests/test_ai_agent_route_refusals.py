@@ -248,15 +248,20 @@ class _Walk:
 
     def __init__(self, app):
         self.unkeyed: list[str] = []
-        self.raised: list[tuple[type, bool, str]] = []  # (exception class, keyed text, where)
-        self.carried: dict[type, str] = {}  # exception classes whose text a detail carries
+        # Every first-party exception built: (class, whether each argument it is given is
+        # keyed, by parameter, "__text__" for its first, where).
+        self.raised: list[tuple[type, dict[str, bool], str]] = []
+        # Exception classes a detail carries: (where, the parameter it is built from).
+        self.carried: dict[type, tuple[str, str]] = {}
+        self._built: dict = {}  # HTTPException subclass -> parameters its __init__ builds the detail from
         self._returns: dict = {}
         self._handed_back: dict = {}  # helper -> the parameters it returns as given
         self._passers: dict = {}
         todo = [(route.endpoint, None) for _path, _methods, route in _api_routes(app)
                 if (route.openapi_extra or {}).get("x-celerp-agent") is True]
         assert todo
-        todo += _slot_handlers() + [(handler, None) for handler, _ in _exception_handlers(app)]
+        self.handlers = {inspect.unwrap(handler) for handler, _ in _exception_handlers(app)}
+        todo += _slot_handlers() + [(handler, None) for handler in self.handlers]
         walked = self.walked = set()
         while todo:
             fn, owner = todo.pop()
@@ -275,6 +280,8 @@ class _Walk:
 
     def _visit(self, fn, owner, tree):
         scope = _scope(fn, tree)
+        if owner is not None and issubclass(owner, HTTPException) and fn is vars(owner).get("__init__"):
+            self._builds(owner)  # the parameters it builds its detail from, checked where it is built
         for node in (n for stmt in tree.body for n in ast.walk(stmt)):
             if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
                 obj = _resolve(node, scope)
@@ -292,11 +299,6 @@ class _Walk:
                     key = node.exc.args[0] if node.exc.args else None
                     if isinstance(key, ast.Constant) and key.value not in _EN:
                         self.unkeyed.append(f"{self._where(fn, node)} raise {ast.unparse(node.exc)} (key not in en.json)")
-                elif isinstance(cls, type) and issubclass(cls, Exception) and _first_party(cls) \
-                        and not issubclass(cls, HTTPException):
-                    text = node.exc.args[0] if node.exc.args else None
-                    self.raised.append((cls, text is not None and self._keyed(text, fn, scope, tree),
-                                        f"{self._where(fn, node)} raise {ast.unparse(node.exc)}"))
             if not isinstance(node, ast.Call):
                 continue
             callee = _resolve(node.func, scope)
@@ -313,6 +315,25 @@ class _Walk:
                 if detail is not None and not self._keyed(detail, fn, scope, tree):
                     self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)}")
                 continue
+            if callee is error_response and fn not in self.handlers:
+                # An exception handler answers a detail checked where it was raised.
+                detail = _argument(callee, node, "detail")
+                if detail is None or not self._keyed(detail, fn, scope, tree):
+                    self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)}")
+                continue
+            if isinstance(callee, type) and issubclass(callee, Exception) and _first_party(callee) \
+                    and not issubclass(callee, (HTTPException, Refused)):
+                # Built here and raised here or later: its text and arguments as given.
+                try:
+                    given = inspect.signature(callee).bind_partial(
+                        *node.args, **{k.arg: k.value for k in node.keywords if k.arg}).arguments
+                except (TypeError, ValueError):
+                    given = {}
+                keyed_args = {name: self._keyed(value, fn, scope, tree) for name, value in given.items()
+                              if isinstance(value, ast.expr)}
+                keyed_args["__text__"] = bool(node.args) and self._keyed(node.args[0], fn, scope, tree)
+                self.raised.append((callee, keyed_args, f"{self._where(fn, node)} {ast.unparse(node)}"))
+                continue
             if isinstance(callee, type) and issubclass(callee, Response) and fn is not error_response \
                     and not _success(node):
                 # A body built here skips the one builder, which keys a t() text (error_body).
@@ -322,7 +343,16 @@ class _Walk:
                 continue
             detail = _argument(callee, node, "detail")
             if detail is False:
-                continue  # the class builds its detail in its own __init__, walked with it
+                # The class builds its detail in its own __init__, walked with it, from the
+                # parameters checked here, as each call gives them.
+                try:
+                    given = inspect.signature(callee).bind_partial(
+                        *node.args, **{k.arg: k.value for k in node.keywords if k.arg}).arguments
+                except TypeError:
+                    given = {}
+                self.unkeyed.extend(f"{self._where(fn, node)} {ast.unparse(node)}" for name in self._builds(callee)
+                                    if not (name in given and self._keyed(given[name], fn, scope, tree)))
+                continue
             status = _argument(callee, node, "status_code")
             if isinstance(status, ast.Constant) and status.value == 401:
                 continue  # refuses the session, not the request (error_body.unkeyed_refusal)
@@ -345,6 +375,24 @@ class _Walk:
                     if _given(fn, tree, detail):
                         self._passers[fn] = detail.id
         return self._passers[fn]
+
+    def _builds(self, cls) -> list[str]:
+        """The parameters an HTTPException subclass's __init__ builds its detail from, as
+        given; its own visit reports a detail it builds otherwise unkeyed."""
+        init = next((vars(b)["__init__"] for b in cls.__mro__ if inspect.isfunction(vars(b).get("__init__"))), None)
+        if init is None or not _first_party(init):
+            return []
+        if init not in self._built:
+            self._built[init] = []
+            tree = _tree(init)
+            scope = _scope(init, tree) if tree is not None else {}
+            self._handed_back.setdefault(init, dict.fromkeys(list(inspect.signature(init).parameters)[1:], False))
+            for node in ast.walk(tree or ast.Module(body=[])):
+                if isinstance(node, ast.Call) and ast.unparse(node.func) == "super().__init__":
+                    detail = _argument(HTTPException, node, "detail")
+                    if detail and self._keyed(detail, init, scope, tree):
+                        self._built[init] = [n for n, back in self._handed_back[init].items() if back]
+        return self._built[init]
 
     def _caught(self, use, tree, scope) -> list:
         """The exception classes the name ``use`` refers to is bound to by the
@@ -372,10 +420,10 @@ class _Walk:
                 return True
             if any(k is None and keyed(v) for k, v in zip(node.keys, node.values)):
                 return True
-            return "errors" in fields and isinstance(fields["errors"], ast.Name) \
-                and self._list_keyed(fields["errors"].id, fn, scope, tree)
+            return "errors" in fields and keyed(fields["errors"])
         if isinstance(node, ast.Name):
-            values = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and n.value
+            values = [n.value for n in ast.walk(tree)
+                      if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and n.value
                       and any(isinstance(target, ast.Name) and target.id == node.id
                               for target in getattr(n, "targets", [getattr(n, "target", None)]))]
             if not values and node.id in self._handed_back.get(fn, {}):
@@ -383,16 +431,21 @@ class _Walk:
                 return True
             if not values and node.id in scope:
                 return _held_keyed(scope[node.id])  # a refusal the module builds once
-            return bool(values) and all(keyed(v) for v in values)
+            return bool(values) and all(keyed(v) for v in values) and (
+                not any(isinstance(v, ast.List) for v in values) or self._list_keyed(node.id, fn, scope, tree, True))
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in scope:
             return _held_keyed(scope[node.value.id], every=True)  # one of a module's refusals
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            return keyed(node.value)  # an entry of a list of refusals, each keyed
+        if isinstance(node, ast.List):
+            return all(keyed(e) for e in node.elts)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
                 and isinstance(node.func.value, ast.Name) and node.func.value.id in scope:
             held = scope[node.func.value.id]
             return _held_keyed(held, every=True) and all(keyed(a) for a in node.args[1:])
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr == "detail":
             # A caught exception's detail: keyed when its class keys it.
-            classes = self._caught(node.value, tree, scope)
+            classes = self._caught(node.value, tree, scope) or self._annotated(fn, node.value.id)
             return bool(classes) and all(self._carries_detail(c, self._where(fn, node)) for c in classes)
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call) and node.attr == "detail":
             # The detail of an exception a helper builds: keyed when the class it returns keys it.
@@ -409,7 +462,7 @@ class _Walk:
                 classes = self._caught(node.args[0], tree, scope)
                 if not classes or not all(isinstance(c, type) and _first_party(c) for c in classes):
                     return False
-                self.carried.update((c, self._where(fn, node)) for c in classes)
+                self.carried.update((c, (self._where(fn, node), "__text__")) for c in classes)
                 return True
             if callee is i18n.t and node.args:
                 return _catalog_key(node.args[0], scope, tree)
@@ -425,7 +478,7 @@ class _Walk:
                         continue
                     if _sets_detail(cls):
                         return False
-                    self.carried[cls] = where
+                    self.carried[cls] = (where, "__text__")
                 return True
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
@@ -442,12 +495,39 @@ class _Walk:
                 return all(name in given and keyed(given[name]) for name in handed)
         return False
 
-    def _list_keyed(self, name: str, fn, scope, tree) -> bool:
-        """A list of refusals built in ``fn``: every entry appended to it is keyed."""
+    def _list_keyed(self, name: str, fn, scope, tree, written: bool = False) -> bool:
+        """A list of refusals built in ``fn``: every entry appended to it is keyed (and, with
+        ``written``, any entry its literal holds, checked by the caller, is enough)."""
         added = [n.args[0] for n in ast.walk(tree) if isinstance(n, ast.Call) and n.args
                  and isinstance(n.func, ast.Attribute) and n.func.attr == "append"
                  and isinstance(n.func.value, ast.Name) and n.func.value.id == name]
-        return bool(added) and all(self._keyed(a, fn, scope, tree) for a in added)
+        if not all(self._keyed(a, fn, scope, tree) for a in added):
+            return False
+        for call in (n for n in ast.walk(tree) if isinstance(n, ast.Call)):
+            # A helper given the list appends its own refusals to it.
+            helper = _resolve(call.func, scope)
+            if not (inspect.isfunction(helper) and _first_party(helper)):
+                continue
+            try:
+                bound = inspect.signature(helper).bind_partial(
+                    *call.args, **{k.arg: k.value for k in call.keywords if k.arg}).arguments
+            except TypeError:
+                continue
+            for param, value in bound.items():
+                if isinstance(value, ast.Name) and value.id == name and (inner := _tree(helper)) is not None:
+                    if not self._list_keyed(param, helper, _scope(helper, inner), inner, True):
+                        return False
+                    added.append(value)
+        return written or bool(added)
+
+    @staticmethod
+    def _annotated(fn, name: str) -> list:
+        """The exception class a parameter of ``fn`` is annotated with."""
+        try:
+            hint = typing.get_type_hints(fn).get(name)
+        except (NameError, TypeError):
+            return []
+        return [hint] if isinstance(hint, type) and issubclass(hint, Exception) else []
 
     def _returns_keyed(self, fn) -> bool:
         """A helper that builds a detail: every value it returns (other than None) is keyed,
@@ -467,10 +547,10 @@ class _Walk:
         """An exception class whose ``detail`` is keyed: an HTTPException subclass the walk
         checks where it builds it, a class whose __init__ sets ``self.detail`` keyed, or one
         that keeps the detail it is given, whose every raise must then give a keyed one."""
+        if isinstance(cls, type) and issubclass(cls, HTTPException):
+            return True  # every HTTPException the walk reaches is checked where it is built
         if not isinstance(cls, type) or not _first_party(cls):
             return False
-        if issubclass(cls, HTTPException):
-            return True
         for base in cls.__mro__:
             init = vars(base).get("__init__")
             tree = _tree(init) if inspect.isfunction(init) else None
@@ -479,9 +559,10 @@ class _Walk:
             scope = _scope(init, tree)
             sets = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(
                 ast.unparse(target) == "self.detail" for target in n.targets)]
-            given = list(inspect.signature(init).parameters)[1:2]
-            if sets and all(isinstance(v, ast.Name) and v.id in given for v in sets):
-                self.carried[cls] = where
+            given = list(inspect.signature(init).parameters)[1:]
+            if sets and len({ast.unparse(v) for v in sets}) == 1 and isinstance(sets[0], ast.Name) \
+                    and sets[0].id in given and _given(init, tree, sets[0]):
+                self.carried[cls] = (where, sets[0].id)  # each build of it gives a keyed one
                 return True
             if sets:
                 return all(self._keyed(v, init, scope, tree) for v in sets)
@@ -491,7 +572,8 @@ class _Walk:
         """Every unkeyed detail, and every unkeyed raise of an exception whose text a
         detail carries."""
         carried = [f"{how} (its text is the detail at {where})" for cls, keyed, how in self.raised
-                   for carrier, where in self.carried.items() if not keyed and issubclass(cls, carrier)]
+                   for carrier, (where, name) in self.carried.items()
+                   if issubclass(cls, carrier) and keyed.get(name) is False]
         return sorted(set(self.unkeyed + carried))
 
 

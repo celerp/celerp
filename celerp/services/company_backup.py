@@ -178,9 +178,7 @@ MAX_ROW_DEPTH = 100
 BATCH_ROWS = 1000
 BATCH_BYTES = 1024 ** 2
 
-_NOT_RESTORED = " Nothing was restored."
 _NO_COPY_MADE = " No copy was made."
-_NOT_REPLACED = " Nothing was replaced."
 # Refusals, as locale keys: each is translated where the BackupError is raised.
 NOT_A_BACKUP = "company_backup.err_not_a_backup"
 SYSTEM_BACKUP = "company_backup.err_system_backup"
@@ -324,11 +322,12 @@ def _refusal(table: str, owners: dict[str, str]) -> BackupError:
 
 
 def _unsupported(label: str, owner: str | None, *, restoring: bool) -> BackupError:
-    status, verb, end = (422, "restore", _NOT_RESTORED) if restoring else (409, "copy", _NO_COPY_MADE)
+    status = 422 if restoring else 409
     if owner:
-        return BackupError(status, f"The {owner} module keeps data in {label} in a form Celerp "
-                                   f"cannot {verb} yet." + end)
-    return BackupError(status, f"This company has data Celerp cannot {verb} yet: {label}." + end)
+        return BackupError(status, t("company_backup.err_module_form_restore", owner=owner, label=label) if restoring
+                           else t("company_backup.err_module_form_copy", owner=owner, label=label))
+    return BackupError(status, t("company_backup.err_data_form_restore", label=label) if restoring
+                       else t("company_backup.err_data_form_copy", label=label))
 
 
 async def _pin(session: AsyncSession, *, restoring: bool) -> None:
@@ -374,8 +373,7 @@ async def _classify(session: AsyncSession, modules: InstalledModules, *, strict:
                 # The prefix came from another installed copy of the module than the one
                 # whose declarations and version a backup records.
                 if strict:
-                    raise BackupError(409, f"The {owner} module is installed more than once, with "
-                                           f"different table prefixes." + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_module_twice", owner=owner))
                 refused.add(name)
                 continue
             how = declarations[owner].get(name)
@@ -649,7 +647,7 @@ def _collect_urls(value, company_id, found: dict[str, str], types: dict[str, str
     if isinstance(value, str):
         name = attachments.company_file_name(company_id, value)
         if name is not None and found.setdefault(name, value) != value:
-            raise BackupError(409, f"This company has two attachment files named {name}." + _NO_COPY_MADE)
+            raise BackupError(409, t("company_backup.err_attachment_name_twice", name=name))
     elif isinstance(value, dict):
         if isinstance(value.get("url"), str) and isinstance(value.get("mime"), str):
             types.setdefault(value["url"], value["mime"])
@@ -668,8 +666,7 @@ def _backup_name(name: str, url: str, types: dict[str, str]) -> str:
     mime = attachments.stored_file_type(name) or types.get(url)
     backup_name = attachments.stored_file_name(name, mime) if mime else None
     if backup_name is None:
-        raise BackupError(409, f"This company has an attachment file of a type Celerp does not store: {url}."
-                          + _NO_COPY_MADE)
+        raise BackupError(409, t("company_backup.err_attachment_type_unstored", url=url))
     return backup_name
 
 
@@ -677,8 +674,8 @@ async def _share_schema(session: AsyncSession, *, restoring: bool) -> None:
     """Hold the schema key shared until the transaction ends, so no schema change runs
     meanwhile; refused at once while one runs or waits."""
     if not await celerp.db.share_schema(session):
-        raise BackupError(409, "Celerp is updating its database." + (_NOT_RESTORED if restoring else _NO_COPY_MADE)
-                          + " Try again in a moment.")
+        raise BackupError(409, t("company_backup.err_updating_restore") if restoring
+                          else t("company_backup.err_updating_copy"))
 
 
 # Who made each change travels as a label in the event's metadata: the person's name, and
@@ -793,9 +790,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
         owners = {plan.owners[t] for t in tables if t in plan.owners}
         for owner in sorted(owners):
             if modules.version(owner) is None:
-                raise BackupError(409, f"The {owner} module does not declare a valid version, so a "
-                                       f"backup of its data cannot say which version restores it."
-                                  + _NO_COPY_MADE)
+                raise BackupError(409, t("company_backup.err_module_no_version", owner=owner))
         manifest: dict = {
             "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
             "backup_id": str(uuid.uuid4()),
@@ -831,8 +826,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
             for name in sorted(found):
                 backup_name = _backup_name(name, found[name], types)
                 if names.setdefault(backup_name, name) != name:
-                    raise BackupError(409, f"This company has two attachment files named {backup_name}."
-                                      + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_attachment_name_twice", name=backup_name))
             for backup_name, name in sorted(names.items()):
                 url = found[name]
                 try:
@@ -842,8 +836,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                     logger.warning("Reading an attachment for a company backup failed", exc_info=True)
                     body = None
                 if body is None:
-                    raise BackupError(409, f"This company has an attachment file Celerp cannot read: {url}."
-                                      + _NO_COPY_MADE)
+                    raise BackupError(409, t("company_backup.err_attachment_unreadable", url=url))
                 zf.writestr(f"attachments/{backup_name}", body)
                 manifest["attachments"].append({"url": url, "name": backup_name, "size": len(body),
                                                 "sha256": hashlib.sha256(body).hexdigest()})
@@ -1723,7 +1716,7 @@ async def _turn_off_shop_sync(session: AsyncSession, company_id, actor_id) -> No
 def _chosen_name(name: str) -> str:
     name = name.strip()
     if (error := company_name_error(name)) is not None:
-        raise BackupError(422, error + _NOT_RESTORED, "name_invalid")
+        raise BackupError(422, error, "name_invalid")
     return name
 
 
@@ -1802,7 +1795,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     [found] = await take_company_locks(
                         session, lambda: lock_company_for_deletion(session, replacing.company_id))
                     if not found:
-                        raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
+                        raise BackupError(404, t("company_backup.err_company_gone_replace"))
                 else:
                     # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
                     await lock_connector_key(session, "shopify")

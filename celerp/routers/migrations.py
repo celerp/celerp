@@ -35,6 +35,7 @@ from python_multipart.multipart import MultipartParser, parse_options_header
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import field_refusal
 from celerp.db import get_session
 from celerp.importers.adapters.registry import get_adapter, list_adapters
 from celerp.models.company import Company, User
@@ -60,7 +61,7 @@ from celerp.services.auth import (
     request_caller,
     validate_password,
 )
-from celerp.services.business_time import business_timezone
+from celerp.services.business_time import InvalidTimezoneError, business_timezone
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
 from ui.i18n import t
@@ -199,39 +200,40 @@ async def ensure_not_bootstrapped(session: AsyncSession) -> None:
         raise HTTPException(status_code=409, detail=t(BOOTSTRAPPED))
 
 
-def _company_name(value: str, errors: dict) -> str:
+def _company_name(value: str, errors: list) -> str:
     name = value.strip()
     if (error := migrations.company_name_error(name)) is not None:
-        errors["company_name"] = error
+        errors.append(field_refusal("company_name", error))
     return name
 
 
-def _company_timezone(value: str, errors: dict) -> str:
+def _company_timezone(value: str, errors: list) -> str:
     """The moved-in company's timezone, checked as the company settings check it."""
     try:
         return business_timezone(value).key
-    except ValueError as exc:
-        errors["timezone"] = str(exc)
+    except InvalidTimezoneError as exc:
+        errors.append(field_refusal("timezone", exc.detail))
         return ""
 
 
 _EMAIL_MAX = 320  # users.email is String(320)
 
 
-def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[str, str]:
+def owner_account(name: str, email: str, password: str, errors: list) -> tuple[str, str]:
     """Check the first owner's name, email and password, recording each problem in
-    ``errors``; returns the trimmed name and email."""
+    ``errors`` (field_refusal); returns the trimmed name and email."""
     name, email = name.strip(), email.strip()
     if not name:
-        errors["name"] = "Enter your name."
+        errors.append(field_refusal("name", t("migration.err_owner_name_empty")))
     elif "\x00" in name:
-        errors["name"] = "Your name contains a character that cannot be saved."
+        errors.append(field_refusal("name", t("migration.err_owner_name_bad_character")))
     if "@" not in email or "\x00" in email or len(email) > _EMAIL_MAX:
-        errors["email"] = "Enter a valid email address."
+        errors.append(field_refusal("email", t("migration.err_owner_email_invalid")))
     try:
         validate_password(password)
     except ValueError:
-        errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        errors.append(field_refusal("password", t("auth.err_password_must_at_least_min_password",
+                                                   min_password_length=MIN_PASSWORD_LENGTH)))
     return name, email
 
 
@@ -360,12 +362,12 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         await ensure_not_bootstrapped(session)
         scan = store.load_scan(payload.scan_token, owner=BOOTSTRAP)
         plan = await _prepare(scan)
-        errors: dict[str, str] = {}
+        errors: list[dict] = []
         company_name = _company_name(payload.company_name, errors)
         timezone = _company_timezone(payload.timezone, errors)
         name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
-            raise HTTPException(status_code=422, detail=errors)
+            raise HTTPException(status_code=422, detail={"errors": errors})
         awaiting = await _turn_on_modules(plan)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
         run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
@@ -426,11 +428,11 @@ async def start_from_scan(payload: StartFromScanIn, response: Response, ctx: Aut
         if run is None:
             scan = store.load_scan(payload.scan_token, owner=_user_scan_owner(payload.scan_token, ctx))
             plan = await _prepare(scan)
-            errors: dict[str, str] = {}
+            errors: list[dict] = []
             company_name = _company_name(payload.company_name, errors)
             timezone = _company_timezone(payload.timezone, errors)
             if errors:
-                raise HTTPException(status_code=422, detail=errors)
+                raise HTTPException(status_code=422, detail={"errors": errors})
             awaiting = await _turn_on_modules(plan)
             run = await _stage(session, user=ctx.user, company_name=company_name, timezone=timezone, scan=scan,
                                plan=plan, awaiting=awaiting)
@@ -504,11 +506,11 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
             raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
         plan = await _prepare(scan)
-        errors: dict[str, str] = {}
+        errors: list[dict] = []
         company_name = _company_name(payload.company_name, errors)
         timezone = _company_timezone(payload.timezone, errors)
         if errors:
-            raise HTTPException(status_code=422, detail=errors)
+            raise HTTPException(status_code=422, detail={"errors": errors})
         awaiting = await _turn_on_modules(plan)
         run = await _stage(session, user=user, company_name=company_name, timezone=timezone, scan=scan, plan=plan,
                            awaiting=awaiting)

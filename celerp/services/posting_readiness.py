@@ -70,12 +70,9 @@ class ReadinessError(ValueError):
         self.detail = detail
 
 
-def _refused(problems: list[dict]) -> ReadinessError:
-    """Every problem with the choices, in one refusal."""
-    if len(problems) == 1:
-        return ReadinessError(problems[0])
-    return ReadinessError(refusal("posting.problems", " ".join(p["message"] for p in problems),
-                                  problems=problems))
+def _all_problems(problems: list[dict]) -> dict:
+    """Several problems with the choices, in one refusal."""
+    return refusal("posting.problems", " ".join(p["message"] for p in problems), problems=problems)
 
 
 def _line_items(state: dict) -> list[dict]:
@@ -435,7 +432,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
         problems.append(refusal("posting.choose_accounts_for", f"Choose the posting account for: {_labels(unchosen)}.",
                                 roles=unchosen))
     if problems:
-        raise _refused(problems)
+        raise ReadinessError(problems[0] if len(problems) == 1 else _all_problems(problems))
     for account in added:
         if account["code"] not in chart and final.get(account["role"]) == account["code"]:
             try:
@@ -452,7 +449,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
             problems.append(problem)
     problems += await stock_problems(session, company_id, dict(company.settings or {}), final)
     if problems:
-        raise _refused(problems)
+        raise ReadinessError(problems[0] if len(problems) == 1 else _all_problems(problems))
     settings = {**(company.settings or {}), SCHEMA_KEY: POSTING_ROLES_SCHEMA}
     settings.setdefault(SOURCE_CONTROLS_KEY, {})
     for role, code in final.items():

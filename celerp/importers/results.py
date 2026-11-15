@@ -93,6 +93,17 @@ def row_refusal(entity_id: str, exc: BaseException) -> str | dict:
     return f"{entity_id}: {failure_reason(exc)}"
 
 
+def kept_refusal(message: str | dict, entity_id: str) -> dict:
+    """The reason a refused record kept (row_refusal), without the record's name: its keyed
+    refusal, rebuilt from its catalog key, else the text as written."""
+    from celerp.accounting_roles import catalog_refusal
+
+    inner = (message.get("params") or {}).get("refusal") if isinstance(message, dict) else None
+    if isinstance(inner, dict) and inner.get("message_key"):
+        return {**inner, **catalog_refusal(inner["message_key"], **(inner.get("params") or {}))}
+    return catalog_refusal("error.refusal_as_written", text=message_text(message).removeprefix(f"{entity_id}: "))
+
+
 def message_text(message: str | dict) -> str:
     """An outcome message as English text: a refusal's own message, else the text."""
     return str(message["message"]) if isinstance(message, dict) else str(message)
