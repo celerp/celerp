@@ -25,7 +25,7 @@ from celerp.db import get_session
 from celerp.events.engine import (
     emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
 )
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
@@ -186,13 +186,6 @@ class AccountPatch(BaseModel):
 class AccBatchImportRequest(BaseModel):
     records: list[AccImportRecord] = Field(..., max_length=500)
     fund_choices: ImportFundChoices | None = None
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
 
 
 class ChartImportRequest(BaseModel):

@@ -858,7 +858,7 @@ async def execute_agent_capability(
     if capability.get("encoding", "json") == "json":
         sent: dict[str, Any] = {"json": body}
     else:
-        form = {k: v if isinstance(v, str) else json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+        form = {k: v if isinstance(v, str) else json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
                 for k, v in (body or {}).items() if v is not None}
         sent = {"data": form, "files": files} if files else {"data": form}
 

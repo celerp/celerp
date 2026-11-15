@@ -390,9 +390,11 @@ def refusal_text(detail) -> str:
     return " ".join(text for text in (message, refusal_text(detail.get("also") or [])) if text)
 
 
-# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
+# A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>. A UUID
+# that is a segment of a path or address (attachments/<uuid>/photo.png) is part of what the
+# user reads, so it stays.
 _INTERNAL_ID = re.compile(
-    r"\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+    r"(?<!/)\b(?:[a-z_]+:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b(?!/)", re.I)
 
 
 def _without_ids(text: str) -> str:

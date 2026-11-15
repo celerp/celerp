@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.ai.gates import agent_gate
@@ -242,13 +242,6 @@ class SettingsImportRecord(BaseModel):
 
 class SettingsBatchImportRequest(BaseModel):
     records: list[SettingsImportRecord] = Field(..., max_length=500)
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
 
 
 class UnitRecord(BaseModel):

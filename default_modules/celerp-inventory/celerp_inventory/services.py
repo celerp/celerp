@@ -24,7 +24,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, Refused, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome
+from celerp.importers.results import BatchImportResult as _BatchImportResult, ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
@@ -2629,11 +2629,7 @@ class ImportRecord(BaseModel):
     source_revision: SourceRevision = None  # a connected company's records only
 
 
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str | dict]
+class BatchImportResult(_BatchImportResult):
     batch_id: str | None = None
     # Rows an earlier run of this same import already wrote; nothing was duplicated.
     already_imported: int = 0

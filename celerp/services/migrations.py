@@ -1453,7 +1453,7 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     for label, value in (
         ("Run id", str(run.id)),
         ("Source", adapter.display_name if adapter else run.source_system),
-        ("Mode", _MODE_LABELS[CIFMode(run.mode)]),
+        ("Mode", t(_MODE_LABELS[CIFMode(run.mode)])),
         ("Cutover date", decisions.get("cutover_date") or "--"),
         ("Lock date", run.source_lock_date.isoformat() if run.source_lock_date else "--"),
         ("Source hash", run.source_artifact_sha256),

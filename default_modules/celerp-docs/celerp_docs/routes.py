@@ -29,7 +29,7 @@ from celerp.db import get_session
 from celerp.downloads import content_disposition
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
@@ -678,13 +678,6 @@ class DocImportRecord(BaseModel):
 
     _state_fields = field_validator("data", mode="before")(_doc_state_payload)
     _stored_key = field_validator("entity_id")(strip_key)
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
 
 
 class DocBatchImportRequest(BaseModel):

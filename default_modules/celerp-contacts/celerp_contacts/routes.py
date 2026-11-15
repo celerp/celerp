@@ -31,6 +31,7 @@ from celerp.services.currencies import require_email, require_phone
 from celerp.services.permissions import assert_role_permission, locked_authority, read_authority, require_permission
 from ui.i18n import t
 
+from celerp.importers.results import BatchImportResult
 from celerp.importers.sinks import register_sink
 from celerp_contacts import services
 from celerp_contacts.migration_sink import SINK
@@ -116,13 +117,6 @@ class ContactAddressUpdate(BaseModel):
     country: str | None = None
     attn: str | None = None
     is_default: bool | None = None
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
 
 
 class CRMBatchImportRequest(BaseModel):

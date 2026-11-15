@@ -8262,7 +8262,7 @@
   "company_backup.err_data_form_copy": "This company has data Celerp cannot copy yet: {label}. No copy was made.",
   "company_backup.err_company_gone_replace": "Celerp couldn't find your company. Log out and sign in again; if it keeps happening, ask the company owner. Nothing was replaced.",
   "company_reset.unplaced": "This company cannot be reset safely: {tables} could not be identified as company data. Nothing was deleted.",
-  "company_reset.crossing": "This company cannot be reset safely: these tables hold both installation and company data: {tables}. Nothing was deleted.",
+  "company_reset.crossing": "This company cannot be reset safely: {tables} hold both installation and company data. Nothing was deleted.",
   "company_reset.connected": "Disconnect {connectors} before resetting this company. Nothing was deleted.",
   "migration.err_company_name_empty": "Enter a company name.",
   "migration.err_company_name_too_long": "The company name must be at most {max} characters.",
@@ -8279,7 +8279,6 @@
   "migration.err_choose_mode": "Choose Full history or Cutover.",
   "migration.err_mode_blocked": "{mode} cannot run while the source has records Celerp cannot import: {records}.",
   "migration.err_choose_mode_first": "Choose how to move the books before starting.",
-  "migration.err_batch_file_refused": "Celerp could not read this file when it was uploaded. {reason}",
   "peer.err_role_account_none_yours": "{account} is the {role} account of {sender}, and you have no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
   "peer.err_role_account_none_other": "{account} is the {role} account of {sender}, and {receiver} has no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
   "peer.err_role_account_differs_yours": "{account} is the {role} account of {sender}, {kind}, and your {role2} account {target} is {target_kind}. Choose one that matches in Settings > Accounting > Posting accounts.",
@@ -8295,5 +8294,6 @@
   "peer.err_sender_account_type_differs": "{sender}'s account {account} is {type_a} account, and {where} is {target_type_a} account. Use another {type} account, or add it as {suggested}.",
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
-  "company_backup.err_name_invalid": "{reason} Nothing was restored."
+  "company_backup.err_name_invalid": "{reason} Nothing was restored.",
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
 }

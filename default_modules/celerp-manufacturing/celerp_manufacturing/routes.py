@@ -29,7 +29,7 @@ from celerp.events.schemas import (
     workflow_step_minutes,
 )
 from celerp.models.company import Company, Location, WorkCenter
-from celerp.importers.results import failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
@@ -191,13 +191,6 @@ class MfgImportRecord(BaseModel):
 
 class MfgBatchImportRequest(BaseModel):
     records: list[MfgImportRecord] = Field(..., max_length=500)
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
 
 
 # ---------------------------------------------------------------------------

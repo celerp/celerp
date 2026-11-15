@@ -16,7 +16,6 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select, text
 
-from ui.i18n import refusal_text
 from fixtures.manager_io.support import BASIC, FX, artifact
 from migration_support import (
     RUN_ROUTES,
@@ -39,7 +38,7 @@ from migration_support import (
     upload_parts,
 )
 from test_helpers import as_another_client, make_authed_token, register_admin
-from ui.i18n import refusal_text, t
+from ui.i18n import date_text, refusal_text, t
 
 OWNER_ONLY = t("migration.err_owner_only", "en")
 NOT_FOUND = t("migration.err_not_found", "en")
@@ -163,8 +162,8 @@ async def test_cutover_date_and_opening_scope_validation(migration_env):
         (None, t("migration.err_choose_cutover", "en")),
         ("2026-02-30", t("migration.err_cutover_format", "en")),
         ("01/02/2026", t("migration.err_cutover_format", "en")),
-        ("2025-12-31", "2026-01-01"),
-        ("2026-04-01", "2026-03-31"),
+        ("2025-12-31", date_text(date(2026, 1, 1), "en")),
+        ("2026-04-01", date_text(date(2026, 3, 31), "en")),
         ("2026-01-02", t("migration.err_cutover_before_first", "en")),
     ):
         errors = _field_errors(lambda: validate_decisions(scan, {"mode": "cutover", "cutover_date": value}))
@@ -793,13 +792,15 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
 @pytest.mark.asyncio
 async def test_prepared_by_is_validated_and_persisted(client, session, migration_env):
     from celerp.models.migration import MigrationRun
+    from celerp.accounting_roles import Refused
     from celerp.services.migrations import validate_prepared_by
 
     assert validate_prepared_by("  Example Accountant  ") == "Example Accountant"
     assert validate_prepared_by("   ") is None
     assert validate_prepared_by(None) is None
     for bad in ("x" * 201, "Example\x07Accountant", "Example\nAccountant"):
-        assert "prepared_by" in _field_errors(lambda: validate_prepared_by(bad))
+        with pytest.raises(Refused):
+            validate_prepared_by(bad)
 
     r = await scan_upload(client, fake_bytes())
     scan_token = r.json()["scan_token"]

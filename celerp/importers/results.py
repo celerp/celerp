@@ -12,10 +12,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from pydantic import BaseModel
+
 OutcomeStatus = Literal["created", "updated", "skipped", "rejected", "failed"]
 
 # The number of error messages a batch route returns, as every batch route always has.
 ROUTE_ERROR_LIMIT = 10
+
+
+class BatchImportResult(BaseModel):
+    """What a batch import route answers (ImportOutcome.route_counts): a refused row's
+    reason is text, or its keyed refusal (row_refusal)."""
+    created: int
+    skipped: int
+    updated: int = 0
+    errors: list[str | dict]
 
 
 @dataclass(frozen=True)

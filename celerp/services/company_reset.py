@@ -135,9 +135,12 @@ def _placed(schema: dict) -> None:
             "identified as company data. Nothing was deleted.", tables=", ".join(unplaced)))
     crossing = sorted(install & company)
     if crossing:
+        tables = ", ".join(crossing)
+        one = len(crossing) == 1
         raise ResetRefused(409, refusal(
-            "company_reset.crossing", "This company cannot be reset safely: these tables hold both installation "
-            f"and company data: {', '.join(crossing)}. Nothing was deleted.", tables=", ".join(crossing)))
+            "company_reset.crossing_one" if one else "company_reset.crossing",
+            f"This company cannot be reset safely: {tables} {'holds' if one else 'hold'} both installation "
+            "and company data. Nothing was deleted.", tables=tables))
 
 
 def _company_rows(schema: dict) -> dict[str, str]:

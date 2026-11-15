@@ -1,5 +1,5 @@
 {
-  "id": "core.company-copies",
+  "id": "core.company-handoff",
   "title": "Send and restore company copies",
   "summary": "Send an encrypted copy of the company to an accountant, and put back a version a copy replaced.",
   "keywords": ["company copy", "handoff", "accountant", "send", "restore", "saved copies"],

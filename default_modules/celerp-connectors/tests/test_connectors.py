@@ -16,9 +16,8 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import respx
 import httpx
-from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.base import (
     ConnectorContext,
@@ -439,7 +438,6 @@ async def test_sync_asks_for_an_update_when_the_relay_requires_one(
             side_effect=ConnectorUpgradeRequired("error.connector_update_needed", service="Xero"))):
         resp = await client.post("/connectors/xero/sync", headers=headers, json={"entity": "contacts"})
     assert resp.status_code == 426
-    from ui.i18n import refusal_text
     assert resp.json()["detail"]["message_key"] == "error.connector_update_needed"
 
 

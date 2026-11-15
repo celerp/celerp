@@ -243,7 +243,7 @@ async def test_wrong_name_is_refused_and_nothing_changes(real_engine, real_clien
     for typed in ("harbor goods ltd", "Harbor Goods Ltd ", "Hillside Supply Co", ""):
         r = await real_client.post(RESET, json={"company_name": typed}, headers=auth(tok))
         assert r.status_code == 422, (typed, r.text)
-        assert refusal_text(r.json()["detail"]) == {
+        assert r.json()["detail"] == {
             "message": "The name you typed does not match this company's name. Nothing was deleted.",
             "message_key": "company_reset.name_mismatch", "params": {}}
     assert (await real_client.post(RESET, json={}, headers=auth(tok))).status_code == 422
@@ -303,7 +303,7 @@ async def test_a_table_it_cannot_place_stops_the_reset_before_any_write(real_eng
         r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"}, headers=auth(tok))
         assert r.status_code == 409
         assert "zz_unplaced" in refusal_text(r.json()["detail"])
-        assert r.json()["detail"].endswith("Nothing was deleted.")
+        assert refusal_text(r.json()["detail"]).endswith("Nothing was deleted.")
         assert await snapshot(real_engine) == before
         assert _folder(tmp_path, a).exists()
     finally:

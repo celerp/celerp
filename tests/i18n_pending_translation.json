@@ -1288,7 +1288,7 @@
       ]
     },
     "company_reset.crossing": {
-      "en": "This company cannot be reset safely: these tables hold both installation and company data: {tables}. Nothing was deleted.",
+      "en": "This company cannot be reset safely: {tables} hold both installation and company data. Nothing was deleted.",
       "params": [
         "tables"
       ]
@@ -1369,12 +1369,6 @@
     "migration.err_choose_mode_first": {
       "en": "Choose how to move the books before starting.",
       "params": []
-    },
-    "migration.err_batch_file_refused": {
-      "en": "Celerp could not read this file when it was uploaded. {reason}",
-      "params": [
-        "reason"
-      ]
     },
     "peer.err_role_account_none_yours": {
       "en": "{account} is the {role} account of {sender}, and you have no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
@@ -1525,6 +1519,12 @@
       "en": "{reason} Nothing was restored.",
       "params": [
         "reason"
+      ]
+    },
+    "company_reset.crossing_one": {
+      "en": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+      "params": [
+        "tables"
       ]
     }
   },
