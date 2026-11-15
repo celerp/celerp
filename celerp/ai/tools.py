@@ -317,7 +317,9 @@ def compile_agent_capabilities(
             if tool_required:
                 params["required"] = tool_required
 
-            description = operation.get("summary") or operation.get("description") or operation_id
+            # The route's own summary, else its docstring. OpenAPI's summary alone is not
+            # enough: FastAPI fills it with a title made from the function name.
+            description = route.summary or operation.get("description") or operation_id
             compiled[operation_id] = {
                 "name": operation_id,
                 "method": method,

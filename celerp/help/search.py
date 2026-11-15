@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
+from urllib.parse import parse_qsl
 
 from celerp.help.registry import CORE, get_index
 from celerp.help.render import label
@@ -19,6 +21,7 @@ from celerp.services.permissions import role_has_permission
 
 MAX_HITS = 8
 _WORD = re.compile(r"\w+")
+_SEGMENT = re.compile(r"\{[^/{}]+\}")
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,31 @@ class Hit:
     score: int
     module_enabled: bool
     permitted: bool
+
+
+@lru_cache(maxsize=512)
+def _route_pattern(route: str) -> re.Pattern:
+    """A help page route's path as a full-path match; each {name} stands for one path segment."""
+    parts = _SEGMENT.split(route)
+    return re.compile("[^/]+".join(re.escape(p) for p in parts) + r"/?\Z")
+
+
+def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
+    route_path, _, route_query = route.partition("?")
+    route_pairs = set(parse_qsl(route_query))
+    return (_route_pattern(route_path).match(path) is not None
+            and route_pairs <= query
+            and dict(route_pairs).get("type") == dict(query).get("type"))
+
+
+def covers(routes, address: str) -> bool:
+    """Whether a page with these help routes covers the screen at ``address`` (its query
+    included): a route's path matches, every query pair it names (a tab, say) is on the
+    address, and both name the same ``type``. A list path such as ``/docs`` serves a
+    different screen per type, so a route without a type covers only the untyped list."""
+    path, _, query = address.partition("?")
+    pairs = set(parse_qsl(query))
+    return any(_covers(route, path, pairs) for route in routes)
 
 
 def _tokens(text: str) -> set[str]:

@@ -76,7 +76,9 @@ No other keys are allowed, and a page file is at most 64 KB.
 
 An invalid page in a third-party module is logged and skipped when modules load; the module's
 other pages still load. First-party pages are held to the checks in `celerp/help/checks.py`
-(schema, label keys, routes, permissions, images, and a page for every sidebar and settings link
-of each module) by `tests/test_help_content.py`. Screenshots are written only by
+(schema, label keys, routes, permissions, images) by `tests/test_help_content.py`. Each sidebar
+and settings link a first-party module registers names its page: the nav entry's `help` (for
+`href`) and `settings_help` (for `settings_href`) hold a page id the module ships, and that page's
+`routes` must cover the link, so the screen's Help panel lists it. Screenshots are written only by
 `tests/test_browser/test_help_capture.py` with `HELP_CAPTURE_WRITE=1`, which also checks each
 step against the running app.
