@@ -1408,11 +1408,14 @@ async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
                             company_id: uuid.UUID = Depends(get_current_company_id),
                             _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                             db: AsyncSession = Depends(get_session)) -> dict:
+    from celerp.services.company_lock import lock_company
+
     key = payload.idempotency_key
     request = _request(payload, bank_id=bank_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:
         return first
     bank = await _bank(db, company_id, bank_id)
+    await lock_company(db, company_id)  # the order answer_question takes: the company, then the line
     lines = await SL.scoped(db, company_id, "line", payload.line_ids, bank=bank)
     SL.withdraw_lines(lines)
     result = await _recorded(db, company_id, user.id, key, request, "withdraw_question", bank.id,
