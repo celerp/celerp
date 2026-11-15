@@ -2183,13 +2183,14 @@ async def disable_module(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Turn a module off for this company. Other companies keep using it. Refused for a
-    module built into Celerp, which is always on."""
+    module built into Celerp, which is always on, and for a name that is neither installed
+    nor on."""
     from celerp.accounting_roles import refusal
     from celerp.modules.boundary import refused_past_lock_timeout, settle_module_use, take_company_locks
     from celerp.modules.loader import is_core_folded, module_label
     from celerp.modules.registry import (
         ModuleStillNeeded, commit_with_load_set, disable_for_company, get_enabled,
-        hold_company_modules, hold_module_gate, hold_module_state,
+        hold_company_modules, hold_module_gate, hold_module_state, is_installed,
     )
     from celerp.services.turn_off_preflight import outstanding
 
@@ -2213,6 +2214,8 @@ async def disable_module(
         session, lambda: hold_company_modules(session, company_id), lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    if not is_installed(module_name) and module_name not in get_enabled(company.settings):
+        raise HTTPException(status_code=404, detail=t("company.err_module_not_found"))
     blocking = (await outstanding(session, company_id, module_name))["blocking"]
     if blocking:
         raise HTTPException(status_code=409, detail=t(

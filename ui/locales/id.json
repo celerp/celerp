@@ -6914,6 +6914,7 @@
   "ai.empty_answer": "Saya tidak menemukan jawabannya. Coba ungkapkan pertanyaan Anda dengan cara lain.",
   "ai.err_busy": "Layanan AI sedang sibuk untuk sementara. Coba lagi sebentar lagi.",
   "ai.err_unexpected": "Terjadi kesalahan yang tidak terduga. Coba lagi.",
+  "ai.err_refused_in_answer": "Celerp tidak dapat melakukan ini. Buka layarnya untuk melihat alasannya.",
   "ai.err_too_much_data": "Terlalu banyak data yang dikembalikan; ajukan pertanyaan yang lebih spesifik.",
   "ai.err_capability_timeout": "Langkah ini tidak selesai dalam {seconds} detik. Coba lagi.",
   "ai.err_invalid_arguments": "Asisten menyiapkan langkah ini dengan data yang tidak dapat digunakan Celerp. Minta asisten untuk mencoba lagi.",

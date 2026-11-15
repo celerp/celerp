@@ -5,7 +5,8 @@
 One refused request per agent route goes through the real AI executor against the real
 app. Its refusal is read as the confirmed action's card shows it and as the reloaded
 thread shows it, in Thai and in a stand-in language that marks every catalog string, so
-English written in code shows up unmarked. A new agent route needs a case here."""
+English written in code shows up unmarked. The routes named below are refused by what
+their own handler checks; every other agent route gets a generated refusal (_generated)."""
 from __future__ import annotations
 
 import html
@@ -53,8 +54,38 @@ def _capabilities(app) -> dict:
     return {(c["method"], c["path"]): c for c in caps.values()}
 
 
-async def _cases(client, h) -> list[tuple[str, str, str, dict]]:
-    """(name, method, path, arguments) of a refused request to every agent route."""
+# Routes that answer for any id they are given, so a missing record is not refused there.
+_ANSWERS_ANY_ID = {
+    ("GET", "/companies/me/category-schema/{category}"): "a category with no extra fields reads as none",
+    ("GET", "/crm/contacts/{contact_id}/notes"): "a contact with no notes reads as none",
+    ("GET", "/docs/{entity_id}/share/state"): "a record with no share link reads as not shared",
+    ("POST", "/api/labels/print/{entity_id}"): "a label prints the id it is given when no item has it",
+}
+
+
+def _generated(capability: dict) -> dict:
+    """A refused request to a route no case below names: a record that does not exist when
+    the path names one, otherwise an argument the route does not take. A download only
+    builds its link, so it is refused for the argument, as is a route that answers for
+    any id (_ANSWERS_ANY_ID)."""
+    if capability["path_names"] and not capability["download"] \
+            and (capability["method"], capability["path"]) not in _ANSWERS_ANY_ID:
+        return {"path": {n: _NOPE if n.endswith("id") else f"no-such-{n}" for n in capability["path_names"]}}
+    return {"query": {"colour": "red"}}
+
+
+async def _cases(client, h, by_route) -> tuple[list, list]:
+    """(name, method, path, arguments) of a refused request to every agent route: the
+    named ones, and a generated one for each other route."""
+    named = await _named_cases(client, h)
+    assert {(m, p) for _n, m, p, _a in named} <= set(by_route), {(m, p) for _n, m, p, _a in named} - set(by_route)
+    covered = {(m, p) for _n, m, p, _a in named}
+    return named, [(capability["name"], method, path, _generated(capability))
+                   for (method, path), capability in sorted(by_route.items()) if (method, path) not in covered]
+
+
+async def _named_cases(client, h) -> list[tuple[str, str, str, dict]]:
+    """(name, method, path, arguments) of a refused request each route's own handler checks."""
     token = h["Authorization"].split()[1]
     await seed_demo.seed_items(client, token)
     contacts = await seed_demo.seed_contacts(client, token)
@@ -181,8 +212,9 @@ async def test_every_agent_route_refuses_in_the_reader_language_live_and_after_a
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     app = client._transport.app
     by_route = _capabilities(app)
-    cases = await _cases(client, h)
-    assert {(m, p) for _n, m, p, _a in cases} == set(by_route), set(by_route) ^ {(m, p) for _n, m, p, _a in cases}
+    named, generated = await _cases(client, h, by_route)
+    cases = named + generated
+    assert {(m, p) for _n, m, p, _a in cases} == set(by_route)
     wrong, _keys = await _misread(app, h, by_route, cases)
     assert not wrong, "\n".join(map(repr, wrong))
 
@@ -200,7 +232,9 @@ async def test_every_agent_write_refuses_in_the_reader_language_when_the_role_ch
     app = client._transport.app
     by_route = _capabilities(app)
     writes = {route for route, capability in by_route.items() if capability["requires_confirmation"]}
-    cases = [case for case in await _cases(client, h) if (case[1], case[2]) in writes]
+    named, generated = await _cases(client, h, by_route)
+    cases = [case for case in named + generated if (case[1], case[2]) in writes]
+    named = {(m, p) for _n, m, p, _a in named} & writes
     real = permissions.read_authority
 
     async def changed(session, company_id, user_id):
@@ -217,4 +251,4 @@ async def test_every_agent_write_refuses_in_the_reader_language_when_the_role_ch
     wrong, keys = await _misread(app, h, by_route, cases, as_a_new_request)
     as_a_new_request()
     assert not wrong, "\n".join(map(repr, wrong))
-    assert {route for route, seen in keys.items() if "error.access_changed" in seen} == writes, keys
+    assert {route for route, seen in keys.items() if "error.access_changed" in seen} >= named, keys

@@ -6914,6 +6914,7 @@
   "ai.empty_answer": "No pude encontrar una respuesta. Intente reformular su pregunta.",
   "ai.err_busy": "El servicio de IA está temporalmente ocupado. Vuelva a intentarlo en unos momentos.",
   "ai.err_unexpected": "Se produjo un error inesperado. Vuelva a intentarlo.",
+  "ai.err_refused_in_answer": "Celerp no pudo hacer esto. Abra su pantalla para ver el motivo.",
   "ai.err_too_much_data": "Se devolvieron demasiados datos; haga una pregunta más específica.",
   "ai.err_capability_timeout": "Este paso no terminó en {seconds} segundos. Vuelva a intentarlo.",
   "ai.err_invalid_arguments": "El asistente preparó este paso con datos que Celerp no puede usar. Pida al asistente que lo vuelva a intentar.",

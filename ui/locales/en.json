@@ -7002,6 +7002,7 @@
   "ai.empty_answer": "I could not find an answer to that. Please try rephrasing your question.",
   "ai.err_busy": "The AI service is temporarily busy. Please try again in a moment.",
   "ai.err_unexpected": "An unexpected error occurred. Please try again.",
+  "ai.err_refused_in_answer": "Celerp could not do this. Open its screen to see the reason.",
   "ai.err_too_much_data": "Too much data was returned; ask a narrower question.",
   "ai.err_capability_timeout": "This step didn't finish within {seconds} seconds. Try again.",
   "ai.err_invalid_arguments": "The assistant prepared this step with details Celerp can't use. Ask the assistant to try again.",

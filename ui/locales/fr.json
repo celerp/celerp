@@ -6914,6 +6914,7 @@
   "ai.empty_answer": "Je n'ai pas trouvé de réponse. Essayez de reformuler votre question.",
   "ai.err_busy": "Le service d'IA est temporairement surchargé. Veuillez réessayer dans quelques instants.",
   "ai.err_unexpected": "Une erreur inattendue s'est produite. Veuillez réessayer.",
+  "ai.err_refused_in_answer": "Celerp n'a pas pu effectuer cette action. Ouvrez l'écran correspondant pour en voir la raison.",
   "ai.err_too_much_data": "Trop de données ont été renvoyées ; posez une question plus précise.",
   "ai.err_capability_timeout": "Cette étape ne s'est pas terminée en {seconds} secondes. Réessayez.",
   "ai.err_invalid_arguments": "L'assistant a préparé cette étape avec des informations que Celerp ne peut pas utiliser. Demandez à l'assistant de réessayer.",

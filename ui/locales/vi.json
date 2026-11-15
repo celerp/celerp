@@ -6914,6 +6914,7 @@
   "ai.empty_answer": "Tôi không tìm được câu trả lời. Hãy thử diễn đạt lại câu hỏi.",
   "ai.err_busy": "Dịch vụ AI đang tạm thời quá tải. Vui lòng thử lại sau ít phút.",
   "ai.err_unexpected": "Đã xảy ra lỗi không mong muốn. Vui lòng thử lại.",
+  "ai.err_refused_in_answer": "Celerp không thể thực hiện việc này. Mở màn hình tương ứng để xem lý do.",
   "ai.err_too_much_data": "Có quá nhiều dữ liệu được trả về; hãy đặt câu hỏi cụ thể hơn.",
   "ai.err_capability_timeout": "Bước này chưa hoàn tất trong {seconds} giây. Hãy thử lại.",
   "ai.err_invalid_arguments": "Trợ lý đã chuẩn bị bước này với dữ liệu mà Celerp không dùng được. Hãy yêu cầu trợ lý thử lại.",

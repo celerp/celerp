@@ -902,6 +902,11 @@ async def execute_agent_capability(
     # the same check here, where every answer the AI keeps arrives.
     error_body.check(f"{capability['method']} {url_path}", response.status_code,
                      data.get("detail") if isinstance(data, dict) else data, agent=True)
+    if response.is_success and isinstance(data, dict) and isinstance(data.get("error"), str) and data["error"].strip():
+        # A route that answers its refusal as a success carrying "error" (the settings
+        # screens read it that way) did not do what was asked; the AI never reports it done.
+        return _agent_error("refused_in_answer", "ai.err_refused_in_answer", data["error"],
+                            http_status=response.status_code, status=response.status_code)
     shown_once = (
         {capability["generated_secret"]: secret}
         if secret is not None and response.is_success and not (isinstance(data, dict) and data.get("linked") is True)

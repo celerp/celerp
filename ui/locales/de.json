@@ -6914,6 +6914,7 @@
   "ai.empty_answer": "Ich konnte dazu keine Antwort finden. Versuchen Sie, Ihre Frage anders zu formulieren.",
   "ai.err_busy": "Der KI-Dienst ist vorübergehend ausgelastet. Versuchen Sie es gleich noch einmal.",
   "ai.err_unexpected": "Ein unerwarteter Fehler ist aufgetreten. Versuchen Sie es erneut.",
+  "ai.err_refused_in_answer": "Celerp konnte das nicht ausführen. Öffnen Sie die zugehörige Seite, um den Grund zu sehen.",
   "ai.err_too_much_data": "Es wurden zu viele Daten zurückgegeben. Stellen Sie eine gezieltere Frage.",
   "ai.err_capability_timeout": "Dieser Schritt wurde nicht innerhalb von {seconds} Sekunden abgeschlossen. Versuchen Sie es erneut.",
   "ai.err_invalid_arguments": "Der Assistent hat diesen Schritt mit Angaben vorbereitet, die Celerp nicht verwenden kann. Bitten Sie den Assistenten, es erneut zu versuchen.",
