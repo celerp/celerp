@@ -141,8 +141,9 @@ def _error_code(result: dict) -> str | None:
     return None if result.get("ok", True) else (result.get("error") or {}).get("code")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def real_app():
+    """Built per test: the autouse loader reset unloads the modules after each one."""
     return real_agent_app()
 
 
@@ -251,7 +252,7 @@ async def test_unopened_tool_is_refused(monkeypatch):
     await _run()
     result = model.tool_result(1, "c1")
     assert _error_code(result) == "unknown_capability"
-    assert result["error"]["key"] == "ai.action_unavailable"
+    assert result["error"]["message_key"] == "ai.action_unavailable"
     assert OPEN_TOOLS in result["error"]["message"]
     assert executed == []
 
