@@ -1,0 +1,74 @@
+{
+  "id": "accounting.bank-questions",
+  "title": "Answer questions about bank lines",
+  "summary": "See the bank lines your accountant asked about and say what each one was.",
+  "keywords": [
+    "questions",
+    "accountant",
+    "bank line",
+    "receipt",
+    "answer",
+    "client",
+    "what was it"
+  ],
+  "routes": [
+    "/accounting/questions"
+  ],
+  "permission": "answer_bank_questions",
+  "order": 4,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar. Each card is a bank line your accountant asked about, with its date, bank, description and amount, and their question.",
+      "labels": {
+        "nav": "nav.bank_questions"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/questions",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Write what the payment was under {what} and who it was paid to or from, add a {receipt} if you have one, then click {save}. Your accountant sees the answer at once, and it becomes the suggestion for that line on the bank page.",
+      "labels": {
+        "what": "bank.what_was_it",
+        "receipt": "bank.receipt",
+        "save": "btn.save"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/questions",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "{open} lists the questions still waiting for you, {answered} the ones you have answered, and {all} every question. A question your accountant takes back no longer waits for you.",
+      "labels": {
+        "open": "bank.questions_open",
+        "answered": "bank.questions_answered",
+        "all": "bank.questions_all"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/questions",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Anyone with the permission to answer bank questions sees this page, so a client can answer without seeing the rest of the books. Your accountant gives that permission in Settings under Users.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/accounting/questions",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "accounting.reconcile"
+  ]
+}

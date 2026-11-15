@@ -134,6 +134,7 @@ def demo_token(api_server, api):
             r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
             assert r.status_code == 200, r.text
             await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
+            await seed_bank_statement(client, auth, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:
@@ -160,6 +161,38 @@ def demo_token(api_server, api):
     if error:
         raise error[0]
     return token
+
+
+async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date) -> None:
+    """One month's CSV statement on the default bank, read and imported through the bank
+    page's own routes, so the bank help pages capture its lines, views and answers."""
+    banks = (await client.get("/accounting/bank-accounts", headers=auth)).json()["items"]
+    bank_id = banks[0]["id"]
+    end = today.replace(day=1) - timedelta(days=1)
+    start = end.replace(day=1)
+    rows = [(start + timedelta(days=2), "OFFICE RENT", "-800.00"), (start + timedelta(days=9), "ATM WITHDRAWAL", "-100.00"),
+            (start + timedelta(days=15), "CUSTOMER PAYMENT", "1500.00")]
+    csv = "Date,Description,Amount\n" + "".join(f"{d.isoformat()},{desc},{amt}\n" for d, desc, amt in rows)
+    r = await client.post("/accounting/reconciliation/files", headers=auth,
+                          files={"files": ("statement.csv", csv.encode(), "text/csv")})
+    assert r.status_code == 201, r.text
+    r = await client.post("/accounting/reconciliation/read-statement", headers=auth, json={
+        "file_ids": r.json()["file_ids"], "bank_id": bank_id, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    for _ in range(100):
+        preview = await client.get(f"/accounting/reconciliation/statement-preview/{job_id}", headers=auth)
+        if preview.status_code == 200 and preview.json()["statements"]:
+            break
+        await asyncio.sleep(0.2)
+    assert preview.status_code == 200, preview.text
+    header = {"opening_balance": "1000.00", "closing_balance": "1600.00",
+              "period_start": start.isoformat(), "period_end": end.isoformat()}
+    r = await client.post("/accounting/reconciliation/import-statement", headers=auth, json={
+        "job_id": job_id, "bank_id": bank_id, "idempotency_key": uuid.uuid4().hex,
+        "statements": [{"header": {**st["header"], **header}, "lines": st["lines"]}
+                       for st in preview.json()["statements"]]})
+    assert r.status_code == 200, r.text
 
 
 @pytest.fixture
