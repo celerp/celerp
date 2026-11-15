@@ -26,9 +26,16 @@
       },
       "image": null,
       "capture": {
-        "route": "/accounting/recognition",
+        "route": "/inventory?inventory_type=service",
         "selector": "main",
-        "actions": []
+        "actions": [
+          {
+            "click": "main tr:has-text('Support plan') a.table-link"
+          },
+          {
+            "wait": "text=Recognize over the service period"
+          }
+        ]
       }
     },
     {
@@ -42,10 +49,9 @@
       }
     },
     {
-      "text": "Open {page}, also a tab in {settings}. Each ended month's runs wait there until they are posted. Click {post} to post a month, or {reverse} to take a posted month back; it is then outstanding again.",
+      "text": "Open {page}, also a tab in the finance settings. Each ended month's runs wait there until they are posted. Click {post} to post a month, or {reverse} to take a posted month back; it is then outstanding again.",
       "labels": {
         "page": "page.revenue_recognition",
-        "settings": "settings_accounting.finance_settings",
         "post": "btn.post",
         "reverse": "recognition.reverse"
       },
@@ -91,10 +97,8 @@
       }
     },
     {
-      "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example through {change} on an invoice from outside. Runs already posted are posted again on the new fund.",
-      "labels": {
-        "change": "fund.change"
-      },
+      "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example when you change the fund of an invoice from outside. Runs already posted are posted again on the new fund.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/accounting/recognition",

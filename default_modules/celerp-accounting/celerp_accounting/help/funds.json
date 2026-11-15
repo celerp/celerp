@@ -40,11 +40,10 @@
       }
     },
     {
-      "text": "To start, open {settings}, choose the {funds} tab and click {on}. Until you do, nothing carries a fund. {off} works again only once every fund is back to zero.",
+      "text": "To start, open {settings}, choose the {funds} tab and turn funds on. Until you do, nothing carries a fund. {off} works again only once every fund is back to zero.",
       "labels": {
         "settings": "settings_accounting.finance_settings",
         "funds": "funds.title",
-        "on": "funds.turn_on",
         "off": "funds.turn_off"
       },
       "image": null,
@@ -71,16 +70,23 @@
       }
     },
     {
-      "text": "On an invoice, bill or journal entry, set {doc} to put the whole record on one fund, or pick a fund in the {fund} column to put a single line on its own fund. A line left empty takes the fund of its document.",
+      "text": "On an invoice, bill or journal entry, pick a fund in the {fund} column to put a line on that fund. A line left empty shows as {unres}. A record from outside, such as one from a connection, can also be put on one fund as a whole.",
       "labels": {
-        "doc": "fund.document_label",
-        "fund": "th.fund"
+        "fund": "th.fund",
+        "unres": "label.unrestricted"
       },
       "image": null,
       "capture": {
-        "route": "/settings/accounting?tab=funds",
+        "route": "/docs?type=invoice",
         "selector": "main",
-        "actions": []
+        "actions": [
+          {
+            "click": "main a[href^='/docs/doc:']"
+          },
+          {
+            "wait": "th:has-text('Fund')"
+          }
+        ]
       }
     },
     {
@@ -109,10 +115,9 @@
       }
     },
     {
-      "text": "Use {release} once restricted money has been spent on its purpose. First post that purpose spending with no fund, as an ordinary bill or journal entry. Then tick it under {this}: the release moves that amount from the restricted fund to an unrestricted one and names the spending it pays for.",
+      "text": "Use {release} once restricted money has been spent on its purpose. First post that purpose spending with no fund, as an ordinary bill or journal entry. Then tick it in the list of spending the release shows: the release moves that amount from the restricted fund to an unrestricted one and names the spending it pays for.",
       "labels": {
-        "release": "funds.release_title",
-        "this": "funds.release_this"
+        "release": "funds.release_title"
       },
       "image": null,
       "capture": {
@@ -131,7 +136,11 @@
       "capture": {
         "route": "/settings/accounting?tab=funds",
         "selector": "main",
-        "actions": []
+        "actions": [
+          {
+            "click": "summary:has-text('Reallocate restricted funds')"
+          }
+        ]
       }
     },
     {
@@ -151,11 +160,8 @@
       }
     },
     {
-      "text": "Records that arrive from a connection, a file import or your accountant wait for a fund choice; {choose} opens them. To skip the wait, set {defaults} on the connection under Settings, Connectors: its records then take that fund when they arrive.",
-      "labels": {
-        "choose": "fund.waiting.link",
-        "defaults": "fund.defaults_title"
-      },
+      "text": "Records that arrive from a connection, a file import or your accountant wait for a fund choice until you pick one. To skip the wait, set default funds on the connection under Settings, Connectors: its records then take that fund when they arrive.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/settings/accounting?tab=funds",
@@ -164,11 +170,8 @@
       }
     },
     {
-      "text": "If a record from outside already posted on the wrong fund, open it and click {change}. Give a {reason} and save: its entries are voided and posted again on the new fund.",
-      "labels": {
-        "change": "fund.change",
-        "reason": "fund.change_reason"
-      },
+      "text": "If a record from outside already posted on the wrong fund, open it and change its fund, giving a reason. Its entries are voided and posted again on the new fund.",
+      "labels": {},
       "image": null,
       "capture": {
         "route": "/settings/accounting?tab=funds",
