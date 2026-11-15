@@ -412,7 +412,7 @@ async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(mo
 async def _route_refusals(client) -> list[dict]:
     """What the real app answers three confirmed AI actions it refuses with: an item
     created in a status only an action reaches, an import whose preview went stale and
-    a match for a statement line that already created its journal entry."""
+    accepting a suggestion for a bank statement group that is no longer open."""
     from test_helpers import register_admin
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     answers = [await client.post("/items", headers=h, json={
@@ -424,23 +424,10 @@ async def _route_refusals(client) -> list[dict]:
     assert preview.status_code == 200, preview.text
     answers.append(await client.post("/items/import/rows", headers=h, json={
         "rows": [dict(rows[0], quantity="2")], "preview_hash": preview.json()["preview_hash"], **batch}))
-    bank = await client.post("/accounting/bank-accounts", headers=h, json={
-        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
-        "currency": "USD", "opening_balance": 1000.0})
-    assert bank.status_code == 200, bank.text
-    recon = await client.post("/accounting/reconciliation/start", headers=h, json={
-        "bank_account_id": bank.json()["id"], "statement_date": "2026-09-30", "statement_balance": 1020.0})
-    assert recon.status_code == 200, recon.text
-    sid = recon.json()["id"]
-    imported = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={
-        "file": ("s.csv", b"Date,Description,Amount\n2026-09-05,Deposit,20.00\n", "text/csv")})
-    assert imported.status_code == 200, imported.text
-    body = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()
-    (line,) = body.get("items") if isinstance(body, dict) else body
-    lines = f"/accounting/reconciliation/{sid}/lines/{line['id']}"
-    created = await client.post(f"{lines}/create", headers=h, json={"account_code": "4100"})
-    assert created.status_code == 200, created.text
-    answers.append(await client.post(f"{lines}/match", headers=h, json={"je_id": str(uuid.uuid4())}))
+    import bank_statement_helpers as B
+    co = await B.co_of(client, h)
+    bank = await B.bank(client, h, name="Harbor Bank", opening=1000.0)
+    answers.append(await B.resolve(client, co, bank["id"], accept={"group_keys": ["NO SUCH GROUP"]}))
     assert [r.status_code for r in answers] == [422, 409, 409], [r.text for r in answers]
     return [{"ok": False, "status": r.status_code, "data": r.json()} for r in answers]
 
