@@ -52,7 +52,7 @@ def _build_router() -> APIRouter:
     read_deps = [Depends(get_current_user)]
     write_deps = [Depends(get_current_user), require_permission("manage_company_settings")]
 
-    @router.get("/verticals/categories", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+    @router.get("/verticals/categories", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the ready-made item categories for business types, such as jewelry or food.")
     async def list_categories() -> list[dict]:
         return [
             {
@@ -66,21 +66,21 @@ def _build_router() -> APIRouter:
             for c in _list_categories()
         ]
 
-    @router.get("/verticals/categories/{name}", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+    @router.get("/verticals/categories/{name}", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read one ready-made item category with its fields.")
     async def get_category(name: str) -> dict:
         cat = load_category(name)
         if cat is None:
             raise HTTPException(status_code=404, detail=t("error.category_not_found", name=name))
         return cat
 
-    @router.get("/verticals/presets", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+    @router.get("/verticals/presets", dependencies=read_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the ready-made business type presets.")
     async def list_presets() -> list[dict]:
         return [
             {"name": p["name"], "display_name": p["display_name"], "categories": p.get("categories", [])}
             for p in _list_presets()
         ]
 
-    @router.post("/me/apply-preset", dependencies=write_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"})
+    @router.post("/me/apply-preset", dependencies=write_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Apply a ready-made business type preset to the company, adding its categories and fields.")
     async def apply_preset(
         vertical: str,
         company_id=Depends(get_current_company_id),
@@ -107,7 +107,7 @@ def _build_router() -> APIRouter:
         return {"applied": vertical, "categories": len(categories), "modules": modules,
                 "company_settings": extra, "restart_required": restart_needed(modules)}
 
-    @router.post("/me/apply-category", dependencies=write_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"})
+    @router.post("/me/apply-category", dependencies=write_deps, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Add one ready-made item category with its fields to the company.")
     async def apply_category(
         name: str,
         company_id=Depends(get_current_company_id),

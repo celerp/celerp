@@ -398,6 +398,30 @@ def _binary(schema: Any) -> bool:
     return _binary(schema.get("items")) or any(_binary(sub) for sub in schema.get("anyOf") or ())
 
 
+# Headers execute sets itself; a route parameter of the same name never reaches the model.
+_OWN_HEADERS = frozenset({"authorization", "accept-language", "content-type", "content-length", "host", "cookie"})
+
+
+def _response_headers(operation: dict[str, Any]) -> tuple[str, ...]:
+    """The headers a route's success answer declares (an ETag a later write sends back as
+    If-Match), which the tool result carries for the model to read."""
+    names: list[str] = []
+    for status, answer in (operation.get("responses") or {}).items():
+        if str(status).startswith("2") and isinstance(answer, dict):
+            names += [n for n in answer.get("headers") or {} if n not in names]
+    return tuple(names)
+
+
+def _optional_body(schema: Any) -> Any:
+    """An optional body (``Model | None``) as its object schema: leaving it out is already
+    allowed because the body is not required, and a key field is then found in it."""
+    if isinstance(schema, dict) and isinstance(schema.get("anyOf"), list):
+        branches = [b for b in schema["anyOf"] if b != {"type": "null"}]
+        if len(branches) == 1 and len(branches) < len(schema["anyOf"]) and isinstance(branches[0], dict):
+            return {**{k: v for k, v in schema.items() if k != "anyOf"}, **branches[0]}
+    return schema
+
+
 def _drop_field(schema: dict[str, Any], dotted: str) -> dict[str, Any]:
     """``schema`` without the field ``dotted`` names (``records[].idempotency_key`` reaches
     into each item of a list), removed from ``properties`` and ``required``."""
@@ -543,6 +567,7 @@ def compile_agent_capabilities(
             path_required: list[str] = []
             query_properties: dict[str, Any] = {}
             query_required: list[str] = []
+            header_properties: dict[str, Any] = {}
             unsupported_parameter = False
             for parameter in operation.get("parameters") or []:
                 if not isinstance(parameter, dict):
@@ -553,7 +578,8 @@ def compile_agent_capabilities(
                 if not isinstance(name, str):
                     unsupported_parameter = True
                     break
-                if location not in ("path", "query"):
+                if location not in ("path", "query", "header") or (
+                        location == "header" and name.lower() in _OWN_HEADERS):
                     unsupported_parameter = True
                     break
                 schema = _inline_local_refs(parameter.get("schema") or {}, schemas)
@@ -564,6 +590,8 @@ def compile_agent_capabilities(
                     path_properties[name] = schema
                     if parameter.get("required", True):
                         path_required.append(name)
+                elif location == "header":
+                    header_properties[name] = schema
                 else:
                     query_properties[name] = schema
                     if parameter.get("required"):
@@ -584,7 +612,7 @@ def compile_agent_capabilities(
                     continue
                 encoding = {"application/json": "json", _FORM: "form", _MULTIPART: "multipart"}[next(iter(media))]
                 raw_schema = (next(iter(media.values())) or {}).get("schema") or {}
-                body_schema = _inline_local_refs(raw_schema, schemas)
+                body_schema = _optional_body(_inline_local_refs(raw_schema, schemas))
                 if not isinstance(body_schema, dict):
                     continue
                 body_required = bool(request_body.get("required"))
@@ -596,7 +624,7 @@ def compile_agent_capabilities(
                     for name in uploads:
                         body_schema = _drop_field(body_schema, name)
 
-            key_field = operation.get("x-celerp-agent-key") if requires_confirmation else None
+            key_field = operation.get("x-celerp-agent-key")
             generated_secret = operation.get("x-celerp-agent-generated-secret") if requires_confirmation else None
             for field in (key_field, generated_secret):
                 if field:
@@ -620,6 +648,8 @@ def compile_agent_capabilities(
                     section["required"] = query_required
                     tool_required.append("query")
                 tool_properties["query"] = section
+            if header_properties:
+                tool_properties["headers"] = {"type": "object", "properties": header_properties}
             if body_schema is not None:
                 tool_properties["body"] = body_schema
                 if body_required:
@@ -647,6 +677,8 @@ def compile_agent_capabilities(
                 "module": owner,
                 "path_names": tuple(path_properties),
                 "query_names": tuple(query_properties),
+                "header_names": tuple(header_properties),
+                "response_headers": _response_headers(operation),
                 "expects_body": body_schema is not None,
                 "encoding": encoding,
                 "uploads": uploads,
@@ -745,6 +777,7 @@ async def execute_agent_capability(
         section for section, present in (
             ("path", bool(capability.get("path_names"))),
             ("query", bool(capability.get("query_names"))),
+            ("headers", bool(capability.get("header_names"))),
             ("body", bool(capability.get("expects_body"))),
             ("file_ids", bool(capability.get("uploads"))),
             ("after_previous", bool(capability.get("requires_confirmation"))),
@@ -756,9 +789,13 @@ async def execute_agent_capability(
 
     path_values = arguments.get("path") or {}
     query_values = arguments.get("query") or {}
+    header_values = arguments.get("headers") or {}
     body = arguments.get("body") if capability.get("expects_body") else None
-    if not isinstance(path_values, dict) or not isinstance(query_values, dict):
-        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Path/query arguments must be JSON objects.")
+    if not isinstance(path_values, dict) or not isinstance(query_values, dict) or not isinstance(header_values, dict):
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Path/query/header arguments must be JSON objects.")
+    if set(header_values) - set(capability.get("header_names") or ()) or not all(
+            isinstance(v, str) or v is None for v in header_values.values()):
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments contain unknown or non-text headers.")
     if capability.get("expects_body") and not isinstance(body, dict):
         return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Request body must be a JSON object.")
 
@@ -833,7 +870,8 @@ async def execute_agent_capability(
                     str(capability["method"]),
                     url_path,
                     params=params,
-                    headers={"Authorization": authorization, "Accept-Language": current_lang()},
+                    headers={**{k: v for k, v in header_values.items() if v is not None},
+                             "Authorization": authorization, "Accept-Language": current_lang()},
                     follow_redirects=False,
                     **sent,
                 ),
@@ -887,6 +925,9 @@ async def execute_agent_capability(
             )
     else:
         result = {"ok": response.is_success, "status": response.status_code, "data": data}
+    answered = {n: response.headers[n] for n in capability.get("response_headers") or () if n in response.headers}
+    if answered:
+        result["headers"] = answered
     if shown_once:
         result["shown_once"] = shown_once
     return result

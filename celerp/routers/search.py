@@ -132,7 +132,7 @@ def _jsonable_rows(rows: list) -> list[dict]:
     return encoded
 
 
-@router.get("/search", summary="Search everything at once, such as items, contacts and documents, by a name, number or other text, when you do not know which kind of record it is. When you know the kind, use that kind's own list, which takes more filters.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"})
+@router.get("/search", summary="Search items, contacts, documents and other records at once by a name, number or other text when you do not know which kind of record it is.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"})
 async def global_search(
     request: Request,
     q: str = "",

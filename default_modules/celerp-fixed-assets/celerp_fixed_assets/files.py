@@ -139,7 +139,7 @@ async def _asset_state(session, company_id, asset_id: str) -> dict:
     return state
 
 
-@router.get("/assets/{asset_id}/files", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]})
+@router.get("/assets/{asset_id}/files", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="List the files attached to a fixed asset.")
 async def list_files(asset_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(views.money_shown),
                      session: AsyncSession = Depends(get_session)) -> dict:
     state = await _asset_state(session, company_id, asset_id)
@@ -147,7 +147,7 @@ async def list_files(asset_id: str, company_id=Depends(get_current_company_id), 
             "linked": await linked(session, company_id, state) if money else [], "tags": list(ASSET_FILE_TAGS)}
 
 
-@router.post("/assets/{asset_id}/files", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
+@router.post("/assets/{asset_id}/files", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Attach a file to a fixed asset, such as an invoice or photo.")
 async def upload_file(asset_id: str, file: UploadFile, document_tag: str = Form(""),
                       company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                       session: AsyncSession = Depends(get_session)) -> dict:
@@ -155,7 +155,7 @@ async def upload_file(asset_id: str, file: UploadFile, document_tag: str = Form(
     return await store_file(session, company_id, user.id, asset_id, file, tag)
 
 
-@router.post("/assets/{asset_id}/files/{file_id}/tag", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
+@router.post("/assets/{asset_id}/files/{file_id}/tag", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Change the tag of a file attached to a fixed asset.")
 async def tag_file(asset_id: str, file_id: str, document_tag: str = Form(""),
                    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                    session: AsyncSession = Depends(get_session)) -> dict:
@@ -165,7 +165,7 @@ async def tag_file(asset_id: str, file_id: str, document_tag: str = Form(""),
                          {"file_id": file_id, "document_tag": tag or "", "filename": f.get("filename")})
 
 
-@router.patch("/assets/{asset_id}/files/{file_id}/description", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
+@router.patch("/assets/{asset_id}/files/{file_id}/description", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Change the description of a file attached to a fixed asset.")
 async def describe_file(asset_id: str, file_id: str, description: str = Form(""),
                         company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)) -> dict:
@@ -174,7 +174,7 @@ async def describe_file(asset_id: str, file_id: str, description: str = Form("")
                          {"file_id": file_id, "description": description.strip(), "filename": f.get("filename")})
 
 
-@router.get("/assets/{asset_id}/files/{file_id}", dependencies=_VIEW)
+@router.get("/assets/{asset_id}/files/{file_id}", dependencies=_VIEW, summary="Download a file attached to a fixed asset.")
 async def download_file(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
                         money: bool = Depends(views.money_shown), session: AsyncSession = Depends(get_session)):
     f = file_of(await _asset_state(session, company_id, asset_id), file_id)
@@ -183,7 +183,7 @@ async def download_file(asset_id: str, file_id: str, company_id=Depends(get_curr
     return serve(company_id, f)
 
 
-@router.post("/classes/{class_id}/valuer-report", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"})
+@router.post("/classes/{class_id}/valuer-report", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"}, summary="Attach the valuer's report behind a class revaluation to every asset in it.")
 async def attach_valuer_report(class_id: str, file: UploadFile, company_id=Depends(get_current_company_id),
                                user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """The valuer's report behind a class revaluation, kept on every asset in use in the class."""
@@ -197,7 +197,7 @@ async def attach_valuer_report(class_id: str, file: UploadFile, company_id=Depen
     return {"filename": file.filename, "files": stored}
 
 
-@router.post("/classes/{class_id}/valuer-report/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"})
+@router.post("/classes/{class_id}/valuer-report/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"}, summary="Remove a valuer's report attached by mistake from every asset it was kept on.")
 async def remove_valuer_report(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                                user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Take a valuer's report attached by mistake off every asset it was kept on."""
@@ -220,7 +220,7 @@ async def remove_valuer_report(class_id: str, body: dict = Body(...), company_id
     return {"removed": len(copies)}
 
 
-@router.delete("/assets/{asset_id}/files/{file_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
+@router.delete("/assets/{asset_id}/files/{file_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Delete a file attached to a fixed asset.")
 async def delete_file(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     f = await _locked_file(session, company_id, asset_id, file_id)

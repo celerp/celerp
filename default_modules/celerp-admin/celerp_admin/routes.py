@@ -1170,7 +1170,7 @@ _CHECK_FNS = {
 }
 
 
-@router.post("/doctor", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/doctor"})
+@router.post("/doctor", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/doctor"}, summary="Run the Doctor checks on this installation and report what needs fixing.")
 async def run_doctor(
     request: Request,
     fix: bool = Query(False, description="Apply repairs (default: dry-run report only)"),
@@ -1237,7 +1237,7 @@ async def run_doctor(
     return response
 
 
-@router.get("/relay/status", openapi_extra={"x-celerp-agent": True})
+@router.get("/relay/status", openapi_extra={"x-celerp-agent": True}, summary="Show whether the relay that makes this installation reachable from the internet is running.")
 async def relay_status(
     _user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),

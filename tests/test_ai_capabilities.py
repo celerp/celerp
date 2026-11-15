@@ -10,9 +10,10 @@ import inspect
 import re
 import sys
 import textwrap
+from typing import Annotated
 
 import pytest
-from fastapi import Depends, FastAPI, Form, Query, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -219,6 +220,43 @@ async def test_executor_reenters_fastapi_with_user_auth_and_server_idempotency()
     assert created["data"]["token"] == "user-token"
     assert created["data"]["idempotency_key"].startswith("agent:")
     assert created["data"]["idempotency_key"] != "model-controlled"
+
+
+async def test_a_revision_read_by_one_tool_is_sent_back_by_the_write():
+    """A write that names the revision it replaces (If-Match) compiles with a headers
+    section, and the read before it hands the model that revision (its ETag), so the
+    model can read, then write, and a stale revision is refused rather than overwritten."""
+    app = FastAPI()
+    state = {"rev": "r1"}
+
+    @app.get("/menu", responses={200: {"headers": {"ETag": {"schema": {"type": "string"}}}}},
+             openapi_extra={"x-celerp-agent": True})
+    async def read_menu(response: Response):
+        response.headers["ETag"] = state["rev"]
+        return {"hidden": []}
+
+    @app.patch("/menu", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/menu"})
+    async def write_menu(if_match: Annotated[str | None, Header(alias="If-Match")] = None):
+        if if_match != state["rev"]:
+            raise HTTPException(status_code=412 if if_match else 428)
+        state["rev"] = "r2"
+        return {"ok": True}
+
+    for endpoint in (read_menu, write_menu):
+        endpoint.__module__ = "celerp.routers.agent_test"
+    caps = {c["method"]: c for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    assert caps["PATCH"]["tool"]["function"]["parameters"]["properties"]["headers"]["properties"].keys() == {"If-Match"}
+    read = await ai_tools.execute_agent_capability(app, "Bearer t", caps["GET"], {}, "call-r")
+    assert read["headers"] == {"ETag": "r1"}
+    wrote = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"If-Match": read["headers"]["ETag"]}}, "call-w")
+    assert wrote["ok"] is True
+    stale = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"If-Match": "r1"}}, "call-s")
+    assert stale["ok"] is False and stale["status"] == 412
+    smuggled = await ai_tools.execute_agent_capability(
+        app, "Bearer t", caps["PATCH"], {"headers": {"Authorization": "Bearer other"}}, "call-x")
+    assert smuggled["ok"] is False and smuggled["error"]["code"] == "invalid_arguments"
 
 
 async def test_executor_rejects_request_infrastructure_and_path_escape():
@@ -666,14 +704,14 @@ def test_user_facing_fields_stay_visible_to_the_model():
         operation = openapi["paths"][cap["path"]][cap["method"].lower()]
         content = (operation.get("requestBody") or {}).get("content") or {}
         raw = next(iter(content.values()), {}).get("schema") if content else None
-        body = ai_tools._inline_local_refs(raw or {}, schemas)
+        body = ai_tools._optional_body(ai_tools._inline_local_refs(raw or {}, schemas))
         props = body.get("properties") or {}
         uploads = {field for field, prop in props.items() if _binary(prop)}
         key = extra.get("x-celerp-agent-key") or ""
         removed = uploads | {extra.get("x-celerp-agent-generated-secret")} | ({key} if "[]" not in key else set())
         params = cap["tool"]["function"]["parameters"]
         top = params["properties"]
-        expected_top = {"path", "query", "body"} | ({"after_previous"} if cap["requires_confirmation"] else set())
+        expected_top = {"path", "query", "headers", "body"} | ({"after_previous"} if cap["requires_confirmation"] else set())
         if uploads:
             expected_top.add("file_ids")
             if "file_ids" not in params.get("required", ()):
@@ -1007,15 +1045,19 @@ def test_every_download_tool_names_a_ui_route():
 
 def test_funds_tools_compile():
     """Fund balances move through the assistant like any other confirmed change; the
-    fund request key is supplied by the system, never shown to the model."""
-    caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
+    fund request key is supplied by the system, never shown to the model, and a change
+    is keyed exactly when a lookup of that key makes its retry safe."""
+    app = real_agent_app()
+    routes = _route_index(app)
+    caps = ai_tools.compile_agent_capabilities(app, {})
     funds = {(c["method"], c["path"]): c for c in caps.values() if c["path"].startswith("/accounting/funds")}
     assert ("GET", "/accounting/funds") in funds
     assert ("POST", "/accounting/funds") in funds
-    for cap in funds.values():
+    for route, cap in funds.items():
         assert "request_key" not in _schema_fields(cap["tool"]["function"]["parameters"])
         if cap["method"] != "GET":
-            assert cap["requires_confirmation"] is True and cap["keyed"] is True
+            assert cap["requires_confirmation"] is True, route
+            assert cap["keyed"] is bool(ai_tools.key_store(routes[route])), route
 
 
 _LIFECYCLE = {

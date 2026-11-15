@@ -82,7 +82,7 @@ async def _provenance(session: AsyncSession, ctx: AuthContext, run_id: uuid.UUID
     return {"prepared_by": run.prepared_by, "source_system": run.source_system}
 
 
-@router.get("/download")
+@router.get("/download", summary="Download a backup file of the current company.")
 async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)):
     """Back up the company the session is on and serve the file, deleted once sent."""
@@ -133,19 +133,19 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     return sent
 
 
-@router.get("/sender", openapi_extra={"x-celerp-agent": True})
+@router.get("/sender", openapi_extra={"x-celerp-agent": True}, summary="Show the firm name and reply address used for the last company copy sent.")
 async def last_sender(ctx: AuthContext = Depends(user_owner)):
     """The firm name and reply address of the last send, for the next send form."""
     return await asyncio.to_thread(files.last_sender)
 
 
-@router.get("/handoffs", openapi_extra={"x-celerp-agent": True})
+@router.get("/handoffs", openapi_extra={"x-celerp-agent": True}, summary="List the copies of this company sent to others, with the link each carries.")
 async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
     """This company's copies sent; only its owner sees them, and each link they carry."""
     return {"items": await sender.as_http(sender.company_copies(ctx.company_id))}
 
 
-@router.post("/handoffs/{copy_id}/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
+@router.post("/handoffs/{copy_id}/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Stop the link of a company copy sent to someone from working.")
 async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
     """The link stops working at once; Undo restores it for a short time."""
     return await sender.as_http(sender.revoke_copy(ctx.company_id, copy_id))
@@ -160,7 +160,7 @@ class NewCopyLink(BaseModel):
     operation_id: uuid.UUID
 
 
-@router.post("/handoffs/{copy_id}/new-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
+@router.post("/handoffs/{copy_id}/new-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Replace the link of a company copy sent to someone with a new one, so the old link stops working.")
 async def new_company_handoff_link(copy_id: uuid.UUID, payload: NewCopyLink,
                                    ctx: AuthContext = Depends(user_owner)):
     """Replace the link for the same stored copy: the old link stops working, and the
@@ -361,7 +361,7 @@ async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("se
         return _error(exc)
 
 
-@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"})
+@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show the backup a staged company was made from.")
 async def staged_backup(upload_token: str, mode: RestoreMode = "settings", ctx: AuthContext = Depends(user_owner),
                         session: AsyncSession = Depends(get_session)):
     return await _staged(session, str(ctx.user.id), upload_token, ctx, mode)
@@ -462,13 +462,13 @@ async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends
                                                     expected_snonce=ctx.snonce), kept_backup_id=kept_id)
 
 
-@router.get("/kept", openapi_extra={"x-celerp-agent": True})
+@router.get("/kept", openapi_extra={"x-celerp-agent": True}, summary="List the backups kept of this company each time a copy replaced it, newest first.")
 async def kept_backups(ctx: AuthContext = Depends(user_owner)):
     """The backups kept of this company each time a copy replaced it, newest first."""
     return {"items": await cb.kept_backups(ctx.company_id)}
 
 
-@router.get("/kept/{kept_id}/download")
+@router.get("/kept/{kept_id}/download", summary="Download one kept backup of this company.")
 async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)):
     try:
         path = await cb.kept_backup(ctx.company_id, kept_id)
@@ -478,7 +478,7 @@ async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_own
                         filename=f"{ctx.company.slug}-before-replace{cb.EXTENSION}")
 
 
-@router.delete("/kept/{kept_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
+@router.delete("/kept/{kept_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Delete one kept backup of this company.")
 async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
     """Delete a kept backup. Not undoable: it is the file itself, so the page asks first."""
     try:

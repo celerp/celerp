@@ -292,7 +292,7 @@ async def check_fund_reconciliation(session: AsyncSession, company_id, *, as_of:
             "attribution": await _attribution(session, company_id, posted, funds, accounts)}
 
 
-@router.get("/funds/balance-sheet", openapi_extra={"x-celerp-agent": True})
+@router.get("/funds/balance-sheet", openapi_extra={"x-celerp-agent": True}, summary="Show the fund balance sheet on a date, with each account split by fund.")
 async def get_fund_balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -306,7 +306,7 @@ async def get_fund_balance_sheet(
     return await fund_balance_sheet(session, company_id, as_of=as_of)
 
 
-@router.get("/funds/activity", openapi_extra={"x-celerp-agent": True})
+@router.get("/funds/activity", openapi_extra={"x-celerp-agent": True}, summary="Show what each fund received, spent, released and transferred over a period.")
 async def get_fund_activity(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -321,7 +321,7 @@ async def get_fund_activity(
     return await fund_activity(session, company_id, date_from=date_from, date_to=date_to)
 
 
-@router.get("/funds/reconciliation", openapi_extra={"x-celerp-agent": True})
+@router.get("/funds/reconciliation", openapi_extra={"x-celerp-agent": True}, summary="Check on a date that the funds add up to the company ledger and list anything that does not.")
 async def get_fund_reconciliation(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),

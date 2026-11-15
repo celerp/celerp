@@ -49,7 +49,7 @@ def _fixed_secret():
 
 async def _propose_user(client, headers, caps, email: str):
     op = _op(caps, "POST", _USERS)
-    assert "password" not in caps[op]["input_schema"]["properties"]["body"].get("properties", {})
+    assert "password" not in caps[op]["tool"]["function"]["parameters"]["properties"]["body"].get("properties", {})
     return await _propose(client, headers, ScriptedModel(
         _call(op, {"body": {"email": email, "name": "New teammate", "role": "operator"}}, "user1")))
 
@@ -141,7 +141,7 @@ async def test_label_source_refused_by_argument_reaches_card(client, session, ag
     of record the role cannot see returns the route's own refusal to the model."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "view_fixed_assets", "admin")
-    op = _op(agent_caps, "GET", "/labels/sources/{source}")
+    op = _op(agent_caps, "GET", "/api/labels/sources/{source}")
     model = ScriptedModel(
         _call(op, {"path": {"source": "fa_asset"}}, "lbl1"),
         lambda _m: text_result("Done."),
@@ -163,7 +163,7 @@ async def _contact(client, headers) -> str:
 
 async def _propose_upload(client, headers, caps, contact_id, file_id):
     op = _op(caps, "POST", "/crm/contacts/{contact_id}/files")
-    assert "file" not in caps[op]["input_schema"]["properties"].get("body", {}).get("properties", {})
+    assert "file" not in caps[op]["tool"]["function"]["parameters"]["properties"].get("body", {}).get("properties", {})
     return await _propose(client, headers, ScriptedModel(
         _call(op, {"path": {"contact_id": contact_id}, "file_ids": [file_id]}, "up1")))
 
@@ -313,7 +313,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
     ctx = await perm_setup(client, session)
     op = _op(agent_caps, "POST", "/items/bulk/expire")
     ids = [str(uuid.uuid4()) for _ in range(3)]
-    field = next(iter(agent_caps[op]["input_schema"]["properties"]["body"]["properties"]))
+    field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
     conv_id, message_id, call_id = await _propose(client, ctx["admin_h"], ScriptedModel(
         _call(op, {"body": {field: ids}}, "bx1")))
     card = await _record(session, message_id, call_id)
@@ -324,7 +324,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
 async def test_bulk_tool_refuses_an_empty_selection(client, session, agent_caps, ai_session):
     ctx = await perm_setup(client, session)
     op = _op(agent_caps, "POST", "/items/bulk/expire")
-    field = next(iter(agent_caps[op]["input_schema"]["properties"]["body"]["properties"]))
+    field = next(iter(agent_caps[op]["tool"]["function"]["parameters"]["properties"]["body"]["properties"]))
     model = ScriptedModel(_call(op, {"body": {field: []}}, "be1"), lambda _m: text_result("Nothing chosen."))
     conv_id = await _new_conversation(client, ctx["admin_h"])
     with patch("celerp.ai.service.complete", model):

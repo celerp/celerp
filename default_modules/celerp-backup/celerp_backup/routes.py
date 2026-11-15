@@ -190,7 +190,7 @@ def _backup_table(items: list[dict]):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/trigger", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
+@router.post("/trigger", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"}, summary="Start a cloud backup of the company's database and files now.")
 async def trigger_backup():
     """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
     from celerp.services import backup_repo, backup_scheduler
@@ -205,7 +205,7 @@ async def trigger_backup():
     return resp
 
 
-@router.get("/list", openapi_extra={"x-celerp-agent": True})
+@router.get("/list", openapi_extra={"x-celerp-agent": True}, summary="List the cloud backups of this installation, newest first.")
 async def list_backups(request: Request):
     """List cloud snapshots.
 
@@ -248,7 +248,7 @@ async def restore_backup(backup_id: str):
     return _recovery_response(result, t("system_recovery.restored"))
 
 
-@router.get("/export", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export"})
+@router.get("/export", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export"}, summary="Download a full local backup of this installation as a backup file.")
 async def export_local() -> FileResponse:
     """Export full local backup as .celerp-backup download."""
     from celerp.services.backup_export import export_full
@@ -267,7 +267,7 @@ def _archive_download(path: Path, label: str) -> FileResponse:
                         background=BackgroundTask(path.unlink, missing_ok=True))
 
 
-@router.get("/export/{backup_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export/{backup_id}"})
+@router.get("/export/{backup_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export/{backup_id}"}, summary="Download one cloud backup as a backup file.")
 async def export_cloud(backup_id: str) -> FileResponse:
     """Download a cloud snapshot, rebuilt as a .celerp-backup archive."""
     from celerp.services.backup_repo import reassemble_snapshot

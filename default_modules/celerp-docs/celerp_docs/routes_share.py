@@ -460,7 +460,7 @@ class ShareCreateBody(BaseModel):
     expires_at: str | None = None
 
 
-@router.get("/docs/{entity_id}/share/state", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/docs/{entity_id}/share/state", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether a document or list has a working share link.")
 async def share_state(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -472,7 +472,7 @@ async def share_state(
     return {"active": bool(row is not None and _share_active(row))}
 
 
-@router.get("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True})
+@router.get("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True}, summary="Read the share link of a document or list with its expiry.")
 async def share_status(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -489,7 +489,7 @@ async def share_status(
     return await _share_status(session, share_row)
 
 
-@router.post("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.post("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Create a share link for a document or list, or change its expiry.")
 async def create_share_link(
     entity_id: str,
     body: ShareCreateBody | None = None,
@@ -523,7 +523,7 @@ async def create_share_link(
     return await _share_status(session, share_row)
 
 
-@router.delete("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/docs/{entity_id}/share", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Turn off the share link of a document or list so it stops working.")
 async def revoke_share_link(
     entity_id: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -763,7 +763,7 @@ async def download_share_bundle(
     )
 
 
-@public_router.post("/docs/import-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@public_router.post("/docs/import-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Fetch a document another Celerp company shared by link and file it under Received.")
 async def import_shared_doc(
     link: str | None = Query(None, description="The share link: the page the sender's document is shown on"),
     src: str | None = Query(None, description="Older link form: the sender's public address, given with token"),
@@ -812,7 +812,7 @@ async def import_shared_doc(
     return await _import_bundle(bundle, company_id, user.id, session, page)
 
 
-@public_router.post("/docs/import-bundle", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@public_router.post("/docs/import-bundle", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Import a Celerp document file someone sent and file it under Received.")
 async def import_bundle_upload(
     request: Request,
     company_id: _uuid.UUID = Depends(get_current_company_id),

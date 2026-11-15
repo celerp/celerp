@@ -1435,7 +1435,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     return {"items": [_doc_row(*row) for row in rows], "total": total}
 
 
-@router.get("", summary="Find sales and purchasing documents by type, status, contact, date, due date, currency or text, for example unpaid invoices or overdue bills. Use Get document to read one in full, and Document totals for counts and sums.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("", summary="Find sales and purchasing documents by type, status, contact, date or text, such as unpaid invoices or overdue bills.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def list_docs(
     filters: DocListFilters = Depends(),
     limit: int | None = None,
@@ -1489,7 +1489,7 @@ async def free_patched_numbers(session: AsyncSession, company_id, entity_id: str
             session, company_id, fields_changed[field].get("new"), exclude_entity_id=entity_id)}
 
 
-@router.get("/numbered", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("/numbered", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Find the documents that carry exactly one document number.")
 async def docs_numbered(
     number: str = Query(min_length=1),
     doc_type: str | None = None,
@@ -1500,7 +1500,7 @@ async def docs_numbered(
     return {"ids": await _ids_numbered(session, company_id, "doc", number, doc_type)}
 
 
-@router.get("/summary", summary="Counts and totals in the company currency for the documents that match the same filters as the document list, such as how much is unpaid or overdue. Use this for questions about how many or how much; use the document list to see the documents themselves.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("/summary", summary="Count and total the documents that match the document list filters, such as how much is unpaid or overdue.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
     filters: DocListFilters = Depends(),
     company_id: str = Depends(get_current_company_id),
@@ -1635,7 +1635,7 @@ class SequencePatch(BaseModel):
     next: int | None = Field(default=None, strict=True)
 
 
-@router.get("/sequences", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/sequences", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the numbering sequence of each document type, such as the next invoice number.")
 async def get_sequences(company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if not company:
@@ -1652,7 +1652,7 @@ _NUMBERING_MODULES = {
 }
 
 
-@router.patch("/sequences/{doc_type}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.patch("/sequences/{doc_type}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the numbering of a document type, such as its prefix or next number.")
 async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("manage_module_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await locked_company(session, company_id)
     if not company:
@@ -1940,7 +1940,7 @@ async def _memo_fixed_taken(session: AsyncSession, company_id, entity_id: str, s
             if t["invoice_id"] == entity_id]
 
 
-@router.get("/{entity_id}", summary="Read one document in full: its contact, lines, totals, dates, status and the payments recorded on it.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}", summary="Read one document in full, with its contact, lines, totals, dates, status and payments.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = shown_state(row.state) | {"id": row.entity_id, "version": row.version}
@@ -2021,7 +2021,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
     return doc
 
 
-@router.get("/{entity_id}/pdf", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/{entity_id}/pdf", "x-celerp-agent-any-role": True})
+@router.get("/{entity_id}/pdf", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/{entity_id}/pdf", "x-celerp-agent-any-role": True}, summary="Download a document as a PDF file.")
 async def get_doc_pdf(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -2081,7 +2081,7 @@ async def get_doc_pdf(
     )
 
 
-@router.post("", summary="Create a new sales or purchasing document, such as a quotation, invoice, credit note, purchase order or vendor bill, with its contact and lines. Search for an existing document first, and use Update document to change one you already made.", openapi_extra=_DOC_WRITE_AGENT)
+@router.post("", summary="Create a new sales or purchasing document, such as a quotation, invoice, credit note, purchase order or bill.", openapi_extra=_DOC_WRITE_AGENT)
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -2254,7 +2254,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.patch("/{entity_id}", summary="Change a document's details or lines, such as its date, reference, notes, contact or line items. Use Create document for a new one and Record a payment on a document to record money received or paid.", openapi_extra=_DOC_WRITE_AGENT)
+@router.patch("/{entity_id}", summary="Change a document's details or lines, such as its date, reference, notes, contact or line items.", openapi_extra=_DOC_WRITE_AGENT)
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await _refuse_synced(session, company_id, entity_id)
     result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
@@ -2272,7 +2272,7 @@ class FundChoicesIn(BaseModel):
     lines: dict[str, str | None] = Field(default_factory=dict)
 
 
-@router.post("/{entity_id}/fund-choices", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.post("/{entity_id}/fund-choices", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Choose the fund of a document that came from outside, for the whole document or line by line.")
 async def choose_doc_funds(entity_id: str, payload: FundChoicesIn, company_id: str = Depends(get_current_company_id),
                            _: None = require_permission("edit_documents"), user=Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)) -> dict:
@@ -2310,7 +2310,7 @@ class DocChangeFundIn(ChangeFundIn):
     document: str | None = None
 
 
-@router.post("/{entity_id}/change-fund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": ["reallocate_restricted_funds"]})
+@router.post("/{entity_id}/change-fund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key", "x-celerp-agent-result-permissions": ["reallocate_restricted_funds"]}, summary="Move a posted document that came from outside to another fund, reposting its entries.")
 async def change_doc_fund(entity_id: str, payload: DocChangeFundIn, company_id: str = Depends(get_current_company_id),
                           _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                           session: AsyncSession = Depends(get_session)) -> dict:
@@ -2734,7 +2734,7 @@ async def doc_email(session: AsyncSession, company_id, entity_id: str, state: di
             "from_name": sender_name, "cc": cc, "bcc": bcc}
 
 
-@router.post("/{entity_id}/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-outside": True})
+@router.post("/{entity_id}/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-outside": True}, summary="Email a document to its contact.")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row, entry, prior = await mark_doc_sent(session, company_id, entity_id, user, payload)
     if prior is not None:
@@ -3126,7 +3126,7 @@ async def finalize_document(
     return {"event_id": entry.id, "shared_lots": shared_lots}
 
 
-@router.post("/{entity_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.post("/{entity_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Finalize a draft document so it is numbered, posted to the books and can be sent.")
 @rerun_after_placing
 async def finalize_doc(
     entity_id: str,
@@ -3241,7 +3241,7 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
     return {"event_id": entry.id, "reopened_memos": reopened}
 
 
-@router.post("/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["fulfill_documents"]})
+@router.post("/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["fulfill_documents"]}, summary="Void a finalized document, reversing its entries in the books.")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await _refuse_synced(session, company_id, entity_id)
     return await void_document(entity_id, payload, company_id, user, session,
@@ -3733,7 +3733,7 @@ async def _undo_under_credit_note(session, company_id, state: dict, invoice_id: 
         f"credit memos first, then try again.", numbers=listed)))
 
 
-@router.post("/{entity_id}/close", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/close", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Close a memo whose goods are all resolved so it leaves the open list.")
 async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Terminal Close for a resolved memo: the paper leaves the "partially
     fulfilled" limbo once every stone has been sold, kept, or returned to stock.
@@ -3798,7 +3798,7 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/reopen", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/reopen", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Reopen a closed memo, putting it back to the status it had before.")
 async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a Close: restore the memo to the status it held before closing."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3845,7 +3845,7 @@ def _memo_rate_problems(row: Projection) -> list[dict]:
     return problems
 
 
-@router.post("/{entity_id}/tax-rate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/tax-rate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Work out the tax of an issued memo entered as an amount at a chosen tax rate.")
 async def set_memo_tax_rate(
     entity_id: str,
     body: MemoTaxRateBody,
@@ -4025,7 +4025,7 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     return RevertCheck(tuple(refusals), to_order=to_order, emptied=emptied)
 
 
-@router.post("/{entity_id}/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Put a finalized document back to draft so it can be edited.")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
 
@@ -4109,7 +4109,7 @@ class DocRenumberBody(BaseModel):
     ref_id: str
 
 
-@router.post("/{entity_id}/renumber", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.post("/{entity_id}/renumber", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the number shown on a document.")
 async def renumber_doc(
     entity_id: str,
     payload: DocRenumberBody,
@@ -4159,7 +4159,7 @@ async def renumber_doc(
     return shown_state(updated.state) | {"id": entity_id}
 
 
-@router.post("/{entity_id}/unvoid", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/unvoid", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Restore a voided document to the status it had before it was voided.")
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
 
@@ -4309,7 +4309,7 @@ def _first_few(names: list[str], limit: int = 5) -> str:
     return f"{', '.join(names[:limit])} and {len(names) - limit} more"
 
 
-@router.delete("/bulk-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/bulk-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Delete several draft documents at once.")
 async def bulk_delete_drafts(
     doc_ids: str,
     company_id: str = Depends(get_current_company_id),
@@ -4357,7 +4357,7 @@ async def bulk_delete_drafts(
     return {"deleted": deleted, "count": len(deleted), "reopened_memos": reopened}
 
 
-@router.delete("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Delete a draft document.")
 async def delete_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("delete_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "draft":
@@ -4606,7 +4606,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
 
 @router.post(
     "/{entity_id}/payment",
-    summary="Record a payment on a document.",
+    summary="Record money received or paid against an invoice or bill.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"},
 )
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
@@ -4623,7 +4623,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 
 
 @router.get("/{entity_id}/fund-open", dependencies=[require_permission("view_documents")],
-            summary="Each fund's open part of a document's balance", openapi_extra={"x-celerp-agent": True})
+            summary="Show what an invoice or bill still has open in each fund.", openapi_extra={"x-celerp-agent": True})
 async def get_doc_fund_open(entity_id: str, company_id: str = Depends(get_current_company_id),
                             session: AsyncSession = Depends(get_session)) -> dict:
     """What an invoice or bill still holds open by fund, in the books' currency: the split its
@@ -4858,7 +4858,7 @@ async def reverse_payment_refund(session, company_id, entity_id: str, row: Proje
     return entry
 
 
-@router.post("/{entity_id}/refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Refund a payment recorded on a document.")
 async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("refund", entity_id, payload)
@@ -4899,7 +4899,7 @@ class VoidPaymentBody(BaseModel):
     _real_date = field_validator("refund_date")(_calendar_date)
 
 
-@router.post("/{entity_id}/void-payment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/void-payment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Void a payment recorded on a document, reversing its entry in the books.")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
 
@@ -5072,7 +5072,7 @@ class DeletePaymentBody(BaseModel):
     idempotency_key: str | None = None
 
 
-@router.delete("/{entity_id}/payments/{payment_index}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.delete("/{entity_id}/payments/{payment_index}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Delete a payment recorded on a document by mistake.")
 async def delete_payment(
     entity_id: str,
     payment_index: int,
@@ -5383,7 +5383,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     return entry
 
 
-@router.post("/{entity_id}/apply-to-invoice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/apply-to-invoice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a customer credit note to an invoice of the same customer.")
 async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     key, digest = _operation("apply-credit-note", entity_id, payload)
     entry = await apply_credit_note(
@@ -5394,7 +5394,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/apply-to-bill", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/apply-to-bill", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a supplier credit note to a bill or purchase order of the same supplier.")
 async def apply_supplier_credit_to_bill(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Apply a supplier credit note to a bill or purchase order of the same supplier."""
     key, digest = _operation("apply-supplier-credit", entity_id, payload)
@@ -5422,7 +5422,7 @@ class CnRefundBody(BaseModel):
     _real_date = field_validator("date")(_calendar_date)
 
 
-@router.post("/{entity_id}/cn-refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/cn-refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Refund a credit note to the customer in money.")
 async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Lock the credit note row FOR UPDATE and validate against that fresh read: the
     # doc-row lock is the single serializer, so a concurrent application/refund on this
@@ -5507,7 +5507,7 @@ class BulkPaymentBody(BaseModel):
     _real_date = field_validator("payment_date")(_calendar_date)
 
 
-@router.post("/bulk-payment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-selection": "doc_ids", "x-celerp-agent-bulk-of": "POST /docs/{entity_id}/payment"})
+@router.post("/bulk-payment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-selection": "doc_ids", "x-celerp-agent-bulk-of": "POST /docs/{entity_id}/payment"}, summary="Record payments on several invoices or bills at once.")
 async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
         raise HTTPException(status_code=422, detail=t("documents.err_no_docs_selected"))
@@ -5784,7 +5784,7 @@ def _refuse_receipt_when_not_open(state: dict) -> None:
             "This document is not open for receiving, so no goods can be received on it."))
 
 
-@router.post("/{entity_id}/receive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
+@router.post("/{entity_id}/receive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_inventory_prices"]}, summary="Receive the goods of a purchase order into stock.")
 async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
     # receipt or cost change in flight and reads what that one committed.
@@ -7755,7 +7755,7 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
     return out
 
 
-@router.post("/{entity_id}/return-items", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/return-items", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Send received goods back to the supplier.")
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Send received goods back to the supplier, named either by lot (``items``) or by document
     line (``lines``, a stock quantity per line, taken from that line's lots on the server)."""
@@ -8233,7 +8233,7 @@ class ShipmentFromDocsBody(BaseModel):
     doc_ids: list[str]
 
 
-@router.post("/shipment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.post("/shipment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Create one draft shipping document from one or more invoices.")
 async def create_shipment_from_docs(
     payload: ShipmentFromDocsBody,
     company_id: str = Depends(get_current_company_id),
@@ -8350,7 +8350,7 @@ class DocConvertBody(BaseModel):
     idempotency_key: str | None = None
 
 
-@router.post("/{entity_id}/convert", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["fulfill_documents", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/{entity_id}/convert", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["fulfill_documents", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Convert a document into the next type, such as a quotation into an invoice or a purchase order into a bill.")
 async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if (await _get_doc(session, company_id, entity_id)).state.get("doc_type") == "memo":
         # Invoice all: one draw of every line at all it has out, under this call's own key.
@@ -8435,7 +8435,7 @@ def _note_list_for(session_exec_result) -> list[dict]:
     ]
 
 
-@router.get("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the notes written on a document, newest first.")
 async def list_doc_notes(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -8455,7 +8455,7 @@ async def list_doc_notes(
     return notes
 
 
-@router.post("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-key": "idempotency_key"}, summary="Add a note to a document.")
 async def add_doc_note(
     entity_id: str,
     payload: NoteCreate,
@@ -8486,7 +8486,7 @@ async def add_doc_note(
     return {"event_id": entry.id, "id": note_id}
 
 
-@router.patch("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-key": "idempotency_key"})
+@router.patch("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-key": "idempotency_key"}, summary="Change the text of a note on a document.")
 async def update_doc_note(
     entity_id: str,
     note_id: str,
@@ -8511,7 +8511,7 @@ async def update_doc_note(
     return {"event_id": entry.id}
 
 
-@router.delete("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Delete a note from a document.")
 async def delete_doc_note(
     entity_id: str,
     note_id: str,
@@ -8535,7 +8535,7 @@ async def delete_doc_note(
     return {"event_id": entry.id}
 
 
-@router.post("/import", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["finalize_documents", "record_payments", "set_inventory_prices"]})
+@router.post("/import", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["finalize_documents", "record_payments", "set_inventory_prices"]}, summary="Import one document record from another system.")
 async def import_doc(
     body: DocImportRecord,
     company_id: str = Depends(get_current_company_id),
@@ -8865,7 +8865,7 @@ async def _import_auto_je(session: AsyncSession, company_id, user, role: str, se
         )
 
 
-@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs/import", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["finalize_documents", "record_payments", "set_inventory_prices", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs/import", "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["finalize_documents", "record_payments", "set_inventory_prices", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Import a batch of documents from another system.")
 async def batch_import_docs(
     body: DocBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
@@ -8896,7 +8896,7 @@ async def batch_import_docs(
 _DOC_EXPORT_COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "issue_date", "due_date", "total", "amount_outstanding", "status"]
 
 
-@router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/export/csv"})
+@router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/export/csv"}, summary="Download the document list as a CSV file, with the same filters as the list.")
 async def export_docs_csv(
     filters: DocListFilters = Depends(),
     cols: str | None = None,
@@ -9171,7 +9171,7 @@ def _list_weight(lines: list, state: dict, items: dict, unit_map: dict) -> dict:
             "has_weight": any(w not in (None, 0) for w, _ in measures)}
 
 
-@lists_router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Find lists, such as stock transfers, audits, write-offs and pick lists, by type, status, text or date.")
 async def list_lists(
     filters: ListIndexFilters = Depends(),
     limit: int | None = None,
@@ -9235,7 +9235,7 @@ async def list_lists(
     return {"items": out, "total": total}
 
 
-@lists_router.get("/numbered", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/numbered", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Find the lists that carry exactly one list number.")
 async def lists_numbered(
     number: str = Query(min_length=1),
     company_id: str = Depends(get_current_company_id),
@@ -9245,7 +9245,7 @@ async def lists_numbered(
     return {"ids": await _ids_numbered(session, company_id, "list", number)}
 
 
-@lists_router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Count the lists in each status for the same filters as the list index.")
 async def get_list_summary(
     filters: ListIndexFilters = Depends(),
     company_id: str = Depends(get_current_company_id),
@@ -9307,7 +9307,7 @@ async def get_list_summary(
 _LIST_EXPORT_COLS = ["id", "ref_id", "list_type", "customer", "date", "total", "status"]
 
 
-@lists_router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/lists/export/csv"})
+@lists_router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/lists/export/csv"}, summary="Download the list index as a CSV file, with the same filters as the index.")
 async def export_lists_csv(
     filters: ListIndexFilters = Depends(),
     cols: str | None = None,
@@ -9345,7 +9345,7 @@ async def export_lists_csv(
     )
 
 
-@lists_router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Read one list in full, with its lines, status and dates.")
 async def get_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -9378,7 +9378,7 @@ def _page_bounds(offset: str, limit: str) -> tuple[int, int]:
     return off, min(lim, _PAGE_LIMIT_MAX)
 
 
-@lists_router.get("/{entity_id}/page", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/{entity_id}/page", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Read one list with one page of its lines, for long lists.")
 async def get_list_page(
     entity_id: str,
     offset: str = "0",
@@ -9458,7 +9458,7 @@ async def _page_item_meta(session: AsyncSession, company_id, page_items: list[di
     return meta
 
 
-@lists_router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@lists_router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Create a new list, such as a stock transfer, pick list or audit.")
 async def create_list(
     payload: ListCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -9531,7 +9531,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     return {"event_id": entry.id, "id": entity_id}
 
 
-@lists_router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@lists_router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Change a list's details or lines.")
 async def patch_list(
     entity_id: str,
     payload: ListPatch,
@@ -9897,7 +9897,7 @@ async def _contact_selection_values(
     return values
 
 
-@router.post("/{entity_id}/reprice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_inventory_costs"]})
+@router.post("/{entity_id}/reprice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_inventory_costs"]}, summary="Update every catalog line of a draft document to the item's current price.")
 async def reprice_doc(
     entity_id: str,
     payload: RepriceBody,
@@ -9982,7 +9982,7 @@ async def reprice_doc(
     }
 
 
-@lists_router.post("/{entity_id}/reprice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_inventory_costs"]})
+@lists_router.post("/{entity_id}/reprice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_inventory_costs"]}, summary="Update every catalog line of a draft list to the item's current price.")
 async def reprice_list(
     entity_id: str,
     payload: RepriceBody,
@@ -10078,7 +10078,7 @@ def _keep_unchanged_lines(page: list, window: list) -> list:
     return kept
 
 
-@lists_router.patch("/{entity_id}/line-page", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["set_sales_doc_prices"]})
+@lists_router.patch("/{entity_id}/line-page", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["set_sales_doc_prices"]}, summary="Save changes to one page of a list's lines.")
 async def patch_list_line_page(
     entity_id: str,
     payload: ListLinePagePatch,
@@ -10170,7 +10170,7 @@ async def patch_list_line_page(
     return {"event_id": entry.id, "version": entry.id}
 
 
-@lists_router.post("/{entity_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Finalize a draft list so its action can be carried out.")
 async def finalize_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10227,7 +10227,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
     return {"event_id": entry.id, "status": FINALIZED}
 
 
-@lists_router.post("/{entity_id}/reserve-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/{entity_id}/reserve-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Reserve or release chosen lines of a list.")
 @answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_list_lines(
     entity_id: str,
@@ -10253,7 +10253,7 @@ async def reserve_list_lines(
                                             may_acquire=may_acquire, commit=False))
 
 
-@lists_router.post("/{entity_id}/set-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/{entity_id}/set-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Set chosen lines of a list as available again, giving back what they hold.")
 @answers_with("new_status", "reserved", "released", *_STOCK_ANSWER)
 async def set_list_lines_available(
     entity_id: str,
@@ -10295,7 +10295,7 @@ async def set_list_lines_available(
     return await _line_action(session, company_id, user, row, "set-available", body, run)
 
 
-@lists_router.post("/{entity_id}/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/{entity_id}/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Put a finalized list back to draft before its action has run.")
 async def revert_list_to_draft(
     entity_id: str,
     payload: DocRevertBody = DocRevertBody(),
@@ -10330,7 +10330,7 @@ async def _list_for_total_change(session, company_id, entity_id: str) -> dict:
     return state
 
 
-@lists_router.post("/{entity_id}/recalculate-total", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/recalculate-total", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Recalculate the totals of a list made by an earlier version with the current document rule.")
 async def recalculate_list_total(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10352,7 +10352,7 @@ async def recalculate_list_total(
     return {"event_id": entry.id}
 
 
-@lists_router.post("/{entity_id}/restore-total", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/restore-total", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Give a recalculated list back the totals it held before it was recalculated.")
 async def restore_list_total(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10371,7 +10371,7 @@ async def restore_list_total(
     return {"event_id": entry.id}
 
 
-@lists_router.get("/{entity_id}/old-rule-total", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/{entity_id}/old-rule-total", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="Compare the total an older list holds with the total the current document rule gives it.")
 async def get_list_old_rule_total(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10383,7 +10383,7 @@ async def get_list_old_rule_total(
     return {"stored": stored, "current": current}
 
 
-@lists_router.post("/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Void a finalized list so it no longer counts.")
 async def void_list(
     entity_id: str,
     payload: ListVoidBody = ListVoidBody(),
@@ -10405,7 +10405,7 @@ async def void_list(
     return {"event_id": entry.id}
 
 
-@lists_router.delete("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.delete("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Delete a draft list.")
 async def delete_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10425,7 +10425,7 @@ async def delete_list(
     return {"deleted": entity_id}
 
 
-@lists_router.post("/{entity_id}/convert", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/convert", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Convert a list into a document, such as a pick list into an invoice.")
 async def convert_list(
     entity_id: str,
     payload: ListConvertBody,
@@ -10490,7 +10490,7 @@ async def convert_list(
     return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
 
-@lists_router.post("/{entity_id}/duplicate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/duplicate", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Make a copy of a list as a new draft.")
 async def duplicate_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10516,7 +10516,7 @@ async def duplicate_list(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
-@lists_router.get("/{entity_id}/notes", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@lists_router.get("/{entity_id}/notes", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="List the notes written on a list, newest first.")
 async def list_list_notes(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10536,7 +10536,7 @@ async def list_list_notes(
     return notes
 
 
-@lists_router.post("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Add a note to a list.")
 async def add_list_note(
     entity_id: str,
     payload: NoteCreate,
@@ -10567,7 +10567,7 @@ async def add_list_note(
     return {"event_id": entry.id, "id": note_id}
 
 
-@lists_router.patch("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.patch("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Change the text of a note on a list.")
 async def update_list_note(
     entity_id: str,
     note_id: str,
@@ -10592,7 +10592,7 @@ async def update_list_note(
     return {"event_id": entry.id}
 
 
-@lists_router.delete("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.delete("/{entity_id}/notes/{note_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Delete a note from a list.")
 async def delete_list_note(
     entity_id: str,
     note_id: str,
@@ -10633,7 +10633,7 @@ def _assert_list_import_permissions(settings: dict, role: str, data: dict) -> No
         assert_role_permission(settings, role, "finalize_documents")
 
 
-@lists_router.post("/import", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["finalize_documents"]})
+@lists_router.post("/import", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["finalize_documents"]}, summary="Import one list record from another system.")
 async def import_list(
     body: ListImportRecord,
     company_id: str = Depends(get_current_company_id),
@@ -10679,7 +10679,7 @@ async def import_list(
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
 
-@lists_router.get("/import/template", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/lists/import/template"})
+@lists_router.get("/import/template", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/lists/import/template"}, summary="Download the spreadsheet template for importing lists.")
 async def import_lists_template():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(
@@ -10689,7 +10689,7 @@ async def import_lists_template():
     )
 
 
-@lists_router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["finalize_documents", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@lists_router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["finalize_documents", "set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Import a batch of lists from a spreadsheet.")
 async def batch_import_lists(
     body: ListBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
@@ -11679,7 +11679,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     return result
 
 
-@router.post("/{entity_id}/fulfill-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/fulfill-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Ship chosen lines of an invoice or memo.")
 @answers_with("fulfillment_status", "fulfilled", "taken_from", *_STOCK_ANSWER)
 async def fulfill_lines(
     entity_id: str,
@@ -12113,7 +12113,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     }
 
 
-@router.post("/{entity_id}/revert-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/revert-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Take back goods that an invoice or memo shipped so they are available again.")
 @answers_with("fulfillment_status", "reverted", "partially_returned", *_STOCK_ANSWER)
 async def revert_lines(
     entity_id: str,
@@ -12539,7 +12539,7 @@ async def _write_draw(session, company_id, role: str, settings: dict, user, comp
     return {"target_doc_id": invoice_id, "draw_id": draw_id, "event_id": entry.id}
 
 
-@router.post("/{entity_id}/invoice-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/{entity_id}/invoice-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Invoice chosen goods of a memo onto a new or existing draft invoice.")
 @answers_with("target_doc_id", "draw_id", "event_id", "invoiced", "memo_ref", "acted", "skipped", "skipped_notice")
 async def invoice_lines(
     entity_id: str,
@@ -12597,7 +12597,7 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
                               select_lines=chosen, operation=operation)
 
 
-@router.post("/{entity_id}/back-to-memo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/{entity_id}/back-to-memo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Send chosen lines of a draft invoice back to the memos they came from.")
 @answers_with("removed", "reopened_memos", *_STOCK_ANSWER)
 async def back_to_memo(
     entity_id: str,
@@ -12857,7 +12857,7 @@ async def _reserve_lines_impl(
             "taken_back": _named_lines(line_items, sorted(shipped))}
 
 
-@router.post("/{entity_id}/reserve-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/reserve-lines", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Reserve or release chosen lines of an invoice or memo.")
 @answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_lines(
     entity_id: str,
@@ -12911,7 +12911,7 @@ async def _set_available_impl(row: Projection, body: SetAvailableRequest, indice
     return {**taken, "released": released, "skipped": skipped}
 
 
-@router.post("/{entity_id}/set-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/set-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Set chosen lines of an invoice or memo as available again, giving back what they hold.")
 @answers_with("fulfillment_status", "reverted", "partially_returned", "released", "taken_back",
               "taken_back_notice", *_STOCK_ANSWER)
 async def set_lines_available(
@@ -13022,7 +13022,7 @@ async def _return_parts(session, company_id, invoice_id: str, items: list[Return
     return parts
 
 
-@router.post("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Receive goods a customer returned on a credit note back into stock.")
 async def receive_return(
     entity_id: str,
     payload: ReceiveReturnPayload,
@@ -13323,7 +13323,7 @@ def _undo_blocked(key: str, lead: str, reasons: list[dict]) -> HTTPException:
         key, f"{lead}: {'; '.join(r['message'] for r in reasons)}", reasons=reasons))
 
 
-@router.delete("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Undo receiving returned goods on a credit note.")
 async def undo_receive_return(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -13593,7 +13593,7 @@ async def _receipt_measures_on_lots(session: AsyncSession, company_id, entity_id
     return added
 
 
-@router.delete("/{entity_id}/receive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@router.delete("/{entity_id}/receive", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Undo receiving the goods of a purchase order.")
 async def undo_receive(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -13827,8 +13827,8 @@ def _get_doc_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
-@lists_router.post("/{entity_id}/files", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
-@router.post("/{entity_id}/files", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@lists_router.post("/{entity_id}/files", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Attach a file to a list, with its tag and description.")
+@router.post("/{entity_id}/files", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Attach a file to a document, with its tag and description.")
 async def upload_doc_file(
     entity_id: str,
     file: UploadFile,
@@ -13864,8 +13864,8 @@ async def upload_doc_file(
     return {"event_id": entry.id, **meta}
 
 
-@lists_router.get("/{entity_id}/files/{file_id}", name="list_files")
-@router.get("/{entity_id}/files/{file_id}", name="doc_files")
+@lists_router.get("/{entity_id}/files/{file_id}", name="list_files", summary="Download a file attached to a list.")
+@router.get("/{entity_id}/files/{file_id}", name="doc_files", summary="Download a file attached to a document.")
 async def download_doc_file(
     entity_id: str,
     file_id: str,
@@ -13903,8 +13903,8 @@ async def download_doc_file(
     )
 
 
-@lists_router.patch("/{entity_id}/files/{file_id}/tag", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
-@router.patch("/{entity_id}/files/{file_id}/tag", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@lists_router.patch("/{entity_id}/files/{file_id}/tag", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the tag of a file attached to a list.")
+@router.patch("/{entity_id}/files/{file_id}/tag", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the tag of a file attached to a document.")
 async def tag_doc_file(
     entity_id: str,
     file_id: str,
@@ -13935,8 +13935,8 @@ async def tag_doc_file(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@lists_router.patch("/{entity_id}/files/{file_id}/description", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
-@router.patch("/{entity_id}/files/{file_id}/description", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@lists_router.patch("/{entity_id}/files/{file_id}/description", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the description of a file attached to a list.")
+@router.patch("/{entity_id}/files/{file_id}/description", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Change the description of a file attached to a document.")
 async def update_doc_file_description(
     entity_id: str,
     file_id: str,
@@ -13967,8 +13967,8 @@ async def update_doc_file_description(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@lists_router.delete("/{entity_id}/files/{file_id}", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
-@router.delete("/{entity_id}/files/{file_id}", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"})
+@lists_router.delete("/{entity_id}/files/{file_id}", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Delete a file attached to a list.")
+@router.delete("/{entity_id}/files/{file_id}", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Delete a file attached to a document.")
 async def delete_doc_file(
     entity_id: str,
     file_id: str,
@@ -14179,7 +14179,7 @@ def _scan_line(item: Projection, quantity, *, priced: bool, price_list: str | No
     return line
 
 
-@lists_router.post("/audit", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/audit", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Start a stock audit list for chosen items or a location.")
 async def create_audit_list(
     payload: AuditCreateBody,
     company_id=Depends(get_current_company_id),
@@ -14310,7 +14310,7 @@ def _scan_failure(failed: list[dict], results: list[dict], code: str, reason: st
     results.append({"code": code, "state": "error", "reason": reason, "label": label, **extra})
 
 
-@lists_router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["view_inventory_costs"]})
+@lists_router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["view_inventory_costs"]}, summary="Add scanned items to a list by barcode or SKU.")
 async def scan_list(
     entity_id: str, payload: ScanBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
@@ -14601,7 +14601,7 @@ def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, cur
     return line
 
 
-@router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Add scanned items to a document by barcode or SKU.")
 async def scan_doc(
     entity_id: str, payload: ScanBody,
     company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"),
@@ -14666,7 +14666,7 @@ async def scan_doc(
     return {"scanned": scanned, "results": results, "failed": failed, "version": version}
 
 
-@lists_router.patch("/{entity_id}/line/{item_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.patch("/{entity_id}/line/{item_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Set the physical count of one line on a stock audit.")
 async def set_audit_count(
     entity_id: str, item_id: str, payload: ListCountBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
@@ -14692,7 +14692,7 @@ class SetScannedBody(BaseModel):
     scanned: bool = Field(default=True, description="true: mark the lines as scanned. false: clear the mark.")
 
 
-@lists_router.post("/{entity_id}/set-scanned", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/set-scanned", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Mark chosen lines of a stock audit as accounted for, or clear the mark.")
 @answers_with("changed", "skipped", "skipped_notice")
 async def set_scanned(
     entity_id: str, payload: SetScannedBody,
@@ -14728,7 +14728,7 @@ async def set_scanned(
     return result
 
 
-@lists_router.post("/{entity_id}/adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Apply a stock audit's counts to stock, adjusting each item to the quantity counted.")
 async def adjust_audit(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
@@ -14845,7 +14845,7 @@ async def adjust_audit_record(entity_id: str, company_id: str, user, session: As
     }
 
 
-@lists_router.post("/{entity_id}/undo-adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/undo-adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Undo the stock adjustment a stock audit applied while stock still matches it.")
 async def undo_audit_adjust(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
@@ -15004,7 +15004,7 @@ def _writeoff_seed_line(item: Projection, settings: dict) -> dict:
             "qty_out": None, "account": role_map(settings).get(AccountRole.STOCK_SHRINKAGE.value), "comment": ""}
 
 
-@lists_router.post("/writeoff", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"})
+@lists_router.post("/writeoff", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key"}, summary="Start a draft write-off list from chosen inventory items.")
 async def create_writeoff_list(
     payload: WriteoffCreateBody,
     company_id=Depends(get_current_company_id),
@@ -15037,7 +15037,7 @@ async def create_writeoff_list(
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
-@lists_router.post("/{entity_id}/writeoff-line", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/writeoff-line", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Set the quantity, account and comment of one line on a write-off list.")
 async def set_writeoff_line(
     entity_id: str, payload: WriteoffLineBody,
     company_id=Depends(get_current_company_id),
@@ -15086,7 +15086,7 @@ async def set_writeoff_line(
     return {"ok": True, "line_id": line["line_id"]}
 
 
-@lists_router.post("/{entity_id}/write-off", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/write-off", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Write off the stock on a write-off list, removing it from stock and posting the loss.")
 async def write_off_stock(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
@@ -15257,7 +15257,7 @@ async def write_off_stock(
     return {"written_off": written_off, "skipped": skipped, "value": total_value}
 
 
-@lists_router.post("/{entity_id}/undo-write-off", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/undo-write-off", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Undo a write-off, voiding its entry and putting the stock back.")
 async def undo_write_off(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
@@ -15309,7 +15309,7 @@ class ListChangeTypeBody(BaseModel):
     list_type: str
 
 
-@lists_router.post("/{entity_id}/change-type", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/change-type", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Change the type of a draft or finalized list.")
 async def change_list_type(
     entity_id: str, payload: ListChangeTypeBody,
     company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
@@ -15352,7 +15352,7 @@ async def change_list_type(
     return {"ok": True, "list_type": new_type, "ref_id": fields.get("ref_id", state.get("ref_id"))}
 
 
-@lists_router.post("/{entity_id}/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-outside": True})
+@lists_router.post("/{entity_id}/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-outside": True}, summary="Record a finalized list as sent.")
 async def send_list(
     entity_id: str, payload: DocSendBody = DocSendBody(),
     company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
@@ -15396,7 +15396,7 @@ async def send_list(
     return {"ok": True}
 
 
-@lists_router.post("/{entity_id}/unmark-sent", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/unmark-sent", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Clear the sent mark of a finalized list.")
 async def unmark_list_sent(
     entity_id: str, company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
@@ -15414,7 +15414,7 @@ class ListMoveBody(BaseModel):
     to_location_id: str
 
 
-@lists_router.post("/{entity_id}/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"})
+@lists_router.post("/{entity_id}/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists"}, summary="Move every item on a finalized transfer list to its destination location.")
 async def move_transfer(
     entity_id: str, payload: ListMoveBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
@@ -15456,7 +15456,7 @@ class AccountingSyncSelection(BaseModel):
     operation_id: uuid.UUID
 
 
-@router.post("/accounting-sync/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
+@router.post("/accounting-sync/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Choose which documents are sent to the connected accounting app.")
 async def update_accounting_sync_selection(
     body: AccountingSyncSelection,
     company_id: str = Depends(get_current_company_id),

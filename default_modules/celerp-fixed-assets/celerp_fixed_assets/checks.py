@@ -86,26 +86,26 @@ async def not_seen(session, company_id, since: str) -> list[dict]:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@router.post("/checks", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/checks"})
+@router.post("/checks", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/checks"}, summary="Record that a fixed asset was seen at its location today.")
 async def create_check(body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await record_check(session, company_id, user.id, body.get("tag"))
 
 
-@router.get("/checks", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True})
+@router.get("/checks", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True}, summary="List the recorded sightings of fixed assets.")
 async def list_checks(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """The standing checks, each with the asset's name as it reads now."""
     names = {a: s.get("name") for a, s in await _entities(session, company_id, "fa_asset")}
     return {"items": [{**c, "name": names.get(c["asset_id"])} for c in await live_checks(session, company_id)]}
 
 
-@router.get("/checks/not-seen", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True})
+@router.get("/checks/not-seen", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True}, summary="List the fixed assets not seen for a while.")
 async def report_not_seen(since: str, company_id=Depends(get_current_company_id),
                           session: AsyncSession = Depends(get_session)) -> dict:
     return {"since": since, "items": await not_seen(session, company_id, since)}
 
 
-@router.delete("/checks/{check_id}", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/checks"})
+@router.delete("/checks/{check_id}", dependencies=_CHECK, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/checks"}, summary="Remove a sighting of a fixed asset recorded by mistake today.")
 async def remove_check(check_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)) -> dict:
     """Its author removes a check recorded by mistake, on the day it was recorded."""

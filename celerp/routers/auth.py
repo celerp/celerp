@@ -315,7 +315,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     )
 
 
-@router.get("/my-companies", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/my-companies", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List every company the signed-in user can open.")
 async def my_companies(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -355,7 +355,7 @@ async def my_companies(
     return {"items": result, "total": len(result), "deactivated": deactivated}
 
 
-@router.get("/firm-view", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/firm-view", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List every company the user can open with its accountant sync status and what needs attention.")
 async def firm_view(
     q: str | None = None,
     sync: str | None = None,
@@ -498,7 +498,7 @@ async def recovery_terminal(request: Request) -> dict:
     return {"command": terminal_command() if is_local_person(request) else None}
 
 
-@router.get("/password-reset-notices", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/password-reset-notices", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the password resets of the user's account that they have not acknowledged yet, newest first.")
 async def reset_notices(
     user: User = Depends(get_current_user), company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -524,7 +524,7 @@ class NoticeIds(BaseModel):
     ids: list[uuid.UUID]
 
 
-@router.post("/password-reset-notices/acknowledge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members", "x-celerp-agent-any-role": True})
+@router.post("/password-reset-notices/acknowledge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members", "x-celerp-agent-any-role": True}, summary="Mark the user's password reset notices as seen so they stop showing.")
 async def acknowledge_reset_notices(
     payload: NoticeIds, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:

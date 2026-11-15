@@ -54,10 +54,11 @@ _MODULES = ["celerp", *sorted(
 
 def _write_routes(app) -> dict[str, list[tuple[str, str]]]:
     """(method, path) of every route that changes data and is not kept off the
-    assistant, by the module that owns it."""
+    assistant, by the module that owns it. A preview (confirm off) changes nothing."""
     by_module: dict[str, list[tuple[str, str]]] = {}
     for path, methods, route in ai_tools._api_routes(app):
-        if not route.include_in_schema or "x-celerp-agent-excluded" in (route.openapi_extra or {}):
+        extra = route.openapi_extra or {}
+        if not route.include_in_schema or "x-celerp-agent-excluded" in extra or extra.get("x-celerp-agent-confirm") is False:
             continue
         owner = ai_tools._agent_route_owner(route.endpoint, {})
         for method in sorted(methods & _MUTATIONS):
@@ -65,15 +66,27 @@ def _write_routes(app) -> dict[str, list[tuple[str, str]]]:
     return by_module
 
 
+def _one_row(dotted: str) -> dict:
+    """A body holding one row on each list ``dotted`` passes through (``records[].key``
+    gives ``{"records": [{}]}``), so the executor has a row to fill a per-row key into."""
+    head, _, rest = dotted.partition(".")
+    if not rest:
+        return {}
+    inner = _one_row(rest)
+    return {head.removesuffix("[]"): [inner] if head.endswith("[]") else inner}
+
+
 def _arguments(capability: dict) -> dict:
-    """Arguments the executor accepts: every path value, one selected record, one file."""
+    """Arguments the executor accepts: every path value, one selected record, one row on
+    the list a per-row key sits in, one file."""
     arguments: dict = {}
     if capability["path_names"]:
         arguments["path"] = {name: "1" for name in capability["path_names"]}
-    if capability.get("selection"):
+    key_rows = _one_row(str(capability.get("key_field") or ""))
+    if capability.get("selection") and capability["selection"] not in key_rows:
         arguments["body"] = {capability["selection"]: ["1"]}
     elif capability.get("expects_body"):
-        arguments["body"] = {}
+        arguments["body"] = key_rows
     if capability.get("uploads"):
         arguments["file_ids"] = ["f"] * len(capability["uploads"])
     return arguments

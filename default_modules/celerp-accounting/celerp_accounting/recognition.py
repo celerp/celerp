@@ -457,7 +457,7 @@ async def _overview(session, company_id) -> tuple[dict, dict, list[dict]]:
     return await _settings(session, company_id), schedules, runs
 
 
-@router.get("/recognition", openapi_extra={"x-celerp-agent": True})
+@router.get("/recognition", openapi_extra={"x-celerp-agent": True}, summary="List the revenue recognition runs by month, newest first, with the amounts each posted.")
 async def list_recognition(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -476,7 +476,7 @@ async def list_recognition(
             "enabled": bool((settings.get("consents") or {}).get(CONSENT))}
 
 
-@router.get("/recognition/summary", openapi_extra={"x-celerp-agent": True})
+@router.get("/recognition/summary", openapi_extra={"x-celerp-agent": True}, summary="Show the deferred revenue balance and what is still to be recognized.")
 async def recognition_summary(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -486,7 +486,7 @@ async def recognition_summary(
     return summary(settings, runs)
 
 
-@router.get("/recognition/roll-forward", openapi_extra={"x-celerp-agent": True})
+@router.get("/recognition/roll-forward", openapi_extra={"x-celerp-agent": True}, summary="Show how deferred revenue moved over a period, from opening to closing balance.")
 async def recognition_roll_forward(
     date_from: date,
     date_to: date,
@@ -501,7 +501,7 @@ async def recognition_roll_forward(
     return roll_forward(schedules, journals, runs, date_from.isoformat(), date_to.isoformat(), funds_enabled(settings))
 
 
-@router.get("/recognition/setting", openapi_extra={"x-celerp-agent": True})
+@router.get("/recognition/setting", openapi_extra={"x-celerp-agent": True}, summary="Show whether revenue recognition posts automatically and who turned it on.")
 async def recognition_setting(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -514,7 +514,7 @@ async def recognition_setting(
             "lapsed": settings.get(LAPSED) if consent else None}
 
 
-@router.put("/recognition/setting", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"})
+@router.put("/recognition/setting", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Turn automatic revenue recognition posting on or off.")
 async def set_recognition_setting(
     payload: SettingIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -528,7 +528,7 @@ async def set_recognition_setting(
     return answer
 
 
-@router.post("/recognition/{month}/post", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"})
+@router.post("/recognition/{month}/post", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Post the revenue recognition of one month to the books.")
 async def post_month(
     month: str,
     payload: PostIn | None = None,
@@ -542,7 +542,7 @@ async def post_month(
     return answer
 
 
-@router.post("/recognition/{month}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"})
+@router.post("/recognition/{month}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Reverse the revenue recognition posted for one month.")
 async def reverse_month(
     month: str,
     payload: ReverseIn | None = None,
@@ -556,7 +556,7 @@ async def reverse_month(
     return answer
 
 
-@router.post("/recognition/schedules/{schedule_id}/amend", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"})
+@router.post("/recognition/schedules/{schedule_id}/amend", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting/recognition"}, summary="Change a revenue recognition schedule from a date, such as a new end date for the service.")
 async def post_amendment(
     schedule_id: str,
     payload: AmendIn,

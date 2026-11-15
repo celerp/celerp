@@ -1128,6 +1128,18 @@ class ItemListFilters:
     dir: str = "desc"
 
 
+def item_list_filters(
+    filters: ItemListFilters = Depends(),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+) -> ItemListFilters:
+    """The item list's filters as a request sends them. A memo or consignment contact scope
+    lists document membership, so it is refused without the document permission."""
+    if filters.on_memo_to or filters.consigned_from:
+        assert_role_permission(settings, role, "view_documents")
+    return filters
+
+
 def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
     """Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened)
     attribute value is in the chosen set. Multiple attribute filters AND together."""
@@ -1244,13 +1256,11 @@ async def query_items(
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
     # Memo/consignment membership and sold prices come from documents, so they follow the
-    # document permission: a contact scope is refused without it, and a sold row carries
-    # no price.
+    # document permission: a contact scope is admitted by item_list_filters, and a sold row
+    # carries no price.
     can_see_docs = role_has_permission(settings, role, "view_documents")
     base_currency = settings.get("currency") or "USD"
     holding_scoped = bool(f.on_memo_to or f.consigned_from)
-    if holding_scoped:
-        assert_role_permission(settings, role, "view_documents")
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
@@ -1511,14 +1521,14 @@ async def query_items(
     return resp
 
 
-@router.get("", summary="Find inventory items by text, status, category, location or other filters, for example everything sold or archived. Use Get item to read one in full and Inventory valuation for counts and totals.", openapi_extra=_ITEM_READ_AGENT)
+@router.get("", summary="Find inventory items by text, status, category, location or other filters, such as everything sold or archived.", openapi_extra=_ITEM_READ_AGENT)
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
@@ -1547,9 +1557,9 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation", summary="Counts and stock value for the items that match the same filters as the item list, split by status and category. Use this for questions about how many items or what the stock is worth; use the item list to see the items themselves.", openapi_extra=_ITEM_READ_AGENT)
+@router.get("/valuation", summary="Count items and total their stock value for the item list filters, split by status and category.", openapi_extra=_ITEM_READ_AGENT)
 async def get_valuation(
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     attr_filters: list[tuple[str, set[str]]] = Depends(_attr_filters),
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
@@ -1654,7 +1664,7 @@ _SUGGESTION_FIELDS = frozenset({
 })
 
 
-@router.get("/field-values", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/field-values", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the distinct values used in one item field, such as every brand or color in stock.")
 async def get_field_values(
     field: str,
     company_id=Depends(get_current_company_id),
@@ -1703,7 +1713,7 @@ async def get_field_values(
     return {"values": sorted(seen)}
 
 
-@router.get("/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/categories", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the item categories in use.")
 async def list_item_categories(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -1729,7 +1739,7 @@ class ItemsMetadataBody(BaseModel):
     entity_ids: list[str] = Field(..., min_length=1, max_length=MAX_ITEMS_METADATA)
 
 
-@router.post("/metadata", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-result-permissions": ["edit_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True})
+@router.post("/metadata", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-result-permissions": ["edit_inventory", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="Read the name, SKU and status of several items at once by their ids.")
 async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """Bulk item-metadata read: one entry per requested id, keyed by entity_id.
 
@@ -1920,7 +1930,8 @@ async def _rows_plan(session, company_id, role: str, settings: dict, body) -> Im
 @router.post(
     "/import/rows/preview", response_model=InventoryImportRowsPreview,
     dependencies=[require_permission("import_export_data")],
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Check mapped item import rows before anything is saved, showing which are new, which update items and which have errors.",
 )
 async def import_rows_preview(
     body: InventoryImportRowsPreviewRequest,
@@ -1949,6 +1960,7 @@ async def import_rows_preview(
     "/import/rows", response_model=BatchImportResult,
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Import mapped item rows that were already checked.",
 )
 async def import_rows(
     body: InventoryImportRows,
@@ -2134,6 +2146,7 @@ async def _build_item_preview(
     "/import/preview", response_model=InventoryImportPreview,
     dependencies=[require_permission("import_export_data")],
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]},
+    summary="Read the check of an uploaded item import file.",
 )
 async def import_preview(
     file_id: str = Query(..., min_length=1, max_length=64),
@@ -2155,7 +2168,7 @@ async def import_preview(
 
 
 @router.post(
-    "/import/preview", summary="Check an item import file before anything is saved: how its columns map to item fields, which rows are new, which update existing items and which have errors. Fix the mapping here, then run Commit item import.", response_model=InventoryImportPreview,
+    "/import/preview", summary="Check an item import file before anything is saved, showing how its columns map and which rows have errors.", response_model=InventoryImportPreview,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data")],
 )
@@ -2187,7 +2200,7 @@ class InventoryImportCommit(BaseModel):
 
 
 @router.post(
-    "/import/commit", summary="Import the items from a file you already checked with Preview item import. Nothing is saved if any row still has an error, and the import can be undone later from the import history.", response_model=BatchImportResult,
+    "/import/commit", summary="Import the items from a file already checked with the item import preview.", response_model=BatchImportResult,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
 )
@@ -2227,7 +2240,7 @@ async def import_commit(
     )
 
 
-@router.get("/{entity_id}", summary="Read one inventory item in full: its fields, quantity, location, prices, status and linked documents.", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
+@router.get("/{entity_id}", summary="Read one inventory item in full, with its fields, quantity, location, prices, status and linked documents.", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -2277,7 +2290,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion", summary="Suggest a reorder point and reorder quantity for an item from how fast it has sold recently. Nothing is changed; the answer is empty when the item has no sales history. Use Update item to save new values.", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}/reorder-suggestion", summary="Suggest a reorder point and reorder quantity for an item from how fast it sold recently.", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
@@ -2363,7 +2376,7 @@ async def _require_company_location(session: AsyncSession, company_id, location_
     await require_company_location(session, company_id, location_id)
 
 
-@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices. Search the item list first, and use Update item to change an item that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
+@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
                                  "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -2587,7 +2600,7 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     return is_draft and role_has_permission(settings, role, "edit_inventory")
 
 
-@router.patch("/{entity_id}", summary="Change an existing inventory item's fields, such as its name, quantity, prices, category, location or reorder settings. Use Add item for a new one.", openapi_extra={
+@router.patch("/{entity_id}", summary="Change an existing inventory item's fields, such as its name, quantity, prices, category or location.", openapi_extra={
     "x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
@@ -2861,7 +2874,7 @@ class BulkDeleteBody(BaseModel):
     untouched_samples_only: bool = False
 
 
-@router.post("/bulk/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/status", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]})
+@router.post("/bulk/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/status", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Set the status of several inventory items at once.")
 async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -2901,7 +2914,7 @@ class RevertToDraftBody(BaseModel):
     reason: str | None = None
 
 
-@router.post("/bulk/make-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"})
+@router.post("/bulk/make-available", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Put several draft items into stock as available at once.")
 async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Commit one or more drafts into stock. Same authority as authoring the draft (edit_inventory) - no extra permission.
 
@@ -2936,7 +2949,7 @@ async def bulk_make_available(payload: MakeAvailableBody, company_id=Depends(get
     return {"updated": len(event_ids), "event_ids": event_ids}
 
 
-@router.post("/bulk/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]})
+@router.post("/bulk/revert-to-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Put several available items back to draft at once.")
 async def bulk_revert_to_draft(payload: RevertToDraftBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """assert_status_change_allowed does the real gating (revert_items_to_draft + clean history),
     on lots locked before any is checked: a fulfilment or reservation that reached a lot
@@ -3005,7 +3018,7 @@ async def _build_transfer_data(session, company_id, entity_id: str, to_location_
     }
 
 
-@router.post("/bulk/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/transfer"})
+@router.post("/bulk/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/transfer"}, summary="Move several inventory items to another location at once.")
 async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -3043,7 +3056,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
     return {"updated": len(event_ids), "event_ids": event_ids, "refused": refused}
 
 
-@router.post("/bulk/delete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"})
+@router.post("/bulk/delete", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Delete several draft items at once.")
 async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Delete drafts that were a mistake. Every selected item must be a draft (or already
     deleted) that never became stock; otherwise nothing is deleted and the answer names the
@@ -3118,7 +3131,7 @@ class RestoreDeletedBody(BaseModel):
     entity_ids: list[str]
 
 
-@router.post("/bulk/restore-deleted", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"})
+@router.post("/bulk/restore-deleted", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids"}, summary="Bring several deleted items back as drafts at once.")
 async def bulk_restore_deleted(payload: RestoreDeletedBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a Delete that moved items to Deleted: each comes back as the draft it was.
     Every selected item must be deleted; otherwise nothing is restored and the answer names
@@ -3146,7 +3159,7 @@ class BulkExpireBody(BaseModel):
     entity_ids: list[str]
 
 
-@router.post("/bulk/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/expire"})
+@router.post("/bulk/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-bulk-of": "POST /items/{entity_id}/expire"}, summary="Mark several inventory items as expired at once.")
 async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
@@ -3172,7 +3185,7 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
 
 
 
-@router.post("/{entity_id}/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/transfer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Move an inventory item to another location.")
 async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,
@@ -3191,7 +3204,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
     return {"event_id": entry.id}
 
 
-@router.get("/{entity_id}/split-preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/{entity_id}/split-preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show what splitting an inventory item into smaller lots would produce, before anything is changed.")
 async def split_preview(
     entity_id: str,
     child_sku: str | None = None,
@@ -3275,7 +3288,7 @@ def _split_key_reused() -> dict:
                    "without a key, or with a new one.")
 
 
-@router.post("/{entity_id}/split", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices"]})
+@router.post("/{entity_id}/split", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices"]}, summary="Split an inventory item into smaller lots, each with its own quantity.")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists = (await get_price_config(session, company_id))[0]
     for _child in payload.children:
@@ -3984,7 +3997,7 @@ async def restock_measures(session: AsyncSession, *, company_id, user_id, lot_id
                          idempotency_key=idempotency_key, metadata_=metadata)
 
 
-@router.post("/{entity_id}/transform", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
+@router.post("/{entity_id}/transform", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["set_inventory_prices"]}, summary="Turn an inventory item into one or more different items, such as cutting raw stock into finished pieces.")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.child_sku)
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
@@ -4714,7 +4727,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     )
 
 
-@router.post("/merge/preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"], "x-celerp-agent-field-visibility": True})
+@router.post("/merge/preview", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"], "x-celerp-agent-field-visibility": True}, summary="Show what merging several items into one would do to stock and the books, before anything is changed.")
 async def preview_merge(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """What merging these items would do to the books, before the user confirms. Send
     the same body the merge will be confirmed with (every field but ``idempotency_key``
@@ -4752,7 +4765,7 @@ async def _merge_result_preview(session: AsyncSession, company_id, plan: MergePl
     return out
 
 
-@router.post("/merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]})
+@router.post("/merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]}, summary="Merge several inventory items into one new item.")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Merge the items into one new item. Preview the merge first with POST
     /items/merge/preview and confirm it with the ``plan_fingerprint`` that preview
@@ -4940,7 +4953,7 @@ async def _merge_undone(session: AsyncSession, company_id, entity_id: str) -> bo
         LedgerEntry.event_type == "item.merge_undone").limit(1))).first() is not None
 
 
-@router.post("/{entity_id}/undo-merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
+@router.post("/{entity_id}/undo-merge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Undo a merge so the merged items hold their own stock again.")
 async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a merge: the merged items hold their own stock again, each on the inventory
     account it was in before, and the merge's reclassification entry is reversed.
@@ -4993,7 +5006,7 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
     return {"id": entity_id, "restored": source_ids}
 
 
-@router.post("/{entity_id}/adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/adjust", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Adjust the quantity of an inventory item, such as after a count or damage.")
 async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await adjust_item_quantity(
         session, company_id, user.id, entity_id, payload.model_dump(exclude_none=True),
@@ -5003,7 +5016,7 @@ async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(ge
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/price", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-any-permission": ["set_inventory_prices", "edit_inventory"], "x-celerp-agent-result-permissions": ["edit_inventory", "set_inventory_prices"]})
+@router.post("/{entity_id}/price", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-any-permission": ["set_inventory_prices", "edit_inventory"], "x-celerp-agent-result-permissions": ["edit_inventory", "set_inventory_prices"]}, summary="Set one price of an inventory item, such as its retail or cost price.")
 async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
     # Guard both the conventional key ("trade_price") and the raw list name ("Trade"):
@@ -5038,7 +5051,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]})
+@router.post("/{entity_id}/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-result-permissions": ["revert_items_to_draft"]}, summary="Change the status of an inventory item, such as available, on hold or sold.")
 async def set_item_status(entity_id: str, payload: StatusBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     await reject_draft_status_change_via_generic_path(session, company_id, entity_id, payload.new_status)
     await assert_status_change_allowed(session, company_id, entity_id, payload.new_status, role, settings)
@@ -5087,7 +5100,7 @@ async def assert_reservable(session: AsyncSession, company_id, entity_id: str, q
             result=f"{reserved:g}"))
 
 
-@router.post("/{entity_id}/reserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/reserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Reserve an inventory item for a customer so it is not sold to anyone else.")
 async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_reservable(session, company_id, entity_id, payload.quantity)
     entry = await emit_event(
@@ -5107,7 +5120,7 @@ async def reserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/unreserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"})
+@router.post("/{entity_id}/unreserve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory", "x-celerp-agent-key": "idempotency_key"}, summary="Release the reservation on an inventory item.")
 async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_reservable(session, company_id, entity_id, payload.quantity, release=True)
     entry = await emit_event(
@@ -5127,7 +5140,7 @@ async def unreserve_item(entity_id: str, payload: ReserveBody, company_id=Depend
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
+@router.post("/{entity_id}/expire", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Mark an inventory item as expired.")
 async def expire_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await assert_expirable(session, company_id, entity_id)
     entry = await emit_event(
@@ -5152,7 +5165,7 @@ async def expire_item(entity_id: str, company_id=Depends(get_current_company_id)
 # transport shares one implementation; this route is the raw-event-batch transport.
 
 
-@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]})
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices", "view_inventory_costs"]}, summary="Import a batch of inventory items, creating new ones and updating those that already exist.")
 async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
@@ -5179,7 +5192,7 @@ async def batch_import_items(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/import/batches", openapi_extra={"x-celerp-agent": True})
+@router.get("/import/batches", openapi_extra={"x-celerp-agent": True}, summary="List the item imports done in this company, newest first.")
 async def list_import_batches(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("import_export_data"),
@@ -5232,7 +5245,7 @@ async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UU
     return batch
 
 
-@router.post("/import/batches/{batch_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
+@router.post("/import/batches/{batch_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"}, summary="Undo an item import, removing the items it created and taking its stock off the books.")
 async def undo_import_batch(
     batch_id: str,
     company_id=Depends(get_current_company_id),
@@ -5365,6 +5378,7 @@ def _fmt_ts(val) -> str:
 @router.get(
     "/export/csv",
     dependencies=[require_permission("view_inventory"), require_permission("import_export_data")],
+    summary="Download the item list as a CSV file, with the same filters as the list.",
 )
 async def export_items_csv(
     request: Request,
@@ -5372,7 +5386,7 @@ async def export_items_csv(
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
-    filters: ItemListFilters = Depends(),
+    filters: ItemListFilters = Depends(item_list_filters),
     cols: str | None = None,
 ) -> StreamingResponse:
     """The item list as CSV: the list's filters and order, every matching row (pagination never

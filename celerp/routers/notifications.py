@@ -45,7 +45,7 @@ class NotificationList(BaseModel):
     unread_count: int
 
 
-@router.get("", response_model=NotificationList, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_accounting"]})
+@router.get("", response_model=NotificationList, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="List the user's notifications, newest first.")
 async def list_notifications(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -81,7 +81,7 @@ async def list_notifications(
     )
 
 
-@router.post("/{notification_id}/read", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True})
+@router.post("/{notification_id}/read", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True}, summary="Mark one of the user's notifications as read.")
 async def mark_read(
     notification_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
@@ -95,7 +95,7 @@ async def mark_read(
     await session.commit()
 
 
-@router.post("/read-all", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True})
+@router.post("/read-all", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/dashboard", "x-celerp-agent-any-role": True}, summary="Mark all of the user's notifications as read.")
 async def mark_all_read(
     session: AsyncSession = Depends(get_session),
     company_id=Depends(get_current_company_id),

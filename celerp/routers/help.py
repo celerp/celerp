@@ -30,7 +30,7 @@ from celerp.ai.tools import agent_excluded
 router = APIRouter(dependencies=[Depends(get_current_user)])
 # An agent tool. Each result names whether the caller holds its page's permission, so
 # it depends on whichever permission a page names: every one.
-_AGENT = {"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}
+_AGENT = {"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"}
 
 _MAX_Q_LEN = 200
 _MAX_PATH_LEN = 300
@@ -95,7 +95,7 @@ async def help_read(
     }
 
 
-@router.get("/help/browse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/help/browse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List every help page by module, or the pages of one module.")
 async def help_browse(module: str | None = None) -> dict:
     """Every help page by module (core first, then each module as the index orders them),
     or one module's pages."""
@@ -127,7 +127,7 @@ def _short_path(address: str) -> str:
     return address
 
 
-@router.get("/help/for-route", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
+@router.get("/help/for-route", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the help pages that cover one screen of the app.")
 async def help_for_route(
     path: Annotated[str, AfterValidator(_short_path), Query(max_length=MAX_ADDRESS_LEN, pattern=r"^/")],
 ) -> dict:

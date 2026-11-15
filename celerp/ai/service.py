@@ -311,6 +311,8 @@ def _allowed_sections(capability: dict) -> list[str]:
         sections.append("path")
     if capability.get("query_names"):
         sections.append("query")
+    if capability.get("header_names"):
+        sections.append("headers")
     if capability.get("expects_body"):
         sections.append("body")
     return sections
