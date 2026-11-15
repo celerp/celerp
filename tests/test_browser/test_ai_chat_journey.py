@@ -26,7 +26,7 @@ from playwright.sync_api import Page, expect
 import celerp.ai.service as ai_service
 from celerp.ai.llm import ModelResult
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 
 # ── Fake model scripting ──────────────────────────────────────────────────────

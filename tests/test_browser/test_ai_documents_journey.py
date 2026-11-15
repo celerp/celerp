@@ -31,7 +31,7 @@ from .test_ai_chat_journey import (  # noqa: F401  (fixtures by name)
     _SCRIPT, _answer, _open_chat, _send, _tool_call, agent_caps, agent_env, item_create_cap,
 )
 
-pytestmark = pytest.mark.browser
+pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
