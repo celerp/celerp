@@ -8221,6 +8221,7 @@
   "peer.err_unsupported_product_fields": "Unsupported product fields",
   "peer.err_connected_company_s_file_needs_its": "A connected company's file needs its file id and checksum.",
   "peer.err_connected_company_s_record_needs_its": "A connected company's record needs its source revision.",
+  "peer.err_record_not_applied": "受信側の会社はこのレコードを適用できませんでした。所有者はサーバーログで理由を確認できます。",
   "peer.err_document_missing_source_payment": "Document missing for source payment",
   "peer.err_duplicate_source_refund_identity": "Duplicate source refund identity",
   "peer.err_invalid_source_paid_balance": "Invalid source paid balance",

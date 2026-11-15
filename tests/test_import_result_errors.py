@@ -263,3 +263,45 @@ async def test_a_refused_row_is_a_keyed_refusal(client, auth, path):
     errors = r.json().get("errors")
     assert errors, r.text
     assert [e for e in errors if not _keyed(e)] == []
+
+
+async def _keyed_http(session, **kw):
+    from fastapi import HTTPException
+    from celerp.accounting_roles import catalog_refusal
+    raise HTTPException(422, catalog_refusal("peer.err_connected_company_s_record_needs_its"))
+
+
+async def _plain_value(session, **kw):
+    raise ValueError("Quantity must be a number")
+
+
+async def _unexpected(session, **kw):
+    raise RuntimeError("connection reset")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receiver, revision", [
+    (_keyed_http, 1), (_plain_value, 1), (_unexpected, 1), (_keyed_http, None)])
+async def test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason(
+        session, auth, ids, monkeypatch, receiver, revision):
+    """A connected company's record the receiving company does not apply comes back, like
+    any batch route's refused row, as a keyed refusal naming it: the sender shows it, and
+    the receiver's attention list keeps it, in each reader's language."""
+    import uuid
+    from types import SimpleNamespace
+    from celerp.services import peer_access, peer_import
+
+    grant = SimpleNamespace(company_id=ids["company_id"], source_company_id=uuid.uuid4(), last_used_at=None)
+
+    async def _grant(session, peer):
+        return grant
+
+    monkeypatch.setattr(peer_import, "_grant", _grant)
+    monkeypatch.setitem(peer_import.RECEIVERS, "contacts", receiver)
+    peer = peer_access.PeerCaller(credential="k", source_company_id=grant.source_company_id, scope="contacts")
+    record = SimpleNamespace(entity_id="C-1", source_revision=revision, data={"name": "C"})
+
+    errors = (await peer_import.receive_records(session, peer, [record]))["errors"]
+
+    assert len(errors) == 1 and _keyed(errors[0]), errors
+    assert errors[0]["params"]["entity_id"] == "C-1"
