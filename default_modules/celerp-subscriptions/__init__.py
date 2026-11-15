@@ -13,8 +13,8 @@ PLUGIN_MANIFEST = {
     "depends_on": ["celerp-docs"],
     "slots": {
         "nav": [
-            {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
-            {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
+            {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "help": "subscriptions.overview", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
+            {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "help": "subscriptions.overview", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
             {"group": "Subscriptions", "key": "retainers", "href": "/retainers", "label": "Retainers", "label_key": "nav.retainers", "order": 27, "permission": "view_subscriptions", "verticals": ["consulting"]},
             {"group": "Subscriptions", "key": "members", "href": "/members", "label": "Members", "label_key": "nav.members", "order": 28, "permission": "view_subscriptions", "verticals": ["nonprofit"]},
             {"group": "Subscriptions", "key": "subscribers", "href": "/subscribers", "label": "Subscribers", "label_key": "nav.subscribers", "order": 29, "permission": "view_subscriptions", "verticals": ["saas"]},
