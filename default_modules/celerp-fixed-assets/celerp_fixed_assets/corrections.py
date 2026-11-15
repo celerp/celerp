@@ -169,13 +169,13 @@ class Draft:
 
 async def _cost(d: Draft, value, fa: dict) -> None:
     if d.asset.get("sources"):
-        raise setup.unprocessable("This cost comes from its source lines. Use Replace source to change it.")
+        raise setup.refuse("fixed_assets.err_cost_from_source_lines")
     if d.opening():
-        raise setup.unprocessable("This asset came in at the cutover. Correct its opening values instead.")
+        raise setup.refuse("fixed_assets.err_correct_opening_values_instead")
     new = _money_in(value, "Cost", d.books.currency, positive=True)
     diff = new - _dec(d.asset.get("cost"))
     if not diff:
-        raise setup.unprocessable(f"The cost is already {said(new, d.books.currency)}.")
+        raise setup.refuse("fixed_assets.err_cost_already", amount=said(new, d.books.currency))
     credit = await _acquisition_credit(d)
     n = d.journal(_lines(d.cls["asset_account"], credit, diff), f"{d.asset['number']} cost corrected")
     d.move("cost", d.asset["available_date"], {"cost": diff},
@@ -190,23 +190,22 @@ async def _acquisition_credit(d: Draft) -> str:
             for e in (je or {}).get("entries") or []:
                 if _dec(e.get("credit")) > 0 and e.get("account") != d.cls["asset_account"]:
                     return e["account"]
-    raise setup.unprocessable("This asset has no acquisition entry to correct its cost against.")
+    raise setup.refuse("fixed_assets.err_no_acquisition_entry")
 
 
 async def _available_date(d: Draft, value, fa: dict) -> None:
     if d.opening():
-        raise setup.unprocessable("This asset came in at the cutover. Correct its opening values instead.")
+        raise setup.refuse("fixed_assets.err_correct_opening_values_instead")
     new, old = _date(value, "The available-for-use date"), d.asset.get("available_date")
     if new == old:
-        raise setup.unprocessable(f"The available-for-use date is already {new}.")
+        raise setup.refuse("fixed_assets.err_available_date_already", date=new)
     cut = setup.cutover(fa)
     if cut and new <= cut:
-        raise setup.unprocessable(f"Dated on or before the cutover {cut}. An asset in use by then belongs to the "
-                                  "opening register.")
+        raise setup.refuse("fixed_assets.err_dated_by_cutover_opening", cut=cut)
     at_old = [m for m in d.live if m.get("effective_date") == old and _dec((m.get("amounts") or {}).get("cost"))]
     cost = _sum((m.get("amounts") or {}).get("cost") for m in at_old)
     if not cost:
-        raise setup.unprocessable(f"Nothing was acquired on {old} to move.")
+        raise setup.refuse("fixed_assets.err_nothing_acquired_on", date=old)
     held = _contributions(at_old)
     d.move("available_date", old, {"cost": -cost}, _as_list(held, -1))
     d.move("available_date", new, {"cost": cost}, _as_list(held))
@@ -216,9 +215,9 @@ async def _available_date(d: Draft, value, fa: dict) -> None:
 async def _class_id(d: Draft, value, fa: dict) -> None:
     new = await setup.get_class(d.session, d.company_id, value)
     if new["id"] == d.cls["id"]:
-        raise setup.unprocessable("The asset is already in this class.")
+        raise setup.refuse("fixed_assets.err_already_in_class")
     if new.get("archived"):
-        raise setup.unprocessable("That class is archived. Choose a class in use.")
+        raise setup.refuse("fixed_assets.err_class_archived_choose_class_use")
     d.without_estimates()
     d.new_cls = new
     # The classes the asset was in, each until the date it left, read when an earlier
@@ -233,19 +232,19 @@ async def _class_id(d: Draft, value, fa: dict) -> None:
 
 async def _opening_values(d: Draft, value, fa: dict) -> None:
     if not d.opening():
-        raise setup.unprocessable("Only an asset brought in at the cutover has opening values.")
+        raise setup.refuse("fixed_assets.err_only_cutover_opening_values")
     if not isinstance(value, dict) or not value or set(value) - set(_OPENING_KEYS):
-        raise setup.unprocessable("Opening values are a cost, accumulated depreciation and accumulated impairment.")
+        raise setup.refuse("fixed_assets.err_opening_values_fields")
     held = [m for m in d.live if m.get("operation") in runs.OPENING_OPERATIONS]
     current = {k: _sum((m.get("amounts") or {}).get(k) for m in held) for k in _OPENING_KEYS}
     labels = {"cost": "Cost", "accumulated_depreciation": "Accumulated depreciation",
               "accumulated_impairment": "Accumulated impairment"}
     new = {k: _money_in(value[k], labels[k], d.books.currency, positive=k == "cost") if k in value else current[k] for k in _OPENING_KEYS}
     if new["accumulated_depreciation"] + new["accumulated_impairment"] > new["cost"]:
-        raise setup.unprocessable("Accumulated depreciation and impairment cannot be more than the cost.")
+        raise setup.refuse("fixed_assets.err_written_off_over_cost")
     diff = {k: new[k] - current[k] for k in _OPENING_KEYS if new[k] != current[k]}
     if not diff:
-        raise setup.unprocessable("The opening values are already these.")
+        raise setup.refuse("fixed_assets.err_opening_values_already")
     first = next(m for m in held if m.get("operation") == "opening")
     d.move("opening_values", first["effective_date"], diff)
 
@@ -254,10 +253,10 @@ async def _maintenance(d: Draft, value, fa: dict) -> None:
     from celerp.services.journal_accounts import require_destinations
 
     if d.opening():
-        raise setup.unprocessable("This asset came in at the cutover. Correct its opening values instead.")
+        raise setup.refuse("fixed_assets.err_correct_opening_values_instead")
     account = str((value or {}).get("expense_account") or "") if isinstance(value, dict) else ""
     if not account:
-        raise setup.unprocessable("Choose the expense account the maintenance belongs to.")
+        raise setup.refuse("fixed_assets.err_choose_maintenance_expense")
     await require_destinations(d.session, d.company_id, {account})
     current = d.current_fy()
     buckets: dict[bool, list[dict]] = {}
@@ -287,13 +286,12 @@ async def _maintenance(d: Draft, value, fa: dict) -> None:
 async def _claimed_here(d: Draft, source: str) -> tuple[dict, dict]:
     entry = next((s for s in d.asset.get("sources") or [] if s.get("source") == source), None)
     if entry is None:
-        raise setup.unprocessable("That line is not a source of this asset.")
+        raise setup.refuse("fixed_assets.err_line_not_source")
     claim = await _state(d.session, d.company_id, sources.claim_id(source))
     if claim is None or claim.get("status") != "claimed":
-        raise setup.unprocessable("That line is not registered.")
+        raise setup.refuse("fixed_assets.err_line_not_registered")
     if (claim.get("asset_ids") or []) != [d.asset_id]:
-        raise setup.unprocessable("That line is shared with other assets. Undo its registration and register the "
-                                  "replacement instead.")
+        raise setup.refuse("fixed_assets.err_line_shared")
     return entry, claim
 
 
@@ -316,7 +314,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
     line = await _open_line(d.session, d.company_id, value.get("new"))
     await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] != "acquisition":
-        raise setup.unprocessable("Replace a source with a bill line or manual journal line acquiring the asset.")
+        raise setup.refuse("fixed_assets.err_replace_source_line_kind")
     carrying, held, key = _carrying(d, claim)
     effective = min(m["effective_date"] for m in carrying)
     new_cost = _dec(line["amount"])
@@ -350,10 +348,10 @@ async def _link_source(d: Draft, value, fa: dict) -> None:
     account = d.cls["asset_account"]
     await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] not in ("acquisition", "reduction") or line["account"] != account:
-        raise setup.unprocessable(f"Link a line on {account}, the asset account of this asset's class.")
+        raise setup.refuse("fixed_assets.err_link_line_on_account", account=account)
     amount = _dec(line["amount"]) * (1 if line["kind"] == "acquisition" else -1)
     if _dec(d.asset.get("cost")) + amount < 0:
-        raise setup.unprocessable("This line reduces the cost below zero.")
+        raise setup.refuse("fixed_assets.err_line_cost_below_zero")
     effective = max(line["date"], d.asset.get("available_date") or line["date"])
     d.move("link_source", effective, {"cost": amount},
            [{"journal_id": line["journal_id"], "line_index": line["line_index"], "amount": str(amount)}])
@@ -366,11 +364,11 @@ async def _release_source(d: Draft, value, fa: dict) -> None:
     source = str((value or {}).get("source") or "") if isinstance(value, dict) else ""
     entry = next((s for s in d.asset.get("sources") or [] if s.get("source") == source), None)
     if entry is not None and not entry.get("linked"):
-        raise setup.unprocessable("This asset was registered from this line. Use Undo on the asset to release it.")
+        raise setup.refuse("fixed_assets.err_registered_from_line")
     entry, claim = await _claimed_here(d, source)
     carrying, held, key = _carrying(d, claim)
     if _dec(d.asset.get("cost")) - held < 0:
-        raise setup.unprocessable("Releasing this line takes the cost below zero.")
+        raise setup.refuse("fixed_assets.err_release_cost_below_zero")
     d.move("release_source", min(m["effective_date"] for m in carrying), {"cost": -held}, _as_list({key: held}, -1))
     d.releases.append(source)
     d.changes["sources"] = [s for s in d.asset.get("sources") or [] if s is not entry]

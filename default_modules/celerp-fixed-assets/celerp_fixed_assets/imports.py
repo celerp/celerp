@@ -65,10 +65,10 @@ class RegisterRow:
     @classmethod
     def of(cls, values) -> RegisterRow:
         if not isinstance(values, dict):
-            raise setup.unprocessable("Every row is a set of named values.")
+            raise setup.refuse("fixed_assets.err_row_named_values")
         unknown = set(values) - set(COLUMNS)
         if unknown:
-            raise setup.unprocessable(f"{sorted(unknown)[0]} is not a register column.")
+            raise setup.refuse("fixed_assets.err_not_register_column", column=sorted(unknown)[0])
         return cls(**{_attr(k): str(v).strip() for k, v in values.items() if v is not None})
 
     def values(self) -> dict:
