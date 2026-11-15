@@ -32,9 +32,11 @@ PLUGIN_MANIFEST = {
                 "label": "Fixed assets",
                 "label_key": "nav.fixed_assets",
                 "href": "/fixed-assets",
+                "help": "fixed-assets.register",
                 "order": 53,
                 "permission": "view_fixed_assets",
                 "settings_href": "/settings/fixed-assets",
+            "settings_help": "fixed-assets.settings",
             },
             # Shown to whoever holds an asset as its custodian, whatever their role.
             {
@@ -44,6 +46,7 @@ PLUGIN_MANIFEST = {
                 "label": "My assets",
                 "label_key": "nav.my_assets",
                 "href": "/fixed-assets/mine",
+                "help": "fixed-assets.my-assets",
                 "probe_href": "/fixed-assets/mine/nav",
                 "order": 95,
             },
