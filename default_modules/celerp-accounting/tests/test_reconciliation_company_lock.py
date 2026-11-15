@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import sys
 
-from test_reconciliation_v2 import _auth, _create_bank, _create_recon, _import_csv
+import bank_statement_helpers as B
+from test_reconciliation_v2 import _auth, _create_bank, _create_recon
 
 _CLASSES = ("row:bank_accounts", "row:reconciliation_sessions", "row:reconciliation_rules",
             "row:bank_statement_lines")
 
 
 def _ungated() -> set[str]:
-    return sys.modules["lock_rank"].RECORDER.ungated_sites(_CLASSES, "celerp_accounting/routes.py")
+    return sys.modules["lock_rank"].RECORDER.ungated_sites(_CLASSES, "celerp_accounting/")
 
 
 async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
@@ -26,26 +27,23 @@ async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
     r = await client.patch(f"/accounting/bank-accounts/{bank['id']}", json={"bank_name": "Renamed"}, headers=h)
     assert r.status_code == 200, r.text
     recon = await _create_recon(client, h, bank["id"])
-    sid = recon["id"]
-    await _import_csv(client, h, sid, b"Date,Description,Amount\n2026-03-01,Fee,-500\n2026-03-02,Mixed,-1500\n"
-                                      b"2026-03-03,Skip,-100\n")
+    sid = (await B.import_into(client, h, recon["id"], b"Date,Description,Amount\n2026-03-01,Fee,-500\n"
+                                b"2026-03-02,Mixed,-1500\n2026-03-03,Skip,-100\n"))["session_id"]
     lines = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"]
     fee, mixed, skip = (line["id"] for line in sorted(lines, key=lambda line: line["line_date"]))
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{fee}/create",
-                          json={"account_code": "6100", "memo": "Bank fee"}, headers=h)
+    r = await B.decide(client, h, sid, fee, "post", account_code="6100", memo="Bank fee")
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
+    r = await B.undo(client, h, sid, [fee])
     assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{fee}/unmatch", headers=h)
+    r = await B.decide(client, h, sid, mixed, "post", splits=[
+        {"account_code": "5100", "amount": 1000}, {"account_code": "6300", "amount": 500}])
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
+    r = await B.decide(client, h, sid, skip, "no_entry")
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
+    r = await B.bank_post(client, h, sid, "suggest")
     assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{mixed}/split", json={"splits": [
-        {"account_code": "5100", "amount": 1000, "memo": "Supplies"},
-        {"account_code": "6300", "amount": 500, "memo": "Utilities"}]}, headers=h)
-    assert r.status_code == 200, r.text
-    r = await client.patch(f"/accounting/reconciliation/{sid}/lines/{skip}", json={"status": "skipped"}, headers=h)
-    assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/auto-match", headers=h)
-    assert r.status_code == 200, r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)
-    assert r.status_code == 200, r.text
+    r = await B.decide(client, h, sid, fee, "post", account_code="6100", memo="Bank fee")
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
     r = await client.post("/accounting/rules", json={
         "bank_account_id": bank["id"], "match_pattern": "POS", "match_type": "contains",
         "target_account_code": "6100", "default_memo": "POS fee"}, headers=h)
@@ -58,8 +56,8 @@ async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
     r = await client.post(f"/accounting/reconciliation/{sid}/write-off", json={"adjustment_account": "6950"},
                           headers=h)
     assert r.status_code in (200, 422), r.text
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code in (200, 409, 422), r.text
+    r = await B.bank_post(client, h, sid, "complete")
+    assert r.status_code == 200, r.text
     r = await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)
     assert r.status_code in (200, 409), r.text
     assert _ungated() - before == set()

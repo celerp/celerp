@@ -191,3 +191,52 @@ async def member(client: AsyncClient, session, co: dict, role: str) -> dict:
     from test_helpers import invite_user
     tok = await invite_user(client, session, co["h"], f"{role}-{_uuid.uuid4().hex[:8]}@example.com", role)
     return {"Authorization": f"Bearer {tok}"}
+
+
+async def import_into(client: AsyncClient, h: dict, sid: str, content: bytes, filename: str = "test.csv",
+                      content_type: str = "text/csv") -> dict:
+    """The statement a started reconciliation stands for, read from ``content`` and imported
+    on its bank in its place: the empty session gives way to the import, which ends on its
+    statement date and closes on its balance (the opening is that balance less the lines).
+    Returns the import answer with ``session_id`` and the statement's ``lines`` by date."""
+    got = (await client.get(f"{API}/{sid}", headers=h)).json()
+    bank_id, end, closing = got["bank_account_id"], got["statement_date"], float(got["statement_balance"])
+    co = await co_of(client, h)
+    preview = await read(client, co, [(content, filename, content_type)], bank_id=bank_id)
+    rows = [line for st in preview["statements"] for line in st["lines"]]
+    total = sum(float(line["amount"]) for line in rows)
+    start = min([line["line_date"] for line in rows if line.get("line_date")] + [end])
+    r = await client.request("DELETE", f"{API}/{sid}", json={"idempotency_key": key()}, headers=h)
+    assert r.status_code == 200, r.text
+    answer = await import_statement(client, co, preview, bank_id=bank_id, tick_all=True, header={
+        "opening_balance": f"{closing - total:.2f}", "closing_balance": f"{closing:.2f}",
+        "period_start": start, "period_end": end})
+    new = answer["sessions"][0]["id"]
+    mine = [line for line in all_lines(await groups(client, co, bank_id, view="all")) if line["statement_id"] == new]
+    return {**answer, "session_id": new,
+            "lines": sorted(mine, key=lambda line: (line["line_date"], line["description"]))}
+
+
+async def bank_of(client: AsyncClient, h: dict, sid: str) -> str:
+    """The bank account a reconciliation belongs to."""
+    r = await client.get(f"{API}/{sid}", headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()["bank_account_id"]
+
+
+async def decide(client: AsyncClient, h: dict, sid: str, line_id: str, kind: str, **fields):
+    """One resolve decision on one line of reconciliation ``sid``: the response."""
+    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/resolve", headers=h, json={
+        "idempotency_key": key(), "decisions": [{"line_ids": [line_id], "kind": kind, **fields}]})
+
+
+async def undo(client: AsyncClient, h: dict, sid: str, line_ids: list[str]):
+    """Undo settled lines of reconciliation ``sid`` through its bank: the response."""
+    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/unmatch", headers=h,
+                             json={"line_ids": line_ids, "idempotency_key": key()})
+
+
+async def bank_post(client: AsyncClient, h: dict, sid: str, action: str, body: dict | None = None):
+    """POST bank/{bank}/<action> (suggest, complete) for the bank of reconciliation ``sid``."""
+    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/{action}", headers=h,
+                             json={"idempotency_key": key(), **(body or {})})

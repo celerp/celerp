@@ -3364,7 +3364,7 @@ def _stmt_line_to_dict(l: BankStatementLine) -> dict:
         "raw_balance": float(l.raw_balance) if l.raw_balance is not None else None,
         "reference": l.reference,
         "status": l.status,
-        "matched_je_id": l.matched_je_id,
+        "matched_je_ids": list(l.matched_je_ids or []),
         "attachments": [_line_attachment(l.company_id, url) for url in l.attachment_ids or []],
         "raw_csv_row": dict(l.raw_csv_row or {}),
         "created_at": l.created_at.isoformat(),
