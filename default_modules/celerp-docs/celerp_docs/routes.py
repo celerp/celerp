@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Annotated, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -109,6 +109,9 @@ from celerp.services.shipping import (
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, refusal_text, t
 from ui.components.encode import inert_media_type
+
+if TYPE_CHECKING:
+    from celerp.services import auto_je
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
