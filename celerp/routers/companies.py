@@ -1039,6 +1039,8 @@ async def create_user(
     user = (await session.execute(
         select(User).where(User.email == payload.email).with_for_update(read=True, key_share=True)
     )).scalar_one_or_none()
+    # A linked member keeps their own password, so the generated one is never shown.
+    linked = user is not None
     if user is None:
         # Only the branch that actually creates a new password hash enforces the length
         # policy; linking an existing global user never touches this password field.
@@ -1075,7 +1077,7 @@ async def create_user(
         await session.rollback()
         logger.error("create_user failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=t("company.err_user_not_added")) from e
-    return {"id": str(user.id)}
+    return {"id": str(user.id), "linked": linked}
 
 
 @router.patch("/me/users/{user_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members"}, summary="Change a member's name, role or whether they are active.")

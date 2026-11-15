@@ -815,7 +815,10 @@ async def _agent_loop(
             if entry[4] is None and (entry[1] in _META_TOOLS or (
                 entry[2] is not None and not entry[2].get("requires_confirmation", False)))
         ]
-        if mutations and not reads:
+        # A change that shares its turn with a refused call is proposed again once the model
+        # has seen the refusal, so no refused call is ever dropped without a word.
+        refusals = any(entry[4] is not None for entry in parsed)
+        if mutations and not reads and not refusals:
             now = datetime.now(timezone.utc)
             expires = now + timedelta(seconds=PENDING_ACTION_TTL_S)
             pending = [
@@ -865,6 +868,12 @@ async def _agent_loop(
                     if tool_result.get("opened"):
                         opened |= set(tool_result["opened"]) & set(capabilities)
                         tools = _open_specs(capabilities, opened)
+            elif capability.get("requires_confirmation", False) and not reads:
+                tool_result = _agent_error(
+                    "refused_turn", "ai.err_invalid_arguments",
+                    "Not proposed: another call in this reply was refused. Fix that call, then "
+                    "propose all the changes again together.",
+                )
             elif capability.get("requires_confirmation", False):
                 tool_result = _agent_error(
                     "mixed_turn", "ai.err_mixed_turn",

@@ -138,9 +138,15 @@ async def test_generated_password_absent_from_history_model_and_ledger(client, s
 # -- A refusal that depends on the argument ---------------------------------------
 
 @pytest.mark.asyncio
-async def test_label_source_refused_by_argument_reaches_card(client, session, agent_caps, ai_session):
+async def test_label_source_refused_by_argument_reaches_card(client, session, agent_caps, ai_session, monkeypatch):
     """The label tools are shown to a role that can print some labels; asking for a kind
     of record the role cannot see returns the route's own refusal to the model."""
+    from celerp.modules import slots
+
+    # A second kind of record, one the operator can see, so the label tools are theirs.
+    monkeypatch.setitem(slots._slots, "label_source", [*slots.get("label_source"), {
+        "entity_type": "stock_tag", "handler": "celerp_labels.routes:get_source", "permission": "edit_inventory",
+        "label_key": "labels.title", "keys": ["name"], "_module": "celerp-labels"}])
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "view_fixed_assets", "admin")
     op = _op(agent_caps, "GET", "/api/labels/sources/{source}")
@@ -171,16 +177,20 @@ async def _propose_upload(client, headers, caps, contact_id, file_id):
 
 
 @pytest.mark.asyncio
-async def test_upload_tool_posts_the_attached_file(client, session, agent_caps, ai_session, xlsx_upload):
+async def test_upload_tool_posts_the_attached_file(client, session, agent_caps, ai_session):
+    """A file attached in the chat (a contract PDF, a type contacts take) reaches the route."""
     ctx = await perm_setup(client, session)
     admin = ctx["admin_h"]
     contact_id = await _contact(client, admin)
-    file_id = await xlsx_upload(client, admin, {"Sheet": [["a"]]}, filename="terms.xlsx")
+    uploaded = await client.post("/ai/upload", headers=admin, files={"files": (
+        "terms.pdf", b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n", "application/pdf")})
+    assert uploaded.status_code == 201, uploaded.text
+    file_id = uploaded.json()["file_ids"][0]
     conv_id, message_id, call_id = await _propose_upload(client, admin, agent_caps, contact_id, file_id)
     r = await _confirm(client, admin, conv_id, message_id, call_id)
     assert r.status_code == 200 and r.json()["ok"] is True, r.text
     got = (await client.get(f"/crm/contacts/{contact_id}", headers=admin)).json()
-    assert "terms.xlsx" in str(got.get("files"))
+    assert "terms.pdf" in str(got.get("files"))
 
 
 @pytest.mark.asyncio
@@ -210,12 +220,14 @@ async def test_upload_tool_refuses_a_missing_file(client, session, agent_caps, a
 # -- Several changes in one request ------------------------------------------------
 
 def _two_patches_and_a_create(caps, missing_id: str):
+    """A rename and a removal of one (missing) location, and an independent new one."""
     patch_op = _op(caps, "PATCH", "/companies/me/locations/{location_id}")
+    delete_op = _op(caps, "DELETE", "/companies/me/locations/{location_id}")
     create_op = _op(caps, "POST", _LOCATIONS)
     return lambda _m: tool_result(calls=[
         tool_call(patch_op, {"path": {"location_id": missing_id}, "body": {"name": "First"}}, "p1"),
         tool_call(create_op, {"body": {"name": "Independent", "type": "warehouse"}}, "c1"),
-        tool_call(patch_op, {"path": {"location_id": missing_id}, "body": {"address": "Second"}}, "p2"),
+        tool_call(delete_op, {"path": {"location_id": missing_id}}, "p2"),
     ])
 
 
@@ -232,6 +244,32 @@ async def test_confirm_all_stops_dependent_actions_at_first_failure(client, sess
     second = await _record(session, body["id"], "p2")
     assert second["status"] == "pending"
     assert "an earlier change to the same record failed" in str(second.get("error") or second.get("reason"))
+
+
+@pytest.mark.asyncio
+async def test_a_change_beside_a_refused_call_goes_back_to_the_model(client, session, agent_caps, ai_session):
+    """One change tool proposed twice is refused; the change beside it is not proposed
+    alone either, and the model sees both answers instead of a card that silently lost
+    two of the three changes it asked for."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    patch_op = _op(agent_caps, "PATCH", "/companies/me/locations/{location_id}")
+    create_op = _op(agent_caps, "POST", _LOCATIONS)
+    missing = str(uuid.uuid4())
+    model = ScriptedModel(
+        lambda _m: tool_result(calls=[
+            tool_call(patch_op, {"path": {"location_id": missing}, "body": {"name": "First"}}, "p1"),
+            tool_call(create_op, {"body": {"name": "Independent", "type": "warehouse"}}, "c1"),
+            tool_call(patch_op, {"path": {"location_id": missing}, "body": {"address": "Second"}}, "p2"),
+        ]),
+        lambda _m: text_result("Let me propose those again."),
+    )
+    conv_id = await _new_conversation(client, admin)
+    with patch("celerp.ai.service.complete", model):
+        body = await asked_in_thread(client, admin, conv_id, {"query": "rename it twice and add one"})
+    assert not body.get("pending_actions")
+    fed = str(model.seen[-1])
+    assert fed.count("repeated_change") == 2 and "refused_turn" in fed
 
 
 @pytest.mark.asyncio

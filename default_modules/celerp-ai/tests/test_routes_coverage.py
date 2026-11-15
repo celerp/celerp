@@ -210,7 +210,7 @@ async def test_include_protected_rejects_nonzero_offset(auth_client):
     c, h = auth_client
     r = await c.get("/ai/conversations?include_protected=true&offset=1", headers=h)
     assert r.status_code == 400
-    assert r.json()["detail"] == "include_protected requires offset=0"
+    assert r.json()["detail"]["message_key"] == "ai.err_include_protected_requires_offset_0"
 
 
 @pytest.mark.asyncio

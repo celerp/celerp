@@ -238,7 +238,9 @@ async def test_a_revision_read_by_one_tool_is_sent_back_by_the_write():
     @app.patch("/menu", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/menu"})
     async def write_menu(if_match: Annotated[str | None, Header(alias="If-Match")] = None):
         if if_match != state["rev"]:
-            raise HTTPException(status_code=412 if if_match else 428)
+            from ui.i18n import t
+            raise HTTPException(status_code=412 if if_match else 428,
+                                detail=t("settings_menu.err_changed" if if_match else "settings_menu.err_version_required"))
         state["rev"] = "r2"
         return {"ok": True}
 

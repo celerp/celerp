@@ -281,6 +281,10 @@ async def _executor_errors(monkeypatch) -> list[dict]:
     async def big():
         return {"value": "x" * 200}
 
+    @app.get("/answered-refusal")
+    async def answered_refusal():
+        return {"error": "Not saved."}
+
     def cap(path, **extra):
         return {"method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
 
@@ -293,6 +297,7 @@ async def _executor_errors(monkeypatch) -> list[dict]:
         await run(app, "Bearer t", cap("/text"), {}, "c"),
         await run(app, "Bearer t", cap("/big"), {}, "c", result_max_bytes=32),
         await run(app, "Bearer t", cap("/text", uploads=("file",)), {"file_ids": ["gone"]}, "c"),
+        await run(app, "Bearer t", cap("/answered-refusal"), {}, "c"),
     ]
     monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.01)
     results.append(await run(app, "Bearer t", cap("/slow"), {}, "c"))
