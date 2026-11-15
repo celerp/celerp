@@ -24,7 +24,7 @@ from ui.i18n import t
 
 ACCOUNT_NEEDED = "migration.move_account_needed"
 UNCONFIRMED = "migration.move_unconfirmed"
-NO_SET = "Add the export files on this page first, then ask us to move this client."
+NO_SET = "migration.err_no_export_set"
 UPLOAD_S = 600
 
 
@@ -40,19 +40,19 @@ async def send(*, operation_id: uuid.UUID, firm_name: str, client_name: str, rep
     payload = {"operation_id": str(operation_id), "firm_name": required_text(firm_name, "firm name"),
                "client_name": required_text(client_name, "client name"), "reply_to": required_email(reply_to, "reply-to email")}
     if not (draft_token or "").strip():
-        raise HTTPException(status_code=422, detail=NO_SET)
+        raise HTTPException(status_code=422, detail=t(NO_SET))
     adapter_key, artifacts = await asyncio.to_thread(store.draft_files, draft_token, owner=owner)
     adapter = get_adapter(adapter_key)
     check = getattr(adapter, "check", None)
     if check is None or not artifacts:
-        raise HTTPException(status_code=422, detail=NO_SET)
+        raise HTTPException(status_code=422, detail=t(NO_SET))
     try:
         checked = await asyncio.to_thread(check, artifacts)
     except SourceRevisionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     if not checked.complete:
-        raise HTTPException(status_code=422, detail=(
-            "Finish the export set before asking us to move this client: " + " ".join(checked.problems)))
+        raise HTTPException(status_code=422, detail=t(
+            "migration.err_finish_export_set", problems=" ".join(checked.problems)))
     created = await _cloud("POST", "/move-requests", payload={**payload, "source": adapter.key}, expected=201)
     request_id = uuid.UUID(str(created.get("id")))
     if created.get("status") == "uploading":

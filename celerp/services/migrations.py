@@ -414,8 +414,12 @@ async def started_run_id(session: AsyncSession, claim: str, user_id: uuid.UUID) 
         MigrationRun.scan_claim_sha256 == claim, MigrationRun.created_by_user_id == user_id))
 
 
+_ILLEGAL = {"start": "migration.err_cannot_start", "cancel": "migration.err_cannot_cancel",
+            "finalize": "migration.err_cannot_finalize"}
+
+
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
-    return MigrationError(409, t(f"migration.err_cannot_{action}"))
+    return MigrationError(409, t(_ILLEGAL[action]))
 
 
 def staged_settings(modules: Sequence[str]) -> dict:

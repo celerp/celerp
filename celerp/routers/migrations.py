@@ -395,7 +395,7 @@ def _user_scan_owner(scan_token: str, ctx: AuthContext) -> store.ScanOwner:
     companies upload. Anyone else's reads as expired."""
     owner = store.scan_owner(scan_token)
     if owner not in (("user", ctx.user.id), (store.SEVERAL, ctx.user.id)):
-        raise store.ScanStoreError(410, store.EXPIRED)
+        raise store.ScanStoreError(410, t(store.EXPIRED))
     return owner
 
 
@@ -457,7 +457,7 @@ _basic = HTTPBasic(auto_error=False)
 def _start_company_owner(scan_token: str) -> store.ScanOwner:
     owner = store.scan_owner(scan_token)
     if owner[0] != START_COMPANY:
-        raise store.ScanStoreError(410, store.EXPIRED)
+        raise store.ScanStoreError(410, t(store.EXPIRED))
     return owner
 
 

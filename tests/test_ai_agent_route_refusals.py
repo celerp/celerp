@@ -70,6 +70,19 @@ def _tree(fn):
         return None
 
 
+def _own_returns(tree) -> list:
+    """The values a function returns itself, not those of a function nested in it."""
+    found, todo = [], list(ast.iter_child_nodes(tree))
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Return):
+            found.append(node)
+        todo.extend(ast.iter_child_nodes(node))
+    return found
+
+
 def _scope(fn, tree) -> dict:
     """The names ``fn`` sees: its module's, its closure's and its own imports."""
     scope = dict(fn.__globals__)
@@ -143,8 +156,8 @@ def _entries(name: str, scope, tree) -> list | None:
 
 def _catalog_key(node, scope, tree=None) -> bool:
     """Whether a t() key is a catalog key wherever it comes from: written there, a constant
-    the module holds, either branch of a choice, a lookup in a mapping of keys whose
-    fallback is one too, or a field of an entry of a mapping the module holds, when that
+    the module holds, either branch of a choice, an entry of a mapping of keys (looked up
+    by subscript, or with ``get`` and a fallback that is one too), or a field of an entry of a mapping the module holds, when that
     field of every entry is a catalog key."""
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id not in scope \
             and tree is not None:
@@ -159,6 +172,9 @@ def _catalog_key(node, scope, tree=None) -> bool:
                            else scope.get(node.func.value.id), dict):
         return bool(held) and all(isinstance(v, str) and v in _EN for v in held.values()) \
             and len(node.args) == 2 and _catalog_key(node.args[1], scope)
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+            and isinstance(held := scope.get(node.value.id), dict):
+        return bool(held) and all(isinstance(v, str) and v in _EN for v in held.values())
     value = scope.get(node.id) if isinstance(node, ast.Name) else _resolve(node, scope)
     return isinstance(value, str) and value in _EN
 
@@ -439,8 +455,8 @@ class _Walk:
             self._handed_back[fn] = dict.fromkeys(inspect.signature(fn).parameters, False)
             tree = _tree(fn)
             scope = _scope(fn, tree) if tree is not None else {}
-            returns = [n.value for n in ast.walk(tree or ast.Module(body=[])) if isinstance(n, ast.Return)
-                       and n.value is not None and not (isinstance(n.value, ast.Constant) and n.value.value is None)]
+            returns = [n.value for n in _own_returns(tree or ast.Module(body=[]))
+                       if n.value is not None and not (isinstance(n.value, ast.Constant) and n.value.value is None)]
             self._returns[fn] = bool(returns) and all(self._keyed(r, fn, scope, tree) for r in returns)
         return self._returns[fn]
 

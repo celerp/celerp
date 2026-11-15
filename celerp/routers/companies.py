@@ -1416,7 +1416,7 @@ async def delete_category(
     if item_count > 0:
         raise HTTPException(
             status_code=409,
-            detail={"detail": t("company.err_category_in_use", count=item_count), "item_count": item_count},
+            detail={**catalog_refusal("company.err_category_in_use", count=item_count), "item_count": item_count},
         )
     cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas

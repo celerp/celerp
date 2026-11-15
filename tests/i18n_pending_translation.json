@@ -1112,6 +1112,28 @@
     "firm_view.err_invalid_sync": {
       "en": "Choose a sync status: On, Off, Failing or Key expiring.",
       "params": []
+    },
+    "migration.err_scan_expired": {
+      "en": "This scan has expired. Upload the file again.",
+      "params": []
+    },
+    "migration.err_scan_busy": {
+      "en": "This scan is being updated. Try again in a moment.",
+      "params": []
+    },
+    "migration.err_source_file_missing": {
+      "en": "The uploaded file for this migration is missing. Discard it and upload the file again.",
+      "params": []
+    },
+    "migration.err_no_export_set": {
+      "en": "Add the export files on this page first, then ask us to move this client.",
+      "params": []
+    },
+    "migration.err_finish_export_set": {
+      "en": "Finish the export set before asking us to move this client: {problems}",
+      "params": [
+        "problems"
+      ]
     }
   },
   "modules": {
