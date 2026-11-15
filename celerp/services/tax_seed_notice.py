@@ -53,7 +53,7 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
         lists |= found.get((entry["country"], entry["id"]), set())
     standing = (await session.execute(select(Notification.title).where(
         Notification.company_id == company_id, Notification.category == _CATEGORY,
-        Notification.i18n["title"].as_string().startswith(_PREFIX)))).scalars().all()
+        Notification.i18n["title"].as_string().startswith(_PREFIX, autoescape=True)))).scalars().all()
     for title in set(standing) - set(told):  # no installed pack retires its rows any more
         await notification_service.clear_standing(session, company_id, _CATEGORY, title)
     for title, (lists, notice) in told.items():
