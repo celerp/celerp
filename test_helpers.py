@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from starlette.routing import Mount
 
 from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
-from celerp.routers import search as search_router_mod
 
 # Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
@@ -703,20 +703,34 @@ def script_cfg(html: str, marker: str) -> dict:
     return found[0]
 
 
+def _core_route(route) -> bool:
+    """True for a route `celerp.main` declares itself. A test that ran the app's lifespan
+    has also included the modules' routers into it; those come from the module loader."""
+    router = getattr(route, "original_router", None)
+    if router is None:
+        return True
+    return any(
+        getattr(getattr(sub, "endpoint", None), "__module__", "").startswith("celerp.")
+        for sub in router.routes
+    )
+
+
 def real_agent_app() -> FastAPI:
     """The real Celerp API surface with every first-party module enabled.
 
-    Built the same way `celerp.main` builds the live app: the core search and help
-    routers plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
-    exactly as in production, so FastAPI's own `/docs` never shadows the
-    documents module. The autouse loader-reset fixture tears `_loaded` and the
-    slot registry back down after the test.
+    Every core route of `celerp.main` (hidden ones included) plus every bundled pluggable
+    module's routes, built the way the live app is. `docs_url`/`redoc_url` are off exactly
+    as in production, so FastAPI's own `/docs` never shadows the documents module. The
+    autouse loader-reset fixture tears `_loaded` and the slot registry back down after the
+    test.
     """
-    from celerp.routers import help as help_router_mod
+    import celerp.main as main_mod
 
     app = FastAPI(docs_url=None, redoc_url=None)
-    app.include_router(search_router_mod.router, tags=["search"])
-    app.include_router(help_router_mod.router, tags=["help"])
+    app.router.routes.extend(
+        route for route in main_mod.app.router.routes
+        if not isinstance(route, Mount) and _core_route(route)
+    )
     loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
     register_api_routes(app, loaded)
     app.openapi_schema = None
