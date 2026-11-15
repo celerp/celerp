@@ -41,15 +41,11 @@ async def ui_client():
         yield c
 
 
-def _cookies(role: str = "owner") -> dict:
-    return {"celerp_token": make_test_token(role=role)}
-
-
 def _api(table):
     return [patch("ui.api_client.get_bank_account", AsyncMock(return_value=_BANK)),
             patch("ui.api_client.get_bank_accounts", AsyncMock(return_value={"items": [_BANK]})),
             patch("ui.api_client.bank_groups", AsyncMock(return_value=table)),
-            patch("ui.api_client.get_accounts", AsyncMock(return_value={"items": [
+            patch("ui.api_client.get_chart", AsyncMock(return_value={"items": [
                 {"code": "5100", "name": "Office expenses", "account_type": "expense", "is_active": True}]})),
             patch("ui.routes.reports._get_company", AsyncMock(return_value={
                 "id": "c1", "name": "TestCo", "currency": "USD", "settings": {"currency": "USD"}}))]
@@ -60,7 +56,8 @@ async def _get(ui_client, url, table, role="owner"):
     for p in patches:
         p.start()
     try:
-        return await ui_client.get(url, cookies=_cookies(role))
+        ui_client.cookies.set("celerp_token", make_test_token(role=role))
+        return await ui_client.get(url)
     finally:
         for p in patches:
             p.stop()
@@ -104,9 +101,19 @@ async def test_bank_inputs_leave_on_escape(ui_client):
     assert html.count("searchable-select") >= 2
     # The bulk toolbar keeps the selection on Escape.
     assert "bulk-toolbar" in html
-    # Nothing on the page posts on a key press: every hx-trigger is a click, submit or change.
-    for trig in re.findall(r'hx-trigger="([^"]+)"', html):
+    # Nothing on the bank page posts on a key press: every hx-trigger is a click, submit or
+    # change (the shell's global search above it reads as you type and writes nothing).
+    for trig in re.findall(r'hx-trigger="([^"]+)"', html[html.index('id="bank-body"'):]):
         assert "keyup" not in trig and "keydown" not in trig, trig
-    preview = (await _get(ui_client, "/accounting/reconcile/bank/b1?preview=j1", _TABLE)).text
-    for cell in re.findall(r"<[^>]+class=\"[^\"]*editable-cell[^\"]*\"[^>]*>", preview):
+    page = (await _get(ui_client, "/accounting/reconcile/bank/b1?preview=j1", _TABLE)).text
+    assert 'hx-get="/accounting/reconcile/bank/b1/preview/j1"' in page
+    found = {"job_id": "j1", "bank_id": "b1", "receipts": [], "failed_steps": [], "statements": [{
+        "file_id": "f1", "header": {"opening_balance": "1000.00", "closing_balance": "800.00",
+                                    "period_start": "2026-01-01", "period_end": "2026-01-31", "currency": "USD"},
+        "lines": [_LINE], "tie": {"ok": True}, "blocking": [], "notices": []}]}
+    with patch("ui.api_client.statement_preview", AsyncMock(return_value=found)):
+        preview = (await _get(ui_client, "/accounting/reconcile/bank/b1/preview/j1", _TABLE)).text
+    cells = re.findall(r"<[^>]+class=\"[^\"]*editable-cell[^\"]*\"[^>]*>", preview)
+    assert len(cells) == 4
+    for cell in cells:
         assert "celerpCellKey" in cell, cell

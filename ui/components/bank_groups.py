@@ -1,0 +1,369 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""The bank page as markup: a bank's statement lines grouped by counterparty, the
+panels a line opens (cloned from templates by bank-page.js, no server trip), the bulk
+toolbar, the statements strip, the statement preview and the drop zone. Rendering only:
+the routes in ui/routes/bank.py fetch the data and call these."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from decimal import Decimal, InvalidOperation
+from urllib.parse import quote, urlencode
+
+from fasthtml.common import *
+
+from celerp.accounting_roles import account_label
+from celerp.output.doc_print import money_step
+from ui.components.attrs import hx_vals
+from ui.components.encode import EVENT, THIS, call
+from ui.components.table import EMPTY, PARTY_SEARCH_URL, display_enum, searchable_select
+from ui.i18n import t
+
+VIEWS = ("open", "suggested", "questions", "posted", "all")
+_STATUS_KEYS = {"unmatched": "bank.status_open", "posted": "bank.status_posted", "matched": "bank.status_matched",
+                "skipped": "bank.status_no_entry"}
+# The header figures of a statement that the preview lets the user correct.
+PREVIEW_FIELDS = (("opening_balance", "bank.field_opening"), ("closing_balance", "bank.field_closing"),
+                  ("period_start", "bank.field_start"), ("period_end", "bank.field_end"))
+
+
+def bank_url(bank_id: str, *tail: str) -> str:
+    return "/".join(["/accounting/reconcile/bank", quote(str(bank_id), safe=""), *tail])
+
+
+def new_key() -> str:
+    """An idempotency key rendered with a form, so a retry of that form replays."""
+    return uuid.uuid4().hex
+
+
+def money(value, currency: str | None) -> str:
+    """A figure as plain digits to the currency's minor unit, the currency named in the header."""
+    if value is None or value == "":
+        return EMPTY
+    try:
+        return format(Decimal(str(value)).quantize(Decimal(money_step(currency))), ",f")
+    except InvalidOperation:
+        return str(value)
+
+
+def _key_input() -> FT:
+    return Input(type="hidden", name="idempotency_key", value=new_key())
+
+
+def _context_inputs(view: str, q: str) -> tuple:
+    return Input(type="hidden", name="view", value=view), Input(type="hidden", name="q", value=q)
+
+
+# ── The page around the groups ──────────────────────────────────────────────
+
+def statements_strip(statements: list[dict], currency: str) -> FT | None:
+    if not statements:
+        return None
+    return Div(
+        *[Div(Span(f"{s.get('period_start') or EMPTY} - {s['statement_date']}", cls="bank-strip__period"),
+              Span(money(s["closing_balance"], currency), cls="bank-strip__closing"),
+              Span(display_enum(s["status"], "recon_session_status"), cls=f"badge badge--recon-{s['status']}"),
+              cls="bank-strip__item", data_statement=s["id"])
+          for s in statements],
+        cls="bank-strip", aria_label=t("bank.statements_heading"))
+
+
+def summary_line(table: dict, currency: str) -> FT:
+    s = table["summary"]
+    diff = table.get("difference") or {}
+    parts = [P(t("bank.summary", lines=s["lines"], open=s["open"], questions=s.get("questions", 0),
+                 posted=s["posted"]), cls="bank-summary")]
+    if diff.get("amount") is not None:
+        parts.append(P(t("bank.difference", date=diff.get("statement_date") or EMPTY,
+                         amount=money(diff["amount"], currency)), cls="bank-difference"))
+    parts += [P(n, cls="text-muted") for n in diff.get("notes") or []]
+    if table.get("suspense_count"):
+        parts.append(P(t("bank.in_suspense", n=table["suspense_count"]), cls="text-muted"))
+    return Div(*parts)
+
+
+def view_links(bank_id: str, view: str, q: str) -> FT:
+    def href(v: str) -> str:
+        return bank_url(bank_id) + "?" + urlencode({"view": v, **({"q": q} if q else {})})
+    return Nav(*[A(t(f"bank.view_{v}"), href=href(v), cls="tab" + (" tab--active" if v == view else ""),
+                   aria_current="page" if v == view else None) for v in VIEWS], cls="tabs bank-views")
+
+
+def search_form(bank_id: str, view: str, q: str) -> FT:
+    return Form(Input(type="hidden", name="view", value=view),
+                Input(type="search", name="q", value=q, placeholder=t("bank.search_placeholder"),
+                      cls="form-input", aria_label=t("bank.search_placeholder")),
+                action=bank_url(bank_id), method="get", cls="bank-search")
+
+
+def page_actions(bank_id: str, view: str, q: str) -> tuple:
+    """Suggest and Complete: each posts once and re-renders the page body."""
+    def action(label: str, path: str, confirm: str | None = None) -> FT:
+        return Form(_key_input(), *_context_inputs(view, q),
+                    Button(label, type="submit", cls="btn btn--secondary"),
+                    hx_post=bank_url(bank_id, path), hx_target="#bank-body", hx_swap="outerHTML",
+                    hx_confirm=confirm, cls="inline-form")
+    return (action(t("bank.suggest"), "suggest"), action(t("bank.complete"), "complete", t("bank.complete_confirm")))
+
+
+def bulk_toolbar(bank_id: str, currency: str, view: str, q: str, outcome: FT | None = None,
+                 undo_ids: list[str] | None = None) -> FT:
+    """The selection's count and total on its Post button (bank-page.js keeps the hidden
+    group and line inputs and the label in step with the ticks). An outcome of the last
+    post, with its Undo, sits in the same bar."""
+    dp = len(money_step(currency).partition(".")[2])
+    post = Form(_key_input(), *_context_inputs(view, q),
+                Div(cls="bulk-toolbar__ticked"),
+                Button(t("bank.post_ticked", n=0, total=money(0, currency)), type="submit",
+                       cls="btn btn--primary bulk-toolbar__post", data_label=t("bank.post_ticked"),
+                       data_label_one=t("bank.post_ticked_one"), data_dp=str(dp)),
+                hx_post=bank_url(bank_id, "post-ticked"), hx_target="#bank-body", hx_swap="outerHTML",
+                hx_confirm=t("bank.post_ticked_confirm"), cls="inline-form")
+    undo = None
+    if undo_ids:
+        undo = Form(_key_input(), *_context_inputs(view, q),
+                    *[Input(type="hidden", name="line_id", value=i) for i in undo_ids],
+                    Button(t("btn.undo"), type="submit", cls="btn btn--ghost"),
+                    hx_post=bank_url(bank_id, "unmatch"), hx_target="#bank-body", hx_swap="outerHTML",
+                    hx_confirm=t("bank.undo_all_confirm", n=len(undo_ids)), cls="inline-form")
+    attrs = {"data_testid": "outcome"} if outcome is not None else {}
+    return Div(post, Span(outcome, cls="bulk-toolbar__outcome") if outcome is not None else None, undo,
+               cls="bulk-toolbar", data_bank=bank_id, **attrs)
+
+
+# ── Groups and lines ────────────────────────────────────────────────────────
+
+def _reason(suggestion: dict | None) -> str:
+    s = suggestion or {}
+    return s.get("reason") or (s.get("account_code") or EMPTY)
+
+
+def _thumbs(line: dict) -> list:
+    return [A(Img(src=a["url"], alt="", cls="receipt-thumb", loading="lazy"), href=a["url"], target="_blank",
+              rel="noopener") for a in line.get("attachments") or [] if a.get("url")]
+
+
+def line_row(line: dict, bank_id: str, currency: str, *, group_key: str = "", ticked: bool = False,
+             notice: FT | None = None) -> FT:
+    """One statement line in full, its buttons, and the slot its panels open in."""
+    lid, status = line["id"], line["status"]
+    is_open = status == "unmatched"
+    q = line.get("client_query") or {}
+    asked = bool(q.get("asked")) and not q.get("withdrawn")
+    if is_open:
+        actions = [Button(t("bank.answer_separately"), type="button", cls="btn btn--ghost btn--sm",
+                          data_open="answer"),
+                   Button(t("bank.split"), type="button", cls="btn btn--ghost btn--sm", data_open="split"),
+                   Button(t("bank.remind") if asked else t("bank.ask_client"), type="button",
+                          cls="btn btn--ghost btn--sm", data_open="ask")]
+    else:
+        actions = [Button(t("btn.undo"), type="button", cls="btn btn--ghost btn--sm",
+                          hx_post=bank_url(bank_id, "unmatch"), hx_vals=hx_vals({"line_id": lid, "idempotency_key": new_key()}),
+                          hx_target="closest [data-line]", hx_swap="outerHTML", hx_confirm=t("bank.undo_confirm"))]
+    tick = Input(type="checkbox", data_role="line", data_group=group_key, data_amount=str(line["amount"]),
+                 value=lid, checked=ticked, aria_label=line.get("description") or lid) if is_open else Span()
+    return Div(
+        Div(tick,
+            Span(line["line_date"], cls="bank-cell bank-cell--date"),
+            Span(line.get("description") or EMPTY, cls="bank-cell bank-cell--text"),
+            Span(line.get("counterparty_account") or EMPTY, cls="bank-cell"),
+            Span(money(line.get("raw_balance"), currency), cls="bank-cell bank-cell--money"),
+            Span(money(line["amount"], currency), cls="bank-cell bank-cell--money"),
+            Span(*_thumbs(line), cls="bank-cell bank-cell--thumbs"),
+            Span(_reason(line.get("suggestion")) if is_open else EMPTY, cls="bank-cell bank-cell--text"),
+            Span(t(_STATUS_KEYS.get(status, "bank.status_open")), cls=f"badge badge--recon-{status}"),
+            Span(q.get("answer") or EMPTY, cls="bank-cell bank-cell--text"),
+            Span(*actions, cls="bank-cell bank-actions screen-only"),
+            cls="bank-row bank-row--line"),
+        Div(notice, cls="bank-panel-slot"),
+        cls="bank-line", id=f"bank-line-{lid}", data_line=lid, data_amount=str(line["amount"]))
+
+
+def group_block(group: dict, bank_id: str, currency: str) -> FT:
+    lines = group["lines"]
+    all_open = all(l["status"] == "unmatched" for l in lines)
+    any_open = any(l["status"] == "unmatched" for l in lines)
+    ticked = bool(group.get("ticked")) and any_open
+    folded = group["count"] > 1 and all_open
+    key = group["key"]
+    name = key.split(":", 2)[-1] if key.startswith("SPARSE:") else key
+    head = Div(
+        Input(type="checkbox", data_role="group", data_group=key, checked=ticked, aria_label=name) if any_open
+        else Span(),
+        Span(name, cls="bank-cell bank-cell--text bank-group__name"),
+        Span(str(group["count"]), cls="bank-cell bank-cell--num"),
+        Span(money(group["total"], currency), cls="bank-cell bank-cell--money"),
+        Span(_reason(group.get("suggestion")), cls="bank-cell bank-cell--text"),
+        Span(Button(t("bank.show_lines"), type="button", cls="btn btn--ghost btn--sm", data_show_lines="1")
+             if folded else None, cls="bank-cell screen-only"),
+        cls="bank-row bank-row--group")
+    return Div(head,
+               Div(*[line_row(l, bank_id, currency, group_key=key, ticked=ticked) for l in lines],
+                   cls="bank-lines", hidden=folded),
+               cls="bank-group", data_group=key, id="bank-group-" + uuid.uuid5(uuid.NAMESPACE_URL, key).hex[:12])
+
+
+def group_table(table: dict, bank_id: str, currency: str) -> FT:
+    if not table["groups"]:
+        return P(t("bank.view_empty"), cls="empty-state")
+    header = Div(Span(), Span(t("bank.th_group")), Span(t("bank.th_count"), cls="bank-cell--num"),
+                 Span(t("th.total"), cls="bank-cell--money"), Span(t("bank.th_suggestion")), Span(),
+                 cls="bank-row bank-row--head", aria_hidden="true")
+    line_head = Div(Span(), Span(t("th.date")), Span(t("th.description")), Span(t("bank.th_counterparty")),
+                    Span(t("th.balance"), cls="bank-cell--money"), Span(t("label.amount"), cls="bank-cell--money"),
+                    Span(), Span(t("bank.th_suggestion")), Span(t("th.status")), Span(t("bank.th_answer")), Span(),
+                    cls="bank-row bank-row--line bank-row--head", aria_hidden="true")
+    return Div(header, line_head, *[group_block(g, bank_id, currency) for g in table["groups"]],
+               cls="bank-groups", data_currency=currency)
+
+
+# ── Panels (templates cloned by bank-page.js) ───────────────────────────────
+
+def _remove_on_escape(selector: str) -> str:
+    return call("celerpRemoveClosest", THIS, selector, EVENT)
+
+
+def answer_options(chart: list[dict], banks: list[dict], bank_id: str) -> list[tuple[str, str]]:
+    """What a line can be answered with: an account to post to, another bank (a transfer),
+    a cash withdrawal, Suspense or no entry."""
+    own = next((b.get("chart_account_code") for b in banks if b["id"] == bank_id), None)
+    opts = [(f"post:{a['code']}", account_label(a)) for a in chart
+            if a.get("is_active", True) and a.get("code") and a["code"] != own]
+    opts += [(f"transfer:{b['id']}", t("bank.answer_transfer", bank=b["bank_name"])) for b in banks
+             if b["id"] != bank_id and b.get("is_active", True) and b.get("bank_type") != "cash"]
+    return opts + [("cash", t("bank.answer_cash")), ("suspense", t("bank.answer_suspense")),
+                   ("no_entry", t("bank.answer_no_entry"))]
+
+
+def answer_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = "", values: dict | None = None,
+                error: str = "") -> FT:
+    values = values or {}
+    return Form(
+        Input(type="hidden", name="line_id", value=line_id), Input(type="hidden", name="form", value="answer"),
+        _key_input(),
+        P(error, cls="form-error") if error else None,
+        Label(t("bank.answer_label"), cls="form-label"),
+        Div(searchable_select("answer", options, value=values.get("answer", ""), aria_label=t("bank.answer_label")),
+            cls="searchable-select"),
+        Label(t("bank.contact_label"), cls="form-label"),
+        Div(searchable_select("contact", [], value=values.get("contact", ""), search_url=PARTY_SEARCH_URL,
+                              aria_label=t("bank.contact_label")), cls="searchable-select"),
+        Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
+                   onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
+        hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
+        cls="bank-panel", data_form="answer", onkeydown=_remove_on_escape("form"))
+
+
+def split_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = "",
+               parts: list[tuple[str, str]] | None = None, error: str = "") -> FT:
+    """The parts of one line, each an account and a positive amount; blank rows are dropped."""
+    accounts = [(v.split(":", 1)[1], label) for v, label in options if v.startswith("post:")]
+    parts = list(parts or []) + [("", "")] * max(0, 3 - len(parts or []))
+    return Form(
+        Input(type="hidden", name="line_id", value=line_id), Input(type="hidden", name="form", value="split"),
+        _key_input(),
+        P(error, cls="form-error") if error else None,
+        P(t("bank.split_hint"), cls="text-muted"),
+        *[Div(Div(searchable_select("account_code", accounts, value=code, aria_label=t("label.account")),
+                  cls="searchable-select"),
+              Input(type="number", name="amount", value=amount, min="0", step="any", cls="form-input",
+                    aria_label=t("label.amount")),
+              cls="bank-split__part") for code, amount in parts],
+        Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
+                   onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
+        hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
+        cls="bank-panel", data_form="split", onkeydown=_remove_on_escape("form"))
+
+
+def ask_panel(bank_id: str) -> FT:
+    return Div(
+        Input(type="hidden", name="line_id", value=""), _key_input(),
+        Label(t("bank.ask_note_label"), cls="form-label"),
+        Textarea(name="note", rows="2", cls="form-input"),
+        Div(Button(t("bank.ask_send"), type="button", cls="btn btn--primary",
+                   hx_post=bank_url(bank_id, "ask"), hx_include="closest [data-panel=ask]",
+                   hx_target="closest [data-line]", hx_swap="outerHTML"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
+                   onclick=call("celerpRemoveClosest", THIS, "[data-panel=ask]")), cls="form-actions"),
+        cls="bank-panel", data_panel="ask", onkeydown=_remove_on_escape("[data-panel=ask]"))
+
+
+def panel_templates(bank_id: str, options: list[tuple[str, str]]) -> tuple:
+    return (Template(answer_form(bank_id, options), id="bank-tpl-answer"),
+            Template(split_form(bank_id, options), id="bank-tpl-split"),
+            Template(ask_panel(bank_id), id="bank-tpl-ask"))
+
+
+# ── The drop zone and the statement preview ─────────────────────────────────
+
+def drop_zone(bank_id: str) -> FT:
+    return Div(
+        H2(t("bank.drop_title")),
+        P(t("bank.drop_hint"), cls="text-muted"),
+        Form(Input(type="file", name="files", multiple=True, accept=".pdf,.csv,.ofx,.qfx,.xlsx,.xls",
+                   cls="form-input", data_drop="1", aria_label=t("bank.drop_title")),
+             _key_input(),
+             action=bank_url(bank_id, "drop"), method="post", enctype="multipart/form-data", cls="bank-drop__form"),
+        A(t("bank.start_without"), href=bank_url(bank_id) + "?view=all&start=1", cls="btn btn--ghost"),
+        cls="bank-drop settings-card")
+
+
+def preview_loading(bank_id: str, job_id: str) -> FT:
+    return Div(P(t("bank.preview_reading"), cls="text-muted"), hx_get=bank_url(bank_id, "preview", job_id),
+               hx_trigger="load delay:1s", hx_swap="outerHTML", data_testid="statement-loading")
+
+
+def header_cell(bank_id: str, job_id: str, idx: int, field: str, value, headers_json: str) -> FT:
+    """One header figure of the preview: an input that re-checks the statement on Enter
+    and puts the figure back on Escape. The span holds no other input."""
+    shown = "" if value is None else str(value)
+    restore = bank_url(bank_id, "preview", job_id, "cell") + "?" + urlencode(
+        {"idx": idx, "field": field, "value": shown, "headers": headers_json})
+    return Span(
+        Form(Input(name="value", value=shown, placeholder=EMPTY, cls="editable-cell form-input",
+                   aria_label=t(dict(PREVIEW_FIELDS)[field]),
+                   onkeydown=call("celerpCellKey", THIS, EVENT, {"url": restore, "target": "[data-field]"})),
+             hx_post=bank_url(bank_id, "preview", job_id), hx_target="closest [data-testid=statement-preview]",
+             hx_swap="outerHTML", hx_vals=hx_vals({"idx": idx, "field": field, "headers": headers_json}),
+             cls="inline-form"),
+        data_field=field, cls="bank-preview__cell")
+
+
+def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
+    """The statements a reading job found, each with its header figures (click to edit),
+    whether it ties, what blocks Import, and its lines. Import confirms first."""
+    headers = [{f: st["header"].get(f) for f, _ in PREVIEW_FIELDS} for st in preview["statements"]]
+    headers_json = json.dumps(headers)
+    blocks = []
+    for idx, st in enumerate(preview["statements"]):
+        cur = st["header"].get("currency")
+        tie = st.get("tie") or {}
+        blocks.append(Div(
+            Div(*[Div(Span(t(label), cls="form-label"),
+                      header_cell(bank_id, job_id, idx, f, st["header"].get(f), headers_json), cls="form-field")
+                  for f, label in PREVIEW_FIELDS], cls="bank-preview__header"),
+            P(t("bank.preview_ties") if tie.get("ok") else t("bank.preview_not_tied"),
+              cls="flash flash--success" if tie.get("ok") else "flash flash--warning"),
+            *[P(b["text"], cls="flash flash--error") for b in st.get("blocking") or []],
+            *[P(n, cls="text-muted") for n in st.get("notices") or []],
+            Div(*[Div(Span(l.get("line_date") or EMPTY), Span(l.get("description") or EMPTY, cls="bank-cell--text"),
+                      Span(money(l.get("amount"), cur), cls="bank-cell--money"),
+                      Span(money(l.get("raw_balance"), cur), cls="bank-cell--money"),
+                      Span(t("bank.preview_duplicate") if l.get("duplicate") else ""),
+                      cls="bank-row bank-row--preview") for l in st["lines"]], cls="bank-preview__lines"),
+            cls="bank-preview__statement"))
+    failed = preview.get("failed_steps") or []
+    importable = preview["statements"] and not any(st.get("blocking") for st in preview["statements"])
+    return Div(
+        H2(t("bank.preview_title")),
+        P(t("bank.failed_steps", n=len(failed)), cls="flash flash--warning") if failed else None,
+        *blocks,
+        Form(Input(type="hidden", name="headers", value=headers_json), _key_input(),
+             Button(t("btn.import"), type="submit", cls="btn btn--primary"),
+             hx_post=bank_url(bank_id, "preview", job_id, "import"), hx_confirm=t("bank.import_confirm"),
+             hx_target="closest [data-testid=statement-preview]", hx_swap="outerHTML") if importable else None,
+        cls="bank-preview settings-card", data_testid="statement-preview")
