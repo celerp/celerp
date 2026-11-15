@@ -225,6 +225,34 @@ def _import_rows_label(n: int) -> str:
     return t("import.import_one_row") if n == 1 else t("import.import_all_rows", n=n)
 
 
+def serve_import_template(app, area: str, home: str) -> None:
+    """Serve the API's import template of ``area`` at the same path under the user's
+    session, so a download link the assistant answers opens in the browser. A refusal
+    shows on a page with a way back to ``home``."""
+    from starlette.requests import Request
+    from starlette.responses import RedirectResponse
+
+    from ui.components.shell import base_shell, flash, page_header, page_title
+    from ui.config import get_token
+    from ui.streaming import ClosingStreamingResponse
+
+    @app.get(f"{area}/import/template")
+    async def import_template(request: Request):
+        token = get_token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            chunks, headers = await api.import_template(token, area)
+        except api.APIError as e:
+            return await base_shell(
+                page_header(t("btn.download_template"), import_back_link(home)),
+                flash(refusal_text(e.detail)),
+                title=page_title("btn.download_template"), request=request,
+            )
+        return ClosingStreamingResponse(chunks, media_type=headers.get("content-type", "text/csv"),
+                                        headers={k.title(): v for k, v in headers.items() if k != "content-type"})
+
+
 def import_back_link(home: str) -> Any:
     """An upload page's Back, to the list the import belongs to."""
     return A(t("btn.back"), href=safe_url(home), cls="btn btn--secondary")

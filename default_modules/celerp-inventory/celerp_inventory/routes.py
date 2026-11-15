@@ -5365,6 +5365,8 @@ def _fmt_ts(val) -> str:
 @router.get(
     "/export/csv",
     dependencies=[require_permission("view_inventory"), require_permission("import_export_data")],
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-field-visibility": True, "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory_costs"], "x-celerp-agent-download": "/inventory/export/csv"},
+    summary="Download the item list as a CSV file, with the same filters as the list.",
 )
 async def export_items_csv(
     request: Request,

@@ -85,7 +85,7 @@ async def get_mine(asset_id: str, company_id=Depends(get_current_company_id), us
     return shown(asset_id, state, await _locations(session, company_id))
 
 
-@router.get("/mine/{asset_id}/files/{file_id}")
+@router.get("/mine/{asset_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/fixed-assets/mine/{asset_id}/files/{file_id}"}, summary="Download a file of a fixed asset the user holds as custodian.")
 async def download_mine(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     match = files.file_of(await held(session, company_id, user.id, asset_id), file_id)

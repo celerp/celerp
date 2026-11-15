@@ -174,7 +174,7 @@ async def describe_file(asset_id: str, file_id: str, description: str = Form("")
                          {"file_id": file_id, "description": description.strip(), "filename": f.get("filename")})
 
 
-@router.get("/assets/{asset_id}/files/{file_id}", dependencies=_VIEW)
+@router.get("/assets/{asset_id}/files/{file_id}", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"], "x-celerp-agent-download": "/fixed-assets/assets/{asset_id}/files/{file_id}/download"}, summary="Download a file attached to a fixed asset.")
 async def download_file(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
                         money: bool = Depends(views.money_shown), session: AsyncSession = Depends(get_session)):
     f = file_of(await _asset_state(session, company_id, asset_id), file_id)

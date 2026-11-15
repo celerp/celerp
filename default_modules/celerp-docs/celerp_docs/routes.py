@@ -13864,8 +13864,8 @@ async def upload_doc_file(
     return {"event_id": entry.id, **meta}
 
 
-@lists_router.get("/{entity_id}/files/{file_id}", name="list_files")
-@router.get("/{entity_id}/files/{file_id}", name="doc_files")
+@lists_router.get("/{entity_id}/files/{file_id}", name="list_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/lists/{entity_id}/files/{file_id}/download"}, summary="Download a file attached to a list.")
+@router.get("/{entity_id}/files/{file_id}", name="doc_files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/{entity_id}/files/{file_id}/download"}, summary="Download a file attached to a document.")
 async def download_doc_file(
     entity_id: str,
     file_id: str,

@@ -573,7 +573,7 @@ async def item_file_thumbnail(
     )
 
 
-@router.get("/{entity_id}/files/{file_id}")
+@router.get("/{entity_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-field-visibility": True, "x-celerp-agent-download": "/items/{entity_id}/files/{file_id}/download"}, summary="Download a file attached to an inventory item.")
 async def download_item_file(
     entity_id: str,
     file_id: str,
