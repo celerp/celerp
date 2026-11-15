@@ -308,7 +308,7 @@ async def _import_module(request: Request, file: UploadFile, session: AsyncSessi
     try:
         await asyncio.to_thread(install_from_zip, data)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from None
     return await _staged(request, session, owner, token, ctx, mode)
 
 

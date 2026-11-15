@@ -417,8 +417,13 @@ class Refused(KeyedRefusal, ValueError):
 
 def refusal_detail(exc: Exception):
     """The detail a route answers a caught exception with: its own ``detail`` when it has
-    one, so a keyed refusal keeps its key, else its text."""
-    return getattr(exc, "detail", str(exc))
+    one, so a keyed refusal keeps its key, else its text: a t() text raised as its one
+    argument is answered as raised, so it keeps its key (str() writes it as plain text)."""
+    from ui.i18n import Text  # ui.i18n reads prices, whose cost rules raise a refusal
+
+    if hasattr(exc, "detail"):
+        return exc.detail
+    return exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], Text) else str(exc)
 
 
 def field_refusal(field: str, text) -> dict:

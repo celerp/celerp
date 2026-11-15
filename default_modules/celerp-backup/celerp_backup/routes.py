@@ -257,7 +257,7 @@ async def export_local() -> FileResponse:
     try:
         path = await export_full()
     except BackupFailed as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return _archive_download(path, f"{datetime.now():%Y-%m-%d-%H%M}")
 
 

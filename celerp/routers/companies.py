@@ -2273,7 +2273,7 @@ async def delete_module(
     try:
         await asyncio.to_thread(remove_module_dir, module_name)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=refusal_detail(exc))
     await session.commit()
 
     return {"ok": True, "name": module_name}
@@ -2432,7 +2432,7 @@ async def import_module_upload(
     try:
         info = await asyncio.to_thread(install_from_zip, data, source=source)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return {"ok": True, **info}
 
 
@@ -2450,7 +2450,7 @@ async def import_module_from_path(body: _ImportPathBody) -> dict:
     try:
         info = await asyncio.to_thread(install_from_folder, body.path)
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
     return {"ok": True, **info}
 
 
@@ -2652,7 +2652,7 @@ async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
             install_from_zip, stage.data, official=stage.is_official, premium=stage.is_paid,
             source="marketplace", expected=(stage.slug, stage.version))
     except ModuleImportError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=refusal_detail(exc))
 
     if stage.is_official and not stage.is_paid:
         # Install is online by definition: keep the free verdict now, so the
@@ -2839,7 +2839,7 @@ async def reactivate_company(
     try:
         done = await company_lifecycle.reactivate_company(session, company_id, user.id)
     except company_lifecycle.NotAnOwner as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        raise HTTPException(status_code=403, detail=refusal_detail(exc)) from None
     return {
         "ok": True,
         "company_id": str(done.company_id),

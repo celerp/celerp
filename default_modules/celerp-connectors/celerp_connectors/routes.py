@@ -136,7 +136,7 @@ def _execution_refusals(connector):
     try:
         yield
     except ConnectorOwnershipError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     except ExecutionBusy as exc:
         raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
     except ExecutionRefused as exc:
@@ -350,14 +350,14 @@ async def set_connector_direction(
             raise ConnectorOwnershipError(t("error.connector_not_here", service=service_name(connector_name)))
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     try:
         directions = validate_directions(
             connector, {**(config.entity_directions or {}), payload.entity: payload.direction}
         )
     except DirectionError as exc:
         await session.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     changed = directions != config.entity_directions
     config.entity_directions = directions
     if changed and config.webhook_secret and await first_sync_state(
@@ -526,7 +526,7 @@ async def store_credentials(
         )
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     if not ownership_created:
         await session.rollback()
@@ -554,7 +554,7 @@ async def store_credentials(
         )
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     except Exception as exc:
         await session.rollback()
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
@@ -663,7 +663,7 @@ async def revoke_credentials(
             ))
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Refused before the store forgets anything, while product links are left
     # that only Inventory can turn into history.
@@ -751,7 +751,7 @@ async def reset_unassigned_connector(
         rows = await lock_unassigned_connector(session, connector_name)
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     webhook_ids = list(dict.fromkeys(
         wid for row in rows for wid in (row.webhook_ids or [])
     ))
@@ -1066,7 +1066,7 @@ async def _owned_config(session: AsyncSession, company_id, connector):
         config = await lock_connector_operation(session, company_id, connector.name, require_owner=True)
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     await session.commit()
     return config
 
@@ -1116,7 +1116,7 @@ async def start_first_sync(
     try:
         directions = validate_directions(connector, payload.directions)
     except DirectionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     previewed = await _owned_config(session, company_id, connector)
     row = await _first_sync_row(session, company_id, connector_name)
     if row is None or row.state != "pending":
@@ -1131,7 +1131,7 @@ async def start_first_sync(
             session, company_id, connector_name, require_owner=True, exclusive=True)
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
     if first_sync is None or first_sync.state != "pending":
         await session.rollback()
@@ -1209,7 +1209,7 @@ async def retry_first_sync(
         await sync_runner.retry_first_sync(session, company_id, connector_name)
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_not_failed")) from exc

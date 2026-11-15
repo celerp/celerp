@@ -487,13 +487,10 @@ class _Walk:
             return self._carries_detail(cls, self._where(fn, node))
         if isinstance(node, ast.Call):
             callee = _resolve(node.func, scope)
-            if callee is str and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
-                # A caught exception's text: keyed when every raise of its class is.
-                classes = self._caught(node.args[0], tree, scope)
-                if not classes or not all(isinstance(c, type) and _first_party(c) for c in classes):
-                    return False
-                self.carried.update((c, (self._where(fn, node), "__text__")) for c in classes)
-                return True
+            if callee is str:
+                # str() writes a t() text as plain text, dropping its key; a caught
+                # exception's text is answered through refusal_detail.
+                return False
             if callee is i18n.t and node.args:
                 return _catalog_key(node.args[0], scope, tree)
             if callee is refusal_detail and len(node.args) == 1 and isinstance(node.args[0], ast.Name):

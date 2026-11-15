@@ -8255,7 +8255,7 @@
   "company_backup.err_attachment_unreadable": "This company has an attachment file Celerp cannot read: {url}. No copy was made.",
   "company_backup.err_updating_restore": "Celerp is updating its database. Nothing was restored. Try again in a moment.",
   "company_backup.err_updating_copy": "Celerp is updating its database. No copy was made. Try again in a moment.",
-  "company_backup.err_module_no_version": "The {owner} module does not declare a valid version, so a backup of its data cannot say which version restores it. No copy was made.",
+  "company_backup.err_module_no_version": "The {owner} module does not declare a valid version, so a company copy of its data cannot say which version restores it. No copy was made.",
   "company_backup.err_module_form_restore": "The {owner} module keeps data in {label} in a form Celerp cannot restore yet. Nothing was restored.",
   "company_backup.err_module_form_copy": "The {owner} module keeps data in {label} in a form Celerp cannot copy yet. No copy was made.",
   "company_backup.err_data_form_restore": "This company has data Celerp cannot restore yet: {label}. Nothing was restored.",
