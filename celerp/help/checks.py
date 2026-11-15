@@ -1,7 +1,7 @@
 """Mechanical checks over help page files.
 
 Each ``check_<name>(pages)`` returns readable messages, one per defect, each
-starting with the page's file name (the coverage check names the module and
+starting with the page's file name (the screen help check names the module and
 the screen instead). tests/test_help_content.py runs them over every shipped
 page; tests/test_help_checks.py proves each one flags its defect fixture.
 """
@@ -19,8 +19,9 @@ from urllib.parse import urlsplit
 
 from celerp.help.registry import CORE, CORE_HELP_DIR, page_files
 from celerp.help.schema import MAX_IMAGE_BYTES, load_file, module_prefix
+from celerp.help.search import covers
 from celerp.modules.loader import (
-    first_party_names, installed_help_dirs, module_search_path, read_manifest,
+    NAV_SCREEN_HELP, first_party_names, installed_help_dirs, module_search_path, read_manifest,
     resolve_module_path,
 )
 from celerp.services.permissions import is_permission_key
@@ -182,29 +183,37 @@ def check_images(pages: list[PageFile]) -> list[str]:
     return out
 
 
-def nav_screens() -> dict[str, list[str]]:
-    """Each first-party module's sidebar and settings links, read from its manifest."""
-    out: dict[str, list[str]] = {}
+def nav_screens() -> dict[str, list[tuple[str, object]]]:
+    """Each first-party module's sidebar and settings screens, read from its manifest,
+    with the help page id each names (None when it names none)."""
+    out: dict[str, list[tuple[str, object]]] = {}
     for name, _path, manifest in _first_party_modules():
         nav = (manifest.get("slots") or {}).get("nav") or []
         entries = [nav] if isinstance(nav, dict) else nav
-        hrefs = [e.get(k) for e in entries if isinstance(e, dict) for k in ("href", "settings_href")]
-        out[name] = [h for h in hrefs if isinstance(h, str) and h]
+        out[name] = [(entry[href], entry.get(help_key))
+                     for entry in entries if isinstance(entry, dict)
+                     for href, help_key in NAV_SCREEN_HELP.items()
+                     if isinstance(entry.get(href), str) and entry[href]]
     return out
 
 
-def check_module_coverage(pages: list[PageFile], modules: dict[str, list[str]] | None = None) -> list[str]:
+def check_screen_help(pages: list[PageFile],
+                      modules: dict[str, list[tuple[str, object]]] | None = None) -> list[str]:
+    """Each module screen names a help page that the module (or core) ships and whose
+    routes cover the screen, so the screen's Help panel lists that page."""
     modules = nav_screens() if modules is None else modules
-    covered: dict[str, set[str]] = {}
-    for page in pages:
-        routes = page.data.get("routes") if isinstance(page.data, dict) else None
-        covered.setdefault(page.module, set()).update(
-            urlsplit(r).path for r in routes or [] if isinstance(r, str))
+    by_id = {page.data["id"]: page for page in pages
+             if isinstance(page.data, dict) and isinstance(page.data.get("id"), str)}
     out = []
-    for module, hrefs in sorted(modules.items()):
-        for path in dict.fromkeys(urlsplit(h).path for h in hrefs):
-            if path not in covered.get(module, set()):
-                out.append(f"{module}: {path} has no help page")
+    for module, screens in sorted(modules.items()):
+        for path, page_id in dict.fromkeys(screens):
+            page = by_id.get(page_id) if isinstance(page_id, str) else None
+            if page_id is None:
+                out.append(f"{module}: {path}: names no help page")
+            elif page is None or page.module not in (module, CORE):
+                out.append(f"{module}: {path}: names help page {page_id!r}, which {module} does not ship")
+            elif not covers([r for r in page.data.get("routes") or [] if isinstance(r, str)], path):
+                out.append(f"{module}: {path}: help page {page_id!r} does not list this screen in its routes")
     return out
 
 
