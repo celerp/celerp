@@ -17,10 +17,13 @@ import inspect
 import json
 import uuid
 
+import pytest
+
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import jobs, service
 from test_ai_usage import _conversation, _settled, _state, owner  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 
 

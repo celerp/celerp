@@ -529,6 +529,16 @@ def _one_current_event_loop():
 _CENSUS = mutation_observer.Totals()
 
 
+@pytest.fixture
+def tools_open_from_the_start(monkeypatch):
+    """For tests whose subject is not area loading: an agent run starts with every
+    compiled tool open, as if the model had listed and opened them, so a scripted model
+    may call any tool at once. Area loading itself is tested in test_ai_agent_areas."""
+    from celerp.ai import service
+
+    monkeypatch.setattr(service, "first_opened", set)
+
+
 @pytest.fixture(autouse=True)
 def _mutation_census(request):
     """One write-observer record per test, kept for the census file

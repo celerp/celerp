@@ -35,6 +35,8 @@ from test_helpers import asked_in_thread, perm_setup
 from _fixtures import tool_call, tool_result
 from test_workflows import ScriptedModel, _new_conversation, _op, agent_caps, ai_session  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+
 _LOCATIONS = "/companies/me/locations"
 _CHECK_SCREEN = "/settings/inventory"
 

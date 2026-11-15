@@ -11,6 +11,7 @@ import json
 import uuid
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import delete, select, update
 
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
@@ -18,6 +19,7 @@ from celerp.ai import jobs, service, tools
 from test_ai_job_journal_auth import AUTH, COST, QUERY, _ask_again, _costs, _name_shown_to_admins_only, _settings
 from test_ai_usage import _conversation, _messages, _settled, owner  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
 SHOWN = f"Its cost is {COST}."
 REPEATED = f"As I said, it costs {COST}."
 
