@@ -8232,5 +8232,11 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "acct.err_remove_not_in_chart": "Esta cuenta ya no está en el plan de cuentas.",
+  "acct.err_remove_has_entries": "Tiene asientos, así que se puede archivar, no eliminar.",
+  "acct.err_remove_has_children": "Tiene cuentas debajo, así que se puede archivar, no eliminar.",
+  "acct.err_remove_posting_role": "Es la cuenta de contabilización de {roles}, así que se puede archivar, no eliminar.",
+  "acct.err_remove_bank_account": "Una cuenta bancaria la usa, así que se puede archivar, no eliminar.",
+  "acct.err_remove_sold_on": "{names} se venden en ella, así que se puede archivar, no eliminar."
 }

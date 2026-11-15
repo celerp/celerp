@@ -8232,5 +8232,11 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "acct.err_remove_not_in_chart": "This account is no longer in the chart.",
+  "acct.err_remove_has_entries": "It has entries, so it can be archived, not removed.",
+  "acct.err_remove_has_children": "Accounts sit under it, so it can be archived, not removed.",
+  "acct.err_remove_posting_role": "It is the posting account for {roles}, so it can be archived, not removed.",
+  "acct.err_remove_bank_account": "A bank account uses it, so it can be archived, not removed.",
+  "acct.err_remove_sold_on": "{names} sell on it, so it can be archived, not removed."
 }

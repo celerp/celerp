@@ -8232,5 +8232,11 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "acct.err_remove_not_in_chart": "لم يعد هذا الحساب في دليل الحسابات.",
+  "acct.err_remove_has_entries": "عليه قيود، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_has_children": "توجد حسابات تحته، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_posting_role": "إنه حساب الترحيل لـ {roles}، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_bank_account": "يستخدمه حساب مصرفي، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_sold_on": "تُسجَّل عليه مبيعات {names}، لذا يمكن أرشفته لا حذفه."
 }

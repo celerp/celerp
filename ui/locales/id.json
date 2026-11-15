@@ -8232,5 +8232,11 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "acct.err_remove_not_in_chart": "Akun ini sudah tidak ada di bagan akun.",
+  "acct.err_remove_has_entries": "Akun ini memiliki entri, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_has_children": "Ada akun di bawahnya, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_posting_role": "Ini akun posting untuk {roles}, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_bank_account": "Sebuah rekening bank memakainya, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_sold_on": "{names} dijual pada akun ini, jadi bisa diarsipkan, bukan dihapus."
 }

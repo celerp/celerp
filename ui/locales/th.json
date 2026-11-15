@@ -8232,5 +8232,11 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "acct.err_remove_not_in_chart": "บัญชีนี้ไม่อยู่ในผังบัญชีแล้ว",
+  "acct.err_remove_has_entries": "บัญชีนี้มีรายการบันทึกแล้ว จึงเก็บถาวรได้ แต่ลบไม่ได้",
+  "acct.err_remove_has_children": "มีบัญชีย่อยอยู่ใต้บัญชีนี้ จึงเก็บถาวรได้ แต่ลบไม่ได้",
+  "acct.err_remove_posting_role": "บัญชีนี้เป็นบัญชีบันทึกของ {roles} จึงเก็บถาวรได้ แต่ลบไม่ได้",
+  "acct.err_remove_bank_account": "มีบัญชีธนาคารใช้บัญชีนี้อยู่ จึงเก็บถาวรได้ แต่ลบไม่ได้",
+  "acct.err_remove_sold_on": "{names} ขายผ่านบัญชีนี้ จึงเก็บถาวรได้ แต่ลบไม่ได้"
 }

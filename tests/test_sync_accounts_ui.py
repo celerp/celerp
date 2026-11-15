@@ -43,7 +43,8 @@ ADDED = [
     {"id": "n-1", "label": "6160 Audit adjustments", "code": "6160", "removable": True, "why": None,
      "reason": "Added by sync from Firm Practice with the journal Adjust.", "at": "2026-10-16T10:00:00"},
     {"id": "n-2", "label": "6150 Courier", "code": "6150", "removable": False,
-     "why": "It has entries, so it can be archived, not removed.",
+     "why": {"message": "It has entries, so it can be archived, not removed.",
+             "message_key": "acct.err_remove_has_entries", "params": {}},
      "reason": "Added by sync from Demo Trading with the journal Courier run.", "at": "2026-10-16T09:00:00"},
 ]
 REVIEW = [{"source_company_id": "c-1", "client": "Demo Trading", "accounts": [
