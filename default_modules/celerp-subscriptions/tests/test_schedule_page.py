@@ -85,7 +85,7 @@ async def test_recognize_over_the_service_period_is_set_from_the_page(owner_ui, 
 async def test_kind_member_and_grace_days_are_set_from_the_page_and_named_in_history(owner_ui, monkeypatch):
     """The agreement type, member and grace days save from the page; the page and History name
     the member by name, and choosing none clears it."""
-    from test_history_and_lists import _history
+    from test_history_and_lists import _history_cells
 
     freeze_day(monkeypatch, "2026-03-15")
     eid = await agreement(owner_ui.api, {}, start="2026-03-01")
@@ -101,12 +101,12 @@ async def test_kind_member_and_grace_days_are_set_from_the_page_and_named_in_his
     assert "Ada Lovelace" in (await owner_ui.get(f"/subscriptions/{eid}")).text
     r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/beneficiary_contact_id", data={"value": ""})
     assert r.status_code == 200 and (await template(owner_ui.api, {}, eid)).get("beneficiary_contact_id") is None
-    text = await _history(owner_ui, eid)
+    changes = [r[3:] for r in await _history_cells(owner_ui, eid)]
     label, none = t("subscriptions.member", "en"), t("activity.none", "en")
-    assert f"{label}: {none} → Ada Lovelace" in text and f"{label}: Ada Lovelace → {none}" in text, text
-    assert f"{t('subscriptions.grace_days', 'en')}: 0 → 14" in text
-    assert f"{t('subscriptions.kind', 'en')}: {t('subscriptions.kind_subscription', 'en')} → " \
-           f"{t('subscriptions.kind_membership', 'en')}" in text
+    assert [label, none, "Ada Lovelace"] in changes and [label, "Ada Lovelace", none] in changes, changes
+    assert [t("subscriptions.grace_days", "en"), "0", "14"] in changes
+    assert [t("subscriptions.kind", "en"), t("subscriptions.kind_subscription", "en"),
+            t("subscriptions.kind_membership", "en")] in changes
 
 
 async def test_stop_at_period_end_is_set_and_undone_from_the_page(owner_ui, monkeypatch):
