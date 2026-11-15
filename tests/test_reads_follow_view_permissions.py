@@ -99,8 +99,9 @@ async def test_item_field_values_keep_costs_from_a_role_without_costs(client, se
 
 
 def _ungated_reads_beside_view_siblings(app) -> list[str]:
-    """GET routes no permission, agent gate or body refusal guards whose first path segment
-    holds a GET that needs a view permission, unless the any-role marker says why."""
+    """GET routes no permission (one, or any of several), agent gate or body refusal guards
+    whose first path segment holds a GET that needs a view permission, unless the any-role
+    marker says why."""
     from collections import defaultdict
 
     from celerp.ai import tools as ai_tools
@@ -115,8 +116,9 @@ def _ungated_reads_beside_view_siblings(app) -> list[str]:
     for path, methods, route in routes:
         if "GET" not in methods or not views[segment(path)]:
             continue
-        if ai_tools._route_permissions(route) or ai_tools.route_gates(route) or ai_tools.refusing_checks(route):
-            continue
+        if ai_tools._route_permissions(route) or ai_tools.route_gates(route) or ai_tools.refusing_checks(route) \
+                or (route.openapi_extra or {}).get("x-celerp-agent-any-permission"):
+            continue  # gated by a permission, a gate, a body refusal, or any one of several permissions
         why = (route.openapi_extra or {}).get("x-celerp-agent-any-role")
         if not (isinstance(why, str) and why.strip()):
             problems.append(f"GET {path}: any role reads it beside {sorted(views[segment(path)])}")
