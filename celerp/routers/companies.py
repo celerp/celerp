@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import BatchImportResult, failure_reason
+from celerp.importers.results import BatchImportResult, row_refusal
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -631,7 +631,7 @@ async def batch_import_settings(
     )).scalars().all())
 
     created = skipped = 0
-    errors: list[str] = []
+    errors: list[str | dict] = []
     for rec in body.records:
         # This legacy transport is a company snapshot import, not arbitrary access
         # to the system-event namespace. User/API-key/backup/migration events have
@@ -666,7 +666,7 @@ async def batch_import_settings(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                errors.append(row_refusal(rec.entity_id, exc))
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)

@@ -585,6 +585,33 @@ def _mutation_census(request):
         pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
 
 
+def _wired_module_catalogs() -> list[tuple[str, dict, bool]]:
+    """(language, catalog, rtl) of every translation catalog a bundled module wired above
+    ships, read the way the loader reads them."""
+    from celerp.modules.loader import module_catalogs, read_manifest
+
+    found = []
+    for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
+        manifest = read_manifest(pkg) if pkg.is_dir() else {}
+        if pkg.name.replace("-", "_") in _sys.modules:
+            found += [c for c in module_catalogs(pkg.name, pkg, manifest) if c[1]]
+    return found
+
+
+_WIRED_CATALOGS = _wired_module_catalogs()
+
+
+@pytest.fixture(autouse=True)
+def _module_catalogs_registered():
+    """The test app wires module routes without the loader, so the catalogs of those modules
+    are registered here, as the loader does at boot, whenever a test left them cleared."""
+    from ui.i18n import _registry, register_catalog
+
+    for lang, catalog, rtl in _WIRED_CATALOGS:
+        if next(iter(catalog)) not in _registry.get(lang, {}).get("catalog", {}):
+            register_catalog(lang, catalog, rtl=rtl)
+
+
 @pytest.fixture(autouse=True)
 def _agent_refusals_keyed():
     """Strict refusals: a route the AI calls that answers a test's request with a refusal

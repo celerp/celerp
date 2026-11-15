@@ -121,3 +121,19 @@ def test_every_result_panel_names_its_records_in_the_users_language():
                 label = next(k.value for k in node.keywords if k.arg == "entity_label")
                 callers.append((path.name, node.lineno, isinstance(label, ast.Constant)))
     assert callers and not [c for c in callers if c[2]], callers
+
+
+def test_a_refused_import_row_keeps_its_keyed_refusal():
+    """A refused row carries the refusal the write raised (row_refusal), so it reads in each
+    reader's language: no shipped import writes it as the English text of failure_reason."""
+    from shipped_sources import shipped_sources
+
+    texts = []
+    for rel, path in shipped_sources():
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "append"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "errors"
+                    and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "failure_reason"
+                            for n in ast.walk(node))):
+                texts.append(f"{rel}:{node.lineno}")
+    assert not texts, f"a refused import row is written as text, use row_refusal: {texts}"

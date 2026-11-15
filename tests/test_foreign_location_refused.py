@@ -122,7 +122,7 @@ async def test_list_batch_import_naming_another_company_location_is_refused(clie
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1, body
-    assert any("list:IMP-2" in e and "location" in e.lower() for e in body["errors"]), body
+    assert "location" in refused_records(body["errors"])["list:IMP-2"].lower(), body
     session.expire_all()
     assert await session.get(Projection, (auth["company_id"], "list:IMP-2")) is None
     assert await session.get(Projection, (auth["company_id"], "list:IMP-3")) is not None

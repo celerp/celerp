@@ -22,7 +22,7 @@ from test_money_stock_and_contact_invariants import _auth_company
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 from test_tax_refusal_draft_route import route
 from ui.i18n import refusal_text, t
-from test_helpers import doc_version
+from test_helpers import doc_version, message_texts
 from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
@@ -144,7 +144,7 @@ async def test_every_list_write_refuses_line_taxes_of_another_shape(client, sess
         r = await client.post("/lists/import/batch", headers=auth["headers"], json={"records": [rec]})
         assert r.status_code == 200, r.text
         assert r.json()["created"] == 0
-        assert any(t("documents.err_tax_unreadable", tax=named) in e for e in r.json()["errors"]), r.json()
+        assert any(t("documents.err_tax_unreadable", tax=named) in e for e in message_texts(r.json()["errors"])), r.json()
     assert (await client.get(f"/lists/{rec['entity_id']}", headers=auth["headers"])).status_code == 404
 
 

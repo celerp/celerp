@@ -29,7 +29,7 @@ from celerp.events.schemas import (
     workflow_step_minutes,
 )
 from celerp.models.company import Company, Location, WorkCenter
-from celerp.importers.results import BatchImportResult, failure_reason
+from celerp.importers.results import BatchImportResult, failure_reason, row_refusal
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
@@ -1276,7 +1276,7 @@ async def batch_import_manufacturing(
     locked = await lock_projections(session, company_id, named)
 
     created = skipped = 0
-    errors: list[str] = []
+    errors: list[str | dict] = []
     for rec in body.records:
         if rec.event_type != "mfg.order.created":
             if len(errors) < 10:
@@ -1297,7 +1297,7 @@ async def batch_import_manufacturing(
             created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                errors.append(row_refusal(rec.entity_id, exc))
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
