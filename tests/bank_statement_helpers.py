@@ -226,7 +226,12 @@ async def bank_of(client: AsyncClient, h: dict, sid: str) -> str:
 
 async def decide(client: AsyncClient, h: dict, sid: str, line_id: str, kind: str, **fields):
     """One resolve decision on one line of reconciliation ``sid``: the response."""
-    return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/resolve", headers=h, json={
+    return await decide_on(client, h, await bank_of(client, h, sid), line_id, kind, **fields)
+
+
+async def decide_on(client: AsyncClient, h: dict, bank_id: str, line_id: str, kind: str, **fields):
+    """One resolve decision on one line of ``bank_id`` in a single request: the response."""
+    return await client.post(f"{API}/bank/{bank_id}/resolve", headers=h, json={
         "idempotency_key": key(), "decisions": [{"line_ids": [line_id], "kind": kind, **fields}]})
 
 

@@ -326,10 +326,11 @@ async def test_a_chart_import_waits_for_a_posting_to_the_account_it_puts_one_und
     headers = bearer(tok)
     await _account(client, headers, "6990")
     sid, line = await _statement_line(client, headers)
+    bank_id = await B.bank_of(client, headers, sid)  # the held commit is the resolve's own
 
     posted, imported = await _race(
         committed_engine, client, hold,
-        lambda: B.decide(client, headers, sid, line, "post", account_code="6990"),
+        lambda: B.decide_on(client, headers, bank_id, line, "post", account_code="6990"),
         lambda: _import_child(client, headers))
 
     assert posted.status_code == 200 and posted.json()["refused"] == 0, posted.text
