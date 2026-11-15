@@ -387,18 +387,6 @@ async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStat
         paired.matched_je_ids = []
 
 
-def card_summary(body: dict, counts: dict[str, int], *, filters: dict | None = None) -> dict:
-    """What an AI card for accepting groups shows: each group with its line count, read
-    only, and a link to the bank page with the same filter, where a changed selection is
-    made by ticking instead of editing the proposal."""
-    from urllib.parse import urlencode
-
-    keys = (body.get("accept") or {}).get("group_keys") or []
-    query = urlencode({k: v for k, v in (filters or {}).items() if v})
-    link = f"/accounting/reconcile/bank/{body['bank_id']}" + (f"?{query}" if query else "")
-    return {"groups": [{"key": k, "count": counts.get(k, 0)} for k in keys], "link": link, "read_only": True}
-
-
 # ── Questions for the client ────────────────────────────────────────────────
 
 # The calls the bank code makes outside the database, each with the test of its failure path.

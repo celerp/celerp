@@ -3697,6 +3697,7 @@
   "ai.attached_files": "File allegati",
   "ai.action_hint": "Controlla i dettagli, poi conferma per applicare questa modifica oppure ignorala.",
   "ai.action_check": "Controlla prima di confermare",
+  "ai.card_open_page": "Vedi o modifica nella sua pagina",
   "ai.action_failed": "Questa modifica non è stata applicata. Chiedi all'assistente di riprovare, oppure fai la modifica tu stesso.",
   "ai.action_failed_badge": "Non riuscita",
   "ai.confirm_all": "Conferma tutto ({count})",

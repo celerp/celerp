@@ -942,7 +942,9 @@ async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[D
 
 
 @router.post(f"{API}/bank/{{bank_id}}/resolve", summary="Resolve a bank's statement lines: post, match, no entry, "
-             "transfer, cash, pay documents or Suspense.", openapi_extra=_agent("decisions", result_permissions=["record_payments"]))
+             "transfer, cash, pay documents or Suspense.", openapi_extra={
+                 **_agent("decisions", result_permissions=["record_payments"]),
+                 "x-celerp-agent-card": "/accounting/reconcile/bank/{bank_id}"})
 async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = Depends(get_current_company_id),
                   _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
                   user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:

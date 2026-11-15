@@ -3697,6 +3697,7 @@
   "ai.attached_files": "添付ファイル",
   "ai.action_hint": "内容を確認し、確定してこの変更を適用するか、閉じてスキップしてください。",
   "ai.action_check": "確定前に確認してください",
+  "ai.card_open_page": "該当ページで確認・変更する",
   "ai.action_failed": "この変更は適用されませんでした。アシスタントにもう一度依頼するか、ご自身で変更してください。",
   "ai.action_failed_badge": "失敗",
   "ai.confirm_all": "すべて確定 ({count})",

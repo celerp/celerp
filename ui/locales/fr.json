@@ -3697,6 +3697,7 @@
   "ai.attached_files": "Fichiers joints",
   "ai.action_hint": "Vérifiez les détails, puis confirmez pour appliquer cette modification ou ignorez-la.",
   "ai.action_check": "À vérifier avant de confirmer",
+  "ai.card_open_page": "Voir ou modifier sur sa page",
   "ai.action_failed": "Cette modification n'a pas été appliquée. Demandez à l'assistant de réessayer, ou faites la modification vous-même.",
   "ai.action_failed_badge": "Échec",
   "ai.confirm_all": "Tout confirmer ({count})",

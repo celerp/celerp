@@ -3697,6 +3697,7 @@
   "ai.attached_files": "Tệp đính kèm",
   "ai.action_hint": "Kiểm tra chi tiết, rồi xác nhận để áp dụng thay đổi này hoặc bỏ qua.",
   "ai.action_check": "Kiểm tra trước khi xác nhận",
+  "ai.card_open_page": "Xem hoặc thay đổi trên trang của mục này",
   "ai.action_failed": "Thay đổi này chưa được áp dụng. Hãy nhờ trợ lý thử lại, hoặc tự thực hiện thay đổi.",
   "ai.action_failed_badge": "Thất bại",
   "ai.confirm_all": "Xác nhận tất cả ({count})",

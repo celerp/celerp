@@ -247,12 +247,17 @@ async def test_resolve_proposed_as_one_card():
     assert any("240" in w for w in _card_warnings(cap, 240, {"body": {"decisions": decisions}}))
     for role in ("viewer", "operator"):
         assert not [c for c in _caps(role).values() if c["path"].endswith("/resolve") and "reconciliation" in c["path"]]
-    from celerp_accounting.statement_lines import card_summary
-    summary = card_summary({"bank_id": "b1", "accept": {"group_keys": ["NETFLIX", "GRAB TRIP"]}},
-                           {"NETFLIX": 12, "GRAB TRIP": 3}, filters={"view": "suggested"})
-    assert summary["groups"] == [{"key": "NETFLIX", "count": 12}, {"key": "GRAB TRIP", "count": 3}]
-    assert summary["link"] == "/accounting/reconcile/bank/b1?view=suggested"
-    assert summary["read_only"] is True
+    # The card lists the accepted groups read only and links to the bank page, where a
+    # changed selection is made by ticking.
+    from celerp.ai.tools import screen_of
+    from celerp_ai.ui_routes import _action_body
+    from fasthtml.common import Div, to_xml
+    arguments = {"path": {"bank_id": "b1"}, "body": {"accept": {"group_keys": ["NETFLIX", "GRAB TRIP"]}}}
+    link = screen_of(cap, arguments, "card_screen")
+    assert link == "/accounting/reconcile/bank/b1"
+    html = to_xml(Div(*_action_body({"arguments": arguments, "card_screen": link})))
+    assert "NETFLIX" in html and "GRAB TRIP" in html and f'href="{link}"' in html
+    assert "<input" not in html and "<select" not in html
 
 
 async def test_continue_after_resolve_proposes_next_group():

@@ -3697,6 +3697,7 @@
   "ai.attached_files": "File terlampir",
   "ai.action_hint": "Periksa rinciannya, lalu konfirmasi untuk menerapkan perubahan ini atau abaikan untuk melewatinya.",
   "ai.action_check": "Periksa sebelum mengonfirmasi",
+  "ai.card_open_page": "Lihat atau ubah di halamannya",
   "ai.action_failed": "Perubahan ini tidak diterapkan. Minta asisten mencoba lagi, atau lakukan perubahannya sendiri.",
   "ai.action_failed_badge": "Gagal",
   "ai.confirm_all": "Konfirmasi semua ({count})",

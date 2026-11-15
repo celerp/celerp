@@ -3785,6 +3785,7 @@
   "ai.attached_files": "Attached files",
   "ai.action_hint": "Check the details, then confirm to apply this change or dismiss to skip it.",
   "ai.action_check": "Check before confirming",
+  "ai.card_open_page": "See or change this on its page",
   "ai.action_failed": "This change wasn't applied. Ask the assistant to try again, or make the change yourself.",
   "ai.action_failed_badge": "Failed",
   "ai.confirm_all": "Confirm all ({count})",

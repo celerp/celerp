@@ -35,9 +35,9 @@ from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
     _agent_error,
     agent_tool_specs,
-    check_screen,
     compile_agent_capabilities,
     execute_agent_capability,
+    screen_of,
 )
 from celerp.services.field_schema import field_visibility
 from celerp.services.permissions import read_authority, role_has_permission
@@ -77,6 +77,7 @@ class PendingAction:
     warnings: list[str] = field(default_factory=list)  # shown on the card above its buttons
     for_each: bool = False  # arguments are {"records": [...]}, one run of the tool per record
     check_screen: str | None = None  # where to look when the outcome is unknown (unkeyed tools)
+    card_screen: str | None = None  # the page the card links to, where its proposal is seen and changed
 
 
 @dataclass
@@ -647,7 +648,8 @@ async def _agent_loop(
                                             else _selection_size(capability, arguments),
                                             None if name == PROPOSE_FOR_EACH else arguments),
                     for_each=name == PROPOSE_FOR_EACH,
-                    check_screen=check_screen(capability, {} if name == PROPOSE_FOR_EACH else arguments),
+                    check_screen=screen_of(capability, {} if name == PROPOSE_FOR_EACH else arguments, "check_screen"),
+                    card_screen=screen_of(capability, {} if name == PROPOSE_FOR_EACH else arguments, "card_screen"),
                 )
                 for (call_id, name, capability, arguments) in mutations
             ]

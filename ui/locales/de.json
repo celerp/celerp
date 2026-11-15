@@ -3697,6 +3697,7 @@
   "ai.attached_files": "Angehängte Dateien",
   "ai.action_hint": "Prüfen Sie die Angaben, dann bestätigen Sie, um die Änderung anzuwenden, oder verwerfen Sie sie.",
   "ai.action_check": "Vor dem Bestätigen prüfen",
+  "ai.card_open_page": "Auf der zugehörigen Seite ansehen oder ändern",
   "ai.action_failed": "Diese Änderung wurde nicht übernommen. Bitten Sie den Assistenten, es erneut zu versuchen, oder nehmen Sie die Änderung selbst vor.",
   "ai.action_failed_badge": "Fehlgeschlagen",
   "ai.confirm_all": "Alle bestätigen ({count})",
