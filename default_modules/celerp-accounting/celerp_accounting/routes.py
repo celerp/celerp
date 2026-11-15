@@ -3169,7 +3169,7 @@ async def create_transfer(
         location_id=None,
         source="transfer",
         idempotency_key=idem_c,
-        metadata_={"request": request},
+        metadata_={"request": request_fingerprint(request)},
     )
     await emit_event(
         session,
