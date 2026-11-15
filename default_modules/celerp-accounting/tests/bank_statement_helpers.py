@@ -132,10 +132,13 @@ async def resolve(client: AsyncClient, co: dict, bank_id: str, *, decisions: lis
     return await client.post(f"{API}/bank/{bank_id}/resolve", json=body, headers=headers or co["h"])
 
 
-async def journal(client: AsyncClient, h: dict, je_id: str) -> dict:
-    r = await client.get(f"/accounting/journal-entries/{je_id}", headers=h)
-    assert r.status_code == 200, r.text
-    return r.json()
+async def journal(session, co: dict, je_id: str) -> dict:
+    """The stored state of one journal entry of ``co``."""
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    state = (await session.execute(select(Projection.state).where(
+        Projection.company_id == _uuid.UUID(co["company_id"]), Projection.entity_id == je_id))).scalar_one()
+    return state
 
 
 async def bank_row(client: AsyncClient, h: dict, bank_id: str) -> dict:

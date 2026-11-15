@@ -175,7 +175,7 @@ async def test_ai_guess_and_sparse_groups_start_unticked(client, monkeypatch):
 
 # ── Resolve ─────────────────────────────────────────────────────────────────
 
-async def test_split_decision_through_resolve_equals_old_split(client):
+async def test_split_decision_through_resolve_equals_old_split(client, session):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "MIXED PURCHASE", "-100.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
@@ -184,7 +184,7 @@ async def test_split_decision_through_resolve_equals_old_split(client):
     assert r.status_code == 200, r.text
     je_id = r.json()["results"][0]["je_ids"][0]
     assert je_id == f"je:recon:split:{line['id']}"
-    je = await B.journal(client, co["h"], je_id)
+    je = await B.journal(session, co, je_id)
     debits = sorted((e["account"], e["debit"]) for e in je["entries"] if e.get("debit"))
     assert debits == [("5100", 60.0), ("5200", 40.0)] and je["je_type"] == "recon_split"
 
@@ -358,16 +358,16 @@ async def test_transfer_pair_posts_once_from_either_side(client):
     assert len([e for e in journal if e.get("je_type") == "recon_transfer"]) == 1
 
 
-async def test_transfer_to_foreign_bank_holds_its_currency(client):
+async def test_transfer_to_foreign_bank_holds_its_currency(client, session):
     co, a = await _co_bank(client, name="A")
     eur = await B.bank(client, co["h"], name="EUR", currency="EUR")
     await _one_month(client, co, a, [("2026-01-05", "TRANSFER TO EUR", "-110.00")])
     la = B.all_lines(await B.groups(client, co, a["id"]))[0]
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
                                                           "target_bank_id": eur["id"], "to_amount": 100.0}])
-    je = await B.journal(client, co["h"], r.json()["results"][0]["je_ids"][0])
+    je = await B.journal(session, co, r.json()["results"][0]["je_ids"][0])
     dest = next(e for e in je["entries"] if e["account"] == eur["chart_account_code"])
-    assert dest["currency"] == "EUR" and Decimal(str(dest["amount"])) == Decimal("100")
+    assert dest["fx_currency"] == "EUR" and Decimal(str(dest["fx_debit"])) == Decimal("100")
 
 
 async def test_undo_transfer_unmatches_paired_line(client):
@@ -455,7 +455,7 @@ async def test_pay_doc_needs_record_payments(client, session):
 
 # ── Unmatch, complete, delete ───────────────────────────────────────────────
 
-async def test_bulk_unmatch_list_of_one_equals_old_unmatch(client):
+async def test_bulk_unmatch_list_of_one_equals_old_unmatch(client, session):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
@@ -466,7 +466,7 @@ async def test_bulk_unmatch_list_of_one_equals_old_unmatch(client):
     assert r.status_code == 200, r.text
     after = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     assert after["status"] == "unmatched" and after["matched_je_ids"] == []
-    assert (await B.journal(client, co["h"], je_id))["status"] == "void"
+    assert (await B.journal(session, co, je_id))["status"] == "void"
 
 
 async def test_complete_balanced_stops_at_first_unbalanced(client):
@@ -497,7 +497,7 @@ async def test_delete_statement_refused_with_posted_line(client):
 
 # ── Opening, Suspense ───────────────────────────────────────────────────────
 
-async def test_set_opening_once_then_adjustment(client):
+async def test_set_opening_once_then_adjustment(client, session):
     co, bk = await _co_bank(client)
     url = f"/accounting/bank-accounts/{bk['id']}/opening"
     r = await client.put(url, json={"amount": 500.0, "date": "2026-01-01", "idempotency_key": B.key()}, headers=co["h"])
@@ -507,23 +507,23 @@ async def test_set_opening_once_then_adjustment(client):
     assert r.status_code == 200, r.text
     adj = r.json()["je_id"]
     assert adj != first
-    je = await B.journal(client, co["h"], adj)
+    je = await B.journal(session, co, adj)
     assert je["ts"].startswith("2026-01-01")
     bank_side = next(e for e in je["entries"] if e["account"] == bk["chart_account_code"])
     assert bank_side["debit"] == 20.0
-    assert (await B.journal(client, co["h"], first))["status"] == "posted"
+    assert (await B.journal(session, co, first))["status"] == "posted"
     await client.post("/accounting/period-lock", json={"lock_date": "2026-01-31"}, headers=co["h"])
     r = await client.put(url, json={"amount": 530.0, "date": "2026-01-01", "idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code in (409, 422) and "2026-01-31" in r.text
 
 
-async def test_reclassify_refused_in_locked_period(client):
+async def test_reclassify_refused_in_locked_period(client, session):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "WITHDRAWAL", "-50.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "suspense"}])
     assert r.json()["results"][0]["ok"], r.text
-    je = await B.journal(client, co["h"], r.json()["results"][0]["je_ids"][0])
+    je = await B.journal(session, co, r.json()["results"][0]["je_ids"][0])
     assert all("contact" not in e or not e["contact"] for e in je["entries"])
     await client.post("/accounting/period-lock", json={"lock_date": "2026-01-31"}, headers=co["h"])
     r = await client.post(f"{B.API}/lines/{line['id']}/reclassify", json={"account_code": "5100", "idempotency_key": B.key()},
