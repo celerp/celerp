@@ -299,7 +299,7 @@ async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uui
                  "lines": st["lines"] if edit.get("lines") is None else edit["lines"]}
         statements.append({"file_id": st["file_id"], **_review(found, bank, base, existing, held)})
     out = {"job_id": str(job_id), "bank_id": None if bank is None else str(bank.id), "statements": statements,
-           **{k: read[k] for k in ("receipts", "failed_steps", "needs_mapping", "layout_saved", "column_map")}}
+           **{k: read[k] for k in ("receipts", "failed_steps", "needs_mapping", "layout_saved", "column_map", "headers")}}
     if bank is None:
         first = statements[0]["header"] if statements else {}
         out["bank"] = None
