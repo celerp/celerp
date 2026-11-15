@@ -8500,7 +8500,6 @@
     "tests/test_held_back_notice.py::test_the_notice_is_cleared_once_a_later_start_brings_the_records_current": 0.087,
     "tests/test_held_routes_released.py::test_no_browser_test_swallows_a_route_release_error": 2.896,
     "tests/test_help_api.py::test_a_screen_offers_help_only_from_its_own_module_or_core": 0.5,
-    "tests/test_help_api.py::test_every_first_party_screen_gets_its_module_help_on_both_routes": 1.295,
     "tests/test_help_api.py::test_help_for_route_keeps_typed_lists_apart": 0.5,
     "tests/test_help_api.py::test_help_for_route_long_list_address": 0.175,
     "tests/test_help_api.py::test_help_for_route_matches_patterns": 0.199,
@@ -8512,7 +8511,6 @@
     "tests/test_help_api.py::test_help_search_ranks_title_over_body": 0.124,
     "tests/test_help_api.py::test_help_search_rejects_long_query": 0.637,
     "tests/test_help_api.py::test_help_search_unknown_module": 0.17,
-    "tests/test_help_checks.py::test_coverage_check_flags_uncovered_nav_entry": 0.003,
     "tests/test_help_checks.py::test_each_check_flags_its_fixture[check_images]": 0.009,
     "tests/test_help_checks.py::test_each_check_flags_its_fixture[check_label_keys]": 0.014,
     "tests/test_help_checks.py::test_each_check_flags_its_fixture[check_permissions]": 0.003,
@@ -8521,7 +8519,6 @@
     "tests/test_help_checks.py::test_every_check_is_exercised": 0.003,
     "tests/test_help_content.py::test_help_content_images": 0.003,
     "tests/test_help_content.py::test_help_content_label_keys": 0.008,
-    "tests/test_help_content.py::test_help_content_module_coverage": 0.005,
     "tests/test_help_content.py::test_help_content_permissions": 0.003,
     "tests/test_help_content.py::test_help_content_routes": 0.03,
     "tests/test_help_content.py::test_help_content_schema": 0.043,
@@ -28965,5 +28962,12 @@
     "tests/test_l10n_pack_schema_oracle.py::test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_valid[6]": 0.110717824078165,
     "tests/test_l10n_pack_schema_oracle.py::test_validate_and_lock_accept_a_pack_exactly_when_the_format_says_it_is_valid[7]": 0.11099571397062391,
     "tests/test_tax_seed_notice.py::test_a_retirement_no_pack_defines_any_more_has_its_notice_cleared": 0.05887940595857799,
-    "tests/test_ci_l10n_packs.py::test_pack_token_is_read_in_one_job_and_shared_as_a_checked_artifact": 0.11170965398196131
+    "tests/test_ci_l10n_packs.py::test_pack_token_is_read_in_one_job_and_shared_as_a_checked_artifact": 0.11170965398196131,
+    "tests/test_ai_capabilities.py::test_every_agent_tool_says_what_it_does": 4.090721575077623,
+    "tests/test_ai_capabilities.py::test_the_description_guard_finds_an_undocumented_tool": 0.002942170947790146,
+    "tests/test_help_api.py::test_every_first_party_screen_offers_the_help_page_it_names": 0.884728571982123,
+    "tests/test_help_checks.py::test_screen_help_check_flags_each_screen_without_its_page": 0.003958845045417547,
+    "tests/test_help_content.py::test_every_module_screen_names_its_help_page": 0.04712406906764954,
+    "tests/test_modules/test_slot_requirements.py::test_entry_a_slot_cannot_read_is_refused_before_module_code_runs[nav-help=['acme.more']]": 0.003740153042599559,
+    "tests/test_modules/test_slot_requirements.py::test_entry_a_slot_cannot_read_is_refused_before_module_code_runs[nav-settings_help=7]": 0.004210143815726042
 }
