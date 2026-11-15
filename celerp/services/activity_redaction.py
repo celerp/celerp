@@ -90,6 +90,7 @@ _COST_EVENT_FIELDS = {
     "item.landed_cost.allocated": frozenset({"source_bill_id", "kind"}),
 }
 _PRICE_TYPED_EVENT = "item.pricing.set"
+_EMPTY = cast(literal("{}"), JSONB)
 
 
 def cost_event_fields(event_type: str, data: dict) -> frozenset[str] | None:
@@ -118,15 +119,17 @@ def _cost_key_sql(key: ColumnElement) -> ColumnElement[bool]:
 
 def _only(data: ColumnElement, fields: frozenset[str]) -> ColumnElement:
     """The top-level ``fields`` of a jsonb object, as a jsonb object."""
-    each = func.jsonb_each(case((func.jsonb_typeof(data) == "object", data),
-                                else_=cast(literal("{}"), JSONB))).table_valued("key", "value")
+    each = func.jsonb_each(data).table_valued("key", "value")
     picked = select(func.jsonb_object_agg(each.c.key, each.c.value)).where(each.c.key.in_(sorted(fields)))
-    return func.coalesce(picked.scalar_subquery(), cast(literal("{}"), JSONB))
+    return func.coalesce(picked.scalar_subquery(), _EMPTY)
 
 
-def _shown_top(data: ColumnElement, event_type: ColumnElement) -> ColumnElement:
-    """cost_event_fields in SQL: the jsonb data of an event as a reader without costs is shown it at
-    its top level (a cost event's own fields only, any other event whole)."""
+def _shown_top(data: ColumnElement, event_type: ColumnElement, costs: bool) -> ColumnElement:
+    """serialize_event in SQL at the top level: an event's data as jsonb as a reader is shown it
+    (an object, else empty; for a reader without costs, a cost event's own fields only)."""
+    data = case((func.jsonb_typeof(data) == "object", data), else_=_EMPTY)
+    if costs:
+        return data
     whens = []
     for kind, fields in _COST_EVENT_FIELDS.items():
         when = event_type == kind
@@ -139,12 +142,11 @@ def _shown_top(data: ColumnElement, event_type: ColumnElement) -> ColumnElement:
 
 
 def shown_data(settings: dict | None, role: str | None) -> ColumnElement:
-    """An event's data as jsonb at its top level as this role is shown it (redact_event_costs for
-    the top level; cost keys below it are each reader's own to leave out)."""
+    """An event's data as jsonb at its top level as this role is shown it; cost keys below the top
+    level are each reader's own to leave out."""
     from celerp.models.ledger import LedgerEntry
 
-    data = cast(LedgerEntry.data, JSONB)
-    return data if can_see_costs(settings, role) else _shown_top(data, LedgerEntry.event_type)
+    return _shown_top(cast(LedgerEntry.data, JSONB), LedgerEntry.event_type, can_see_costs(settings, role))
 
 
 def _sql(expr: ColumnElement) -> str:
@@ -178,11 +180,8 @@ _DATA_MATCH = """EXISTS (
 def _data_match_sql(costs: bool) -> str:
     from celerp.models.ledger import LedgerEntry
 
-    data = cast(LedgerEntry.data, JSONB)
-    if costs:
-        return _DATA_MATCH.format(root=_sql(data), hidden_key="false")
-    return _DATA_MATCH.format(root=_sql(_shown_top(data, LedgerEntry.event_type)),
-                              hidden_key=_sql(_cost_key_sql(literal_column("e.key", Text))))
+    root = _sql(_shown_top(cast(LedgerEntry.data, JSONB), LedgerEntry.event_type, costs))
+    return _DATA_MATCH.format(root=root, hidden_key="false" if costs else _sql(_cost_key_sql(literal_column("e.key", Text))))
 
 
 def event_data_matches(needle: str, settings: dict | None, role: str | None) -> ColumnElement[bool]:

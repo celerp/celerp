@@ -234,3 +234,43 @@ async def test_random_cost_events_show_and_match_only_their_plain_fields(client,
             hit = (await session.execute(select(LedgerEntry.id).where(
                 LedgerEntry.id == entry.id, event_data_matches(needle, {}, "manager")))).first() is not None
             assert hit is any(needle.lower() in t.lower() for t in _all_text(entry.data)), needle
+
+
+@pytest.mark.asyncio
+async def test_odd_shapes_of_a_cost_price_event_still_show_only_the_price_type(client, session):
+    """A price type that is not text, a payload that is not an object, a very large or deeply
+    nested payload, cost keys in another case or script: none of them lets a cost through."""
+    from celerp.models.company import Company
+    from celerp.models.ledger import LedgerEntry
+
+    owner, operator, manager, item_id = await _company(client, session)
+    company_id = (await session.execute(select(Company.id).where(Company.name == "Perm Co"))).scalar_one()
+    deep: dict = {"amount": "zq-deep-amount"}
+    for _ in range(60):
+        deep = {"inner": [deep]}
+    shapes = {
+        "numeric price type": {"price_type": 7, "new_price": "zq-numeric-type"},
+        "object price type": {"price_type": {"list": "Retail"}, "new_price": "zq-object-type"},
+        "no price type": {"price": "zq-no-type"},
+        "list payload": ["zq-list-payload", {"new_price": 1}],
+        "large": {"price_type": "landed_price", **{f"k{n}": f"zq-large-{n}" for n in range(3000)}},
+        "deep": {"price_type": "Cost", "detail": deep},
+        "json in a string": {"price_type": "cost_price", "note": json.dumps({"new_price": "zq-json-string"})},
+        "unicode": {"price_type": "cost_price", "価格": "zq-unicode-key", "Cost_Price": "zq-case-key"},
+    }
+    ids = {}
+    for name, data in shapes.items():
+        entry = LedgerEntry(company_id=company_id, entity_id=f"item:odd-{len(ids)}", entity_type="item",
+                            event_type="item.pricing.set", data=data, source="test",
+                            idempotency_key=f"odd-{uuid.uuid4()}")
+        session.add(entry)
+        await session.flush()
+        ids[name] = entry.id
+    for name, entry_id in ids.items():
+        shown = (await client.get(f"/ledger/{entry_id}", headers=operator)).json()["data"]
+        assert set(shown) <= {"price_type", "cost_redacted"}, (name, shown)
+        assert "zq-" not in json.dumps(shown), name
+        r = await client.get("/dashboard/activity/search", params={"q": "zq-", "per_page": 200}, headers=operator)
+        assert entry_id not in [e["id"] for e in r.json()["activities"]], name
+        r = await client.get("/dashboard/activity/search", params={"q": "zq-", "per_page": 200}, headers=manager)
+        assert (entry_id in [e["id"] for e in r.json()["activities"]]) is (name != "list payload"), name
