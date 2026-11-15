@@ -105,7 +105,7 @@ async def _field(session, company_id, field: str, value, kind: str):
         try:
             amount = setup.number(value, "The insured value")
         except HTTPException:
-            raise setup.unprocessable("Enter the insured value as an amount, such as 25000.") from None
+            raise setup.refuse("fixed_assets.err_enter_insured_value_as_amount_such") from None
         if amount < 0:
             raise setup.refuse("fixed_assets.err_enter_insured_value_as_amount_such")
         return str(round_money(amount, await setup.currency(session, company_id)))
@@ -178,7 +178,7 @@ def _open(reminder: dict) -> None:
     if reminder["status"] == "done":
         raise setup.refuse("fixed_assets.err_reminder_already_done")
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder was removed. Undo the removal first.")
+        raise setup.refuse("fixed_assets.err_reminder_was_removed_undo_removal_first")
 
 
 async def _record_maintenance(session, company_id, user_id, asset_id: str, data: dict) -> str:
@@ -276,7 +276,7 @@ async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> 
     day = _day(body.get("date"), "The date the work was done")
     work = _text(body.get("work"))
     if not work:
-        raise setup.unprocessable("Describe the maintenance work.")
+        raise setup.refuse("fixed_assets.err_describe_maintenance_work")
     data = {"date": day, "work": work, "by": _text(body.get("by")), "next_due": None, "reminder_id": None}
     if body.get("next_due") not in (None, ""):
         data["reminder_id"] = await _new_reminder(session, company_id, user_id, asset_id, {

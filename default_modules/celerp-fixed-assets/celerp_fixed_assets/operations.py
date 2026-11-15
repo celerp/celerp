@@ -726,7 +726,7 @@ async def create_asset(session, company_id, user_id, body: dict) -> dict:
     async def plan(fa):
         name = str(body.get("name") or "").strip()
         if not name:
-            raise setup.unprocessable("An asset needs a name.")
+            raise setup.refuse("fixed_assets.err_asset_needs_name")
         (number,) = await _next_numbers(session, company_id, 1)
         if physical:
             return {"journals": [], "assets": [{"number": number, "name": name, "cost": None}]}, {

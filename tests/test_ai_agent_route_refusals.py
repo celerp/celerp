@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from starlette.responses import Response
 
-from celerp.accounting_roles import Refused, catalog_refusal, refusal
+from celerp.accounting_roles import Refused, catalog_refusal, refusal, refusal_detail
 from celerp.ai.tools import _api_routes, keyed_error
 from celerp.error_body import error_response
 from ui import i18n
@@ -125,10 +125,31 @@ def _given(fn, tree, detail) -> bool:
         for n in ast.walk(tree))
 
 
-def _catalog_key(node, scope) -> bool:
+def _entries(name: str, scope, tree) -> list | None:
+    """The values a local name can hold when every binding of it is an entry of one mapping
+    the module holds (``M.get(...)`` or ``M[...]``), else None."""
+    bound = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+             and any(isinstance(target, ast.Name) and target.id == name for target in n.targets)]
+    held = []
+    for value in bound:
+        source = value.func.value if isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) \
+            and value.func.attr == "get" else value.value if isinstance(value, ast.Subscript) else None
+        mapping = _resolve(source, scope) if source is not None else None
+        if not isinstance(mapping, dict) or not mapping:
+            return None
+        held.extend(mapping.values())
+    return held or None
+
+
+def _catalog_key(node, scope, tree=None) -> bool:
     """Whether a t() key is a catalog key wherever it comes from: written there, a constant
-    the module holds, either branch of a choice, or a lookup in a mapping of keys whose
-    fallback is one too."""
+    the module holds, either branch of a choice, a lookup in a mapping of keys whose
+    fallback is one too, or a field of an entry of a mapping the module holds, when that
+    field of every entry is a catalog key."""
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id not in scope \
+            and tree is not None:
+        entries = _entries(node.value.id, scope, tree)
+        return entries is not None and all(getattr(e, node.attr, None) in _EN for e in entries)
     if isinstance(node, ast.Constant):
         return isinstance(node.value, str) and node.value in _EN
     if isinstance(node, ast.IfExp):
@@ -140,6 +161,17 @@ def _catalog_key(node, scope) -> bool:
             and len(node.args) == 2 and _catalog_key(node.args[1], scope)
     value = scope.get(node.id) if isinstance(node, ast.Name) else _resolve(node, scope)
     return isinstance(value, str) and value in _EN
+
+
+def _sets_detail(cls) -> bool:
+    """Whether an exception class's __init__ (its own or a base's) sets ``self.detail``."""
+    for base in cls.__mro__:
+        init = vars(base).get("__init__")
+        tree = _tree(init) if inspect.isfunction(init) else None
+        if tree is not None and any(isinstance(n, ast.Assign) and any(
+                ast.unparse(target) == "self.detail" for target in n.targets) for n in ast.walk(tree)):
+            return True
+    return False
 
 
 def _held_keyed(value, every: bool = False) -> bool:
@@ -361,7 +393,21 @@ class _Walk:
                 self.carried.update((c, self._where(fn, node)) for c in classes)
                 return True
             if callee is i18n.t and node.args:
-                return _catalog_key(node.args[0], scope)
+                return _catalog_key(node.args[0], scope, tree)
+            if callee is refusal_detail and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
+                # A caught exception's detail when it has one, else its text: each class
+                # it may be keys its detail, or every raise of it is keyed.
+                classes = self._caught(node.args[0], tree, scope)
+                if not classes or not all(isinstance(c, type) and _first_party(c) for c in classes):
+                    return False
+                where = self._where(fn, node)
+                for cls in classes:
+                    if self._carries_detail(cls, where):
+                        continue
+                    if _sets_detail(cls):
+                        return False
+                    self.carried[cls] = where
+                return True
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN

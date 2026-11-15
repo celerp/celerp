@@ -300,10 +300,10 @@ async def renew(session: AsyncSession, company_id: uuid.UUID, grant_id: uuid.UUI
     changes nothing further."""
     company = await locked_company(session, company_id)
     if company is None:
-        raise HTTPException(404, "Company unavailable")
+        raise HTTPException(404, t("peer.err_company_unavailable"))
     row = await session.get(CompanyPeerGrant, grant_id)
     if row is None or row.company_id != company_id:
-        raise HTTPException(404, "Integration unavailable")
+        raise HTTPException(404, t("peer.err_integration_unavailable"))
     if row.revoked_at is not None:
         raise HTTPException(409, t("peer.err_key_was_revoked_issue_new_key"))
     when = now or datetime.now(timezone.utc)

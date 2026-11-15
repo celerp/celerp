@@ -55,7 +55,7 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
     seen: set[int] = set()
     for payment in incoming:
         if not isinstance(payment, dict):
-            raise HTTPException(422, "Invalid source payment")
+            raise HTTPException(422, t("peer.err_invalid_source_payment"))
         idx = payment.get("index")
         if type(idx) is not int or idx < 0 or idx in seen:
             raise HTTPException(422, t("peer.err_invalid_source_payment_identity"))
@@ -126,7 +126,7 @@ def validate_source_refunds(data: dict) -> list[dict]:
     currency = data.get("currency") or "USD"
     for record in events:
         if not isinstance(record, dict):
-            raise HTTPException(422, "Invalid source refund event")
+            raise HTTPException(422, t("peer.err_invalid_source_refund_event"))
         kind = record.get("kind", "refunded")
         common = {"event_id", "payment_index", "refund_number", "amount"}
         when_key = "reversal_date" if kind == "reversed" else "refund_date"
@@ -144,7 +144,7 @@ def validate_source_refunds(data: dict) -> list[dict]:
             day = date.fromisoformat(record[when_key])
             amount = round_money(record["amount"], currency)
         except (ValueError, TypeError, ArithmeticError) as exc:
-            raise HTTPException(422, "Invalid source refund amount or date") from exc
+            raise HTTPException(422, t("peer.err_invalid_source_refund_amount_date")) from exc
         if amount <= 0 or day.isoformat() != record[when_key]:
             raise HTTPException(422, t("peer.err_invalid_source_refund_amount_date"))
         identity = (index, number)

@@ -138,7 +138,7 @@ async def resolve_peer_location(session: AsyncSession, *, grant, source_id: str,
 
 def new_target_identity(source_company: uuid.UUID, entity_type: str, source_entity_id: str) -> str:
     if entity_type not in ENTITY_TYPES or not source_entity_id or len(source_entity_id) > 512:
-        raise HTTPException(422, "Invalid external identity")
+        raise HTTPException(422, t("peer.err_invalid_external_identity"))
     target = uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-peer:{source_company}:{entity_type}:{source_entity_id}")
     return f"{entity_type}:{target}"
 
@@ -207,7 +207,7 @@ async def claim_peer_revision(
     company_id, source_company = grant.company_id, grant.source_company_id
     company = await locked_company(session, company_id)
     if company is None or not company.is_active or company.is_migration_staged:
-        raise HTTPException(403, "Company unavailable")
+        raise HTTPException(403, t("peer.err_company_unavailable"))
     source_key = _digest(source_entity_id)
     digest = _payload_digest(data)
     mapping = await session.scalar(select(CompanyPeerIdentity).where(
@@ -218,7 +218,7 @@ async def claim_peer_revision(
     ).with_for_update())
     if mapping is not None:
         if mapping.source_entity_id != source_entity_id:
-            raise HTTPException(409, "External identity conflict")
+            raise HTTPException(409, t("peer.err_external_identity_conflict"))
         target = await peer_identity(
             session, target_company=company_id, source_company=source_company,
             entity_type=entity_type, source_entity_id=source_entity_id)

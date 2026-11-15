@@ -142,7 +142,7 @@ async def receive_document(
     from celerp_docs.sequences import require_doc_type
 
     if not isinstance(data, dict):
-        raise HTTPException(422, "Invalid document")
+        raise HTTPException(422, t("peer.err_invalid_document"))
     if set(data) - _FIELDS or set(data) & (
             LIFECYCLE_OWNED_FIELDS - {"status", "payments", "amount_paid", "fulfilled_items"}):
         raise HTTPException(422, t("peer.err_unapproved_document_fields"))
@@ -211,7 +211,7 @@ async def receive_document(
     mapped_lines = []
     for line in incoming.get("line_items", []):
         if not isinstance(line, dict):
-            raise HTTPException(422, "Invalid document line")
+            raise HTTPException(422, t("peer.err_invalid_document_line"))
         moved = dict(line)
         # A line id names a line within the sender's record; the copy's lines keep their own.
         moved.pop("line_id", None)

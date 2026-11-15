@@ -1330,5 +1330,6 @@
   "fixed_assets.err_reason_required_reopen_tax_year": "A reason is required to reopen a tax year.",
   "fixed_assets.err_describe_effect_accepting_item_figures": "Describe the effect of accepting this item on the figures.",
   "fixed_assets.err_run_before_first_period": "{month} is before the first managed period.",
-  "fixed_assets.err_run_month_locked": "{month} is locked. Run a later month; what it owes is caught up there."
+  "fixed_assets.err_run_month_locked": "{month} is locked. Run a later month; what it owes is caught up there.",
+  "fixed_assets.err_statutory_report": "statutory_report"
 }

@@ -83,7 +83,7 @@ def parse(value) -> dict[str, dict]:
     try:
         out = {code: _Account.model_validate(a).model_dump() for code, a in value.items()}
     except ValidationError:
-        raise HTTPException(422, "Invalid accounts") from None
+        raise HTTPException(422, t("peer.err_invalid_accounts")) from None
     if any(code != a["code"] for code, a in out.items()) or len({a["id"] for a in out.values()}) != len(out):
         raise HTTPException(422, t("peer.err_invalid_accounts"))
     return out
@@ -517,7 +517,7 @@ async def use_account(session: AsyncSession, company_id: uuid.UUID, source_compa
     """Post the other company's ``other`` to the receiver's ``code`` from now on."""
     chart = chart_access()
     if chart is None:
-        raise HTTPException(409, "Accounting is not running.")
+        raise HTTPException(409, t("peer.err_accounting_not_running"))
     company = await session.get(Company, company_id)
     rows = {a["code"]: a for a in await chart.list_accounts(session, company_id)}
     problem = use_problem(other, rows.get(code), code, books_currency(company.settings or {}))
