@@ -29,7 +29,7 @@ from celerp.db import get_session
 from celerp.downloads import content_disposition
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
-from celerp.importers.results import BatchImportResult, failure_reason
+from celerp.importers.results import BatchImportResult, row_refusal
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
@@ -10719,7 +10719,7 @@ async def batch_import_lists(
         )).scalars().all())
 
     created = skipped = updated = 0
-    errors: list[str] = []
+    errors: list[str | dict] = []
     # Authorization is checked for the whole batch before the first write.
     for rec in body.records:
         if rec.event_type == "list.created":
@@ -10744,7 +10744,7 @@ async def batch_import_lists(
                                              data=rec.data)
             except HTTPException as exc:
                 if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                    errors.append(row_refusal(rec.entity_id, exc))
                 skipped += 1
                 continue
             if not body.upsert:
@@ -10772,7 +10772,7 @@ async def batch_import_lists(
                     updated += 1
             except Exception as exc:
                 if len(errors) < 10:
-                    errors.append(f"{replay.entity_id}: {failure_reason(exc)}")
+                    errors.append(row_refusal(replay.entity_id, exc))
             continue
         if rec.entity_id in existing_entities:
             skipped += 1
@@ -10797,7 +10797,7 @@ async def batch_import_lists(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
+                errors.append(row_refusal(rec.entity_id, exc))
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors)
