@@ -18,6 +18,7 @@ _COMPLETE_LOCALES there), so this file does not re-check locales itself."""
 from __future__ import annotations
 
 import ast
+import functools
 import json
 from pathlib import Path
 
@@ -67,6 +68,7 @@ def _module(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+@functools.cache
 def _trees() -> dict[str, tuple[Path, ast.Module]]:
     """Every production file (celerp/ and default_modules/, excluding tests) by module."""
     trees = {}
@@ -79,11 +81,24 @@ def _trees() -> dict[str, tuple[Path, ast.Module]]:
     return trees
 
 
+@functools.cache
+def _imports(tree: ast.Module) -> tuple[ast.ImportFrom, ...]:
+    """Every ``from ... import`` of a module, walked once (the maker search reads them on
+    every pass)."""
+    return tuple(n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom))
+
+
+@functools.cache
+def _calls(node: ast.AST) -> tuple[ast.Call, ...]:
+    """Every call inside ``node``, walked once."""
+    return tuple(n for n in ast.walk(node) if isinstance(n, ast.Call))
+
+
 def _visible(module: str, tree: ast.Module, makers: dict[str, dict[str, int]]) -> dict[str, int]:
     """The makers a module calls by name: its own, and those it imports from another."""
     seen = dict(makers.get(module, {}))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module in makers and not node.level:
+    for node in _imports(tree):
+        if node.module in makers and not node.level:
             seen.update({a.asname or a.name: makers[node.module][a.name]
                          for a in node.names if a.name in makers[node.module]})
     return seen
@@ -97,9 +112,9 @@ def _key_index(node: ast.FunctionDef, skip: int = 0) -> int | None:
 
 def _hands_on_key(node: ast.FunctionDef, seen: dict[str, int]) -> bool:
     """Whether ``node`` passes its ``key``, as it is, to a maker it sees."""
-    return any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in seen
+    return any(isinstance(c.func, ast.Name) and c.func.id in seen
                and len(c.args) > seen[c.func.id] and isinstance(c.args[seen[c.func.id]], ast.Name)
-               and c.args[seen[c.func.id]].id == "key" for c in ast.walk(node))
+               and c.args[seen[c.func.id]].id == "key" for c in _calls(node))
 
 
 def _makers(trees) -> dict[str, dict[str, int]]:
@@ -135,7 +150,8 @@ def _makers(trees) -> dict[str, dict[str, int]]:
     return makers
 
 
-def _refusal_calls():
+@functools.cache
+def _refusal_calls() -> tuple:
     """Every refusal call site in production code, as (file:line, key_or_prefix, kind): a
     call naming the key of a maker (_makers) it sees, outside the makers themselves."""
     trees = _trees()
@@ -143,12 +159,12 @@ def _refusal_calls():
     calls = []
     for module, (path, tree) in trees.items():
         seen = _visible(module, tree, makers)
-        modules = {a.asname or a.name: f"{n.module}.{a.name}" for n in ast.walk(tree)
-                   if isinstance(n, ast.ImportFrom) and n.module and not n.level for a in n.names}
+        modules = {a.asname or a.name: f"{n.module}.{a.name}" for n in _imports(tree)
+                   if n.module and not n.level for a in n.names}
         wrapped = {id(n) for f in tree.body if isinstance(f, (ast.FunctionDef, ast.ClassDef))
                    and f.name in makers[module] for n in ast.walk(f)}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or id(node) in wrapped:
+        for node in _calls(tree):
+            if id(node) in wrapped:
                 continue
             fn = node.func
             if isinstance(fn, ast.Name):
@@ -161,7 +177,7 @@ def _refusal_calls():
                 continue
             calls += [(f"{path.relative_to(_ROOT)}:{node.lineno}", *_literal_or_prefix(arg))
                       for arg in _branches(node.args[position])]
-    return calls
+    return tuple(calls)
 
 
 def test_every_kind_of_maker_is_found():

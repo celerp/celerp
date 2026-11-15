@@ -222,16 +222,25 @@ async def test_removed_line_routes_are_gone(client):
         assert not re.search(r"reconciliation/\{[a-z_]+\}" + re.escape(tail.rstrip("/")) + r"[\"'/]", ui_src), path
 
 
+_ROLES = (None, "owner", "operator", "viewer")
+
+
 @functools.cache
+def _surface():
+    """One real API surface for this module, with its OpenAPI schema and each role's
+    compiled capabilities (read only), all built while its modules are loaded: the
+    loader is reset after every test, so nothing is compiled from it later."""
+    app = real_agent_app()
+    app.openapi()
+    return app, {role: ai_tools.compile_agent_capabilities(app, {}, role) for role in _ROLES}
+
+
 def _app():
-    """One real API surface for this module; its OpenAPI schema is built once."""
-    return real_agent_app()
+    return _surface()[0]
 
 
-@functools.cache
 def _caps(role="owner"):
-    """The compiled capabilities for *role*, compiled once per role (read only)."""
-    return ai_tools.compile_agent_capabilities(_app(), {}, role)
+    return _surface()[1][role]
 
 
 def _cap(caps, method, path):
