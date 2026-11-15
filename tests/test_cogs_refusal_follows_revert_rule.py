@@ -240,7 +240,7 @@ _STEPS = {
     "error.cogs_line_unknown": "reissue",
     "error.cogs_line_unknown_paid": "void_payments",
     "documents.err_revert_has_payments": "void_payments",
-    "Cannot void a document with payments; void the payments first": "void_payments",
+    "documents.err_cannot_void_document_with_payments_void": "void_payments",
     "docs.revert_under_credit_note": "void_credit_notes",
     "docs.void_under_credit_note": "void_credit_notes",
     "docs.revert_lines_out": "set_available",
