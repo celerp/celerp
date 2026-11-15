@@ -865,3 +865,175 @@ async def test_generated_secret_is_filled_by_the_server_and_hidden_from_the_mode
         app, "Bearer t", add_user, {"body": {"email": "new@example.com"}}, "call-u"
     )
     assert got["ok"] is True and got["data"]["password_length"] >= 16
+
+
+# ---------------------------------------------------------------------------
+# Gates the compiler can see, the way back, downloads, newly opened areas
+# ---------------------------------------------------------------------------
+
+_GATE_MARKERS = ("x-celerp-agent-any-permission", "x-celerp-agent-any-role")
+
+
+def test_every_tool_gate_is_visible_to_compile():
+    """A role check the compiler cannot see would show a tool to a role the route then
+    refuses. Every tool carries require_permission, an agent_gate dependency, or a marker
+    that says any permission or any role is enough; a route whose body refuses a role
+    (a 403 or a permission call) needs one of the first three and never any-role."""
+    app = real_agent_app()
+    routes = _route_index(app)
+    problems = []
+    for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        route = routes[(cap["method"], cap["path"])]
+        extra = route.openapi_extra or {}
+        fixed = bool(ai_tools._route_permissions(route)) or bool(ai_tools.route_gates(route))
+        refusing = ai_tools.refusing_checks(route)
+        if not (fixed or any(extra.get(m) for m in _GATE_MARKERS)):
+            problems.append(f"{name}: no gate the compiler can see")
+        if refusing and extra.get("x-celerp-agent-any-role"):
+            problems.append(f"{name}: any-role, but its body refuses: {refusing[0]}")
+        if refusing and not (fixed or extra.get("x-celerp-agent-any-permission")):
+            problems.append(f"{name}: its body refuses with no gate the compiler can see: {refusing[0]}")
+    assert problems == []
+
+
+def test_the_gate_scan_finds_a_refusal_in_a_helper_the_handler_calls():
+    """The scan behind the gate guard reads the handler and the helpers it calls."""
+    from fastapi import HTTPException
+
+    def _deny(role: str) -> None:
+        if role != "owner":
+            raise HTTPException(status_code=403, detail="no")
+
+    app = FastAPI()
+
+    @app.post("/guarded", openapi_extra={"x-celerp-agent": True})
+    def guarded(role: str = Query("x")) -> dict:
+        _deny(role)
+        return {}
+
+    route = _route_index(app)[("POST", "/guarded")]
+    assert ai_tools.refusing_checks(route) != []
+
+
+def test_price_tool_hidden_without_price_permission():
+    """The price tool is shown to a role that may set prices, and to a role that may edit
+    items (a draft's creator authors its cost); a role with neither never sees it."""
+    app = real_agent_app()
+    route = ("POST", "/items/{entity_id}/price")
+
+    def paths(role):
+        return {(c["method"], c["path"]) for c in ai_tools.compile_agent_capabilities(app, {}, role=role).values()}
+
+    assert route not in paths("viewer")
+    assert route in paths("operator")
+    assert route in paths("manager")
+
+
+def test_staff_password_tools_owner_only():
+    """Whether a member's password may be reset is the owner's question: the check is a
+    tool for the owner only, and the reset itself, which takes a password, stays off."""
+    app = real_agent_app()
+    check = ("GET", "/companies/me/users/{user_id}/password")
+    reset = ("POST", "/companies/me/users/{user_id}/password")
+
+    def paths(role, gates):
+        compiled = ai_tools.compile_agent_capabilities(app, {}, role=role, caller_gates=gates)
+        return {(c["method"], c["path"]) for c in compiled.values()}
+
+    assert check in paths("owner", frozenset({"owner"}))
+    assert check not in paths("admin", frozenset())
+    assert reset not in paths("owner", frozenset({"owner"}))
+    extra = _route_index(app)[reset].openapi_extra or {}
+    assert extra.get("x-celerp-agent-excluded") == "secret"
+
+
+def test_every_write_tool_has_a_way_back():
+    """Everything the assistant changes can be undone. Every write tool names its way
+    back: a reverse that is itself a tool, a screen the card links to, or a reason a
+    user would accept. A reason that only points at the screen is not a reason."""
+    from celerp.ai import reverse
+    from celerp.help import checks
+    from celerp.help.search import covers
+
+    app = real_agent_app()
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    tools = {(c["method"], c["path"]) for c in compiled.values()}
+    screens = checks.ui_route_paths()
+    problems = []
+    for name, cap in sorted(compiled.items()):
+        if not cap["requires_confirmation"]:
+            continue
+        back = reverse.WAY_BACK.get((cap["method"], cap["path"]))
+        kind, _, target = (back or "").partition(":")
+        if back is None:
+            problems.append(f"{name}: no way back")
+        elif kind == "tool" and tuple(target.split(" ", 1)) not in tools:
+            problems.append(f"{name}: reverse {target!r} is not a tool")
+        elif kind == "screen" and not covers(screens, re.sub(r"\{[^}]+\}", "sample", target)):
+            problems.append(f"{name}: screen {target!r} is not a signed-in screen")
+        elif kind == "reason" and target not in reverse.REASONS:
+            problems.append(f"{name}: unknown reason {target!r}")
+        elif kind not in {"tool", "screen", "reason"}:
+            problems.append(f"{name}: unreadable way back {back!r}")
+    for key, text in reverse.REASONS.items():
+        if reverse.SCREEN_ONLY.search(text):
+            problems.append(f"reason {key}: only points at the screen")
+    assert problems == []
+    assert reverse.SCREEN_ONLY.search("Same as the screen.")
+
+
+def test_every_download_tool_names_a_ui_route():
+    """A file is never sent through the chat. A download tool answers a link to the
+    signed-in screen that serves the file, so that link must be a live UI route."""
+    from celerp.help import checks
+
+    app = real_agent_app()
+    screens = set(checks.ui_route_paths())
+    downloads = []
+    for path, methods, route in ai_tools._api_routes(app):
+        link = (route.openapi_extra or {}).get("x-celerp-agent-download")
+        if link is None:
+            continue
+        downloads.append(path)
+        if link not in screens:
+            raise AssertionError(f"{path}: download link {link!r} is not a UI route")
+        assert set(re.findall(r"\{([^}]+)\}", link)) <= set(re.findall(r"\{([^}]+)\}", path)), path
+    compiled = {c["path"] for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    assert len(downloads) == 20
+    assert set(downloads) <= compiled
+
+
+def test_funds_tools_compile():
+    """Fund balances move through the assistant like any other confirmed change; the
+    fund request key is supplied by the system, never shown to the model."""
+    caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
+    funds = {(c["method"], c["path"]): c for c in caps.values() if c["path"].startswith("/accounting/funds")}
+    assert ("GET", "/accounting/funds") in funds
+    assert ("POST", "/accounting/funds") in funds
+    for cap in funds.values():
+        assert "request_key" not in _schema_fields(cap["tool"]["function"]["parameters"])
+        if cap["method"] != "GET":
+            assert cap["requires_confirmation"] is True and cap["keyed"] is True
+
+
+_LIFECYCLE = {
+    ("POST", "/docs/{entity_id}/finalize"): "finalize_documents",
+    ("POST", "/docs/{entity_id}/void"): "finalize_documents",
+    ("POST", "/docs/{entity_id}/send"): "edit_documents",
+    ("POST", "/items/bulk/expire"): "adjust_inventory",
+    ("POST", "/items/import/batch"): "import_export_data",
+    ("DELETE", "/crm/contacts/{contact_id}/notes/{note_id}"): "edit_contacts",
+}
+
+
+def test_lifecycle_bulk_import_and_delete_tools_are_confirm_first_and_role_filtered():
+    """Finalize, void, send, a bulk change, a batch import and a delete are confirmed
+    tools, and a role without the permission never sees them."""
+    app = real_agent_app()
+    caps = {(c["method"], c["path"]): c for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    viewer = {(c["method"], c["path"]) for c in ai_tools.compile_agent_capabilities(app, {}, role="viewer").values()}
+    for route, permission in _LIFECYCLE.items():
+        assert route in caps, route
+        assert caps[route]["requires_confirmation"] is True, route
+        assert permission in ai_tools._route_permissions(_route_index(app)[route]), route
+        assert route not in viewer, route
