@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.importers.schema import CIFContact, ContactRole, CIFSourceRecord, ReconciliationExpectations
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.migration_core_sink import deterministic_id, import_prepared, sink_result
@@ -43,11 +44,12 @@ def _contact_type(roles: list[ContactRole]) -> str:
     return "vendor" if supplier else "customer"
 
 
-def _contact_record(context: SinkContext, record: CIFSourceRecord) -> CRMImportRecord | str:
+def _contact_record(context: SinkContext, record: CIFSourceRecord) -> CRMImportRecord | dict:
     if not isinstance(record, CIFContact):
-        return f"Record type {type(record).__name__} is not a contact."
+        return catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)
     if not record.name.strip():
-        return f"Contact {record.source_external_id} has no name."
+        return catalog_refusal("migration.record.no_name",
+                               label=catalog_refusal("migration.label.contact", ref=record.source_external_id))
     data = {
         "name": record.name.strip(),
         "email": record.email,

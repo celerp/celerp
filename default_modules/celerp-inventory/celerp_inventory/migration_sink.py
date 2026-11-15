@@ -18,6 +18,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from celerp.events.engine import find_event_by_idempotency
+from celerp.accounting_roles import catalog_refusal
 from celerp.importers.results import RecordOutcome, row_refusal
 from celerp.importers.schema import (
     CIFInventoryAdjustment,
@@ -114,13 +115,14 @@ async def _import_items(context: SinkContext, items: Sequence[CIFItem]) -> list[
 
 def _item_record(
     context: SinkContext, item: CIFItem, by_name: dict[str, str], default: str | None, products: dict[str, str]
-) -> ImportRecord | str:
+) -> ImportRecord | dict:
+    label = catalog_refusal("migration.label.item", ref=item.name)
     if item.product_external_id and item.product_external_id not in products:
-        return f"Item {item.name}: the item it is stock of, {item.product_external_id}, was not imported."
+        return catalog_refusal("migration.record.stock_of_not_imported", label=label, product=item.product_external_id)
     if item.location_name:
         location_id = by_name.get(item.location_name)
         if location_id is None:
-            return f"Item {item.name}: location {item.location_name} does not exist."
+            return catalog_refusal("migration.record.location_missing", label=label, location=item.location_name)
     else:
         location_id = default
     sell_by = item.weight_unit if item.sell_by == "weight" else (item.sell_by or item.unit or "piece")
@@ -166,7 +168,7 @@ async def _import_adjustments(context: SinkContext, records: Sequence[CIFSourceR
     outcomes = []
     for record in records:
         if not isinstance(record, CIFInventoryAdjustment):
-            outcomes.append(RecordOutcome("", "rejected", f"Record type {type(record).__name__} is not an inventory adjustment."))
+            outcomes.append(RecordOutcome("", "rejected", catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)))
             continue
         outcomes.append(await _adjust(context, record, items, locations))
     return outcomes
@@ -179,9 +181,10 @@ async def _adjust(
     locations: dict[str, str],
 ) -> RecordOutcome:
     session = context.session
+    label = catalog_refusal("migration.label.item", ref=record.item_external_id)
     item_id = items.get(record.item_external_id)
     if item_id is None:
-        return RecordOutcome("", "rejected", f"Item {record.item_external_id} was not imported.")
+        return RecordOutcome("", "rejected", catalog_refusal("migration.record.not_imported", label=label))
     key = context.idempotency_key(record, "adjusted")
     if await find_event_by_idempotency(session, context.company_id, key) is not None:
         return RecordOutcome(item_id, "skipped")
@@ -190,16 +193,13 @@ async def _adjust(
     if record.location_external_id:
         location_id = locations.get(record.location_external_id)
         if location_id is None or location_id != str(state.get("location_id") or ""):
-            return RecordOutcome(
-                "", "rejected",
-                f"Item {record.item_external_id} is kept at one location in Celerp; "
-                f"its position at {record.location_external_id} cannot be imported.",
-            )
+            return RecordOutcome("", "rejected", catalog_refusal(
+                "migration.record.one_location", label=label, location=record.location_external_id))
     opening = record.kind == "opening"
     current = Decimal(str(state.get("quantity") or 0))
     new_qty = record.quantity if opening else current + record.quantity
     if new_qty < 0:
-        return RecordOutcome("", "rejected", f"Item {record.item_external_id} would have a negative quantity.")
+        return RecordOutcome("", "rejected", catalog_refusal("migration.record.negative_quantity", label=label))
     data = {"new_qty": float(new_qty), "prior_qty": float(current), "reason": f"Migration {record.kind}"}
     if opening and record.value is not None:
         data["cost_base"] = to_stored_float(record.value)
@@ -211,7 +211,7 @@ async def _adjust(
             source="migration", idempotency_key=key,
         )
     except Exception as exc:
-        return RecordOutcome("", "failed", row_refusal(f"Item {record.item_external_id}", exc))
+        return RecordOutcome("", "failed", row_refusal(label, exc))
     return RecordOutcome(item_id, "created")
 
 

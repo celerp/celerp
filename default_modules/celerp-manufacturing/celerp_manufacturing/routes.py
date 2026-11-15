@@ -29,7 +29,7 @@ from celerp.events.schemas import (
     workflow_step_minutes,
 )
 from celerp.models.company import Company, Location, WorkCenter
-from celerp.importers.results import BatchImportResult, failure_reason, record_refused, row_refusal
+from celerp.importers.results import BatchImportResult, failure_reason, keyed_reason, record_refused, row_refusal
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
@@ -957,7 +957,7 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     at = datetime.now(timezone.utc).isoformat()
     completed: list[str] = []
     failed: list[str] = []
-    not_created: list[str] = []
+    not_created: list[dict] = []
     states = await _all_item_states(session, company_id)
     # One action per finalize: a re-finalize after a revert to draft is a new one.
     operation = f"finalize:{entity_id}:{int((doc_state or {}).get('revert_count') or 0)}"
@@ -971,7 +971,9 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
                 made = await make_selected(session, company_id, user_id,
                                            [WorkOrderLineRef(item_id=item_id, doc_id=entity_id)], False, operation)
         except HTTPException as exc:
-            not_created.append(f"{(states.get(item_id) or {}).get('sku') or item_id} ({failure_reason(exc)})")
+            not_created.append(catalog_refusal("notice.mfg_not_created.product",
+                                               product=(states.get(item_id) or {}).get("sku") or item_id,
+                                               refusal=keyed_reason(exc)))
             continue
         if not auto_complete:
             continue
@@ -995,29 +997,29 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     try:
         async with session.begin_nested():
             if not_created:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders not created",
-                    body=(f"{len(not_created)} work order(s) could not be created on invoice posting: "
-                          f"{', '.join(not_created)}. Fix the recipe, "
-                          f"then create the work order from the To-Make board."),
-                    priority="high", action_url="/manufacturing/to-make")
+                await _finalize_notice(session, company_id, "not_created", "high",
+                                       "/manufacturing/to-make", n=len(not_created), products=not_created)
             if auto_complete and failed:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders need completing",
-                    body=(f"{len(failed)} work order(s) could not auto-complete on invoice posting "
-                          f"and are left planned: {', '.join(failed)}. Complete them manually."),
-                    priority="high", action_url="/manufacturing/production?status=planned")
+                await _finalize_notice(session, company_id, "not_completed", "high",
+                                       "/manufacturing/production?status=planned", n=len(failed),
+                                       runs=", ".join(failed))
             elif auto_complete and completed:
-                await notif_svc.create(
-                    session, company_id, category="manufacturing",
-                    title="Work orders auto-completed",
-                    body=(f"{len(completed)} work order(s) were completed automatically on invoice "
-                          f"posting: {', '.join(completed)}."),
-                    priority="medium", action_url="/manufacturing/production")
+                await _finalize_notice(session, company_id, "auto_completed", "medium",
+                                       "/manufacturing/production", n=len(completed), runs=", ".join(completed))
     except Exception as exc:
         log.warning("work order notification failed: %s", exc)
+
+
+async def _finalize_notice(session: AsyncSession, company_id, outcome: str, priority: str, action_url: str,
+                           **params) -> None:
+    """A notice of what an invoice's posting did to its work orders, stored in English with
+    the keys each reader's language is shown from; a param may be a list of refusals."""
+    title = catalog_refusal(f"notice.mfg_{outcome}.title")
+    body = catalog_refusal(f"notice.mfg_{outcome}.body", **params)
+    await notif_svc.create(session, company_id, category="manufacturing", title=title["message"],
+                           body=body["message"], priority=priority, action_url=action_url,
+                           i18n={"title": title["message_key"], "body": body["message_key"],
+                                 "params": body["params"]})
 
 
 @router.post("/to-make/requirements", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/manufacturing"}, summary="Total the raw materials and sub-assemblies chosen to-make lines need.")

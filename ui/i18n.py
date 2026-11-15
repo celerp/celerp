@@ -418,7 +418,8 @@ _SENTENCE_END = (".", "!", "?", "\u3002", "\uff01", "\uff1f", "\u1362", "\u061f"
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
     label without its icon), or a list of them (``steps`` and ``reasons`` joined by
-    semicolons unless every one is a whole sentence, others as sentences), in the user's language; a
+    semicolons unless every one is a whole sentence, ``reasons`` closed by a full stop, others
+    as sentences), in the user's language; a
     ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
@@ -433,8 +434,11 @@ def _refusal_param(name: str, value):
         return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
         texts = [refusal_text(v) for v in value]
-        sentences = name not in ("steps", "reasons") or all(t.endswith(_SENTENCE_END) for t in texts)
-        return (" " if sentences else "; ").join(texts)
+        if name not in ("steps", "reasons") or all(t.endswith(_SENTENCE_END) for t in texts):
+            return " ".join(texts)
+        # Reasons that are not whole sentences read as one, closed by a full stop, so the
+        # sentence after them ("And 3 more.") starts a new one; a step list sits mid-sentence.
+        return "; ".join(texts) + ("." if name == "reasons" and not texts[-1].endswith(_SENTENCE_END) else "")
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):

@@ -104,6 +104,18 @@ def row_refusal(entity_id: str | dict, why: BaseException | dict) -> str | dict:
     return f"{message_text(entity_id)}: {failure_reason(why)}"
 
 
+def keyed_reason(why: BaseException | str | dict) -> dict:
+    """A reason as a keyed refusal: the keyed refusal given or raised, else its text as written."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.error_body import as_refusal, keyed
+
+    detail = as_refusal(getattr(why, "detail", None)) if isinstance(why, BaseException) else why
+    if isinstance(detail, dict) and keyed(detail):
+        return detail
+    text = failure_reason(why) if isinstance(why, BaseException) else message_text(why)
+    return catalog_refusal("error.refusal_as_written", text=text)
+
+
 def record_refused(entity_id: str | dict, key: str, /, **params) -> dict:
     """A record refused for the reason ``import.record.<key>`` names, naming the record."""
     from celerp.accounting_roles import catalog_refusal

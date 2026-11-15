@@ -111,11 +111,11 @@ class MigrationBatchError(Exception):
 
     def __init__(self, errors: Sequence[SinkError]) -> None:
         from celerp.accounting_roles import catalog_refusal
-        from celerp.importers.results import row_refusal
+        from celerp.importers.results import keyed_reason, row_refusal
         from ui.i18n import english, refusal_text
 
         self.errors = list(errors)
-        reasons = [row_refusal(f"{e.source_type} {e.source_external_id}", _keyed_reason(e.message))
+        reasons = [row_refusal(f"{e.source_type} {e.source_external_id}", keyed_reason(e.message))
                    for e in self.errors[:REPORTED_RECORD_LIMIT]]
         self.refusal = (catalog_refusal("migration.batch_not_saved_one", n=1, reasons=reasons) if len(self.errors) == 1
                         else catalog_refusal("migration.batch_not_saved", n=len(self.errors), reasons=reasons))
@@ -123,16 +123,6 @@ class MigrationBatchError(Exception):
             self.refusal["also"] = [catalog_refusal("migration.batch_more", n=more)]
         with english():
             super().__init__(refusal_text(self.refusal))
-
-
-def _keyed_reason(message: str | dict) -> dict:
-    """A record's reason as a keyed refusal: a refusal as given, text as written."""
-    from celerp.accounting_roles import catalog_refusal
-    from celerp.importers.results import message_text
-
-    if isinstance(message, dict) and message.get("message_key"):
-        return message
-    return catalog_refusal("error.refusal_as_written", text=message_text(message))
 
 
 def validate_batch_result(records: Sequence[CIFSourceRecord], result: SinkBatchResult) -> None:

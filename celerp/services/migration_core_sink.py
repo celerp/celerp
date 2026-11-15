@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
-from celerp.importers.results import ImportOutcome, RecordOutcome
+from celerp.importers.results import ImportOutcome, RecordOutcome, keyed_reason
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
@@ -125,19 +125,19 @@ def sink_result(
 
 
 async def import_prepared(
-    prepared: Sequence[object | str],
+    prepared: Sequence[object | dict],
     write: Callable[[list], Awaitable[ImportOutcome]],
 ) -> list[RecordOutcome]:
     """Outcomes for records a sink has turned into service inputs.
 
     `prepared[i]` is the import service's input for the i-th record, or the
-    reason that record cannot be imported. The service writes every ready input
+    refusal saying why that record cannot be imported. The service writes every ready input
     in one call; the reasons become rejections, keeping one outcome per record
     in input order.
     """
-    ready = [p for p in prepared if not isinstance(p, str)]
+    ready = [p for p in prepared if not isinstance(p, dict)]
     written = iter((await write(ready)).records if ready else [])
-    return [RecordOutcome("", "rejected", p) if isinstance(p, str) else next(written) for p in prepared]
+    return [RecordOutcome("", "rejected", p) if isinstance(p, dict) else next(written) for p in prepared]
 
 
 def sink_error(record: CIFSourceRecord, message: str | dict) -> SinkError:
@@ -184,7 +184,7 @@ class CoreMigrationSink:
 
     async def _import_one(
         self, context: SinkContext, company: Company, record: CIFSourceRecord
-    ) -> tuple[str, str, str | None]:
+    ) -> tuple[str, str, dict | None]:
         if isinstance(record, CIFCompanyProfile):
             return "company", str(company.id), _apply_company_profile(company, record)
         if isinstance(record, CIFCurrency):
@@ -197,7 +197,7 @@ class CoreMigrationSink:
         if isinstance(record, CIFAttachment):
             file_id, error = await _import_attachment(context, record)
             return "attachment", file_id, error
-        return "", "", f"Record type {type(record).__name__} does not belong to the company settings."
+        return "", "", catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)
 
     async def reconcile(
         self, context: SinkContext, expectations: ReconciliationExpectations
@@ -235,7 +235,7 @@ async def stage_file_cleanup(session: AsyncSession, company_id: uuid.UUID, run_i
     return task_id
 
 
-async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tuple[str, str | None]:
+async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tuple[str, dict | None]:
     """Store one source file and attach it to the imported record it belongs to, as the
     upload routes do. Returns the stored file id, or the reason the file was not attached.
 
@@ -256,26 +256,26 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         )
     )).one_or_none()
     if target is None:
-        return "", "Its target record was not imported; the file was not attached."
+        return "", catalog_refusal("migration.record.file_target_not_imported")
     entity_type, entity_id = target
     if entity_type not in FILE_ATTACHED_EVENTS:
         raise ValueError(f"A {entity_type.replace('_', ' ')} cannot hold files; the adapter sent a file for one.")
     row = await context.session.get(Projection, {"company_id": context.company_id, "entity_id": entity_id})
     if row is None:
-        return "", "Its target record no longer exists; the file was not attached."
+        return "", catalog_refusal("migration.record.file_target_gone")
     try:
         content = await asyncio.to_thread(context.read_attachment, record.source_external_id)
     except ScanError as exc:
-        return "", f"{exc} The file was not attached."
+        return "", catalog_refusal("migration.record.file_refused", refusal=keyed_reason(exc))
     if hashlib.sha256(content).hexdigest() != record.sha256:
-        return "", "The file content does not match its recorded hash; the file was not attached."
+        return "", catalog_refusal("migration.record.file_hash_mismatch")
     mime = record.declared_content_type or mimetypes.guess_type(record.file_name)[0] or "application/octet-stream"
     file_id = attachment_file_id(context.run_id, record.source_external_id, record.sha256)
     task_id = await stage_file_cleanup(context.session, context.company_id, context.run_id, file_id, mime, key)
     try:
         meta = await store_file(str(context.company_id), content, record.file_name, mime, att_id=file_id)
     except ValueError as exc:
-        return "", f"{exc}; the file was not attached."
+        return "", catalog_refusal("migration.record.file_refused", refusal=keyed_reason(exc))
     except Exception as exc:
         raise AttachmentStorageError(record.file_name) from exc
     document_tag, is_hero = None, None
@@ -287,22 +287,20 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
     return meta["id"], None
 
 
-def _check_currency(code: str) -> str | None:
+def _check_currency(code: str) -> dict | None:
     if code.upper() not in CURRENCY_CODES:
-        return f"Currency {code} is not supported."
+        return catalog_refusal("migration.record.currency_unsupported", code=code)
     return None
 
 
-def _apply_company_profile(company: Company, profile: CIFCompanyProfile) -> str | None:
+def _apply_company_profile(company: Company, profile: CIFCompanyProfile) -> dict | None:
     currency = profile.base_currency.upper()
     error = _check_currency(currency)
     if error:
         return error
     if profile.money_precision is not None and profile.money_precision != currency_dp(currency):
-        return (
-            f"The source keeps {currency} amounts to {profile.money_precision} decimal places; "
-            f"Celerp keeps {currency} to {currency_dp(currency)}."
-        )
+        return catalog_refusal("migration.record.currency_decimals", code=currency,
+                               source=profile.money_precision, celerp=currency_dp(currency))
     settings = dict(company.settings or {})
     settings["currency"] = currency
     if profile.fiscal_year_start_month is not None:
@@ -311,16 +309,16 @@ def _apply_company_profile(company: Company, profile: CIFCompanyProfile) -> str 
     return None
 
 
-def _apply_tax_code(company: Company, tax: CIFTaxCode) -> str | None:
+def _apply_tax_code(company: Company, tax: CIFTaxCode) -> dict | None:
     if tax.inclusive:
-        return f"Tax code {tax.name} is tax-inclusive, which Celerp tax rates do not support."
+        return catalog_refusal("migration.record.tax_inclusive", name=tax.name)
     rate = float(tax.rate_percent)
     settings = dict(company.settings or {})
     taxes = list(settings.get("taxes") or [])
     for existing in taxes:
         if str(existing.get("name", "")).strip().lower() == tax.name.strip().lower():
             if float(existing.get("rate") or 0) != rate:
-                return f"A tax named {tax.name} already exists with a different rate."
+                return catalog_refusal("migration.record.tax_rate_differs", name=tax.name)
             return None
     taxes.append({
         "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
@@ -330,7 +328,7 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> str | None:
     return None
 
 
-async def _import_location(context: SinkContext, location: CIFLocation) -> tuple[uuid.UUID, str | None]:
+async def _import_location(context: SinkContext, location: CIFLocation) -> tuple[uuid.UUID, dict | None]:
     location_id = deterministic_id(context, "location", location.source_external_id)
     if await context.session.get(Location, location_id) is not None:
         return location_id, None
@@ -338,7 +336,7 @@ async def _import_location(context: SinkContext, location: CIFLocation) -> tuple
         select(Location).where(Location.company_id == context.company_id)
     )).scalars().all()
     if any(r.name == location.name for r in rows):
-        return location_id, f"A location named {location.name} already exists."
+        return location_id, catalog_refusal("migration.record.location_exists", name=location.name)
     context.session.add(Location(
         id=location_id,
         company_id=context.company_id,

@@ -29,7 +29,7 @@ from celerp.importers.schema import (
     ReconciliationExpectations,
     ReconciliationMeasure,
 )
-from celerp.accounting_roles import AccountRole
+from celerp.accounting_roles import AccountRole, catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.doc_balance import (
     AWAITING_PAYMENT_STATUSES,
@@ -241,16 +241,16 @@ async def _import_accounts(context: SinkContext, accounts: list[CIFAccount]) -> 
                     context, account, resolved.get(account.parent_external_id or ""), existing, taken,
                 )
             except Exception as exc:
-                outcomes[index] = RecordOutcome("", "failed", row_refusal(f"Account {account.name}", exc))
+                outcomes[index] = RecordOutcome("", "failed", row_refusal(catalog_refusal("migration.label.account", name=account.name), exc))
                 continue
             resolved[account.source_external_id] = code
             outcomes[index] = RecordOutcome(code, "created")
         if len(waiting) == len(pending):
             for index, account in waiting:
-                outcomes[index] = RecordOutcome(
-                    "", "rejected",
-                    f"Account {account.name}: its parent account {account.parent_external_id} was not imported.",
-                )
+                outcomes[index] = RecordOutcome("", "rejected", catalog_refusal(
+                    "migration.record.parent_not_imported",
+                    label=catalog_refusal("migration.label.account", name=account.name),
+                    parent=account.parent_external_id))
             break
         pending = waiting
     return [outcomes[i] for i in range(len(accounts))]
@@ -361,15 +361,18 @@ def _journal_record(
     codes: dict[str, str],
     contacts: dict[str, str],
     banks: dict[str, str],
-) -> AccImportRecord | str:
+) -> AccImportRecord | dict:
     """The journal import record for one source journal or transfer, or why there is none."""
     if isinstance(record, CIFJournalEntry):
+        label = catalog_refusal("migration.label.journal", ref=record.source_external_id)
         if record.currency and record.currency.upper() != base:
-            return f"Journal {record.source_external_id} is in {record.currency}; only {base} journals can be imported."
+            return catalog_refusal("migration.record.journal_not_base", label=label, currency=record.currency,
+                                   base=base)
         entries = []
         for line in record.lines:
             if line.account_external_id not in codes:
-                return f"Journal {record.source_external_id}: account {line.account_external_id} was not imported."
+                return catalog_refusal("migration.record.account_not_imported", label=label,
+                                       account=line.account_external_id)
             entry = {
                 "account": codes[line.account_external_id],
                 "debit": to_stored_float(round_money(line.debit, base)),
@@ -384,17 +387,19 @@ def _journal_record(
                 }
             if line.contact_external_id:
                 if line.contact_external_id not in contacts:
-                    return f"Journal {record.source_external_id}: contact {line.contact_external_id} was not imported."
+                    return catalog_refusal("migration.record.contact_not_imported", label=label,
+                                           contact=line.contact_external_id)
                 entry["contact"] = contacts[line.contact_external_id]
             entries.append(entry)
         data = {"memo": record.narration or "", "ts": record.entry_date.isoformat(), "entries": entries}
     elif isinstance(record, CIFBankTransfer):
+        label = catalog_refusal("migration.label.transfer", ref=record.source_external_id)
         for ext in (record.from_account_external_id, record.to_account_external_id):
             if ext not in codes:
-                return f"Transfer {record.source_external_id}: account {ext} was not imported."
+                return catalog_refusal("migration.record.account_not_imported", label=label, account=ext)
         moved = _transfer_base(record, base, banks.get(codes[record.from_account_external_id], base).upper(),
-                               banks.get(codes[record.to_account_external_id], base).upper())
-        if isinstance(moved, str):
+                               banks.get(codes[record.to_account_external_id], base).upper(), label)
+        if isinstance(moved, dict):
             return moved
         amount, legs = to_stored_float(moved), []
         for ext, native, side in ((record.to_account_external_id, record.to_amount or record.amount, "debit"),
@@ -413,7 +418,7 @@ def _journal_record(
             "entries": legs,
         }
     else:
-        return f"Record type {type(record).__name__} is not a journal."
+        return catalog_refusal("migration.record.wrong_group", record_type=type(record).__name__)
     return AccImportRecord(
         entity_id=f"je:migration:{deterministic_id(context, record.source_type, record.source_external_id)}",
         event_type=JOURNAL_CREATED,
@@ -423,26 +428,25 @@ def _journal_record(
     )
 
 
-def _transfer_base(record: CIFBankTransfer, base: str, source: str, dest: str) -> Decimal | str:
+def _transfer_base(record: CIFBankTransfer, base: str, source: str, dest: str, label: dict) -> Decimal | dict:
     """What a transfer moves in the base currency, or why it cannot be imported. A base
     currency side states it exactly; a transfer within one foreign currency converts at
     its own rate; between two foreign currencies there is no rate to convert at."""
     received = record.to_amount if record.to_amount is not None else record.amount
-    label = f"Transfer {record.source_external_id}"
     if source == base and dest == base:
         if received != record.amount:
-            return f"{label}: the two sides of a transfer in {base} must be equal."
+            return catalog_refusal("migration.record.transfer_sides_differ", label=label, currency=base)
         return round_money(record.amount, base)
     if dest == base:
         return round_money(received, base)
     if source == base:
         return round_money(record.amount, base)
     if source != dest:
-        return f"{label} is between {source} and {dest}; transfers between two foreign currencies cannot be imported."
+        return catalog_refusal("migration.record.transfer_two_foreign", label=label, source=source, destination=dest)
     if received != record.amount:
-        return f"{label}: the two sides of a transfer in {source} must be equal."
+        return catalog_refusal("migration.record.transfer_sides_differ", label=label, currency=source)
     if record.exchange_rate is None:
-        return f"{label} is in {source} and carries no exchange rate."
+        return catalog_refusal("migration.record.no_exchange_rate", label=label, currency=source)
     return round_money(record.amount * record.exchange_rate, base)
 
 
