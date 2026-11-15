@@ -12,8 +12,10 @@ import uuid
 
 import pytest
 
+import bank_statement_helpers as B
 from test_reconciliation_history import (
-    admin, bank, deposit, fx_deposit, legacy_deposit, legacy_session, match, post_je, start)
+    admin, bank, bank_complete, complete, deposit, fx_deposit, legacy_deposit, legacy_session, match, post_je, start,
+    stopped_reason)
 from test_reconciliation_reopen import _ui_as
 from test_recon_writers_bank_currency import _eur_invoice
 from ui.i18n import t, refusal_text
@@ -24,15 +26,19 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 _SOURCES = (
     "default_modules/celerp-accounting/celerp_accounting/routes.py",
     "default_modules/celerp-accounting/celerp_accounting/recon_guard.py",
+    "default_modules/celerp-accounting/celerp_accounting/bank_statements.py",
+    "default_modules/celerp-accounting/celerp_accounting/statement_lines.py",
     "default_modules/celerp-docs/celerp_docs/routes.py",
     "celerp/services/auto_je.py",
+    "ui/routes/bank.py",
     "ui/routes/reconciliation.py",
     "ui/routes/settings_accounting.py",
 )
 
 
 async def _complete(client, h, sid):
-    return await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
+    """The bank's complete finishes the statement: the job is done."""
+    await complete(client, h, sid)
 
 
 async def _currency_in_use(client, h, session, tok):
@@ -54,7 +60,7 @@ async def _currency_in_use(client, h, session, tok):
     sid = (await start(client, h, b["id"], "2026-09-30", 0.0)).json()["id"]
     ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]
     assert (await match(client, h, sid, ids)).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 async def _currency_reconciled(client, h, session, tok):
@@ -67,28 +73,24 @@ async def _currency_reconciled(client, h, session, tok):
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     assert (await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"},
                                headers=h)).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 async def _rate_required(client, h, session, tok):
     """Way out: the screen that books the line asks for the rate; with it the line books."""
     b = await bank(client, h, currency="EUR", opening=0.0)
     sid = (await start(client, h, b["id"], "2026-09-30", 25.0)).json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={"file": (
-        "s.csv", b"Date,Description,Amount\n2026-09-20,Interest,25\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    line = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()["items"][0]
-    path = f"/accounting/reconciliation/{sid}/lines/{line['id']}/create"
-    r = await client.post(path, headers=h, json={"account_code": "4100"})
-    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
-        "acct.err_bank_rate_required", currency="EUR", base="USD"), r.text
+    got = await B.import_into(client, h, sid, b"Date,Description,Amount\n2026-09-20,Interest,25\n")
+    sid, line = got["session_id"], got["lines"][0]
+    result = (await B.decide_on(client, h, b["id"], line["id"], "post", account_code="4100")).json()["results"][0]
+    assert not result["ok"] and result["reason"] == t("acct.err_bank_rate_required", currency="EUR", base="USD"), result
     async with _ui_as(tok) as ui:
-        form = (await ui.get(f"/accounting/reconcile/{sid}/lines/{line['id']}/create-form")).text
-        assert 'name="rate"' in form
-    assert (await client.post(path, headers=h, json={"account_code": "4100", "rate": 1.08})).status_code == 200
-    ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]
-    await match(client, h, sid, ids)
-    assert (await _complete(client, h, sid)).status_code == 200
+        page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
+        assert 'name="rate"' in page.split('id="bank-tpl-answer"', 1)[1].split("</template>", 1)[0]
+    result = (await B.decide_on(client, h, b["id"], line["id"], "post", account_code="4100",
+                                rate=1.08)).json()["results"][0]
+    assert result["ok"], result
+    await _complete(client, h, sid)
 
 
 async def _je_bank_currency(client, h, session, tok):
@@ -106,37 +108,38 @@ async def _je_bank_currency(client, h, session, tok):
     je = await fx_deposit(client, h, b, 1850, 0.0067, 12.40)
     sid = (await start(client, h, b["id"], "2026-09-30", 1850)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 async def _amount_unknown(client, h, session, tok):
-    """Way out: Undo on the entry with no amount, offered in the workspace."""
+    """Way out: Undo on the entry with no amount, offered on the bank page."""
     b = await bank(client, h, currency="EUR", opening=0.0)
     eur = await fx_deposit(client, h, b, 100, 1.08, 108)
     base_only = await legacy_deposit(client, h, session, b, "2026-09-12", 50.0)
     sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[eur, base_only], balance=100.0)
-    r = await _complete(client, h, sid)
-    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("acct.err_recon_amount_unknown", currency="EUR"), r.text
-    undo = f"/accounting/reconcile/{sid}/entries/{base_only}/unmatch"
+    assert stopped_reason(await bank_complete(client, h, sid)) == t("acct.err_recon_amount_unknown", currency="EUR")
+    bank_page = f"/accounting/reconcile/bank/{b['id']}"
+    undo = f"{bank_page}/statement/{sid}/undo-entry"
     async with _ui_as(tok) as ui:
-        assert undo in (await ui.get(f"/accounting/reconcile/{sid}")).text
-        assert (await ui.post(undo)).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+        page = (await ui.get(bank_page)).text
+        assert undo in page and f'value="{base_only}"' in page
+        r = await ui.post(undo, data={"je_id": base_only, "idempotency_key": B.key()})
+        assert r.status_code == 200 and t("bank.entry_undone") in r.text, r.text[:400]
+    await _complete(client, h, sid)
 
 
 async def _amount_unknown_relabel(client, h, session, tok):
-    """Way out: the button at the top of the workspace sets the account to the books' currency."""
+    """Way out: the button at the top of the bank page sets the account to the books' currency."""
     b = await bank(client, h, currency="THB", opening=0.0)
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
     sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[je], balance=200.0)
-    r = await _complete(client, h, sid)
-    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
-        "acct.err_recon_amount_unknown_relabel", currency="THB", base="USD"), r.text
-    relabel = f"/accounting/reconcile/relabel/{b['id']}"
+    assert stopped_reason(await bank_complete(client, h, sid)) == t(
+        "acct.err_recon_amount_unknown_relabel", currency="THB", base="USD")
+    relabel, bank_page = f"/accounting/reconcile/relabel/{b['id']}", f"/accounting/reconcile/bank/{b['id']}"
     async with _ui_as(tok) as ui:
-        assert f'action="{relabel}"' in (await ui.get(f"/accounting/reconcile/{sid}")).text
-        assert (await ui.post(relabel, data={"next": f"/accounting/reconcile/{sid}"})).status_code == 303
-    assert (await _complete(client, h, sid)).status_code == 200
+        assert f'action="{relabel}"' in (await ui.get(bank_page)).text
+        assert (await ui.post(relabel, data={"next": bank_page})).status_code == 303
+    await _complete(client, h, sid)
 
 
 async def _book_entry_no_amount(client, h, session, tok):
@@ -153,7 +156,7 @@ async def _book_entry_no_amount(client, h, session, tok):
     assert r.status_code == 200, r.text
     again = await fx_deposit(client, h, b, 50, 1.08, 54, day="2026-09-12")
     assert (await match(client, h, sid, [eur, again])).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 async def _transfer_to_amount(client, h, session, tok):
@@ -167,7 +170,7 @@ async def _transfer_to_amount(client, h, session, tok):
     sid = (await start(client, h, b["id"], "2026-09-30", 50.0)).json()["id"]
     ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]
     assert (await match(client, h, sid, ids)).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 async def _payment_bank_currency(client, h, session, tok):
@@ -188,7 +191,7 @@ async def _payment_bank_currency(client, h, session, tok):
     sid = (await start(client, h, eur["id"], "2026-09-30", 100.0)).json()["id"]
     ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]
     assert (await match(client, h, sid, ids)).status_code == 200
-    assert (await _complete(client, h, sid)).status_code == 200
+    await _complete(client, h, sid)
 
 
 WAYS_OUT = {
