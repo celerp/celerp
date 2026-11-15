@@ -222,18 +222,26 @@ async def test_mixed_read_and_mutation_executes_reads_and_defers_mutation(monkey
 
 
 @pytest.mark.asyncio
-async def test_mutation_with_parse_error_sibling_still_pends(monkeypatch):
-    _install(
+async def test_mutation_with_parse_error_sibling_is_proposed_once_the_model_sees_the_error(monkeypatch):
+    """A change sharing its turn with a call that could not be read goes back to the model
+    with that call's error, so the refused call is never dropped without a word; the
+    change becomes a card when the model proposes it again."""
+    fake = _install(
         monkeypatch,
-        [tool_result(calls=[
-            raw_tool_call("create_contact", "{not json", "bad"),
-            tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
-        ])],
+        [
+            tool_result(calls=[
+                raw_tool_call("create_contact", "{not json", "bad"),
+                tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
+            ]),
+            tool_result(calls=[tool_call("create_contact", {"body": {"name": "A"}}, "m2")]),
+        ],
         execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
     )
     result = await _run()
     assert result.error is None
-    assert [p.id for p in result.pending_actions] == ["m1"]
+    assert [p.id for p in result.pending_actions] == ["m2"]
+    tool_messages = [m for m in fake.calls[1]["messages"] if m.get("role") == "tool"]
+    assert {m["tool_call_id"] for m in tool_messages} == {"bad", "m1"}
 
 
 @pytest.mark.asyncio
