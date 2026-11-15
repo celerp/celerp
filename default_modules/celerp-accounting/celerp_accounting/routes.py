@@ -3687,11 +3687,9 @@ async def unmatch_reconciliation(
     """The undo of ``match_reconciliation``. An entry a statement line holds is let go
     of by undoing that line, so the line and the session never disagree."""
     recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    on_lines = set((await db.execute(select(BankStatementLine.matched_je_id).where(
-        BankStatementLine.reconciliation_id == recon.id,
-        BankStatementLine.matched_je_id.in_(payload.je_ids),
-    ))).scalars())
-    if on_lines:
+    on_lines = {je for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == recon.id))).scalars() for je in ids or []}
+    if on_lines & set(payload.je_ids):
         raise HTTPException(status_code=409, detail=t("acct.err_recon_book_entry_matched"))
     drop = set(payload.je_ids)
     recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in drop]

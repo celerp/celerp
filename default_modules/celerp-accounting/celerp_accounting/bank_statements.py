@@ -507,6 +507,20 @@ async def _difference_notes(db: AsyncSession, company_id: uuid.UUID, bank: BankA
     return [t("acct.recon_book_before", date=first.period_start, book=str(book), opening=str(opening))]
 
 
+def _counted_entries(recon: ReconciliationSession | None, rows: list[BankStatementLine], entries: list[dict],
+                     currency: str) -> list[dict]:
+    """The book entries an open statement counts by their own match that no line holds,
+    each for its Undo: an entry with no amount in the bank's currency keeps a statement
+    from balancing until it is let go of."""
+    if recon is None:
+        return []
+    held = {je for line in rows for je in line.matched_je_ids or []}
+    counted = set(recon.reconciled_je_ids or []) - held
+    return [{"je_id": e["je_id"], "ts": e.get("ts"), "memo": e.get("memo"),
+             "amount": None if e["amount"] is None else _money_text(e["amount"], currency)}
+            for e in entries if e["je_id"] in counted]
+
+
 # The views of the group table: which of a bank's lines each shows.
 VIEWS = ("open", "suggested", "questions", "posted", "all")
 
@@ -568,8 +582,10 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
                         "questions": sum(1 for l in waiting if SL.asked(l)),
                         "posted": sum(1 for l in rows if l.status != "unmatched")},
             "difference": {"amount": None if balance is None else _money_text(balance[1], bank.currency),
+                           "statement_id": None if first_open is None else str(first_open.id),
                            "statement_date": None if first_open is None else first_open.statement_date,
-                           "notes": await _difference_notes(db, company_id, bank, sessions)},
+                           "notes": await _difference_notes(db, company_id, bank, sessions),
+                           "entries": _counted_entries(first_open, rows, entries, bank.currency)},
             "suspense_count": sum(1 for l in rows if is_suspense(l))}
 
 

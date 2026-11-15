@@ -3815,6 +3815,8 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
 .bank-summary, .bank-difference { margin: 4px 0; }
 .bank-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 .bank-strip__item { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border: 1px solid var(--c-border); border-radius: 6px; }
+.bank-entries { margin: 8px 0; }
+.bank-entry { display: flex; gap: 12px; align-items: center; padding: 2px 0; }
 .bank-search { margin: 8px 0; max-width: 420px; }
 .bulk-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 .bank-groups { display: flex; flex-direction: column; border-top: 1px solid var(--c-border); }

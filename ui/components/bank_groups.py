@@ -122,6 +122,26 @@ def statements_strip(statements: list[dict], bank: dict, view: str = "open", q: 
         cls="bank-strip", aria_label=t("bank.statements_heading"))
 
 
+def counted_entries(table: dict, bank_id: str, currency: str | None, view: str, q: str) -> FT | None:
+    """The book entries the open statement counts with no line holding them, each with its
+    Undo (an entry with no amount in the bank's currency shows "--")."""
+    diff = table.get("difference") or {}
+    entries = diff.get("entries") or []
+    if not entries:
+        return None
+    undo = bank_url(bank_id, "statement", quote(str(diff["statement_id"]), safe=""), "undo-entry")
+    return Div(
+        P(t("bank.counted_entries"), cls="text-muted"),
+        *[Div(Span((e.get("ts") or EMPTY)[:10], cls="bank-entry__date"), Span(e.get("memo") or EMPTY),
+              Span(EMPTY if e["amount"] is None else money(e["amount"], currency), cls="cell--number"),
+              Form(_key_input(), *_context_inputs(view, q), Input(type="hidden", name="je_id", value=e["je_id"]),
+                   Button(t("btn.undo"), type="submit", cls="btn btn--ghost btn--sm"),
+                   hx_post=undo, hx_target="#bank-body", hx_swap="outerHTML", cls="inline-form screen-only"),
+              cls="bank-entry", id=f"bank-entry-{e['je_id']}")
+          for e in entries],
+        cls="bank-entries")
+
+
 def summary_line(table: dict, currency: str) -> FT:
     s = table["summary"]
     diff = table.get("difference") or {}

@@ -59,6 +59,7 @@ async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "",
         flash(outcome, "info") if outcome else None,
         Div(*BG.page_actions(bank_id, view, q), cls="bank-actions-bar screen-only"),
         BG.summary_line(table, cur),
+        BG.counted_entries(table, bank_id, cur, view, q),
         BG.statements_strip(table["statements"], bank, view, q),
         BG.view_links(bank_id, view, q),
         BG.search_form(bank_id, view, q),
@@ -315,12 +316,12 @@ def setup_routes(app):
     @app.post("/accounting/reconcile/bank/{bank_id}/statement/{session_id}/{action}")
     async def statement_action(request: Request, bank_id: str, session_id: str, action: str):
         """Reopen a completed statement, write off an open one's difference within
-        tolerance, or remove it while none of its lines is posted; the page body re-renders
-        with what happened."""
+        tolerance, remove it while none of its lines is posted, or let go of a book entry it
+        counts with no line; the page body re-renders with what happened."""
         token = _token(request)
         if not token:
             return _login()
-        if action not in ("reopen", "write-off", "remove"):
+        if action not in ("reopen", "write-off", "remove", "undo-entry"):
             return Response(status_code=404)
         form = await request.form()
         view, q = _view(str(form.get("view", ""))), str(form.get("q", "")).strip()
@@ -331,6 +332,8 @@ def setup_routes(app):
                 await api.reopen_reconciliation(token, session_id)
             elif action == "remove":
                 await api.delete_statement(token, session_id, key)
+            elif action == "undo-entry":
+                await api.unmatch_recon_entries(token, session_id, [str(form.get("je_id", ""))])
             else:
                 data: dict = {}
                 raw = str(form.get("rate", "")).strip()
@@ -344,7 +347,8 @@ def setup_routes(app):
             if e.status == 401:
                 return _login()
             return await _body(token, bank, view, q, outcome=str(e.detail))
-        done = {"reopen": "bank.reopened", "remove": "bank.statement_removed", "write-off": "bank.written_off"}
+        done = {"reopen": "bank.reopened", "remove": "bank.statement_removed", "write-off": "bank.written_off",
+                "undo-entry": "bank.entry_undone"}
         return await _body(token, bank, view, q, outcome=t(done[action]))
 
     @app.post("/accounting/reconcile/bank/{bank_id}/resolve-line")

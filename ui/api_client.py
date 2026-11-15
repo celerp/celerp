@@ -2218,6 +2218,11 @@ async def reopen_reconciliation(token: str, session_id: str) -> dict:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/reopen")).json()
 
 
+async def unmatch_recon_entries(token: str, session_id: str, je_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/unmatch", json={"je_ids": je_ids})).json()
+
+
 async def write_off_recon(token: str, session_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/write-off", json=data)).json()
