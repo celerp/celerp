@@ -167,14 +167,13 @@ async def post_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: 
     from celerp_accounting import import_service
     from celerp_accounting.routes import (_bank_entries, _bank_rate, _base_currency, _money_text,
                                           _pooled_offsets, require_destinations)
-    from celerp.i18n import t
 
     recon = await _session(db, line)
     amount = abs(Decimal(str(line.amount)))
     total = sum((a for _, a in offsets), Decimal(0))
     if total != amount:
-        raise HTTPException(status_code=422, detail=t("acct.err_split_total", total=_money_text(total, bank.currency),
-                                                      amount=_money_text(amount, bank.currency)))
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_split_total", total=_money_text(total, bank.currency), amount=_money_text(amount, bank.currency)))
     await require_destinations(db, company_id, {o["account"] for o, _ in offsets})
     je_type = je_type or ("recon_split" if len(offsets) > 1 else "recon_create")
     je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE[je_type]}{line.id}")

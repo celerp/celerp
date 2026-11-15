@@ -22,11 +22,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, request_fingerprint
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
@@ -522,7 +522,7 @@ class Resolve(BaseModel):
 
 
 def _reason(exc: Exception) -> str:
-    return refusal_text(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+    return refusal_text(exc.detail) if isinstance(exc, (HTTPException, KeyedRefusal)) else str(exc)
 
 
 def _check_money(decisions: list[Decision], currency: str) -> None:
@@ -539,7 +539,7 @@ def _one(lines: list[BankStatementLine]) -> BankStatementLine:
     return lines[0]
 
 
-async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list,
+async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None, line_ids: list,
                         state: tuple[str, ...] | None = ("unmatched",)) -> list[BankStatementLine]:
     """The lines under their locks, taken in the one order: each line's statement (in id
     order, refused when completed), then the lines in id order."""
@@ -638,9 +638,11 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     probe = await db.get(BankStatementLine, line_id)
     pair_id = None if probe is None or probe.status != "unmatched" else await _pair(db, company_id, probe, target,
                                                                                    d.to_amount)
-    lines = await _locked_lines(db, company_id, bank, [line_id] + ([pair_id] if pair_id else []), state=None)
+    lines = await _locked_lines(db, company_id, None, [line_id] + ([pair_id] if pair_id else []), state=None)
     by_id = {l.id: l for l in lines}
     line = by_id[line_id]
+    if line.bank_account_id != bank.id:
+        raise SL._not_found("line")
     held = list(line.matched_je_ids or [])
     if line.status == "matched" and held and all(j.startswith("je:recon:transfer:") for j in held):
         return {str(line.id): held}
@@ -652,3 +654,200 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
                                     paired=paired, rate=d.rate, to_amount=d.to_amount, key=key)
     return {str(line.id): je_ids}
+
+
+def _refused(status: int, key: str, **params) -> HTTPException:
+    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
+
+
+async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
+                   key: str) -> dict:
+    """Pay open documents with one line: an invoice from a deposit, a bill from a
+    withdrawal, each at most its open balance (the payment service refuses more, never
+    clamps), and the parts that are not the documents (a fee taken out, an overpayment
+    kept) as one entry, all together equal to the line."""
+    from celerp.models.projections import Projection
+    from celerp.services.permissions import admit_permission
+    from celerp_accounting.routes import _money_text as money_text
+    from celerp_docs.routes import apply_doc_payment
+
+    await admit_permission(db, company_id, role, "record_payments")
+    line = _one(await _locked_lines(db, company_id, bank, d.line_ids))
+    if not d.docs:
+        raise _refused(422, "acct.err_recon_pay_needs_doc")
+    amount = abs(Decimal(str(line.amount)))
+    total = sum((Decimal(str(x.amount)) for x in d.docs), Decimal(0)) + \
+        sum((Decimal(str(p.amount)) for p in d.parts or ()), Decimal(0))
+    if total != amount:
+        raise _refused(422, "acct.err_split_total", total=money_text(total, bank.currency),
+                       amount=money_text(amount, bank.currency))
+    want = "invoice" if line.amount > 0 else "bill"
+    je_ids: list[str] = []
+    for x in d.docs:
+        row = await db.get(Projection, {"company_id": company_id, "entity_id": x.doc_id})
+        if row is not None and row.entity_type == "doc" and (row.state or {}).get("doc_type") != want:
+            raise _refused(422, "acct.err_recon_doc_direction")
+        event, _applied = await apply_doc_payment(
+            db, str(company_id), x.doc_id,
+            {"amount": x.amount, "payment_date": line.line_date, "bank_account": bank.chart_account_code,
+             **({"conversion_rate": d.rate} if d.rate else {})},
+            source="reconciliation", actor_id=actor_id, idempotency_key=f"{key}:{line.id}:pay:{x.doc_id}",
+            commit=False)
+        je_ids.append(f"je:auto:{x.doc_id}:pay:{event.data['index']}")
+    if d.parts:
+        je_ids.append(await SL.post_parts(
+            db, company_id=company_id, actor_id=actor_id, bank=bank, line=line,
+            parts=[({"account": p.account_code}, Decimal(str(p.amount))) for p in d.parts], rate=d.rate, key=key))
+    SL.settle_payment(await SL._session(db, line), line, je_ids)
+    return {str(line.id): je_ids}
+
+
+def _offsets(d: Decision, lines: list[BankStatementLine]) -> list[tuple[dict, Decimal] | None]:
+    """Per line, what it posts against: the decision's splits (one line only) or its account."""
+    def fields(account, contact, fund_id) -> dict:
+        return {"account": account, **({"contact": contact} if contact else {}), **({"fund_id": fund_id} if fund_id else {})}
+    if d.splits:
+        _one(lines)
+        return [[(fields(s.account_code, s.contact, s.fund_id), Decimal(str(s.amount))) for s in d.splits]]
+    if not d.account_code:
+        raise _refused(422, "acct.err_recon_needs_account")
+    return [[(fields(d.account_code, d.contact, d.fund_id), abs(Decimal(str(l.amount))))] for l in lines]
+
+
+async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
+                  key: str) -> dict:
+    """Carry out one decision; ``{line_id: je_ids}`` for each line it settled."""
+    if d.kind in ("transfer", "cash"):
+        return await _transfer(db, company_id, actor_id, bank, d, key)
+    if d.kind == "pay_doc":
+        return await _pay_doc(db, company_id, actor_id, role, bank, d, key)
+    lines = await _locked_lines(db, company_id, bank, d.line_ids)
+    if d.kind == "match":
+        await SL.match_lines(db, company_id=company_id, bank=bank, lines=lines, je_ids=d.je_ids or [])
+        return {str(l.id): list(d.je_ids or []) for l in lines}
+    if d.kind == "no_entry":
+        for line in lines:
+            await SL.skip_line(db, line)
+        return {str(l.id): [] for l in lines}
+    if d.kind == "suspense":
+        account = await suspense_account(db, company_id, actor_id)
+        offsets = [[({"account": account}, abs(Decimal(str(l.amount))))] for l in lines]
+    else:
+        offsets = _offsets(d, lines)
+    out = {}
+    for line, own in zip(lines, offsets):
+        out[str(line.id)] = await SL.post_line(
+            db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, offsets=own, rate=d.rate,
+            memo=d.memo, entry_date=d.date.isoformat() if d.date else None, key=key,
+            je_type="recon_suspense" if d.kind == "suspense" else None)
+        if d.remember:
+            await _remember(db, company_id, line, d)
+    return out
+
+
+async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, accept: Accept) -> list[Decision]:
+    """The decisions the selected groups' suggestions make: each open line of a named group
+    (narrowed to ``line_ids`` when given) that carries a suggestion. A key with no open
+    line, or a named line that is not open with a suggestion, is refused."""
+    from celerp.accounting_roles import AccountRole
+    from celerp.services import account_roles
+
+    open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
+    rows = [l for l in await _bank_lines(db, company_id, bank)
+            if l.reconciliation_id in open_ids and l.status == "unmatched"]
+    keys = set(accept.group_keys)
+    in_groups = {l.id: l for l in rows if _group_key(_line_dict(l, bank.currency)) in keys}
+    found = {_group_key(_line_dict(l, bank.currency)) for l in in_groups.values()}
+    if keys - found:
+        raise _refused(409, "reconciliation.group_closed")
+    if accept.line_ids is not None:
+        named = await SL.scoped(db, company_id, "line", accept.line_ids, bank=bank)
+        if any(l.id not in in_groups or not l.suggestion for l in named):
+            raise _refused(409, "reconciliation.line_not_open")
+        chosen = [in_groups[l.id] for l in named]
+    else:
+        chosen = [l for l in in_groups.values() if l.suggestion and l.suggestion.get("kind")]
+    tax_account = None
+    out = []
+    for line in sorted(chosen, key=lambda l: (l.line_date, str(l.id))):
+        s = line.suggestion or {}
+        base = {"line_ids": [line.id], "kind": s.get("kind")}
+        if s.get("kind") == "post" and s.get("vat"):
+            tax_account = tax_account or await account_roles.resolve(db, company_id, AccountRole.TAX_INPUT)
+            base["splits"] = [{"account_code": s.get("account_code"), "amount": s["vat"]["net"],
+                               "contact": s.get("contact_id")},
+                              {"account_code": tax_account, "amount": s["vat"]["tax"]}]
+        elif s.get("kind") == "post":
+            base.update(account_code=s.get("account_code"), contact=s.get("contact_id"))
+        elif s.get("kind") == "match":
+            base["je_ids"] = s.get("je_ids")
+        elif s.get("kind") == "transfer":
+            base["target_bank_id"] = s.get("target_bank_id")
+        elif s.get("kind") == "pay_doc":
+            base["docs"] = s.get("docs")
+        if s.get("kind") not in _KINDS.__args__:
+            raise _refused(409, "reconciliation.line_not_open")
+        out.append(Decision(**base))
+    return out
+
+
+async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[Decision], done: dict,
+                      by_line: dict) -> None:
+    """Count each rule whose suggestion a posted line followed."""
+    from celerp_accounting.models import ReconciliationRule
+
+    counts: dict = {}
+    for d in decisions:
+        for lid in d.line_ids:
+            rule_id = by_line.get(lid)
+            if rule_id and done.get(str(lid)):
+                counts[rule_id] = counts.get(rule_id, 0) + 1
+    for rule_id, n in counts.items():
+        rule = (await db.execute(select(ReconciliationRule).where(
+            ReconciliationRule.id == uuid.UUID(rule_id), ReconciliationRule.company_id == company_id)
+            .with_for_update())).scalars().first()
+        if rule is not None:
+            rule.times_applied = (rule.times_applied or 0) + n
+
+
+@router.post(f"{API}/bank/{{bank_id}}/resolve", summary="Resolve a bank's statement lines: post, match, no entry, "
+             "transfer, cash, pay documents or Suspense", openapi_extra=_agent("decisions"))
+async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = Depends(get_current_company_id),
+                  _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
+                  user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:
+    """Each decision commits on its own: a refused one (a line another user settled, a
+    locked period, a document over its open balance) is reported with its reason while
+    the rest go through. A replay of the same key answers the first result."""
+    key, actor_id = payload.idempotency_key, user.id
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    decisions = list(payload.decisions or [])
+    by_line: dict = {}
+    if payload.accept is not None:
+        accepted = await _accepted(db, company_id, bank, payload.accept)
+        lines = {l.id: l for l in await SL.scoped(db, company_id, "line", [x for d in accepted for x in d.line_ids],
+                                                  bank=bank)} if accepted else {}
+        by_line = {lid: (l.suggestion or {}).get("rule_id") for lid, l in lines.items()}
+        decisions += accepted
+    _check_money(decisions, bank.currency)
+    await db.rollback()
+    results: list[dict] = []
+    done: dict = {}
+    for d in decisions:
+        try:
+            bank = await _bank(db, company_id, bank_id)
+            settled = await _decide(db, company_id, actor_id, role, bank, d, key)
+            await db.commit()
+        except (HTTPException, KeyedRefusal) as exc:
+            await db.rollback()
+            results += [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc)} for lid in d.line_ids]
+            continue
+        done.update(settled)
+        results += [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
+    if by_line:
+        await _bump_rules(db, company_id, decisions, done, by_line)
+    result = await _recorded(db, company_id, actor_id, key, request, "resolve", bank_id, {"results": results})
+    await db.commit()
+    return result

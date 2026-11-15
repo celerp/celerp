@@ -46,7 +46,7 @@ from ui.components.encode import as_js, call, EVENT, safe_url, THIS
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
 # human label is resolved at render via display_enum(domain="bank_type").
-_BANK_TYPES = ("checking", "savings", "credit_card")
+_BANK_TYPES = ("checking", "savings", "credit_card", "cash")
 
 
 

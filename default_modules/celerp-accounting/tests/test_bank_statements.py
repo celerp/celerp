@@ -240,15 +240,18 @@ async def test_locked_line_reports_engine_refusal(client):
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "post", "account_code": "5100"}])
     res = r.json()["results"][0]
-    assert res["ok"] is False and "2026-01-31" in res["reason"]
+    from celerp.events.engine import period_locked_refusal
+    from ui.i18n import refusal_text
+    assert res["ok"] is False and res["reason"] == refusal_text(period_locked_refusal("2026-01-31"))
 
 
 async def test_resolve_across_statements_respects_each_session_guard(client):
     co, bk = await _co_bank(client)
-    await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00"), ("2026-01-06", "FEE", "-5.00")], closing="-5.00")
-    jan = B.all_lines(await B.groups(client, co, bk["id"]))
+    await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00"), ("2026-01-06", "CHARGE", "-7.00"),
+                                      ("2026-01-07", "CHARGE REVERSAL", "7.00")])
+    jan = sorted(B.all_lines(await B.groups(client, co, bk["id"])), key=lambda l: l["line_date"])
     await _post(client, co, bk, jan[0])
-    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [jan[1]["id"]], "kind": "no_entry"}])
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [jan[1]["id"], jan[2]["id"]], "kind": "no_entry"}])
     assert r.status_code == 200
     assert (await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()},
                               headers=co["h"])).json()["completed"]
@@ -276,11 +279,11 @@ async def test_one_deposit_matches_three_payments(client):
     co, bk = await _co_bank(client)
     jes = []
     for d in ("2026-01-02", "2026-01-03", "2026-01-04"):
-        r = await client.post("/accounting/journal-entries", json={"memo": "receipt", "ts": d, "entries": [
+        r = await client.post("/accounting/journal-entries", json={"memo": "receipt", "ts": d, "idempotency_token": B.key(), "entries": [
             {"account": bk["chart_account_code"], "debit": 100.0, "credit": 0},
-            {"account": "4000", "debit": 0, "credit": 100.0}]}, headers=co["h"])
+            {"account": "4100", "debit": 0, "credit": 100.0}]}, headers=co["h"])
         assert r.status_code == 200, r.text
-        jes.append(r.json()["id"])
+        jes.append(r.json()["je_id"])
     await _one_month(client, co, bk, [("2026-01-05", "DEPOSIT BATCH", "300.00")])
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "match", "je_ids": jes}])
@@ -291,10 +294,10 @@ async def test_one_deposit_matches_three_payments(client):
 
 async def test_two_lines_match_one_entry(client):
     co, bk = await _co_bank(client)
-    r = await client.post("/accounting/journal-entries", json={"memo": "receipt", "ts": "2026-01-02", "entries": [
+    r = await client.post("/accounting/journal-entries", json={"memo": "receipt", "ts": "2026-01-02", "idempotency_token": B.key(), "entries": [
         {"account": bk["chart_account_code"], "debit": 300.0, "credit": 0},
-        {"account": "4000", "debit": 0, "credit": 300.0}]}, headers=co["h"])
-    je = r.json()["id"]
+        {"account": "4100", "debit": 0, "credit": 300.0}]}, headers=co["h"])
+    je = r.json()["je_id"]
     await _one_month(client, co, bk, [("2026-01-05", "PART A", "100.00"), ("2026-01-06", "PART B", "200.00")])
     lines = B.all_lines(await B.groups(client, co, bk["id"]))
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [l["id"] for l in lines], "kind": "match", "je_ids": [je]}])
@@ -351,8 +354,8 @@ async def test_transfer_pair_posts_once_from_either_side(client):
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
                                                           "target_bank_id": b["id"]}])
     assert r.json()["results"][0]["je_ids"] == [je]
-    journal = (await client.get("/accounting/journal", params={"je_type": "recon_transfer"}, headers=co["h"])).json()
-    assert len([e for e in journal.get("items", journal) if e.get("je_type") == "recon_transfer"]) == 1
+    journal = (await client.get("/accounting/journal", headers=co["h"])).json()["entries"]
+    assert len([e for e in journal if e.get("je_type") == "recon_transfer"]) == 1
 
 
 async def test_transfer_to_foreign_bank_holds_its_currency(client):

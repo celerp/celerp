@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -2759,13 +2759,13 @@ async def statement_of_account(
 # Bank Accounts CRUD
 # ---------------------------------------------------------------------------
 
-_BANK_TYPES = frozenset({"checking", "savings", "credit_card"})
+_BANK_TYPES = frozenset({"checking", "savings", "credit_card", "cash"})
 
 
 class BankAccountCreate(BaseModel):
     bank_name: str
     account_number: str
-    bank_type: str  # checking|savings|credit_card
+    bank_type: str  # checking|savings|credit_card|cash
     currency: str
     opening_balance: FiniteFloat = 0.0
     # The day the opening balance stands on; the company's today when not given.
@@ -3399,13 +3399,16 @@ def _rule_to_dict(r: ReconciliationRule) -> dict:
     return {
         "id": str(r.id),
         "company_id": str(r.company_id),
-        "bank_account_id": str(r.bank_account_id),
+        "bank_account_id": None if r.bank_account_id is None else str(r.bank_account_id),
         "match_field": r.match_field,
         "match_pattern": r.match_pattern,
         "match_type": r.match_type,
+        "match_amount": None if r.match_amount is None else str(r.match_amount),
         "target_account_code": r.target_account_code,
+        "target_bank_id": None if r.target_bank_id is None else str(r.target_bank_id),
+        "contact_id": r.contact_id,
+        "origin": r.origin,
         "default_memo": r.default_memo,
-        "default_tax": r.default_tax,
         "is_active": r.is_active,
         "times_applied": r.times_applied or 0,
         "created_at": r.created_at.isoformat(),
@@ -3875,24 +3878,47 @@ class WriteOffPayload(BaseModel):
     rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
 
 
+_RULE_FIELDS = Literal["description", "reference", "counterparty_account", "counterparty_key"]
+_RULE_TYPES = Literal["contains", "exact", "starts_with"]
+
+
 class ReconRuleCreate(BaseModel):
-    bank_account_id: uuid.UUID
-    match_field: str = "description"
-    match_pattern: str
-    match_type: str = "contains"
-    target_account_code: str
-    default_memo: str | None = None
-    default_tax: str | None = None
+    """A rule on one bank, or every bank when ``bank_account_id`` is empty. A rule on a
+    sparse counterparty key (a bare WITHDRAWAL or TRANSFER) names its amount too."""
+    bank_account_id: uuid.UUID | None = None
+    match_field: _RULE_FIELDS = "description"
+    match_pattern: str = Field(min_length=1, max_length=256)
+    match_type: _RULE_TYPES = "contains"
+    match_amount: FiniteFloat | None = None
+    target_account_code: str = Field(min_length=1, max_length=32)
+    contact_id: str | None = Field(None, max_length=128)
+    default_memo: str | None = Field(None, max_length=256)
 
 
 class ReconRulePatch(BaseModel):
-    match_field: str | None = None
-    match_pattern: str | None = None
-    match_type: str | None = None
-    target_account_code: str | None = None
-    default_memo: str | None = None
-    default_tax: str | None = None
+    match_field: _RULE_FIELDS | None = None
+    match_pattern: str | None = Field(None, min_length=1, max_length=256)
+    match_type: _RULE_TYPES | None = None
+    match_amount: FiniteFloat | None = None
+    target_account_code: str | None = Field(None, min_length=1, max_length=32)
+    contact_id: str | None = Field(None, max_length=128)
+    default_memo: str | None = Field(None, max_length=256)
     is_active: bool | None = None
+
+
+async def _rule_amount(db: AsyncSession, company_id: uuid.UUID, bank_id, pattern: str, amount) -> Decimal | None:
+    """The rule's amount as money in its bank's currency (the books' for an every-bank
+    rule); a sparse key without one is refused, since the key alone names nobody."""
+    from celerp_accounting.statement_lines import money_value
+    if amount is None:
+        if pattern.startswith("SPARSE:"):
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_rule_sparse_amount"))
+        return None
+    currency = None
+    if bank_id is not None:
+        currency = (await db.execute(select(BankAccount.currency).where(
+            BankAccount.id == bank_id, BankAccount.company_id == company_id))).scalar_one_or_none()
+    return money_value(amount, currency or await _base_currency(db, company_id))
 
 
 class StatementFileImport(BaseModel):
@@ -4703,13 +4729,15 @@ async def create_recon_rule(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     await lock_company(db, company_id)
-    bank = (await db.execute(select(BankAccount.id).where(
-        BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
-    ))).scalar_one_or_none()
-    if bank is None:
-        raise HTTPException(status_code=404, detail=refusal(
-            "accounting.bank_not_found",
-            "That bank account was not found in this company. Choose one of the company's bank accounts."))
+    if payload.bank_account_id is not None:
+        bank = (await db.execute(select(BankAccount.id).where(
+            BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
+        ))).scalar_one_or_none()
+        if bank is None:
+            raise HTTPException(status_code=404, detail=refusal(
+                "accounting.bank_not_found",
+                "That bank account was not found in this company. Choose one of the company's bank accounts."))
+    amount = await _rule_amount(db, company_id, payload.bank_account_id, payload.match_pattern, payload.match_amount)
     rule = ReconciliationRule(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -4717,9 +4745,11 @@ async def create_recon_rule(
         match_field=payload.match_field,
         match_pattern=payload.match_pattern,
         match_type=payload.match_type,
+        match_amount=amount,
         target_account_code=payload.target_account_code,
+        contact_id=payload.contact_id,
         default_memo=payload.default_memo,
-        default_tax=payload.default_tax,
+        origin="user",
         is_active=True,
         times_applied=0,
     )
@@ -4752,10 +4782,13 @@ async def patch_recon_rule(
 ) -> dict:
     rule = await _locked_rule(db, company_id, rule_id)
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
-                  "default_memo", "default_tax", "is_active"):
+                  "contact_id", "default_memo", "is_active"):
         val = getattr(payload, field)
         if val is not None:
             setattr(rule, field, val)
+    if payload.match_amount is not None or rule.match_amount is None:
+        rule.match_amount = await _rule_amount(db, company_id, rule.bank_account_id, rule.match_pattern,
+                                               payload.match_amount)
     await db.commit()
     return _rule_to_dict(rule)
 
