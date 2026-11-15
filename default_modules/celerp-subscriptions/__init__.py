@@ -13,8 +13,8 @@ PLUGIN_MANIFEST = {
     "depends_on": ["celerp-docs"],
     "slots": {
         "nav": [
-            {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
-            {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
+            {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "help": "subscriptions.overview", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "permission": "view_subscriptions"},
+            {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "help": "subscriptions.overview", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
         ],
         "on_modules_ready": [{"handler": "celerp_subscriptions.migration:migrate_schedules_hook"}],
         "on_company_restored": [{"handler": "celerp_subscriptions.migration:reconcile_restored_company_schedules"}],
