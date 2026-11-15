@@ -63,7 +63,7 @@ _MEDIA_READ_BYTES = 256 * 1024
 
 # HEAD is the same operation as GET, so the schema lists it once.
 @media_router.get("/{token}", openapi_extra=agent_excluded("machine"))
-@media_router.head("/{token}", openapi_extra=agent_excluded("machine"))
+@media_router.head("/{token}", include_in_schema=False, openapi_extra=agent_excluded("machine"))
 async def connector_media(token: str, request: Request):
     """One product image a sync sent a store, while its token is valid. HEAD answers
     from the file's size without reading it."""

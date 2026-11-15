@@ -1561,6 +1561,9 @@
   "POST /lists/{entity_id}/restore-total": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
+  "GET /help/browse": {
+    "query:module": "Optional module name, to list only that module's help pages."
+  },
   "GET /help/for-route": {
     "query:path": "Address of the screen to find help pages for, starting with a slash, with its query if it has one. The path part is at most 300 characters and the whole address at most 4096."
   },

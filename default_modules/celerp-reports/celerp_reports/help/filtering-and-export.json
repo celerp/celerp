@@ -6,7 +6,7 @@
   "routes": ["/reports/ar-aging"],
   "permission": "view_financial_reports",
   "order": 2,
-  "checked": "e295e0a25196858128f4d04d8aaee64b94afdc69ce2a2b8820d63c9588826587",
+  "checked": "cc407bbc18ff9899ade955b8ee0d7201edb5cc04e46b37ec14c389616bec265a",
   "steps": [
     {
       "text": "Each report has a row of preset periods such as {month}, or a custom range typed into the two date fields beside them.",
