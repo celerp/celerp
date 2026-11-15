@@ -30477,5 +30477,10 @@
     "tests/test_cost_event_visibility.py::test_a_field_changed_inside_a_cost_event_is_no_history_filter_without_costs": 0.49341218697372824,
     "tests/test_cost_event_visibility.py::test_activity_search_finds_a_cost_only_for_a_role_that_sees_it": 0.667644156026654,
     "tests/test_cost_event_visibility.py::test_odd_shapes_of_a_cost_price_event_still_show_only_the_price_type": 0.8472528740530834,
-    "tests/test_cost_event_visibility.py::test_random_cost_events_show_and_match_only_their_plain_fields": 0.6719241208629683
+    "tests/test_cost_event_visibility.py::test_random_cost_events_show_and_match_only_their_plain_fields": 0.6719241208629683,
+    "tests/test_help_api.py::test_help_search_finds_the_funds_and_deferred_revenue_pages[deferred revenue-accounting.revenue-recognition]": 0.37650077999569476,
+    "tests/test_help_api.py::test_help_search_finds_the_funds_and_deferred_revenue_pages[move money between funds-accounting.funds]": 0.1902540058363229,
+    "tests/test_help_api.py::test_help_search_finds_the_funds_and_deferred_revenue_pages[release restricted money-accounting.funds]": 0.26372791395988315,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-accounting.funds]": 17.935995292966254,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-accounting.revenue-recognition]": 3.446803906932473
 }
