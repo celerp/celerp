@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "Ada akun di bawahnya, jadi bisa diarsipkan, bukan dihapus.",
   "acct.err_remove_posting_role": "Ini akun posting untuk {roles}, jadi bisa diarsipkan, bukan dihapus.",
   "acct.err_remove_bank_account": "Sebuah rekening bank memakainya, jadi bisa diarsipkan, bukan dihapus.",
-  "acct.err_remove_sold_on": "{names} dijual pada akun ini, jadi bisa diarsipkan, bukan dihapus."
+  "acct.err_remove_sold_on": "{names} dijual pada akun ini, jadi bisa diarsipkan, bukan dihapus.",
+  "error.backup_download_failed": "Cadangan cloud ini tidak dapat diunduh. Coba lagi; jika terus terjadi, tanyakan di GitHub Issues atau Discussions. (Detail untuk dukungan: {detail})",
+  "connectors.err_order_still_refused": "Pesanan ini masih tidak dapat diimpor: {reason}",
+  "contacts.err_import_refused": "Kontak ini tidak dapat diimpor: {reason}",
+  "contacts.err_delete_linked": "Kontak ini tidak dapat dihapus selama dokumen, daftar, atau kesepakatan menyebutnya: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp tidak dapat mengetahui pembukuan mana yang mencatat pembayaran Stripe ini, jadi pembayaran ini tidak dapat dikembalikan atau dibatalkan di sini. Catat pengembalian dana dengan entri jurnal sebagai gantinya.",
+  "pay.err_refund_not_linked_to_stripe": "Pembayaran ini sudah tidak terhubung ke Stripe."
 }

@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "ከሥሩ መለያዎች ስላሉ ማህደር ውስጥ ሊቀመጥ ይችላል እንጂ ሊወገድ አይችልም።",
   "acct.err_remove_posting_role": "ለ{roles} የመመዝገቢያ መለያ ስለሆነ ማህደር ውስጥ ሊቀመጥ ይችላል እንጂ ሊወገድ አይችልም።",
   "acct.err_remove_bank_account": "የባንክ ሂሳብ ስለሚጠቀምበት ማህደር ውስጥ ሊቀመጥ ይችላል እንጂ ሊወገድ አይችልም።",
-  "acct.err_remove_sold_on": "{names} በዚህ መለያ ላይ ስለሚሸጡ ማህደር ውስጥ ሊቀመጥ ይችላል እንጂ ሊወገድ አይችልም።"
+  "acct.err_remove_sold_on": "{names} በዚህ መለያ ላይ ስለሚሸጡ ማህደር ውስጥ ሊቀመጥ ይችላል እንጂ ሊወገድ አይችልም።",
+  "error.backup_download_failed": "ይህ የደመና ምትኬ ሊወርድ አልቻለም። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ላይ ይጠይቁ። (ለድጋፍ ዝርዝሮች፦ {detail})",
+  "connectors.err_order_still_refused": "ይህ ትዕዛዝ አሁንም ሊገባ አልቻለም፦ {reason}",
+  "contacts.err_import_refused": "ይህ እውቂያ ሊገባ አልቻለም፦ {reason}",
+  "contacts.err_delete_linked": "ሰነዶች፣ ዝርዝሮች ወይም ስምምነቶች እስከሚጠቅሷቸው ድረስ እነዚህ እውቂያዎች ሊሰረዙ አይችሉም፦ {records}።",
+  "documents.err_stripe_books_unreadable": "Celerp ይህ የStripe ክፍያ በየትኛው መዝገብ እንደተመዘገበ ሊያውቅ አይችልም፤ ስለዚህ እዚህ ተመላሽ ሊደረግ ወይም ሊሰረዝ አይችልም። በምትኩ ተመላሹን በጆርናል ግቤት ይመዝግቡ።",
+  "pay.err_refund_not_linked_to_stripe": "ክፍያው ከእንግዲህ ከStripe ጋር አልተገናኘም።"
 }

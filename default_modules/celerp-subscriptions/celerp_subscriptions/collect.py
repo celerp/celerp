@@ -491,7 +491,8 @@ def _refused(answer) -> HTTPException:
         return HTTPException(status_code=502, detail=t("subscriptions.err_cloud_unreachable"))
     reason = collection.refusal_of(answer)
     if answer[0] == 429 and reason in ("setup_link_daily_limit", "setup_email_daily_limit"):
-        return HTTPException(status_code=429, detail=t(f"subscriptions.err_{reason}"))
+        return HTTPException(status_code=429, detail=t("subscriptions.err_setup_link_daily_limit")
+                             if reason == "setup_link_daily_limit" else t("subscriptions.err_setup_email_daily_limit"))
     if reason == "collection_off":
         return HTTPException(status_code=409, detail=t("subscriptions.err_collection_off"))
     return HTTPException(status_code=409, detail=t("subscriptions.err_collection_refused", reason=reason or "-"))

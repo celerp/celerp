@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.cloud_gate import upgrade_banner
 from ui.components.encode import as_js
 from ui.components.module_off import module_off_page
@@ -145,9 +145,7 @@ def _invoice_editor(reference: str, invoices: list[dict], value: str = "") -> FT
 
 def _refusal(error: APIError) -> str:
     """Why the payment was not recorded, in the user's language."""
-    reason = (error.data or {}).get("reason")
-    key = f"pay.unmatched_refused_{reason}"
-    return t(key) if reason and t(key) != key else str(error.detail)
+    return error_message(error)
 
 
 def _unmatched_payments(payments: list[dict]) -> FT | str:

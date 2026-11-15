@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "Darunter liegen Konten, daher kann es archiviert, aber nicht entfernt werden.",
   "acct.err_remove_posting_role": "Es ist das Buchungskonto für {roles}, daher kann es archiviert, aber nicht entfernt werden.",
   "acct.err_remove_bank_account": "Ein Bankkonto verwendet es, daher kann es archiviert, aber nicht entfernt werden.",
-  "acct.err_remove_sold_on": "{names} werden darauf verkauft, daher kann es archiviert, aber nicht entfernt werden."
+  "acct.err_remove_sold_on": "{names} werden darauf verkauft, daher kann es archiviert, aber nicht entfernt werden.",
+  "error.backup_download_failed": "Diese Cloud-Sicherung konnte nicht heruntergeladen werden. Versuchen Sie es erneut; wenn es weiterhin passiert, fragen Sie in GitHub Issues oder Discussions. (Details für den Support: {detail})",
+  "connectors.err_order_still_refused": "Diese Bestellung konnte immer noch nicht importiert werden: {reason}",
+  "contacts.err_import_refused": "Dieser Kontakt konnte nicht importiert werden: {reason}",
+  "contacts.err_delete_linked": "Diese Kontakte können nicht gelöscht werden, solange Dokumente, Listen oder Deals sie nennen: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp kann nicht erkennen, in welchen Büchern diese Stripe-Zahlung erfasst wurde, daher kann sie hier nicht erstattet oder storniert werden. Erfassen Sie die Erstattung stattdessen mit einer Journalbuchung.",
+  "pay.err_refund_not_linked_to_stripe": "Die Zahlung ist nicht mehr mit Stripe verknüpft."
 }

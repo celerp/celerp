@@ -237,7 +237,7 @@ async def test_import_as_answers_the_reason_an_order_still_waits(store, monkeypa
     async with ui_signed_in(store.tok) as ui:
         r = await ui.api.post("/connectors/woocommerce/orders/61/import-next", json={"signature": entry["signature"]})
     assert r.status_code == 409, r.text
-    assert refusal_text(r.json()["detail"]) == refusal_text(entry["reason"])
+    assert refusal_text(r.json()["detail"]) == t("connectors.err_order_still_refused", reason=refusal_text(entry["reason"]))
     assert await store.created() == (0, None)
 
 

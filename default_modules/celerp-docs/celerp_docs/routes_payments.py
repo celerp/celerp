@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole, Refused, refusal, refusal_detail
+from celerp.accounting_roles import AccountRole, Refused, catalog_refusal, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -113,7 +113,7 @@ _BOOKS = ("deposit_account", "timezone", "base_currency", "rate")
 async def payment_books(session: AsyncSession, company_id, state: dict) -> dict:
     """The books an online payment on *state* is recorded on, fixed when its payment
     page opens: the deposit account, the business timezone that dates it, the company
-    currency and the document's rate. ValueError when the document cannot be paid in
+    currency and the document's rate. Refused when the document cannot be paid in
     the company's books (no usable timezone or rate)."""
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
@@ -173,7 +173,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     if not managed:
         try:
             context = await payment_books(session, company_id, doc_state)
-        except ValueError as exc:
+        except Refused as exc:
             raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
@@ -245,9 +245,6 @@ def unmatched_refusal(state: dict, amount: Decimal, currency: str) -> str | None
 REFUND_TRANSITIONS = ("applied", "reversed")
 
 
-NOT_LINKED_TO_STRIPE = "The payment is no longer linked to Stripe"
-
-
 def stripe_refund_key(refund_id: str, cycle: int, transition: str) -> str:
     """The ledger name of one change to a Stripe refund, in the *cycle* Stripe put
     the refund through."""
@@ -297,7 +294,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     released_at = payment.get("stripe_released_at")
     if (reference not in await stripe_receipt_references(session, company_id, entity_id, managed=True)
             or (released_at and occurred_at >= datetime.datetime.fromisoformat(released_at))):
-        raise HTTPException(status_code=409, detail=NOT_LINKED_TO_STRIPE)
+        raise HTTPException(status_code=409, detail=t("pay.err_refund_not_linked_to_stripe"))
     if payment.get("bank_account") != account or Decimal(str(payment.get("conversion_rate"))) != rate:
         raise HTTPException(status_code=422, detail=refusal(
             "pay.err_refund_books_mismatch",
@@ -537,17 +534,17 @@ async def payments_unmatched(company_id=Depends(get_current_company_id),
 
 
 # Why an unmatched payment was not recorded on the chosen invoice
-# (``pay.UnmatchedRefused``); the web app shows them in the user's language.
+# (``pay.UnmatchedRefused``), each reason's catalog key.
 UNMATCHED_REFUSALS = {
-    "gone": "This payment is no longer with the unmatched payments.",
-    "other_company": "This payment was made to another company. Switch to that company to record it there.",
-    "missing": "This invoice no longer exists.",
-    "not_invoice": "Only an invoice can take this payment.",
-    "status": "This invoice cannot take a payment in its current status.",
-    "currency": "This invoice is in another currency than the payment.",
-    "paid": "This invoice is already paid.",
-    "too_small": "This invoice owes less than the payment.",
-    "refused": "This invoice cannot take this payment.",
+    "gone": "pay.unmatched_refused_gone",
+    "other_company": "pay.unmatched_refused_other_company",
+    "missing": "pay.unmatched_refused_missing",
+    "not_invoice": "pay.unmatched_refused_not_invoice",
+    "status": "pay.unmatched_refused_status",
+    "currency": "pay.unmatched_refused_currency",
+    "paid": "pay.unmatched_refused_paid",
+    "too_small": "pay.unmatched_refused_too_small",
+    "refused": "pay.unmatched_refused_refused",
 }
 
 
@@ -560,7 +557,7 @@ _UNMATCHED_RECORDERS = [Depends(require_install_owner), require_permission("reco
 
 
 def _unmatched_refused(reason: str) -> HTTPException:
-    return HTTPException(status_code=409, detail={"message": UNMATCHED_REFUSALS[reason], "reason": reason})
+    return HTTPException(status_code=409, detail={**catalog_refusal(UNMATCHED_REFUSALS[reason]), "reason": reason})
 
 
 @router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS, openapi_extra={"x-celerp-agent": True}, summary="List the invoices an unmatched online payment can be recorded on.")

@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "มีบัญชีย่อยอยู่ใต้บัญชีนี้ จึงเก็บถาวรได้ แต่ลบไม่ได้",
   "acct.err_remove_posting_role": "บัญชีนี้เป็นบัญชีบันทึกของ {roles} จึงเก็บถาวรได้ แต่ลบไม่ได้",
   "acct.err_remove_bank_account": "มีบัญชีธนาคารใช้บัญชีนี้อยู่ จึงเก็บถาวรได้ แต่ลบไม่ได้",
-  "acct.err_remove_sold_on": "{names} ขายผ่านบัญชีนี้ จึงเก็บถาวรได้ แต่ลบไม่ได้"
+  "acct.err_remove_sold_on": "{names} ขายผ่านบัญชีนี้ จึงเก็บถาวรได้ แต่ลบไม่ได้",
+  "error.backup_download_failed": "ดาวน์โหลดข้อมูลสำรองบนคลาวด์นี้ไม่ได้ ลองอีกครั้ง หากยังเกิดขึ้นอีก ให้สอบถามใน GitHub Issues หรือ Discussions (รายละเอียดสำหรับฝ่ายสนับสนุน: {detail})",
+  "connectors.err_order_still_refused": "ยังนำเข้าคำสั่งซื้อนี้ไม่ได้: {reason}",
+  "contacts.err_import_refused": "นำเข้าผู้ติดต่อนี้ไม่ได้: {reason}",
+  "contacts.err_delete_linked": "ลบผู้ติดต่อเหล่านี้ไม่ได้ขณะที่ยังมีเอกสาร รายการ หรือดีลระบุถึงอยู่: {records}",
+  "documents.err_stripe_books_unreadable": "Celerp ไม่สามารถระบุได้ว่าการชำระเงิน Stripe นี้บันทึกไว้ในสมุดบัญชีใด จึงคืนเงินหรือยกเลิกที่นี่ไม่ได้ ให้บันทึกการคืนเงินด้วยรายการบันทึกบัญชีแทน",
+  "pay.err_refund_not_linked_to_stripe": "การชำระเงินนี้ไม่ได้เชื่อมโยงกับ Stripe แล้ว"
 }

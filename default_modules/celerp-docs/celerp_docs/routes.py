@@ -4670,10 +4670,6 @@ class PaymentBooks:
     settlement_rate: float
 
 
-UNREADABLE_STRIPE_BOOKS = ("Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be "
-                           "refunded or voided here. Record the refund with a journal entry instead.")
-
-
 async def posted_books(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
     """The books *payment* on the document *row* posted on. A payment recorded before
     payments kept their books: one received through Stripe has them read from its
@@ -4716,7 +4712,7 @@ async def imported_payment_books(session, company_id, entity_id: str, row: Proje
 
 async def _books_from_entry(session, company_id, entity_id: str, row: Projection, payment: dict) -> PaymentBooks:
     """The books an older Stripe payment posted on, read from its posted entry, or 422
-    (``UNREADABLE_STRIPE_BOOKS``) when the entry does not show them. The ledger keeps
+    (``documents.err_stripe_books_unreadable``) when the entry does not show them. The ledger keeps
     its entries in the company's currency, so the payment's entry is read in it. A
     Stripe payment posted at one rate on both sides: its own, or the document's when it
     carried none. The books are the ones whose lines are exactly the entry's."""
@@ -4752,7 +4748,7 @@ async def _books_from_entry(session, company_id, entity_id: str, row: Projection
                 {"account": books.bank_account}, *amounts)
             if control is not None and lines(expected) == posted:
                 return books
-    raise HTTPException(status_code=422, detail=UNREADABLE_STRIPE_BOOKS)
+    raise HTTPException(status_code=422, detail=t("documents.err_stripe_books_unreadable"))
 
 
 async def apply_payment_refund(session, company_id, entity_id: str, row: Projection, payment: dict, *,
@@ -5505,6 +5501,11 @@ class BulkPaymentBody(BaseModel):
     _real_date = field_validator("payment_date")(_calendar_date)
 
 
+def _first_not_payable(rows: dict, refused: list[dict]) -> dict:
+    """The refusal of the first document a bulk payment refused for its status."""
+    return not_payable(dict(rows[refused[0]["doc_id"]].state))
+
+
 @router.post("/bulk-payment", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key", "x-celerp-agent-selection": "doc_ids", "x-celerp-agent-bulk-of": "POST /docs/{entity_id}/payment"}, summary="Record payments on several invoices or bills at once.")
 async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
@@ -5533,7 +5534,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         currency = str(state.get("currency") or "USD").upper()
         payable.append((doc_id, state, currency, _payable_balance(state)))
     if not payable:
-        raise HTTPException(status_code=409, detail=refused[0]["reason"] if len(refused) == 1 else refusal(
+        raise HTTPException(status_code=409, detail=_first_not_payable(rows, refused) if len(refused) == 1 else refusal(
             "docs.bulk_payment_none_payable",
             "None of these documents awaits payment. Choose issued documents that still owe money."))
 
@@ -5560,6 +5561,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     remaining = tender
     allocations = []
     skipped: list[dict] = list(refused)
+    first_refusal: HTTPException | None = None
     for doc_id, _state, _, outstanding in payable:
         if remaining <= 0:
             break
@@ -5581,12 +5583,16 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
                     commit=False)
         except HTTPException as exc:
             skipped.append({"doc_id": doc_id, "reason": exc.detail})
+            first_refusal = first_refusal or exc
             continue
         applied_d = round_money(applied, currency)
         allocations.append({"doc_id": doc_id, "amount": to_stored_float(applied_d)})
         remaining = round_money(max(Decimal(0), remaining - applied_d), currency)
     if not allocations:
-        raise HTTPException(status_code=409, detail=skipped[0]["reason"])
+        # Nothing was paid: the first document's own refusal answers the batch.
+        if refused or first_refusal is None:
+            raise HTTPException(status_code=409, detail=_first_not_payable(rows, refused))
+        raise first_refusal
 
     result = {
         "allocations": allocations,
@@ -14246,7 +14252,7 @@ def _scan_event_key(entity_id: str, run_key: str) -> str:
     return "scan:" + hashlib.sha256(raw).hexdigest()
 
 
-async def _scan_replay(session: AsyncSession, row: Projection, payload: ScanBody, codes: list[str]):
+async def _scan_replay(request: Request, session: AsyncSession, row: Projection, payload: ScanBody, codes: list[str]):
     """Replay a batch from the bounded projection cache or its durable domain event."""
     if not payload.run_key:
         return None
@@ -14268,11 +14274,9 @@ async def _scan_replay(session: AsyncSession, row: Projection, payload: ScanBody
     if previous is None:
         return None
     if previous.get("fp") != fp:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=409, content={
-            "code": "scan_run_conflict",
-            "detail": t("documents.err_scan_conflict"),
-            "version": row.version})
+        from celerp.error_body import error_response
+        return error_response(request, 409, t("documents.err_scan_conflict"),
+                              code="scan_run_conflict", version=row.version)
     return {"scanned": previous.get("scanned", 0), "results": previous.get("results", []),
             "failed": previous.get("failed", []), "duplicate": True, "version": row.version}
 
@@ -14306,7 +14310,7 @@ def _scan_failure(failed: list[dict], results: list[dict], code: str, reason: st
 
 @lists_router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/lists", "x-celerp-agent-result-permissions": ["view_inventory_costs"]}, summary="Add scanned items to a list by barcode or SKU.")
 async def scan_list(
-    entity_id: str, payload: ScanBody,
+    entity_id: str, payload: ScanBody, request: Request,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
@@ -14327,7 +14331,7 @@ async def scan_list(
     price_config = await get_price_config(session, company_id) if sb.priced or payload.price_list else None
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
+    if (replay := await _scan_replay(request, session, row, payload, codes)) is not None:
         return replay
 
     lines = [dict(l) for l in (state.get("line_items") or [])]
@@ -14597,7 +14601,7 @@ def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, cur
 
 @router.post("/{entity_id}/scan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]}, summary="Add scanned items to a document by barcode or SKU.")
 async def scan_doc(
-    entity_id: str, payload: ScanBody,
+    entity_id: str, payload: ScanBody, request: Request,
     company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"),
     role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
@@ -14618,7 +14622,7 @@ async def scan_doc(
     price_config = await get_price_config(session, company_id)
     if payload.price_list:
         _check_price_list(settings, role, payload.price_list, price_config)
-    if (replay := await _scan_replay(session, row, payload, codes)) is not None:
+    if (replay := await _scan_replay(request, session, row, payload, codes)) is not None:
         return replay
     # Priced as a line added in the editor: a purchase document at cost, which a caller who may not
     # see costs adds unpriced.

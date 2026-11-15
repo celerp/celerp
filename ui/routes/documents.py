@@ -5669,9 +5669,10 @@ def setup_routes(app):
             # A RECORD-LEVEL rejection (closed/void, a finalized record that refuses scanning, or a
             # spent scan run key reused for a different batch, which carries the current version).
             # The scan bar branches on the structured body: a machine `code` (e.g. scan_run_conflict)
-            # drives its recovery, a plain rejection is shown as-is. Per-code failures are NOT this -
+            # drives its recovery; either way the detail is the sentence the bar shows. Per-code failures are NOT this -
             # they come back 200 in the JSON body.
-            body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": error_message(e)}
+            body = {**e.data, "detail": error_message(e)} if isinstance(e.data, dict) and e.data.get("code") \
+                else {"detail": error_message(e)}
             return _JSON(body, status_code=e.status or 400)
         res = res or {}
         html = (await tbody(token, form)) if tbody else ""

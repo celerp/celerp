@@ -198,7 +198,8 @@ async def trigger_backup():
     backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or t("error.backup_failed_unknown"))
+        raise HTTPException(status_code=422, detail=t("error.backup_failed_detail", detail=result.error)
+                            if result.error else t("error.backup_failed_unknown"))
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
@@ -274,7 +275,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
     try:
         path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=t("error.backup_download_failed", detail=exc.args[0] if exc.args else ""))
     return _archive_download(path, backup_id)
 
 

@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "توجد حسابات تحته، لذا يمكن أرشفته لا حذفه.",
   "acct.err_remove_posting_role": "إنه حساب الترحيل لـ {roles}، لذا يمكن أرشفته لا حذفه.",
   "acct.err_remove_bank_account": "يستخدمه حساب مصرفي، لذا يمكن أرشفته لا حذفه.",
-  "acct.err_remove_sold_on": "تُسجَّل عليه مبيعات {names}، لذا يمكن أرشفته لا حذفه."
+  "acct.err_remove_sold_on": "تُسجَّل عليه مبيعات {names}، لذا يمكن أرشفته لا حذفه.",
+  "error.backup_download_failed": "تعذّر تنزيل هذه النسخة الاحتياطية السحابية. حاول مرة أخرى؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions. (تفاصيل للدعم: {detail})",
+  "connectors.err_order_still_refused": "لا يزال تعذّر استيراد هذا الطلب: {reason}",
+  "contacts.err_import_refused": "تعذّر استيراد جهة الاتصال هذه: {reason}",
+  "contacts.err_delete_linked": "لا يمكن حذف جهات الاتصال هذه ما دامت مستندات أو قوائم أو صفقات تذكرها: {records}.",
+  "documents.err_stripe_books_unreadable": "لا يستطيع Celerp معرفة الدفاتر التي سُجّلت عليها دفعة Stripe هذه، لذا لا يمكن ردّها أو إلغاؤها هنا. سجّل الاسترداد بقيد يومية بدلاً من ذلك.",
+  "pay.err_refund_not_linked_to_stripe": "لم تعد الدفعة مرتبطة بـ Stripe."
 }

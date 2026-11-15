@@ -112,7 +112,7 @@ async def test_bulk_delete_contacts_blocked_by_any_doc(client):
 
     r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
     assert r.status_code == 422
-    assert "associated documents" in r.json()["detail"].lower()
+    assert r.json()["detail"]["message_key"] == "contacts.err_delete_linked"
 
 
 @pytest.mark.asyncio

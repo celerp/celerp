@@ -8238,5 +8238,11 @@
   "acct.err_remove_has_children": "Tiene cuentas debajo, así que se puede archivar, no eliminar.",
   "acct.err_remove_posting_role": "Es la cuenta de contabilización de {roles}, así que se puede archivar, no eliminar.",
   "acct.err_remove_bank_account": "Una cuenta bancaria la usa, así que se puede archivar, no eliminar.",
-  "acct.err_remove_sold_on": "{names} se venden en ella, así que se puede archivar, no eliminar."
+  "acct.err_remove_sold_on": "{names} se venden en ella, así que se puede archivar, no eliminar.",
+  "error.backup_download_failed": "No se pudo descargar esta copia de seguridad en la nube. Inténtalo de nuevo; si sigue ocurriendo, pregunta en GitHub Issues o Discussions. (Detalles para soporte: {detail})",
+  "connectors.err_order_still_refused": "Este pedido sigue sin poder importarse: {reason}",
+  "contacts.err_import_refused": "No se pudo importar este contacto: {reason}",
+  "contacts.err_delete_linked": "Estos contactos no se pueden eliminar mientras documentos, listas u oportunidades los mencionen: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp no puede saber en qué libros se registró este pago de Stripe, así que no se puede reembolsar ni anular aquí. Registra el reembolso con un asiento de diario.",
+  "pay.err_refund_not_linked_to_stripe": "El pago ya no está vinculado a Stripe."
 }
