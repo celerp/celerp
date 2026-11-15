@@ -1655,7 +1655,7 @@ def setup_routes(app) -> None:
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
                   data_import_hint=True) if can_import else "",
-                (A(t("settings_sales.tab_numbering"), href=f"{path}?tab=numbering&direction={side}",
+                (A(t("settings_sales.tab_numbering"), href=safe_url(f"{path}?tab=numbering&direction={side}"),
                    cls="btn btn--secondary") if can_number else ""),
             ),
             *_list_banners(catch_up, summary),
