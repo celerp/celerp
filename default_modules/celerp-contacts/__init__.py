@@ -20,8 +20,8 @@ PLUGIN_MANIFEST = {
     "depends_on": ["celerp-inventory"],
     "slots": {
         "nav": [
-            {"group": "Contacts", "key": "customers", "href": "/contacts/customers", "label": "Customers", "label_key": "nav.customers", "order": 40, "settings_href": "/settings/contacts", "permission": "view_contacts"},
-            {"group": "Contacts", "key": "vendors", "href": "/contacts/vendors", "label": "Vendors", "label_key": "nav.vendors", "order": 41, "permission": "view_contacts"},
+            {"group": "Contacts", "key": "customers", "href": "/contacts/customers", "help": "contacts.add-customer", "label": "Customers", "label_key": "nav.customers", "order": 40, "settings_href": "/settings/contacts", "settings_help": "contacts.settings", "permission": "view_contacts"},
+            {"group": "Contacts", "key": "vendors", "href": "/contacts/vendors", "help": "contacts.add-vendor", "label": "Vendors", "label_key": "nav.vendors", "order": 41, "permission": "view_contacts"},
         ],
         "projection_handler": [
             {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event"},

@@ -140,7 +140,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
     return row
 
 
-@router.post("/contacts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.post("/contacts", summary="Add a new customer or vendor. Look the name up with List contacts first, and use Update contact to change one that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     await lock_company(session, company_id)
     if payload.idempotency_key:
@@ -169,7 +169,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.get("/contacts", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
+@router.get("/contacts", summary="Find customers and vendors by name, email, phone, company name or tag, or list them all. Use Get contact to read one in full.", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def list_contacts(
     q: str = "",
     limit: int = 50,
@@ -186,13 +186,13 @@ async def list_contacts(
     return {"items": items, "total": await count_contacts(session, company_id, q, **filters)}
 
 
-@router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
+@router.get("/contacts/{contact_id}", summary="Read one customer or vendor in full: contact details, addresses, currency and tags.", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def get_contact(contact_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_contact(session, company_id, contact_id)
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.patch("/contacts/{contact_id}", summary="Change details of an existing customer or vendor, such as their email, phone, address or currency.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
                                                     "x-celerp-agent-result-permissions": ["edit_contacts", "manage_company_settings"]})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _locked_identity_contact(session, company_id, user, contact_id)
