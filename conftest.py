@@ -529,6 +529,46 @@ def _one_current_event_loop():
 _CENSUS = mutation_observer.Totals()
 
 
+@pytest.fixture
+def tools_open_when_called(monkeypatch):
+    """For tests whose subject is not area loading: a tool the scripted model calls is
+    opened just before the call, as if the model had listed and opened it, so a script
+    may call any compiled tool at once. Area loading itself is tested in
+    test_ai_agent_areas."""
+    import json as _json
+
+    from celerp.ai import service
+
+    parse = service._parse_call
+
+    def _opening(call, capabilities, opened):
+        function = call.get("function") or {}
+        names = {function.get("name")}
+        try:
+            names.add((_json.loads(function.get("arguments") or "{}") or {}).get("tool"))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        opened |= names & set(capabilities)
+        return parse(call, capabilities, opened)
+
+    monkeypatch.setattr(service, "_parse_call", _opening)
+
+
+@pytest.fixture
+def model_answers_unscripted_runs(monkeypatch):
+    """For tests that confirm a card outside their scripted model: the request then
+    carries on as a job after the test's script is gone, and that run gets a plain
+    answer instead of reaching the AI service."""
+    from celerp.ai import service
+    from celerp.ai.llm import ModelResult
+
+    async def _answer(*_a, **_kw):
+        return ModelResult(message={"role": "assistant", "content": "Done."}, model_used="test-model",
+                           usage={"total_tokens": 1}, reservation_id=None, remaining=None)
+
+    monkeypatch.setattr(service, "complete", _answer)
+
+
 @pytest.fixture(autouse=True)
 def _mutation_census(request):
     """One write-observer record per test, kept for the census file

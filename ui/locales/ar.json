@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "تأكيد المحدد",
   "ai.confirm_progress": "جارٍ تطبيق {done} من {total}.",
   "ai.open_drafts": "فتح هذه المسودات ({n})",
+  "ai.download_file": "تنزيل الملف",
   "ai.open_record": "فتح",
   "ai.col_change": "التغيير",
   "ai.col_checks": "التحققات",

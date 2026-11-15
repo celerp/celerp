@@ -608,7 +608,7 @@ async def reset_nav_overrides(
 # Locations
 # ---------------------------------------------------------------------------
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False, summary="Download the spreadsheet template for importing company settings.")
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/companies/import/template"}, summary="Download the spreadsheet template for importing company settings.")
 async def import_settings_template():
     return PlainTextResponse(
         "entity_id,event_type,idempotency_key\n",

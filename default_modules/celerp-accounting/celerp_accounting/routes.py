@@ -793,7 +793,7 @@ async def import_chart_accounts(
     return _chart_import_result(plan)
 
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False, summary="Download the spreadsheet template for importing accounting records.")
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/accounting/import/template"}, summary="Download the spreadsheet template for importing accounting records.")
 async def import_accounting_template(
     _: None = require_permission("manage_accounting"),
 ):

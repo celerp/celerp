@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "Xác nhận mục đã chọn",
   "ai.confirm_progress": "Đang áp dụng {done} trên {total}.",
   "ai.open_drafts": "Mở {n} bản nháp này",
+  "ai.download_file": "Tải tệp xuống",
   "ai.open_record": "Mở",
   "ai.col_change": "Thay đổi",
   "ai.col_checks": "Kiểm tra",

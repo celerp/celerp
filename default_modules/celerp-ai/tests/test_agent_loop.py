@@ -37,6 +37,8 @@ from celerp.ai.service import (
 
 from _fixtures import raw_tool_call, tool_call, tool_result
 
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
+
 
 # -- Fake capabilities (shape mirrors compile_agent_capabilities output) ----
 
@@ -486,16 +488,19 @@ async def test_history_trimmed_oldest_first_to_fit_one_model_call(monkeypatch):
     assert sent[-1]["role"] == "user" and "a question" in sent[-1]["content"]
 
 
-def test_request_size_with_every_real_tool_fits_a_model_call():
-    """The real tool list, the system prompt and the largest tool result a turn may
-    carry fit inside the budget, so an ordinary question is never refused as too large."""
-    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, agent_tool_specs, compile_agent_capabilities
+def test_request_size_with_the_real_core_tools_fits_a_model_call():
+    """The tools a run starts with (the core set and the meta tools), the system prompt
+    naming every real area and the largest tool result a turn may carry fit inside the
+    budget, so an ordinary question is never refused as too large. The tools a run opens
+    later are measured as it opens them (test_ai_agent_areas)."""
+    from celerp.ai.tools import AGENT_RESULT_MAX_BYTES, compile_agent_capabilities
     from celerp.ai.service import agent_system_prompt
     from test_helpers import real_agent_app
-    tools = agent_tool_specs(compile_agent_capabilities(real_agent_app(), {}, "owner"))
-    assert len(tools) > 20
+    caps = compile_agent_capabilities(real_agent_app(), {}, "owner")
+    tools = service._open_specs(caps, set(service.CORE_TOOLS & set(caps)))
+    assert len(caps) > 20 and len(tools) > len(service.CORE_TOOLS)
     messages = [
-        {"role": "system", "content": agent_system_prompt("th")},
+        {"role": "system", "content": agent_system_prompt("th", caps, {})},
         {"role": "user", "content": "<user_query>\n" + "ก" * 2000 + "\n</user_query>"},
         {"role": "tool", "tool_call_id": "x", "content": "x" * AGENT_RESULT_MAX_BYTES},
     ]

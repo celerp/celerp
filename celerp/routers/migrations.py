@@ -665,7 +665,7 @@ async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_a
     return run.reconciliation
 
 
-@router.get("/{run_id}/reconciliation/pack", summary="Download the reconciliation pack of a migration as a file.")
+@router.get("/{run_id}/reconciliation/pack", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"], "x-celerp-agent-download": "/migrations/{run_id}/pack"}, summary="Download the reconciliation pack of a migration as a file.")
 async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                   session: AsyncSession = Depends(get_session)) -> Response:
     run = await _owned_run(session, run_id, ctx)

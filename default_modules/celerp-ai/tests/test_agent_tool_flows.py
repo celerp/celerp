@@ -33,6 +33,8 @@ from test_action_outcomes import (
 )
 from test_workflows import ScriptedModel, _new_conversation, _op, agent_caps, ai_session, xlsx_upload  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
+
 _USERS = "/companies/me/users"
 _LOCATIONS = "/companies/me/locations"
 _GENERATED = "Generated-Once-Sentinel-7Q2"
@@ -262,7 +264,7 @@ async def test_confirm_resumes_the_request(client, session, agent_caps, ai_sessi
         assert r.status_code == 200, r.text
         job_id = r.json()["continued_job_id"]
         state = await settled_question(client, admin, conv_id, job_id)
-    assert state["state"] == "done"
+    assert state["state"] == "answered"
     assert "Annex" in str(model.seen[-1])
     assert "The annex is set up." in state["message"]["content"]
 

@@ -107,11 +107,11 @@ def thai():
 
 @pytest.mark.asyncio
 async def test_agent_prompt_names_user_language(monkeypatch, thai):
-    prompt = agent_system_prompt("th")
+    prompt = agent_system_prompt("th", _CAPS, {})
     assert lang_label("th") in prompt
     assert "help_search" in prompt and "help_read" in prompt
     assert "English" in prompt
-    assert agent_system_prompt("en") != prompt
+    assert agent_system_prompt("en", _CAPS, {}) != prompt
 
     seen = _script(monkeypatch, [_turn("สวัสดี")])
     await _run()

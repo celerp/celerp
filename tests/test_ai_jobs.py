@@ -26,10 +26,13 @@ from sqlalchemy import select, update
 from ai_fake_cloud import answer, cloud, tool_turn, until  # noqa: F401
 from celerp.ai import deadlines, jobs, llm, service, usage
 from celerp.config import settings
+from ui.i18n import lang_label
 from celerp.models.ai import AIBatchJob, AIJobStep, AIUsage
 from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 from test_ai_usage import _conversation, owner  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -670,7 +673,7 @@ async def test_a_background_question_resumed_after_a_restart_answers_in_its_aske
     state = await _question(client, token, conv, qid)
     resent = [b for b in cloud.bodies if b.get("step_id") == second][-1]
     system = next(m["content"] for m in resent["messages"] if m.get("role") == "system")
-    assert service.agent_system_prompt("th") in system
+    assert f"The user reads {lang_label('th')}." in system
     if end == "store":
         assert (state["state"], state["message"]["content"]) == ("answered", "เปิดผู้ติดต่อ")
     else:

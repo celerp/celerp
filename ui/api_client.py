@@ -4679,6 +4679,12 @@ async def migration_finalize(token: str, run_id: str, posting_accounts: dict) ->
         return _raise(await c.post(f"/migrations/{run_id}/finalize", json=posting_accounts)).json()
 
 
+async def import_template(token: str, area: str):
+    """GET the import template CSV of ``area`` (an API prefix such as "/accounting"),
+    streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, f"{area}/import/template", timeout_message=timeout_message())
+
+
 async def migration_pack(token: str, run_id: str):
     """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",

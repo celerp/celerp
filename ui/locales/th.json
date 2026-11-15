@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "ยืนยันรายการที่เลือก",
   "ai.confirm_progress": "กำลังดำเนินการ {done} จาก {total}",
   "ai.open_drafts": "เปิดร่าง {n} รายการนี้",
+  "ai.download_file": "ดาวน์โหลดไฟล์",
   "ai.open_record": "เปิด",
   "ai.col_change": "การเปลี่ยนแปลง",
   "ai.col_checks": "ตรวจสอบ",

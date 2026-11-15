@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "Konfirmasi yang dipilih",
   "ai.confirm_progress": "Menerapkan {done} dari {total}.",
   "ai.open_drafts": "Buka {n} draf ini",
+  "ai.download_file": "Unduh file",
   "ai.open_record": "Buka",
   "ai.col_change": "Perubahan",
   "ai.col_checks": "Pemeriksaan",

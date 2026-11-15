@@ -82,7 +82,7 @@ async def _provenance(session: AsyncSession, ctx: AuthContext, run_id: uuid.UUID
     return {"prepared_by": run.prepared_by, "source_system": run.source_system}
 
 
-@router.get("/download", summary="Download a backup file of the current company.")
+@router.get("/download", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/company-backup/download"}, summary="Download a backup file of the current company.")
 async def download_backup(run_id: uuid.UUID | None = None, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)):
     """Back up the company the session is on and serve the file, deleted once sent."""
@@ -468,7 +468,7 @@ async def kept_backups(ctx: AuthContext = Depends(user_owner)):
     return {"items": await cb.kept_backups(ctx.company_id)}
 
 
-@router.get("/kept/{kept_id}/download", summary="Download one kept backup of this company.")
+@router.get("/kept/{kept_id}/download", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/settings/saved-copies/{kept_id}/download"}, summary="Download one kept backup of this company.")
 async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)):
     try:
         path = await cb.kept_backup(ctx.company_id, kept_id)

@@ -1220,7 +1220,7 @@ async def item_manufacturing_hub(
 # Import endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("/import/template", response_class=PlainTextResponse, include_in_schema=False, summary="Download the spreadsheet template for importing manufacturing records.")
+@router.get("/import/template", response_class=PlainTextResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/manufacturing/import/template"}, summary="Download the spreadsheet template for importing manufacturing records.")
 async def import_manufacturing_template():
     return PlainTextResponse(
         "entity_id,event_type,idempotency_key\n",

@@ -46,6 +46,8 @@ from test_helpers import answered_continuation, asked_in_thread, perm_setup
 
 from _fixtures import tool_call, tool_result
 
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
+
 
 # ── Scripted model ────────────────────────────────────────────────────────────
 

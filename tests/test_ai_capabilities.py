@@ -1040,7 +1040,7 @@ def test_every_download_tool_names_a_ui_route():
             raise AssertionError(f"{path}: download link {link!r} is not a UI route")
         assert set(re.findall(r"\{([^}]+)\}", link)) <= set(re.findall(r"\{([^}]+)\}", path)), path
     compiled = {c["path"] for c in ai_tools.compile_agent_capabilities(app, {}).values()}
-    assert len(downloads) == 20
+    assert len(downloads) == 21
     assert set(downloads) <= compiled
 
 
