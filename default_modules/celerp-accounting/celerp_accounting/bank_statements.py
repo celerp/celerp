@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import KeyedRefusal, catalog_refusal
+from celerp.ai.tools import agent_excluded
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, request_fingerprint
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
@@ -41,9 +42,11 @@ API = "/reconciliation"
 _NOTE_MAX = 5000
 
 
-def _agent(selection: str | None = None, *, credits: bool = False, any_permission: list[str] | None = None) -> dict:
+def _agent(selection: str | None = None, *, credits: bool = False, any_permission: list[str] | None = None,
+           result_permissions: list[str] | None = None) -> dict:
     """The AI markers of a keyed bank write: idempotent under ``idempotency_key``, the
-    request field that selects its records, a credit spend, and alternative permissions."""
+    request field that selects its records, a credit spend, alternative permissions and
+    the permissions its handler consults beyond its own."""
     extra: dict = {"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}
     if selection:
         extra["x-celerp-agent-selection"] = selection
@@ -51,6 +54,8 @@ def _agent(selection: str | None = None, *, credits: bool = False, any_permissio
         extra["x-celerp-agent-credits"] = True
     if any_permission:
         extra["x-celerp-agent-any-permission"] = any_permission
+    if result_permissions:
+        extra["x-celerp-agent-result-permissions"] = result_permissions
     return extra
 
 
@@ -97,7 +102,7 @@ class ReadStatement(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-@router.post(f"{API}/read-statement", summary="Read bank or card statement files with AI before import",
+@router.post(f"{API}/read-statement", summary="Read bank or card statement files with AI before import.",
              openapi_extra=_agent(credits=True))
 async def read_statement(payload: ReadStatement, company_id: uuid.UUID = Depends(get_current_company_id),
                          _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
@@ -309,7 +314,7 @@ async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uui
     return out
 
 
-@router.get(f"{API}/statement-preview/{{job_id}}", summary="The statements a reading job found, checked before import",
+@router.get(f"{API}/statement-preview/{{job_id}}", summary="The statements a reading job found, checked before import.",
             openapi_extra={"x-celerp-agent": True})
 async def statement_preview(job_id: uuid.UUID,
                             company_id: uuid.UUID = Depends(get_current_company_id),
@@ -329,7 +334,7 @@ class PreviewEdit(BaseModel):
 
 
 @router.post(f"{API}/statement-preview/{{job_id}}", summary="Check a reading job's statements again with edited "
-             "header figures, lines or column map, before import", openapi_extra={"x-celerp-agent": True,
+             "header figures, lines or column map, before import.", openapi_extra={"x-celerp-agent": True,
                                                                        "x-celerp-agent-confirm": False})
 async def statement_preview_edited(job_id: uuid.UUID, payload: PreviewEdit,
                                    company_id: uuid.UUID = Depends(get_current_company_id),
@@ -384,7 +389,7 @@ async def _seed(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, star
     return ids if opening is not None and book == round_money(to_decimal(opening), bank.currency) else []
 
 
-@router.post(f"{API}/import-statement", summary="Import the reviewed statements onto a bank account",
+@router.post(f"{API}/import-statement", summary="Import the reviewed statements onto a bank account.",
              openapi_extra=_agent("statements"))
 async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Depends(get_current_company_id),
                            _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
@@ -536,7 +541,7 @@ def _searched(line: BankStatementLine, q: str) -> bool:
     return q.casefold() in text
 
 
-@router.get(f"{API}/bank/{{bank_id}}/groups", summary="A bank's statement lines, grouped by counterparty",
+@router.get(f"{API}/bank/{{bank_id}}/groups", summary="A bank's statement lines, grouped by counterparty.",
             openapi_extra={"x-celerp-agent": True})
 async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^({'|'.join(VIEWS)})$"),
                       q: str = Query("", max_length=200),
@@ -937,7 +942,7 @@ async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[D
 
 
 @router.post(f"{API}/bank/{{bank_id}}/resolve", summary="Resolve a bank's statement lines: post, match, no entry, "
-             "transfer, cash, pay documents or Suspense", openapi_extra=_agent("decisions"))
+             "transfer, cash, pay documents or Suspense.", openapi_extra=_agent("decisions", result_permissions=["record_payments"]))
 async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = Depends(get_current_company_id),
                   _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
                   user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:
@@ -1128,7 +1133,7 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
     return replies
 
 
-@router.post(f"{API}/bank/{{bank_id}}/suggest", summary="Suggest an answer for each open statement line of a bank",
+@router.post(f"{API}/bank/{{bank_id}}/suggest", summary="Suggest an answer for each open statement line of a bank.",
              openapi_extra=_agent(credits=True))
 async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
                         _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
@@ -1174,7 +1179,7 @@ class Unmatch(BaseModel):
 
 
 @router.post(f"{API}/bank/{{bank_id}}/unmatch", summary="Undo settled statement lines: void what they posted and "
-             "release what they matched", openapi_extra=_agent("line_ids"))
+             "release what they matched.", openapi_extra=_agent("line_ids"))
 async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.UUID = Depends(get_current_company_id),
                         _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                         db: AsyncSession = Depends(get_session)) -> dict:
@@ -1194,7 +1199,7 @@ async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.U
 
 
 @router.post(f"{API}/bank/{{bank_id}}/complete", summary="Complete a bank's open statements in date order, up to "
-             "the first that does not balance", openapi_extra=_agent())
+             "the first that does not balance.", openapi_extra=_agent())
 async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
                         _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                         db: AsyncSession = Depends(get_session)) -> dict:
@@ -1236,7 +1241,7 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
     return result
 
 
-@router.delete(f"{API}/{{session_id}}", summary="Remove an imported statement with none of its lines settled",
+@router.delete(f"{API}/{{session_id}}", summary="Remove an imported statement with none of its lines settled.",
                openapi_extra=_agent())
 async def delete_statement(session_id: uuid.UUID, payload: Keyed,
                            company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1277,7 +1282,7 @@ class Opening(BaseModel):
 
 
 @router.put("/bank-accounts/{bank_id}/opening", summary="Set a bank's opening balance; a later change posts "
-            "an adjustment", openapi_extra=_agent())
+            "an adjustment.", openapi_extra=_agent())
 async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUID = Depends(get_current_company_id),
                       _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                       db: AsyncSession = Depends(get_session)) -> dict:
@@ -1318,7 +1323,7 @@ class Reclassify(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-@router.post(f"{API}/lines/{{line_id}}/reclassify", summary="Move a line out of Suspense to the account it belongs to",
+@router.post(f"{API}/lines/{{line_id}}/reclassify", summary="Move a line out of Suspense to the account it belongs to.",
              openapi_extra=_agent())
 async def reclassify(line_id: uuid.UUID, payload: Reclassify, company_id: uuid.UUID = Depends(get_current_company_id),
                      _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
@@ -1354,14 +1359,17 @@ async def _question_reader(role: str = Depends(get_current_role),
     from celerp.services.permissions import admit_permission, missing_permission, role_has_permission
 
     company = await db.get(Company, company_id)
-    held = next((k for k in _QUESTION_READERS if role_has_permission(company.settings if company else {}, role, k)),
-                None)
+    settings = company.settings if company else {}
+    # Each key named where it is checked, so the tools declare what their answers depend on.
+    held = ("answer_bank_questions" if role_has_permission(settings, role, "answer_bank_questions")
+            else "manage_accounting" if role_has_permission(settings, role, "manage_accounting") else None)
     if held is None:
         raise missing_permission(_QUESTION_READERS[0])
     await admit_permission(db, company_id, role, held)
 
 
-@router.post(f"{API}/files", status_code=201, summary="Keep statement and receipt files for reading or an answer")
+@router.post(f"{API}/files", status_code=201, summary="Keep statement and receipt files for reading or an answer.",
+             openapi_extra=agent_excluded("internal"))
 async def bank_files(files: list[UploadFile] = File(...), company_id: uuid.UUID = Depends(get_current_company_id),
                      _: None = Depends(_question_reader), user=Depends(get_current_user),
                      db: AsyncSession = Depends(get_session)) -> dict:
@@ -1378,8 +1386,8 @@ class Ask(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-@router.post(f"{API}/bank/{{bank_id}}/ask", summary="Ask the client about open statement lines, or remind them",
-             openapi_extra=_agent("line_ids"))
+@router.post(f"{API}/bank/{{bank_id}}/ask", summary="Ask the client about open statement lines, or remind them.",
+             openapi_extra=_agent("line_ids", result_permissions=["answer_bank_questions"]))
 async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(get_current_company_id),
               _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
               db: AsyncSession = Depends(get_session)) -> dict:
@@ -1402,7 +1410,7 @@ class LineIds(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-@router.post(f"{API}/bank/{{bank_id}}/withdraw-question", summary="Take back questions asked about statement lines",
+@router.post(f"{API}/bank/{{bank_id}}/withdraw-question", summary="Take back questions asked about statement lines.",
              openapi_extra=_agent("line_ids"))
 async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
                             company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1433,8 +1441,9 @@ def _question(line: BankStatementLine, bank: BankAccount) -> dict:
             "answered": q.get("answered"), "attachments": _attachments(line)}
 
 
-@router.get("/bank-questions", summary="The questions asked about bank lines, newest first",
-            openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": _QUESTION_READERS})
+@router.get("/bank-questions", summary="The questions asked about bank lines, newest first.",
+            openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": _QUESTION_READERS,
+                           "x-celerp-agent-result-permissions": _QUESTION_READERS})
 async def bank_questions(status: Literal["open", "answered", "all"] = "open",
                          company_id: uuid.UUID = Depends(get_current_company_id),
                          _: None = Depends(_question_reader), db: AsyncSession = Depends(get_session)) -> dict:
@@ -1476,8 +1485,8 @@ async def _named_contact(db: AsyncSession, company_id: uuid.UUID, text: str | No
     return {"account_code": max(rows, key=lambda r: r["line_date"])["account_code"], "contact_id": contacts[0]}
 
 
-@router.post("/bank-questions/{line_id}/answer", summary="Answer a question about a bank line, with receipts",
-             openapi_extra=_agent(any_permission=_QUESTION_READERS))
+@router.post("/bank-questions/{line_id}/answer", summary="Answer a question about a bank line, with receipts.",
+             openapi_extra=_agent(any_permission=_QUESTION_READERS, result_permissions=_QUESTION_READERS))
 async def answer_question(line_id: uuid.UUID, payload: Answer, company_id: uuid.UUID = Depends(get_current_company_id),
                           _: None = Depends(_question_reader), user=Depends(get_current_user),
                           db: AsyncSession = Depends(get_session)) -> dict:

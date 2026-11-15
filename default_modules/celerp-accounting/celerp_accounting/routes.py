@@ -3123,7 +3123,8 @@ async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_ba
 
 
 @router.post("/transfers", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
-                                          "x-celerp-agent-key": "idempotency_key"})
+                                          "x-celerp-agent-key": "idempotency_key"},
+             summary="Record a transfer of money between two of the company's bank accounts.")
 async def create_transfer(
     payload: TransferCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3140,6 +3141,9 @@ async def create_transfer(
     je_id = f"je:transfer:{uuid.uuid5(uuid.NAMESPACE_URL, f'celerp:transfer:{company_id}:{payload.idempotency_key}')}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
+    request = payload.model_dump(mode="json")
+    if (stored := await keyed_event(session, company_id, idem_c, request)) is not None:
+        return _transfer_answer(je_id, payload, stored.data)
     memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} to {str(payload.to_bank_id)[:8]}"
     base = await _base_currency(session, company_id)
     allocation = None if payload.allocation is None else [
@@ -3165,7 +3169,7 @@ async def create_transfer(
         location_id=None,
         source="transfer",
         idempotency_key=idem_c,
-        metadata_={},
+        metadata_={"request": request},
     )
     await emit_event(
         session,
@@ -3181,15 +3185,19 @@ async def create_transfer(
         metadata_={},
     )
     await session.commit()
+    return _transfer_answer(je_id, payload, {"ts": when, "memo": memo, "entries": entries})
 
+
+def _transfer_answer(je_id: str, payload: TransferCreate, data: dict) -> dict:
+    """What a transfer answers, first time and on a retry under its key."""
     return {
         "je_id": je_id,
         "from_bank_id": str(payload.from_bank_id),
         "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
-        "date": when,
-        "memo": memo,
-        "entries": entries,
+        "date": data["ts"],
+        "memo": data["memo"],
+        "entries": data["entries"],
     }
 
 
@@ -3578,7 +3586,7 @@ def _refuse_ineligible(reasons: dict[str, str | None]) -> None:
 
 @router.post(
     "/reconciliation/start",
-    summary="Start reconciling a bank or card statement",
+    summary="Start reconciling a bank or card statement.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def start_reconciliation(
@@ -3625,7 +3633,8 @@ async def start_reconciliation(
     return _recon_to_dict(recon)
 
 
-@router.get("/reconciliation/{session_id}")
+@router.get("/reconciliation/{session_id}", openapi_extra={"x-celerp-agent": True},
+            summary="Read one reconciliation with its cleared and open book entries and its balance.")
 async def get_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3656,7 +3665,8 @@ async def get_reconciliation(
     return d
 
 
-@router.post("/reconciliation/{session_id}/match")
+@router.post("/reconciliation/{session_id}/match", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+             summary="Mark book entries as cleared on a reconciliation without a statement line.")
 async def match_reconciliation(
     session_id: uuid.UUID,
     payload: ReconciliationMatch,
@@ -3675,7 +3685,8 @@ async def match_reconciliation(
 
 @router.post(
     "/reconciliation/{session_id}/unmatch",
-    summary="Undo matching book entries that no statement line holds",
+    summary="Undo matching book entries that no statement line holds.",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def unmatch_reconciliation(
     session_id: uuid.UUID,
@@ -3699,7 +3710,7 @@ async def unmatch_reconciliation(
 
 @router.post(
     "/reconciliation/{session_id}/reopen",
-    summary="Put a completed reconciliation back in progress",
+    summary="Put a completed reconciliation back in progress.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def reopen_reconciliation(
@@ -3750,7 +3761,7 @@ def _capped(rows: list, cap: int = AGENT_WORKBENCH_CAP) -> tuple[list, bool]:
 
 @router.get(
     "/reconciliation/{session_id}/workbench",
-    summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference",
+    summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference.",
     openapi_extra={"x-celerp-agent": True},
 )
 async def reconciliation_workbench(
@@ -3834,7 +3845,8 @@ async def _rule_amount(db: AsyncSession, company_id: uuid.UUID, bank_id, pattern
     return money_value(amount, currency or await _base_currency(db, company_id))
 
 
-@router.get("/reconciliation/{session_id}/statement-lines")
+@router.get("/reconciliation/{session_id}/statement-lines", openapi_extra={"x-celerp-agent": True},
+            summary="List the statement lines of one reconciliation in date order.")
 async def get_statement_lines(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3852,7 +3864,8 @@ async def get_statement_lines(
     return {"items": [_stmt_line_to_dict(l) for l in lines], "total": len(lines)}
 
 
-@router.post("/reconciliation/{session_id}/lines/{line_id}/attach")
+@router.post("/reconciliation/{session_id}/lines/{line_id}/attach", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+             summary="Attach a receipt or other document to a statement line.")
 async def attach_to_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3876,7 +3889,8 @@ async def attach_to_line(
             "filename": meta["filename"]}
 
 
-@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}")
+@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+               summary="Remove a document attached to a statement line.")
 async def remove_line_attachment(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3910,7 +3924,7 @@ async def remove_line_attachment(
 
 @router.post(
     "/reconciliation/{session_id}/write-off",
-    summary="Write off a remaining difference within tolerance",
+    summary="Write off a remaining difference within tolerance.",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
 )
 async def write_off_difference(
