@@ -446,6 +446,37 @@ def test_every_permission_a_capabilitys_result_depends_on_is_declared():
     assert _undeclared(real_agent_app()) == []
 
 
+def _undescribed(app) -> list[str]:
+    """Agent tools whose description is blank or only their operation id: the model
+    would have to guess what the tool does and when to use it."""
+    return [name for name, capability in sorted(ai_tools.compile_agent_capabilities(app, {}).items())
+            if capability["tool"]["function"]["description"].strip() in ("", name)]
+
+
+def test_every_agent_tool_says_what_it_does():
+    """The AI reads a tool's description to pick it, so every tool the live surface
+    compiles carries one written for the user's task, never the operation id."""
+    assert _undescribed(real_agent_app()) == []
+
+
+def test_the_description_guard_finds_an_undocumented_tool():
+    app = FastAPI()
+
+    @app.get("/plain", operation_id="plain", openapi_extra={"x-celerp-agent": True})
+    async def plain():
+        return {"ok": True}
+
+    @app.get("/told", operation_id="told", openapi_extra={"x-celerp-agent": True})
+    async def told():
+        """List what was told."""
+        return {"ok": True}
+
+    for endpoint in (plain, told):
+        endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    assert _undescribed(app) == ["plain"]
+
+
 def _costs_helper(settings, role):
     return permissions.role_has_permission(settings, role, "view_inventory_costs")
 
