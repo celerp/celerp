@@ -757,6 +757,15 @@ def test_translated_catalog_text_keeps_its_key_in_error_responses():
     assert "message" in detail
 
 
+def test_a_dict_refusal_whose_message_is_catalog_text_keeps_its_key_and_its_fields():
+    from celerp.error_body import as_refusal, keyed
+
+    detail = as_refusal({"code": "import_items_modified", "message": i18n.t("inventory.err_import_items_changed"),
+                         "entity_ids": ["item:1"]})
+    assert keyed(detail) and detail["message_key"] == "inventory.err_import_items_changed"
+    assert detail["code"] == "import_items_modified" and detail["entity_ids"] == ["item:1"]
+
+
 def test_the_unkeyed_list_only_shrinks():
     """A new unkeyed refusal fails the guard, and so does a listed one that is gone."""
     finding = "celerp/x.py:12 HTTPException(409, 'Taken')"
