@@ -347,7 +347,7 @@ async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
         return {}
     op = uuid.uuid5(uuid.NAMESPACE_URL, f"celerp:bank-suggest:{call.company_id}:{call.key}:{groups[0]['key']}")
     messages = [{"role": "system", "content": _MODEL_PROMPT},
-                {"role": "user", "content": json.dumps({"accounts": accounts, "groups": groups})}]
+                {"role": "user", "content": json.dumps({"accounts": accounts, "groups": groups}, ensure_ascii=False)}]
     async with jobs.gate.slot("interactive"):
         result = await llm.complete(messages, operation_id=op, hints={"query": "bank suggestions", "file_count": 0,
                                                                         "is_batch": False})
