@@ -46,7 +46,9 @@ from celerp.services.ledger_rows import journal_rows
 from celerp.services.money import books_currency, round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.visible_text import visible_text
-from celerp_accounting.routes import _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range
+from celerp_accounting.routes import (
+    _je_doc_refs, _line_amounts, _line_party, _require_contact, _require_date_range, open_period,
+)
 from ui.components.encode import to_markup
 from ui.i18n import t
 
@@ -265,19 +267,21 @@ async def list_donors(
 
 @router.get("/statements/preview")
 async def preview_statements(
-    date_from: str = Query(alias="from"),
-    date_to: str = Query(alias="to"),
+    date_from: str | None = Query(default=None, alias="from"),
+    date_to: str | None = Query(default=None, alias="to"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     _c: None = _READ[0], _p: None = _READ[1],
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Who a send for the period reaches, each with their total and gifts and the number the next
     Send again of their statement under the current wording names (0 while it was never sent); a donor with no email address is marked and
-    would be skipped."""
+    would be skipped. An open end runs from the first entry or to today, and ``period`` names
+    the dates the send and each statement then cover."""
     words = wording(await current_settings(session, company_id))
-    rows = await _donor_rows(session, company_id, *_period(date_from, date_to))
+    date_from, date_to = await open_period(session, company_id, date_from, date_to)
+    rows = await _donor_rows(session, company_id, date_from, date_to)
     return {"donors": await _with_sends(session, company_id, rows, date_from, date_to, words["version"]),
-            "wording": words}
+            "wording": words, "period": {"from": date_from, "to": date_to}}
 
 
 @router.post("/statements/send")
@@ -344,17 +348,19 @@ async def donor_history_route(
 @router.get("/{contact_id}/statement.pdf")
 async def statement_pdf(
     contact_id: str,
-    date_from: str = Query(alias="from"),
-    date_to: str = Query(alias="to"),
+    date_from: str | None = Query(default=None, alias="from"),
+    date_to: str | None = Query(default=None, alias="to"),
     company_id: uuid.UUID = Depends(get_current_company_id),
     _c: None = _READ[0], _p: None = _READ[1],
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """One donor's statement for the period as a PDF, through the document PDF renderer."""
+    """One donor's statement for the period as a PDF, through the document PDF renderer; an open
+    end runs from the first entry or to today, as on the preview."""
     from celerp.output.pdf import generate_document_pdf
 
     contact = (await _require_contact(session, company_id, contact_id)).state or {}
-    found = (await donor_history(session, company_id, contact_id, *_period(date_from, date_to))).get(contact_id) \
+    date_from, date_to = await open_period(session, company_id, date_from, date_to)
+    found = (await donor_history(session, company_id, contact_id, date_from, date_to)).get(contact_id) \
         or {"total": 0.0, "gifts": []}
     company_row = await session.get(Company, company_id)
     settings = company_row.settings or {}

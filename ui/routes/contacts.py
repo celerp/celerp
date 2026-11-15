@@ -17,6 +17,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.components.icons import icon, import_icon
 from ui.components.module_off import can_open
+from ui.components.report_kit import date_params
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title, toast_header
@@ -270,7 +271,7 @@ async def _invoice_totals(token: str, contact_id: str, company: dict) -> dict[st
     scope = {"doc_type": "invoice", "contact_id": contact_id}
     try:
         ytd, open_, credit = await _asyncio.gather(
-            api.get_doc_summary(token, scope | {"date_from": date_from, "date_to": date_to}),
+            api.get_doc_summary(token, scope | date_params(date_from, date_to)),
             api.get_doc_summary(token, scope),
             api.get_doc_summary(token, scope | {"doc_type": "credit_note"}),
         )

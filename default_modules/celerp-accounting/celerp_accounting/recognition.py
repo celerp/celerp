@@ -39,6 +39,7 @@ from celerp.services.recognition import (
     PREFIX, REVERSAL, SCHEDULE, Ledger, amended_segments, amendment, month_end, parse_run, posted_amount,
     record_amendment, run_ledger, segment_runs,
 )
+from celerp_accounting.routes import open_period
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -488,17 +489,19 @@ async def recognition_summary(
 
 @router.get("/recognition/roll-forward")
 async def recognition_roll_forward(
-    date_from: date,
-    date_to: date,
+    date_from: str | None = None,
+    date_to: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """The roll-forward for the period; an open end runs from the first entry or to today."""
+    date_from, date_to = await open_period(session, company_id, date_from, date_to)
     settings, schedules, runs = await _overview(session, company_id)
     accounts = {s["deferred_account"] for s in schedules.values()}
     journals = {entity_id: state for entity_id, state in (await _states(session, company_id, "journal_entry")).items()
                 if any(e.get("account") in accounts for e in state.get("entries") or ())}
-    return roll_forward(schedules, journals, runs, date_from.isoformat(), date_to.isoformat(), funds_enabled(settings))
+    return roll_forward(schedules, journals, runs, date_from, date_to, funds_enabled(settings))
 
 
 @router.get("/recognition/setting")
