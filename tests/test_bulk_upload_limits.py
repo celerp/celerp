@@ -133,7 +133,7 @@ async def _drive_chunked(limit: int, path: str, chunks: int, chunk_size: int) ->
 
 @pytest.mark.asyncio
 async def test_body_cap_counts_a_chunked_body_without_content_length():
-    status, read = await _drive_chunked(1024, "/accounting/reconciliation/x/import-csv", 10, 512)
+    status, read = await _drive_chunked(1024, "/accounting/reconciliation/files", 10, 512)
     assert status == 413
     assert read <= 1024  # the app never sees more than the limit
     assert await _drive_chunked(1024, "/items", 2, 512) == (200, 1024)  # at the limit passes
@@ -149,7 +149,7 @@ async def test_chunked_upload_over_the_cap_is_refused_by_the_app(client):
     boundary = "b0undary"
 
     async def body():
-        yield (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"s.csv\"\r\n"
+        yield (f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"s.csv\"\r\n"
                "Content-Type: text/csv\r\n\r\n").encode()
         for _ in range(11):
             yield b"x" * (1024 * 1024)
@@ -157,7 +157,7 @@ async def test_chunked_upload_over_the_cap_is_refused_by_the_app(client):
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post(
-            "/accounting/reconciliation/00000000-0000-0000-0000-000000000000/import-csv",
+            "/accounting/reconciliation/files",
             content=body(), headers={"content-type": f"multipart/form-data; boundary={boundary}"},
         )
     assert r.status_code == 413, r.text

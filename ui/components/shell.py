@@ -3268,8 +3268,8 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 _REFUSAL_FIXES = {
     "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
     "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
-    "error.recon_entry_held": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
-    "error.recon_period_changed": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
+    "error.recon_entry_held": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed"),
+    "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed"),
 }
 
 

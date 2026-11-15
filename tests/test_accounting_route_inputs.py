@@ -165,7 +165,7 @@ async def test_close_year_accepts_the_fiscal_year_end_for_every_start(client, se
 
 
 @pytest.mark.parametrize("path,body", [
-    ("/accounting/transfers", {"from_bank_id": "not-a-uuid", "to_bank_id": "not-a-uuid", "amount": 1,
+    ("/accounting/transfers", {"idempotency_key": "malformed-bank-id", "from_bank_id": "not-a-uuid", "to_bank_id": "not-a-uuid", "amount": 1,
                                "date": "2026-10-01"}),
     ("/accounting/reconciliation/start", {"bank_account_id": "not-a-uuid", "statement_date": "2026-10-01",
                                           "statement_balance": 1}),
@@ -201,7 +201,7 @@ async def test_well_formed_bank_ids_still_work(client, auth):
         assert r.status_code == 200, r.text
         banks.append(r.json()["id"])
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": banks[0], "to_bank_id": banks[1], "amount": 5, "date": "2026-10-01"})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": banks[0], "to_bank_id": banks[1], "amount": 5, "date": "2026-10-01"})
     assert r.status_code == 200, r.text
     r = await client.post("/accounting/reconciliation/start", headers=h, json={
         "bank_account_id": banks[0], "statement_date": "2026-10-01", "statement_balance": 1})

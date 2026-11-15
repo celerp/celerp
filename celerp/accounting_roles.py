@@ -27,7 +27,7 @@ from celerp.compat import StrEnum
 
 # Bumped when a release adds a role. Older companies and backups stay readable:
 # an unmapped role only fails the operation that needs it.
-POSTING_ROLES_SCHEMA = 4
+POSTING_ROLES_SCHEMA = 5
 
 # Company.settings keys. ``posting_roles`` is the current target per role;
 # ``posting_role_scopes`` is every account that has legitimately served the role,
@@ -114,6 +114,7 @@ class AccountRole(StrEnum):
     DEFERRED_REVENUE = "deferred_revenue"
     DISPUTED_PAYMENTS = "disputed_payments"
     PAYMENT_DISPUTE_LOSSES = "payment_dispute_losses"
+    SUSPENSE = "suspense"
 
 
 R = AccountRole
@@ -157,6 +158,7 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.DEFERRED_REVENUE: "Deferred revenue",
     R.DISPUTED_PAYMENTS: "Disputed payments",
     R.PAYMENT_DISPUTE_LOSSES: "Payment dispute losses",
+    R.SUSPENSE: "Suspense",
 }
 
 _ASSET = frozenset({"asset"})
@@ -203,6 +205,7 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.DEFERRED_REVENUE: frozenset({"liability"}),
     R.DISPUTED_PAYMENTS: _ASSET,
     R.PAYMENT_DISPUTE_LOSSES: _EXPENSE,
+    R.SUSPENSE: _ASSET,
 }
 
 # Roles a posting lands on directly, so the target must be a concrete account,
@@ -257,6 +260,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
 # and maps the role to it when the feature posting there is first turned on, never before.
 ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str]] = {
     R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "3000"),
+    R.SUSPENSE: ("1190", "Suspense", "1100"),
 }
 
 # The default code of every role: the seeded account, or the one added when turned on.
@@ -308,6 +312,7 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "online_payments": (R.ONLINE_PAYMENT_FEES, R.DISPUTED_PAYMENTS, R.PAYMENT_DISPUTE_LOSSES),
     "funds": (R.RESTRICTED_NET_ASSETS,),
     "recognition": (R.DEFERRED_REVENUE,),
+    "bank": (R.SUSPENSE,),
 }
 
 # Roles whose accounts hold stock or its cost. Stock is always unrestricted: a journal

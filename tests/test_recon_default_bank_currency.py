@@ -10,7 +10,8 @@ import uuid
 import pytest
 
 from ui.i18n import refusal_text, t
-from test_reconciliation_history import legacy_deposit, admin, deposit, start
+from test_reconciliation_history import (admin, bank_complete, complete, deposit, legacy_deposit, start,
+                                        stopped_reason)
 
 pytestmark = pytest.mark.asyncio
 
@@ -51,8 +52,7 @@ async def test_default_bank_reconciles_after_the_wizard_sets_the_currency(client
     assert r.status_code == 200, r.text
     sid = r.json()["id"]
     assert (await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": [je]}, headers=h)).status_code == 200
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
+    await complete(client, h, sid)
 
 
 async def test_default_bank_with_a_foreign_amount_keeps_its_currency(client, session):
@@ -73,7 +73,7 @@ async def test_default_bank_with_a_foreign_amount_keeps_its_currency(client, ses
 async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliations_read_again(client, session):
     """An existing install whose default bank was seeded in another currency than the books:
     every posting on it carries a books-currency amount only. Nothing changes it on its own;
-    the workspace and the history page say why its figures read "--" and offer the one
+    the bank page and the history page say why its figures read "--" and offer the one
     correction. A completed reconciliation of the account would be read again by it, so the
     correction asks for that reconciliation to be reopened first; then it goes through,
     changes no amount, and can be changed back until a reconciliation is completed again."""
@@ -84,22 +84,24 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     paid = await legacy_deposit(client, h, session, b, "2026-08-10", 300.0)
     done = await legacy_session(session, b, "2026-08-31", je_ids=[paid], balance=300.0)
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
-    sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[je], balance=200.0)
+    # The September statement closes on both deposits: the bank's complete opens it on August's close.
+    sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[je], balance=500.0)
 
     recon = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert recon["difference"] is None and recon["bank_account"]["relabel_to"] == "USD"
-    assert (await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)).status_code == 422
+    assert stopped_reason(await bank_complete(client, h, sid))
     action = f'action="/accounting/reconcile/relabel/{b["id"]}"'
-    back = {"next": f"/accounting/reconcile/{sid}"}
+    bank_page = f"/accounting/reconcile/bank/{b['id']}"
+    back = {"next": bank_page}
     async with _ui_as(tok) as ui:
-        for page in (f"/accounting/reconcile/{sid}", f"/accounting/reconcile/history/{b['id']}"):
+        for page in (bank_page, f"/accounting/reconcile/history/{b['id']}"):
             assert action in (await ui.get(page)).text, page
         r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data=back)
         assert r.status_code == 303 and "?msg=" in r.headers["location"], r.headers
         assert t("acct.err_bank_currency_reconciled", currency="THB") in (await ui.get(r.headers["location"])).text
         assert (await client.post(f"/accounting/reconciliation/{done}/reopen", headers=h)).status_code == 200
         r = await ui.post(f"/accounting/reconcile/relabel/{b['id']}", data=back)
-        assert r.status_code == 303 and r.headers["location"].startswith(f"/accounting/reconcile/{sid}?done="), r.headers
+        assert r.status_code == 303 and r.headers["location"].startswith(f"{bank_page}?done="), r.headers
         page = (await ui.get(r.headers["location"])).text
         assert action not in page
         # The correction went through, so it reads as done, not as a refusal.
@@ -110,9 +112,8 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     for target in ("THB", "USD"):
         r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
         assert r.status_code == 200 and r.json()["currency"] == target, r.text
-    for s_id in (done, sid):
-        r = await client.post(f"/accounting/reconciliation/{s_id}/complete", headers=h)
-        assert r.status_code == 200, r.text
+    await complete(client, h, sid)
+    assert (await client.get(f"/accounting/reconciliation/{done}", headers=h)).json()["status"] == "completed"
     items = (await client.get(f"/accounting/bank-accounts/{b['id']}/reconciliations", headers=h)).json()["items"]
     assert not any(i["needs_review"] for i in items), items
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "THB"}, headers=h)

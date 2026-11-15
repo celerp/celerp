@@ -462,7 +462,9 @@ def compile_agent_capabilities(
     A confirm-first change compiles only with exactly one retry marker:
     ``x-celerp-agent-idempotent`` (a retry under the card's key answers the first
     result; ``keyed``) or ``x-celerp-agent-check`` naming the screen where the user
-    looks when the outcome is unknown. ``x-celerp-agent-key`` names the route's key
+    looks when the outcome is unknown. ``x-celerp-agent-card`` names the page the card
+    links to, where the user sees and changes what it proposes, its placeholders filled
+    from the call's path arguments. ``x-celerp-agent-key`` names the route's key
     field: compile hides it and execute fills it from the tool call identity.
 
     When ``role`` is supplied, tools whose FastAPI permission dependencies (or
@@ -650,6 +652,7 @@ def compile_agent_capabilities(
                 "key_field": key_field or None,
                 "keyed": keyed,
                 "check_screen": check or None,
+                "card_screen": operation.get("x-celerp-agent-card") or None,
                 "generated_secret": generated_secret or None,
                 "download": download,
                 "selection": operation.get("x-celerp-agent-selection"),
@@ -704,10 +707,12 @@ def filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dict
     return url_path
 
 
-def check_screen(capability: dict[str, Any], arguments: dict[str, Any]) -> str | None:
-    """The screen where the user sees whether a change of an unkeyed tool happened, its
-    placeholders filled from the call's path arguments (the list screen when they are not)."""
-    screen = capability.get("check_screen")
+def screen_of(capability: dict[str, Any], arguments: dict[str, Any], field: str) -> str | None:
+    """The capability's screen named by ``field`` (``check_screen``: where the user sees
+    whether a change of an unkeyed tool happened; ``card_screen``: the page the card links
+    to), its placeholders filled from the call's path arguments (the list screen when
+    they are not)."""
+    screen = capability.get(field)
     if not screen:
         return None
     path_values = arguments.get("path") if isinstance(arguments.get("path"), dict) else {}

@@ -1,0 +1,551 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
+"""Bank statement lines: the one place a line is found, settled or let go.
+
+Every bank route resolves each record id it is given through ``scoped``; ``RECORD_FIELDS``
+names the request fields that carry one. A line settles by posting an entry (``post_line``,
+one offset or several), by matching book entries already on the bank (``match_lines``), or by
+needing none (``skip_line``); ``unmatch_line`` lets it go and voids an entry it posted.
+``write_suggestion`` is the only writer of a line's suggestion.
+"""
+
+from __future__ import annotations
+
+import uuid
+from decimal import Decimal
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp.accounting_roles import catalog_refusal
+from celerp.events.engine import emit_event
+from celerp.models.projections import Projection
+from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
+
+# Request fields that name a record, by the kind ``scoped`` resolves them as.
+RECORD_FIELDS = {
+    "line_ids": "line", "line_id": "line", "paired_line_id": "line",
+    "target_bank_id": "bank", "bank_id": "bank", "bank_account_id": "bank", "from_bank_id": "bank", "to_bank_id": "bank",
+    "statement_id": "session", "through_statement_id": "session", "session_id": "session",
+    "job_id": "job", "doc_id": "doc", "je_ids": "entry",
+    "group_keys": "group", "file_ids": "file",
+    "account_code": "account", "target_account_code": "account", "contact": "contact", "contact_id": "contact", "fund_id": "fund", "rule_id": "rule",
+}
+
+SETTLED = ("matched", "posted")
+_OWN_ENTRY_TYPES = {"recon_create", "recon_split", "recon_transfer", "recon_suspense", "recon_reclass"}
+# The entry id a line's own posting takes, by entry type, before ``next_je_id`` numbers retries.
+_ENTRY_BASE = {"recon_create": "je:recon:", "recon_split": "je:recon:split:", "recon_suspense": "je:recon:suspense:",
+               "recon_transfer": "je:recon:transfer:", "recon_reclass": "je:recon:reclass:"}
+
+
+# What a reclassification carries over from a Suspense line: its amounts and fund. The
+# posting engine stamps roles and gift answers on the new entry itself.
+_MOVED_FIELDS = ("account", "debit", "credit", "fx_debit", "fx_credit", "fx_currency", "fx_rate", "fund_id")
+
+
+def money_value(value, currency: str, *, zero_ok: bool = False) -> Decimal:
+    """``value`` as money in ``currency``: refused when it is zero (unless ``zero_ok``) or
+    finer than the currency's minor unit, never rounded into another figure."""
+    from celerp.services.money import round_money, to_decimal
+
+    amount = to_decimal(value)
+    if amount == 0 and not zero_ok:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_zero"))
+    if round_money(amount, currency) != amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_minor_unit", currency=currency))
+    return amount
+
+
+def _not_found(kind: str) -> HTTPException:
+    return HTTPException(status_code=404, detail=catalog_refusal(
+        "acct.err_statement_line_not_found" if kind == "line"
+        else "acct.err_bank_account_not_found" if kind == "bank" else "acct.err_recon_not_found"))
+
+
+async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, *, bank: BankAccount | None = None,
+                 state: tuple[str, ...] | None = None) -> list:
+    """The records ``ids`` name, each the caller company's (and, for a line or statement, the
+    path bank's), lines read under their row lock in id order. A foreign id gets the same 404
+    as an unknown one; a line outside ``state`` is refused with its status."""
+    want = sorted({uuid.UUID(str(i)) for i in ids}, key=str)
+    if kind == "line":
+        q = select(BankStatementLine).where(BankStatementLine.id.in_(want), BankStatementLine.company_id == company_id)
+        if bank is not None:
+            q = q.where(BankStatementLine.bank_account_id == bank.id)
+        rows = list((await db.execute(q.order_by(BankStatementLine.id).with_for_update())).scalars())
+    elif kind == "session":
+        q = select(ReconciliationSession).where(ReconciliationSession.id.in_(want),
+                                                ReconciliationSession.company_id == company_id)
+        if bank is not None:
+            q = q.where(ReconciliationSession.bank_account_id == bank.id)
+        rows = list((await db.execute(q)).scalars())
+    elif kind == "bank":
+        q = select(BankAccount).where(BankAccount.id.in_(want), BankAccount.company_id == company_id,
+                                      BankAccount.is_active.is_(True))
+        rows = list((await db.execute(q)).scalars())
+        if bank is not None and any(r.id == bank.id for r in rows):
+            raise _not_found("bank")
+    else:
+        raise ValueError(kind)
+    if len(rows) != len(want):
+        raise _not_found(kind)
+    if state is not None and kind == "line":
+        for r in rows:
+            if r.status not in state:
+                raise HTTPException(status_code=409, detail=catalog_refusal(
+                    "acct.err_recon_line_state", status=r.status))
+    return rows
+
+
+async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> None:
+    """Refuse ``code`` unless it is an active account in the company's chart."""
+    from celerp_accounting.models import Account
+
+    active = (await db.execute(select(Account.is_active).where(
+        Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
+    if active is None:
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_account_unknown", code=code))
+    if not active:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_account_archived", code=code))
+
+
+def suggestion_value(suggestion: dict) -> dict:
+    """``suggestion`` as stored: a contact stays only when its evidence names the record that
+    names that contact (an open document, a person's or an answer's rule, a read receipt,
+    history on a named counterparty, or a client answer); a posting with no contact says why,
+    once however often the stored value is written again."""
+    from ui.i18n import t
+    s = {k: v for k, v in suggestion.items() if v is not None or k == "kind"}
+    if s.get("contact_id") and not (s.get("evidence") or {}).get("names_contact"):
+        s.pop("contact_id")
+    why = t("acct.recon_no_contact_named")
+    if s.get("kind") == "post" and not s.get("contact_id") and why not in (s.get("reason") or ""):
+        s["reason"] = f"{s.get('reason') or ''} {why}".strip()
+    return s
+
+
+def write_suggestion(line: BankStatementLine, suggestion: dict | None) -> None:
+    """The one writer of a line's suggestion."""
+    line.suggestion = None if suggestion is None else suggestion_value(suggestion)
+
+
+async def _session(db: AsyncSession, line: BankStatementLine) -> ReconciliationSession:
+    """The line's statement under its lock, refused unless it can still change."""
+    from celerp_accounting.routes import _lock_recon
+    recon, _bank = await _lock_recon(db, line.reconciliation_id, line.company_id, editable=True)
+    return recon
+
+
+def completed(recon: ReconciliationSession) -> bool:
+    return recon.status == "completed"
+
+
+def complete(recon: ReconciliationSession) -> None:
+    from datetime import datetime, timezone
+
+    recon.status = "completed"
+    recon.completed_at = datetime.now(timezone.utc)
+
+
+def hold(recon: ReconciliationSession, je_ids: list[str]) -> None:
+    held = list(recon.reconciled_je_ids or [])
+    recon.reconciled_je_ids = held + [j for j in je_ids if j not in held]
+
+
+def _release(recon: ReconciliationSession, je_ids: list[str]) -> None:
+    recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in je_ids]
+
+
+async def next_je_id(db: AsyncSession, company_id: uuid.UUID, base_id: str) -> str:
+    """The next usable entry id after any voided earlier attempts; the line's row lock
+    serialises the choice. After an unmatch voided an attempt, the next posting gets a new
+    entry instead of resurrecting the voided one."""
+    attempt = 1
+    while True:
+        entity_id = base_id if attempt == 1 else f"{base_id}:{attempt}"
+        row = await db.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if row is None:
+            return entity_id
+        if row.entity_type != "journal_entry":
+            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_entry_exists"))
+        if (row.state or {}).get("status") != "void":
+            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_has_entry"))
+        attempt += 1
+
+
+async def post_entry(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine, je_id: str,
+                     je_type: str, entries: list[dict], memo: str, entry_date: str, key: str) -> None:
+    """Create and post one entry for ``line``; the event keys derive from the request key,
+    so a replay answers the first result even after an undo voided it."""
+    meta = {"recon_session_id": str(line.reconciliation_id), "statement_line_id": str(line.id)}
+    await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                     event_type="acc.journal_entry.created",
+                     data={"memo": memo, "ts": entry_date, "entries": entries, "je_type": je_type},
+                     actor_id=actor_id, location_id=None, source="reconciliation",
+                     idempotency_key=f"{key}:{line.id}:c", metadata_=meta)
+    await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                     event_type="acc.journal_entry.posted", data={"ts": entry_date}, actor_id=actor_id,
+                     location_id=None, source="reconciliation", idempotency_key=f"{key}:{line.id}:p", metadata_={})
+
+
+async def post_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: BankAccount, line: BankStatementLine,
+                    offsets: list[tuple[dict, Decimal]], rate: float | None, memo: str | None, entry_date: str | None,
+                    key: str, je_type: str | None = None) -> list[str]:
+    """Post ``line`` against ``offsets`` (one, or several for a split) and hold the entry.
+    The offsets must total the line; each carries its account and optional contact and fund."""
+    from celerp_accounting import import_service
+    from celerp_accounting.routes import (_bank_entries, _bank_rate, _base_currency, _money_text,
+                                          _pooled_offsets, require_destinations)
+
+    recon = await _session(db, line)
+    amount = abs(Decimal(str(line.amount)))
+    total = sum((a for _, a in offsets), Decimal(0))
+    if total != amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_split_total", total=_money_text(total, bank.currency), amount=_money_text(amount, bank.currency)))
+    await require_destinations(db, company_id, {o["account"] for o, _ in offsets})
+    je_type = je_type or ("recon_split" if len(offsets) > 1 else "recon_create")
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE[je_type]}{line.id}")
+    when = entry_date or line.line_date
+    base = await _base_currency(db, company_id)
+    fx = _bank_rate(bank, base, rate)
+    pooled = await _pooled_offsets(db, company_id, bank, base, fx, offsets, inflow=line.amount > 0, as_of=when)
+    entries = _bank_entries(bank, base, fx, pooled, inflow=line.amount > 0)
+    await import_service.check_line_contacts(db, company_id, entries)
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type=je_type,
+                     entries=entries, memo=memo or line.description, entry_date=when, key=key)
+    _settle(recon, line, "posted", [je_id])
+    return [je_id]
+
+
+def _settle(recon: ReconciliationSession, line: BankStatementLine, status: str, je_ids: list[str]) -> None:
+    line.status = status
+    line.matched_je_ids = list(je_ids)
+    hold(recon, je_ids)
+    if status == "posted":
+        recon.created_count = (recon.created_count or 0) + 1
+    else:
+        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
+
+
+async def post_transfer(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: BankAccount, line: BankStatementLine,
+                        target: BankAccount, paired: BankStatementLine | None, rate: float | None,
+                        to_amount: float | None, key: str) -> list[str]:
+    """Post ``line`` as a transfer between its bank and ``target`` (one ``recon_transfer``
+    entry) and match ``paired``, the target bank's line for the same money, to that entry.
+    ``to_amount`` is what the target bank moved in its own currency when the two differ."""
+    from celerp_accounting.routes import transfer_entries
+
+    recon = await _session(db, line)
+    amount = abs(Decimal(str(line.amount)))
+    other = None if to_amount is None else Decimal(str(to_amount))
+    when = line.line_date
+    if line.amount < 0:
+        entries = await transfer_entries(db, company_id, bank, target, amount, when, rate=rate,
+                                         to_amount=None if other is None else float(other))
+    else:
+        if target.currency != bank.currency and other is None:
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_to_amount",
+                                                                        currency=target.currency))
+        entries = await transfer_entries(db, company_id, target, bank, other if other is not None else amount, when,
+                                         rate=rate, to_amount=float(amount))
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_transfer']}{line.id}")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_transfer",
+                     entries=entries, memo=line.description, entry_date=when, key=key)
+    _settle(recon, line, "posted", [je_id])
+    if paired is not None:
+        _settle(await _session(db, paired), paired, "matched", [je_id])
+    return [je_id]
+
+
+async def post_parts(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: BankAccount, line: BankStatementLine,
+                     parts: list[tuple[dict, Decimal]], rate: float | None, key: str) -> str:
+    """One entry for the parts of a document payment that are not the documents (a bank
+    fee taken out, an overpayment kept): a part of the line's sign moves money the line's
+    way, an opposite one the other way."""
+    from celerp_accounting.routes import _bank_entries, _bank_rate, _base_currency, _pooled_offsets, require_destinations
+
+    await require_destinations(db, company_id, {f["account"] for f, _ in parts})
+    base = await _base_currency(db, company_id)
+    fx = _bank_rate(bank, base, rate)
+    entries: list[dict] = []
+    for fields, amount in parts:
+        inflow = (line.amount > 0) == (amount > 0)
+        pooled = await _pooled_offsets(db, company_id, bank, base, fx, [(fields, abs(amount))], inflow=inflow,
+                                       as_of=line.line_date)
+        entries += _bank_entries(bank, base, fx, pooled, inflow=inflow)
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_create']}{line.id}")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_create",
+                     entries=entries, memo=line.description, entry_date=line.line_date, key=key)
+    return je_id
+
+
+async def reclassify(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine, account: str,
+                     contact: str | None, suspense: str, key: str) -> str:
+    """Move a line's Suspense posting to ``account``: each Suspense line of its entry is
+    reversed and posted again on ``account`` with the same amounts and fund."""
+    from celerp_accounting import import_service
+    from celerp_accounting.routes import require_destinations
+
+    await require_destinations(db, company_id, {account})
+    row = await db.get(Projection, {"company_id": company_id, "entity_id": line.matched_je_ids[0]})
+    entries: list[dict] = []
+    for e in (row.state or {}).get("entries", []) if row is not None else []:
+        if e.get("account") != suspense:
+            continue
+        money = {k: e[k] for k in _MOVED_FIELDS if k in e}
+        back = {**money, "debit": e.get("credit"), "credit": e.get("debit")}
+        if "fx_debit" in e:
+            back.update({"fx_debit": e.get("fx_credit"), "fx_credit": e.get("fx_debit")})
+        entries += [back, {**money, "account": account, **({"contact": contact} if contact else {})}]
+    if not entries:
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
+    await import_service.check_line_contacts(db, company_id, entries)
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_reclass']}{line.id}:1")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_reclass",
+                     entries=entries, memo=line.description, entry_date=line.line_date, key=key)
+    line.matched_je_ids = list(line.matched_je_ids) + [je_id]
+    return je_id
+
+
+def settle_payment(recon: ReconciliationSession, line: BankStatementLine, je_ids: list[str]) -> None:
+    """Hold the entries a document payment posted for ``line``."""
+    _settle(recon, line, "posted", je_ids)
+
+
+async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAccount, lines: list[BankStatementLine],
+                      je_ids: list[str]) -> None:
+    """Match ``lines`` (one or several) to book entries on the bank (one or several) whose
+    bank-side total equals theirs. An entry another line already holds is refused."""
+    from celerp_accounting.routes import _eligible_entries, _je_entries_for_account, _money_text, _refuse_ineligible
+
+    if not je_ids:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_match_needs_entry"))
+    booked = sum((Decimal(str(e["amount"])) for e in await _je_entries_for_account(db, company_id, bank)
+                  if e["je_id"] in je_ids and e["amount"] is not None), Decimal(0))
+    stated = sum((Decimal(str(l.amount)) for l in lines), Decimal(0))
+    if booked != stated:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_recon_match_total", total=_money_text(booked, bank.currency),
+            amount=_money_text(stated, bank.currency)))
+    held: set[str] = set()
+    for row in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+            BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
+            BankStatementLine.id.notin_([l.id for l in lines])))).scalars():
+        held.update(row or [])
+    if held & set(je_ids):
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_book_entry_matched"))
+    by_session: dict = {}
+    for line in lines:
+        by_session.setdefault(line.reconciliation_id, []).append(line)
+    for group in by_session.values():
+        recon = await _session(db, group[0])
+        _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, je_ids,
+                                                   line_ids=[l.id for l in group]))
+    for line in lines:
+        _settle(await _session(db, line), line, "matched", je_ids)
+
+
+async def skip_line(db: AsyncSession, line: BankStatementLine) -> None:
+    """Mark a line that needs no entry (a bank reversal pair, a line already in the books)."""
+    await _session(db, line)
+    line.status = "skipped"
+    line.matched_je_ids = []
+
+
+async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine) -> None:
+    """Let ``line`` go: its statement releases the entries first, so the completed-history
+    check sees none held, then an entry the line posted itself is voided."""
+    from celerp.services.je_keys import je_void_data
+
+    recon = await _session(db, line)
+    je_ids = list(line.matched_je_ids or [])
+    _release(recon, je_ids)
+    await db.flush()
+    if line.status == "posted":
+        for je_id in je_ids:
+            row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
+            if row is None or row.entity_type != "journal_entry":
+                raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
+            state = row.state or {}
+            if state.get("status") == "void":
+                continue
+            if state.get("je_type") not in _OWN_ENTRY_TYPES:
+                raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
+            if state.get("je_type") == "recon_transfer":
+                await _release_pairs(db, company_id, line, je_id)
+            await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                             event_type="acc.journal_entry.voided",
+                             data=je_void_data("Reconciliation line unmatched", state),
+                             actor_id=actor_id, location_id=None, source="reconciliation",
+                             idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={})
+    line.status = "unmatched"
+    line.matched_je_ids = []
+
+
+async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, je_id: str) -> None:
+    """Unmatch the other bank's line matched to the transfer ``line`` posted, before that
+    entry is voided."""
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.matched_je_ids).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.status == "matched",
+        BankStatementLine.bank_account_id != line.bank_account_id))).all()
+    ids = [i for i, held in rows if je_id in (held or [])]
+    for paired in (await scoped(db, company_id, "line", ids, state=("matched",)) if ids else []):
+        _release(await _session(db, paired), [je_id])
+        paired.status = "unmatched"
+        paired.matched_je_ids = []
+
+
+# ── Questions for the client ────────────────────────────────────────────────
+
+# The calls the bank code makes outside the database, each with the test of its failure path.
+BANK_CALLS = {
+    "send_email": "test_ask_client_email_failure_keeps_question",
+    "notify_once": "test_ask_notice_rolls_back_with_question",
+    "store_file": "test_answer_receipt_store_failure_keeps_form",
+    "model_rung": "test_suggest_without_model_states_why",
+    "apply_doc_payment": "test_pay_doc_refuses_over_open_balance",
+}
+
+QUESTIONS_URL = "/accounting/questions"
+# Worst first: the state an Ask reports for its emails is the worst one.
+_EMAIL_STATES = ("failed", "unconfirmed", "sent")
+
+
+async def client_users(db: AsyncSession, company_id: uuid.UUID) -> list:
+    """The active members who answer questions and do not keep the books: their role holds
+    answer_bank_questions and not manage_accounting."""
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp.services.permissions import resolved_grant_roles
+
+    company = await db.get(Company, company_id)
+    settings = company.settings if company else {}
+    roles = resolved_grant_roles(settings, "answer_bank_questions") - resolved_grant_roles(settings,
+                                                                                            "manage_accounting")
+    if not roles:
+        return []
+    return list((await db.execute(select(User).join(UserCompany, UserCompany.user_id == User.id).where(
+        UserCompany.company_id == company_id, UserCompany.is_active.is_(True), User.is_active.is_(True),
+        UserCompany.role.in_(sorted(roles))).order_by(User.name, User.id))).scalars())
+
+
+def asked(line: BankStatementLine) -> bool:
+    """A question the client can see: asked and not withdrawn."""
+    q = line.client_query or {}
+    return bool(q.get("asked")) and not q.get("withdrawn")
+
+
+async def _open_questions(db: AsyncSession, company_id: uuid.UUID) -> int:
+    rows = (await db.execute(select(BankStatementLine).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.client_query.is_not(None)))).scalars()
+    return sum(1 for l in rows if asked(l) and not (l.client_query or {}).get("answered"))
+
+
+async def after_ask_written(db: AsyncSession) -> None:
+    """The question and its notice are kept before any email goes out."""
+    await db.commit()
+
+
+async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines: list[BankStatementLine],
+                    note: str) -> dict:
+    """Ask the client about ``lines`` (or remind them): each line's question is written, the
+    client members are told once per key, the question is kept, then each is emailed under an
+    operation id of the key, so a retry of the key sends no second email."""
+    from datetime import datetime, timezone
+
+    from celerp.config import settings
+    from celerp.models.company import Company
+    from celerp.notifications.service import notify_once
+    from celerp.services import email as email_service
+    from ui.i18n import t
+
+    members = await client_users(db, company_id)
+    if not members:
+        raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.no_client_user"))
+    now = datetime.now(timezone.utc).isoformat()
+    reminder = 0
+    for line in lines:
+        q = dict(line.client_query or {})
+        if q.get("key") == key:  # a retry of this Ask after its question was kept
+            reminder = max(reminder, q["asks"] - 1)
+            continue
+        reminder = max(reminder, q.get("asks", 0) if asked(line) else 0)
+        line.client_query = {"asked": now, "note": note or q.get("note") or "", "asks": q.get("asks", 0) + 1, "key": key, "answer": None,
+                             "contact_text": None, "answered": None, "withdrawn": None}
+    await db.flush()
+    count = await _open_questions(db, company_id)
+    title_key, body_key = "acct.recon_questions_title", ("acct.recon_questions_reminder" if reminder
+                                                         else "acct.recon_questions_body")
+    params = {"count": count, "n": reminder}
+    title, body = str(t(title_key, "en")), str(t(body_key, "en", **params))
+    for member in members:
+        await notify_once(db, company_id, "bank_questions", title, body, user_id=member.id, action_url=QUESTIONS_URL,
+                          i18n={"title": title_key, "body": body_key, "params": params})
+    await after_ask_written(db)
+
+    company = await db.get(Company, company_id)
+    base = (settings.celerp_public_url or "").rstrip("/")
+    link = f"{base}{QUESTIONS_URL}" if base else None
+    text = "\n\n".join(filter(None, [str(t(body_key, **params)), note, link or str(t("acct.recon_questions_where"))]))
+    html = "".join(f"<p>{_html(p)}</p>" for p in text.split("\n\n"))
+    worst, failed = "sent", []
+    for member in members:
+        result = await email_service.send_email(
+            to=member.email, subject=str(t(title_key)), body_html=html, body_text=text,
+            from_name=company.name if company else "",
+            operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member.id}")),
+            fail_closed_on_uncertain=True)
+        state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
+        if state != "sent":
+            failed.append((member.name, state, str(t(result.reason)) if result.reason else result.detail))
+        worst = min(worst, state, key=_EMAIL_STATES.index)
+    asked_ids = [str(l.id) for l in lines]
+    if not failed:
+        outcome = t("acct.recon_asked", count=len(lines), names=", ".join(m.name for m in members))
+    else:
+        state, reason = failed[0][1], failed[0][2]
+        outcome = t("acct.recon_asked_email_failed" if state == "failed" else "acct.recon_asked_email_unconfirmed",
+                    count=len(lines), name=", ".join(n for n, _s, _r in failed), reason=reason)
+    return {"asked": asked_ids, "outcome": str(outcome), "email": {"state": worst}}
+
+
+def _html(text: str) -> str:
+    from html import escape
+    return escape(text).replace("\n", "<br>")
+
+
+def withdraw_lines(lines: list[BankStatementLine]) -> None:
+    """Take back the questions on ``lines``; each must be asked and not withdrawn."""
+    from datetime import datetime, timezone
+
+    for line in lines:
+        if not asked(line):
+            raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.line_not_asked"))
+    now = datetime.now(timezone.utc).isoformat()
+    for line in lines:
+        line.client_query = {**line.client_query, "withdrawn": now}
+
+
+async def attach_file(store, company_id: uuid.UUID, line: BankStatementLine, content: bytes, filename: str | None,
+                      mime: str) -> dict:
+    """Store a file on ``line`` under an id of the line and the content, so the same file
+    attached again is the attachment the line already holds. Refused with 413 when the store
+    does not take the file."""
+    import hashlib
+
+    from celerp.services.attachments import company_file_name, stored_file_name
+
+    att_id = hashlib.sha256(str(line.id).encode() + content).hexdigest()[:32]
+    name = stored_file_name(att_id, mime)
+    held = next((u for u in line.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
+    if held is not None:
+        return {"id": name, "url": held, "filename": filename}
+    try:
+        meta = await store.file(content, filename, mime, att_id=att_id)
+    except ValueError:
+        raise HTTPException(status_code=413, detail=catalog_refusal("accounting.statement_attachment_refused"))
+    line.attachment_ids = [*(line.attachment_ids or []), meta["url"]]
+    return meta

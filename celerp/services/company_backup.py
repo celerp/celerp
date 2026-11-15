@@ -79,6 +79,7 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.permissions import act_for
 from celerp.services.provisioning import create_install_owner, hold_owner, provision_restored_company
+from celerp.services.statement_line_upgrade import backfill_fingerprints, migrated_line
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -1050,6 +1051,7 @@ def read_backup(path: Path) -> BackupFile:
             for f in manifest["attachments"]:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
             event_types = _event_types(zf, manifest)
+            _upgrade_columns(manifest)
     except (zlib.error, EOFError):
         raise BackupError(422, t(INCOMPLETE)) from None
     except (zipfile.LargeZipFile, KeyError, *ZIP_ERRORS):
@@ -1116,6 +1118,91 @@ def _lines(zf: zipfile.ZipFile, name: str):
                 yield line
 
 
+# ── Rows of an older shape ───────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class _Upgrade:
+    """A table whose backup still holds ``retired``: its rows move to the shape the
+    schema upgrade gave the table, with ``added`` columns, through ``rows`` (called with a
+    reader of any table's stored rows)."""
+    retired: str
+    added: tuple[str, ...]
+    rows: object
+
+
+def _plain(value):
+    """A stored number by its text, so a fingerprint reads it as the database held it."""
+    return value[1:-1] if isinstance(value, str) and len(value) > 1 and value[0] == value[-1] == "\x00" else value
+
+
+def _bank_lines(read):
+    """Each line on its statement's bank, with the fingerprint, status, entry list and
+    suggestion the schema upgrade gives it. A line whose statement is missing is damage."""
+    statements = {s.get("id"): (s.get("bank_account_id"), s.get("statement_date"))
+                  for s in read("reconciliation_sessions")}
+    keys = []
+    for r in read("bank_statement_lines"):
+        if r.get("reconciliation_id") not in statements:
+            raise BackupError(422, t(DAMAGED))
+        bank, date = statements[r["reconciliation_id"]]
+        keys.append({"id": r.get("id"), "bank_account_id": bank, "statement_date": date, "created_at": r.get("created_at"),
+                     **{k: _plain(r.get(k)) for k in ("line_date", "amount", "description", "reference", "raw_balance")}})
+    fps = backfill_fingerprints(keys)
+    for r in read("bank_statement_lines"):
+        moved = migrated_line(r)
+        row = {k: v for k, v in r.items() if k != "matched_je_id"}
+        yield {**row, "bank_account_id": statements[r["reconciliation_id"]][0], "fingerprint": fps[r.get("id")], **moved}
+
+
+def _drop(table: str, column: str) -> _Upgrade:
+    def rows(read):
+        for row in read(table):
+            yield {k: v for k, v in row.items() if k != column}
+    return _Upgrade(column, (), rows)
+
+
+ROW_UPGRADES = {
+    "bank_statement_lines": _Upgrade("matched_je_id", ("bank_account_id", "fingerprint", "matched_je_ids", "suggestion"),
+                                     _bank_lines),
+    "reconciliation_sessions": _drop("reconciliation_sessions", "auto_matched_count"),
+    "reconciliation_rules": _drop("reconciliation_rules", "default_tax"),
+}
+
+
+def _upgrade_columns(manifest: dict) -> None:
+    """Give each table a backup holds in an older shape the columns its rows are upgraded
+    to (_table_lines); the stored list stays in ``stored_columns``."""
+    for name, up in ROW_UPGRADES.items():
+        meta = manifest["tables"].get(name)
+        if meta is not None and up.retired in meta["columns"]:
+            meta["stored_columns"] = meta["columns"]
+            meta["columns"] = [c for c in meta["columns"] if c != up.retired] + [
+                c for c in up.added if c not in meta["columns"]]
+
+
+def _stored_rows(zf: zipfile.ZipFile, manifest: dict, name: str):
+    meta = manifest["tables"].get(name)
+    if meta is None:
+        raise BackupError(422, t(DAMAGED))
+    stored = set(meta.get("stored_columns", meta["columns"]))
+    for line in _lines(zf, f"tables/{name}.jsonl"):
+        if _RAW_NUL.search(line):
+            raise BackupError(422, t(DAMAGED))
+        row = _parse_row(line)
+        if not isinstance(row, dict) or set(row) != stored:
+            raise BackupError(422, t(DAMAGED))
+        yield row
+
+
+def _table_lines(zf: zipfile.ZipFile, manifest: dict, name: str):
+    """The backup's rows of ``name`` as JSON lines in the shape its manifest columns name."""
+    if "stored_columns" not in manifest["tables"][name]:
+        yield from _lines(zf, f"tables/{name}.jsonl")
+        return
+    for row in ROW_UPGRADES[name].rows(lambda table: _stored_rows(zf, manifest, table)):
+        yield _NUMBER.sub(r"\1", dump_json(row)).encode() + b"\n"
+
+
 def _older(m: dict) -> bool:
     """Whether the backup was written in a format this Celerp no longer writes, so it may
     hold what this Celerp has since stopped backing up."""
@@ -1157,7 +1244,7 @@ def _scan_rows(backup: BackupFile, order: list[str], plan: _Plan) -> tuple[set[s
                 raise BackupError(422, t(DAMAGED))
             single = table.pk[0] if len(table.pk) == 1 and not table.columns[table.pk[0]].generated else None
             total = 0
-            for line in _lines(zf, f"tables/{name}.jsonl"):
+            for line in _table_lines(zf, m, name):
                 if _RAW_NUL.search(line):
                     raise BackupError(422, t(DAMAGED))
                 row = _parse_row(line)
@@ -1589,11 +1676,12 @@ def _row_batches(lines, limit: int):
         yield rows
 
 
-async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
+async def _insert(session: AsyncSession, zf: zipfile.ZipFile, manifest: dict, table: str,
                   id_map: dict[str, str], schema: db_catalog.Table, company_id) -> None:
     """Insert the backup's rows of ``table``. Its company column is the restored company,
     bound once for the whole statement: the source company every row was checked to name
     maps to it, so no restored row can name another company."""
+    columns = manifest["tables"][table]["columns"]
     cols = ", ".join(db_catalog.ident(c) for c in columns)
     company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
         if "company_id" in columns else ""
@@ -1602,7 +1690,7 @@ async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, column
         f"INSERT INTO {db_catalog.ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
-    batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
+    batches = _row_batches(_table_lines(zf, manifest, table), BATCH_ROWS)
     while rows := await asyncio.to_thread(next, batches, None):
         await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map)), "company": str(company_id)})
 
@@ -1881,7 +1969,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 act_for(session, new_id, user.id, "owner", LIFECYCLE)
                 try:
                     for name in checked.order:
-                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map,
+                        await _insert(session, zf, m, name, id_map,
                                       checked.plan.schema[name], new_id)
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None

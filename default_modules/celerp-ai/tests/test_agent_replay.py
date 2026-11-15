@@ -126,7 +126,7 @@ async def _card(session, conversation_id: str, capability: dict, **state) -> tup
         id=call_id, name=capability["name"], arguments=arguments,
         created_at=now.isoformat(), expires_at=(now + timedelta(hours=1)).isoformat(),
         title=capability["name"], keyed=capability["keyed"] is True,
-        check_screen=ai_tools.check_screen(capability, arguments),
+        check_screen=ai_tools.screen_of(capability, arguments, "check_screen"),
     ))
     msg = await add_message(session, uuid.UUID(conversation_id), "assistant", "",
                             tools_called=[{**record, **state}])

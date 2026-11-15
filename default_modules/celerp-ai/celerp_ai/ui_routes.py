@@ -1294,8 +1294,9 @@ def _action_dom_id(message_id: str, tool_call_id: str) -> str:
 
 
 def _action_body(action: dict, lang: str = "en") -> list[FT]:
-    """What a proposal will write and what to check first: the argument groups
-    and the warnings block, shared by the card and the table's detail row."""
+    """What a proposal will write and what to check first: the argument groups, the link
+    to the page where it is seen and changed, and the warnings block, shared by the card
+    and the table's detail row."""
     args = action.get("arguments") or {}
     groups = [
         _arg_lines(args[part])
@@ -1303,6 +1304,8 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
         if isinstance(args.get(part), dict) and args[part]
     ]
     out: list[FT] = [Div(*groups, cls="ai-action__list")]
+    if action.get("card_screen"):
+        out.append(A(t("ai.card_open_page", lang), href=safe_url(action["card_screen"]), cls="ai-action__page-link"))
     warnings = _action_warnings(action)
     if warnings:
         out.append(Div(

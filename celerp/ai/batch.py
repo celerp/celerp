@@ -33,7 +33,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import jobs, llm, service
-from celerp.ai.files import load_file_for_llm
+from celerp.ai.files import TABULAR_UPLOAD_TYPES, load_file, load_file_for_llm
 from celerp.ai.llm import RelayError
 from ui.i18n import t
 from celerp.accounting_roles import Refused
@@ -70,6 +70,36 @@ that runs over several pages is 1, and a statement listing transactions is 1. Wh
 the file holds more than one, extract only the first.
 
 If the document is unreadable, return a one-sentence explanation instead of JSON.
+"""
+
+# A statement reading job (read-statement) asks this; its steps use the statement shape.
+STATEMENT_QUERY = "Read this bank or card statement."
+STATEMENT_PAGES = 3
+# Files a statement job never sends: their owning module parses them without credits.
+STRUCTURED_TYPES = TABULAR_UPLOAD_TYPES
+STRUCTURED_SUFFIXES = (".csv", ".xlsx", ".ofx", ".qfx")
+
+_STATEMENT_SYSTEM_PROMPT = """\
+You are reading pages of a bank or card statement, or a payment slip or receipt sent with one.
+Extract what is printed. Never guess a value that is not on the page; leave it null instead.
+
+For a statement, output a JSON block:
+```json
+{
+  "kind": "statement",
+  "header": {"period_start": "YYYY-MM-DD", "period_end": "YYYY-MM-DD", "opening_balance": "0.00",
+             "closing_balance": "0.00", "currency": "ISO 4217 code", "account_tail": "last 4 digits or null"},
+  "lines": [{"line_date": "YYYY-MM-DD", "description": "string", "amount": "-0.00 for money out, 0.00 for money in",
+             "balance": "running balance or null", "base_amount": "books-currency amount if printed, or null",
+             "page": 1}]
+}
+```
+For a slip or receipt, output:
+```json
+{"kind": "receipt", "date": "YYYY-MM-DD", "total": "0.00", "tax": "0.00 or null", "tax_id": "string or null",
+ "is_tax_invoice": false, "party": "who was paid or who paid"}
+```
+If the pages are unreadable, return a one-sentence explanation instead of JSON.
 """
 
 _FENCED_JSON = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
@@ -158,19 +188,41 @@ class FileOutcome:
     sent: bool = False
 
 
+def reads_without_model(run: FileRun, file_key: str) -> bool:
+    """Whether a step of ``run`` is read here without the model: a tabular or OFX file of a
+    statement job, which its owning module parses itself. Such a step needs no AI access."""
+    from celerp.ai.files import _file_paths_and_meta
+    if run.query != STATEMENT_QUERY:
+        return False
+    try:
+        _path, meta = _file_paths_and_meta(file_key.partition(":")[0], run.company_id, run.user_id)
+    except (FileNotFoundError, PermissionError):
+        return False
+    return is_structured(meta.get("content_type") or "", meta.get("filename") or "")
+
+
 async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
                     before_send: Callable[[int], Awaitable[None]]) -> FileOutcome:
     """Read one file under ``operation_id`` (the caller holds its gate slot). It is
     sent again only under that id: while its first send still runs, and when the
     service surely did not run it or no reply came back. An outcome the service
     cannot report, or an id it no longer accepts, ends the file without running it."""
+    statement = run.query == STATEMENT_QUERY
+    file_id, _, pages = file_id.partition(":")
     try:
         file = load_file_for_llm(file_id, run.company_id, run.user_id)
     except (FileNotFoundError, PermissionError):
         return FileOutcome("failed", {"filename": file_id, "error": t("error.file_gone")})
     filename = file["filename"]
-    prompt = f"{run.query}\n\nRead the attached document." if run.query else "Read the attached document."
-    messages = [{"role": "system", "content": _BATCH_SYSTEM_PROMPT},
+    if statement and is_structured(file["media_type"], filename):
+        return FileOutcome("done", {"filename": filename, "structured": True})
+    if pages:
+        file = {**file, "data": _page_slice(file_id, run, pages)}
+    # The file's name goes with it: "slip.jpg" beside a statement tells the model what it holds.
+    read = f"Read the attached document, {filename}."
+    prompt = f"{run.query}\n\n{read}" if run.query else read
+    system = _STATEMENT_SYSTEM_PROMPT if statement else _BATCH_SYSTEM_PROMPT
+    messages = [{"role": "system", "content": system},
                 {"role": "user", "content": llm._build_user_content(prompt, [file])}]
     hints = {"query": prompt[:500], "file_count": 1, "is_batch": False}
     sent = False
@@ -201,8 +253,50 @@ async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
     answer = result.message.get("content") or ""
     known = result.operation_credits is not None
     credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
-    return FileOutcome("done", {"filename": filename, "answer": answer, "extraction": parse_extraction(answer)},
-                       credits, known, sent)
+    extraction = parse_extraction(answer)
+    if statement and (extraction or {}).get("kind") not in ("statement", "receipt"):
+        # Nothing readable came back: the step ends failed with the model's reason, to retry.
+        return FileOutcome("failed", {"filename": filename, "pages": pages or None,
+                                      "error": answer.strip()[:300] or t("ai.err_file_unexpected")},
+                           credits, known, sent)
+    return FileOutcome("done", {"filename": filename, "pages": pages or None, "answer": answer,
+                                "extraction": extraction}, credits, known, sent)
+
+
+def is_structured(content_type: str, filename: str) -> bool:
+    return content_type in STRUCTURED_TYPES or filename.lower().endswith(STRUCTURED_SUFFIXES)
+
+
+def statement_step_keys(file_ids: list[str], company_id: uuid.UUID, user_id: uuid.UUID) -> list[str]:
+    """One step per file, and a PDF one step per range of up to STATEMENT_PAGES pages
+    (``file_id:first-last``), read in page order."""
+    import io
+    import pypdf
+    keys: list[str] = []
+    for file_id in file_ids:
+        data, meta = load_file(file_id, company_id, user_id)
+        if meta.get("content_type") != "application/pdf":
+            keys.append(file_id)
+            continue
+        count = len(pypdf.PdfReader(io.BytesIO(data)).pages)
+        keys += [f"{file_id}:{a}-{min(a + STATEMENT_PAGES - 1, count)}"
+                 for a in range(1, count + 1, STATEMENT_PAGES)]
+    return keys
+
+
+def _page_slice(file_id: str, run: "FileRun", pages: str) -> str:
+    """The pages ``first-last`` of a PDF as a PDF of their own, base64 for the model."""
+    import base64
+    import io
+    import pypdf
+    data, _meta = load_file(file_id, run.company_id, run.user_id)
+    first, last = (int(n) for n in pages.split("-"))
+    reader, writer = pypdf.PdfReader(io.BytesIO(data)), pypdf.PdfWriter()
+    for i in range(first - 1, last):
+        writer.add_page(reader.pages[i])
+    buf = io.BytesIO()
+    writer.write(buf)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 async def create_batch_job(
@@ -213,6 +307,7 @@ async def create_batch_job(
     file_ids: list[str],
     conversation_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
+    step_keys: list[str] | None = None,
 ):
     """Create a pending reading job, held by this process, and one step per file, under
     the company's lock (lock_for_ai, a retake for a caller that holds it); the caller
@@ -226,7 +321,7 @@ async def create_batch_job(
         raise Refused("ai.attach_one_file")
     if len(file_ids) > MAX_BATCH_FILES:
         raise Refused("error.batch_too_many", max=MAX_BATCH_FILES)
-    job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
+    job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id, step_keys=step_keys)
     await jobs.lock_for_ai(session, company_id)
     session.add(job)
     await session.flush()

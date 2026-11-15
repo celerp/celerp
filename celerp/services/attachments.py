@@ -590,7 +590,9 @@ class CompanyGone(HTTPException):
     """The company was deleted before its file could be stored."""
 
     def __init__(self) -> None:
-        super().__init__(status_code=404, detail=t("error.err_company_not_found"))
+        from celerp.accounting_roles import catalog_refusal
+
+        super().__init__(status_code=404, detail=catalog_refusal("posting.company_not_found"))
 
 
 class CompanyFiles:

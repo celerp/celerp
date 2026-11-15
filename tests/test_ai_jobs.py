@@ -9,7 +9,7 @@ again only under the identity it was sent under: the service replays a stored re
 and refuses to run again a step whose outcome it cannot report. Running a step under
 a new identity is always an explicit user action that says what it counts as.
 
-The AI service is played over HTTP by its step rules (tests/ai_fake_cloud.py). A kill
+The AI service is played over HTTP by its step rules (ai_fake_cloud.py at the repository root). A kill
 is ``jobs.shutdown()`` (every task cancelled mid-step), a restart is
 ``jobs.recover_on_start()``.
 """

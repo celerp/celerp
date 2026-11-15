@@ -20,6 +20,8 @@ from fasthtml.common import to_xml
 
 from celerp.ai import tools
 from celerp_ai import routes, ui_routes
+
+import bank_statement_helpers as B
 from ui import i18n
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -74,18 +76,20 @@ def _generated(capability: dict) -> dict:
     return {"query": {"colour": "red"}}
 
 
-async def _cases(client, h, by_route) -> tuple[list, list]:
+async def _cases(client, h, by_route) -> tuple[list, list, dict]:
     """(name, method, path, arguments) of a refused request to every agent route: the
-    named ones, and a generated one for each other route."""
-    named = await _named_cases(client, h)
-    assert {(m, p) for _n, m, p, _a in named} <= set(by_route), {(m, p) for _n, m, p, _a in named} - set(by_route)
+    named ones and a generated one for each other route; and by named case the arguments
+    that reach the company lock where the refused ones do not."""
+    named, reaching = await _named_cases(client, h)
     covered = {(m, p) for _n, m, p, _a in named}
+    assert covered <= set(by_route), covered - set(by_route)
     return named, [(capability["name"], method, path, _generated(capability))
-                   for (method, path), capability in sorted(by_route.items()) if (method, path) not in covered]
+                   for (method, path), capability in sorted(by_route.items()) if (method, path) not in covered], reaching
 
 
-async def _named_cases(client, h) -> list[tuple[str, str, str, dict]]:
-    """(name, method, path, arguments) of a refused request each route's own handler checks."""
+async def _named_cases(client, h) -> tuple[list[tuple[str, str, str, dict]], dict]:
+    """(name, method, path, arguments) of a refused request each route's own handler checks,
+    and by case name the arguments that reach the company lock where the refused ones do not."""
     token = h["Authorization"].split()[1]
     await seed_demo.seed_items(client, token)
     contacts = await seed_demo.seed_contacts(client, token)
@@ -100,28 +104,43 @@ async def _named_cases(client, h) -> list[tuple[str, str, str, dict]]:
     sent = next(d for d in invoices if d["status"] == "sent")
     vendor = next(c["id"] for c in contacts if c.get("contact_type") == "vendor")
 
-    bank = await client.post("/accounting/bank-accounts", headers=h, json={
-        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
-        "currency": "USD", "opening_balance": 1000.0})
-    sid = (await client.post("/accounting/reconciliation/start", headers=h, json={
-        "bank_account_id": bank.json()["id"], "statement_date": "2026-09-30",
-        "statement_balance": 1020.0})).json()["id"]
-    await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={
-        "file": ("s.csv", b"Date,Description,Amount\n2026-09-05,Deposit,20.00\n2026-09-06,Fee,-3.00\n", "text/csv")})
-    body = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()
-    l1, l2 = [line["id"] for line in (body.get("items") if isinstance(body, dict) else body)]
-    created = await client.post(f"/accounting/reconciliation/{sid}/lines/{l1}/create", headers=h,
-                                json={"account_code": "4100"})
-    assert created.status_code == 200, created.text
-    other = await client.post("/accounting/bank-accounts", headers=h, json={
-        "bank_name": "Quay Bank", "account_number": "0002", "bank_type": "checking",
-        "currency": "USD", "opening_balance": 0.0})
+    co = await B.co_of(client, h)
+    bank = await B.bank(client, h, name="Harbor Bank", opening=1000.0, opening_date="2026-08-31")
+    sid, (l1, l2) = await B.lines_on(client, co, bank["id"], [("2026-09-05", "Deposit", "20.00"),
+                                                               ("2026-09-06", "Fee", "-3.00")],
+                                     opening="1000.00", closing="1017.00", start="2026-09-01", end="2026-09-30")
+    posted = await B.resolve(client, co, bank["id"], decisions=[
+        {"line_ids": [l1["id"]], "kind": "post", "account_code": "4100"}])
+    assert posted.json()["results"][0]["ok"], posted.text
+    other = await B.bank(client, h, name="Quay Bank")
     apart = {"session_id": (await client.post("/accounting/reconciliation/start", headers=h, json={
-        "bank_account_id": other.json()["id"], "statement_date": "2026-09-30",
+        "bank_account_id": other["id"], "statement_date": "2026-09-30",
         "statement_balance": 500.0})).json()["id"]}
-
+    on_bank = {"bank_id": bank["id"]}
+    nope = [_NOPE]
+    unread = B.csv_bytes([("2026-10-02", "Wire", "5.00")])
+    preview = await B.read(client, co, [(unread, "oct.csv", "text/csv")], bank_id=bank["id"])
+    # A write refused before it waits for the company lock (a record not found) is judged
+    # again only once it waits there, so the role-change sweep calls those routes with
+    # arguments that reach the lock.
+    reaching = {
+        "statement_read_no_file": {"body": {"file_ids": [B.upload(co["company_id"], co["user_id"], unread, "r.csv")],
+                                            "bank_id": bank["id"]}},
+        "statement_import_no_job": {"body": {"job_id": preview["job_id"], "bank_id": bank["id"],
+                                             "statements": [{"header": st["header"], "lines": st["lines"]}
+                                                            for st in preview["statements"]]}},
+        "bank_resolve_no_group": {"path": on_bank, "body": {"decisions": [
+            {"line_ids": [l2["id"]], "kind": "post", "account_code": "6100"}]}},
+        "bank_suggest_no_bank": {"path": on_bank, "body": {}},
+        "bank_unmatch_no_line": {"path": on_bank, "body": {"line_ids": [l1["id"]]}},
+        "bank_complete_no_bank": {"path": on_bank, "body": {}},
+        "bank_opening_no_bank": {"path": on_bank, "body": {"amount": 1.0, "date": "2026-08-31"}},
+        "bank_ask_no_line": {"path": on_bank, "body": {"line_ids": [l2["id"]]}},
+        "bank_withdraw_no_line": {"path": on_bank, "body": {"line_ids": [l2["id"]]}},
+        "bank_question_answer_no_line": {"path": {"line_id": l2["id"]}, "body": {"answer": "A client lunch"}},
+    }
     rec = "/accounting/reconciliation/{session_id}"
-    on = {"session_id": sid}
+    bank_rec = "/accounting/reconciliation/bank/{bank_id}"
     sku = lambda: f"SW-{uuid.uuid4().hex[:6]}"  # noqa: E731
     item = {"name": "Ring", "quantity": 1, "sell_by": "piece"}
     line = [{"description": "x", "quantity": 1, "unit_price": 1}]
@@ -130,19 +149,32 @@ async def _named_cases(client, h) -> list[tuple[str, str, str, dict]]:
         ("bank_accounts_bad_limit", "GET", "/accounting/bank-accounts", {"query": {"limit": "many"}}),
         ("recon_start_no_account", "POST", "/accounting/reconciliation/start", {"body": {
             "bank_account_id": _NOPE, "statement_date": "2026-09-30", "statement_balance": 1.0}}),
-        ("recon_auto_match_no_session", "POST", rec + "/auto-match", {"path": {"session_id": _NOPE}}),
-        ("recon_bulk_confirm_no_session", "POST", rec + "/bulk-confirm",
-         {"path": {"session_id": _NOPE}, "body": {"line_ids": [l2]}}),
-        ("recon_complete_difference", "POST", rec + "/complete", {"path": apart}),
-        ("recon_import_no_session", "POST", rec + "/import-file",
-         {"path": {"session_id": _NOPE}, "body": {"file_id": "nofile"}}),
-        ("recon_patch_no_line", "PATCH", rec + "/lines/{line_id}",
-         {"path": {**on, "line_id": _NOPE}, "body": {"description": "x"}}),
-        ("recon_create_bad_account", "POST", rec + "/lines/{line_id}/create",
-         {"path": {**on, "line_id": l2}, "body": {"account_code": "0000"}}),
-        ("recon_match_created", "POST", rec + "/lines/{line_id}/match",
-         {"path": {**on, "line_id": l1}, "body": {"je_id": str(uuid.uuid4())}}),
-        ("recon_unmatch_no_line", "POST", rec + "/lines/{line_id}/unmatch", {"path": {**on, "line_id": _NOPE}}),
+        ("statement_read_no_file", "POST", "/accounting/reconciliation/read-statement",
+         {"body": {"file_ids": ["nofile"], "bank_id": bank["id"]}}),
+        ("statement_import_no_job", "POST", "/accounting/reconciliation/import-statement",
+         {"body": {"job_id": _NOPE, "bank_id": bank["id"], "statements": [{"header": {}}]}}),
+        ("statement_preview_no_job", "GET", "/accounting/reconciliation/statement-preview/{job_id}",
+         {"path": {"job_id": _NOPE}}),
+        ("statement_preview_edit_no_job", "POST", "/accounting/reconciliation/statement-preview/{job_id}",
+         {"path": {"job_id": _NOPE}, "body": {"statements": [{"header": {}}]}}),
+        ("bank_groups_bad_view", "GET", bank_rec + "/groups", {"path": on_bank, "query": {"view": "sideways"}}),
+        ("bank_questions_bad_status", "GET", "/accounting/bank-questions", {"query": {"status": "sideways"}}),
+        ("transfer_same_bank", "POST", "/accounting/transfers", {"body": {
+            "from_bank_id": bank["id"], "to_bank_id": bank["id"], "amount": 5.0, "date": "2026-09-10"}}),
+        ("bank_resolve_no_group", "POST", bank_rec + "/resolve",
+         {"path": on_bank, "body": {"accept": {"group_keys": ["NO SUCH GROUP"]}}}),
+        ("bank_suggest_no_bank", "POST", bank_rec + "/suggest", {"path": {"bank_id": _NOPE}, "body": {}}),
+        ("bank_unmatch_no_line", "POST", bank_rec + "/unmatch", {"path": on_bank, "body": {"line_ids": nope}}),
+        ("bank_complete_no_bank", "POST", bank_rec + "/complete", {"path": {"bank_id": _NOPE}, "body": {}}),
+        ("statement_remove_settled", "DELETE", "/accounting/reconciliation/{session_id}", {"path": {"session_id": sid}, "body": {}}),
+        ("bank_opening_no_bank", "PUT", "/accounting/bank-accounts/{bank_id}/opening",
+         {"path": {"bank_id": _NOPE}, "body": {"amount": 1.0, "date": "2026-08-31"}}),
+        ("line_reclassify_not_suspense", "POST", "/accounting/reconciliation/lines/{line_id}/reclassify",
+         {"path": {"line_id": l2["id"]}, "body": {"account_code": "6100"}}),
+        ("bank_ask_no_line", "POST", bank_rec + "/ask", {"path": on_bank, "body": {"line_ids": nope}}),
+        ("bank_withdraw_no_line", "POST", bank_rec + "/withdraw-question", {"path": on_bank, "body": {"line_ids": nope}}),
+        ("bank_question_answer_no_line", "POST", "/accounting/bank-questions/{line_id}/answer",
+         {"path": {"line_id": _NOPE}, "body": {"answer": "A client lunch"}}),
         ("recon_reopen_no_session", "POST", rec + "/reopen", {"path": {"session_id": _NOPE}}),
         ("recon_workbench_no_session", "GET", rec + "/workbench", {"path": {"session_id": _NOPE}}),
         ("recon_write_off_bad_account", "POST", rec + "/write-off", {"path": apart, "body": {"account_code": "0000"}}),
@@ -175,7 +207,7 @@ async def _named_cases(client, h) -> list[tuple[str, str, str, dict]]:
          {"path": {"entity_id": items[0]["id"]}, "body": {"fields_changed": {"barcode": {"new": "12ab"}}}}),
         ("reorder_missing_item", "GET", "/items/{entity_id}/reorder-suggestion", {"path": {"entity_id": "item:nope"}}),
         ("search_unknown_argument", "GET", "/search", {"query": {"colour": "red"}}),
-    ]
+    ], reaching
 
 
 async def _misread(app, h, by_route, cases, before_each=lambda: None) -> tuple[list, dict]:
@@ -212,9 +244,9 @@ async def test_every_agent_route_refuses_in_the_reader_language_live_and_after_a
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     app = client._transport.app
     by_route = _capabilities(app)
-    named, generated = await _cases(client, h, by_route)
+    named, generated, _reaching = await _cases(client, h, by_route)
     cases = named + generated
-    assert {(m, p) for _n, m, p, _a in cases} == set(by_route)
+    assert {(m, p) for _n, m, p, _a in cases} == set(by_route), set(by_route) ^ {(m, p) for _n, m, p, _a in cases}
     wrong, _keys = await _misread(app, h, by_route, cases)
     assert not wrong, "\n".join(map(repr, wrong))
 
@@ -232,8 +264,9 @@ async def test_every_agent_write_refuses_in_the_reader_language_when_the_role_ch
     app = client._transport.app
     by_route = _capabilities(app)
     writes = {route for route, capability in by_route.items() if capability["requires_confirmation"]}
-    named, generated = await _cases(client, h, by_route)
-    cases = [case for case in named + generated if (case[1], case[2]) in writes]
+    named, generated, reaching = await _cases(client, h, by_route)
+    cases = [(name, method, path, reaching.get(name, args)) for name, method, path, args in named + generated
+             if (method, path) in writes]
     named = {(m, p) for _n, m, p, _a in named} & writes
     real = permissions.read_authority
 
@@ -251,4 +284,5 @@ async def test_every_agent_write_refuses_in_the_reader_language_when_the_role_ch
     wrong, keys = await _misread(app, h, by_route, cases, as_a_new_request)
     as_a_new_request()
     assert not wrong, "\n".join(map(repr, wrong))
-    assert {route for route, seen in keys.items() if "error.access_changed" in seen} >= named, keys
+    assert {route for route, seen in keys.items() if "error.access_changed" in seen} >= named, "\n".join(
+        f"{route}: {keys.get(route)}" for route in sorted(named) if "error.access_changed" not in keys.get(route, ()))

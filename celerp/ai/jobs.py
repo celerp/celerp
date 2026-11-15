@@ -466,9 +466,10 @@ async def company_runs_now(session, company_id: uuid.UUID) -> bool:
         select(AIBatchJob.id).where(AIBatchJob.company_id == company_id, runs_now()).limit(1)) is not None
 
 
-def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID | None = None) -> tuple:
+def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID | None = None,
+                  step_keys: list[str] | None = None) -> tuple:
     """A new reading job for ``request``, held by this process, and one step per file
-    of ``file_ids``; the caller adds them to its session, commits, then starts it. A job
+    of ``file_ids`` (or per ``step_keys``: a statement's page ranges, ``file_id:first-last``); the caller adds them to its session, commits, then starts it. A job
     started in a thread takes the id of the question that asked for it, which it
     answers."""
     from celerp.models.ai import AIBatchJob, AIJobStep
@@ -480,9 +481,9 @@ def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID
                      request_digest=request.digest(), lang=current_lang())
     hold(job)
     steps = []
-    for seq, file_id in enumerate(file_ids):
-        op = file_operation_id(job_id, file_id, 0)
-        steps.append(AIJobStep(job_id=job_id, seq=seq, key=file_id, operation_id=op, step_id=op))
+    for seq, key in enumerate(step_keys or file_ids):
+        op = file_operation_id(job_id, key, 0)
+        steps.append(AIJobStep(job_id=job_id, seq=seq, key=key, operation_id=op, step_id=op))
     return job, steps
 
 
@@ -916,9 +917,11 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
     async with gate.slot("documents"):
         if run.stop_reason is not None or await _cancel_requested(run.job_id):
             return
-        async with SessionLocal() as session:
-            refusal = await _refusal(session, run.company_id, run.user_id)
-            await session.commit()
+        refusal = None
+        if not batch.reads_without_model(run, file_id):
+            async with SessionLocal() as session:
+                refusal = await _refusal(session, run.company_id, run.user_id)
+                await session.commit()
         if refusal is None:
             try:
                 outcome = await batch.read_file(run, file_id, operation_id, before_send=_before_send)

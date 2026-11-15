@@ -195,7 +195,8 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
                                     statement_balance=100)
         s.add(rec)
         await s.flush()
-        s.add(BankStatementLine(company_id=cid, reconciliation_id=rec.id, line_date="2026-01-15",
+        s.add(BankStatementLine(company_id=cid, reconciliation_id=rec.id, bank_account_id=bank.id,
+                                fingerprint=f"{marker[:10]}-fp", line_date="2026-01-15",
                                 description=f"{marker} deposit", amount=100))
         s.add(ReconciliationRule(company_id=cid, bank_account_id=bank.id, match_pattern=f"{marker} fee",
                                  target_account_code="1111"))
@@ -643,6 +644,67 @@ async def test_no_cross_company_rows(real_engine, real_client, tmp_path, monkeyp
                 row = json.loads(line)
                 if "company_id" in row:
                     assert row["company_id"] == str(a), name
+
+
+def _bk_in_older_shape(data: bytes) -> bytes:
+    """The backup as a Celerp from before statement lines knew their bank wrote it: each line
+    holds one matched entry, a statement counts its auto-matched lines and a rule names a
+    default tax."""
+    parts, m = members(data), manifest(data)
+    added = {"bank_statement_lines": ["bank_account_id", "fingerprint", "counterparty_key", "counterparty_account",
+                                      "suggestion", "matched_je_ids", "client_query"],
+             "reconciliation_sessions": ["period_start", "opening_balance", "source_file_id"],
+             "reconciliation_rules": ["match_amount", "contact_id", "target_bank_id", "origin"],
+             "bank_accounts": ["statement_column_map"]}
+    retired = {"bank_statement_lines": {"matched_je_id": "je:older-entry", "status": "matched"},
+               "reconciliation_sessions": {"auto_matched_count": 0}, "reconciliation_rules": {"default_tax": None}}
+    for table, columns in added.items():
+        name = f"tables/{table}.jsonl"
+        rows = [json.loads(line) for line in parts[name].split(b"\n") if line.strip()]
+        rows = [{**{k: v for k, v in row.items() if k not in columns}, **retired.get(table, {})} for row in rows]
+        parts[name] = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+        meta = m["tables"][table]
+        meta["columns"] = [c for c in meta["columns"] if c not in columns] + [
+            c for c in retired.get(table, {}) if c not in meta["columns"]]
+        meta["sha256"] = hashlib.sha256(parts[name]).hexdigest()
+    parts["manifest.json"] = json.dumps(m).encode()
+    return rezip(parts)
+
+
+async def test_backup_from_before_lines_knew_their_bank_restores_them_on_their_bank(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """A line restored from an older backup belongs to the restored statement's bank, holds its
+    entry in the list, and keeps the identity a statement read again on that bank finds."""
+    from celerp.services.field_fingerprints import statement_line
+    _bk_local(monkeypatch, tmp_path)
+    _user, cid, tok = await _bk_setup(real_engine)
+    await _bk_seed_portable(real_engine, cid, "alpha-marker")
+    restored = await _bk_restore_new(real_client, tok, _bk_in_older_shape(await download(real_client, tok)))
+    async with maker(real_engine)() as s:
+        line = (await s.execute(text(
+            "SELECT l.bank_account_id, s.bank_account_id AS statement_bank, l.fingerprint, l.status, "
+            "CAST(l.matched_je_ids AS text) AS je_ids, l.suggestion FROM bank_statement_lines l "
+            "JOIN reconciliation_sessions s ON s.id = l.reconciliation_id WHERE l.company_id = :c"),
+            {"c": restored})).mappings().one()
+        rule_origin = await s.scalar(text("SELECT origin FROM reconciliation_rules WHERE company_id = :c"),
+                                     {"c": restored})
+    assert line["bank_account_id"] == line["statement_bank"]
+    assert line["fingerprint"] == statement_line("2026-01-15", 100, "alpha-marker deposit", None, None, 0)
+    assert (line["status"], json.loads(line["je_ids"]), line["suggestion"]) == ("matched", ["je:older-entry"], None)
+    assert rule_origin == "user"
+
+
+def test_older_bank_line_whose_statement_is_missing_is_refused_as_damaged():
+    """An older backup's line is put on its statement's bank: a line naming a statement the
+    backup does not hold has no bank to go on, so the backup is refused as damaged."""
+    from celerp.services import company_backup as cb
+    line = {"id": "l1", "reconciliation_id": "s-gone", "created_at": "t", "status": "matched", "matched_je_id": "je:1",
+            "line_date": "2026-01-15", "amount": 100, "description": "x", "reference": None, "raw_balance": None}
+    tables = {"reconciliation_sessions": [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-01-31"}],
+              "bank_statement_lines": [line]}
+    with pytest.raises(cb.BackupError) as e:
+        list(cb._bank_lines(lambda name: iter(tables[name])))
+    assert e.value.detail == cb.t(cb.DAMAGED)
 
 
 async def test_excluded_installation_state(real_engine, real_client, tmp_path, monkeypatch):

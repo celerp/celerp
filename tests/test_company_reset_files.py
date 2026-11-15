@@ -467,11 +467,11 @@ async def _ai_upload(client, engine, boss, cid):
 
 async def test_a_reset_waits_for_an_assistant_upload_then_deletes_it(real_engine, real_client, tmp_path,
                                                                      monkeypatch):
-    import celerp_ai.routes as ai_routes
+    import celerp.services.company_lock as company_lock
     _local_files(monkeypatch, tmp_path)
     _connected(monkeypatch)
     boss, a, b, files_a, files_b = await _harbor(real_engine)
-    reached, release = _pause_after(monkeypatch, ai_routes, "hold_company")
+    reached, release = _pause_after(monkeypatch, company_lock, "hold_company")
     upload = asyncio.create_task(_ai_upload(real_client, real_engine, boss, a))
     await _until(reached, upload)
 
@@ -488,11 +488,11 @@ async def test_a_reset_waits_for_an_assistant_upload_then_deletes_it(real_engine
 
 async def test_an_assistant_upload_after_the_reset_is_never_stored(real_engine, real_client, tmp_path,
                                                                    monkeypatch):
-    import celerp_ai.routes as ai_routes
+    import celerp.services.company_lock as company_lock
     _local_files(monkeypatch, tmp_path)
     _connected(monkeypatch)
     boss, a, b, files_a, files_b = await _harbor(real_engine)
-    reached, release = _pause_before(monkeypatch, ai_routes, "hold_company")
+    reached, release = _pause_before(monkeypatch, company_lock, "hold_company")
     upload = asyncio.create_task(_ai_upload(real_client, real_engine, boss, a))
     await _until(reached, upload)
 

@@ -55,6 +55,7 @@ async def race(committed_engine, monkeypatch):
     """An API client whose requests commit for real in the test's own database, and the
     hold on the next request's commit."""
     import celerp.db
+    from celerp.ai import jobs
     from httpx import ASGITransport, AsyncClient
 
     from celerp.db import get_session
@@ -73,6 +74,7 @@ async def race(committed_engine, monkeypatch):
             yield s
 
     monkeypatch.setattr(celerp.db, "engine", committed_engine)
+    monkeypatch.setattr(jobs, "SessionLocal", maker(committed_engine))  # a reading job the client starts
     app.dependency_overrides[get_session] = _session
     try:
         with patch("celerp.gateway.client._client", MagicMock()), \
