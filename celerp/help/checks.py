@@ -317,7 +317,7 @@ def stamp(page_ids: list[str]) -> list[str]:
 # Signed-in screens: GET routes whose handler reaches one of these page shells.
 _SHELLS = frozenset({"base_shell", "wizard_page", "minimal_shell", "auth_shell"})
 # A download answers with a file and shows a shell only on its error path: not a screen.
-_NOT_SCREENS = ("/download", "/pack")
+_NOT_SCREENS = ("/download", "/pack", "/import/template")
 
 
 def _handler(endpoint):
