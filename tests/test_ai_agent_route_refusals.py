@@ -190,6 +190,12 @@ def _sets_detail(cls) -> bool:
     return False
 
 
+def _gives_nothing(fn, param: str) -> bool:
+    """Whether a parameter left out of a call is empty by default: no refusal to key."""
+    default = inspect.signature(fn).parameters[param].default
+    return default is None or (isinstance(default, (tuple, list)) and not default)
+
+
 def _held_keyed(value, every: bool = False) -> bool:
     """Whether a refusal built ahead of time is keyed: a ``refusal`` whose key is in the
     catalog or, with ``every``, a mapping of them."""
@@ -257,6 +263,11 @@ class _Walk:
         self._returns: dict = {}
         self._handed_back: dict = {}  # helper -> the parameters it returns as given
         self._passers: dict = {}
+        # A parameter of a function that raises with it: (function, parameter) -> where it is
+        # used, checked at every call the walk reaches (_called_with).
+        self._needs: dict = {}
+        self._calls: list = []  # every call of a first-party function: (callee, call, caller, scope, tree)
+        self._at_raise = False  # while a detail a raise answers is checked (_detail_keyed)
         todo = [(route.endpoint, None) for _path, _methods, route in _api_routes(app)
                 if (route.openapi_extra or {}).get("x-celerp-agent") is True]
         assert todo
@@ -293,7 +304,7 @@ class _Walk:
                 cls = _resolve(node.exc.func, scope)
                 if isinstance(getattr(cls, "__self__", None), type) and issubclass(cls.__self__, Refused):
                     # Refused.of(detail): the refusal it raises is the detail it is given.
-                    if not (node.exc.args and self._keyed(node.exc.args[0], fn, scope, tree)):
+                    if not (node.exc.args and self._detail_keyed(node.exc.args[0], fn, scope, tree)):
                         self.unkeyed.append(f"{self._where(fn, node)} raise {ast.unparse(node.exc)}")
                 elif isinstance(cls, type) and issubclass(cls, Refused):
                     key = node.exc.args[0] if node.exc.args else None
@@ -304,6 +315,8 @@ class _Walk:
             callee = _resolve(node.func, scope)
             if ast.unparse(node.func) == "super().__init__" and owner is not None:
                 callee = owner.__mro__[1]
+            if inspect.isfunction(callee) and _first_party(callee):
+                self._calls.append((inspect.unwrap(callee), node, fn, scope, tree))
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
                 if isinstance(key, ast.Constant) and key.value not in _EN:
@@ -358,7 +371,7 @@ class _Walk:
                 continue  # refuses the session, not the request (error_body.unkeyed_refusal)
             if _given(fn, tree, detail):
                 continue  # a subclass or helper passes its detail on: checked where it is built or called
-            if detail is None or not self._keyed(detail, fn, scope, tree):
+            if detail is None or not self._detail_keyed(detail, fn, scope, tree):
                 self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(detail) if detail else '<no detail>'}")
 
     def _passes(self, fn) -> str | None:
@@ -414,6 +427,16 @@ class _Walk:
             return all(keyed(v) for v in node.values)
         if isinstance(node, ast.Await):
             return keyed(node.value)  # what a coroutine helper returns
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return keyed(node.left) and keyed(node.right)  # two lists of refusals joined
+        if isinstance(node, ast.Starred):
+            return keyed(node.value)  # the entries of a list of refusals, spread into another
+        if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+            # Entries of a keyed list kept as they are (a filter), or a keyed entry made for each.
+            targets = {g.target.id for g in node.generators if isinstance(g.target, ast.Name)}
+            if isinstance(node.elt, ast.Name) and node.elt.id in targets:
+                return all(keyed(g.iter) for g in node.generators if ast.unparse(g.target) == node.elt.id)
+            return keyed(node.elt)
         if isinstance(node, ast.Dict):
             fields = dict((getattr(k, "value", None), v) for k, v in zip(node.keys, node.values) if k is not None)
             if "message_key" in fields or ("message" in fields and keyed(fields["message"])):
@@ -431,13 +454,20 @@ class _Walk:
                 return True
             if not values and node.id in scope:
                 return _held_keyed(scope[node.id])  # a refusal the module builds once
+            unpacked = self._unpacked(node.id, fn, tree, scope)
+            if unpacked is not None:
+                return unpacked and all(keyed(v) for v in values)
+            if self._at_raise and not values and node.id in inspect.signature(fn).parameters \
+                    and fn not in self._handed_back:
+                self._needs.setdefault((fn, node.id), self._where(fn, node))  # keyed where each call gives it
+                return True
             return bool(values) and all(keyed(v) for v in values) and (
                 not any(isinstance(v, ast.List) for v in values) or self._list_keyed(node.id, fn, scope, tree, True))
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in scope:
             return _held_keyed(scope[node.value.id], every=True)  # one of a module's refusals
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
             return keyed(node.value)  # an entry of a list of refusals, each keyed
-        if isinstance(node, ast.List):
+        if isinstance(node, (ast.List, ast.Tuple)):
             return all(keyed(e) for e in node.elts)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
                 and isinstance(node.func.value, ast.Name) and node.func.value.id in scope:
@@ -483,23 +513,115 @@ class _Walk:
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN
+            if callee in (list, tuple, sorted) and len(node.args) == 1:
+                return keyed(node.args[0])  # the same refusals, as a list
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "values" and not node.args \
+                    and isinstance(node.func.value, ast.Name):
+                return self._dict_values_keyed(node.func.value.id, fn, scope, tree)
+            if callee is None and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+                # A method of a local: keyed when every class the local is built as keys it.
+                classes = self._local_classes(node.func.value.id, tree, scope)
+                methods = [getattr(c, node.func.attr, None) for c in classes or ()]
+                return bool(methods) and all(
+                    inspect.isfunction(m) and _first_party(m) and self._given_keyed(m, node, keyed, bound=True)
+                    for m in methods)
             if inspect.isfunction(callee) and _first_party(callee):
-                if not self._returns_keyed(callee):
-                    return False
-                handed = [name for name, back in self._handed_back[inspect.unwrap(callee)].items() if back]
-                try:
-                    given = inspect.signature(callee).bind_partial(
-                        *node.args, **{k.arg: k.value for k in node.keywords if k.arg}).arguments
-                except TypeError:
-                    return False
-                return all(name in given and keyed(given[name]) for name in handed)
+                return self._given_keyed(callee, node, keyed)
         return False
+
+    def _detail_keyed(self, detail, fn, scope, tree) -> bool:
+        """Whether the detail a raise answers is keyed; a parameter of ``fn`` it is built from
+        is then checked at every call of ``fn`` (_called_with), unless the detail is unkeyed anyway."""
+        before, self._at_raise = set(self._needs), True
+        try:
+            keyed = self._keyed(detail, fn, scope, tree)
+        finally:
+            self._at_raise = False
+        if not keyed:
+            for need in set(self._needs) - before:
+                del self._needs[need]
+        return keyed
+
+    def _dict_values_keyed(self, name: str, fn, scope, tree) -> bool:
+        """The values of a local dict, each keyed: it is built as a literal, and every entry
+        set on it (``name[k] = v``) is keyed."""
+        built = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value
+                 and any(isinstance(t, ast.Name) and t.id == name for t in getattr(n, "targets", None) or [n.target])]
+        set_ = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name) and t.value.id == name for t in n.targets)]
+        return bool(built) and all(isinstance(b, ast.Dict) for b in built) and all(
+            self._keyed(v, fn, scope, tree) for v in [*(v for b in built for v in b.values), *set_])
+
+    def _given_keyed(self, callee, call, keyed, bound: bool = False, at: int | None = None) -> bool:
+        """Whether ``call`` of the helper ``callee`` (a method when ``bound``) gets a keyed
+        value: every value it returns (or the ``at`` entry of each tuple it returns) is keyed,
+        and every parameter it hands back is keyed where this call gives it."""
+        if not (self._returns_keyed(callee) if at is None else self._returns_keyed_at(callee, at)):
+            return False
+        handed = [name for name, back in self._handed_back[inspect.unwrap(callee)].items() if back]
+        try:
+            given = inspect.signature(callee).bind_partial(
+                *([call.func.value] if bound else []), *call.args,
+                **{k.arg: k.value for k in call.keywords if k.arg}).arguments
+        except TypeError:
+            return False
+        return all(keyed(given[name]) if name in given else _gives_nothing(callee, name) for name in handed)
+
+    def _unpacked(self, name: str, fn, tree, scope) -> bool | None:
+        """For a local bound by unpacking what first-party helpers return (``a, b = f()``):
+        whether its entry of each is keyed; None when no such binding binds it."""
+        found = None
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)):
+                continue
+            for target in n.targets:
+                names = [e.id if isinstance(e, ast.Name) else None for e in getattr(target, "elts", [])]
+                if isinstance(target, ast.Tuple) and name in names:
+                    callee = _resolve(n.value.func, scope)
+                    keyed = lambda v: self._keyed(v, fn, scope, tree)  # noqa: E731
+                    found = (found is not False and inspect.isfunction(callee) and _first_party(callee)
+                             and self._given_keyed(callee, n.value, keyed, at=names.index(name)))
+        return found
+
+    def _returns_keyed_at(self, fn, at: int) -> bool:
+        """A helper returning tuples: the ``at`` entry of every tuple it returns is keyed."""
+        fn = inspect.unwrap(fn)
+        if (fn, at) not in self._returns:
+            self._returns[(fn, at)] = False
+            self._handed_back.setdefault(fn, dict.fromkeys(inspect.signature(fn).parameters, False))
+            tree = _tree(fn)
+            scope = _scope(fn, tree) if tree is not None else {}
+            returns = [n.value for n in _own_returns(tree or ast.Module(body=[])) if n.value is not None]
+            self._returns[(fn, at)] = bool(returns) and all(
+                isinstance(r, ast.Tuple) and len(r.elts) > at and self._keyed(r.elts[at], fn, scope, tree)
+                for r in returns)
+        return self._returns[(fn, at)]
+
+    def _local_classes(self, name: str, tree, scope) -> list | None:
+        """The classes a local is built as: each binding a call of a first-party helper whose
+        return annotation names them (a class, or one of them or None)."""
+        values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)]
+        classes = []
+        for value in values:
+            callee = _resolve(value.func, scope) if isinstance(value, ast.Call) else None
+            if not (inspect.isfunction(callee) and _first_party(callee)):
+                return None
+            try:
+                hint = typing.get_type_hints(callee).get("return")
+            except (NameError, TypeError):
+                return None
+            found = [c for c in (typing.get_args(hint) or (hint,)) if c is not type(None)]
+            if not found or not all(isinstance(c, type) and _first_party(c) for c in found):
+                return None
+            classes += found
+        return classes or None
 
     def _list_keyed(self, name: str, fn, scope, tree, written: bool = False) -> bool:
         """A list of refusals built in ``fn``: every entry appended to it is keyed (and, with
         ``written``, any entry its literal holds, checked by the caller, is enough)."""
         added = [n.args[0] for n in ast.walk(tree) if isinstance(n, ast.Call) and n.args
-                 and isinstance(n.func, ast.Attribute) and n.func.attr == "append"
+                 and isinstance(n.func, ast.Attribute) and n.func.attr in ("append", "extend")
                  and isinstance(n.func.value, ast.Name) and n.func.value.id == name]
         if not all(self._keyed(a, fn, scope, tree) for a in added):
             return False
@@ -574,7 +696,31 @@ class _Walk:
         carried = [f"{how} (its text is the detail at {where})" for cls, keyed, how in self.raised
                    for carrier, (where, name) in self.carried.items()
                    if issubclass(cls, carrier) and keyed.get(name) is False]
-        return sorted(set(self.unkeyed + carried))
+        return sorted(set(self.unkeyed + carried + self._called_with()))
+
+    def _called_with(self) -> list[str]:
+        """Every call that gives a function raising with its parameter an unkeyed value, and
+        every such parameter no walked call gives (a route's own: what the request sent)."""
+        found, checked = [], set()
+        while len(checked) < len(self._needs):
+            for (fn, param), where in list(self._needs.items()):
+                if (fn, param) in checked:
+                    continue
+                checked.add((fn, param))
+                calls = [c for c in self._calls if c[0] is fn]
+                if not calls:
+                    found.append(f"{where} {param} (no call the walk reaches gives it)")
+                for _callee, call, caller, scope, tree in calls:
+                    try:
+                        given = inspect.signature(fn).bind_partial(
+                            *call.args, **{k.arg: k.value for k in call.keywords if k.arg}).arguments
+                    except TypeError:
+                        given = {}
+                    ok = (isinstance(given[param], ast.expr) and self._keyed(given[param], caller, scope, tree)
+                          if param in given else _gives_nothing(fn, param))
+                    if not ok:
+                        found.append(f"{self._where(caller, call)} {ast.unparse(call)} ({param}, raised at {where})")
+        return found
 
 
 # The unkeyed refusals agent routes may still raise. Each reaches the AI under the generic

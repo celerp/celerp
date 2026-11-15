@@ -10894,24 +10894,27 @@ def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> lis
     return [{**named, "kind": kind} for named in _named_lines(line_items, indices)]
 
 
-def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
+def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False,
+                   reasons: list[dict] | tuple = ()) -> list[dict]:
     """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
-    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are. With
+    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are,
+    followed by ``reasons``, why lines left as unavailable could not be taken (_merged_reasons;
+    unavailable is the last kind of the one action that has it, Fulfill). With
     ``refuse``, one message: the reason for each kind that none of the chosen lines is one the
     action acts on, then the action's next step once (LINE_REFUSAL_NEXT), so no page can show
     the step apart from its reasons. A kind the action has no reason for is a KeyError, never
     another action's wording."""
-    reasons = LINE_SKIP_REASONS[action]
-    unknown = {s["kind"] for s in skipped} - set(reasons)
+    kinds = LINE_SKIP_REASONS[action]
+    unknown = {s["kind"] for s in skipped} - set(kinds)
     if unknown:
         raise KeyError(f"{action} has no skip reason for {sorted(unknown)}")
     messages = []
-    for kind, keys in reasons.items():
+    for kind, keys in kinds.items():
         of_kind = [s for s in skipped if s["kind"] == kind]
         if of_kind:
             key = f"{keys[refuse]}_{'one' if len(of_kind) == 1 else 'many'}"
             messages.append(catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind)))
-            messages += _merged_reasons([s["reason"] for s in of_kind if s.get("reason")])
+    messages += _merged_reasons(reasons)
     if refuse:
         step = catalog_refusal(f"{LINE_REFUSAL_NEXT[action]}_{'one' if len(skipped) == 1 else 'many'}")
         return [catalog_refusal("lines.reasons_then_next", reasons=messages, next=step)]
@@ -10945,12 +10948,14 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
     return acting, counted, skipped
 
 
-def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422) -> None:
+def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422,
+                    reasons: list[dict] | tuple = ()) -> None:
     """Refuse a choice every line of which ``action`` leaves as it is, naming them: with the
     action's refusal, its next step in the same message, when no chosen line was one it could
-    act on; otherwise with its notices, as there was nothing to change."""
-    reasons = LINE_SKIP_REASONS[action]
-    msgs = _skip_messages(action, skipped, refuse=all(reasons[s["kind"]][1] for s in skipped))
+    act on; otherwise with its notices (and ``reasons``, as _skip_messages), as there was
+    nothing to change."""
+    kinds = LINE_SKIP_REASONS[action]
+    msgs = _skip_messages(action, skipped, refuse=all(kinds[s["kind"]][1] for s in skipped), reasons=reasons)
     raise HTTPException(status_code=status_code, detail={**msgs[0], "also": msgs[1:]})
 
 
@@ -11427,7 +11432,7 @@ async def _fulfill_lines_impl(
              + _skipped_lines(line_items, drawn, "drawn")) + [
         {**s, "reason": unavailable[s["line"] - 1]} for s in _skipped_lines(line_items, list(unavailable), "unavailable")]
     if left and not shipments and not service_lines:
-        _refuse_skipped("fulfill", left)
+        _refuse_skipped("fulfill", left, reasons=list(unavailable.values()))
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -11599,7 +11604,8 @@ def _line_action_answer(action: str, result: dict, chosen: list[str], *, binds: 
     left = {s["line_id"] for s in result.get("skipped") or []}
     result["acted"] = [lid for lid in chosen if lid not in left]
     if result.get("skipped"):
-        result["skipped_notice"] = _skip_messages(action, result["skipped"])
+        result["skipped_notice"] = _skip_messages(
+            action, result["skipped"], reasons=[s["reason"] for s in result["skipped"] if s.get("reason")])
     if result.get("taken_back"):
         result["taken_back_notice"] = [_taken_back_notice(result["taken_back"])]
     if binds:
