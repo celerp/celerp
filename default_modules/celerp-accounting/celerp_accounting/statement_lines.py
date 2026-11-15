@@ -114,13 +114,15 @@ async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> N
 def suggestion_value(suggestion: dict) -> dict:
     """``suggestion`` as stored: a contact stays only when its evidence names the record that
     names that contact (an open document, a person's or an answer's rule, a read receipt,
-    history on a named counterparty, or a client answer); a posting with no contact says why."""
+    history on a named counterparty, or a client answer); a posting with no contact says why,
+    once however often the stored value is written again."""
     from ui.i18n import t
     s = {k: v for k, v in suggestion.items() if v is not None or k == "kind"}
     if s.get("contact_id") and not (s.get("evidence") or {}).get("names_contact"):
         s.pop("contact_id")
-    if s.get("kind") == "post" and not s.get("contact_id"):
-        s["reason"] = f"{s.get('reason') or ''} {t('acct.recon_no_contact_named')}".strip()
+    why = t("acct.recon_no_contact_named")
+    if s.get("kind") == "post" and not s.get("contact_id") and why not in (s.get("reason") or ""):
+        s["reason"] = f"{s.get('reason') or ''} {why}".strip()
     return s
 
 

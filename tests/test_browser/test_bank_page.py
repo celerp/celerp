@@ -7,6 +7,7 @@ on a phone, and the Questions list printed with "--" for an empty field."""
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -26,6 +27,13 @@ def _bank(api) -> str:
     assert r.status_code == 200, r.text
     r = api.post("/accounting/rules", json={"match_pattern": "NETFLIX", "target_account_code": "5100",
                                             "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    # A client to ask: a viewer whose role answers bank questions.
+    r = api.patch("/companies/me/role-permissions",
+                  json={"perm_key": "answer_bank_questions", "role_key": "viewer", "granted": True})
+    assert r.status_code == 200, r.text
+    r = api.post("/companies/me/users", json={"email": f"client-{uuid.uuid4().hex[:6]}@example.com",
+                                               "name": "Client", "role": "viewer", "password": "clientpw123"})
     assert r.status_code == 200, r.text
     return api.get("/accounting/bank-accounts").json()["items"][-1]["id"]
 
@@ -47,7 +55,8 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
         cell = preview.locator(f"[data-field={name}]")
         cell.click()
         cell.locator("input").fill(value)
-        cell.locator("input").press("Enter")
+        with page.expect_response(lambda r: "/preview/" in r.url and r.request.method == "POST"):
+            cell.locator("input").press("Enter")
     expect(preview.get_by_text("The statement ties")).to_be_visible()
     preview.get_by_role("button", name="Import").click()
     page.get_by_role("button", name="Confirm").click()
@@ -55,7 +64,7 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     # Suggest, then the URL carries the filters and the view.
     page.get_by_role("button", name="Suggest").click()
     page.get_by_role("link", name="Suggested").click()
-    expect(page).to_have_url(f"**/accounting/reconcile/bank/{bank_id}?view=suggested*")
+    expect(page).to_have_url(re.compile(rf"/accounting/reconcile/bank/{bank_id}\?view=suggested"))
     page.goto(f"/accounting/reconcile/bank/{bank_id}?view=all&q=NETFLIX")
     netflix = page.locator("[data-group]").filter(has_text="NETFLIX")
     expect(netflix.locator("input[type=checkbox][data-role=group]")).to_be_checked()
@@ -73,7 +82,7 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     withdrawal.get_by_role("button", name="Answer separately").click()
     answer = withdrawal.locator(".searchable-select .combobox-input").first
     answer.fill("Office")
-    page.get_by_role("option", name="5100").first.click()
+    page.get_by_role("option", name=re.compile("6800")).first.click()
     withdrawal.get_by_role("button", name="Post").click()
     expect(withdrawal).to_contain_text("Posted")
 
@@ -82,7 +91,7 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     mixed.get_by_role("button", name="Split").click()
     split = page.locator("form[data-form=split]")
     split.locator(".combobox-input").first.fill("Office")
-    page.get_by_role("option", name="5100").first.click()
+    page.get_by_role("option", name=re.compile("6800")).first.click()
     split.locator("input[name=amount]").first.fill("60")
     split.get_by_role("button", name="Post").click()
     expect(split).to_contain_text("add up to")
@@ -102,11 +111,19 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
 
     # Ask the client: the note panel closes on Escape and sends nothing.
     page.goto(f"/accounting/reconcile/bank/{bank_id}?view=all")
-    page.locator("[data-line]").filter(has_text="NETFLIX").first.get_by_role("button", name="Ask the client").click()
+    ask = page.get_by_role("button", name="Ask the client")
+    page.locator("[data-line]").filter(has_text="NETFLIX").filter(has=ask).first.locator(ask).click()
     note = page.locator("[data-panel=ask] textarea")
     note.fill("What is this?")
     note.press("Escape")
     expect(page.locator("[data-panel=ask]")).to_have_count(0)
+    # Then ask for real: the line shows Remind instead.
+    asked = page.locator("[data-line]").filter(has_text="NETFLIX").filter(has=ask).first
+    asked_id = asked.get_attribute("data-line")
+    asked.locator(ask).click()
+    note.fill("What is this?")
+    page.locator("[data-panel=ask]").get_by_role("button", name="Ask", exact=True).click()
+    expect(page.locator(f"[data-line='{asked_id}']")).to_contain_text("Remind")
 
     # Thumbnails keep one fixed dimension.
     for img in page.locator("img.receipt-thumb").all():
