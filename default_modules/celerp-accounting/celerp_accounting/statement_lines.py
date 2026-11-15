@@ -370,3 +370,156 @@ async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStat
         _release(await _session(db, paired), [je_id])
         paired.status = "unmatched"
         paired.matched_je_ids = []
+
+
+# ── Questions for the client ────────────────────────────────────────────────
+
+# The calls the bank code makes outside the database, each with the test of its failure path.
+BANK_CALLS = {
+    "send_email": "test_ask_client_email_failure_keeps_question",
+    "notify_once": "test_ask_notice_rolls_back_with_question",
+    "store_file": "test_answer_receipt_store_failure_keeps_form",
+    "model_rung": "test_suggest_without_model_states_why",
+    "apply_doc_payment": "test_pay_doc_refuses_over_open_balance",
+}
+
+QUESTIONS_URL = "/accounting/questions"
+# Worst first: the state an Ask reports for its emails is the worst one.
+_EMAIL_STATES = ("failed", "unconfirmed", "sent")
+
+
+async def client_users(db: AsyncSession, company_id: uuid.UUID) -> list:
+    """The active members who answer questions and do not keep the books: their role holds
+    answer_bank_questions and not manage_accounting."""
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp.services.permissions import resolved_grant_roles
+
+    company = await db.get(Company, company_id)
+    settings = company.settings if company else {}
+    roles = resolved_grant_roles(settings, "answer_bank_questions") - resolved_grant_roles(settings,
+                                                                                            "manage_accounting")
+    if not roles:
+        return []
+    return list((await db.execute(select(User).join(UserCompany, UserCompany.user_id == User.id).where(
+        UserCompany.company_id == company_id, UserCompany.is_active.is_(True), User.is_active.is_(True),
+        UserCompany.role.in_(sorted(roles))).order_by(User.name, User.id))).scalars())
+
+
+def asked(line: BankStatementLine) -> bool:
+    """A question the client can see: asked and not withdrawn."""
+    q = line.client_query or {}
+    return bool(q.get("asked")) and not q.get("withdrawn")
+
+
+async def _open_questions(db: AsyncSession, company_id: uuid.UUID) -> int:
+    rows = (await db.execute(select(BankStatementLine).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.client_query.is_not(None)))).scalars()
+    return sum(1 for l in rows if asked(l) and not (l.client_query or {}).get("answered"))
+
+
+async def after_ask_written(db: AsyncSession) -> None:
+    """The question and its notice are kept before any email goes out."""
+    await db.commit()
+
+
+async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines: list[BankStatementLine],
+                    note: str) -> dict:
+    """Ask the client about ``lines`` (or remind them): each line's question is written, the
+    client members are told once per key, the question is kept, then each is emailed under an
+    operation id of the key, so a retry of the key sends no second email."""
+    from datetime import datetime, timezone
+
+    from celerp.config import settings
+    from celerp.models.company import Company
+    from celerp.notifications.service import notify_once
+    from celerp.services import email as email_service
+    from ui.i18n import t
+
+    members = await client_users(db, company_id)
+    if not members:
+        raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.no_client_user"))
+    now = datetime.now(timezone.utc).isoformat()
+    reminder = 0
+    for line in lines:
+        q = dict(line.client_query or {})
+        if q.get("key") == key:  # a retry of this Ask after its question was kept
+            reminder = max(reminder, q["asks"] - 1)
+            continue
+        reminder = max(reminder, q.get("asks", 0) if asked(line) else 0)
+        line.client_query = {"asked": now, "note": note or q.get("note") or "", "asks": q.get("asks", 0) + 1, "key": key, "answer": None,
+                             "contact_text": None, "answered": None, "withdrawn": None}
+    await db.flush()
+    count = await _open_questions(db, company_id)
+    title_key, body_key = "acct.recon_questions_title", ("acct.recon_questions_reminder" if reminder
+                                                         else "acct.recon_questions_body")
+    params = {"count": count, "n": reminder}
+    title, body = str(t(title_key, "en")), str(t(body_key, "en", **params))
+    for member in members:
+        await notify_once(db, company_id, "bank_questions", title, body, user_id=member.id, action_url=QUESTIONS_URL,
+                          i18n={"title": title_key, "body": body_key, "params": params})
+    await after_ask_written(db)
+
+    company = await db.get(Company, company_id)
+    base = (settings.celerp_public_url or "").rstrip("/")
+    link = f"{base}{QUESTIONS_URL}" if base else None
+    text = "\n\n".join(filter(None, [str(t(body_key, **params)), note, link or str(t("acct.recon_questions_where"))]))
+    html = "".join(f"<p>{_html(p)}</p>" for p in text.split("\n\n"))
+    worst, failed = "sent", []
+    for member in members:
+        result = await email_service.send_email(
+            to=member.email, subject=str(t(title_key)), body_html=html, body_text=text,
+            from_name=company.name if company else "",
+            operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member.id}")),
+            fail_closed_on_uncertain=True)
+        state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
+        if state != "sent":
+            failed.append((member.name, state, str(t(result.reason)) if result.reason else result.detail))
+        worst = min(worst, state, key=_EMAIL_STATES.index)
+    asked_ids = [str(l.id) for l in lines]
+    if not failed:
+        outcome = t("acct.recon_asked", count=len(lines), names=", ".join(m.name for m in members))
+    else:
+        state, reason = failed[0][1], failed[0][2]
+        outcome = t("acct.recon_asked_email_failed" if state == "failed" else "acct.recon_asked_email_unconfirmed",
+                    count=len(lines), name=", ".join(n for n, _s, _r in failed), reason=reason)
+    return {"asked": asked_ids, "outcome": str(outcome), "email": {"state": worst}}
+
+
+def _html(text: str) -> str:
+    from html import escape
+    return escape(text).replace("\n", "<br>")
+
+
+def withdraw_lines(lines: list[BankStatementLine]) -> None:
+    """Take back the questions on ``lines``; each must be asked and not withdrawn."""
+    from datetime import datetime, timezone
+
+    for line in lines:
+        if not asked(line):
+            raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.line_not_asked"))
+    now = datetime.now(timezone.utc).isoformat()
+    for line in lines:
+        line.client_query = {**line.client_query, "withdrawn": now}
+
+
+async def attach_file(store, company_id: uuid.UUID, line: BankStatementLine, content: bytes, filename: str | None,
+                      mime: str) -> dict:
+    """Store a file on ``line`` under an id of the line and the content, so the same file
+    attached again is the attachment the line already holds. Refused with 413 when the store
+    does not take the file."""
+    import hashlib
+
+    from celerp.services.attachments import company_file_name, stored_file_name
+
+    att_id = hashlib.sha256(str(line.id).encode() + content).hexdigest()[:32]
+    name = stored_file_name(att_id, mime)
+    held = next((u for u in line.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
+    if held is not None:
+        return {"id": name, "url": held, "filename": filename}
+    try:
+        meta = await store.file(content, filename, mime, att_id=att_id)
+    except ValueError:
+        raise HTTPException(status_code=413, detail=catalog_refusal("accounting.statement_attachment_refused"))
+    line.attachment_ids = [*(line.attachment_ids or []), meta["url"]]
+    return meta

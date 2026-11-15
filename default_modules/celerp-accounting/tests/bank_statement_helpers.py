@@ -160,6 +160,13 @@ async def bank_row(client: AsyncClient, h: dict, bank_id: str) -> dict:
     return r.json()
 
 
+def user_id(headers: dict) -> str:
+    """The user a bearer token signs in (its ``sub`` claim)."""
+    import base64
+    payload = headers["Authorization"].split(" ", 1)[1].split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+
+
 async def member(client: AsyncClient, session, co: dict, role: str) -> dict:
     """Headers for a new member of ``co`` holding ``role``."""
     from test_helpers import invite_user

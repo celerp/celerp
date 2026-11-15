@@ -407,7 +407,13 @@ def _line_dict(line: BankStatementLine, currency: str) -> dict:
     return {"id": str(line.id), "statement_id": str(line.reconciliation_id), "line_date": line.line_date,
             "description": line.description, "amount": _money_text(line.amount, currency), "status": line.status,
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,
-            "counterparty_key": line.counterparty_key, "client_query": line.client_query}
+            "counterparty_key": line.counterparty_key, "client_query": line.client_query,
+            "attachments": _attachments(line)}
+
+
+def _attachments(line: BankStatementLine) -> list[dict]:
+    from celerp_accounting.routes import _line_attachment
+    return [_line_attachment(line.company_id, u) for u in line.attachment_ids or []]
 
 
 def _group_key(line: dict) -> str:
@@ -938,7 +944,8 @@ async def _history(db: AsyncSession, company_id: uuid.UUID) -> dict:
             for e in state.get("entries", []):
                 if e.get("account") == code:
                     continue
-                row = {"account_code": e.get("account"), "contact_id": e.get("contact"), "amount": str(line.amount)}
+                row = {"account_code": e.get("account"), "contact_id": e.get("contact"), "amount": str(line.amount),
+                       "line_date": line.line_date}
                 for k in {line.counterparty_key, line.counterparty_account} - {None, ""}:
                     out.setdefault(k, []).append(row)
     return out
@@ -1025,7 +1032,8 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
             if l.reconciliation_id in open_ids and l.status == "unmatched"]
     lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
               "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
-              "counterparty_account": l.counterparty_account, "reference": l.reference} for l in rows]
+              "counterparty_account": l.counterparty_account, "reference": l.reference,
+              "client": l.client_query if SL.asked(l) and l.client_query.get("answered") else None} for l in rows]
     ctx = await _ladder_context(db, company_id, bank, {l.id for l in rows})
     out, residue = suggest.ladder_rungs(lines, ctx)
     replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(db, company_id, actor_id, key)) \
@@ -1215,4 +1223,172 @@ async def reclassify(line_id: uuid.UUID, payload: Reclassify, company_id: uuid.U
     result = await _recorded(db, company_id, user.id, key, request, "reclassify", line.bank_account_id,
                              {"line_id": str(line.id), "je_id": je_id})
     await db.commit()
+    return result
+
+
+# ── Questions for the client ────────────────────────────────────────────────
+
+_QUESTION_READERS = ["answer_bank_questions", "manage_accounting"]
+
+
+async def _question_reader(role: str = Depends(get_current_role),
+                           company_id: uuid.UUID = Depends(get_current_company_id),
+                           db: AsyncSession = Depends(get_session)) -> None:
+    """403 unless the caller's role answers bank questions or keeps the books."""
+    from celerp.models.company import Company
+    from celerp.services.permissions import admit_permission, missing_permission, role_has_permission
+
+    company = await db.get(Company, company_id)
+    held = next((k for k in _QUESTION_READERS if role_has_permission(company.settings if company else {}, role, k)),
+                None)
+    if held is None:
+        raise missing_permission(_QUESTION_READERS[0])
+    await admit_permission(db, company_id, role, held)
+
+
+class Ask(BaseModel):
+    line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    note: str = Field("", max_length=_NOTE_MAX)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.post(f"{API}/bank/{{bank_id}}/ask", summary="Ask the client about open statement lines, or remind them",
+             openapi_extra=_agent("line_ids"))
+async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(get_current_company_id),
+              _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+              db: AsyncSession = Depends(get_session)) -> dict:
+    """The question is kept, and the client told in Celerp, before the email goes out; a
+    failed email is said in the outcome and the question stays."""
+    key = payload.idempotency_key
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    lines = await _locked_lines(db, company_id, bank, payload.line_ids)
+    result = await SL.ask_lines(db, company_id=company_id, key=key, lines=lines, note=payload.note)
+    await _recorded(db, company_id, user.id, key, request, "ask", bank.id, result)
+    await db.commit()
+    return result
+
+
+class LineIds(BaseModel):
+    line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.post(f"{API}/bank/{{bank_id}}/withdraw-question", summary="Take back questions asked about statement lines",
+             openapi_extra=_agent("line_ids"))
+async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
+                            company_id: uuid.UUID = Depends(get_current_company_id),
+                            _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                            db: AsyncSession = Depends(get_session)) -> dict:
+    key = payload.idempotency_key
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    lines = await SL.scoped(db, company_id, "line", payload.line_ids, bank=bank)
+    SL.withdraw_lines(lines)
+    result = await _recorded(db, company_id, user.id, key, request, "withdraw_question", bank.id,
+                             {"withdrawn": [str(l.id) for l in lines]})
+    await db.commit()
+    return result
+
+
+def _question(line: BankStatementLine, bank: BankAccount) -> dict:
+    q = line.client_query or {}
+    return {"line_id": str(line.id), "bank_name": bank.bank_name, "line_date": line.line_date,
+            "description": line.description, "amount": _money_text(line.amount, bank.currency),
+            "currency": bank.currency, "status": line.status, "note": q.get("note"), "asked": q.get("asked"),
+            "asks": q.get("asks"), "answer": q.get("answer"), "contact_text": q.get("contact_text"),
+            "answered": q.get("answered"), "attachments": _attachments(line)}
+
+
+@router.get("/bank-questions", summary="The questions asked about bank lines, newest first",
+            openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": _QUESTION_READERS})
+async def bank_questions(status: Literal["open", "answered", "all"] = "open",
+                         company_id: uuid.UUID = Depends(get_current_company_id),
+                         _: None = Depends(_question_reader), db: AsyncSession = Depends(get_session)) -> dict:
+    banks = {b.id: b for b in (await db.execute(select(BankAccount).where(
+        BankAccount.company_id == company_id))).scalars()}
+    rows = [l for l in (await db.execute(select(BankStatementLine).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.client_query.is_not(None)))).scalars()
+            if SL.asked(l)]
+    answered = {l.id for l in rows if (l.client_query or {}).get("answered")}
+    shown = [l for l in rows if status == "all" or (status == "answered") == (l.id in answered)]
+    shown.sort(key=lambda l: (l.client_query["asked"], str(l.id)), reverse=True)
+    return {"items": [_question(l, banks[l.bank_account_id]) for l in shown],
+            "open": len(rows) - len(answered), "answered": len(answered)}
+
+
+class Answer(BaseModel):
+    answer: str = Field(min_length=1, max_length=_NOTE_MAX)
+    contact_text: str | None = Field(None, max_length=200)
+    file_ids: list[str] = Field(default_factory=list, max_length=20)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+async def _named_contact(db: AsyncSession, company_id: uuid.UUID, text: str | None) -> dict | None:
+    """The suggestion an answer naming a contact gives: that contact with the account its
+    last posted line went to; None when no contact has the name or none was posted."""
+    from celerp.models.projections import Projection
+
+    name = (text or "").strip().casefold()
+    if not name:
+        return None
+    contacts = [cid for cid, state in (await db.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "contact"))).all()
+        if str((state or {}).get("name") or "").strip().casefold() == name]
+    if len(contacts) != 1:
+        return None
+    rows = [r for rs in (await _history(db, company_id)).values() for r in rs if r["contact_id"] == contacts[0]]
+    if not rows:
+        return None
+    return {"account_code": max(rows, key=lambda r: r["line_date"])["account_code"], "contact_id": contacts[0]}
+
+
+@router.post("/bank-questions/{line_id}/answer", summary="Answer a question about a bank line, with receipts",
+             openapi_extra=_agent(any_permission=_QUESTION_READERS))
+async def answer_question(line_id: uuid.UUID, payload: Answer, company_id: uuid.UUID = Depends(get_current_company_id),
+                          _: None = Depends(_question_reader), user=Depends(get_current_user),
+                          db: AsyncSession = Depends(get_session)) -> dict:
+    """The answer and its receipts are kept together or not at all. An answer naming a
+    contact becomes the line's suggestion; a free answer waits for the next suggestion run."""
+    from datetime import datetime, timezone
+
+    from celerp.ai.files import load_file
+    from celerp.services.attachments import storing
+    from celerp.services.company_lock import lock_company
+    from celerp_accounting import suggest
+
+    key = payload.idempotency_key
+    request = _request(payload, line_id=line_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    try:
+        files = [load_file(fid, company_id, user.id) for fid in payload.file_ids]
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status_code=404, detail=catalog_refusal("error.file_not_found"))
+    named = await _named_contact(db, company_id, payload.contact_text)
+    try:
+        async with storing(db, company_id) as store:
+            await lock_company(db, company_id)  # the one order: the company, then the line
+            line = (await SL.scoped(db, company_id, "line", [line_id]))[0]
+            if not SL.asked(line):
+                raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_statement_line_not_found"))
+            if line.status != "unmatched":
+                raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.question_settled"))
+            for content, meta in files:
+                await SL.attach_file(store, company_id, line, content, meta.get("filename"),
+                                     meta.get("content_type") or "application/octet-stream")
+            line.client_query = {**line.client_query, "answer": payload.answer, "contact_text": payload.contact_text,
+                                 "answered": datetime.now(timezone.utc).isoformat(),
+                                 "contact_id": None, "account_code": None, **(named or {})}
+            if named:
+                SL.write_suggestion(line, suggest.answer_suggestion(line.client_query))
+            result = await _recorded(db, company_id, user.id, key, request, "answer", line.bank_account_id,
+                                     {"line_id": str(line.id), "suggested": bool(named),
+                                      "attachments": _attachments(line)})
+    except OSError:
+        raise HTTPException(status_code=503, detail=catalog_refusal("reconciliation.receipt_not_saved"))
     return result

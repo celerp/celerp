@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -58,7 +57,7 @@ from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
 from celerp.services.peer_lines import UNRESTRICTED, held_accounts, waits_for_funds
 from celerp.services.attachments import (
-    company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
+    company_file_name, delete_stored_file, stored_file_type, storing, upload_mime,
 )
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
@@ -4506,23 +4505,12 @@ async def attach_to_line(
     The stored id is derived from the line and the content, so attaching the same file to
     the same line again returns the attachment it already holds, and the same file on two
     lines is two files that are removed independently."""
+    from celerp_accounting.statement_lines import attach_file
+
     content = await file.read()
-    mime = upload_mime(file)
-    att_id = hashlib.sha256(str(line_id).encode() + content).hexdigest()[:32]
     async with storing(db, company_id) as store:
         _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-        name = stored_file_name(att_id, mime)
-        held = next((u for u in sl.attachment_ids or [] if name and company_file_name(company_id, u) == name), None)
-        if held is not None:
-            return {"attachment_id": name, "url": held, "filename": file.filename}
-        try:
-            meta = await store.file(content, file.filename, mime, att_id=att_id)
-        except ValueError:
-            raise HTTPException(status_code=413, detail=refusal(
-                "accounting.statement_attachment_refused",
-                "This file cannot be attached. Attach a PDF, image, video, Word or text "
-                "file of at most 50 MB."))
-        sl.attachment_ids = [*(sl.attachment_ids or []), meta["url"]]
+        meta = await attach_file(store, company_id, sl, content, file.filename, upload_mime(file))
     return {"attachment_id": company_file_name(company_id, meta["url"]), "url": meta["url"],
             "filename": meta["filename"]}
 

@@ -4,7 +4,7 @@
 
 Each rung answers from its own evidence and the first rung that answers a line wins:
 0 a bank reversal pair, 1 a book entry on the bank (one, or a few of one counterparty that
-add up), 2 an open invoice or bill of the same amount, 3 a rule, 4 a transfer from another
+add up), then a client's answer that named a contact, 2 an open invoice or bill of the same amount, 3 a rule, 4 a transfer from another
 of the company's banks, 5 a read receipt, 6 history on the same counterparty, 7 the model
 for the groups nothing else answered, 8 a question. A rung only proposes: it never posts or
 matches. Every suggestion passes ``statement_lines.suggestion_value``, which keeps a contact
@@ -228,6 +228,23 @@ def _history(line: dict, ctx: LadderContext) -> dict | None:
     return s
 
 
+def client_said(answer: str) -> str:
+    return t("acct.recon_reason_client", answer=answer.strip().rstrip(".!? "))
+
+
+def answer_suggestion(client: dict) -> dict:
+    """What a client's answer naming a contact suggests: that contact and the account its
+    last posted line went to."""
+    return {"kind": "post", "source": "answer", "account_code": client["account_code"],
+            "contact_id": client["contact_id"], "evidence": {"names_contact": True, "answer": True},
+            "reason": client_said(client["answer"])}
+
+
+def _answer(line: dict, ctx: LadderContext) -> dict | None:
+    client = line.get("client") or {}
+    return answer_suggestion(client) if client.get("account_code") else None
+
+
 def ladder_rungs(lines: list[dict], ctx: LadderContext) -> tuple[dict, list[dict]]:
     """Rungs 0 to 6: ({line id: suggestion}, residue groups for the model). A residue group
     is ``{key, direction, count, total, sample}`` for lines no rung answered."""
@@ -237,7 +254,7 @@ def ladder_rungs(lines: list[dict], ctx: LadderContext) -> tuple[dict, list[dict
     for line in lines:
         if line["id"] in out:
             continue
-        for rung in (_document, _rule, _transfer, _slip, _history):
+        for rung in (_answer, _document, _rule, _transfer, _slip, _history):
             s = rung(line, ctx)
             if s:
                 out[line["id"]] = s
@@ -246,9 +263,11 @@ def ladder_rungs(lines: list[dict], ctx: LadderContext) -> tuple[dict, list[dict
     for line in lines:
         if line["id"] in out:
             continue
-        g = residue.setdefault(_key(line), {"key": _key(line), "direction": direction(line["amount"]),
-                                            "count": 0, "total": Decimal(0), "sample": line["description"],
-                                            "line_ids": []})
+        answer = (line.get("client") or {}).get("answer")
+        key = f"ANSWER:{line['id']}" if answer else _key(line)  # an answer speaks for its own line
+        g = residue.setdefault(key, {"key": key, "direction": direction(line["amount"]), "count": 0,
+                                     "total": Decimal(0), "sample": line["description"], "line_ids": [],
+                                     "answer": answer})
         g["count"] += 1
         g["total"] += _amt(line["amount"])
         g["line_ids"].append(line["id"])
@@ -258,7 +277,7 @@ def ladder_rungs(lines: list[dict], ctx: LadderContext) -> tuple[dict, list[dict
 def model_batches(residue: list[dict]) -> list[list[dict]]:
     """The residue groups the model sees, at most ``MODEL_BATCH`` per call."""
     shown = [{"key": g["key"], "direction": g["direction"], "count": g["count"], "total": _money(g["total"]),
-              "sample": g["sample"]} for g in residue]
+              "sample": g["sample"], **({"client_said": g["answer"]} if g.get("answer") else {})} for g in residue]
     return [shown[i:i + MODEL_BATCH] for i in range(0, len(shown), MODEL_BATCH)]
 
 
@@ -269,12 +288,14 @@ def apply_model(out: dict, residue: list[dict], replies: dict, accounts: list[st
     for g in residue:
         reply = replies.get(g["key"]) or {}
         account = str(reply.get("account_code") or "")
+        said = client_said(g["answer"]) if g.get("answer") else ""
         for line_id in g["line_ids"]:
             if account in allowed:
                 out[line_id] = {"kind": "post", "source": "model", "account_code": account,
-                                "reason": str(reply.get("reason") or "").strip()[:300]}
+                                "reason": f"{said} {str(reply.get('reason') or '').strip()[:300]}".strip()}
             else:
-                out[line_id] = {"kind": None, "source": "question", "reason": t("acct.recon_reason_question")}
+                out[line_id] = {"kind": None, "source": "question",
+                                "reason": said or t("acct.recon_reason_question")}
 
 
 def finish(out: dict) -> dict:
@@ -309,7 +330,8 @@ current_call: contextvars.ContextVar[ModelCall | None] = contextvars.ContextVar(
 _MODEL_PROMPT = (
     "You classify groups of bank statement lines for bookkeeping. For each group, pick the one "
     "posting account from the list that fits best, or none when nothing fits. Never name a "
-    "customer or vendor. Reply with JSON only: {\"<group key>\": {\"account_code\": \"<code or null>\", "
+    "customer or vendor. A group with client_said is one line the client explained; go by what "
+    "they said. Reply with JSON only: {\"<group key>\": {\"account_code\": \"<code or null>\", "
     "\"reason\": \"<one short sentence>\"}}."
 )
 

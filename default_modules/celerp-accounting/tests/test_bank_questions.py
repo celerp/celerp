@@ -102,7 +102,7 @@ async def test_answer_naming_contact_suggests_without_model(client, session, mon
     monkeypatch.setattr(suggest, "model_rung", lambda groups, accounts: called.append(groups) or {})
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)
-    r = await client.post("/contacts", json={"name": "Siam Landlord", "contact_type": "vendor"}, headers=co["h"])
+    r = await client.post("/crm/contacts", json={"name": "Siam Landlord", "contact_type": "vendor"}, headers=co["h"])
     contact_id = r.json()["id"]
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [lines["BANK FEE"]["id"]], "kind": "post",
                                                           "account_code": "6100", "contact": contact_id}])
@@ -221,8 +221,7 @@ async def test_answer_receipt_refused_saves_nothing(client, session, monkeypatch
     co, bk, client_h, lines = await _setup(client, session)
     lid = lines["WITHDRAWAL"]["id"]
     await _ask(client, co, bk, [lid])
-    me = (await client.get("/auth/me", headers=client_h)).json()
-    fid = B.upload(co["company_id"], str(me["id"]), b"MZ\x90\x00", "tool.exe", "application/x-msdownload")
+    fid = B.upload(co["company_id"], B.user_id(client_h), b"MZ\x90\x00", "tool.exe", "application/x-msdownload")
     r = await client.post(f"{Q}/{lid}/answer", json={"answer": "receipt", "file_ids": [fid], "idempotency_key": B.key()},
                           headers=client_h)
     assert r.status_code == 413 and "cannot be attached" in r.text
@@ -235,8 +234,7 @@ async def test_answer_receipt_store_failure_keeps_form(client, session, monkeypa
     co, bk, client_h, lines = await _setup(client, session)
     lid = lines["WITHDRAWAL"]["id"]
     await _ask(client, co, bk, [lid])
-    me = (await client.get("/auth/me", headers=client_h)).json()
-    fid = B.upload(co["company_id"], str(me["id"]), b"%PDF-1.4\n%%EOF\n", "slip.pdf", "application/pdf")
+    fid = B.upload(co["company_id"], B.user_id(client_h), b"%PDF-1.4\n%%EOF\n", "slip.pdf", "application/pdf")
     from celerp.services import attachments
     real = attachments.store_file
 

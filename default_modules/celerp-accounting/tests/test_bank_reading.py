@@ -237,10 +237,9 @@ async def test_bank_statements_year_end_to_end(client, session, monkeypatch):
     assert r.status_code == 200, r.text
     r = await client.post(f"{B.API}/bank/{bank_id}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
     assert len(r.json()["completed"]) == 3, r.text
-    tb = (await client.get("/accounting/trial-balance", params={"as_of": "2026-03-31"}, headers=co["h"])).json()
+    tb = (await client.get("/accounting/trial-balance", params={"date_to": "2026-03-31"}, headers=co["h"])).json()
     bank_code = (await B.bank_row(client, co["h"], bank_id))["chart_account_code"]
-    row = next(a for a in tb.get("accounts", tb.get("items", [])) if a.get("code", a.get("account")) == bank_code)
-    assert round(float(row.get("balance", row.get("debit", 0) - row.get("credit", 0))), 2) == 541.53
+    assert {line["code"]: round(float(line["net"]), 2) for line in tb["lines"]}[bank_code] == 541.53
 
 
 async def _ok_email(to, subject, body_html, body_text="", **kw):
