@@ -46,7 +46,7 @@ _MULTIPART = "multipart/form-data"
 SHOWN_ONCE = "(shown once to you)"
 
 # Why a route is not an assistant tool. Every route is a tool unless its own decorator
-# carries ``openapi_extra=agent_excluded(<key>)`` (or its router calls exclude_router).
+# carries ``openapi_extra=agent_excluded(<key>)``.
 AGENT_EXCLUSIONS: dict[str, str] = {
     # Not a user action.
     "session": "Sign-in, first-boot and session plumbing: runs before or around a signed-in user, "
@@ -58,11 +58,16 @@ AGENT_EXCLUSIONS: dict[str, str] = {
     # User actions kept off the assistant.
     "secret": "Takes a password, one-time code, claim token or service key; typed into the chat it "
               "would go to the AI provider and stay in the conversation log.",
-    "company": "Creates, restores, replaces or erases a whole company, including the conversation and "
-               "confirmation the assistant runs in.",
-    "installation": "Restarts the server or installs code, which ends the running conversation mid-step.",
-    "assistant": "The assistant's own controls: a tool that confirms, dismisses, reruns or reconfigures "
-                 "the assistant would let it approve its own proposals.",
+    "company": "Replaces or erases the whole company, or the installation's data, that the "
+               "conversation and its confirmation run in.",
+    "switch": "Opens a different company and signs the person in to it: the answer is a sign-in "
+              "token, which in the chat would go to the AI provider, and the conversation stays behind.",
+    "no_company": "Serves a login that has no company left; the assistant runs inside a company, so "
+                  "it is never there to take this step.",
+    "installation": "Restarts the server, which stops the assistant before it can record what happened.",
+    "assistant": "The assistant's own controls and chat plumbing: confirming, dismissing, rerunning or "
+                 "stopping its proposals and runs, starting or deleting a conversation, attachments; "
+                 "as tools they would let it approve its own proposals or erase the conversation it runs in.",
 }
 
 # Keyed changes that also reach outside the database (an email, the cloud service). A
@@ -88,14 +93,6 @@ def agent_excluded(reason: str) -> dict[str, str]:
     if reason not in AGENT_EXCLUSIONS:
         raise ValueError(f"unknown agent exclusion reason: {reason!r}")
     return {"x-celerp-agent-excluded": reason}
-
-
-def exclude_router(router: Any, reason: str) -> None:
-    """Mark every route of a router whose routes all stay off for one reason."""
-    marker = agent_excluded(reason)
-    for route in router.routes:
-        if isinstance(route, APIRoute):
-            route.openapi_extra = {**(route.openapi_extra or {}), **marker}
 
 
 def keyed_error(code: str, key: str, message: str | None = None, /, **params) -> dict[str, Any]:

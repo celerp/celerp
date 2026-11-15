@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
-from celerp.ai.tools import SHOWN_ONCE, exclude_router
+from celerp.ai.tools import SHOWN_ONCE, agent_excluded
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -188,7 +188,7 @@ async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, ques
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def ai_query(
     request: Request,
@@ -222,7 +222,7 @@ async def ai_query(
     )
 
 
-@router.post("/estimate-credits", response_model=EstimateResponse)
+@router.post("/estimate-credits", response_model=EstimateResponse, openapi_extra=agent_excluded("assistant"))
 async def estimate_credits(
     body: EstimateRequest,
     company_id=Depends(get_current_company_id),
@@ -252,7 +252,7 @@ async def estimate_credits(
     return EstimateResponse(total_credits=total, files=file_estimates)
 
 
-@router.post("/upload", status_code=201)
+@router.post("/upload", status_code=201, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("30/minute")
 async def ai_upload(
     request: Request,
@@ -290,7 +290,7 @@ async def ai_upload(
     return {"file_ids": file_ids}
 
 
-@router.get("/file/{file_id}")
+@router.get("/file/{file_id}", openapi_extra=agent_excluded("assistant"))
 async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user)):
     """Retrieve a previously uploaded file."""
     from celerp.ai.files import upload_dir
@@ -299,7 +299,7 @@ async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user
     return FileResponse(bin_path, media_type=inert_media_type(meta.get("content_type")))
 
 
-@router.get("/memory", response_model=MemoryResponse)
+@router.get("/memory", response_model=MemoryResponse, openapi_extra={"x-celerp-agent": True}, summary="Show the notes and facts the assistant keeps for this company.")
 async def get_ai_memory(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -313,7 +313,7 @@ async def get_ai_memory(
     )
 
 
-@router.delete("/memory", status_code=204)
+@router.delete("/memory", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Clear every note and fact the assistant keeps for this company.")
 async def clear_ai_memory(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_company_settings"),
@@ -325,7 +325,7 @@ async def clear_ai_memory(
     await session.commit()
 
 
-@router.post("/memory/notes", status_code=201)
+@router.post("/memory/notes", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Add a note for the assistant to keep for this company.")
 async def add_ai_memory_note(
     body: NoteRequest,
     company_id=Depends(get_current_company_id),
@@ -339,7 +339,7 @@ async def add_ai_memory_note(
     return {"ok": True}
 
 
-@router.post("/memory/kv", status_code=201)
+@router.post("/memory/kv", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/settings"}, summary="Set a named fact for the assistant to keep for this company.")
 async def set_ai_memory_kv(
     body: KVRequest,
     company_id=Depends(get_current_company_id),
@@ -355,7 +355,7 @@ async def set_ai_memory_kv(
 
 # ── Quota status (settings_router - no session token required) ────────────────
 
-@settings_router.get("/quota-status")
+@settings_router.get("/quota-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show how many assistant credits are used and left.")
 async def quota_status() -> dict:
     """Return current AI quota usage for the UI badge.
 
@@ -564,7 +564,7 @@ async def _jobs_out(session: AsyncSession, rows: list) -> list[BatchJobOut]:
 
 # ── Conversation endpoints ────────────────────────────────────────────────────
 
-@router.post("/conversations", status_code=201)
+@router.post("/conversations", status_code=201, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def create_conv(
     request: Request,
@@ -584,7 +584,7 @@ async def create_conv(
     )
 
 
-@router.get("/conversations")
+@router.get("/conversations", openapi_extra={"x-celerp-agent": True}, summary="List the person's assistant conversations, newest first.")
 @_limiter.limit("60/minute")
 async def list_convs(
     request: Request,
@@ -618,7 +618,7 @@ async def list_convs(
     ]
 
 
-@router.get("/conversations/{conversation_id}")
+@router.get("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True}, summary="Show one assistant conversation with its messages.")
 async def get_conv(
     conversation_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
@@ -642,7 +642,7 @@ async def get_conv(
     )
 
 
-@router.delete("/conversations/{conversation_id}", status_code=204)
+@router.delete("/conversations/{conversation_id}", status_code=204, openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def delete_conv(
     request: Request,
@@ -663,7 +663,7 @@ async def delete_conv(
     await session.commit()
 
 
-@router.patch("/conversations/{conversation_id}")
+@router.patch("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/ai/conversations"}, summary="Rename an assistant conversation.")
 @_limiter.limit("60/minute")
 async def rename_conv(
     request: Request,
@@ -686,7 +686,7 @@ async def rename_conv(
     )
 
 
-@router.post("/conversations/{conversation_id}/query")
+@router.post("/conversations/{conversation_id}/query", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def query_in_conversation(
     request: Request,
@@ -795,7 +795,7 @@ async def query_in_conversation(
     )
 
 
-@router.get("/conversations/{conversation_id}/questions/{question_id}")
+@router.get("/conversations/{conversation_id}/questions/{question_id}", openapi_extra=agent_excluded("assistant"))
 async def question_state(
     conversation_id: uuid.UUID,
     question_id: uuid.UUID,
@@ -1187,7 +1187,7 @@ async def _continue_request(session: AsyncSession, *, conversation_id: uuid.UUID
     return str(question_id)
 
 
-@router.post("/conversations/{conversation_id}/confirm")
+@router.post("/conversations/{conversation_id}/confirm", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def confirm_action(
     request: Request,
@@ -1225,7 +1225,7 @@ async def confirm_action(
     return outcome
 
 
-@router.post("/conversations/{conversation_id}/dismiss")
+@router.post("/conversations/{conversation_id}/dismiss", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def dismiss_action(
     request: Request,
@@ -1252,7 +1252,7 @@ async def dismiss_action(
     return {"dismissed": True, "tool_call_id": body.tool_call_id, "continued_job_id": continued}
 
 
-@router.post("/conversations/{conversation_id}/dismiss-all")
+@router.post("/conversations/{conversation_id}/dismiss-all", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("60/minute")
 async def dismiss_all(
     request: Request,
@@ -1335,7 +1335,7 @@ def _target_values(arguments: dict) -> set[str]:
     return {str(v) for v in path.values() if v not in (None, "")} if isinstance(path, dict) else set()
 
 
-@router.post("/conversations/{conversation_id}/confirm-all")
+@router.post("/conversations/{conversation_id}/confirm-all", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("5/minute")
 async def confirm_all(
     request: Request,
@@ -1716,7 +1716,7 @@ def _proposals_out(msg) -> dict:
     return {"message_id": str(msg.id), "answer": msg.content, "pending_actions": _message_out(msg).pending_actions}
 
 
-@router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals")
+@router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals", openapi_extra=agent_excluded("assistant"))
 @_limiter.limit("20/minute")
 async def propose_from_job(
     request: Request,
@@ -1805,7 +1805,7 @@ async def propose_from_job(
     return _proposals_out(msg)
 
 
-@settings_router.get("/usage-stats")
+@settings_router.get("/usage-stats", openapi_extra={"x-celerp-agent": True}, summary="Show how many questions each person asked the assistant this month or in all, and the credits used.")
 async def usage_stats(
     period: Literal["month", "all"] = "month",
     company_id=Depends(get_current_company_id),
@@ -1887,7 +1887,7 @@ async def usage_stats(
     }
 
 
-@router.get("/batch/{job_id}")
+@router.get("/batch/{job_id}", openapi_extra=agent_excluded("assistant"))
 async def batch_status(
     job_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
@@ -1911,7 +1911,7 @@ async def _job_action(action, job_id: uuid.UUID, company_id, user, session: Asyn
     return JSONResponse(status_code=202, content={"job_id": str(job_id)})
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post("/jobs/{job_id}/cancel", openapi_extra=agent_excluded("assistant"))
 async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)) -> JSONResponse:
@@ -1920,7 +1920,7 @@ async def cancel_job(job_id: uuid.UUID, company_id=Depends(get_current_company_i
     return await _job_action(jobs.cancel, job_id, company_id, user, session)
 
 
-@router.post("/jobs/{job_id}/resume")
+@router.post("/jobs/{job_id}/resume", openapi_extra=agent_excluded("assistant"))
 async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user),
                      session: AsyncSession = Depends(get_session)) -> JSONResponse:
@@ -1929,15 +1929,10 @@ async def resume_job(job_id: uuid.UUID, company_id=Depends(get_current_company_i
     return await _job_action(jobs.resume, job_id, company_id, user, session)
 
 
-@router.post("/jobs/{job_id}/retry-failed")
+@router.post("/jobs/{job_id}/retry-failed", openapi_extra=agent_excluded("assistant"))
 async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user),
                            session: AsyncSession = Depends(get_session)) -> JSONResponse:
     """Send again, each as a new question, the files that ended without an answer."""
     from celerp.ai import jobs
     return await _job_action(jobs.retry_failed, job_id, company_id, user, session)
-
-
-# The assistant never confirms, dismisses, reruns or reconfigures itself.
-exclude_router(router, "assistant")
-exclude_router(settings_router, "assistant")

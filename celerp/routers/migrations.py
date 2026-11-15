@@ -461,7 +461,7 @@ def _start_company_owner(scan_token: str) -> store.ScanOwner:
     return owner
 
 
-@router.post("/start-company/scan", openapi_extra=agent_excluded("company"))
+@router.post("/start-company/scan", openapi_extra=agent_excluded("no_company"))
 @limiter.limit("5/minute")
 async def start_company_scan(request: Request, credentials: HTTPBasicCredentials | None = Depends(_basic),
                              session: AsyncSession = Depends(get_session)) -> dict:
@@ -473,18 +473,18 @@ async def start_company_scan(request: Request, credentials: HTTPBasicCredentials
     return _scan_result(await store.create_scan(_upload_parts(request), owner=(START_COMPANY, user_id)))
 
 
-@router.post("/start-company/scan/read", openapi_extra=agent_excluded("company"))
+@router.post("/start-company/scan/read", openapi_extra=agent_excluded("no_company"))
 async def start_company_scan_read(payload: ScanTokenIn) -> dict:
     owner = _start_company_owner(payload.scan_token)
     return {"scan": migrations.scan_view(store.load_scan(payload.scan_token, owner=owner))}
 
 
-@router.post("/start-company/decisions", openapi_extra=agent_excluded("company"))
+@router.post("/start-company/decisions", openapi_extra=agent_excluded("no_company"))
 async def start_company_decisions(payload: DecisionsIn) -> dict:
     return await _save_decisions(_start_company_owner(payload.scan_token), payload)
 
 
-@router.post("/start-company/start", status_code=201, openapi_extra=agent_excluded("company"))
+@router.post("/start-company/start", status_code=201, openapi_extra=agent_excluded("no_company"))
 @limiter.limit("5/minute")
 async def start_company_start(request: Request, payload: StartCompanyStartIn,
                               session: AsyncSession = Depends(get_session)) -> dict:

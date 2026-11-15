@@ -270,7 +270,7 @@ class CompanyCreate(BaseModel):
 # Company profile
 # ---------------------------------------------------------------------------
 
-@router.post("", openapi_extra=agent_excluded("company"))
+@router.post("", openapi_extra=agent_excluded("switch"))
 async def create_company(
     payload: CompanyCreate,
     ctx: AuthContext = Depends(get_auth_context),
@@ -2248,7 +2248,7 @@ async def _refuse_while_in_use(session: AsyncSession, module_name: str, action: 
                 action=action))
 
 
-@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("company"))
+@router.post("/me/modules/{module_name}/delete", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Delete the folder of an added module no company uses, so its package can be added again later.")
 async def delete_module(
     module_name: str,
     session: AsyncSession = Depends(get_session),
@@ -2335,7 +2335,7 @@ def _is_fk_dependency_error(exc: Exception) -> bool:
     return sqlstate(exc) == "2BP01" or "depend" in str(exc).lower()
 
 
-@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("company"))
+@router.post("/me/modules/{module_name}/purge-data", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Permanently drop every table of a module no company uses.")
 async def purge_module_data(
     module_name: str,
     session: AsyncSession = Depends(get_session),
@@ -2403,7 +2403,7 @@ class _ImportPathBody(BaseModel):
     path: str
 
 
-@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
+@router.post("/me/modules/import", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a module from an uploaded .zip package; it stays off until turned on.")
 async def import_module_upload(
     request: Request,
     file: UploadFile = File(...),
@@ -2442,7 +2442,7 @@ async def import_module_upload(
     return {"ok": True, **info}
 
 
-@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
+@router.post("/me/modules/import-path", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a module from a folder on this computer; it stays off until turned on.")
 async def import_module_from_path(body: _ImportPathBody) -> dict:
     """Install a module from a local folder path (desktop folder picker). Installation owner only.
 
@@ -2572,7 +2572,7 @@ def _install_answer(answer: dict, slug: str) -> dict | None:
     return {field: answer[field] for field in _INSTALL_FIELDS}
 
 
-@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
+@router.post("/me/modules/marketplace-download", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Download a module from the marketplace and check it, ready to add.")
 async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     """Stage a marketplace module for install: fetch it from the relay and hold
     the archive on disk, ready for a following Install. Installation owner only.
@@ -2630,7 +2630,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
     return {"ok": True, "ref": ref}
 
 
-@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("installation"))
+@router.post("/me/modules/marketplace-install", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/modules"}, summary="Add a downloaded marketplace module; it stays off until turned on.")
 async def marketplace_install(body: _MarketplaceInstallBody) -> dict:
     """Install a staged marketplace module through the shared importer. Installation owner only.
 
@@ -2735,7 +2735,7 @@ async def reset_company(
     return result
 
 
-@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra=agent_excluded("company"))
+@router.delete("/me", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Deactivate the company: its records are kept, members lose access and connectors are disconnected.")
 async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -2832,7 +2832,7 @@ async def deactivate_company(
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
 
-@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra=agent_excluded("company"))
+@router.post("/me/reactivate", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Reactivate the company after it was deactivated; disconnected connectors stay disconnected.")
 async def reactivate_company(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),
