@@ -32,6 +32,7 @@ from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
 from celerp_accounting.routes import BankAccountCreate
+from celerp_accounting.statement_reader import block_refusal
 from ui.i18n import refusal_text, t
 
 router = APIRouter()
@@ -376,8 +377,10 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
         lines = given.lines if given.lines is not None else found["lines"]
         reviewed = _review({"header": {**found["header"], **given.header}, "lines": lines}, bank, base, existing, held)
         if reviewed["blocking"]:
-            first, *rest = [b["refusal"] for b in reviewed["blocking"]]
-            raise HTTPException(status_code=422, detail={**first, "also": rest} if rest else first)
+            refusals = []
+            for block in reviewed["blocking"]:
+                refusals.append(block_refusal(block["code"], **block["params"]))
+            raise HTTPException(status_code=422, detail={**refusals[0], "also": refusals[1:]})
         header = reviewed["header"]
         start, end = header.get("period_start"), header.get("period_end")
         if any(s.statement_date == end for s in await _sessions(db, company_id, bank)):
@@ -1012,12 +1015,12 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
 
     from celerp_accounting import suggest
 
-    rung = suggest.model_rung
-    if rung is None:
-        return None
     token = suggest.current_call.set(call)
     replies: dict = {}
     try:
+        rung = suggest.model_rung
+        if rung is None:
+            return None
         for batch in suggest.model_batches(residue):
             reply = rung(batch, accounts)
             replies.update((await reply if inspect.isawaitable(reply) else reply) or {})

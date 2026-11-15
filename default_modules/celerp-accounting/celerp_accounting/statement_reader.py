@@ -88,14 +88,19 @@ def _money(value, currency: str) -> Decimal | None:
         return None
 
 
-def _block(code: str, line: int | None = None, **params) -> dict:
-    """A reason Import is blocked: its code, the line it names, and its refusal (the
-    catalog key ``acct.recon_block_<code>``), whose text reads in the user's language."""
+def block_refusal(code: str, /, **params) -> dict:
+    """The refusal of a reason Import is blocked, keyed ``acct.recon_block_<code>``."""
     from celerp.accounting_roles import catalog_refusal
+
+    return catalog_refusal(f"acct.recon_block_{code}", **params)
+
+
+def _block(code: str, line: int | None = None, **params) -> dict:
+    """A reason Import is blocked: its code, the line it names, the parameters of its
+    refusal and the refusal's text in the user's language."""
     from ui.i18n import refusal_text
 
-    refusal = catalog_refusal(f"acct.recon_block_{code}", **params)
-    return {"code": code, "line": line, "refusal": refusal, "text": refusal_text(refusal)}
+    return {"code": code, "line": line, "params": params, "text": refusal_text(block_refusal(code, **params))}
 
 
 def _tie(opening: Decimal | None, closing: Decimal | None, amounts: list[Decimal],

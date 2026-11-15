@@ -59,6 +59,15 @@ def _key_index(callee, seen: frozenset = frozenset()) -> int | None:
     return None
 
 
+def _shielded(tree) -> set[int]:
+    """The nodes of every ``try`` body a handler catching every exception ends without
+    raising: nothing they run can refuse the request, so the walk does not follow them."""
+    broad = lambda h: h.type is None or (isinstance(h.type, ast.Name) and h.type.id in ("Exception", "BaseException"))  # noqa: E731
+    return {id(n) for node in ast.walk(tree) if isinstance(node, ast.Try)
+            and any(broad(h) and not any(isinstance(r, ast.Raise) for r in ast.walk(h)) for h in node.handlers)
+            for stmt in node.body for n in ast.walk(stmt)}
+
+
 def _first_party(obj) -> bool:
     return (getattr(obj, "__module__", None) or "").split(".")[0].startswith("celerp")
 
@@ -210,7 +219,8 @@ class _Walk:
 
     def _visit(self, fn, owner, tree):
         scope = _scope(fn, tree)
-        for node in (n for stmt in tree.body for n in ast.walk(stmt)):
+        shielded = _shielded(tree)
+        for node in (n for stmt in tree.body for n in ast.walk(stmt) if id(n) not in shielded):
             if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
                 obj = _resolve(node, scope)
                 if isinstance(obj, type) and _first_party(obj):
@@ -453,6 +463,26 @@ def test_translated_catalog_text_keeps_its_key_in_error_responses():
     detail = as_refusal(i18n.t("subscriptions.err_not_found"))
     assert detail["message_key"] == "subscriptions.err_not_found"
     assert "message" in detail
+
+
+def test_a_try_whose_broad_handler_never_raises_is_not_followed():
+    tree = ast.parse(textwrap.dedent("""
+        def f():
+            try:
+                shielded()
+            except Exception:
+                return None
+            try:
+                followed()
+            except Exception:
+                raise
+            try:
+                narrow()
+            except ValueError:
+                return None
+    """)).body[0]
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and id(n) not in _shielded(tree)}
+    assert "shielded" not in names and {"followed", "narrow"} <= names
 
 
 def test_the_unkeyed_list_only_shrinks():
