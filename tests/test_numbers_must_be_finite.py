@@ -56,7 +56,7 @@ async def _adjust(client, auth):
 
 async def _transfer(client, auth):
     return "/accounting/transfers", \
-        f'{{"from_bank_id": "a", "to_bank_id": "b", "amount": BAD, "date": "{DATE}"}}'
+        f'{{"idempotency_key": "finite-amount", "from_bank_id": "a", "to_bank_id": "b", "amount": BAD, "date": "{DATE}"}}'
 
 
 @pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity"])

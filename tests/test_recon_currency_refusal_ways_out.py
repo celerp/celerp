@@ -160,7 +160,7 @@ async def _transfer_to_amount(client, h, session, tok):
     """Way out: the transfer states what the destination receives in its own currency."""
     usd = await bank(client, h, currency="USD", opening=500.0, name="Home Bank", number="0002")
     b = await bank(client, h, currency="EUR", opening=0.0)
-    body = {"from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": "2026-09-10"}
+    body = {"idempotency_key": uuid.uuid4().hex, "from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": "2026-09-10"}
     r = await client.post("/accounting/transfers", headers=h, json=body)
     assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("acct.err_transfer_to_amount", currency="EUR"), r.text
     assert (await client.post("/accounting/transfers", headers=h, json=body | {"to_amount": 50})).status_code == 200

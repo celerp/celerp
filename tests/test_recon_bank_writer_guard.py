@@ -102,10 +102,10 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
 
     # Transfers in and out.
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": DAY, "to_amount": 50})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": DAY, "to_amount": 50})
     assert r.status_code == 200, r.text
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": b["id"], "to_bank_id": usd["id"], "amount": 20, "date": DAY, "rate": rate})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": b["id"], "to_bank_id": usd["id"], "amount": 20, "date": DAY, "rate": rate})
     assert r.status_code == 200, r.text
 
     # A payment, a refund of part of it, and a second payment voided.

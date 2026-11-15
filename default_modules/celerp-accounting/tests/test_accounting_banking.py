@@ -10,6 +10,7 @@ from httpx import AsyncClient
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 import uuid as _uuid
+import uuid
 
 async def _headers(client: AsyncClient, suffix: str = "") -> dict:
     uid = suffix or _uuid.uuid4().hex[:8]
@@ -117,6 +118,7 @@ async def test_transfer_between_accounts(client):
     r3 = await client.post(
         "/accounting/transfers",
         json={
+            "idempotency_key": uuid.uuid4().hex,
             "from_bank_id": from_id,
             "to_bank_id": to_id,
             "amount": 5000.0,

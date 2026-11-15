@@ -154,7 +154,7 @@ async def test_transfer_is_guarded_on_both_accounts(client, session):
     a = await bank(client, h)
     b = await bank(client, h, name="Coast Bank", number="0002")
     r = await client.post("/accounting/transfers", json={
-        "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 100.0, "date": "2026-09-10"}, headers=h)
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 100.0, "date": "2026-09-10"}, headers=h)
     assert r.status_code == 200, r.text
     je = r.json().get("je_id") or r.json()["id"]
     await completed(client, h, a, "2026-09-30", OPENING - 100.0, [je])

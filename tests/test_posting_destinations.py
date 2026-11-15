@@ -12,6 +12,8 @@ a posting that waited sees the change and is refused.
 """
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from migration_support import auth as bearer
@@ -279,7 +281,7 @@ async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_ref
         await session.flush()
 
     _refused(await client.post("/accounting/transfers", headers=headers, json={
-        "from_bank_id": bank["id"], "to_bank_id": savings["id"], "amount": 10, "date": "2026-03-01"}), why, code)
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": bank["id"], "to_bank_id": savings["id"], "amount": 10, "date": "2026-03-01"}), why, code)
 
 
 # --- On real Postgres: the account cannot change between the check and the posting -----

@@ -128,7 +128,7 @@ async def test_transfer_can_be_matched_in_both_accounts(client, session):
     a = await bank(client, h)
     b = await bank(client, h, name="Second Bank", number="0002")
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 30.0, "date": "2026-09-05"})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": a["id"], "to_bank_id": b["id"], "amount": 30.0, "date": "2026-09-05"})
     assert r.status_code == 200, r.text
     body = r.json()
     je = body.get("je_id") or body.get("id")

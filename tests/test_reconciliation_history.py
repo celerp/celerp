@@ -81,10 +81,29 @@ async def match(client, h, sid, je_ids):
     return await client.post(f"/accounting/reconciliation/{sid}/match", json={"je_ids": je_ids}, headers=h)
 
 
-async def complete(client, h, sid):
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200 and r.json()["status"] == "completed", r.text
+async def bank_complete(client, h, sid) -> dict:
+    """Complete the open statements of the session's bank, up to the first that does not balance."""
+    r = await client.get(f"/accounting/reconciliation/{sid}", headers=h)
+    if r.status_code != 200:
+        return {"status_code": r.status_code}
+    bank_id = r.json()["bank_account_id"]
+    r = await client.post(f"/accounting/reconciliation/bank/{bank_id}/complete", headers=h,
+                          json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
     return r.json()
+
+
+def stopped_reason(body: dict) -> str:
+    assert body["stopped_at"], body
+    return body["stopped_at"]["reason"]
+
+
+async def complete(client, h, sid):
+    body = await bank_complete(client, h, sid)
+    assert body["stopped_at"] is None, body
+    got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
+    assert got["status"] == "completed", got
+    return got
 
 
 async def completed(client, h, b: dict, day, balance=OPENING, je_ids=()) -> str:
@@ -280,18 +299,8 @@ RECONCILIATION_ROUTES = {
     ("GET", "/accounting/bank-accounts/{bank_id}/reconciliations"): "manage_accounting",
     ("POST", "/accounting/reconciliation/start"): "manage_accounting",
     ("GET", "/accounting/reconciliation/{session_id}"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/auto-match"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/bulk-confirm"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/complete"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/import-csv"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/import-file"): "manage_accounting",
-    ("PATCH", "/accounting/reconciliation/{session_id}/lines/{line_id}"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/attach"): "manage_accounting",
     ("DELETE", "/accounting/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/create"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/match"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/split"): "manage_accounting",
-    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/match"): "manage_accounting",
     ("POST", "/accounting/reconciliation/{session_id}/reopen"): "manage_accounting",
     ("GET", "/accounting/reconciliation/{session_id}/statement-lines"): "manage_accounting",
@@ -335,30 +344,13 @@ async def test_session_of_another_company_is_not_found(real_engine, real_client)
     sid = (await start(real_client, ha, b["id"], "2026-09-30")).json()["id"]
     assert (await real_client.get(f"/accounting/reconciliation/{sid}", headers=hb)).status_code == 404
     assert (await match(real_client, hb, sid, [])).status_code == 404
-    assert (await real_client.post(f"/accounting/reconciliation/{sid}/complete", headers=hb)).status_code == 404
+    r = await real_client.post(f"/accounting/reconciliation/bank/{b['id']}/complete", headers=hb,
+                               json={"idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 404, r.text
     await complete(real_client, ha, sid)
     assert (await real_client.post(f"/accounting/reconciliation/{sid}/reopen", headers=hb)).status_code == 404
     assert (await real_client.get(f"/accounting/reconciliation/{sid}", headers=ha)).json()["status"] == "completed"
 
-
-async def test_line_of_another_session_is_not_found(client, session):
-    _, h = await admin(client)
-    b = await bank(client, h)
-    s1 = (await start(client, h, b["id"], "2026-08-31")).json()["id"]
-    s2 = (await start(client, h, b["id"], "2026-09-30")).json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{s1}/import-csv", headers=h, files={
-        "file": ("s.csv", b"Date,Description,Amount\n2026-08-05,Coffee,-4.50\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    line = (await client.get(f"/accounting/reconciliation/{s1}/statement-lines", headers=h)).json()
-    line_id = (line.get("items") if isinstance(line, dict) else line)[0]["id"]
-    for action in ("match", "unmatch", "split", "create"):
-        r = await client.post(f"/accounting/reconciliation/{s2}/lines/{line_id}/{action}", headers=h, json={})
-        assert r.status_code in (404, 422), (action, r.text)
-    r = await client.patch(f"/accounting/reconciliation/{s2}/lines/{line_id}", headers=h, json={"status": "skipped"})
-    assert r.status_code == 404, r.text
-
-
-# --- Flagging for review ------------------------------------------------------------
 
 async def test_history_flags_a_reference_outside_the_account_for_review(client, session):
     tok, h = await admin(client)
@@ -606,9 +598,7 @@ async def test_three_decimal_currency_completes_at_its_own_precision(client, ses
         sid = (await start(client, h, b["id"], "2026-09-30", statement)).json()["id"]
         assert (await match(client, h, sid, [je])).status_code == 200
         if refused:
-            r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-            assert r.status_code == 422, r.text
-            assert "0.001" in refusal_text(r.json()["detail"])
+            assert "0.001" in stopped_reason(await bank_complete(client, h, sid))
         else:
             await complete(client, h, sid)
 
@@ -645,8 +635,7 @@ async def test_foreign_currency_account_refuses_the_base_figure(client, session)
     je = await fx_deposit(client, h, b, 1850, 0.0067, 12.40)
     sid = (await start(client, h, b["id"], "2026-09-30", 12)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422 and "1838" in refusal_text(r.json()["detail"]), r.text
+    assert "1838" in stopped_reason(await bank_complete(client, h, sid))
 
 
 async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_converted(client, session):
@@ -657,9 +646,9 @@ async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_conve
     got = (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()
     assert got["reconciled_entries"][0]["amount"] is None
     assert got["difference"] is None and got["balanced"] is False and got["book_balance"] is None
-    for action in ("complete", "write-off"):
-        r = await client.post(f"/accounting/reconciliation/{sid}/{action}", headers=h, json={})
-        assert r.status_code == 422 and "JPY" in refusal_text(r.json()["detail"]), r.text
+    assert "JPY" in stopped_reason(await bank_complete(client, h, sid))
+    r = await client.post(f"/accounting/reconciliation/{sid}/write-off", headers=h, json={})
+    assert r.status_code == 422 and "JPY" in refusal_text(r.json()["detail"]), r.text
 
 
 async def test_default_bank_account_is_kept_in_the_base_currency(client, session):

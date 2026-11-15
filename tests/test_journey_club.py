@@ -203,7 +203,7 @@ async def test_e2e1_spending_release_transfer_year_close_and_donor_statement(cli
 
     main, savings = await bank("Harbor Bank", "0001", BANK), await bank("Coast Savings", "0002")
     r = await client.post("/accounting/transfers", headers=h, json={
-        "from_bank_id": main["id"], "to_bank_id": savings["id"], "amount": 500.0, "date": DATE})
+        "idempotency_key": uuid.uuid4().hex, "from_bank_id": main["id"], "to_bank_id": savings["id"], "amount": 500.0, "date": DATE})
     assert r.status_code == 200, r.text
     to = savings["chart_account_code"]
     assert await _held(session, auth, f["R"], to) == 200 and await _held(session, auth, None, to) == 300
