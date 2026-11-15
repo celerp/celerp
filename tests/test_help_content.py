@@ -40,8 +40,8 @@ def test_help_content_permissions(pages):
     assert checks.check_permissions(pages) == []
 
 
-def test_help_content_module_coverage(pages):
-    assert checks.check_module_coverage(pages) == []
+def test_every_module_screen_names_its_help_page(pages):
+    assert checks.check_screen_help(pages) == []
 
 
 def test_help_content_images(pages):

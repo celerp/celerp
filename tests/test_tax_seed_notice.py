@@ -16,9 +16,9 @@ from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 
-from test_tax_seeds import _OLD_ET
+from test_tax_seeds import _OLD_ET, old_retired, with_retired  # noqa: F401 - old_retired is a fixture
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("old_retired")]
 
 
 async def _company(session, *, sales: list[dict] | None = None, purchasing: list[dict] | None = None,
@@ -47,15 +47,15 @@ async def _notices(session, company_id) -> dict[str, Notification]:
     rows = (await session.execute(
         select(Notification).where(Notification.company_id == company_id))).scalars().all()
     prefix = "notice.tax_seed."
-    return {n.i18n["title"][len(prefix):-len(".title")]: n for n in rows
+    return {n.i18n["title"][len(prefix):-len(".title")].split(".")[-1]: n for n in rows
             if (n.i18n or {}).get("title", "").startswith(prefix)}
 
 
 async def test_tax_seed_notice_one_per_entry_and_idempotent(session):
-    from celerp.tax_regimes import TAX_REGIMES
+    from celerp.tax_regimes import get_regime
 
     old = await _company(session, sales=_OLD_ET)
-    fresh = await _company(session, sales=TAX_REGIMES["TH"]["taxes"], currency=TAX_REGIMES["TH"]["currency"])
+    fresh = await _company(session, sales=get_regime("TH")["taxes"], currency=get_regime("TH")["currency"])
 
     await _run(session)
     notices = await _notices(session, old)
@@ -154,14 +154,139 @@ _REPLACEMENT = {"in-default-2025": "IGST 18%", "et-wht-2025": "3%", "et-tot-2025
 
 
 async def test_each_retired_seed_notice_names_its_rows_and_the_replacement():
-    from celerp.tax_regimes import RETIRED_SEED_ROWS
+    from celerp.tax_regimes import retired_taxes
     from ui.i18n import t
 
-    assert {entry["id"] for entry in RETIRED_SEED_ROWS} == set(_REPLACEMENT)
-    for entry in RETIRED_SEED_ROWS:
-        body = t(f"notice.tax_seed.{entry['id']}.body", "en")
+    assert {entry["id"] for entry in retired_taxes()} == set(_REPLACEMENT)
+    for entry in retired_taxes():
+        body = t(f"notice.tax_seed.{entry['country']}.{entry['id']}.body", "en")
         assert [row["name"] for row in entry["rows"] if row["name"] not in body] == [], entry["id"]
         assert _REPLACEMENT[entry["id"]] in body, entry["id"]
+
+
+async def test_a_retirement_only_a_pack_lists_tells_the_companies_holding_its_row(session, monkeypatch):
+    """A pack may retire a row core has no words for: the company still holding it is told, by the
+    row's name, and its taxes are left as they are; a company without the row is told nothing."""
+    from celerp.tax_regimes import get_regime
+
+    with_retired(monkeypatch, {"TH": [{"id": "th-vat-7-2099", "match": "any", "rows": [{"name": "VAT 7%", "rate": 7.0}]}]})
+    th = get_regime("TH")
+    holding = await _company(session, sales=th["taxes"], currency=th["currency"])
+    without = await _company(session, sales=[r for r in th["taxes"] if r["name"] != "VAT 7%"], currency=th["currency"])
+
+    await _run(session)
+    await _run(session)
+    notices = await _notices(session, holding)
+    assert set(notices) == {"retired"}
+    notice = notices["retired"]
+    assert notice.i18n == {"title": "notice.tax_seed.retired.title", "body": "notice.tax_seed.retired.body",
+                           "params": {"taxes": "VAT 7%"}}
+    assert "VAT 7%" in notice.title and "VAT 7%" in notice.body
+    assert notice.action_url == "/settings/sales?tab=taxes"
+    assert await _notices(session, without) == {}
+    assert (await session.get(Company, holding)).settings["taxes"] == th["taxes"]
+
+
+async def test_two_packs_retiring_the_same_id_are_told_apart(session, monkeypatch):
+    """Retirements are told per country: two packs that both use one id each tell the company
+    holding their own row, and a row only one of them retires never raises the other's notice."""
+    with_retired(monkeypatch, {
+        "TH": [{"id": "shared-id", "match": "any", "rows": [{"name": "Old Thai tax"}]}],
+        "MY": [{"id": "shared-id", "match": "any", "rows": [{"name": "Old Malaysian tax"}]}]})
+    thai = {"name": "Old Thai tax", "rate": 1.0, "tax_type": "both", "is_default": False}
+    malaysian = {**thai, "name": "Old Malaysian tax"}
+    both = await _company(session, sales=[thai, malaysian])
+    one = await _company(session, sales=[thai])
+
+    await _run(session)
+
+    async def told(company_id) -> set[str]:
+        rows = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars()
+        return {n.i18n["params"]["taxes"] for n in rows if (n.i18n or {}).get("title") == "notice.tax_seed.retired.title"}
+    assert await told(both) == {"Old Thai tax", "Old Malaysian tax"}
+    assert await told(one) == {"Old Thai tax"}
+
+
+async def test_two_countries_retiring_one_id_each_show_their_own_words(session, monkeypatch):
+    """A catalog's own words belong to one country's entry: another pack retiring the same id is
+    told by its own words (here, the names of its rows), never by the first country's text."""
+    with_retired(monkeypatch, {
+        "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%"}]}],
+        "ET": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "Old Ethiopian tax"}]}]})
+    sst = {"name": "SST 6%", "rate": 6.0, "tax_type": "both", "is_default": False}
+    holding = await _company(session, sales=[sst, {**sst, "name": "Old Ethiopian tax", "rate": 1.0}])
+
+    await _run(session)
+    rows = (await session.execute(select(Notification).where(Notification.company_id == holding))).scalars().all()
+    assert sorted((n.i18n["title"], n.i18n["params"]) for n in rows) == [
+        ("notice.tax_seed.MY.my-sst-6.title", {}),
+        ("notice.tax_seed.retired.title", {"taxes": "Old Ethiopian tax"})]
+
+
+async def test_a_retirement_no_pack_defines_any_more_has_its_notice_cleared(session, monkeypatch):
+    """A notice stands only while an installed pack still retires its rows: once the entry is gone
+    from every pack, its notice goes, by its catalog words or by its rows' names alike, the notices
+    of entries still defined stay, and a second pass changes nothing."""
+    old = {"name": "Old Thai tax", "rate": 1.0, "tax_type": "both", "is_default": False}
+    sst = {**old, "name": "SST 6%", "rate": 6.0}
+    kept = {"id": "th-kept", "match": "any", "rows": [{"name": "Kept tax"}]}
+    holding = await _company(session, sales=[old, sst, {**old, "name": "Kept tax"}])
+    with_retired(monkeypatch, {"TH": [{"id": "th-old", "match": "any", "rows": [{"name": "Old Thai tax"}]}, kept],
+                               "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%"}]}]})
+    await _run(session)
+
+    async def standing() -> dict:
+        rows = (await session.execute(select(Notification).where(Notification.company_id == holding))).scalars()
+        return {(n.i18n["title"], n.i18n["params"].get("taxes")): n.id for n in rows}
+    assert set(await standing()) == {("notice.tax_seed.retired.title", "Old Thai tax"),
+                                     ("notice.tax_seed.retired.title", "Kept tax"),
+                                     ("notice.tax_seed.MY.my-sst-6.title", None)}
+
+    with_retired(monkeypatch, {"TH": [kept], "MY": []})
+    await _run(session)
+    after = await standing()
+    assert set(after) == {("notice.tax_seed.retired.title", "Kept tax")}
+    await _run(session)
+    assert await standing() == after
+
+
+async def test_a_notice_told_under_a_key_since_renamed_is_read_from_the_new_key(session):
+    """A notice an earlier release told under the id-only key is moved to the country key at the
+    next start, so a reader in another language sees it translated, not in the stored English."""
+    from sqlalchemy import update
+
+    old = await _company(session, sales=_OLD_ET)
+    await _run(session)
+    told = (await _notices(session, old))["et-wht-2025"]
+    await session.execute(update(Notification).where(Notification.id == told.id).values(
+        i18n={"title": "notice.tax_seed.et-wht-2025.title", "body": "notice.tax_seed.et-wht-2025.body", "params": {}}))
+    await session.commit()
+
+    await _run(session)
+    session.expire_all()
+    again = (await _notices(session, old))["et-wht-2025"]
+    assert again.id == told.id
+    assert again.i18n == {"title": "notice.tax_seed.ET.et-wht-2025.title",
+                          "body": "notice.tax_seed.ET.et-wht-2025.body", "params": {}}
+
+
+async def test_each_country_s_own_words_are_in_every_locale_under_its_country():
+    """Every catalog key of a retired entry's own words is keyed by country and id and names an
+    entry the packs retire, and every locale has the same entries as English, title and body."""
+    from celerp.tax_regimes import retired_taxes
+    from ui.i18n import _cached_load, available_langs
+
+    entries = {f"notice.tax_seed.{e['country']}.{e['id']}" for e in retired_taxes()}
+
+    def own_words(lang: str) -> set[str]:
+        return {k for k in _cached_load(lang) if k.startswith("notice.tax_seed.")
+                and not k.startswith("notice.tax_seed.retired.")}
+
+    english = own_words("en")
+    assert english and {k.rsplit(".", 1)[0] for k in english} <= entries
+    assert all(f"{k.rsplit('.', 1)[0]}.{part}" in english for k in english for part in ("title", "body"))
+    for lang in available_langs():
+        assert own_words(lang) == english, lang
 
 
 async def test_tax_seed_notice_links_purchasing_tab_for_purchasing_match(session):
@@ -201,7 +326,7 @@ async def _bell(client, h) -> set[str]:
     r = await client.get("/notifications", headers=h, params={"limit": 100})
     assert r.status_code == 200, r.text
     prefix = "notice.tax_seed."
-    return {n["i18n"]["title"][len(prefix):-len(".title")] for n in r.json()["items"]
+    return {n["i18n"]["title"][len(prefix):-len(".title")].split(".")[-1] for n in r.json()["items"]
             if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
 
 
@@ -286,7 +411,7 @@ async def _bell_links(client, h) -> dict[str, str]:
     r = await client.get("/notifications", headers=h, params={"limit": 100})
     assert r.status_code == 200, r.text
     prefix = "notice.tax_seed."
-    return {n["i18n"]["title"][len(prefix):-len(".title")]: n["action_url"] for n in r.json()["items"]
+    return {n["i18n"]["title"][len(prefix):-len(".title")].split(".")[-1]: n["action_url"] for n in r.json()["items"]
             if ((n.get("i18n") or {}).get("title") or "").startswith(prefix)}
 
 
@@ -306,7 +431,7 @@ async def test_saving_the_sales_list_fixed_moves_the_notice_link_to_the_purchasi
 
 async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client, monkeypatch):
     """Two notices raised by one save with the cap at one: the older is pruned in the same request,
-    and the one kept is the newer, raised second in RETIRED_SEED_ROWS order."""
+    and the one kept is the newer, raised second in the Ethiopia pack's retired list."""
     monkeypatch.setattr("celerp.notifications.service.MAX_PER_COMPANY", 1)
     h = await _register(client)
     assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200

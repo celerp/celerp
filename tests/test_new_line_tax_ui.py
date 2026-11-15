@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from celerp.tax_regimes import TAX_REGIMES
+from celerp.tax_regimes import get_regime
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
 
@@ -27,7 +27,7 @@ def _line_tax(name: str, rate: float) -> list[dict]:
 
 
 def _taxes(country: str = "TH") -> AsyncMock:
-    return AsyncMock(return_value=TAX_REGIMES[country]["taxes"])
+    return AsyncMock(return_value=get_regime(country)["taxes"])
 
 
 async def _post(ui_client, url: str, body: bytes, *, taxes: AsyncMock, create=None, doc=None, patch_doc=None):
@@ -46,8 +46,8 @@ async def _post(ui_client, url: str, body: bytes, *, taxes: AsyncMock, create=No
 @pytest.mark.parametrize("country, expected", [
     ("TH", _line_tax("VAT 7%", 7.0)),
     ("IN", _line_tax("IGST 18%", 18.0)),
-    ("GB", _line_tax("VAT 20%", 20.0)),
-    ("US", None),
+    ("AU", _line_tax("GST 10%", 10.0)),
+    ("ZZ", None),  # no pack: the generic list, whose default rate is zero
 ])
 async def test_a_new_invoice_from_items_starts_with_the_default_line_tax(ui_client, country, expected):
     create = AsyncMock(return_value={"id": "doc:INV-1"})

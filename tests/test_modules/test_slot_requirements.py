@@ -52,7 +52,8 @@ _CODE = {
 _VALID = {
     "nav": [{"key": "acme", "label": "Acme", "href": "/acme", "order": 40.5, "group": None},
             {"key": "acme-more", "label_key": "nav.acme", "href": "/acme/more", "order": 41,
-             "group": "Acme"},
+             "group": "Acme", "help": "acme.more", "settings_href": "/settings/acme",
+             "settings_help": "acme.settings"},
             {"key": "acme-mine", "label": "Mine", "href": "/acme/mine", "order": 42,
              "probe_href": "/acme/mine/nav"}],
     "search_provider": {"handler": "{inner}.search:find", "result_key": "items",
@@ -105,6 +106,8 @@ _WRONG = [
     ("nav", {"key": 7}, "key"),
     ("nav", {"group": {"a": 1}}, "group"),
     ("nav", {"group": 3}, "group"),
+    ("nav", {"help": ["acme.more"]}, "help"),
+    ("nav", {"settings_help": 7}, "settings_help"),
     ("nav", {"label": 5}, "label"),
     ("nav", {"label_key": ["nav.acme"]}, "label_key"),
     ("bulk_action", {"action_type": "navgate"}, "action_type"),

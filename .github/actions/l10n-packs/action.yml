@@ -1,0 +1,16 @@
+name: Get the country packs
+description: >
+  Download the country packs the real-pack golden fetched and validated in this run, and check
+  each against celerp/localization/packs.lock.json (scripts/l10n_packs.py check).
+runs:
+  using: composite
+  steps:
+    - name: Download the packs
+      uses: actions/download-artifact@v8
+      with:
+        name: country-packs
+        path: celerp/localization/packs
+
+    - name: Check the packs against the lock
+      shell: bash
+      run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/l10n_packs.py check celerp/localization

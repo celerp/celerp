@@ -35,6 +35,7 @@ PLUGIN_MANIFEST = {
             "label": "Labels",
             "label_key": "nav.labels",
             "href": "/settings/labels",
+            "help": "labels.settings",
             "order": 32,
             "permission": "manage_labels",
         },

@@ -8,7 +8,7 @@ Revises: bc0d1e2f3a4b
 Create Date: 2026-08-31
 
 Inventory write-offs and audit shrinkage post to 6970. New companies get the
-account from THAI_CHART_OF_ACCOUNTS on creation; this backfills existing ones,
+account from DEFAULT_CHART_OF_ACCOUNTS on creation; this backfills existing ones,
 which would otherwise be refused at posting time.
 """
 

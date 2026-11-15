@@ -165,6 +165,40 @@ async def test_every_http_request_the_apps_make_names_the_request_it_is_made_for
     assert mutation_observer.OUTER_HEADER in sent[0] and mutation_observer.OUTER_HEADER not in sent[1]
 
 
+
+def _refresh_answer(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"access_token": "a", "refresh_token": "r"})
+
+
+async def test_the_ui_session_refresh_is_not_made_for_the_request_it_rides_on(monkeypatch, session, auth):
+    """The UI renews a session on whichever request comes once the access cookie is past
+    half its life, a time no test controls: the API request it sends is made for no other
+    request, in process or over HTTP, so its write never counts for the route it rode on."""
+    from ui import api_client
+
+    outer, sent = {}, []
+
+    async def api_app(scope, receive, send):
+        outer["in process"] = mutation_observer._REQUEST.get()["outer"]
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": b'{"access_token": "a", "refresh_token": "r"}'})
+
+    transports = iter([httpx.ASGITransport(app=mutation_observer.observed(api_app, "api")),
+                       httpx.MockTransport(lambda request: sent.append(request.headers) or _refresh_answer(request))])
+    monkeypatch.setattr(api_client, "_anon_client",
+                        lambda timeout=10.0: httpx.AsyncClient(transport=next(transports), base_url="http://api"))
+
+    async def ui(scope, receive, send):
+        await api_client._refresh_upstream("in process")
+        await api_client._refresh_upstream("over http")
+
+    await mutation_observer.observed(ui, "ui")({"type": "http", "method": "POST", "path": "/api/items/merge/preview"},
+                                                None, None)
+    assert outer == {"in process": None}
+    assert mutation_observer.OUTER_HEADER not in sent[0]
+
+
 async def test_a_read_request_that_writes_nothing_durable_is_not_reported(session, auth):
     with serving("GET", "/observed"):
         cid = _authorize(session, auth)

@@ -15,7 +15,7 @@ Adds four landed-cost clearing sub-accounts under 1130 (Inventory):
 
 Capitalisable import charges (freight/insurance/duty + non-recoverable import VAT) land in
 these clearing accounts at bill posting and capitalise into inventory on receipt.
-New companies already get these via THAI_CHART_OF_ACCOUNTS on creation; this backfills existing.
+New companies already get these via DEFAULT_CHART_OF_ACCOUNTS on creation; this backfills existing.
 """
 
 from __future__ import annotations

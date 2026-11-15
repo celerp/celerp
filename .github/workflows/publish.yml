@@ -12,8 +12,15 @@ on:
         required: true
 
 jobs:
+  l10n-golden:
+    uses: ./.github/workflows/l10n-golden.yml
+    secrets: inherit
+
   build:
+    needs: l10n-golden
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,6 +50,9 @@ jobs:
       # made months later gets the same packages. Pinning edits pyproject.toml,
       # which would make setuptools-scm read the tree as a dev build; the version
       # was verified against the tag above, so it is passed in explicitly.
+      - name: Get the country packs
+        uses: ./.github/actions/l10n-packs
+
       - name: Pin dependencies and build
         run: |
           python scripts/pin_release_deps.py
@@ -73,6 +83,11 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Check the wheel's country packs
+        shell: bash
+        run: |
+          python -m zipfile -e dist/*.whl "$RUNNER_TEMP/whl"
+          python scripts/l10n_packs.py check "$RUNNER_TEMP/whl/celerp/localization" --lock celerp/localization/packs.lock.json
       - name: Fresh install and update from the current release
         shell: bash
         run: python -u scripts/e2e_update.py --release-wheel dist/*.whl --work "${{ runner.temp }}/e2e" --keep

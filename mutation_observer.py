@@ -210,6 +210,10 @@ READ_METHODS = ("GET", "HEAD")
 # token refresh, once a token is past half its life. Their writes are judged like any other,
 # and do not show that the request they ride on, or one it is made for, writes.
 ANY_REQUEST_WRITERS = ("celerp/middleware.py _refresh_bearer_validated",)
+# The UI's twin of that refresh: its auth middleware renews the session on whichever request
+# comes once the access cookie is past half its life. The API request it sends is made for no
+# other request, so its write never shows that the UI route it rode on writes.
+ANY_REQUEST_CALLERS = ("ui/api_client.py _refresh_upstream",)
 # The header a request from the UI to the API names the UI request it is made for by, when
 # the two talk over HTTP (the browser suite's servers): outgoing_headers.
 OUTER_HEADER = "x-observed-request"
@@ -304,7 +308,10 @@ def observed(app, label: str):
 
 def _outer(scope) -> dict | None:
     """The request a request is made for: the one served in the same task (a test's
-    in-process transport), or the one the UI names when it calls the API over HTTP."""
+    in-process transport), or the one the UI names when it calls the API over HTTP. A call
+    ANY_REQUEST_CALLERS make is made for none."""
+    if _made_by(ANY_REQUEST_CALLERS):
+        return None
     enclosing = _REQUEST.get()
     if enclosing is not None:
         return enclosing
@@ -315,7 +322,9 @@ def _outer(scope) -> dict | None:
 def outgoing_headers() -> dict[str, str]:
     """The header a request to the API sends to name the request it is made for."""
     request = _REQUEST.get()
-    return {OUTER_HEADER: str(id(request))} if request is not None and id(request) in _SERVING else {}
+    if request is None or id(request) not in _SERVING or _made_by(ANY_REQUEST_CALLERS):
+        return {}
+    return {OUTER_HEADER: str(id(request))}
 
 
 class serving:

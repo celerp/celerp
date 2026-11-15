@@ -30,6 +30,7 @@ import httpx
 import psycopg2
 import pytest
 
+from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
 from celerp_docs.doc_money import draft_route
 from ui.i18n import t
 
@@ -46,7 +47,13 @@ _INDIA_BEFORE = [
     {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
     {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False},
 ]
-_VAT_WHOLE = {"code": "VAT 7%", "rate": 7.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
+_VAT_WHOLE = line_tax(next(tax for tax in get_regime("TH")["taxes"] if tax["name"] == "VAT 7%"))
+
+
+def _default_factor(country: str) -> float:
+    """What an invoice line of a company newly set up in ``country`` costs per unit of price."""
+    taxes = default_line_taxes(get_regime(country)["taxes"], "invoice", doc=None)
+    return 1 + sum(tax["rate"] for tax in taxes) / 100
 
 
 @contextmanager
@@ -83,7 +90,8 @@ def _codes(line: dict) -> list[str]:
 
 
 @pytest.mark.parametrize(("country", "taxes", "factor"),
-                         [("GB", None, 1.20), ("IN", None, 1.18), ("IN", _INDIA_BEFORE, 1.18)])
+                         [("AU", None, _default_factor("AU")), ("IN", None, _default_factor("IN")),
+                          ("IN", _INDIA_BEFORE, 1.18)])
 def test_from_items_invoice_total_is_subtotal_plus_default_rate(api_server, ui_server, api, country, taxes, factor):
     with _demo_company(api_server, ui_server, api, country, taxes) as (company, ui, _, items):
         r = ui.post("/docs/from-items/new", data={"selected": [i["id"] for i in items]})

@@ -454,6 +454,45 @@ def test_every_permission_a_capabilitys_result_depends_on_is_declared():
     assert _undeclared(real_agent_app()) == []
 
 
+def _undescribed(app) -> list[str]:
+    """Agent tools whose description is blank, their operation id or the title FastAPI
+    makes from the function name: the model would have to guess what the tool does and
+    when to use it."""
+    endpoints = {(path, method): route for path, methods, route in ai_tools._api_routes(app) for method in methods}
+    found = []
+    for name, capability in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+        route = endpoints[(capability["path"], capability["method"])]
+        generated = route.name.replace("_", " ").title()
+        if capability["tool"]["function"]["description"].strip() in ("", name, generated):
+            found.append(name)
+    return found
+
+
+def test_every_agent_tool_says_what_it_does():
+    """The AI reads a tool's description to pick it, so every tool the live surface
+    compiles carries one written for the user's task, never the operation id."""
+    assert _undescribed(real_agent_app()) == []
+
+
+def test_the_description_guard_finds_an_undocumented_tool():
+    app = FastAPI()
+
+    @app.get("/plain", operation_id="plain", openapi_extra={"x-celerp-agent": True})
+    async def plain():
+        return {"ok": True}
+
+    @app.get("/told", operation_id="told", openapi_extra={"x-celerp-agent": True})
+    async def told():
+        """List what was told."""
+        return {"ok": True}
+
+    for route in app.routes:
+        if getattr(getattr(route, "endpoint", None), "__name__", "") in ("plain", "told"):
+            route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+    assert _undescribed(app) == ["plain"]
+
+
 def _costs_helper(settings, role):
     return permissions.role_has_permission(settings, role, "view_inventory_costs")
 

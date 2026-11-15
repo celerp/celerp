@@ -2636,6 +2636,9 @@ _HANDLER_KEYWORDS = {
 # Entry keys naming a permission. Gating surfaces index the permission registry,
 # so a value outside it must never reach them.
 _PERMISSION_ENTRY_KEYS = ("permission", "write_permission")
+# The screens a nav entry opens, each with the key naming its help page id: the
+# page the screen's top bar Help panel lists (celerp.help.checks.check_screen_help).
+NAV_SCREEN_HELP = {"href": "help", "settings_href": "settings_help"}
 # Entry keys naming where a click goes, and whether the entry must carry the key.
 _DESTINATION_KEYS = {
     "nav": {"href": False, "settings_href": False, "probe_href": False},
@@ -2768,7 +2771,8 @@ _LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
 # destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
 _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
-            "order": (_NUMBER, False), "verticals": ((list,), False)},
+            "order": (_NUMBER, False), "verticals": ((list,), False),
+            **{key: (_TEXT, False) for key in NAV_SCREEN_HELP.values()}},
     "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
     "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
     "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),

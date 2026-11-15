@@ -10,6 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, RedirectResponse
 
+from celerp.tax_regimes import TAX_TYPES
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
@@ -61,7 +62,7 @@ def _loc_validate(col: str, value: str, row: dict | None = None) -> bool:
 
 def _tax_validate(col: str, value: str, row: dict | None = None) -> bool:
     if col == "tax_type" and value.strip():
-        return value.strip() in {"sales", "purchase", "both"}
+        return value.strip() in TAX_TYPES
     if col == "is_default" and value.strip():
         return value.strip().lower() in {"true", "false", "1", "0", "yes", "no"}
     return validate_cell(_TAX_SPEC, col, value)
