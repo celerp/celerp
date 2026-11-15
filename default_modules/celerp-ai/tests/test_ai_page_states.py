@@ -113,7 +113,8 @@ async def _page(ui_client, status, *, offer=None, owner=True, role="owner"):
 async def test_no_account_owner_sees_create_account_button(ui_client):
     html = await _page(ui_client, {"local": True})
     assert t("ai.free_no_account_title") in html
-    assert t("ai.free_questions_included", n=30) in html and t("ai.free_terms") in html
+    assert t("ai.free_questions_included", n=30) in html
+    assert "one file" not in html and "free-usage budget" not in html
     assert "next=ai" in html and 'hx-target="#account-gate-host"' in html
     assert t("ai.free_create_account") in html
     assert t("ai.free_ask_owner") not in html
@@ -151,7 +152,6 @@ async def test_owner_check_failure_reads_as_unknown(ui_client, monkeypatch):
     html = await _page(ui_client, {"local": True}, offer={"paid_ai": False, "free_ai_questions": None,
                                                          "plan_ai_questions": None})
     assert "next=ai" in html and t("ai.free_questions_included", n=30) not in html
-    assert t("ai.free_terms") not in html
 
 
 @pytest.mark.asyncio

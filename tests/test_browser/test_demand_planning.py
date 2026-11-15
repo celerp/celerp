@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser test: Demand Planning flat-board interactions and Work In Progress ESC-cancel.
+"""Browser test: Production Planning flat-board interactions and Work Orders ESC-cancel.
 
 Covers (Phase 1 bulk_toolbar design):
-- Page renders with title "Demand Planning" and intro banner.
+- Page renders with title "Production Planning (MRP)" and intro banner.
 - One row per demand-document-line (flat, not nested); columns include Product, Document,
   Type, For, Due, Ordered, Short, Status.
 - A single document-Type filter bar (status_cards, one card per type) replaces the old
@@ -103,14 +103,14 @@ def test_demand_planning_interactions(page, ui_server, api):
     ], "total": 20}).json()["id"]
     api.post(f"/docs/{doc_pendant}/finalize")
 
-    # Navigate to Demand Planning.
+    # Navigate to Production Planning.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
     # ── Basic page assertions ─────────────────────────────────────────────────
 
     body_text = page.locator("body").inner_text()
-    assert "Demand Planning" in body_text, f"'Demand Planning' not found: {body_text[:200]}"
+    assert "Production Planning (MRP)" in body_text, f"'Production Planning (MRP)' not found: {body_text[:200]}"
 
     assert page.locator(".info-banner").count() >= 1, ".info-banner missing from /manufacturing"
 
@@ -395,12 +395,12 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
-    assert "Work In Progress" in page.locator("body").inner_text()
+    assert "Work Orders" in page.locator("body").inner_text()
     assert page.locator(".info-banner").count() >= 1
     assert page.locator(".status-cards").count() >= 1, "No status-cards found on WIP page"
 
     assert "WIP-CAN" in page.locator("#mfg-table").inner_text(), \
-        "WIP-CAN run not found in the Work In Progress table"
+        "WIP-CAN run not found in the Work Orders table"
 
     due_cell = page.locator(
         "#mfg-table .editable-cell[title='Double-click to set a due date']"
@@ -427,18 +427,18 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
 def test_demand_planning_screenshots(page, ui_server, api):
     """Capture full-page screenshots for visual review.
 
-    Covers: Demand Planning flat board (Type filter bar + funnel icons + demand lines),
-    Work In Progress with status cards, and /manufacturing/production sidebar nav.
+    Covers: Production Planning flat board (Type filter bar + funnel icons + demand lines),
+    Work Orders with status cards, and /manufacturing/production sidebar nav.
     """
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    # Screenshot 1: Demand Planning flat board.
+    # Screenshot 1: Production Planning flat board.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(SHOTS / "dp-demand-planning.png"), full_page=True)
 
-    # Screenshot 2: Work In Progress (banner, status cards with Active default).
+    # Screenshot 2: Work Orders (banner, status cards with Active default).
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(SHOTS / "dp-work-in-progress.png"), full_page=True)
@@ -448,8 +448,8 @@ def test_demand_planning_screenshots(page, ui_server, api):
     # Screenshot 3: WIP page sidebar - verify correct nav item is active.
     sidebar_active = page.locator(".sidebar .nav-link--active").first
     active_text = sidebar_active.inner_text().strip()
-    assert active_text == "Work In Progress", (
-        f"Sidebar active nav item should be 'Work In Progress' on /manufacturing/production; "
+    assert active_text == "Work Orders", (
+        f"Sidebar active nav item should be 'Work Orders' on /manufacturing/production; "
         f"got: {active_text!r}"
     )
     page.screenshot(path=str(SHOTS / "wip-sidebar-active-nav.png"), full_page=True)

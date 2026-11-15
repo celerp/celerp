@@ -88,6 +88,7 @@ def test_sell_by_unit_shown_as_text_in_batch_split(page, api_server, ui_server, 
         ctx, tab = _tab(page, ui_server, token)
         try:
             tab.goto(f"/inventory/{item_id}", wait_until="domcontentloaded")
+            tab.locator("select.split-mode").first.select_option("batch")
             form = tab.locator("form:has([name=batch_count])").first
             form.locator("[name=batch_qty]").fill("2", force=True)
             form.locator("[name=batch_count]").fill("5", force=True)

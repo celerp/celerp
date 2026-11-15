@@ -4,7 +4,7 @@
 """One default location per company
 
 Revision ID: c4d1e7a2f9b3
-Revises: u4v5w6x7y8z9
+Revises: v5w6x7y8z9a0
 Create Date: 2026-11-14
 
 An earlier version let a company mark a second location default without clearing the first.
@@ -25,7 +25,7 @@ from celerp.json_text import dump_json
 from celerp.migrations._locks import lock_tables
 
 revision = "c4d1e7a2f9b3"
-down_revision = "u4v5w6x7y8z9"
+down_revision = "v5w6x7y8z9a0"
 branch_labels = None
 depends_on = None
 

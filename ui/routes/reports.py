@@ -7,6 +7,7 @@ import asyncio
 from datetime import date, timedelta
 from urllib.parse import parse_qsl, quote_plus
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -316,7 +317,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
         custom_form,
     ]
     if settings_link:
-        parts.append(A("⚙", href=safe_url(settings_link), cls="settings-gear", title=t("reports.related_settings", lang)))
+        parts.append(A(icon("settings"), href=safe_url(settings_link), cls="settings-gear", title=t("reports.related_settings", lang)))
 
     return Div(*parts, cls="date-filter-bar")
 

@@ -69,7 +69,7 @@ def test_shipping_doc_is_registered_non_financial_customs():
     assert "shipping_doc" in LIST_TYPES
     assert "delivery_note" not in LIST_TYPES  # the rename is complete, no alias survives
     b = behavior("shipping_doc")
-    assert b.label == "Shipping Document"
+    assert b.label == "Delivery Note"
     assert is_money_list("shipping_doc") is False
     assert b.customs is True
     # regression: existing types unchanged

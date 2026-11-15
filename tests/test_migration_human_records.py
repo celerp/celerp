@@ -111,7 +111,7 @@ async def test_activity_times_are_in_company_timezone(real_engine, real_client, 
 async def test_every_feed_shows_a_carried_backup_actor(real_engine, feed):  # noqa: F811
     """RED before the change: the dashboard feed dropped the name a company backup carried."""
     from datetime import datetime, timezone
-    row = SimpleNamespace(entity_id="doc:none", actor_id=None, event_type="doc.created", data={},
+    row = SimpleNamespace(id=1, entity_id="doc:none", actor_id=None, event_type="doc.created", data={},
                           entity_type="doc", ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
                           metadata_={"backup_actor": {"name": "Former Clerk", "user_ref": "x"}})
     async with maker(real_engine)() as s:

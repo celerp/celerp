@@ -8,13 +8,13 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
-from ui.routes.subscriptions import _sub_table
+from ui.routes.subscriptions import _list_state, _sub_table
 
 
 @pytest.mark.parametrize("direction", ["sales", "purchasing"])
 def test_empty_list_shows_the_shared_card_with_new_subscription(direction):
     i18n.set_lang("en")
-    html = to_xml(_sub_table([], direction))
+    html = to_xml(_sub_table([], _list_state({"direction": direction}), False))
     assert 'class="empty-state-cta"' in html
     assert i18n.t("label.no_subscription_templates_found") in html
     assert f'hx-post="/subscriptions/new?direction={direction}"' in html

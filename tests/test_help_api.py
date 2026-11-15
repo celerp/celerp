@@ -233,3 +233,19 @@ async def test_help_for_route_keeps_typed_lists_apart(client, monkeypatch):
     assert await ids("/docs?type=invoice&status=draft") == ["docs.sales"]
     assert await ids("/docs?type=production_order") == []
     assert await ids("/docs?q=x") == ["docs.all"]
+
+
+@pytest.mark.parametrize(("query", "page_id"), [
+    ("release restricted money", "accounting.funds"),
+    ("move money between funds", "accounting.funds"),
+    ("deferred revenue", "accounting.revenue-recognition"),
+])
+async def test_help_search_finds_the_funds_and_deferred_revenue_pages(client, query, page_id):
+    """The pages that ship answer the plain words a reader types, as the first hit."""
+    registry.reset()
+    try:
+        r = await client.get("/help/search", params={"q": query}, headers=await _headers(client))
+        assert r.status_code == 200, r.text
+        assert [hit["id"] for hit in r.json()["hits"]][0] == page_id
+    finally:
+        registry.reset()

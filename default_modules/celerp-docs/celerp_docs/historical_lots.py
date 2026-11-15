@@ -72,7 +72,7 @@ async def link_historical_lots(session: AsyncSession, company_id, lots: list[str
         listed = ", ".join(sorted(skus))
         await notify_once(session, company_id, "system", NO_PRODUCT_TITLE, (
             f"Invoice {number} came over with goods delivered before the move whose item names no "
-            f"product: {listed}. Demand Planning counts what those lines still owe "
+            f"product: {listed}. Production Planning counts what those lines still owe "
             "under each item's own SKU, not under a product."),
             i18n={"title": "notice.historical_lots_no_product.title", "body": "notice.historical_lots_no_product.body",
                   "params": {"number": number, "skus": listed}})

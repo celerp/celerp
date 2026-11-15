@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser test + screenshot: the Work In Progress queue scheduling.
+"""Browser test + screenshot: the Work Orders queue scheduling.
 
 Covers the Due / Priority columns, overdue highlighting, the no-due-first then earliest-due sort,
 and double-click-to-edit a run's due date.

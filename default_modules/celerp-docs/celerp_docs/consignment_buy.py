@@ -42,6 +42,7 @@ from celerp.services.account_roles import consignor_of, is_consigned, lineage, n
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
+from celerp.services.peer_lines import granted_from_stored
 from celerp_docs.doc_money import DOC_TOTAL_FIELDS, UnratedTaxError, document_money, refuse_unset_line_tax
 from celerp_docs.record_copy import conversion_of
 
@@ -408,7 +409,8 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
     data.update({"doc_type": "bill", "ref_id": ref, "source_consignment_id": consignment_id,
                  "status": "awaiting_payment", "finalized": True})
     await emit_event(
-        session, company_id=company_id, entity_id=bill_id, entity_type="doc", event_type="doc.created",
+        session, fund_grant=granted_from_stored(lines, data),
+        company_id=company_id, entity_id=bill_id, entity_type="doc", event_type="doc.created",
         data=data, actor_id=user_id, location_id=None, source="api",
         idempotency_key=f"consignment-buy:{bill_id}", metadata_={"source_doc": consignment_id},
     )

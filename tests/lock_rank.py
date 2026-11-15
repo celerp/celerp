@@ -77,6 +77,9 @@ RANKS: dict[str, int] = {
     # The company (R3) and what is read under it.
     "row:companies": 30, "row:user_companies": 32,
     "row:company_peer_identities": 33, "row:locations": 34, "row:sync_runs": 35,
+    # The fund ledger (company_lock.lock_fund_ledger): after the company, before any account or
+    # projection row; exclusive for a fund cap, shared for a posting.
+    "adv:funds": 37,
     # A connection's config, then its first-sync record (a disconnect forgets it, a first sync
     # locks it, before either touches the store's identities).
     "row:connector_configs": 38, "row:connector_first_syncs": 39, "row:connector_sources": 43,
@@ -92,6 +95,9 @@ RANKS: dict[str, int] = {
     # Items (R6), then import batches (R7), the items' ledger rows and the outbound queue (R8).
     "row:projections": 60, "row:import_batches": 61, "row:ledger": 62, "row:outbound_queue": 63,
     "row:payment_recoveries": 64,
+    # An agreement's card charges (collect._charge_open_elsewhere): taken under the invoice's own
+    # row, before the attempt it decides is written.
+    "adv:collection": 60,
     # Bookkeeping rows written last.
     "row:migration_runs": 70, "row:migration_cleanup_tasks": 71, "row:migration_templates": 72,
     # A fetch's start takes its key before its row, which may not exist yet.

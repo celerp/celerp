@@ -56,7 +56,7 @@ def test_no_header_no_session_returns_401():
     assert resp.status_code == 401
     detail = resp.json()["detail"]
     assert detail["message_key"] == "error.connect_account_first"
-    assert "Open Web Access" in detail["message"] and "Settings >" not in detail["message"]
+    assert "Open Remote Access" in detail["message"] and "Settings >" not in detail["message"]
     assert _SUBSCRIBE_BASE not in detail
 
 
@@ -84,7 +84,7 @@ def test_header_mismatch_returns_expired_error():
     assert resp.status_code == 401
     detail = resp.json()["detail"]
     assert detail["message_key"] == "error.relay_signed_out"
-    assert "Web Access" in detail["message"]
+    assert "Remote Access" in detail["message"]
 
 
 def test_valid_header_passes():
@@ -243,7 +243,7 @@ def test_ai_access_refuses_without_key(monkeypatch):
     _stored_key(monkeypatch, "")
     resp = _ai_client().get("/ai-gated")
     assert resp.status_code == 401
-    assert "Web Access" in resp.json()["detail"]["message"]
+    assert "Remote Access" in resp.json()["detail"]["message"]
 
 
 def test_ai_access_makes_no_relay_call(monkeypatch):

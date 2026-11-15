@@ -75,7 +75,7 @@ from celerp.modules.license import (
 )
 from celerp.modules.meta import META_FILENAME
 from celerp.modules.slots import (
-    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, check as check_slot,
+    FIRST_PARTY_SLOTS, KERNEL_PROJECTION_PREFIXES, SLOT_NAMES, check as check_slot, get as get_slot,
     projection_prefixes_overlap, register as register_slot, resolve_handler,
     unregister_module as unregister_module_slots,
 )
@@ -1259,6 +1259,39 @@ def _event_prefix_owners() -> dict[str, tuple[str, str]]:
             for prefix, name in claimed.items() if name in found}
 
 
+def event_read_permissions() -> dict[str, str]:
+    """The permission each module event prefix is read with: the one named on the
+    projection_handler contribution registered by a module this process loaded (admitted
+    and enabled) or folded into core, for a prefix no other of them overlaps. A module
+    turned off, refused or never loaded registers none, so its events fall to the
+    company-admin default; installed manifests are never read for it. A contribution
+    that fails slot validation is left out and logged. Built once per load."""
+    search_path = module_search_path()
+    if search_path not in _event_permissions:
+        _event_permissions[search_path] = _admitted_event_permissions()
+    return dict(_event_permissions[search_path])
+
+
+# Kept until the next load, which changes which modules are admitted.
+_event_permissions: dict[str, tuple[tuple[str, str], ...]] = {}
+
+
+def _admitted_event_permissions() -> tuple[tuple[str, str], ...]:
+    valid = []
+    for c in get_slot("projection_handler"):
+        name = c.get("_module")
+        try:
+            _validate_slot_entry("projection_handler", c)
+        except ModuleLoadError as exc:
+            log.error("Module %r declares an event read permission Celerp cannot use (%s); "
+                      "its events are read by company admins only", name, exc)
+            continue
+        valid.append((name, c))
+    return tuple((c["prefix"], c["permission"]) for name, c in valid if "permission" in c
+                 and not any(other != name and projection_prefixes_overlap(c["prefix"], o["prefix"])
+                             for other, o in valid))
+
+
 def _owner_of(event_type: str, owners: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
     """The owner of the one claimed prefix ``event_type`` starts with; claimed prefixes
     never overlap, so there is at most one."""
@@ -1390,6 +1423,7 @@ def load_all(
     _loaded.clear()
     _load_errors.clear()
     _admitted.clear()
+    _event_permissions.clear()
     _module_routes.clear()
     _module_dirs = tuple(e.strip() for e in str(module_dir).split(",") if e.strip())
     # Every core table is on the metadata before any module code runs, so a table
@@ -1907,6 +1941,7 @@ def _deactivate(name: str, reason: str) -> set[str]:
         _load_errors[gone] = why
         _admitted.pop(gone, None)
         unregister_module_slots(gone)
+    _event_permissions.clear()
     _drop_tables(set(out))
     clear_registry()
     for manifest in _loaded:
@@ -2575,6 +2610,7 @@ _CALLABLE_SLOTS = {
     "background_loop": ("handler", True),
     "periodic_operation": ("handler", True),
     "doc_asset_lines": ("handler", True),
+    "doc_posting_dependents": ("handler", True),
     "fixed_asset_rules": ("handler", False),
     "label_source": ("handler", True),
     "import_target": ("handler", True),
@@ -2592,6 +2628,7 @@ _HANDLER_KEYWORDS = {
     "background_loop": (),
     "periodic_operation": ("session", "company_id", "today", "budget"),
     "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+    "doc_posting_dependents": ("session", "company_id", "user_id", "doc_id", "relabel"),
     "label_source": ("session", "company_id", "ids"),
     "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
     "turn_off_preflight": ("session", "company_id"),
@@ -2734,7 +2771,8 @@ _LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
 # destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
 _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
-            "order": (_NUMBER, False), **{key: (_TEXT, False) for key in NAV_SCREEN_HELP.values()}},
+            "order": (_NUMBER, False), "verticals": ((list,), False),
+            **{key: (_TEXT, False) for key in NAV_SCREEN_HELP.values()}},
     "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
     "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
     "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),
@@ -2742,7 +2780,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "item_action": _LABEL_KEYS,
     "pricing_action": _LABEL_KEYS,
     "category_schema": {"category": (_TEXT, True), "fields": ((list,), True)},
-    "projection_handler": {"prefix": (_TEXT, True)},
+    "projection_handler": {"prefix": (_TEXT, True), "permission": (_TEXT, False)},
     "search_provider": {"result_key": (_TEXT, True)},
     "doc_detail_actions": {},
     "doc_detail_badges": {},
@@ -2760,6 +2798,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "background_loop": {},
     "periodic_operation": {"module": (_TEXT, True)},
     "doc_asset_lines": {},
+    "doc_posting_dependents": {},
     "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
     "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
                      "preset": ((dict,), True)},

@@ -25,10 +25,10 @@ PLUGIN_MANIFEST = {
             {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "help": "inventory.stock-views", "label": "Sold Inventory", "label_key": "nav.sold_inventory", "order": 31, "permission": "view_inventory"},
             {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "help": "inventory.stock-views", "label": "Archived Inventory", "label_key": "nav.archived_inventory", "order": 32, "permission": "view_inventory"},
             {"group": "Inventory", "key": "inventory_disposed", "href": "/inventory?status=disposed", "help": "inventory.stock-views", "label": "Disposed Inventory", "label_key": "nav.disposed_inventory", "order": 33, "permission": "view_inventory"},
-            {"group": "Inventory", "key": "audits", "href": "/lists?type=audit", "help": "inventory.stock-views", "label": "Audits", "label_key": "nav.audits", "order": 34, "permission": "view_inventory"},
+            {"group": "Inventory", "key": "audits", "href": "/lists?type=audit", "help": "inventory.stock-views", "label": "Stock Counts", "label_key": "nav.audits", "order": 34, "permission": "view_inventory"},
         ],
         "projection_handler": [
-            {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},
+            {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event", "permission": "view_inventory"},
         ],
         "search_provider": {
             "handler": "celerp_inventory.search:global_search",

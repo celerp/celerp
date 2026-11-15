@@ -13,13 +13,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "name",
-      "label": "Fragrance Name",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "concentration",
       "label": "Concentration",
       "type": "select",
@@ -49,13 +42,6 @@
         "Men",
         "Unisex"
       ],
-      "visible_to_roles": []
-    },
-    {
-      "key": "batch_no",
-      "label": "Batch No.",
-      "type": "text",
-      "options": [],
       "visible_to_roles": []
     }
   ],

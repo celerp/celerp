@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """An invoice a data migration brought over with part of its goods delivered before then
 (``pre366`` company ``migrated``): the older release made each delivery a sold lot of the
-line's item that named no product, so Demand Planning asked for the rest of the order under
+line's item that named no product, so Production Planning asked for the rest of the order under
 the lot as if it were a product of its own.
 
 After the first start of this release, a lot whose line names its product is stock of that

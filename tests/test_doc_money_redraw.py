@@ -28,8 +28,10 @@ DOC = "doc:inv-1"
 _LINE_EDITOR = {"/docs/{entity_id}/lines", "/docs/{entity_id}/items/csv", "/docs/{entity_id}/scan"}
 # Writes whose page script reloads the page once they answer (the price-list change).
 _CLIENT_RELOADS = {"/docs/{entity_id}/reprice"}
-# Writes that change no money: notes, files, sharing, previews, text fields of a finalized line.
+# Writes that change no money: notes, files, sharing, previews, text fields of a finalized line,
+# and the fund choice of a record from outside (stored on a record with no posted entry; no amount moves).
 _NO_MONEY = {
+    "/docs/{entity_id}/funds",
     "/docs/{entity_id}/notes", "/docs/{entity_id}/notes/{note_id}", "/docs/{entity_id}/files",
     "/docs/{entity_id}/files/{file_id}", "/docs/{entity_id}/files/{file_id}/tag",
     "/docs/{entity_id}/files/{file_id}/description", "/docs/{entity_id}/share",

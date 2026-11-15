@@ -155,8 +155,16 @@ def test_the_dashboard_fits_a_phone_screen(page, ui_server, fresh_company, width
         "quantity": 2, "sell_by": "piece", "cost_total": 20.0})
     assert r.status_code in (200, 201), r.text
 
+    # The chart library comes from a CDN: the page fits while the charts are not drawn (the
+    # library is slow or never arrives), and again once it has drawn them.
+    page.route("**/chart.umd.min.js", lambda route: route.abort())
     page.set_viewport_size({"width": width, "height": 740})
     page.goto(f"{ui_server}/dashboard", wait_until="domcontentloaded")
+    page.wait_for_selector(".chart-card canvas", timeout=8000)
+    page.wait_for_selector("table.activity-table", timeout=8000)
+    _fits(page, "dashboard before its charts draw")
+    page.unroute("**/chart.umd.min.js")
+    page.reload(wait_until="domcontentloaded")
     page.wait_for_selector(".chart-card", timeout=8000)
     page.wait_for_selector("table.activity-table", timeout=8000)
     page.wait_for_timeout(500)
@@ -247,6 +255,23 @@ def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, wi
             wide.append(f"{url}: table rows short of the table {short}")
     assert not wide, f"at {width}px: {wide}"
     assert len(seen) > len(_MAIN_PAGES), "no tab was swept"
+
+
+def test_the_inventory_toolbar_wraps_inside_a_phone_screen_in_german(page, ui_server, fresh_company):
+    """German gives the toolbar its longest labels; every action stays on screen."""
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "de", "domain": host, "path": "/"}])
+    try:
+        page.set_viewport_size({"width": 320, "height": 740})
+        page.goto(f"{ui_server}/inventory", wait_until="load")
+        actions = "#inventory-toolbar-actions > *"
+        assert page.locator(actions).count() == 4
+        for i in range(4):
+            _on_screen(page, f"{actions} >> nth={i}", "inventory toolbar (de)")
+        doc_w = page.evaluate("document.documentElement.scrollWidth")
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
+    assert doc_w <= 320, f"inventory page is {doc_w}px wide on a 320px screen in German"
 
 
 @pytest.mark.parametrize("lang", ["en", "de"])

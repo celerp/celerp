@@ -149,9 +149,10 @@ def _surfaced_event_types() -> set[str]:
     manufacturing module's run events, less the internal records and file events."""
     import celerp_manufacturing.run_events  # noqa: F401  registers the module's types
     from celerp.events.schemas import EVENT_SCHEMA_MAP
-    from ui.components.activity import _SYSTEM_EVENT_TYPES, _is_file_event
+    from celerp.services.ledger_display import SYSTEM_EVENT_TYPES
+    from ui.components.activity import _is_file_event
     return {et for et in EVENT_SCHEMA_MAP
-            if et not in _SYSTEM_EVENT_TYPES and not _is_file_event(et)}
+            if et not in SYSTEM_EVENT_TYPES and not _is_file_event(et)}
 
 
 def test_every_surfaced_event_type_has_a_label_in_every_locale():

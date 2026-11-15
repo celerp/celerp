@@ -37,6 +37,7 @@ _CODE = {
         "async def extra_in_production(*, session, company_id, when=None):\n    return 0\n"
         "async def demo(*, session, company_id, user_id):\n    return None\n"
         "async def asset_lines(*, session, company_id, user_id, doc_id, doc, change):\n    return None\n"
+        "async def dependents(*, session, company_id, user_id, doc_id, relabel):\n    return None\n"
         "async def periodic(*, session, company_id, today, budget):\n    return None\n"
         "async def label_rows(*, session, company_id, ids):\n    return []\n"
         "async def loose_label_rows(*, session, company_id):\n    return []\n"
@@ -72,7 +73,8 @@ _VALID = {
     "send_to_targets": [{"label": "Quote", "doc_type": "quotation", "statuses": ["in_stock"]}],
     "catalog_channel": [{"id": "shop", "label": "Shop", "marker": "S", "can_create": True,
                          "write_permission": "edit_inventory", "requires_connector": "shop"}],
-    "projection_handler": [{"prefix": "acme.", "handler": "{inner}.events:handle"}],
+    "projection_handler": [{"prefix": "acme.", "handler": "{inner}.events:handle",
+                            "permission": "view_inventory"}],
     "pricing_action": [{"label": "Set", "href_template": "/acme/{entity_id}/{price_list}",
                         "show_on": ["sell"]}],
     "doc_finalize_hook": [{"handler": "{inner}.hooks:hook"}],
@@ -84,6 +86,7 @@ _VALID = {
     "background_loop": [{"handler": "{inner}.hooks:loop"}],
     "periodic_operation": [{"handler": "{inner}.lineage:periodic", "module": "acme"}],
     "doc_asset_lines": [{"handler": "{inner}.lineage:asset_lines"}],
+    "doc_posting_dependents": [{"handler": "{inner}.lineage:dependents"}],
     "fixed_asset_rules": [{"kind": "method", "key": "acme_rate", "handler": "{inner}.rules:Rate"}],
     "label_source": [{"entity_type": "acme_box", "handler": "{inner}.lineage:label_rows",
                       "permission": "view_inventory", "label_key": "nav.acme", "keys": ["number", "name"],

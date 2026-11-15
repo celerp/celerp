@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import quote
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import Response
@@ -141,37 +142,37 @@ def setup_routes(app):
         # provider returns each record's entity id under "id"; detail hrefs link
         # straight to the record's own page.
         descriptors = [
-            ("celerp-inventory", "items", "📦",
+            ("celerp-inventory", "items", "package",
              lambda r: r.get("name") or r.get("sku") or "",
              lambda r: f"/inventory/{r.get('id', '')}",
              lambda r: r.get("sku") or "",
              frozenset({"sold", "archived", "merged", "expired", "disposed"}),
              _enum_status("item_status")),
-            ("celerp-contacts", "items", "👤",
+            ("celerp-contacts", "items", "user",
              lambda r: r.get("name") or r.get("contact_name") or "",
              lambda r: f"/contacts/{r.get('id', '')}",
              lambda r: "",
              frozenset(),
              _enum_status("contact_status")),
-            ("celerp-docs", "items", "📄",
+            ("celerp-docs", "items", "file-text",
              lambda r: r.get("doc_number") or r.get("ref_id") or r.get("ref") or "",
              lambda r: f"/{'lists' if r.get('kind') == 'list' else 'docs'}/{r.get('id', '')}",
              _doc_type_name,
              frozenset({"void"}),
              _doc_status),
-            ("celerp-manufacturing", "items", "🏭",
+            ("celerp-manufacturing", "items", "factory",
              lambda r: r.get("description") or r.get("id") or "",
              lambda r: f"/manufacturing/production?q={quote(q)}",
              lambda r: "",
              frozenset({"cancelled"}),
              _enum_status("mfg_run_status")),
-            ("celerp-subscriptions", "items", "🔁",
+            ("celerp-subscriptions", "items", "repeat",
              lambda r: r.get("name") or r.get("doc_number") or r.get("ref_id") or r.get("id") or "",
              lambda r: f"/subscriptions/{r.get('id', '')}",
              lambda r: "",
              frozenset({"cancelled"}),
              _enum_status("subscription_status")),
-            ("celerp-accounting", "entries", "📒",
+            ("celerp-accounting", "entries", "book-open",
              lambda r: r.get("memo") or ((r.get("lines") or [{}])[0].get("name") or ""),
              lambda r: "/accounting",
              lambda r: "",
@@ -182,7 +183,7 @@ def setup_routes(app):
         # (is_inactive, rendered) pairs; the stable sort below floats every active
         # result above the inactive ones while keeping module order within each group.
         rendered: list[tuple[bool, FT]] = []
-        for module, key, icon, label_fn, href_fn, sub_fn, inactive_statuses, status_fn in descriptors:
+        for module, key, icon_name, label_fn, href_fn, sub_fn, inactive_statuses, status_fn in descriptors:
             bucket = (results_by_module.get(module) or {}).get(key) or []
             for record in bucket[:5]:
                 label = label_fn(record)
@@ -192,7 +193,7 @@ def setup_routes(app):
                 status = str(record.get("status") or "").lower()
                 inactive = status in inactive_statuses
                 rendered.append((inactive, A(
-                    f"{icon} {label}",
+                    Span(icon(icon_name), cls="search-result-icon"), " ", label,
                     Small(f" ({sub})") if sub else "",
                     *_match_tags(record, ("name", "sku")),
                     _status_tag(status_fn(record, status)),
@@ -216,7 +217,7 @@ def setup_routes(app):
                         continue
                     subtitle = record.get("subtitle") or ""
                     rendered.append((False, A(
-                        f"🔎 {label}",
+                        Span(icon("search"), cls="search-result-icon"), " ", label,
                         Small(f" ({subtitle})") if subtitle else "",
                         href=safe_url(href),
                         cls="search-result-item",

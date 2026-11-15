@@ -48,7 +48,7 @@ async def _seed_company(session, name: str = "CogsCo") -> uuid.UUID:
 def _seed_parcel(session, company_id, entity_id: str, *, cost_total=None,
                  quantity=0.0, cost_price=None, account: str | None = "1130-P") -> None:
     """A parcel projection as compute_doc_cogs reads it, recording the inventory account
-    a lot takes on when it first holds stock (none for older stock from a backup)."""
+    a lot takes on when it first holds stock (none for opening inventory from a backup)."""
     state: dict = {"quantity": quantity}
     if account:
         state[LOT_ACCOUNT_FIELD] = account
@@ -788,8 +788,8 @@ async def test_backfill_reports_an_older_cost_line_it_cannot_classify_instead_of
     assert await _marker_value(session) is None
 
 
-_OLDER_STOCK_NEXT = ("1 wait for older stock to be placed on an inventory account: "
-                     "the older stock notice says what holds it back.")
+_OLDER_STOCK_NEXT = ("1 wait for opening inventory to be placed on an inventory account: "
+                     "the opening inventory notice says what holds it back.")
 
 
 async def _place_lot(session, company_id, entity_id: str) -> None:
@@ -802,8 +802,8 @@ async def _place_lot(session, company_id, entity_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_backfill_tells_older_stock_to_choose_its_account_then_restart(session):
-    """An invoice whose lot is older stock with no inventory account is not a computation
-    failure: the notice says to choose the account under Older stock and restart, and the
+    """An invoice whose lot is opening inventory with no inventory account is not a computation
+    failure: the notice says to choose the account under Opening inventory and restart, and the
     marker stays unset so that restart posts it."""
     await _clear_marker(session)
     company_id = await _seed_company(session)
@@ -942,7 +942,7 @@ async def test_backfill_notice_is_keyed_and_shown_in_the_readers_language(sessio
         ("notice.cogs_backfill.older_stock", {"count": 1})]
     es = _shown_in("es", notice)
     assert es["title"] == "Costo de ventas contabilizado para facturas anteriores"
-    assert es["body"].startswith("1 factura, total 20.00. 1 esperan a que las existencias antiguas"), es["body"]
+    assert es["body"].startswith("1 factura, total 20.00. 1 esperan a que el inventario inicial"), es["body"]
     assert es["body"].endswith("indica qué lo impide."), es["body"]
 
 

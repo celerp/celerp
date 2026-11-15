@@ -119,20 +119,22 @@ async def _member_name(session, user_id) -> str:
 async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dict:
     """What runs on its own for the agreement now, read from it as stored after a status
     change: each mode in force and the member whose authorization it runs under, or whose
-    authorization has lapsed so it does not run; that it is billed by hand when none is."""
+    authorization has lapsed so it does not run, each mode's sentence saying so (``said``);
+    that it is billed by hand when none is."""
     state = (await _states(session, company_id, {entity_id})).get(entity_id) or {}
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
-    runs, lapsed, sentences = [], [], []
+    runs, lapsed, said = [], [], {}
     for mode in billing.modes_in_force(state):
         name = await _member_name(session, ((state.get("consents") or {}).get(mode) or {}).get("by"))
         if await billing.authorizer(session, company_id, settings, state, mode) is None:
             lapsed.append(mode)
-            sentences.append(t(f"subscriptions.runs_{mode}_lapsed", name=name))
+            said[mode] = t(f"subscriptions.runs_{mode}_lapsed", name=name)
         else:
             runs.append(mode)
-            sentences.append(t(f"subscriptions.runs_{mode}", name=name))
-    return {"runs": runs, "lapsed": lapsed, "message": " ".join(sentences) or t("subscriptions.runs_by_hand")}
+            said[mode] = t(f"subscriptions.runs_{mode}", name=name)
+    return {"runs": runs, "lapsed": lapsed, "said": said,
+            "message": " ".join(said.values()) or t("subscriptions.runs_by_hand")}
 
 
 async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]:

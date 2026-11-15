@@ -205,6 +205,35 @@ def _schedule_error_keys() -> list[str]:
     return sorted(set(keys))
 
 
+def _peer_lines_keys() -> list[str]:
+    """The key of every peer_lines._refused call, and of every peer_lines.checked call in any
+    file importing it (checked passes its key on to _refused). A key passed through by name is
+    allowed only inside checked itself; one built from anything else fails here."""
+    keys = []
+    for root in _ROOTS:
+        for path in sorted(root.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            own = path.as_posix().endswith("celerp/services/peer_lines.py")
+            imports = own or any(isinstance(n, ast.ImportFrom) and n.module == "celerp.services.peer_lines"
+                                 and any(a.name == "checked" for a in n.names) for n in ast.walk(tree))
+            if not imports:
+                continue
+            passing = {id(c) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == "checked"
+                       for c in ast.walk(f)}
+            for node in ast.walk(tree):
+                name = getattr(node.func, "id", None) if isinstance(node, ast.Call) else None
+                at = {"checked": 2, **({"_refused": 1} if own else {})}.get(name)
+                if at is None or id(node) in passing:
+                    continue
+                key = node.args[at]
+                options = [key.body, key.orelse] if isinstance(key, ast.IfExp) else [key]
+                assert all(isinstance(k, ast.Constant) for k in options), \
+                    f"{path.name}:{node.lineno} {name} key is not a literal"
+                keys += [k.value for k in options]
+    assert keys
+    return sorted(set(keys))
+
+
 _DYNAMIC_KEY_SITES = {
     # celerp/services/lot_origin.py: _refused(status, key, message) wraps refusal(key, ...)
     # for the older-stock move, undo and adjustment refusals
@@ -283,6 +312,9 @@ _DYNAMIC_KEY_SITES = {
     # celerp_subscriptions/billing.py: schedule_refusal(status, exc) for the key of each
     # ScheduleError the module raises
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py": _schedule_error_keys(),
+    # celerp/services/peer_lines.py: _refused(status, key, **params) wraps catalog_refusal(key, ...)
+    # for the fund choice, arrival and Change fund refusals
+    "celerp/services/peer_lines.py": _peer_lines_keys(),
 }
 
 

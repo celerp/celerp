@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Playwright: on every main page at a desktop width, a column of figures reads as one.
 
-A header over figures sits right, over its own numbers, and a header over text does not; a number
+A header over figures sits right, over its own numbers, and a header over text sits centered; a number
 box typed into sits right like the figures it edits, and so do its cell and header; and no header is cut short."""
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ _ALIGNMENT_JS = """() => {
       const label = th.innerText.trim();
       if (!label) return;
       if (th.scrollWidth > th.clientWidth + 1) out.push(`header cut short: ${label}`);
+      if (!right(th) && getComputedStyle(th).textAlign !== 'center')
+        out.push(`${label}: header over text sits ${getComputedStyle(th).textAlign}, not centered`);
       const td = row && row.children[i];
       if (!td) return;
       if (right(th) !== right(td)) out.push(`${label}: header ${getComputedStyle(th).textAlign}, cells ${getComputedStyle(td).textAlign}`);

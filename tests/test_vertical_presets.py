@@ -33,7 +33,7 @@ def test_presets_enable_fixed_assets():
     """Every preset that keeps books keeps a fixed asset register beside them."""
     presets = [json.loads(f.read_text()) for f in sorted((vp._data_dir() / "presets").glob("*.json"))]
     books = [p for p in presets if "celerp-accounting" in p.get("modules", [])]
-    assert len(books) == 19
+    assert len(books) == 20
     assert [p["name"] for p in books if "celerp-fixed-assets" not in p["modules"]] == []
 
 
@@ -44,9 +44,14 @@ def test_missing_package_gives_empty_catalog():
 
 
 def test_hidden_presets_only_on_request():
-    assert vp.load_preset("saas") is None
-    assert vp.load_preset("saas", allow_hidden=True) is not None
-    assert "saas" not in {p["name"] for p in vp.list_presets()}
+    assert vp.load_preset("property_rental") is None
+    assert vp.load_preset("property_rental", allow_hidden=True) is not None
+    assert "property_rental" not in {p["name"] for p in vp.list_presets()}
+
+
+def test_saas_is_offered():
+    assert "saas" in {p["name"] for p in vp.list_presets()}
+    assert "celerp-subscriptions" in vp.load_preset("saas")["modules"]
 
 
 def test_unreadable_and_nameless_files_skipped(tmp_path):
@@ -62,11 +67,11 @@ def test_merge_adds_missing_and_keeps_existing(tmp_path):
     with _library(tmp_path, categories=cats):
         settings = {"category_schemas": {"a": [{"key": "mine"}]}, "category_display_names": {"a": "Mine"},
                     "units": [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"}]}
-        out, resolved = vp.merge_missing_preset_categories(settings, {"name": "p", "categories": ["a", "b", "zz"]})
+        out, added = vp.merge_missing_preset_categories(settings, {"name": "p", "categories": ["a", "b", "zz"]})
     assert out["category_schemas"]["a"] == [{"key": "mine"}]
     assert out["category_display_names"]["a"] == "Mine"
     assert out["category_schemas"]["b"] == [{"key": "y"}]
-    assert resolved == ["a", "b"]
+    assert added == ["b"], "only the category added now is named"
     assert any(u["name"] == "carat" for u in out["units"])
     assert settings["category_schemas"] == {"a": [{"key": "mine"}]}, "input is not mutated"
 

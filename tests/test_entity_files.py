@@ -283,3 +283,42 @@ async def test_void_doc_still_takes_and_drops_files(client):
     doc = (await client.get(f"/docs/{doc_id}", headers=h)).json()
     assert doc.get("files", []) == []
     assert doc["status"] == "void"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource,kind", [("docs", k) for k in ("invoice", "memo", "purchase_order", "bill", "consignment_in", "credit_note", "debit_note")] + [("lists", k) for k in ("quotation", "transfer", "audit", "writeoff", "shipping_doc")])
+async def test_shared_document_file_lifecycle_uses_the_owning_resource(client, resource, kind):
+    h = await _headers(client)
+    r = await client.post("/" + resource, headers=h, json={
+        "doc_type" if resource == "docs" else "list_type": kind, "line_items": []})
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    base = f"/{resource}/{eid}"
+    r = await client.post(base + "/files", headers=h, files={"file": ("Scan Copy.PDF", _SMALL_PDF, "application/pdf")})
+    assert r.status_code == 200, r.text
+    fid = r.json()["id"]
+    assert (await client.get(base + f"/files/{fid}", headers=h)).content == _SMALL_PDF
+    for suffix, data in [("tag", {"document_tag": "contracts"}), ("description", {"description": "Scanned original"})]:
+        r = await client.patch(base + f"/files/{fid}/{suffix}", headers=h, data=data)
+        assert r.status_code == 200, r.text
+    stored = (await client.get(base, headers=h)).json()["files"][0]
+    assert stored["filename"] == "Scan Copy.PDF" and stored["description"] == "Scanned original"
+    assert (await client.delete(base + f"/files/{fid}", headers=h)).status_code == 200
+    assert (await client.get(base, headers=h)).json()["files"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_attachment_upload_to_a_missing_record_is_not_a_file_type_error(client, resource):
+    h = await _headers(client)
+    r = await client.post(f"/{resource}/missing-record/files", headers=h,
+                          files={"file": ("valid.pdf", _SMALL_PDF, "application/pdf")})
+    assert r.status_code == 404, r.text
+    assert "couldn't find" in r.text
+
+
+def test_file_link_uses_the_record_owner_not_its_display_type():
+    from ui.routes.documents import _enrich_doc_files
+    for owner, path in [("list", "lists"), ("doc", "docs")]:
+        doc={"entity_type":owner,"doc_type":"list","entity_id":"record:1","files":[{"id":"file:1"}]}
+        assert _enrich_doc_files(doc)[0]["linked_url"]==f"/{path}/record:1"

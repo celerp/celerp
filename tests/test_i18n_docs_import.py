@@ -140,7 +140,7 @@ async def test_result_panel_entity_label_translates(monkeypatch, tmp_path):
     async def _no_rows(token, resource, number, doc_type=None):
         return []
 
-    async def _fake_batch(token, path, records, upsert=False):
+    async def _fake_batch(token, path, records, upsert=False, fund_choices=None):
         return {"created": 1, "skipped": 0, "updated": 0, "errors": []}
 
     monkeypatch.setattr(di, "_token", lambda request: "tok")

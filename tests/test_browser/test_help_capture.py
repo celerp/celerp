@@ -16,6 +16,7 @@ import os
 import random
 import threading
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -23,6 +24,7 @@ import pytest
 from playwright.sync_api import expect
 
 from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
+from celerp.services.business_time import business_today
 from celerp_labels.presets import PRESET_TEMPLATES
 from ui.i18n import t
 
@@ -41,6 +43,49 @@ _EXIF_DESCRIPTION = 0x010E
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
 
 
+async def _ok(response: httpx.Response) -> dict:
+    assert response.status_code in (200, 201), response.text
+    return response.json()
+
+
+async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict, contacts: list[dict],
+                                          today: date) -> None:
+    """Funds and revenue recognition show their controls only once they are in use: funds
+    on, a restricted fund, an archived fund and a transfer; an invoice deferring revenue over
+    the last three ended months with the oldest month posted, and a voided one."""
+    def key() -> str:
+        return uuid.uuid4().hex
+
+    await _ok(await client.put("/accounting/funds/setting", headers=auth, json={"enabled": True}))
+    await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Roof appeal", "restricted": True, "purpose": "Repair the roof"}))
+    reserve = await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Reserve"}))
+    fair = await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Summer fair"}))
+    await _ok(await client.post(f"/accounting/funds/{fair['id']}/archive", headers=auth))
+    await _ok(await client.post("/accounting/funds/transfer", headers=auth, json={
+        "request_key": key(), "date": today.isoformat(), "reason": "Set aside a reserve",
+        "from_fund": None, "to_fund": reserve["id"], "amount": 500.0}))
+
+    item = await _ok(await client.post("/items", headers=auth, json={
+        "name": "Support plan", "sell_by": "piece", "inventory_type": "service", "quantity": 0,
+        "status": "available", "retail_price": 900.0, "recognize_over_service_period": True}))
+    this_month = today.replace(day=1)
+    start = (this_month - timedelta(days=85)).replace(day=1)
+    line = {"item_id": item["id"], "name": "Support plan", "quantity": 1, "unit_price": 900.0,
+            "line_total": 900.0, "service_start": start.isoformat(),
+            "service_end": (this_month - timedelta(days=1)).isoformat()}
+    docs = []
+    for _ in range(2):
+        doc = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "invoice", "contact_id": contacts[2]["id"], "line_items": [line], "total": 900.0}))
+        await _ok(await client.post(f"/docs/{doc['id']}/finalize", headers=auth, json={}))
+        docs.append(doc["id"])
+    await _ok(await client.post(f"/accounting/recognition/{start:%Y-%m}/post", headers=auth, json={}))
+    await _ok(await client.post(f"/docs/{docs[1]}/void", headers=auth, json={"reason": "Sent twice"}))
+
+
 @pytest.fixture(scope="module")
 def demo_token(api_server, api):
     """A company of its own, filled with the same demo data every run."""
@@ -49,6 +94,7 @@ def demo_token(api_server, api):
     token = r.json()["access_token"]
 
     async def seed():
+        auth = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(base_url=api_server, timeout=30.0) as client:
             await seed_demo.seed_items(client, token)
             contacts = await seed_demo.seed_contacts(client, token)
@@ -59,6 +105,35 @@ def demo_token(api_server, api):
             # already-started state.
             r = await client.post("/fixed-assets/api/start", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code in (200, 201), r.text
+            # Donors and Subscribers show a donor's statement and a subscriber's quantities only
+            # once there is one: a gift by bank transfer from a contact to a gift category's income
+            # account, and an active agreement.
+            r = await client.post("/accounting/accounts", headers=auth, json={
+                "code": "4250", "name": "Donations", "account_type": "revenue", "parent_code": "4000"})
+            assert r.status_code == 200, r.text
+            r = await client.post("/companies/me/categories", headers=auth, json={"name": "Donation"})
+            assert r.status_code == 200, r.text
+            donation = r.json()["key"]
+            for path, body in (("income-account", {"income_account": "4250"}), ("gift", {"gift": True})):
+                r = await client.put(f"/companies/me/categories/{donation}/{path}", headers=auth, json=body)
+                assert r.status_code == 200, r.text
+            # Dated the company's today, the day the Donors page's default period ends on.
+            r = await client.get("/companies/me", headers=auth)
+            assert r.status_code == 200, r.text
+            today = business_today(r.json()["settings"].get("timezone")).isoformat()
+            r = await client.post("/accounting/journal-entries", headers=auth, json={
+                "ts": today, "memo": "Gift by bank transfer", "idempotency_token": uuid.uuid4().hex,
+                "entries": [{"account": "1111", "debit": 250.0, "credit": 0.0},
+                            {"account": "4250", "debit": 0.0, "credit": 250.0, "contact": contacts[0]["id"]}]})
+            assert r.status_code == 200, r.text
+            r = await client.post("/docs", headers=auth, json={
+                "doc_type": "subscription_invoice", "contact_id": contacts[1]["id"], "frequency": "monthly",
+                "start_date": today,
+                "line_items": [{"description": "Seats", "quantity": 5, "unit_price": 20.0, "line_total": 100.0}]})
+            assert r.status_code in (200, 201), r.text
+            r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
+            assert r.status_code == 200, r.text
+            await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:

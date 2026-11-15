@@ -20,7 +20,7 @@ from test_helpers import REPO_ROOT, fastest_cpu_seconds
 
 # Tests whose timed work runs in the database server, which the test process's CPU time
 # does not see: they time the wall clock on purpose.
-_WALL_CLOCK = {"test_cost_follows_goods.py"}
+_WALL_CLOCK = {"test_cost_follows_goods.py", "test_ledger_history_paging.py"}
 
 
 def test_waiting_is_not_counted():

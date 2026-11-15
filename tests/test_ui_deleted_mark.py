@@ -115,7 +115,7 @@ async def test_the_full_history_marks_a_deleted_transform_parent(ui_client):
         patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "transformed_from": "item:mum"})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         patch("ui.api_client.get_category_labels", new=AsyncMock(return_value={})),
-        patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [event], "total": 1})),
+        patch("ui.api_client.entity_history", new=AsyncMock(return_value=({"items": [event], "total": 1}, {"event_types": [], "fields": [], "actors": []}))),
         _items(_MUM),
     ):
         r = await ui_client.get("/inventory/gc:123/history")

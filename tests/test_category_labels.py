@@ -221,9 +221,14 @@ async def test_activity_shows_renamed_and_custom_categories_as_named(owner_ui, l
     headers = {"Accept-Language": lang}
     for url in (f"/inventory/{item_id}/history", f"/inventory/{item_id}?tab=activity", "/history", "/dashboard"):
         text = (await owner_ui.get(url, headers=headers)).text
-        assert "books_we_like →" not in text and "→ gear_box" not in text, url
-        assert re.search(r"Books we like → Gear Box", text), url
-        assert re.search(rf"{'Bier' if lang == 'de' else 'Beer'} → Books we like", text), url
+        assert "books_we_like" not in text and "gear_box" not in text, url
+        beer = "Bier" if lang == "de" else "Beer"
+        if url.startswith("/inventory/"):  # the item's History: one row per change, old and new apart
+            assert re.search(r"Books we like</td>\s*<td[^>]*>Gear Box<", text), url
+            assert re.search(rf"{beer}</td>\s*<td[^>]*>Books we like<", text), url
+        else:  # the dashboard's activity feed keeps its one-line summary
+            assert re.search(r"Books we like → Gear Box", text), url
+            assert re.search(rf"{beer} → Books we like", text), url
 
 
 @pytest.mark.asyncio

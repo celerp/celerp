@@ -107,9 +107,13 @@ def test_every_door_that_makes_an_agreement_bill_asks_the_bill_path():
     doors = set(billable_routes()) | {name for name, (_, sets, _) in route_doors().items() if "generation_mode" in sets}
     assert doors == {"activate_subscription", "resume_subscription", "change_schedule"}
     source = inspect.getsource(routes._build_router)  # the routes are closures of _build_router
+    # A door asks in its own body or through a routes helper that does (activate_agreement,
+    # shared with the demo data that activates agreements the same way).
+    asking = {name for name, fn in vars(routes).items()
+              if inspect.isfunction(fn) and fn.__module__ == routes.__name__ and _calls(fn, "bill_refusal")}
     for door in doors:
         body = source.split(f"async def {door}(", 1)[1].split("\n    @router.", 1)[0]
-        assert "billing.bill_refusal(" in body, door
+        assert "billing.bill_refusal(" in body or any(f"{name}(" in body for name in asking), door
     assert _calls(billing.bill_refusal, "_bill")
     assert not _calls(billing.write_agreement, "bill_refusal")
     assert not _calls(billing.guard_agreement_status, "bill_refusal")

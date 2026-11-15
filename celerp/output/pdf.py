@@ -55,8 +55,8 @@ _DOC_TYPE_LABELS: dict[str, str] = {
     "invoice": "Invoice",
     "purchase_order": "Purchase Order",
     "bill": "Vendor Bill",
-    "credit_note": "Credit Note",
-    "debit_note": "Supplier Credit Note",
+    "credit_note": "Credit Memo",
+    "debit_note": "Vendor Credit Memo",
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "receipt": "Receipt",
@@ -104,9 +104,11 @@ _CURRENCY_SYMBOLS: dict[str, str] = {
 
 
 def _fmt_money(value: Any, currency: str = "USD") -> str:
+    """A money amount on a printed document at the places its currency keeps (KWD 3, JPY 0)."""
+    from celerp.services.money import currency_dp as _cdp
     try:
         symbol = _CURRENCY_SYMBOLS.get(currency, currency)
-        return f"{symbol}\u00a0{float(value):,.2f}"
+        return f"{symbol}\u00a0{float(value):,.{_cdp(currency)}f}"
     except (TypeError, ValueError):
         return "-"
 

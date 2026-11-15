@@ -619,6 +619,9 @@ class GatewayClient:
         "invoice.payment_release": "_handle_invoice_payment_release",
         "invoice.refund": "_handle_invoice_refund",
         "invoice.fees": "_handle_invoice_fees",
+        "invoice.dispute": "_handle_invoice_dispute",
+        "collection.attempt": "_handle_collection_attempt",
+        "collection.binding": "_handle_collection_binding",
     }
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
@@ -868,6 +871,12 @@ class GatewayClient:
         from celerp.services.payments import receive_fees
         await self._receive_delivery("invoice.fees", receive_fees, payload)
 
+    async def _handle_invoice_dispute(self, payload: dict) -> None:
+        """Record a delivered step of a card dispute on the payment it disputes and
+        acknowledge it once recorded."""
+        from celerp.services.payments import receive_dispute
+        await self._receive_delivery("invoice.dispute", receive_dispute, payload)
+
     async def _handle_invoice_refund(self, payload: dict) -> None:
         """Record a delivered change to a refund of an invoice payment and acknowledge
         it once recorded."""
@@ -879,6 +888,16 @@ class GatewayClient:
         acknowledge it once recorded."""
         from celerp.services.payments import receive_release
         await self._receive_delivery("invoice.payment_release", receive_release, payload)
+
+    async def _handle_collection_attempt(self, payload: dict) -> None:
+        """Record what became of an automatic collection attempt and acknowledge it once recorded."""
+        from celerp.services.collection import receive_attempt
+        await self._receive_delivery("collection.attempt", receive_attempt, payload)
+
+    async def _handle_collection_binding(self, payload: dict) -> None:
+        """Record a payer's card on file for automatic collection and acknowledge it once recorded."""
+        from celerp.services.collection import receive_binding
+        await self._receive_delivery("collection.binding", receive_binding, payload)
 
     async def _receive_delivery(self, kind: str, receive, payload: dict) -> None:
         """Hand a Celerp Cloud delivery to *receive*; acknowledge it once *receive*

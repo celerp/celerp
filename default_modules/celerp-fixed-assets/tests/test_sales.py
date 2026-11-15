@@ -439,6 +439,12 @@ async def test_s4_mixed_invoice_goods_only_credit_leaves_clearing(fa):
     refused = await _discard_refused(fa, await fa.client.post("/docs", headers=fa.h, json={
         "doc_type": "credit_note", "original_doc_id": inv, "line_items": [stray], "total": 100.0}))
     assert refused.status_code == 422 and "Car" in refusal_text(refused.json()["detail"])
+    # A line linked to the car's line without naming the car credits revenue, never sale clearing.
+    unnamed = {**await _asset_line(fa, inv)}
+    unnamed.pop("asset_id")
+    cn = await _credit(fa, inv, "100", line=unnamed)
+    assert _lines(await _doc_entry(fa, cn)) == {"4100": (D("100"), D(0)), "1120": (D(0), D("100"))}
+    await _assert_clearing(fa, car, "10000")
 
 
 async def test_s4_paid_sale_asset_returned(fa):

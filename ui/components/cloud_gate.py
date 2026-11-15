@@ -9,6 +9,7 @@ Keeps all subscribe CTA copy and styling in one place (DRY).
 
 from __future__ import annotations
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from ui.i18n import t, get_lang
 from ui.components.encode import safe_url
@@ -157,7 +158,7 @@ def upgrade_banner(
     href, cta_label = commercial_cta("subscribe", plan, direct_label, lang)
     return Div(
         Div(
-            Span(t("msg.u0001f512", lang), cls="upgrade-banner__icon"),
+            Span(icon("lock"), cls="upgrade-banner__icon"),
             Div(
                 Strong(f"{feature} {t('cloud.requires_celerp_cloud', lang)}", cls="upgrade-banner__title"),
                 P(description, cls="upgrade-banner__desc"),

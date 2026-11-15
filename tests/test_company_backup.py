@@ -5508,7 +5508,7 @@ def _bk_owner_module(root: Path, name: str, prefix: str) -> None:
     (pkg / "__init__.py").write_text(
         "PLUGIN_MANIFEST = {\n"
         f'    "name": "{name}", "version": "1.0.0", "display_name": "{name}",\n'
-        f'    "slots": {{"projection_handler": [{{"prefix": "{prefix}", "handler": "x:y"}}]}},\n'
+        f'    "slots": {{"projection_handler": [{{"prefix": "{prefix}", "handler": "x:y", "permission": "view_inventory"}}]}},\n'
         "}\n")
 
 

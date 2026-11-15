@@ -35,11 +35,16 @@ def operation_key_attrs(kept: str = "") -> dict:
     return {"data-operation-key": kept or str(uuid.uuid4())}
 
 
+def key_reused(error) -> bool:
+    """Whether a refusal says the key sent already named a different request."""
+    return str((getattr(error, "data", None) or {}).get("message_key") or "").endswith(".key_reused")
+
+
 def kept_operation_key(form, error) -> str:
     """The key a failed action's form carried, for the page answering it to keep; none when
     the refusal says that key already named a different action, as sending it again could
     only be refused again."""
-    if str((getattr(error, "data", None) or {}).get("message_key") or "").endswith(".key_reused"):
+    if key_reused(error):
         return ""
     return str(form.get(FIELD, "")).strip()
 

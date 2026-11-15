@@ -73,7 +73,7 @@ async def _books_disagree(client, session, auth):
     await _older_issue(session, auth, order, raw, 4)
     ob = await role(session, auth, OPENING)
     await _emit_auto_posted_je(
-        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:manual:writeoff",
+        session, company_id=auth["company_id"], user_id=auth["user_id"], je_id="je:manual:writeoff", record_id=None,
         idem_create="writeoff:c", idem_posted="writeoff:p", memo="Write-off",
         entries=[{"account": "5100", "debit": 10.0, "credit": 0.0}, {"account": ob, "debit": 0.0, "credit": 10.0}],
         metadata_={})

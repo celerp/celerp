@@ -13,7 +13,7 @@ from celerp_manufacturing.costing import RecipeError, roll_up_cost
 from celerp_manufacturing.expansion import explode_demand
 from mfg_runs import product
 from test_cost_restatement import _item
-from ui.i18n import refusal_text, set_lang
+from ui.i18n import refusal_text, set_lang, t
 
 
 def _in(detail, lang: str) -> str:
@@ -41,8 +41,8 @@ async def test_a_recipe_using_its_own_product_is_refused_by_sku(client, session,
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     english, german = _in(detail, "en"), _in(detail, "de")
-    assert english == f"{inner_sku} is used in its own recipe, directly or through a sub-assembly", english
-    assert inner_sku in german and "eigenen Rezept" in german, german
+    assert english == f"{inner_sku} is used in its own bill of materials, directly or through a sub-assembly", english
+    assert german == t("mfg.recipe_cycle", "de", product=inner_sku), german
     for text in (english, german, r.text):
         assert inner not in text and outer not in text, text
 
@@ -73,7 +73,7 @@ def test_a_cycle_through_a_product_without_a_sku_names_it_this_product():
     with pytest.raises(RecipeError) as exploded:
         explode_demand([("A", 1)], graph.get)
 
-    assert _in(costed.value.detail, "en") == "This product is used in its own recipe, directly or through a sub-assembly"
+    assert _in(costed.value.detail, "en") == "This product is used in its own bill of materials, directly or through a sub-assembly"
     assert _in(costed.value.detail, "de").startswith("Dieses Produkt ")
     assert _in(exploded.value.detail, "de").startswith("Dieses Produkt: Dieses Produkt ")
     for exc in (costed.value, exploded.value):

@@ -35,7 +35,8 @@ _HEADER_BOXES_JS = """async (header) => {
   const boxes = {title: box(header.querySelector('.page-title')),
                  caption: box(header.querySelector('.search-scope-label')),
                  search: box(header.querySelector('#search-input'))};
-  for (const b of header.querySelectorAll('.page-actions > .btn')) boxes['button ' + b.innerText] = box(b);
+  // The inventory toolbar groups its buttons in a wrapper the status view swaps; count the shown ones.
+  for (const b of header.querySelectorAll('.page-actions .btn')) if (b.getClientRects().length) boxes['button ' + b.innerText] = box(b);
   return boxes;
 }"""
 
@@ -104,7 +105,8 @@ _KIT_BOXES_JS = """async (main) => {
   const boxes = {title: box(header.querySelector('.page-title'))};
   const summary = header.querySelector('.page-subtitle');
   if (summary && summary.getBoundingClientRect().height) boxes.summary = box(summary);
-  for (const b of header.querySelectorAll('.page-actions > .btn')) boxes['button ' + b.innerText] = box(b);
+  // The inventory toolbar groups its buttons in a wrapper the status view swaps; count the shown ones.
+  for (const b of header.querySelectorAll('.page-actions .btn')) if (b.getClientRects().length) boxes['button ' + b.innerText] = box(b);
   return {header: boxes, whole: box(header), filters: box(main.querySelector('.list-filters')),
           caption: box(main.querySelector('label[for="search-input"]')),
           search: box(main.querySelector('.list-filters #search-input'))};

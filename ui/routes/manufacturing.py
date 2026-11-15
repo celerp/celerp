@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -59,7 +60,7 @@ def _badge(status: str) -> FT:
 
 
 def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> FT:
-    """Status filter cards for the Work In Progress queue. 'Active' = planned+in_progress+on_hold
+    """Status filter cards for the Work Orders queue. 'Active' = planned+in_progress+on_hold
     (the default view). There is no 'All' card - we never show completed/cancelled and active runs
     together. Cards link within base_url (carrying the status) so the queue stays put when filtering."""
     _CARD_DEFS = [
@@ -457,8 +458,8 @@ def setup_routes(app):
             params["date_to"] = date_to
         return params, date_from, date_to, preset
 
-    def _intro(icon: str, text: str) -> FT:
-        return Div(Span(icon, cls="info-banner-icon"), Span(text), cls="info-banner")
+    def _intro(name: str, text: str) -> FT:
+        return Div(Span(icon(name), cls="info-banner-icon"), Span(text), cls="info-banner")
 
     def _dp_filter_args(request: Request) -> tuple[str, str]:
         """(document-type, search) from the query string. Type is the board's main filter; finer
@@ -475,7 +476,7 @@ def setup_routes(app):
 
     @app.get("/manufacturing")
     async def demand_planning(request: Request):
-        """Demand Planning board: one line per open demand document, with the product it needs and
+        """Production Planning board: one line per open demand document, with the product it needs and
         how well current supply (on hand + in progress) covers it. Document type is the main filter;
         the Status and For columns have Excel-style funnels. Tick lines and Make to start runs."""
         token = _token(request)
@@ -496,7 +497,7 @@ def setup_routes(app):
         all_lines = _demand_lines(rows)
         lines = _dp_search(_demand_filter(all_lines, dtype), q)
         body = (
-            _intro("📊", t("manufacturing.demand_intro")),
+            _intro("chart-column", t("manufacturing.demand_intro")),
             _type_filter_bar(all_lines, dtype),
             bulk_toolbar("mfg-table", [
                 {"value": "make", "label": t("manufacturing.action_make_selected"),
@@ -526,7 +527,7 @@ def setup_routes(app):
 
     @app.get("/manufacturing/production")
     async def work_in_progress(request: Request):
-        """Work In Progress: the production-run queue (issue components, then receive finished goods).
+        """Work Orders: the production-run queue (issue components, then receive finished goods).
         Status cards are the single filter; the default view is Active (planned/in_progress/on_hold)."""
         token = _token(request)
         if not token:
@@ -551,7 +552,7 @@ def setup_routes(app):
                      if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
-            _intro("🏭", t("manufacturing.wip_intro")),
+            _intro("factory", t("manufacturing.wip_intro")),
             _mfg_status_cards(orders_all, active, "/manufacturing/production"),
             bulk_toolbar("mfg-table", [
                 {"value": "start", "label": t("btn.start"), "method": "post",
@@ -679,7 +680,7 @@ def setup_routes(app):
                 t("manufacturing.component_requirements"),
                 Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
             ),
-            _intro("📋", t("manufacturing.requirements_intro")),
+            _intro("clipboard-list", t("manufacturing.requirements_intro")),
             head,
             _need_table(t("manufacturing.raw_materials"), data.get("raw_materials", [])),
             _need_table(t("manufacturing.sub_assemblies"), data.get("sub_assemblies", [])),

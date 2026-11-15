@@ -29,7 +29,7 @@ from ui.routes.settings_sales import (
 # click-to-edit chrome, and enum-style display labels for the identifier options.
 _XX = {
     "settings.doc_type_invoice": "XX_INVOICE",
-    "settings_sales.doc_type_quotation": "XX_QUOTATION",
+    "enum.doc_type.quotation": "XX_QUOTATION",
     "settings_sales.tab_numbering": "XX_NUMBERING",
     "settings_sales.numbering_hint": "XX_NUMHINT {PREFIX}",
     "settings.click_to_edit": "XX_CLICKEDIT",

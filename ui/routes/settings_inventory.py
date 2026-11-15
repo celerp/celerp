@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+from ui.components.icons import icon
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.services.recognition import GIFT_CATEGORIES
+from ui.components.posting_accounts import income_account_view
+from ui.routes.recognition import flag_view
 from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import EMPTY
 from ui.components.cloud_gate import digest_upsell_modal
@@ -22,7 +26,7 @@ _VERTICAL_TAGS: tuple[str, ...] = (
     "agricultural", "artwork", "automotive", "books_media",
     "coins_precious_metals", "consulting", "cosmetics", "electronics",
     "fashion", "food_beverage", "furniture", "gems_jewelry", "hardware",
-    "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
+    "nonprofit", "property_rental", "saas", "watches_accessories", "wine_spirits", "other",
 )
 _TAG_LABELS: dict[str, str] = {tag: f"enum.vertical_tag.{tag}" for tag in _VERTICAL_TAGS}
 from ui.i18n import t, get_lang, category_label, category_labels
@@ -30,6 +34,7 @@ from ui.i18n import t, get_lang, category_label, category_labels
 from ui.routes.settings import (
     _token,
     _check_permission,
+    _get_role,
     _category_row,
     _locations_tab,
     _import_history_tab,
@@ -106,7 +111,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             _unit_display_cell(uname, "unit_type", utype),
             Td(
                 Button(
-                    "✕",
+                    icon("x"),
                     cls="btn btn--danger btn--xs",
                     type="button",
                     hx_delete=f"/settings/units/{uname}",
@@ -222,10 +227,13 @@ def _categories_tab(
     vert_presets: list[dict],
     cat: str = "",
     cat_display_names: dict | None = None,
+    books: list[tuple[str, FT]] = (),
 ) -> FT:
     """Categories settings tab - 3-section layout.
 
-    When `cat` is set and present in cat_schemas: renders the field editor.
+    When `cat` is set and present in cat_schemas: renders the field editor, with the
+    category's accounting rows (`books`: label key and cell, its income account and whether it
+    is a gift category; none without accounting) above it.
     Otherwise: renders the library view (Your Categories + Quick Setup + Browse Library).
     """
     from urllib.parse import quote as _q
@@ -257,7 +265,7 @@ def _categories_tab(
                 _cat_schema_display_cell(cat, idx, "show_in_table", f),
                 _cat_schema_display_cell(cat, idx, "options", f),
                 Td(
-                    Button("✕", cls="btn btn--danger btn--xs",
+                    Button(icon("x"), cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/cat-schema/{enc}/{idx}",
                            hx_confirm=t("settings_inventory.delete_field_confirm", name=f.get('key', idx)),
                            hx_target="#cat-fields-result", hx_swap="innerHTML"),
@@ -283,6 +291,8 @@ def _categories_tab(
             ),
             H3(t("settings_inventory.category_fields_heading", cat=cat_name), cls="settings-section-title"),
             P(t("settings_inventory.category_fields_hint", cat=cat_name), cls="settings-hint"),
+            Table(Tbody(*(Tr(Td(t(label), cls="detail-label"), cell) for label, cell in books)),
+                  cls="detail-table mb-md") if books else "",
             Table(
                 Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")),
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
@@ -492,7 +502,20 @@ def setup_routes(app):
         if tab == "locations":
             content = _locations_tab(locations, lang=lang)
         elif tab == "categories":
-            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
+            books = []
+            if cat in cat_schemas:
+                try:
+                    settings = (await api.get_company(token)).get("settings") or {}
+                    role = _get_role(request)
+                    books = [(label, cell) for label, cell in (
+                        ("item.income_account", await income_account_view(token, "category", cat, settings, role)),
+                        ("settings_inventory.category_gift",
+                         flag_view("category", cat, cat in (settings.get(GIFT_CATEGORIES) or ()), settings, role)),
+                    ) if cell is not None]
+                except APIError as e:
+                    api.raise_if_signed_out(e)
+            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names,
+                                      books)
         elif tab == "units":
             content = _units_tab(units, from_import=from_import)
         elif tab == "reorder":

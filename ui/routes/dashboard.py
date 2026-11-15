@@ -12,7 +12,7 @@ from ui.api_client import APIError
 import asyncio
 
 from ui.components.demo_items import DEMO_ITEMS_FILTER, DEMO_ITEMS_URL
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.components.import_access import can_import_documents
 from ui.components.module_off import can_open
 from ui.components.shell import base_shell, page_header, star_supporter_card, page_title
@@ -20,6 +20,7 @@ from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from ui.components.funds import fund_waiting_banner
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
@@ -774,6 +775,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             _older_stock_banner(settings, role),
+            await fund_waiting_banner(token, settings, role),
             welcome or "",
             await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
@@ -945,7 +947,7 @@ async def _demo_note(token: str, settings: dict, role: str) -> FT | str:
         return ""
     link = (A(t("dashboard.remove_demo_items"), href=DEMO_ITEMS_URL, id="remove-demo-items")
             if _role_has_permission(settings, role, "adjust_inventory") else "")
-    return Div(Span("ℹ️", cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
+    return Div(Span(icon("info"), cls="info-banner-icon"), Span(t("dashboard.demo_note"), " ", link),
                cls="info-banner", id="demo-note")
 
 
@@ -971,20 +973,12 @@ _IMPORT_TARGETS = (
 )
 
 
-async def _getting_started_ai_line(token: str, settings: dict, role: str) -> FT | str:
-    """Points people who may use the AI assistant at /ai, naming the free account's
-    included questions when the install is not on a paid plan and the count is known.
-    A failed read only drops the number."""
+def _getting_started_ai_line(settings: dict, role: str) -> FT | str:
+    """Points people who may use the AI assistant at /ai with a button."""
     if not _role_has_permission(settings, role, "use_ai_assistant"):
         return ""
-    try:
-        offer = await api.ai_offer(token)
-    except APIError:
-        offer = {}
-    text = t("dashboard.getting_started_ai")
-    if not offer.get("paid_ai") and (n := offer.get("free_ai_questions")):
-        text = f"{text} {t('ai.free_questions_included', n=n)}"
-    return P(A(text, href="/ai"), cls="getting-started-ai")
+    return P(A(t("dashboard.getting_started_ai"), href="/ai", cls="btn btn--primary"),
+             cls="getting-started-ai")
 
 
 async def _getting_started_card(token: str, settings: dict, role: str) -> FT | None:
@@ -1032,7 +1026,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         ),
         P(t("dashboard.getting_started_from_spreadsheet"), cls="getting-started-lead"),
         Div(*links, cls="getting-started-links"),
-        await _getting_started_ai_line(token, settings, role),
+        _getting_started_ai_line(settings, role),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
         raw_html("<!-- /getting-started-card -->"),
@@ -1047,7 +1041,7 @@ def _finish_setup_banner(company: dict, settings: dict, role: str) -> FT | str:
     if (has_business_type(company) or settings.get("finish_setup_dismissed")
             or not _role_has_permission(settings, role, "manage_company_lifecycle")):
         return ""
-    return Div(Span("ℹ️", cls="info-banner-icon"),
+    return Div(Span(icon("info"), cls="info-banner-icon"),
                A(t("dashboard.finish_setup"), href="/setup/company"),
                Button("×", type="button", cls="getting-started-dismiss info-banner-close",
                       title=t("settings.dismiss"), aria_label=t("settings.dismiss"),
@@ -1063,7 +1057,7 @@ def _older_stock_banner(settings: dict, role: str) -> FT | str:
     if (not placed or settings.get("older_stock_banner_dismissed") == placed
             or not _role_has_permission(settings, role, "manage_accounting")):
         return ""
-    return Div(Span("ℹ️", cls="info-banner-icon"),
+    return Div(Span(icon("info"), cls="info-banner-icon"),
                Span(t("dashboard.older_stock_placed"), " ",
                     A(t("dashboard.older_stock_review"), href="/settings/accounting?tab=older-stock")),
                Button("×", type="button", cls="getting-started-dismiss info-banner-close",

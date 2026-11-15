@@ -120,8 +120,7 @@ async def test_fulfilled_item_event_carries_doc_number(client, session, auth, _s
     from ui.components.activity import activity_table
     from fasthtml.common import to_xml
     html = to_xml(activity_table([{"id": rows[0].id, "event_type": "item.fulfilled",
-                                   "entity_id": item_id, "ts": "2026-06-21T10:00:00+00:00", "data": data}],
-                                 subject_entity_id=item_id))
+                                   "entity_id": item_id, "ts": "2026-06-21T10:00:00+00:00", "data": data}]))
     assert expected_num in html and f"/docs/{doc_id}" in html
 
 

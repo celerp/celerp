@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -301,6 +302,28 @@ async def test_the_modules_settle_nothing_while_the_projections_are_not_current(
     assert app.state.data_current is False
     notify.assert_awaited_once()
     assert notify.await_args.args[1:3] == ("system", "An update step failed while Celerp started")
+
+
+@pytest.mark.asyncio
+async def test_the_first_ledger_read_after_a_boot_admits_no_module_again(monkeypatch):
+    """The permission a module's events are read with comes from the modules boot already
+    loaded, so neither boot nor the first ledger read after it (a record's History, the
+    dashboard's activity) admits or parses the installed modules again."""
+    from celerp.modules import loader, slots
+
+    monkeypatch.setattr(loader, "_event_permissions", {})  # nothing settled by an earlier read
+    await _boot_in_order(monkeypatch, AsyncMock(return_value={"changed": False, "rebuilt": False, "current": True}))
+
+    def _admitted_again(*a, **k):
+        raise AssertionError("a ledger read admitted the installed modules again")
+
+    loader.register_core_folded_slots(Path(loader.__file__).parents[2] / "default_modules")
+    monkeypatch.setattr(loader, "admit_modules", _admitted_again)
+    monkeypatch.setattr(loader, "_admission_checks", _admitted_again)
+    try:
+        assert loader.event_read_permissions()["mp."] == "manage_integrations"
+    finally:
+        slots.clear()
 
 
 def _transactions_left_open(url) -> list[tuple]:

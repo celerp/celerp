@@ -1276,7 +1276,7 @@ async def test_verify_page_says_where_to_add_an_account_and_sets_discard_apart(u
     run_id = fake_api.add_run("ready_to_finalize")
     fake_api.posting[run_id] = [_posting_row("general_expense", "General expenses", proposal=_EXPENSE_PROPOSAL)]
     html = _page(await ui.get(f"/migrations/{run_id}/verify"))
-    assert "Posting accounts" in html and "add the one shown" not in html
+    assert "Default Accounts" in html and "add the one shown" not in html
     assert "choose Add account in its list" in html
     assert re.search(rf'href="/migrations/{run_id}/discard" class="btn btn--outline btn--danger', html)
 
@@ -1339,7 +1339,7 @@ async def test_finishing_asks_for_each_posting_account_the_company_needs(ui, rou
         _posting_row("fx_gain", "Exchange gain", required=False),
     ]
     verify = _visible(await ui.get(f"/migrations/{run_id}/verify"))
-    assert "Posting accounts" in verify
+    assert "Default Accounts" in verify
     # An account already set is shown, not asked for again.
     assert re.search(r"<td>Accounts receivable</td>\s*<td>120</td>", verify)
     assert 'name="role.receivable"' not in verify

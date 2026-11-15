@@ -104,7 +104,7 @@ def test_an_api_refusal_reaches_every_ui_site_in_the_users_language():
         _raise(response)
     label = _catalog("de")["posting.role.cogs"]
     assert exc.value.detail == (f"Für {label} ist kein Konto festgelegt. Jemand, der die Buchhaltung verwaltet, "
-                                "muss das Konto unter Einstellungen > Buchhaltung > Buchungskonten wählen; "
+                                "muss das Konto unter Einstellungen > Buchhaltung > Default Accounts wählen; "
                                 "diese Personen wurden benachrichtigt.")
     assert exc.value.data == error.detail
 

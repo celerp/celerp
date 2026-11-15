@@ -119,22 +119,26 @@ async def peer_batch(ctx, session: AsyncSession, records) -> dict | None:
     return await receive_records(session, ctx.peer, records)
 
 
-async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file,
-                       **fields) -> dict | None:
+async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file, entity_type: str, *,
+                       source_file_id: str | None, sha256_hex: str | None,
+                       document_tag: str | None, description: str | None) -> dict | None:
     """A document file sent with a connected company's key, recorded once under the sender's
-    document and file ids: ``{"status": ...}``, or None for a signed-in user's upload, which
-    may not name those fields."""
+    document and file ids: ``{"status": ...}``. For a signed-in user's upload, which may not
+    name those ids, None: the route then stores the file with its tag and description."""
     if ctx.peer is None:
-        if any(value is not None for value in fields.values()):
+        if source_file_id is not None or sha256_hex is not None:
             raise HTTPException(422, PEER_ONLY)
         return None
     from celerp.services.peer_attachments import receive_attachment
-    if fields["source_file_id"] is None or fields["sha256_hex"] is None:
+    if entity_type != "doc":  # a connected company sends files to documents only
+        raise HTTPException(404, "Not found")
+    if source_file_id is None or sha256_hex is None:
         raise HTTPException(422, "A connected company's file needs its file id and checksum.")
     grant = await _grant(session, ctx.peer)
     peer_access.mark_used(grant)
     status = await receive_attachment(
-        session, grant=grant, source_doc_id=source_doc_id, file=file, **fields)
+        session, grant=grant, source_doc_id=source_doc_id, file=file, source_file_id=source_file_id,
+        sha256_hex=sha256_hex, document_tag=document_tag, description=description)
     return {"status": status}
 
 

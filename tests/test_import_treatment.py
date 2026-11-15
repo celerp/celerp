@@ -308,7 +308,7 @@ async def test_a_staged_migration_needs_no_treatment(client, session, auth):
     rec = _rec(_snapshot(lot, "bill", 5, 2))
     outcome = await import_service.import_doc_records(
         session, auth["company_id"], SimpleNamespace(id=auth["user_id"]), "admin", {},
-        [DocImportRecord(**rec)], post_ledger=False)
+        [DocImportRecord(**rec)], origin="file_import", post_ledger=False)
     assert [r.status for r in outcome.records] == ["created"], outcome.records
 
 

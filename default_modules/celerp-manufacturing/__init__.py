@@ -43,14 +43,14 @@ PLUGIN_MANIFEST = {
         "item_lineage_guard": {"handler": "celerp_manufacturing.movements:guard_output_lineage"},
         # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
-        # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders
+        # Production Planning (what to make) -> Work Orders (runs on the floor) -> Production Orders
         # (create internal build-for-stock demand): the natural left-to-right production flow.
         "nav": [
             {
                 "group": "Manufacturing",
                 "key": "manufacturing",
                 "icon": "📊",
-                "label": "Demand Planning",
+                "label": "Production Planning (MRP)",
                 "label_key": "manufacturing.demand_planning",
                 "href": "/manufacturing",
                 "help": "manufacturing.demand-planning",
@@ -64,7 +64,7 @@ PLUGIN_MANIFEST = {
                 "group": "Manufacturing",
                 "key": "work_in_progress",
                 "icon": "🏭",
-                "label": "Work In Progress",
+                "label": "Work Orders",
                 "label_key": "manufacturing.work_in_progress",
                 "href": "/manufacturing/production",
                 "help": "manufacturing.production",
@@ -75,7 +75,7 @@ PLUGIN_MANIFEST = {
                 "group": "Manufacturing",
                 "key": "production_orders",
                 "icon": "📋",
-                "label": "Stock Orders",
+                "label": "Production Orders",
                 "label_key": "documents.page_stock_orders",
                 "href": "/docs?type=production_order",
                 "help": "manufacturing.demand-planning",
@@ -87,6 +87,7 @@ PLUGIN_MANIFEST = {
             {
                 "prefix": "mfg.",
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+                "permission": "manage_manufacturing",
             },
             # Historical bom.* events (the BOM entity was retired; recipes live on the item) are
             # not routed here: the kernel replays them (celerp.projections.retired).

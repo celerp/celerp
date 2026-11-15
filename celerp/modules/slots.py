@@ -31,9 +31,10 @@ category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function. Each event type has
                    one handler: no two prefixes may overlap (one equal to or starting
                    with another), within a module, across modules, or with a prefix
-                   core handles itself (KERNEL_PROJECTION_PREFIXES). An optional
-                   "permission" names the one its events are read with: activity
-                   and ledger feeds leave them out for a role without it
+                   core handles itself (KERNEL_PROJECTION_PREFIXES). Its optional
+                   "permission" names the one its events are read with: every
+                   ledger reader leaves them out for a role without it, and
+                   without one they are read by company admins only
 on_company_created Async callback(session, company_id) fired after a new company is persisted
 on_company_restored
                    First-party callback(session, company_id) after backup rows are restored,
@@ -96,6 +97,15 @@ doc_asset_lines    {"handler": "module.path:function"} naming
                    transaction; raising refuses the document action. Called whether or not the company uses the module, so
                    the module decides what it still allows. Filled by Celerp's own
                    modules only (FIRST_PARTY_SLOTS)
+doc_posting_dependents {"handler": "module.path:function"} naming
+                   `async def handler(*, session, company_id, user_id, doc_id, relabel)
+                   -> None`, called with exactly those keyword arguments when Change fund
+                   posts a document's entries again on new funds, inside the open fund
+                   change (journal_accounts.fund_change_action): the module voids and posts
+                   again the entries of each record it keeps that copied a fund from the
+                   document, rewriting their lines with ``relabel``, so the action is judged
+                   once over all of them. Filled by Celerp's own modules only
+                   (FIRST_PARTY_SLOTS)
 fixed_asset_rules  {"kind", "key", "handler": "module.path:Name"}: a country rule for
                    fixed assets, read by celerp-fixed-assets. kind is "method",
                    "convention", "tax_regime" or "statutory_report"; handler names a
@@ -139,6 +149,7 @@ Every slot entry is checked before any of its module's code runs
 (celerp.modules.loader): an entry is a dict; every key its slot reads has the
 type it is read as (nav "key" text, "group" text or None, "order" a number,
 "help" / "settings_help" the id of the help page for "href" / "settings_href";
+"verticals" a list of the business types whose sidebar shows it;
 send_to_targets "doc_type", catalog_channel "id", label_source "entity_type" and
 import_target "kind" non-empty text, label_source "keys" a list of text and "preset"
 a dict, catalog_channel "can_create" true or false; category_schema "category" non-empty text and
@@ -151,7 +162,7 @@ app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
 (inventory_in_production, item_lineage_guard, doc_status_guard, demo_records, doc_asset_lines,
-label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
+doc_posting_dependents, label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
 permission.
@@ -185,14 +196,15 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_company_restored", "on_company_module_enabled", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "doc_status_guard", "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "doc_status_guard", "demo_records", "background_loop", "doc_asset_lines", "doc_posting_dependents",
+    "fixed_asset_rules", "label_source",
     "import_target", "turn_off_preflight", "periodic_operation",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
-                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set",
+                               "doc_asset_lines", "doc_posting_dependents", "turn_off_preflight", "on_books_currency_set",
                                "periodic_operation", "on_company_restored", "on_company_module_enabled"})
 
 # projection_handler prefixes core handles itself: system events (registered at
@@ -227,7 +239,8 @@ def resolve_handler(dotted: str) -> Callable:
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
 _HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "doc_status_guard", "demo_records",
-                            "doc_asset_lines", "label_source", "import_target", "turn_off_preflight"})
+                            "doc_asset_lines", "doc_posting_dependents", "label_source", "import_target",
+                            "turn_off_preflight"})
 
 
 def check(slot: str, contribution: dict) -> None:
@@ -236,6 +249,11 @@ def check(slot: str, contribution: dict) -> None:
         handler = contribution.get("handler")
         if not isinstance(handler, str) or ":" not in handler:
             raise ValueError(f"Slot {slot!r} needs a \"handler\" naming \"module.path:function\".")
+    if slot == "projection_handler":
+        from celerp.services.permissions import is_permission_key
+
+        if "permission" in contribution and not is_permission_key(contribution["permission"]):
+            raise ValueError("Slot 'projection_handler' \"permission\" must be a permission key, or left out.")
     if slot in FIRST_PARTY_SLOTS and contribution.get("_first_party") is not True:
         raise ValueError(f"Slot {slot!r} is filled by Celerp's own modules only.")
 

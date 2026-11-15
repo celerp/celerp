@@ -31,7 +31,7 @@ from fasthtml.common import *
 from starlette.responses import StreamingResponse
 import ui.api_client as api
 from celerp.services import import_stage
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.i18n import get_lang, refusal_text, t
 from ui.components.table import empty_mark, searchable_select
 
@@ -836,7 +836,7 @@ def upload_form(
             Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),
             Div(
-                Div("📄", cls="import-dropzone-icon"),
+                Div(icon("file-text"), cls="import-dropzone-icon"),
                 Div(t("msg.drag_your_file_here_or_click_to_browse"), cls="import-dropzone-text"),
                 Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),
@@ -1613,18 +1613,25 @@ async def import_numbered(token: str, resource: str, records: list[dict], number
     """Send ``records`` to the ``resource`` batch import, each under the id of the one existing
     record with exactly its number, or a new id when there is none, so a re-imported row updates
     the record it matched. A row whose number several records already share is reported as an
-    error and not sent."""
+    error and not sent. A record's ``fund_choices`` ({"document": choice, "lines": {line number:
+    choice}}) go with the batch under the id it is sent with."""
     sendable: list[dict] = []
     errors: list[str] = []
+    fund_choices: dict = {"records": {}, "lines": {}}
     for rec in records:
+        chosen = rec.pop("fund_choices", None) or {}
         number = rec["data"][number_field]
         ids = await api.numbered_ids(token, resource, number, rec["data"].get("doc_type"))
         if len(ids) > 1:
             errors.append(t("msg.import_number_shared", number=number, count=len(ids)))
             continue
         rec["entity_id"] = ids[0] if ids else f"{prefix}:{uuid.uuid4()}"
+        if chosen.get("document"):
+            fund_choices["records"][rec["entity_id"]] = chosen["document"]
+        fund_choices["lines"].update({f"{rec['entity_id']}:{n}": v for n, v in (chosen.get("lines") or {}).items()})
         sendable.append(rec)
-    result = (await api.batch_import(token, f"/{resource}/import/batch", sendable, upsert=upsert)
+    result = (await api.batch_import(token, f"/{resource}/import/batch", sendable, upsert=upsert,
+                                     fund_choices=fund_choices if any(fund_choices.values()) else None)
               if sendable else {"created": 0, "skipped": 0})
     return {**result, "errors": errors + list(result.get("errors") or [])}
 

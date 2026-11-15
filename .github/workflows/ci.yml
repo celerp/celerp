@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
 
     services:
       postgres:
@@ -58,7 +58,7 @@ jobs:
       - name: Tune the throwaway Postgres
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
 
-      - name: Run tests (shard ${{ matrix.group }}/37)
+      - name: Run tests (shard ${{ matrix.group }}/39)
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
@@ -67,7 +67,7 @@ jobs:
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 37 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 39 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
@@ -82,7 +82,7 @@ jobs:
         run: >
           timeout 630 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration and not real_packs"
-          --splits 37 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 39 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
@@ -474,6 +474,21 @@ jobs:
       - name: Fail if the committed constraints are stale
         run: git diff --exit-code constraints.txt
 
+  # An English string changed with every translation left as it was never reaches the
+  # translators: it must be translated or queued in tests/i18n_pending_translation.json.
+  translations:
+    name: No stale translations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # the merge commit and the main it merges into
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compare with main
+        run: python scripts/check_stale_translations.py --base HEAD^1
+
   # The Intel macOS desktop build installs into an x86_64 bundled Python, where a
   # package with no x86_64 wheel fails. Runs on every PR so Test gates on it.
   mac-intel-deps:
@@ -599,7 +614,7 @@ jobs:
 
   test:
     name: Test
-    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e, l10n-golden]
+    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, translations, mac-intel-deps, update-changes, update-e2e, l10n-golden]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -647,6 +662,10 @@ jobs:
           fi
           if [ "${{ needs.constraints.result }}" != "success" ]; then
             echo "constraints.txt is stale (result: ${{ needs.constraints.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.translations.result }}" != "success" ]; then
+            echo "An English string changed with its translations left as before (result: ${{ needs.translations.result }})"
             exit 1
           fi
           if [ "${{ needs.mac-intel-deps.result }}" != "success" ] && [ "${{ needs.mac-intel-deps.result }}" != "skipped" ]; then

@@ -836,7 +836,8 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Dark chocolate 72% cacao 100g bar. Remove before going live.",
             "barcode": "2110020000026",
-            "attributes": {"cacao_pct": "72", "weight_g": "100", "origin": "Ecuador"},
+            "weight": 100, "weight_unit": "gram",
+            "attributes": {"cacao_pct": "72", "origin": "Ecuador"},
         },
         {
             "sku": "DEMO-F&B-003",
@@ -848,7 +849,8 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Organic durum wheat penne 500g. Remove before going live.",
             "barcode": "2110030000033",
-            "attributes": {"weight_g": "500", "organic": "Yes", "shape": "Penne"},
+            "weight": 500, "weight_unit": "gram",
+            "attributes": {"organic": "Yes", "shape": "Penne"},
         },
         {
             "sku": "DEMO-F&B-004",
@@ -860,7 +862,8 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Frozen margherita pizza 400g. Remove before going live.",
             "barcode": "2110040000040",
-            "attributes": {"weight_g": "400", "diameter_cm": "30", "vegetarian": "Yes"},
+            "weight": 400, "weight_unit": "gram",
+            "attributes": {"diameter_cm": "30", "vegetarian": "Yes"},
         },
         {
             "sku": "DEMO-F&B-005",
@@ -872,7 +875,8 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Deli garden salad 300g. Remove before going live.",
             "barcode": "2110050000057",
-            "attributes": {"storage_condition": "Refrigerated", "weight_g": "300", "expiry_date": "2026-07-01"},
+            "weight": 300, "weight_unit": "gram",
+            "attributes": {"storage_condition": "Refrigerated", "expiry_date": "2026-07-01"},
         },
         {
             "sku": "DEMO-F&B-006",
@@ -1148,11 +1152,12 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Mineral specimen example. Remove before going live.",
             "barcode": "2130080000082",
+            "weight": 1850,
+            "weight_unit": "gram",
             "attributes": {
                 "mineral": "Amethyst",
                 "origin": "Uruguay",
                 "dimensions_cm": "18 x 12 x 10",
-                "weight_g": "1850",
                 "grade": "Museum",
                 "condition": "Excellent",
             },
@@ -1188,10 +1193,11 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "status": "available",
             "description": "[DEMO] Jewelry example. Remove before going live.",
             "barcode": "2130100000106",
+            "weight": 4.2,
+            "weight_unit": "gram",
             "attributes": {
                 "style": "Ring",
                 "metal": "18k White Gold",
-                "weight_g": "4.2",
                 "stones": "0.75ct total diamond pave",
                 "hallmark": "750",
                 "condition": "New",
@@ -1479,6 +1485,86 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
             "attributes": {"type": "Sparkling", "region": "Champagne, France", "dosage": "Brut"},
         },
     ],
+    "nonprofit": [
+        {
+            "sku": "DEMO-NP-001",
+            "name": "[DEMO] Annual Membership - Individual",
+            "category": "membership",
+            "inventory_type": "service",
+            "quantity": 500,
+            "sell_by": "piece",
+            "prices": {"Retail": 60.00, "Wholesale": 60.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] Individual membership for one year. Remove before going live.",
+            "barcode": "2190010000010",
+            "attributes": {"membership_term": "Annual", "membership_level": "Individual"},
+        },
+        {
+            "sku": "DEMO-NP-002",
+            "name": "[DEMO] Annual Membership - Family",
+            "category": "membership",
+            "inventory_type": "service",
+            "quantity": 500,
+            "sell_by": "piece",
+            "prices": {"Retail": 120.00, "Wholesale": 120.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] Family membership for one year, two adults and their children. Remove before going live.",
+            "barcode": "2190020000024",
+            "attributes": {"membership_term": "Annual", "membership_level": "Family"},
+        },
+        {
+            "sku": "DEMO-NP-003",
+            "name": "[DEMO] Lifetime Membership",
+            "category": "membership",
+            "inventory_type": "service",
+            "quantity": 100,
+            "sell_by": "piece",
+            "prices": {"Retail": 1200.00, "Wholesale": 1200.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] Lifetime membership, paid once. Remove before going live.",
+            "barcode": "2190030000038",
+            "attributes": {"membership_term": "Lifetime", "membership_level": "Individual"},
+        },
+        {
+            "sku": "DEMO-NP-004",
+            "name": "[DEMO] General Donation",
+            "category": "donation",
+            "inventory_type": "service",
+            "quantity": 1000,
+            "sell_by": "piece",
+            "prices": {"Retail": 50.00, "Wholesale": 50.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] A gift to the general work of the organization. Remove before going live.",
+            "barcode": "2190040000042",
+            "attributes": {"gift_type": "One-off"},
+        },
+        {
+            "sku": "DEMO-NP-005",
+            "name": "[DEMO] Building Appeal Donation",
+            "category": "donation",
+            "inventory_type": "service",
+            "quantity": 1000,
+            "sell_by": "piece",
+            "prices": {"Retail": 250.00, "Wholesale": 250.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] A gift to the building appeal. Remove before going live.",
+            "barcode": "2190050000056",
+            "attributes": {"gift_type": "Appeal", "campaign": "Building Appeal"},
+        },
+        {
+            "sku": "DEMO-NP-006",
+            "name": "[DEMO] Annual Dinner Ticket",
+            "category": "event_ticket",
+            "inventory_type": "service",
+            "quantity": 120,
+            "sell_by": "piece",
+            "prices": {"Retail": 85.00, "Wholesale": 85.00, "Cost": 0.00},
+            "status": "available",
+            "description": "[DEMO] One seat at the annual fundraising dinner. Remove before going live.",
+            "barcode": "2190060000060",
+            "attributes": {"event_name": "Annual Dinner", "ticket_type": "Standard"},
+        },
+    ],
 }
 
 
@@ -1526,6 +1612,12 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
         {"name": "Consignment 60", "days": 60, "description": "Consignment, settle within 60 days"},
     ],
+    "nonprofit": [
+        {"name": "Due on Receipt", "days": 0, "description": "Due when received"},
+        {"name": "Membership Renewal", "days": 30, "description": "Membership dues, due within 30 days of renewal"},
+        {"name": "Net 14", "days": 14, "description": "Due within 14 days"},
+        {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
+    ],
     "hardware": [
         {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt"},
         {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
@@ -1541,6 +1633,10 @@ _VERTICAL_TERMS_CONDITIONS: dict[str, list[dict]] = {
         {"name": "Gemstone Consignment Out Terms", "text": "Consigned stones remain property of the consignor. Must be stored in a secure facility. Insurance is the consignee's responsibility.", "doc_types": ["memo"], "default_for": ["memo"]},
         {"name": "Gemstone Consignment In Terms", "text": "Consigned stones remain property of the consignor. Settlement within agreed terms or return of goods.", "doc_types": ["consignment_in"], "default_for": ["consignment_in"]},
         {"name": "Gemstone Purchase Terms", "text": "Stones must match the agreed grade, weight, and certification.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
+    ],
+    "nonprofit": [
+        {"name": "Membership and Donation Terms", "text": "Membership runs for the period shown and renews unless cancelled before the renewal date. Donations are gifts and are refunded only when made in error. Event tickets are not refundable.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
+        {"name": "Standard Purchase Terms", "text": "Goods and services must conform to agreed specifications.", "doc_types": ["purchase_order", "bill", "debit_note"], "default_for": ["purchase_order", "bill", "debit_note"]},
     ],
     "food_beverage": [
         {"name": "F&B Sales Terms", "text": "All products sold meet applicable food safety standards.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
@@ -1596,6 +1692,30 @@ def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, t
 # The operation the sample stock is booked and removed under. It names no sample item:
 # a record mentioning one marks that item used (_untouched_demo_items).
 _SAMPLE_STOCK = "sample-stock"
+
+
+async def follow_books_currency(session: AsyncSession, company_id: uuid.UUID, keys, currency: str) -> None:
+    """Keep the sample documents a module seeded (each named by the idempotency key of its
+    doc.created) in the books' currency. Their amounts are sample figures, like the sample
+    stock's, so a currency set before the company keeps books of its own re-labels them;
+    any journals they posted already hold the same figures at a rate of one."""
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.projections import Projection
+
+    for key in keys:
+        created = await find_event_by_idempotency(session, company_id, key)
+        if created is None:
+            continue
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": created.entity_id})
+        held = str(((row.state if row else None) or {}).get("currency") or currency).upper()
+        if held == currency:
+            continue
+        await emit_event(session, company_id=company_id, entity_id=created.entity_id, entity_type="doc",
+                         event_type="doc.updated",
+                         data={"fields_changed": {"currency": {"old": held, "new": currency}}},
+                         actor_id=None, location_id=None, source=DEMO_SOURCE,
+                         idempotency_key=f"{key}:currency:{currency}:{uuid.uuid4().hex[:8]}")
+    await session.flush()
 
 
 async def has_own_books(session: AsyncSession, company_id: uuid.UUID) -> bool:

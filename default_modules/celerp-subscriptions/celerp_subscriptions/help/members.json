@@ -1,0 +1,88 @@
+{
+  "id": "subscriptions.members",
+  "title": "Members and their standing",
+  "summary": "See each member's standing, from their oldest unpaid bill.",
+  "keywords": [
+    "member",
+    "membership",
+    "standing",
+    "grace",
+    "lapsed",
+    "dues"
+  ],
+  "routes": [
+    "/members"
+  ],
+  "permission": "view_subscriptions",
+  "order": 4,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see every member and their standing.",
+      "labels": {
+        "nav": "nav.members"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A member is {cur} until their oldest unpaid bill falls due, {grace} for the agreement's {days} after that, then {lapsed}. Paying a newer bill does not clear an older one. Once every bill is paid or fully credited they are {cur} again.",
+      "labels": {
+        "cur": "enum.member_standing.current",
+        "grace": "enum.member_standing.in_grace",
+        "days": "subscriptions.grace_days",
+        "lapsed": "enum.member_standing.lapsed"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A membership that was cancelled, or whose term is over, is {ended} whatever its bills say. The {status} column shows where each agreement stands.",
+      "labels": {
+        "ended": "enum.member_standing.ended",
+        "status": "th.status"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A {life} member is listed while the invoice that sold the lifetime membership is settled, until credit notes against it credit the lifetime membership back in full.",
+      "labels": {
+        "life": "enum.member_standing.lifetime"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {new} to add a member.",
+      "labels": {
+        "new": "page.new_membership"
+      },
+      "image": null,
+      "capture": {
+        "route": "/members",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.overview",
+    "accounting.donors"
+  ]
+}

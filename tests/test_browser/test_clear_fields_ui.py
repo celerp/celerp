@@ -87,8 +87,8 @@ def test_clear_retail_price_via_pricing_tab(page, ui_server, api, item_id):
     assert _poll_cleared(api, item_id, "retail_price"), "retail_price not cleared from Pricing tab"
 
 
-def test_clear_select_field_via_ui(page, ui_server, api):
-    """A SELECT (dropdown) field is cleared by choosing the blank '(clear)' option."""
+def _select_item(api) -> str:
+    """An item whose category has a `format` select attribute, set to Hardcover."""
     r = api.patch("/companies/me/category-schema/book", json={"fields": [
         {"key": "format", "label": "Format", "type": "select",
          "options": ["Hardcover", "Paperback"], "required": False},
@@ -101,10 +101,39 @@ def test_clear_select_field_via_ui(page, ui_server, api):
     r = api.patch(f"/items/{eid}", json={"fields_changed": {"format": {"old": None, "new": "Hardcover"}}})
     assert r.status_code == 200, r.text
     assert api.get(f"/items/{eid}").json().get("format") == "Hardcover"  # sanity: set
+    return eid
 
+
+def test_clear_select_field_via_ui(page, ui_server, api):
+    """A SELECT (dropdown) field is cleared by choosing the blank '(clear)' option."""
+    eid = _select_item(api)
     _open_editor(page, ui_server, eid, "format", td_only=False)
     sel = page.locator('select[name="value"]').first
     sel.wait_for(state="visible", timeout=5000)
     sel.select_option(value="")          # the blank "(clear)" option (issue #202)
     _await_saved(sel)                    # cell swaps back to display once the PATCH returns
     assert _poll_cleared(api, eid, "format"), "select field not cleared from UI"
+
+# Picks the blank option the moment the editor enters the page, before anything else can run:
+# the fastest a user (or a loaded browser) can act on a freshly opened editor.
+_PICK_ON_ARRIVAL = """
+window.__picked = false;
+new MutationObserver(function () {
+  const sel = document.querySelector('select[name="value"]');
+  if (sel && !window.__picked) {
+    window.__picked = true;
+    sel.value = '';
+    sel.dispatchEvent(new Event('change', {bubbles: true}));
+  }
+}).observe(document, {childList: true, subtree: true});
+"""
+
+
+def test_select_editor_saves_a_pick_made_as_it_opens(page, ui_server, api):
+    """An inline editor listens from the moment it is on the page: a choice made as soon as it
+    opens is saved, not dropped while the editor waits to be wired up."""
+    eid = _select_item(api)
+    page.add_init_script(_PICK_ON_ARRIVAL)
+    _open_editor(page, ui_server, eid, "format", td_only=False)
+    page.wait_for_function("window.__picked", timeout=5000)
+    assert _poll_cleared(api, eid, "format", timeout=8.0), "a pick made as the editor opened was lost"

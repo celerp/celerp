@@ -17,6 +17,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from celerp.modules.loader import module_search_path, resolve_runtime_module_path
+from celerp.services.recognition import GIFT_CATEGORIES
 from celerp.services.units import DEFAULT_UNITS, settings_units
 
 log = logging.getLogger(__name__)
@@ -133,28 +134,38 @@ def seed_category_units(settings: dict, category: dict) -> None:
             ensure_unit_seeded(settings, category[field])
 
 
+def mark_gift_category(settings: dict, category: dict) -> None:
+    """Add a library category marked ``"gift": true`` to the company's gift categories, whose
+    sales are gifts (recognition.GIFT_CATEGORIES). Mutates settings in place."""
+    if category.get("gift"):
+        settings[GIFT_CATEGORIES] = sorted({*(settings.get(GIFT_CATEGORIES) or ()), category["name"]})
+
+
 def merge_missing_preset_categories(settings: dict, preset: dict) -> tuple[dict, list[str]]:
     """Add the preset's category schemas the company does not have yet.
 
     An existing schema (seeded earlier or customised by the user) is never
-    overwritten. Returns the new settings and the preset's category names that
-    resolved in the library (whether added now or already present)."""
+    overwritten, and a gift category is marked as one only when it is added, so a
+    category the user unmarked stays unmarked. Returns the new settings and the
+    names of the categories added now."""
     out = dict(settings)
     schemas = dict(out.get("category_schemas") or {})
     names = dict(out.get("category_display_names") or {})
-    resolved: list[str] = []
+    added: list[str] = []
     for cat_name in preset.get("categories") or []:
         cat = load_category(cat_name)
         if cat is None:
             log.warning("preset %s names unknown category %r", preset.get("name"), cat_name)
             continue
+        if cat["name"] not in schemas:
+            mark_gift_category(out, cat)
+            added.append(cat["name"])
         schemas.setdefault(cat["name"], deepcopy(cat.get("fields") or []))
         names.setdefault(cat["name"], cat.get("display_name", cat["name"]))
         seed_category_units(out, cat)
-        resolved.append(cat["name"])
     out["category_schemas"] = schemas
     out["category_display_names"] = names
-    return out, resolved
+    return out, added
 
 
 def reconcile_preset_settings(settings: dict, previous_preset: dict | None, target_preset: dict) -> dict:
