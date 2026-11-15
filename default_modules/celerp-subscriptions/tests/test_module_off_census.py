@@ -98,6 +98,9 @@ DOORS = {
     ("billing.run_due", "billing._expire_attempts_for"):
         "queued only by run_due, which the dispatcher never calls for a company that turned the module off "
         "(celerp_docs.periodic._run_operation); it deletes old send attempts and sends nothing",
+    ("billing.run_due", "billing.pass_for"):
+        "queued only by run_due, which the dispatcher never calls for a company that turned the module off "
+        "(celerp_docs.periodic._run_operation); it asks Celerp Cloud only about invoices already billed",
     ("doc_status_guard", "celerp_subscriptions.billing:guard_bill_status"):
         "refuses only a bill whose period was let go becoming billing again, never a stop: kept while the "
         "module is off so turning it back on cannot bill a period twice",
@@ -109,6 +112,9 @@ DOORS = {
         "fired when the company turns the module on, never while it is off",
     ("doc_detail_badges", "celerp_subscriptions.ui_routes:doc_period_badge"):
         "shown only for the modules the company uses (ui visible_slot_contributions); it reads, never writes",
+    ("demo_records", "celerp_subscriptions.demo:seed_demo_agreements_hook"):
+        "fired only for the modules the company uses (celerp.modules.slots._company_hooks), when its demo "
+        "data is seeded; it writes sample agreements and bills nothing",
     ("search_provider", "celerp_subscriptions.search:global_search"):
         "called only for the modules the company uses (celerp.routers.search); it reads, never writes",
 }

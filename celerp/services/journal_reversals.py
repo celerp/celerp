@@ -52,14 +52,14 @@ async def _chain(session: AsyncSession, company_id, je_id: str) -> dict[str, dic
 async def standing_reversals(session: AsyncSession, company_id, je_id: str) -> list[tuple[str, dict]]:
     """The reversals of ``je_id`` that still stand, with their states."""
     nodes = await _chain(session, company_id, je_id)
-    return [(eid, nodes[eid]) for eid in _standing_reversals(nodes, je_id)]
+    return [(eid, nodes[eid]) for eid in standing_reversal_ids(nodes, je_id)]
 
 
-def _standing_reversals(nodes: dict[str, dict], je_id: str) -> list[str]:
+def standing_reversal_ids(nodes: dict[str, dict], je_id: str) -> list[str]:
     """The reversals of ``je_id`` that still stand."""
     return [eid for eid, state in nodes.items()
             if state.get("reverses") == je_id and state.get("status") == "posted"
-            and not _standing_reversals(nodes, eid)]
+            and not standing_reversal_ids(nodes, eid)]
 
 
 def _named(state: dict, fallback: str) -> dict:
@@ -87,7 +87,7 @@ async def require_cancelled_once(session: AsyncSession, company_id, entity_id: s
     elif entity_id not in nodes:
         nodes[entity_id] = {"status": "posted", "reverses": reverses}
     for eid, state in nodes.items():
-        standing = _standing_reversals(nodes, eid)
+        standing = standing_reversal_ids(nodes, eid)
         if len(standing) + (state.get("status") == "void") <= 1:
             continue
         if void and eid == entity_id and standing:

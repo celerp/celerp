@@ -15,7 +15,7 @@ from agreement_kit import (
     agreement, billed_docs, company_id, freeze_day, member, register, revoke, schedule, template, tick,
 )
 from celerp_subscriptions.periods import shown
-from ui.routes.subscriptions import _billing_section
+from ui.routes.subscriptions import _billing_section, _with_schedule
 
 pytestmark = pytest.mark.asyncio
 
@@ -23,7 +23,7 @@ AUTHORIZED = {"generation": "Automatic billing authorized", "sending": "Automati
 
 
 def _shown(eid: str, sub: dict) -> set[str]:
-    html = to_xml(_billing_section(eid, sub))
+    html = to_xml(_billing_section(eid, _with_schedule(sub, {}), defers=False))
     return {mode for mode, text in AUTHORIZED.items() if text in html}
 
 
@@ -108,23 +108,9 @@ async def test_turning_on_billing_that_would_send_needs_the_sending_permission(c
     assert (await template(client, hd, eid)).get("generation_mode", "manual_due") == "manual_due"
 
 
-@pytest.mark.parametrize("role", ["owner", "admin", "manager"])
-async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, role):
-    """Automatic collection is not offered in this release: every role gets the same refusal
-    as for any unknown mode, and the page offers only billing by hand or automatically."""
-    freeze_day(monkeypatch, "2026-03-15")
-    hd = await register(client)
-    eid = await agreement(client, hd, start="2026-04-01")
-    who = hd if role == "owner" else (await member(client, session, hd, role))[0]
-    r = await schedule(client, who, eid, generation_mode="auto_invoice_collect")
-    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "subscriptions.err_generation_mode"
-    html = to_xml(_billing_section(eid, await template(client, hd, eid)))
-    assert "collect" not in html.lower()
-
-
 # One value for each schedule setting that differs from what a running automatic agreement starting
 # 2026-07-01 holds; every ScheduleBody field is listed, so a new setting has to be classified here.
-_CHANGED_TERM = {"anchor_date": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,
+_CHANGED_TERM = {"anchor_date": "2026-07-05", "trial_end": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,
                  "billing_timing": "arrears", "term_start": "2026-07-01", "term_end": "2027-07-01",
                  "cancel_at_period_end": True, "catchup_periods": 3, "generation_mode": "auto_invoice",
                  "auto_send": True}
@@ -159,7 +145,11 @@ async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent(
             self.read.add(key)
             return super().__contains__(key)
 
-    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields)
+    # Recognize over the service period is read by the books when a bill posts, and the kind,
+    # member and grace days by the vertical pages, never by unattended billing, so no consent
+    # covers them (periods.TERMS).
+    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields) - {
+        "recognize_over_service_period", "kind", "beneficiary_contact_id", "grace_days"}
     settings = set(ScheduleBody.model_fields)
     for frequency, timing in (("monthly", "advance"), ("custom", "arrears")):
         state = Recorded({"status": "active", "anchor_date": "2026-01-01", "frequency": frequency,

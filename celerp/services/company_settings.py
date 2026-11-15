@@ -24,6 +24,8 @@ COMPANY_SETTINGS = "PATCH /companies/me"
 BOOKS = "PATCH /companies/me/books"
 PERIOD_LOCK = "POST /accounting/period-lock"
 POSTING_ACCOUNTS = "PUT /accounting/posting-accounts/{role}"
+FUNDS_SETTING = "PUT /accounting/funds/setting"
+RECOGNITION_SETTING = "PUT /accounting/recognition/setting"
 
 OWNERS: dict[str, str] = {
     # General settings: no effect on the books.
@@ -55,6 +57,9 @@ OWNERS: dict[str, str] = {
     "lock_date": PERIOD_LOCK,
     "posting_roles": POSTING_ACCOUNTS,
     "posting_role_scopes": POSTING_ACCOUNTS,
+    "funds_enabled": FUNDS_SETTING,
+    # Who authorized an unattended operation, and when (consents.recognition {by, at}).
+    "consents": RECOGNITION_SETTING,
     # Lists and schemas with their own pages.
     "role_grants": "PATCH /companies/me/role-permissions",
     "nav_overrides": "PATCH /companies/me/nav-overrides",
@@ -63,6 +68,9 @@ OWNERS: dict[str, str] = {
     "item_schema": "PATCH /companies/me/item-schema",
     "category_schemas": "PATCH /companies/me/category-schema/{category}",
     "category_display_names": "PATCH /companies/me/categories/{category_key}",
+    "category_income_accounts": "PUT /companies/me/categories/{category_key}/income-account",
+    "gift_categories": "PUT /companies/me/categories/{category_key}/gift",
+    "donor_statement_wording": "PUT /donors/statements/wording",
     "column_prefs": "PATCH /companies/me/column-prefs",
     "taxes": "PATCH /companies/me/taxes",
     "purchasing_taxes": "PATCH /companies/me/purchasing-taxes",
@@ -85,6 +93,7 @@ OWNERS: dict[str, str] = {
     "sequences": SYSTEM,  # document numbering, advanced as documents are numbered
     "self_contact_id": SYSTEM,
     "ai_memory": SYSTEM,
+    "recognition_lapsed": SYSTEM,  # when the recognition authorizer was found to have lost it
     "reorder_last_scan_at": SYSTEM,
     "pay_tip_shown": SYSTEM,
     "erased_connector_items": SYSTEM,
@@ -95,7 +104,7 @@ BOOKS_KEYS = frozenset(k for k, owner in OWNERS.items() if owner == BOOKS)
 
 # The audited keys and the stamp each change leaves: who (a person, so a company backup
 # drops it) and when.
-AUDITED = BOOKS_KEYS | {"lock_date", "posting_roles"}
+AUDITED = BOOKS_KEYS | {"lock_date", "posting_roles", "funds_enabled"}
 SET_BY_KEYS = frozenset(f"{k}_set_by" for k in AUDITED)
 for _key in AUDITED:
     OWNERS[f"{_key}_set_by"] = OWNERS[f"{_key}_set_at"] = SYSTEM

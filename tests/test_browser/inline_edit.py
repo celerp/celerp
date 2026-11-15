@@ -22,12 +22,8 @@ fail, so a naive retry never gets past its first step: it reports a settle
 timeout and the real failure is lost. The retry cancels the stray editor with
 Escape first, which the app handles by restoring the cell (GDR 2j).
 
-A third race is in the editor itself. The double-click swaps the editor into the
-page, and HTMX binds its triggers a tick later. Between those two moments the
-editor is visible and typeable but nothing is listening: a select's change fires
-into an unbound element and the save is simply lost, leaving the editor open
-until the settle times out. Visible is not ready, so every edit waits for HTMX to
-report the element initialised before acting on it.
+An editor is live as soon as it is visible: the app settles swaps at once
+(ui/static/celerp-page.js), so HTMX has bound its triggers before it is drawn.
 """
 from __future__ import annotations
 
@@ -52,29 +48,10 @@ def cancel_editor(page, scope):
     settled(page, scope)
 
 
-def ready(page, selector):
-    """Wait until HTMX has bound the editor at `selector`, not merely drawn it.
-
-    HTMX records what it has processed on the element itself and sets
-    `firstInitCompleted` once a node's triggers are bound
-    (ui/static/htmx.min.js). Waiting on that is waiting on the real condition;
-    waiting on visibility only wins the race most of the time.
-    """
-    page.wait_for_function(
-        "(sel) => {const l = document.querySelectorAll(sel); const e = l[l.length - 1];"
-        " const d = e && e['htmx-internal-data'];"
-        " return !!(d && d.firstInitCompleted);}",
-        arg=selector,
-        timeout=4000,
-    )
-
-
 def _editor(page, scope, tag):
     """The cell editor just opened in `scope`, ready to be edited."""
-    selector = f"{scope} {tag}[name=value]"
-    el = page.locator(selector).last
+    el = page.locator(f"{scope} {tag}[name=value]").last
     el.wait_for(state="visible", timeout=4000)
-    ready(page, selector)
     return el
 
 

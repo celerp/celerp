@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import uuid
 from collections import Counter, defaultdict
 from urllib.parse import urlencode
 
@@ -27,7 +28,8 @@ _FILTER_KEYS = [f.name for f in dataclasses.fields(DocListFilters) if f.name not
 
 async def _documents(owner_ui, monkeypatch) -> dict:
     """The demo company plus one customer's invoices in every state, a credit note and a
-    quotation turned into an invoice, and a vendor's bill."""
+    quotation turned into an invoice, a vendor's bill, and, with funds turned on, an imported
+    draft bill waiting for a fund choice."""
     contact = await _demo_contact(owner_ui, monkeypatch)
     api = owner_ui.api
     ids = {
@@ -57,7 +59,14 @@ async def _documents(owner_ui, monkeypatch) -> dict:
         "line_items": [{"name": "Service", "quantity": 1, "unit_price": 70.0, "line_total": 70.0}],
         "total": 70.0}))
     await _ok(await api.post(f"/docs/{quote['id']}/convert", json={}))
-    return {"contact": contact, "ids": ids, "bill": bill["id"], "credit_note": cn["id"]}
+    await _ok(await api.put("/accounting/funds/setting", json={"enabled": True}))
+    outside = f"doc:IMP-{uuid.uuid4().hex[:8]}"
+    await _ok(await api.post("/docs/import", json={
+        "entity_id": outside, "event_type": "doc.created", "source": "csv", "idempotency_key": uuid.uuid4().hex,
+        "data": {"doc_type": "bill", "status": "draft", "ref_id": outside.split(":")[1], "issue_date": _day(7),
+                 "line_items": [{"name": "Imported", "quantity": 1, "unit_price": 20.0, "line_total": 20.0}],
+                 "total": 20.0}}))
+    return {"contact": contact, "ids": ids, "bill": bill["id"], "credit_note": cn["id"], "outside": outside}
 
 
 def _filters(made: dict) -> dict[str, dict]:
@@ -84,6 +93,7 @@ def _filters(made: dict) -> dict[str, dict]:
         "not_stocked": {"not_stocked": "1"},
         "converted_to_type": {"converted_to_type": "invoice"},
         "accounting_sync": {"accounting_sync": "excluded"},
+        "fund_choice": {"fund_choice": "needed"},
         "ids": {"ids": f"{ids['overdue']},{ids['draft']},{made['bill']}"},
     }
 

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
@@ -29,6 +31,10 @@ from celerp.services.document_lines import (
     line_id_counts,
     linked_items,
     normalize_line_ids,
+)
+from celerp.services.peer_lines import (
+    HEADER_KEYS, FundChoiceGrant, inbound_keys, journal_inbound_keys, judge_header_keys, judge_line_keys,
+    keep_fund_choices, mark_journal, refuse_inbound,
 )
 from celerp.services.business_time import business_date_of
 
@@ -156,6 +162,29 @@ async def find_event_by_idempotency(session, company_id, idempotency_key: str | 
     )).scalars().first()
 
 
+def request_fingerprint(request) -> str:
+    """The digest a request key is bound to: the whole request, canonical JSON."""
+    return hashlib.sha256(json.dumps(request, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+def refuse_other_request(bound: str | None, request) -> None:
+    """409 (request.key_reused) unless ``request`` is the one its key was bound to (``bound``,
+    the fingerprint stored at the key's first use)."""
+    if bound != request_fingerprint(request):
+        raise HTTPException(status_code=409, detail=catalog_refusal("request.key_reused"))
+
+
+async def keyed_event(session, company_id, idempotency_key: str, request) -> LedgerEntry | None:
+    """The event committed under ``idempotency_key``, when it was written for this same
+    ``request`` (its metadata ``request`` the fingerprint); None when the key is unused. One
+    rule for every request key: the same key with the same request answers what the first did,
+    with any other request it is refused (refuse_other_request)."""
+    stored = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if stored is not None:
+        refuse_other_request((stored.metadata_ or {}).get("request"), request)
+    return stored
+
+
 def write_period_lock(company, lock_date: str | None, user_id) -> None:
     """Lock *company*'s books through the ISO *lock_date*, recorded as set by *user_id*,
     or unlock them when *lock_date* is None. The caller holds the company row and commits."""
@@ -249,9 +278,11 @@ async def _connector_entity_id(
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
     external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
-    update=None, metadata_: dict | None = None,
+    update=None, metadata_: dict | None = None, origin: str | None,
 ) -> str:
-    """Create-or-update a projection from a connector payload.
+    """Create-or-update a projection from a connector payload. ``origin``: where the record
+    came from (peer_lines.ORIGINS), or None for a record that is the company's own (a shop
+    platform's order); each connector states it.
 
     Returns "created" (new projection), "updated" (existing projection, changed
     content), or "noop" (this exact content was already applied, or the record is one
@@ -306,6 +337,7 @@ async def connector_upsert(
         # A platform's codes are recorded as the platform holds them; a duplicate is
         # reported by the resolver and Doctor rather than failing the sync.
         preserve_external_code_conflicts=entity_type == "item",
+        origin=origin,
         company_id=company_id,
         entity_id=entity_id,
         entity_type=entity_type,
@@ -646,10 +678,56 @@ async def unattended(work):
         _UNATTENDED.reset(token)
 
 
+async def _judge_inbound(session, company_id, found: list[tuple[str, int | None]], origin: str) -> None:
+    """An arrival bringing fund keys (peer_lines.inbound_keys): kept as sent while funds are
+    off, refused while they are on (peer_lines.refuse_inbound). Read under the company lock, so it never
+    interleaves with turning funds on, which checks what unposted records carry (emit_event
+    takes the company lock before it calls this)."""
+    if found:
+        from celerp.services.journal_accounts import funds_enabled, held_fund_ledger
+
+        if funds_enabled(await held_fund_ledger(session, company_id)):
+            refuse_inbound(found, origin)
+
+
+ITEMS_AT_SALE = "items_at_sale"
+
+
+async def _stamp_items_at_sale(session, kwargs: dict) -> None:
+    """An invoice keeps each item's category and attributes as they stood when it was first
+    issued (``items_at_sale``), so what it sold reads the same however the item is edited
+    later. Only this boundary writes it: a caller's value is dropped, a document that already
+    holds one keeps it (a void and unvoid, an edit after issue), and a replay or restore copies
+    the stored event without coming here."""
+    data = {k: v for k, v in kwargs["data"].items() if k != ITEMS_AT_SALE}
+    if isinstance(data.get("fields_changed"), dict) and ITEMS_AT_SALE in data["fields_changed"]:
+        data["fields_changed"] = {k: v for k, v in data["fields_changed"].items() if k != ITEMS_AT_SALE}
+    kwargs["data"] = data
+    previous = await session.get(Projection, (kwargs["company_id"], kwargs["entity_id"]))
+    before = (previous.state or {}) if previous is not None else {}
+    if ITEMS_AT_SALE in before or (before.get("doc_type") not in (None, "invoice") and "doc_type" not in data):
+        return
+    after = ProjectionEngine._apply(before, kwargs["event_type"], data)
+    if after.get("doc_type") != "invoice" or (after.get("status") or "draft") in ("draft", "void"):
+        return
+    ids = {li["item_id"] for li in after.get("line_items") or [] if isinstance(li, dict) and li.get("item_id")}
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == kwargs["company_id"], Projection.entity_type == "item",
+        Projection.entity_id.in_(ids)))).all() if ids else []
+    data[ITEMS_AT_SALE] = {eid: {"category": (state or {}).get("category"),
+                                 "attributes": (state or {}).get("attributes") or {}} for eid, state in rows}
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
-    memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
+    memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None,
+    origin: str | None = None, fund_grant: FundChoiceGrant | None = None, keep_gifts: bool = False, **kwargs
 ) -> LedgerEntry:
+    # ``origin``: only an arrival writer passes it (peer_lines.ORIGINS), marking the record and
+    # the lines it brings; ``fund_grant``: the fund keys this write may set (peer_lines);
+    # ``keep_gifts``: the journal's lines carry the gift answers these books gave them (a
+    # document's posting, or a copy of posted lines), so the boundary keeps them.
+    fund_choices_cleared: dict = {}
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
@@ -701,7 +779,8 @@ async def emit_event(
     )
 
     # An entry's effect is cancelled at most once, by a void or by one reversal that
-    # stands: one rule for every void and every reversal, whichever path writes it.
+    # stands, and never while a standing release names it as backing: one rule for every
+    # void and every reversal, whichever path writes it.
     restoring = bool((kwargs.get("metadata_") or {}).get("restores"))
     if not restoring and (kwargs["event_type"] == "acc.journal_entry.voided" or (
             kwargs["event_type"] == "acc.journal_entry.created" and kwargs["data"].get("reverses"))):
@@ -711,16 +790,38 @@ async def emit_event(
             session, kwargs.get("company_id"), kwargs["entity_id"],
             void=kwargs["event_type"] == "acc.journal_entry.voided",
             reverses=kwargs["data"].get("reverses") if kwargs["event_type"] == "acc.journal_entry.created" else None)
+        from celerp.services.journal_accounts import check_backing_cancel
 
-    # A void of an entry in a locked period is dated to an open day instead of mutating
-    # the period: one rule for every void path.
+        await check_backing_cancel(
+            session, kwargs.get("company_id"),
+            kwargs["entity_id"] if kwargs["event_type"] == "acc.journal_entry.voided" else kwargs["data"]["reverses"])
+
+    # A movement between funds is never voided, only reversed, and a void of an entry in a
+    # locked period is dated to an open day instead of mutating the period: one rule for
+    # every void path.
     if kwargs["event_type"] == "acc.journal_entry.voided":
+        from celerp.services.journal_accounts import check_fund_void
         from celerp.services.posting_dates import void_reversal
 
+        if not restoring:
+            await check_fund_void(session, kwargs.get("company_id"), kwargs["entity_id"])
         await void_reversal(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["data"])
 
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
+
+    # A new journal entry holds its company's fund ledger before it locks any other row,
+    # and an arrival reads the fund setting, both under the company lock taken here first,
+    # so the fund lock keeps its place in the lock order (company, fund ledger, rows).
+    if kwargs["event_type"] == "acc.journal_entry.created" or origin is not None:
+        from celerp.services.company_lock import lock_company
+
+        await lock_company(session, kwargs["company_id"])
+    if kwargs["event_type"] == "acc.journal_entry.created":
+        from celerp.services.journal_accounts import held_fund_ledger, hold_movement_actor
+
+        await held_fund_ledger(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
+        await hold_movement_actor(session, kwargs.get("company_id"), kwargs["entity_id"], kwargs.get("actor_id"))
 
     # Every journal entry change, whoever produced it, is judged against the bank
     # reconciliations: one that would change what a reconciliation counts is refused.
@@ -732,11 +833,20 @@ async def emit_event(
             await access.guard_journal_change(
                 session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["event_type"], kwargs["data"])
 
-    # Every journal line, whoever produced it, passes the one account boundary.
+    # Every journal line, whoever produced it, passes the one account boundary. An arrival
+    # journal carries its origin on the entry and every line before the boundary reads them;
+    # a line copying one these books posted (``posted_from``, rule V) keeps its own fund keys,
+    # and a local user's choice (``fund_grant``, by line number) sets the ones it names.
     if kwargs["event_type"] == "acc.journal_entry.created":
         from celerp.services.journal_accounts import prepare_journal_entry
 
-        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring)
+        if origin is not None:
+            await _judge_inbound(session, kwargs.get("company_id"), journal_inbound_keys(kwargs["data"], fund_grant), origin)
+            mark_journal(kwargs["data"], origin)
+
+        await prepare_journal_entry(session, kwargs.get("company_id"), kwargs["data"], restored=restoring,
+                                    keep_gifts=keep_gifts, actor_id=kwargs.get("actor_id"),
+                                    entity_id=kwargs["entity_id"])
 
     # Enforce the line rules on every document and List write. Extract the post-change
     # line set by DATA SHAPE so every writer (create, patch, shared_import, update,
@@ -763,8 +873,18 @@ async def emit_event(
                      and "new" in change})
         line_set = sets.get("line_items") if isinstance(sets.get("line_items"), list) else None
         sets["line_items"] = line_set
+        # The header fund keys the write sets (peer_lines).
+        header = {key: data[key] for key in HEADER_KEYS if key in data}
+        header.update({key: change["new"] for key, change in changed.items()
+                       if key in HEADER_KEYS and isinstance(change, dict) and "new" in change})
+        # The header money inputs the write sets: a change clears the fund choices (peer_lines).
+        from celerp_docs.doc_money import DOC_MONEY_INPUTS
+
+        money = {key: data[key] for key in DOC_MONEY_INPUTS if key in data}
+        money.update({key: change["new"] for key, change in changed.items()
+                      if key in DOC_MONEY_INPUTS and isinstance(change, dict) and "new" in change})
         stored = {}
-        if line_set is not None or "contact_id" in sets or "currency" in sets:
+        if line_set is not None or "contact_id" in sets or "currency" in sets or header or money or origin is not None:
             # The stored record, read only when it is of the same type (the Projection PK
             # is (company_id, entity_id) with no type discriminator).
             proj = await session.get(
@@ -776,6 +896,32 @@ async def emit_event(
                 # Every line carries a stable line id: new lines get one, lines already on
                 # the record keep theirs, and a malformed or repeated id is refused.
                 normalize_line_ids(line_set, stored.get("line_items"))
+            if origin is not None:
+                await _judge_inbound(session, kwargs.get("company_id"),
+                                     inbound_keys(stored.get("line_items"), line_set, stored, header), origin)
+            if line_set is not None:
+                # Where a line came from and the fund chosen for it are kept, written only by
+                # an arrival or a copy, and changed only as a grant names them.
+                judge_line_keys(stored.get("line_items"), line_set, origin=origin, grant=fund_grant)
+            if marker := judge_header_keys(stored, header, origin=origin, grant=fund_grant):
+                if isinstance(data.get("fields_changed"), dict):
+                    data["fields_changed"].update({key: {"old": None, "new": value} for key, value in marker.items()})
+                else:
+                    data.update(marker)
+            # A change to the money of a marked line or of the record clears its fund choices;
+            # a revision from outside stores why, until a user chooses again.
+            cleared_lines, fund_choices_cleared = keep_fund_choices(stored, line_set, money, source=origin)
+            if fund_choices_cleared:
+                cleared = {"fund_choice": None, "fund_choice_source": None} if fund_choices_cleared["document"] else {}
+                if "reason" in fund_choices_cleared:
+                    cleared["fund_choice_reason"] = fund_choices_cleared["reason"]
+                if line_set is None:
+                    cleared["line_items"] = cleared_lines
+                if isinstance(data.get("fields_changed"), dict):
+                    data["fields_changed"].update({key: {"old": stored.get(key), "new": value}
+                                                   for key, value in cleared.items()})
+                else:
+                    data.update(cleared)
             # A line drawn from a memo is added only by the draw, leaves only by Back to
             # memo, and keeps what it is and the invoice's customer and currency meanwhile.
             await assert_drawn_lines_authorized(
@@ -887,9 +1033,18 @@ async def emit_event(
     await lock_company(session, kwargs["company_id"])
     item = kwargs.get("entity_type") == "item"
     if item:
+        # An item's apply can post journal entries (opening stock at the draft boundary, a
+        # value change), so its fund ledger is held here, after the company lock and before
+        # the row lock, keeping the order company, fund ledger, rows.
+        from celerp.services.journal_accounts import held_fund_ledger
+
+        await held_fund_ledger(session, kwargs["company_id"])
         _guard_on_books(kwargs)
         await _record_lot_account(session, kwargs, previous_item_state)
         _record_consignor_payable(kwargs, previous_item_state)
+
+    if kwargs.get("entity_type") == "doc":
+        await _stamp_items_at_sale(session, kwargs)
 
     if _UNATTENDED.get():
         kwargs["metadata_"] = {**(kwargs.get("metadata_") or {}), "automatic": True}
@@ -936,6 +1091,15 @@ async def emit_event(
         raise
     await savepoint.commit()
 
+    # A fund change open in this session counts every journal event it writes, whichever
+    # path writes it (journal_accounts.fund_change_action), and judges them once.
+    if entry.event_type in ("acc.journal_entry.created", "acc.journal_entry.voided"):
+        from celerp.services.journal_accounts import open_fund_change
+
+        if (action := open_fund_change(session)) is not None:
+            stored = await session.get(Projection, (entry.company_id, entry.entity_id))
+            action.record(entry.entity_id, entry.event_type, (stored.state if stored is not None else None) or {})
+
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:
         await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
@@ -943,4 +1107,6 @@ async def emit_event(
         # Deterministic: do not fail event emission due to notification issues.
         pass
 
+    # The fund choices this write cleared, for the writer to tell the user (peer_lines).
+    entry.fund_choices_cleared = fund_choices_cleared
     return entry

@@ -25,12 +25,14 @@ class RecordOutcome:
     rejected: refused by validation and counted as skipped with its reason;
     failed: the write raised, reported but not counted. `message` is the reason, as
     text or as a refusal the UI shows in the reader's language. `entity_type` names
-    the Celerp entity written when it differs from the batch's own.
+    the Celerp entity written when it differs from the batch's own; `fix` is what a
+    failed write's refusal says to change (a fund choice), for a caller that offers it.
     """
     entity_id: str
     status: OutcomeStatus
     message: str | dict | None = None
     entity_type: str | None = None
+    fix: dict | None = None
 
 
 @dataclass
@@ -40,8 +42,9 @@ class ImportOutcome:
     records: list[RecordOutcome] = field(default_factory=list)
     lasting_effects: set[str] = field(default_factory=set)
 
-    def add(self, entity_id: str, status: OutcomeStatus, message: str | dict | None = None) -> None:
-        self.records.append(RecordOutcome(entity_id, status, message))
+    def add(self, entity_id: str, status: OutcomeStatus, message: str | dict | None = None,
+            fix: dict | None = None) -> None:
+        self.records.append(RecordOutcome(entity_id, status, message, fix=fix))
 
     def count(self, *statuses: OutcomeStatus) -> int:
         return sum(1 for r in self.records if r.status in statuses)

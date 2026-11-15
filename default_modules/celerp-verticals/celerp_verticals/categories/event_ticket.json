@@ -1,0 +1,45 @@
+{
+  "name": "event_ticket",
+  "display_name": "Event Ticket",
+  "vertical_tags": [
+    "nonprofit"
+  ],
+  "fields": [
+    {
+      "key": "event_name",
+      "label": "Event",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "event_date",
+      "label": "Event Date",
+      "type": "date",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "venue",
+      "label": "Venue",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ticket_type",
+      "label": "Ticket Type",
+      "type": "select",
+      "options": [
+        "Standard",
+        "Concession",
+        "Table",
+        "Complimentary"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece",
+  "default_inventory_type": "service",
+  "default_purchase_unit": "piece"
+}

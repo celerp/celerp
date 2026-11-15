@@ -12,9 +12,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
+from datetime import date, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Mapping
 from decimal import Decimal as _Dec
 
 from celerp.accounting_roles import (
@@ -53,13 +53,18 @@ from celerp.services.account_roles import (
     split_party_key,
     surviving_key,
 )
-from celerp.services.business_time import business_date_of
+from celerp.services.business_time import business_date_of, company_today
 from celerp.services.record_quantities import sent_out_by
-from celerp.services import doc_asset_lines
+from celerp.services import doc_asset_lines, recognition
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
-from celerp.services.journal_accounts import UnbalancedJournalEntry, bank_currencies, lock_accounts
+from celerp.services.journal_accounts import (
+    CONTROL, HEADER, UnbalancedJournalEntry, bank_currencies, copy_fund_split, fund_legs, fund_open_amounts,
+    fund_open_shares, funds_enabled, income_account_of, lock_accounts, note_fund_lines, posted_fund_shares,
+    require_income_account,
+)
+from celerp.services.peer_lines import copy_posted_lines, leg_funds, posted_line_funds
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
@@ -89,6 +94,16 @@ def _origin_line(settings: dict, code: str, role, debit=0.0, credit=0.0) -> dict
     if code in scope_codes(settings, role):
         return _line(code, role, debit, credit)
     return {"account": code, "debit": debit, "credit": credit}
+
+
+def _revenue_line(settings: dict, code: str, debit=0.0, credit=0.0) -> dict:
+    """A line moving a sale's revenue on ``code``: posted for sales revenue when that
+    account has served it, else explicitly unclassified, so an income account another
+    role targets (other income as the stock gain account) is never read as that role.
+    It reads as revenue by its account's type (_revenue_sold_on)."""
+    if code in scope_codes(settings, R.SALES_REVENUE):
+        return _line(code, R.SALES_REVENUE, debit, credit)
+    return {"account": code, "account_roles": [], "debit": debit, "credit": credit}
 
 
 def _lot_line(settings: dict, key: str, debit=0.0, credit=0.0) -> dict:
@@ -239,6 +254,7 @@ async def _emit_auto_posted_je(
     company_id,
     user_id,
     je_id: str,
+    record_id: str | None,
     idem_create: str,
     idem_posted: str,
     memo: str,
@@ -251,7 +267,10 @@ async def _emit_auto_posted_je(
     """Post an automatic JE. The one place its amounts become money: every line is rounded
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
-    their lines to balance once rounded. *extra* adds fields the created event records
+    their lines to balance once rounded. *record_id* names the record the entry posts for
+    (a document, a List, an item, an order; None for an entry of no record), so the boundary
+    judges the entry by where that record came from; the gift answers on its lines (_stamp_gifts)
+    are the ones the boundary keeps. *extra* adds fields the created event records
     with the entry (a module journal's source and request hash). A line that moves nothing
     once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
@@ -268,6 +287,8 @@ async def _emit_auto_posted_je(
         raise UnbalancedJournalEntry("error.auto_je_unbalanced", memo=memo, debits=str(debits),
                                      credits=str(credits), currency=currency)
     payload = {**(extra or {}), "memo": memo, "entries": entries}
+    if record_id:
+        payload["record_id"] = record_id
     if ts:
         payload["ts"] = ts
 
@@ -283,6 +304,7 @@ async def _emit_auto_posted_je(
         source="auto_je",
         idempotency_key=idem_create,
         metadata_=metadata_,
+        keep_gifts=True,
     )
     await emit_event(
         session,
@@ -593,14 +615,19 @@ async def _asset_split(session, company_id, doc: dict, base_currency: str, reven
     """A sale document's asset lines taken out of its revenue: (the line allocations, a
     clearing line per asset line on the account its sale clears through, the revenue the
     other lines leave). Asset lines post their share of the net to clearing (Cr on an
-    invoice, Dr on a credit note), tagged with the asset; with none the revenue is whole."""
-    if not doc_asset_lines.asset_lines(doc) or not doc.get("line_items"):
+    invoice, Dr on a credit note), tagged with the asset, and their allocations name that
+    account; with none the revenue is whole. No allocations without lines."""
+    if not doc.get("line_items"):
         return None, [], revenue
     allocations = _line_allocations(doc, base_currency, revenue)
+    if not doc_asset_lines.asset_lines(doc):
+        return allocations, [], revenue
     code = await resolve(session, company_id, R.ASSET_DISPOSAL_CLEARING)
     clearing, cleared = [], _Dec(0)
     for index, share in allocations.items():
         asset_id = doc["line_items"][int(index)].get("asset_id")
+        if asset_id:
+            share["account"] = code
         if asset_id and share["base"]:
             amount = to_decimal(share["base"])
             cleared += amount
@@ -658,8 +685,123 @@ def finalized_entry_day(doc: dict) -> str | None:
     return doc.get("finalized_at") or doc.get("issue_date")
 
 
+async def _line_income_accounts(session, company_id, doc: dict, settings: dict) -> dict[str, str]:
+    """The income account of each line selling an item that names one, its own or its
+    category's (income_account_of), keyed by the line's index as a string. Lines without
+    one, and asset lines, are not listed. Each account is checked again
+    (require_income_account, naming the item), since it may have changed since it was saved."""
+    lines = [li if isinstance(li, dict) and not li.get("asset_id") else {} for li in doc.get("line_items") or []]
+    ids = {line_item_id(li) for li in lines} - {None}
+    if not ids:
+        return {}
+    items = {row.entity_id: row.state or {} for row in (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(sorted(ids))))).scalars().all()}
+    accounts: dict[str, str] = {}
+    for index, li in enumerate(lines):
+        item = items.get(line_item_id(li))
+        code = income_account_of(settings, item)
+        if code:
+            if code not in accounts.values():
+                await require_income_account(session, company_id, code, item=item.get("name") or li.get("name") or code)
+            accounts[str(index)] = code
+    return accounts
+
+
+def _income_lines(settings: dict, allocations: dict | None, incomes: dict[str, str], default: str,
+                  revenue, deferred: str | None = None) -> list[dict]:
+    """A sale's revenue credits: each line's share (``allocations``) on its income account
+    (``incomes``, _revenue_line), and what the other lines leave on the sales revenue
+    account ``default``. Every allocation without an account is named ``default``. With
+    no income account of its own on any line the revenue is one ``default`` line. A line
+    whose account is ``deferred`` posts for deferred revenue (celerp.services.recognition)."""
+    own: dict[str, _Dec] = {}
+    for index, share in (allocations or {}).items():
+        code = share.setdefault("account", incomes.get(index, default))
+        if index in incomes and code != default:
+            own[code] = own.get(code, _Dec(0)) + to_decimal(share["base"])
+    rest = to_decimal(revenue) - sum(own.values(), _Dec(0))
+    lines = [_line(default, R.SALES_REVENUE, credit=to_stored_float(rest))] if rest else []
+    return lines + [_line(code, R.DEFERRED_REVENUE, credit=to_stored_float(amount)) if code == deferred
+                    else _revenue_line(settings, code, credit=to_stored_float(amount)) for code, amount in own.items()]
+
+
+async def _gift_lines(session, company_id, doc: dict, settings: dict) -> set[int]:
+    """The document lines (1-based) selling an item of a gift category (recognition.gift_categories)
+    as the company classifies it at posting; asset lines are never gifts."""
+    lines = [li if isinstance(li, dict) and not li.get("asset_id") else {} for li in doc.get("line_items") or []]
+    gifts = recognition.gift_categories(settings)
+    ids = {line_item_id(li) for li in lines} - {None}
+    if not gifts or not ids:
+        return set()
+    categories = {eid: (state or {}).get("category") for eid, state in (await session.execute(
+        _select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            Projection.entity_id.in_(sorted(ids))))).all()}
+    return {n for n, li in enumerate(lines, 1) if categories.get(line_item_id(li)) in gifts}
+
+
+def _stamp_gifts(entries: list[dict], bases: list, gifted: list, currency: str) -> tuple[list[dict], list]:
+    """Each revenue line split by the document lines behind it (``bases``, line -> weight): the
+    part its gift lines account for (``gifted``, the same shape, None for none) is stamped
+    ``gift`` True on the line, where the books keep it from then on, and every other line or part
+    ``gift`` False. Donor history reads gifts by that classification alone, so a later change of
+    an item's category, the gift setting or a category's account never moves one already posted."""
+    out, out_bases = [], []
+    for entry, behind, gift in zip(entries, bases, gifted):
+        weight = sum((to_decimal(w) for w in (gift or {}).values()), _Dec(0))
+        whole = sum((to_decimal(w) for w in behind.values()), _Dec(0)) if isinstance(behind, dict) else _Dec(0)
+        if not weight or not whole:
+            out.append({**entry, "gift": False})
+            out_bases.append(behind)
+            continue
+        side = "credit" if entry.get("credit") else "debit"
+        part, rest = allocate_pro_rata(to_decimal(entry[side]), [min(weight, whole), max(whole - weight, _Dec(0))],
+                                       currency)
+        rest_behind = {n: left for n, w in behind.items() if (left := to_decimal(w) - to_decimal(gift.get(n, 0))) > 0}
+        for amount, line_bases, stamp in ((part, gift, True), (rest, rest_behind, False)):
+            if amount:
+                out.append({**entry, side: to_stored_float(amount), "gift": stamp})
+                out_bases.append(line_bases or HEADER)
+    return out, out_bases
+
+
+async def _emit_schedules(session, *, company_id, user_id, cycle: str, records: list[dict]) -> None:
+    """Write each deferred line's schedule (recognition.schedule_records), once per finalize."""
+    for record in records:
+        sid = recognition.schedule_id(record["doc_id"], record["line_id"])
+        await emit_event(session, company_id=company_id, entity_id=sid, entity_type=recognition.SCHEDULE,
+                         event_type="rev_schedule.created", data=record, actor_id=user_id, location_id=None,
+                         source="doc.finalized", idempotency_key=f"{sid}:created:{cycle}", metadata_={})
+
+
+def _line_tax_basis(doc: dict):
+    """Where a document's tax belongs: each line's tax (bill_line_charges) by line number, or
+    the document's own fund when no line carries any."""
+    basis = {n: tax for n, (_, _, tax) in enumerate(bill_line_charges(doc), 1) if tax > 0}
+    return basis or HEADER
+
+
+def _clearing_bases(doc: dict, allocations: dict | None, clearing: list[dict]) -> list[dict]:
+    """The document line behind each asset clearing line (_asset_split), by its asset."""
+    lines = doc.get("line_items") or []
+    return [{n: allocations[str(n - 1)]["base"] for n, li in enumerate(lines, 1)
+             if isinstance(li, dict) and li.get("asset_id") == e["asset_id"]} for e in clearing]
+
+
+def _document_fund_legs(settings: dict, doc: dict, entries: list[dict], bases: list, base_currency: str) -> list[dict]:
+    """``entries`` carried by the funds of the document lines behind them (fund_legs), where
+    the company has funds turned on; otherwise as they are."""
+    if not funds_enabled(settings):
+        return entries
+    return fund_legs(entries, bases, *leg_funds(doc), base_currency)
+
+
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
-    refuse_unissuable_taxes(await current_settings(session, company_id), "invoice", doc)
+    settings = await current_settings(session, company_id)
+    refuse_unissuable_taxes(settings, "invoice", doc)
+    periods = await recognition.deferred_lines(session, company_id, doc, settings)
+    incomes = await _line_income_accounts(session, company_id, doc, settings)
     total, tax, revenue = _sale_totals(doc, base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "invoice")
     # Recognize COGS with revenue: cost of the goods sold posts on the same JE, dated
@@ -673,16 +815,32 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         roles.append(R.TAX_OUTPUT)
     if cogs > 0:
         roles.append(R.COGS)
+    if periods:
+        roles.append(R.DEFERRED_REVENUE)
     acc = await resolve_many(session, company_id, roles)
     allocations, clearing, revenue = await _asset_split(session, company_id, doc, base_currency, revenue, debit=False)
-    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing]
-    if revenue or not clearing:
-        entries.append(_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, credit=revenue))
+    revenue_accounts = {index: incomes.get(index, acc[R.SALES_REVENUE]) for index in periods}
+    incomes = {**incomes, **{index: acc[R.DEFERRED_REVENUE] for index in periods}}
+    gifts = await _gift_lines(session, company_id, doc, settings) - {int(i) + 1 for i in periods}
+    for index, share in (allocations or {}).items():
+        if int(index) + 1 in gifts:
+            share["gift"] = True
+    income = _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue,
+                           deferred=acc.get(R.DEFERRED_REVENUE))
+    behind = [{int(i) + 1: share["base"] for i, share in allocations.items() if share["account"] == e["account"]}
+              if allocations else HEADER for e in income]
+    income, behind = _stamp_gifts(income, behind, [{n: w for n, w in b.items() if n in gifts}
+                                                   if isinstance(b, dict) else None for b in behind], base_currency)
+    entries = [_line(acc[R.RECEIVABLE], R.RECEIVABLE, debit=total), *clearing, *income]
+    bases = [CONTROL, *_clearing_bases(doc, allocations, clearing), *behind]
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=tax))
+        bases.append(_line_tax_basis(doc))
     if cogs > 0:
-        entries += _cogs_lines(await current_settings(session, company_id), acc[R.COGS],
-                               cogs_result.by_account, await company_currency(session, company_id))
+        cost = _cogs_lines(settings, acc[R.COGS], cogs_result.by_account, await company_currency(session, company_id))
+        entries += cost
+        bases += [None] * len(cost)
+    entries = _document_fund_legs(settings, doc, entries, bases, base_currency)
     await record_consignor_payables(session, company_id, user_id, cogs_result.payables)
     metadata_ = _recognition_metadata("doc.finalized", doc_id, cogs_result.allocations)
     if allocations:
@@ -691,7 +849,7 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
@@ -699,15 +857,24 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
         entries=entries,
         metadata_=metadata_,
     )
+    if periods:
+        await _emit_schedules(session, company_id=company_id, user_id=user_id, cycle=cycle_suffix, records=recognition.schedule_records(
+                                  doc_id, doc, periods=periods, allocations=allocations,
+                                  revenue_accounts=revenue_accounts, deferred=acc[R.DEFERRED_REVENUE],
+                                  funds=leg_funds(doc)[0] if funds_enabled(settings) else {},
+                                  books_currency=base_currency, rate=require_doc_rate(doc, base_currency),
+                                  source_je=f"je:auto:{doc_id}:{cycle_suffix}"))
     await doc_asset_lines.notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
                                  change="finalize")
 
 
-async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> list[tuple[str, _Dec]]:
+async def _revenue_sold_on(session, company_id, doc_id: str,
+                           settings: dict) -> tuple[list[tuple[str, _Dec]], dict[str, _Dec]]:
     """Each account a document's live finalize entry moved revenue on, with its net credit
-    (below zero on a discount account the sale was debited to), in code order. A line names
-    its revenue by its role, or one that carries no role (an imported document's own lines)
-    by its account being a revenue account in the chart. Empty when it moved none."""
+    (below zero on a discount account the sale was debited to), in code order, and the part of
+    that net its lines stamped as gifts (_stamp_gifts) by account. A line names its revenue by
+    its role, or one that carries no role (an imported document's own lines) by its account
+    being a revenue account in the chart (_revenue_line). Empty when it moved none."""
     lines = [e for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
              if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
              and (row.state or {}).get("status") == "posted"
@@ -715,11 +882,15 @@ async def _revenue_sold_on(session, company_id, doc_id: str, settings: dict) -> 
     roleless = {e["account"] for e in lines if not e.get("account_roles")}
     chart = (await lock_accounts(session, company_id, roleless) if roleless else None) or {}
     net: dict[str, _Dec] = {}
+    gift: dict[str, _Dec] = {}
     for e in lines:
         typed = not e.get("account_roles") and chart.get(e["account"], {}).get("account_type") in ROLE_TYPES[R.SALES_REVENUE]
         if typed or line_has_role(settings, e, R.SALES_REVENUE):
-            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
-    return sorted((code, amount) for code, amount in net.items() if amount)
+            moved = to_decimal(e.get("credit")) - to_decimal(e.get("debit"))
+            net[e["account"]] = net.get(e["account"], _Dec(0)) + moved
+            if e.get("gift"):
+                gift[e["account"]] = gift.get(e["account"], _Dec(0)) + moved
+    return sorted((code, amount) for code, amount in net.items() if amount), gift
 
 
 def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> list[tuple[str, _Dec]]:
@@ -739,14 +910,57 @@ def _revenue_shares(revenue, sold_on: list[tuple[str, _Dec]], currency: str) -> 
             *zip([c for c, _ in debited], (-share for share in allocate_pro_rata(back, [a for _, a in debited], currency)))]
 
 
-async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *,
-                             releasing: bool = False) -> tuple[list[dict], dict | None] | None:
+async def _posted_line_shares(session, company_id, doc_id: str) -> dict[str, dict]:
+    """line_id -> that line's share as a document's live finalize entry posted it (its
+    ``account`` and ``base``), read from the entry's line allocations (never from the item's
+    account today)."""
+    from celerp.models.ledger import LedgerEntry
+
+    live = [f"je:auto:{doc_id}:{suffix}" for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id)).items()
+            if _finalize_root(doc_id, f"je:auto:{doc_id}:{suffix}") is not None
+            and (row.state or {}).get("status") == "posted"]
+    if not live:
+        return {}
+    created = (await session.execute(_select(LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(sorted(live)),
+        LedgerEntry.event_type == "acc.journal_entry.created"))).scalars().all()
+    return {share["line_id"]: share for metadata_ in created
+            for share in ((metadata_ or {}).get("line_allocations") or {}).values()
+            if share.get("line_id") and share.get("account")}
+
+
+async def _note_with_posted_funds(session, company_id, doc: dict) -> dict:
+    """A credit or debit note whose lines linked to its original document's lines carry the
+    funds those lines posted with (peer_lines.posted_line_funds, rule V)."""
+    original = str(doc.get("original_doc_id") or "")
+    if not original or not any(isinstance(li, dict) and li.get("source_line_id") for li in doc.get("line_items") or []):
+        return doc
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": original})
+    return {**doc, "line_items": posted_line_funds(doc.get("line_items"), (row.state or {}) if row is not None else {})}
+
+
+async def _credit_note_lines(session, company_id, doc: dict, base_currency: str, *, day: date | None = None,
+                             releasing: bool = False) -> tuple[list[dict], dict | None, dict] | None:
     """A credit note's issue lines (Dr revenue and output tax, Cr receivable, each on the
     account its invoice recognized it on), or with *releasing* the same lines the other
-    way round, with its line allocations when it credits an asset sale. Revenue goes back
+    way round, with its line allocations (_asset_split). Revenue goes back
     on the accounts the invoice sold on, in the proportions it credited them (an imported
-    invoice can split its sale over several); a line crediting an asset's sale goes on
-    sale clearing (_asset_split). None when it carries no amount."""
+    invoice can split its sale over several), except a line linked to an invoice line
+    (source_line_id): its share goes back on the revenue account that invoice line was
+    credited on (_posted_line_shares), and its allocation names it. A note crediting no invoice
+    takes each line back on the account an invoice line of its item credits (_income_lines),
+    and every allocation names its account. A line crediting an asset's
+    sale goes on sale clearing (_asset_split). Where funds are on, each line is carried by
+    the funds of the note lines behind it, a linked line in the fund its invoice line posted
+    with (_note_with_posted_funds). None when it carries no amount.
+
+    An invoice line recognized over its service period (a revenue schedule), while the
+    invoice's live entry posted it, takes its linked lines and its pro rata share of the
+    unlinked ones like an account of its own: the note dated ``day`` takes that share off
+    deferred revenue as far as the schedule still plans it (recognition.credited_segments)
+    and off the line's revenue account for the rest, and the third value holds each such
+    schedule's new segments and credit for the caller to record. A release runs only once
+    the invoice is void, when no schedule takes part."""
     total, tax, revenue = _sale_totals(doc, base_currency)
     if not total:
         return None
@@ -755,7 +969,7 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
     settings = await current_settings(session, company_id)
     original = str(doc.get("original_doc_id") or "")
     ar = await party_origin(session, company_id, original, R.RECEIVABLE, settings) if original else None
-    sold_on = await _revenue_sold_on(session, company_id, original, settings) if original else []
+    sold_on, gift_on = await _revenue_sold_on(session, company_id, original, settings) if original else ([], {})
     roles = [r for r, have in ((R.RECEIVABLE, ar), (R.SALES_REVENUE, sold_on)) if not have]
     acc = await resolve_many(session, company_id, [*roles, *([R.TAX_OUTPUT] if tax else [])])
 
@@ -764,19 +978,86 @@ async def _credit_note_lines(session, company_id, doc: dict, base_currency: str,
         amount = abs(amount)
         return {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
 
-    if sold_on:
-        entries = [_origin_line(settings, code, R.SALES_REVENUE, **side(to_stored_float(share), True))
-                   for code, share in _revenue_shares(revenue, sold_on, base_currency) if share]
+    posted = await _posted_line_shares(session, company_id, original) if original else {}
+    schedules = {sid: s for sid, s in (await recognition.doc_schedules(session, company_id, original, lock=True)).items()
+                 if s.get("line_id") in posted} if posted and not releasing else {}
+    by_line = {s["line_id"]: sid for sid, s in schedules.items()}
+    weights = [(sid, to_decimal(posted[s["line_id"]]["base"])) for sid, s in sorted(schedules.items())]
+    sold_codes = {code for code, _ in sold_on}
+    linked: dict[str, _Dec] = {}
+    on_code: dict[int, str] = {}
+    gift_linked: set[int] = set()
+    for index, share in (allocations or {}).items():
+        line = doc["line_items"][int(index)]
+        source = line.get("source_line_id") if isinstance(line, dict) and not line.get("asset_id") else None
+        code = by_line.get(source) or (posted.get(source) or {}).get("account")
+        if code in sold_codes or code in schedules:
+            share["account"] = schedules[code]["account"] if code in schedules else code
+            linked[code] = linked.get(code, _Dec(0)) + to_decimal(share["base"])
+            on_code[int(index) + 1] = code
+            if (posted.get(source) or {}).get("gift"):
+                gift_linked.add(int(index) + 1)
+    # The document lines behind each revenue line: a linked line on its own account, every
+    # other line (not an asset's) on each account in the proportion that account takes of them.
+    spread = {int(i) + 1: to_decimal(share["base"]) for i, share in (allocations or {}).items()
+              if int(i) + 1 not in on_code and not doc["line_items"][int(i)].get("asset_id")}
+    credits: dict[str, tuple[list[dict], dict]] = {}
+    if sold_on or weights:
+        rest = to_decimal(revenue) - sum(linked.values(), _Dec(0))
+        shares: dict[str, _Dec] = dict(linked)
+        for code, share in (_revenue_shares(rest, [*sold_on, *weights], base_currency) if rest else []):
+            shares[code] = shares.get(code, _Dec(0)) + share
+        shares = {code: share for code, share in shares.items() if share}
+        entries, bases, gifted = [], [], []
+        ledger = await recognition.run_ledger(session, company_id) if schedules else None
+        sold_net = dict(sold_on)
+        for code, share in shares.items():
+            own = {n: to_decimal(allocations[str(n - 1)]["base"]) for n, c in on_code.items() if c == code}
+            spread_on = {n: base * (share - linked.get(code, _Dec(0))) / rest for n, base in spread.items()} if rest else {}
+            behind = {**own, **spread_on} or HEADER
+            if code not in schedules:
+                # What the invoice posted as gifts comes back as gifts: a linked line as its
+                # invoice line, the rest at the gift part of the invoice's revenue on the account.
+                ratio = gift_on.get(code, _Dec(0)) / sold_net[code] if sold_net.get(code) else _Dec(0)
+                entries.append(_revenue_line(settings, code, **side(to_stored_float(share), True)))
+                bases.append(behind)
+                gifted.append({**{n: w for n, w in own.items() if n in gift_linked},
+                               **{n: w * ratio for n, w in spread_on.items()}})
+                continue
+            schedule = schedules[code]
+            deferred, segments = recognition.credited_segments(code, schedule, ledger, share, day)
+            credits[code] = (segments, to_stored_float(deferred))
+            for line, part in ((_line(schedule["deferred_account"], R.DEFERRED_REVENUE, **side(to_stored_float(deferred), True)),
+                                deferred),
+                               (_revenue_line(settings, schedule["account"], **side(to_stored_float(share - deferred), True)),
+                                share - deferred)):
+                if part:
+                    entries.append(line)
+                    bases.append({n: b * part / share for n, b in behind.items()} if behind is not HEADER else HEADER)
+                    gifted.append(None)
+        entries, bases = _stamp_gifts(entries, bases, gifted, base_currency)
     elif revenue or not clearing:
-        entries = [_line(acc[R.SALES_REVENUE], R.SALES_REVENUE, **side(revenue, True))]
+        incomes = await _line_income_accounts(session, company_id, doc, settings)
+        gifts = await _gift_lines(session, company_id, doc, settings)
+        entries = [{**e, **side(e["credit"], True)}
+                   for e in _income_lines(settings, allocations, incomes, acc[R.SALES_REVENUE], revenue)]
+        bases = [{n: base for n, base in spread.items() if allocations[str(n - 1)]["account"] == e["account"]} or HEADER
+                 for e in entries]
+        entries, bases = _stamp_gifts(entries, bases, [{n: w for n, w in b.items() if n in gifts}
+                                                       if isinstance(b, dict) else None for b in bases], base_currency)
     else:
-        entries = []
+        entries, bases = [], []
     entries += clearing
+    bases += _clearing_bases(doc, allocations, clearing)
     if tax:
         entries.append(_line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, **side(tax, True)))
+        bases.append(_line_tax_basis(doc))
     entries.append(_origin_line(settings, ar, R.RECEIVABLE, **side(total, False)) if ar
                    else _line(acc[R.RECEIVABLE], R.RECEIVABLE, **side(total, False)))
-    return entries, allocations
+    entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
+                                  [*bases, CONTROL], base_currency)
+    return entries, allocations, credits
+
 
 
 async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_id: str, doc: dict,
@@ -790,9 +1071,11 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
     the credit note was issued unless ``ts`` says otherwise, with ``memo`` replacing the
     standard one."""
     refuse_unissuable_taxes(await current_settings(session, company_id), "credit_note", doc)
-    built = await _credit_note_lines(session, company_id, doc, base_currency)
+    day = ts or finalized_entry_day(doc)
+    on = date.fromisoformat(str(day)[:10]) if day else await company_today(session, company_id)
+    built = await _credit_note_lines(session, company_id, doc, base_currency, day=on)
     if built:
-        entries, allocations = built
+        entries, allocations, credits = built
         cycle_suffix, je_type_key = _finalize_cycle(doc, "credit_note")
         metadata_ = {"trigger": "doc.finalized", "doc_id": doc_id}
         if allocations:
@@ -801,14 +1084,18 @@ async def create_for_credit_note_finalized(session, *, company_id, user_id, doc_
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+            je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
             idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
             memo=memo or f"Auto JE for credit note {doc_id} finalized",
-            ts=ts or finalized_entry_day(doc),
+            ts=day,
             entries=entries,
             metadata_=metadata_,
         )
+        for sid, (segments, amount) in sorted(credits.items()):
+            entry = recognition.amendment("credit", on.isoformat(), None, user_id, note_id=doc_id, amount=amount)
+            await recognition.record_amendment(session, company_id, user_id, sid, segments, entry,
+                                               key=f"{sid}:credit:{doc_id}:{cycle_suffix}", source="doc.finalized")
     await doc_asset_lines.notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id, doc=doc,
                                  change="credit")
 
@@ -817,8 +1104,9 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
                                           base_currency: str = "USD") -> None:
     """Post a supplier credit note issued in Celerp: what a bill with the same lines books,
     the other way round (Dr accounts payable, Cr each line's expense account and the input
-    tax), with the payable on the account its bill recognized it on. A note a return raised
-    posts nothing here: the return's own entries already took it off the payable."""
+    tax), with the payable on the account its bill recognized it on, each line in the fund of
+    the bill line it credits (_note_with_posted_funds). A note a return raised posts nothing
+    here: the return's own entries already took it off the payable."""
     settings = await current_settings(session, company_id)
     refuse_unissuable_taxes(settings, "debit_note", doc)
     built = await _bill_entries(session, company_id, doc_id, doc, base_currency)
@@ -832,12 +1120,14 @@ async def create_for_debit_note_finalized(session, *, company_id, user_id, doc_i
         if ap and line_has_role(settings, e, R.PAYABLE):
             swapped = _origin_line(settings, ap, R.PAYABLE, debit=swapped["debit"])
         entries.append(swapped)
+    entries = _document_fund_legs(settings, await _note_with_posted_funds(session, company_id, doc), entries,
+                                  _bill_bases(doc, built), base_currency)
     cycle_suffix, je_type_key = _finalize_cycle(doc, "debit_note")
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for supplier credit note {doc_id} finalized",
@@ -865,7 +1155,7 @@ async def release_credit_note_open(session, *, company_id, user_id, doc_id: str,
         return
     entries = built[0]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:release",
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:release", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, "credit_note.release", "c"),
         idem_posted=je_idempotency_key(doc_id, "credit_note.release", "p"),
         memo=f"Credit left open on {doc_id} released: its invoice is void",
@@ -875,24 +1165,27 @@ async def release_credit_note_open(session, *, company_id, user_id, doc_id: str,
 
 
 async def _restate_receivable(session, *, company_id, user_id, doc_id: str, settings: dict, ar: str, gap,
-                              je_id: str, op: str, memo: str, ts, metadata_: dict) -> None:
-    """Move the receivable back by ``gap`` (what an entry took off it less what it should
-    have) against exchange gain or loss. Posts nothing when ``gap`` is 0."""
+                              je_id: str, op: str, memo: str, ts, metadata_: dict, follows: str) -> None:
+    """Move the receivable back by ``gap`` (what the entry ``follows`` took off it less what
+    it should have) against exchange gain or loss, split by fund as that entry split its
+    receivable. Posts nothing when ``gap`` is 0."""
     if not gap:
         return
     entries = [_origin_line(settings, ar, R.RECEIVABLE, debit=to_stored_float(max(gap, _Dec(0))),
                             credit=to_stored_float(max(-gap, _Dec(0))))]
+    entries = await _with_fx_difference(session, company_id, entries)
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, op, "c"), idem_posted=je_idempotency_key(doc_id, op, "p"),
-        memo=memo, ts=ts, entries=await _with_fx_difference(session, company_id, entries),
-        metadata_=metadata_,
+        memo=memo, ts=ts, metadata_=metadata_,
+        entries=await _split_as_posted(session, company_id, entries, follows, {ar}, await company_currency(
+            session, company_id), sources=f"je:auto:{doc_id}:fin"),
     )
 
 
 async def _credit_note_payment_receivable(session, company_id, doc_id: str, payment: dict, ar: str):
     """What a credit note's refund or application put back on the receivable for the credit
-    note, as its posted entry shows, or None when it has no posted entry."""
+    note, as its posted entry shows (None when it has no posted entry), and that entry."""
     index = payment.get("index")
     if payment.get("method") == "refund":
         je_id = f"je:auto:{doc_id}:pay:{index}"
@@ -900,9 +1193,9 @@ async def _credit_note_payment_receivable(session, company_id, doc_id: str, paym
         je_id = f"je:auto:{payment.get('target_doc_id')}:cnapply:{doc_id}:{index}"
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is None or (row.state or {}).get("status") != "posted":
-        return None
+        return None, je_id
     lines = [e for e in (row.state or {}).get("entries") or [] if e.get("account") == ar and to_decimal(e.get("debit"))]
-    return sum((to_decimal(e.get("debit")) for e in lines), _Dec(0)) if lines else None
+    return (sum((to_decimal(e.get("debit")) for e in lines), _Dec(0)) if lines else None), je_id
 
 
 async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str, doc: dict,
@@ -932,12 +1225,12 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
             gap=taken - to_decimal(_sale_totals(doc, base_currency)[0]), je_id=f"je:auto:{doc_id}:fin:rate",
             op="credit_note.rate", memo=memo or f"Credit note {doc_id} brought to its invoice's rate",
             ts=ts or finalized_entry_day(doc),
-            metadata_={"trigger": "doc.finalized", "doc_id": doc_id})
+            metadata_={"trigger": "doc.finalized", "doc_id": doc_id}, follows=f"je:auto:{doc_id}:fin")
     rate = require_doc_rate(doc, base_currency)
     for payment in doc.get("payments") or []:
         if payment.get("status", "active") != "active" or payment.get("method") not in ("refund", "applied"):
             continue
-        put_back = await _credit_note_payment_receivable(session, company_id, doc_id, payment, ar)
+        put_back, follows = await _credit_note_payment_receivable(session, company_id, doc_id, payment, ar)
         if put_back is None:
             continue
         index = payment.get("index")
@@ -948,7 +1241,7 @@ async def true_up_credit_note_rate(session, *, company_id, user_id, doc_id: str,
             memo=f"{'Refund' if payment.get('method') == 'refund' else 'Application'} {index} of credit note "
                  f"{doc_id} brought to its invoice's rate",
             ts=ts or payment.get("payment_date"),
-            metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": index})
+            metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": index}, follows=follows)
 
 
 async def void_credit_note_payment_rate(session, *, company_id, user_id, doc_id: str, payment_index) -> bool:
@@ -983,7 +1276,7 @@ async def _post_opening_settled(session, *, company_id, user_id, doc_id: str, do
                _line(acc[R.RETAINED_EARNINGS], R.RETAINED_EARNINGS,
                      debit=0.0 if party_debited else amount, credit=amount if party_debited else 0.0)]
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:{suffix}",
+        session, company_id=company_id, user_id=user_id, je_id=f"je:auto:{doc_id}:{suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, op, "c"),
         idem_posted=je_idempotency_key(doc_id, op, "p"),
         memo=memo,
@@ -1171,7 +1464,7 @@ async def payment_bank_fx(session, company_id, doc_id: str, base_currency: str, 
     return lambda code: fx if currencies.get(code) == currency else None
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float, fund_allocation: list[tuple[str | None, float]] | None = None) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account the cash moves through. None only for a payment
@@ -1192,24 +1485,38 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     Both rates are required - no default. A rate silently defaulting to 1 next to a real
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
+
+    With funds in use the payment settles each fund's open share of the document's balance
+    (journal_accounts.fund_open_shares), or the shares of ``fund_allocation`` (fund or None,
+    in the document's currency, adding up to ``amount``), and the entry records the split.
     """
     paid_key = str(payment_index)
     ledger_amount, bank_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
                                                  settlement_rate=settlement_rate)
 
     bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
+    control_codes: set[str] = set()
 
     def entries_for(control, bank):
-        return payment_lines(doc_type, control, {"account": bank}, ledger_amount, bank_amount, bank_fx=bank_fx(bank))
+        def control_line(**amounts):
+            line = control(**amounts)
+            control_codes.add(line["account"])
+            return line
+        return payment_lines(doc_type, control_line, {"account": bank}, ledger_amount, bank_amount,
+                             bank_fx=bank_fx(bank))
 
     entries = await _settlement_accounts(
         session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
         entries_for=entries_for)
+    entries, split = await fund_open_shares(
+        session, company_id, doc_id, control_codes, entries, base_currency.upper(),
+        amount=round_money(ledger_amount, base_currency),
+        allocation=[(fund, to_decimal(share)) for fund, share in fund_allocation] if fund_allocation else None)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:pay:{paid_key}",
+        je_id=f"je:auto:{doc_id}:pay:{paid_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
@@ -1217,8 +1524,34 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         currency=base_currency.upper(),
         entries=entries,
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
+        extra={"fund_allocation": split} if split else None,
     )
 
+
+async def doc_fund_open(session, company_id, doc_id: str, doc_type: str) -> dict[str | None, Decimal]:
+    """Each fund's open part (None: the unrestricted group's), in the books' currency, of the
+    receivable or payable a document still holds, as its next payment splits it
+    (journal_accounts.fund_open_amounts on the account create_for_doc_payment settles).
+    Empty with funds off."""
+    settings = await current_settings(session, company_id)
+    if not funds_enabled(settings):
+        return {}
+    role = _control_role(doc_type)
+    code = await party_origin(session, company_id, doc_id, role, settings) \
+        or (await resolve_many(session, company_id, [role]))[role]
+    return {fund: amount for fund, (amount, _) in (await fund_open_amounts(session, company_id, doc_id, {code})).items()}
+
+
+async def _split_as_posted(session, company_id, entries: list[dict], follows: str, codes: set[str], base: str,
+                           sources: str | None = None) -> list[dict]:
+    """With funds in use, ``entries`` split as the posted entry ``follows`` split its lines on
+    ``codes`` (attribution rules P and V), each line naming ``sources`` (else ``follows``) as
+    the entry it follows."""
+    if not funds_enabled(await current_settings(session, company_id)):
+        return entries
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": follows})
+    posted = ((row.state or {}).get("entries") or []) if row is not None else []
+    return copy_fund_split(entries, posted_fund_shares(posted, codes), base, sources or follows)
 
 
 async def create_for_online_fees(
@@ -1231,6 +1564,7 @@ async def create_for_online_fees(
 
     Gross settlement of the invoice remains unchanged. Every provider transaction is
     a separate signed cash movement, including actual fee refunds. No inferred fees.
+    With funds in use the fees split by fund as the receipt they were charged on banked.
     """
     import hashlib
     import json
@@ -1315,10 +1649,12 @@ async def create_for_online_fees(
     day = await correction_day(session, company_id, original_day) or original_day
     await _emit_auto_posted_je(
         session, company_id=company_id, user_id=user_id,
-        je_id=f"je:auto:{doc_id}:online-fees:{token}",
+        je_id=f"je:auto:{doc_id}:online-fees:{token}", record_id=doc_id,
         idem_create=create_key, idem_posted=je_idempotency_key("online-fees", suffix, "p"),
         memo=f"Online payment processing fees for {doc_id}",
-        ts=day, currency=base, entries=entries,
+        ts=day, currency=base,
+        entries=await _split_as_posted(session, company_id, entries, f"je:auto:{doc_id}:pay:{payment.get('index')}",
+                                       {bank}, base),
         metadata_={"trigger": "doc.online_fees", "doc_id": doc_id,
                    "reference": reference, "fee_hash": digest,
                    "transaction_id": tx, "fee_currency": fees["currency"],
@@ -1326,6 +1662,83 @@ async def create_for_online_fees(
                                             ("processor_minor", "platform_minor", "other_minor")}},
     )
     return expense
+
+
+# What each posting step of a card dispute moves: the account debited and the account
+# credited, a role or None for the payment's deposit account. "lost" is a closed dispute
+# Stripe decided against the company after it took the money.
+DISPUTE_STEPS: dict[str, tuple[AccountRole | None, AccountRole | None]] = {
+    "funds_withdrawn": (R.DISPUTED_PAYMENTS, None),
+    "funds_reinstated": (None, R.DISPUTED_PAYMENTS),
+    "lost": (R.PAYMENT_DISPUTE_LOSSES, R.DISPUTED_PAYMENTS),
+}
+
+
+async def post_dispute_adjustment(
+    session, *, company_id, user_id, doc_id: str, payment: dict, dispute_id: str, step: str,
+    amount_minor: int, currency: str, occurred_at: datetime | None,
+) -> bool:
+    """Post one step of a card dispute on *payment* (DISPUTE_STEPS): the money Stripe took
+    from the deposit account moves to Disputed payments, back when the company wins, and
+    on to Payment dispute losses when it loses. Dated the company's business day at
+    *occurred_at* (now when Stripe gave no time), moved to the correction day when that
+    day is closed. The payment and the invoice are never changed: the customer paid, and
+    the dispute is money held or lost after it. Each step posts once; False when it was
+    already posted. With funds in use the lines split by fund as the receipt banked."""
+    from datetime import timezone
+    from celerp.events.engine import find_event_by_idempotency
+    from celerp.models.company import Company
+    from celerp.services.account_roles import resolve
+    from celerp.services.business_time import business_date_at
+    from celerp.services.payments import stripe_amount
+    from celerp_docs.routes import books_currency_still
+
+    debit_role, credit_role = DISPUTE_STEPS[step]
+    suffix = f"{dispute_id}:{step}"
+    create_key = je_idempotency_key("dispute", suffix, "c")
+    if await find_event_by_idempotency(session, company_id, create_key) is not None:
+        return False
+    bank = payment["bank_account"]
+    base = payment["books"]["base_currency"].upper()
+    await books_currency_still(session, company_id, base)
+    disputed_currency = currency.upper()
+    paid_currency = str(payment.get("currency") or "").upper()
+    if disputed_currency == base:
+        rate = _Dec(1)
+    elif disputed_currency == paid_currency:
+        rate = checked_exchange_rate(payment["conversion_rate"])
+    else:
+        raise ValueError("A dispute's currency cannot be converted from the payment's recorded books")
+    disputed = stripe_amount(amount_minor, currency)
+    amount = to_base(disputed, rate, base)
+    bank_currency = (await bank_currencies(session, company_id)).get(bank)
+    bank_fx = ((disputed_currency, to_stored_float(round_money(disputed, disputed_currency)), float(rate))
+               if bank_currency == disputed_currency != base else None)
+
+    async def side(role: AccountRole | None, *, debit: bool) -> dict:
+        figures = {"debit": amount if debit else 0.0, "credit": 0.0 if debit else amount}
+        if role is None:
+            return {"account": bank, **figures, **bank_fx_fields(bank_fx, outflow=not debit)}
+        return _line(await resolve(session, company_id, role), role, **figures)
+
+    entries = [await side(debit_role, debit=True), await side(credit_role, debit=False)]
+    company = await session.get(Company, company_id)
+    original_day = business_date_at(occurred_at or datetime.now(timezone.utc),
+                                    ((company.settings if company else None) or {}).get("timezone"))
+    day = await correction_day(session, company_id, original_day) or original_day
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id,
+        je_id=f"je:auto:{doc_id}:dispute:{suffix}", record_id=doc_id,
+        idem_create=create_key, idem_posted=je_idempotency_key("dispute", suffix, "p"),
+        memo=f"Card payment dispute {dispute_id} on {doc_id}: {step.replace('_', ' ')}",
+        ts=day, currency=base,
+        entries=await _split_as_posted(session, company_id, entries, f"je:auto:{doc_id}:pay:{payment['index']}",
+                                       {bank}, base),
+        metadata_={"trigger": "doc.payment_dispute", "doc_id": doc_id, "reference": payment.get("reference"),
+                   "dispute_id": dispute_id, "step": step, "amount_minor": amount_minor,
+                   "currency": currency.lower()},
+    )
+    return True
 
 
 def _reversal_template(entry: dict) -> dict:
@@ -1356,24 +1769,43 @@ async def payment_return_entries(session, company_id, *, doc_id: str, payment_in
         return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True,
                              bank_fx=bank_fx(bank_line["account"]))
 
-    original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
+    paid_id = f"je:auto:{doc_id}:pay:{payment_index}"
+    original = await session.get(Projection, {"company_id": company_id, "entity_id": paid_id})
     posted = (original.state or {}).get("entries") or [] if original is not None else []
-    if len(posted) < 2:
+    # One line per account: a payment split by fund wrote each of its lines once per fund.
+    distinct = list({(e["account"], tuple(e.get("account_roles") or ())): e for e in posted[::-1]}.values())
+    distinct = sorted(distinct, key=posted.index)
+    if len(distinct) < 2:
         return await _settlement_accounts(
             session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
             entries_for=entries_for)
     # The payment's entry is [control, bank] for an outflow and [bank, control] for
     # a receipt, then its exchange difference, if any.
-    control_entry, bank_entry = (posted[0], posted[1]) if outflow else (posted[1], posted[0])
+    control_entry, bank_entry = (distinct[0], distinct[1]) if outflow else (distinct[1], distinct[0])
     control_template = _reversal_template(control_entry)
 
     def control_line(debit=0.0, credit=0.0):
         return {**control_template, "debit": debit, "credit": credit}
     entries = entries_for(control_line, _reversal_template(bank_entry))
-    difference = _reversal_template(posted[2]) if len(posted) > 2 else None
+    difference = _reversal_template(distinct[2]) if len(distinct) > 2 else None
     if difference is None:
-        return await _with_fx_difference(session, company_id, entries)
-    return _balanced_with_fx_difference(entries, difference)
+        entries = await _with_fx_difference(session, company_id, entries)
+    else:
+        entries = _balanced_with_fx_difference(entries, difference)
+    if not funds_enabled(await current_settings(session, company_id)):
+        return entries
+    # Each fund gets back its part of what the pieces so far and this one take off the
+    # control line, less what the earlier pieces took (rule V), so the pieces add up to
+    # each fund's part of the payment exactly.
+    shares = posted_fund_shares(posted, {control_entry["account"]})
+
+    def taken(given_back: float) -> list:
+        ledger = payment_amounts(amount=given_back, base_currency=base_currency, doc_rate=doc_rate,
+                                 settlement_rate=settlement_rate)[0] if given_back else 0
+        return allocate_pro_rata(ledger, [share for _, share in shares], base_currency) if shares else []
+    pieces = [after - before for after, before in zip(taken(already_given_back + amount), taken(already_given_back))]
+    return copy_fund_split(entries, [(fund, piece) for (fund, _), piece in zip(shares, pieces) if piece],
+                           base_currency, paid_id)
 
 
 async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str | None, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None, already_given_back: float = 0.0) -> None:
@@ -1415,7 +1847,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{kind}:{key}",
+        je_id=f"je:auto:{doc_id}:{kind}:{key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{op}:{key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{op}:{key}", "p"),
         memo=memo,
@@ -1426,7 +1858,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float, currency: str) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     The invoice's receivable is credited on the account the invoice recognized it on,
@@ -1437,29 +1869,32 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
     base_currency: company base currency for JE conversion.
     conversion_rate: the note's recognition rate; target_rate: the invoice's rate.
+    currency: the currency of the two documents, which ``amount`` is in.
     The control balances clear at their own rates, with any difference booked as FX.
     """
     await _create_for_note_application(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
         payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
-        conversion_rate=conversion_rate, target_rate=target_rate, role=R.RECEIVABLE, kind="cn", label="credit note",
+        conversion_rate=conversion_rate, target_rate=target_rate, currency=currency, role=R.RECEIVABLE, kind="cn", label="credit note",
     )
 
 
-async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float) -> None:
+async def create_for_dn_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float, target_rate: float, currency: str) -> None:
     """Create JE for a supplier credit note applied to a bill: AP-to-AP transfer, the
     bill's payable debited and the note's credited, each on the account it sits on."""
     await _create_for_note_application(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, note_id=note_id, amount=amount,
         payment_index=payment_index, payment_date=payment_date, base_currency=base_currency,
-        conversion_rate=conversion_rate, target_rate=target_rate, role=R.PAYABLE, kind="dn", label="supplier credit note",
+        conversion_rate=conversion_rate, target_rate=target_rate, currency=currency, role=R.PAYABLE, kind="dn", label="supplier credit note",
     )
 
 
-async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, target_rate: float, role, kind: str, label: str) -> None:
+async def _create_for_note_application(session, *, company_id, user_id, doc_id: str, note_id: str, amount: float, payment_index: int, payment_date: str | None, base_currency: str, conversion_rate: float, target_rate: float, currency: str, role, kind: str, label: str) -> None:
     """One credit note applied to one document: the document's control balance cleared
     against the note's, on the accounts each recognized it on. A receivable is credited
-    on the document's side, a payable debited."""
+    on the document's side, a payable debited. With funds in use it settles only what both
+    hold open in the same fund (journal_accounts.note_fund_lines), and the entry names the
+    note among the records it ``settles``."""
     note_amount = to_base(float(amount), checked_exchange_rate(conversion_rate), base_currency)
     target_amount = to_base(float(amount), checked_exchange_rate(target_rate), base_currency)
     app_key = f"{kind}_apply_{note_id}:{payment_index}"
@@ -1472,6 +1907,15 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         doc_side, note_side = {"credit": target_amount}, {"debit": note_amount}
     else:
         doc_side, note_side = {"debit": target_amount}, {"credit": note_amount}
+    doc_line, note_line, *fx = await _with_fx_difference(session, company_id, [
+        _origin_line(settings, doc_account, role, **doc_side),
+        _origin_line(settings, note_account, role, **note_side),
+    ])
+    entries = await note_fund_lines(
+        session, company_id, doc_id=doc_id, doc_codes={doc_line["account"]}, note_id=note_id,
+        note_codes={note_line["account"]}, doc_lines=[doc_line, *fx], note_lines=[note_line],
+        amount=to_decimal(amount), doc_rate=checked_exchange_rate(target_rate),
+        note_rate=checked_exchange_rate(conversion_rate), base=base_currency.upper(), currency=currency)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1479,16 +1923,14 @@ async def _create_for_note_application(session, *, company_id, user_id, doc_id: 
         # Entity id carries the application's index: the same note can be applied to
         # the same document more than once, and each application must be a distinct
         # entry so voiding one never erases another.
-        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}",
+        je_id=f"je:auto:{doc_id}:{kind}apply:{note_id}:{payment_index}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{kind}.applied:{app_key}", "p"),
         memo=f"Auto JE for {label} {note_id} applied to {doc_id}",
         ts=payment_date,
-        entries=await _with_fx_difference(session, company_id, [
-            _origin_line(settings, doc_account, role, **doc_side),
-            _origin_line(settings, note_account, role, **note_side),
-        ]),
+        entries=entries,
         metadata_={"trigger": f"{kind}.applied", "doc_id": doc_id, f"{kind}_id": note_id},
+        extra={"settles": [note_id]},
     )
 
 
@@ -1506,17 +1948,21 @@ def po_receipt_role(doc: dict, receive_as: str = "stock") -> AccountRole:
 
 
 async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_key: str | None,
-                           debits: dict[AccountRole | str, float], receive_date: str | None,
+                           debits: dict[AccountRole | str, dict[int | None, float]], receive_date: str | None,
                            items: list[dict]) -> None:
     """Dr each receipt debit / Cr AP for the sum of the rounded debits.
 
     A role key posts to the role's account; an account key is the inventory account
-    of the lot the goods were added to. AP continues on the account the order's
-    earlier receipts recognized it on. `items` (item, quantity, cost in the books'
+    of the lot the goods were added to. Each debit is given by the order line (1-based,
+    None when no line names the goods) its cost came from. AP continues on the account
+    the order's earlier receipts recognized it on. Where funds are on, each debit is
+    carried by its lines' funds and the AP by each fund's balance (_document_fund_legs), as
+    the bill the order becomes carries them, so the two net fund by fund; a stock line with
+    no fund of its own carries none, and rule 7 refuses a restricted one. `items` (item, quantity, cost in the books'
     currency) is what this receipt booked; the entry carries it, so the receipt's items
     are read from the receipt and not from the whole order."""
     currency = await company_currency(session, company_id)
-    rounded = {key: round_money(amount, currency) for key, amount in debits.items()}
+    rounded = {key: round_money(sum(by_line.values()), currency) for key, by_line in debits.items()}
     total = sum(rounded.values(), _Dec(0))
     if total <= 0:
         return
@@ -1529,12 +1975,18 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
                for k, amt in rounded.items() if amt]
     entries.append(_origin_line(settings, ap, R.PAYABLE, credit=to_stored_float(total)) if ap
                    else _line(acc[R.PAYABLE], R.PAYABLE, credit=to_stored_float(total)))
+    if funds_enabled(settings):
+        order = await session.get(Projection, {"company_id": company_id, "entity_id": po_id})
+        bases = [{n: cost for n, cost in by_line.items() if n is not None}
+                 for key, by_line in debits.items() if rounded[key]]
+        entries = _document_fund_legs(settings, order.state if order is not None else {}, entries,
+                                      [*bases, CONTROL], currency)
     suffix = f":{receipt_key}" if receipt_key else ""
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv{suffix}",
+        je_id=f"je:auto:{po_id}:rcv{suffix}", record_id=po_id,
         idem_create=je_idempotency_key(po_id, f"po.received{suffix}", "c"),
         idem_posted=je_idempotency_key(po_id, f"po.received{suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
@@ -1579,7 +2031,7 @@ async def create_for_imported_document(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{suffix}",
+        je_id=f"je:auto:{doc_id}:{suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, je_type, "c"),
         idem_posted=je_idempotency_key(doc_id, je_type, "p"),
         memo=f"Imported entry for {doc_id}",
@@ -1590,13 +2042,13 @@ async def create_for_imported_document(
 
 
 async def create_for_po_receipt(
-    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, float],
+    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, dict[int | None, float]],
     items: list[dict],
 ) -> None:
     """Receipt entry for one batch of goods received on a purchase order.
 
     debits are what the received goods cost per role, or per lot inventory account
-    for goods added to stock, in the books' currency: the same amounts the receipt
+    for goods added to stock, by order line, in the books' currency: the same amounts the receipt
     adds to the lots' cost. Dated today in the company's timezone (entry_day)."""
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
@@ -1604,9 +2056,9 @@ async def create_for_po_receipt(
     )
 
 
-def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...]]:
-    """What a line nets against: its account and what it was posted for."""
-    return entry["account"], tuple(sorted(line_roles(settings, entry)))
+def _net_key(settings: dict, entry: dict) -> tuple[str, tuple[str, ...], str | None]:
+    """What a line nets against: its account, what it was posted for and its fund."""
+    return entry["account"], tuple(sorted(line_roles(settings, entry))), entry.get("fund_id") or None
 
 
 _LOT_ROLES = (R.INVENTORY_OPENING.value, R.INVENTORY_PURCHASED.value)
@@ -1776,7 +2228,7 @@ async def create_for_landed_capitalisation(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}",
+        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
         memo=f"Auto JE for {doc_id} landed-cost capitalisation",
@@ -1981,7 +2433,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:rtn-value:{return_key}",
+            je_id=f"je:auto:{doc_id}:rtn-value:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"items.returned.value:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} corrected cost of goods returned to supplier",
@@ -2030,7 +2482,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:rtn:{return_key}",
+            je_id=f"je:auto:{doc_id}:rtn:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} goods returned to supplier",
@@ -2052,7 +2504,7 @@ async def create_for_supplier_return(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}",
+            je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "p"),
             memo=f"Auto JE for {doc_id} landed cost of goods returned to supplier",
@@ -2098,7 +2550,7 @@ async def reverse_return_charges(session, *, company_id, user_id, doc_id: str, r
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:rtn-bill:{revert_count}",
+        je_id=f"je:auto:{doc_id}:rtn-bill:{revert_count}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"items.returned.bill:{revert_count}", "p"),
         memo=f"Auto JE for {doc_id} tax and exchange difference of its returns, reversed with the bill",
@@ -2170,7 +2622,7 @@ async def create_for_receipt_undone(
     """
     settings = await current_settings(session, company_id)
     booked: dict[str, _Dec] = {}
-    for (code, roles), amount in (await _doc_receipt_booked(session, company_id, doc_id, settings)).items():
+    for (code, roles, _fund), amount in (await _doc_receipt_booked(session, company_id, doc_id, settings)).items():
         if set(roles) <= set(_LOT_ROLES):
             booked[code] = booked.get(code, _Dec(0)) + amount
     currency = await company_currency(session, company_id)
@@ -2197,7 +2649,7 @@ async def create_for_receipt_undone(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:rcv:undo:{undo_key}",
+        je_id=f"je:auto:{doc_id}:rcv:undo:{undo_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"receipt.undone:{undo_key}", "p"),
         memo=f"Auto JE for {doc_id} goods received undone",
@@ -2260,6 +2712,17 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
     return entries, sources, debits
 
 
+def _bill_bases(doc: dict, built) -> list:
+    """The document lines behind each line _bill_entries books: a debit its own line, tax the
+    lines that incurred it, shipping every goods line, and the payable each fund's balance."""
+    entries, sources, debits = built
+    goods = {index + 1: d for index, d in zip(sources, debits) if index is not None}
+    return [*({index + 1: d} if index is not None
+              else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
+              else goods or HEADER
+              for index, e, d in zip(sources, entries, debits)), CONTROL]
+
+
 async def create_for_bill_conversion(
     session,
     *,
@@ -2277,7 +2740,8 @@ async def create_for_bill_conversion(
     document's purchase order receipts already booked and less what the opening balances
     carry for a document imported into them (imported_carriage). ``correction`` marks the
     posting as the correction of an earlier import's (correct_earlier_import), apart from
-    the cycle's own.
+    the cycle's own. Where funds are on, each debit and the AP are carried by the funds of
+    the bill's lines (_document_fund_legs) and net only against what was booked for the same fund.
     Returns what each line debits, in base currency, by line index: {index: (account,
     amount)}, before any netting against receipts.
     """
@@ -2288,6 +2752,7 @@ async def create_for_bill_conversion(
         return {}
     entries, sources, debits = built
     by_line = {index: (e["account"], d) for index, e, d in zip(sources, entries, debits) if index is not None}
+    entries = _document_fund_legs(settings, doc, entries, _bill_bases(doc, built), base_currency)
     # What the document's purchase order receipts already booked is not booked again, so
     # receiving before or after finalizing ends in the same books.
     # A line first takes up what the receipts booked for the same purpose, on the accounts
@@ -2301,10 +2766,12 @@ async def create_for_bill_conversion(
     if booked:
         unfilled = dict(booked)
         net: dict[tuple, _Dec] = {}
+        source_lines: dict[tuple, set[int]] = {}
         for e in entries:
             key = _net_key(settings, e)
+            source_lines.setdefault(key, set()).update(e.get("source_lines") or [])
             left = to_decimal(e["debit"]) - to_decimal(e["credit"])
-            slots = sorted((k for k in unfilled if k[1] and _net_group(k[1]) == _net_group(key[1])),
+            slots = sorted((k for k in unfilled if k[1] and _net_group(k[1]) == _net_group(key[1]) and k[2] == key[2]),
                            key=lambda k: (k != key, -abs(unfilled[k]), k[0]))
             for slot in slots:
                 if left and unfilled[slot] and (unfilled[slot] > 0) == (left > 0):
@@ -2317,8 +2784,10 @@ async def create_for_bill_conversion(
         for key, amount in booked.items():
             net[key] = net.get(key, _Dec(0)) - amount
         entries = [{"account": acct, "account_roles": list(roles),
-                    "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
-                   for (acct, roles), v in net.items() if v]
+                    "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0))),
+                    **({"source_lines": sorted(source_lines[key])} if key in source_lines else {}),
+                    **({"fund_id": fund} if fund else {})}
+                   for key, v in net.items() if v for acct, roles, fund in [key]]
         if not entries:
             return by_line
 
@@ -2327,7 +2796,7 @@ async def create_for_bill_conversion(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:bill",
+        je_id=f"je:auto:{doc_id}:bill", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}{tag}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
@@ -2433,14 +2902,23 @@ async def imported_document(session, company_id, doc_id: str) -> ImportedDocumen
 
 async def _carriage_entries(session, company_id, imported: ImportedDocument) -> list[dict]:
     """What the opening balances hold for an imported document, as the entry its bill
-    would book (_bill_carriage_parts, without the source lines)."""
-    return [e for e, _ in await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)]
+    would book (_bill_carriage_parts), carried by the funds the document's lines have now
+    as that bill's would be (_document_fund_legs), so the two net fund by fund."""
+    parts = await _bill_carriage_parts(session, company_id, imported.doc_id, imported.snapshot)
+    entries = [e for e, _, _ in parts]
+    settings = await current_settings(session, company_id)
+    if not entries or not funds_enabled(settings):
+        return entries
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": imported.doc_id})
+    return _document_fund_legs(settings, row.state if row is not None else imported.snapshot, entries,
+                               [basis for _, _, basis in parts], await company_currency(session, company_id))
 
 
-async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None]]:
+async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict) -> list[tuple[dict, int | None, object]]:
     """Each line of what the opening balances hold for an imported document, with the
     index of the document line it comes from (None for tax, shipping, retained earnings
-    and payables). For a bill, its whole entry, except that goods it had already received
+    and payables) and the document lines behind it as its bill's entry has them
+    (_bill_bases; the retained earnings none). For a bill, its whole entry, except that goods it had already received
     are in opening stock, held by their lots: what is owed for them is held against
     retained earnings, never in transit. For a purchase order, each line's share received
     when it was imported. A purchase order's receipts book only the goods, so its tax and
@@ -2450,6 +2928,7 @@ async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict)
     if built is None:
         return []
     entries, sources, debits = built
+    bases = _bill_bases(snapshot, built)
     from celerp.services.document_lines import received_line_index
 
     lines = snapshot.get("line_items") or []
@@ -2464,31 +2943,31 @@ async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict)
         return min(received.get(source, _Dec(0)) / ordered, _Dec(1)) if ordered > 0 else _Dec(0)
 
     if snapshot.get("doc_type") == "bill":
-        held: list[tuple[dict, int | None]] = []
+        held: list[tuple[dict, int | None, object]] = []
         in_stock = _Dec(0)
-        for e, s, d in zip(entries, sources, debits):
+        for e, s, d, basis in zip(entries, sources, debits, bases):
             stock = s is not None and bill_line_kind(lines[s]) == "stock"
             amount = round_money(d * received_fraction(s), base_currency) if stock else _Dec(0)
             if amount:
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
             if to_decimal(e["debit"]):
-                held.append((e, s))
+                held.append((e, s, basis))
         if in_stock:
             held.append((_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,
-                               debit=to_stored_float(in_stock)), None))
-        return [*held, (entries[-1], None)]
+                               debit=to_stored_float(in_stock)), None, None))
+        return [*held, (entries[-1], None, CONTROL)]
     carried = []
-    for e, s, d in zip(entries, sources, debits):
+    for e, s, d, basis in zip(entries, sources, debits, bases):
         if s is None:
             continue
         amount = round_money(d * received_fraction(s), base_currency)
         if amount:
-            carried.append(({**e, "debit": to_stored_float(amount)}, s))
+            carried.append(({**e, "debit": to_stored_float(amount)}, s, basis))
     if not carried:
         return []
-    total = sum((to_decimal(e["debit"]) for e, _ in carried), _Dec(0))
-    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None)]
+    total = sum((to_decimal(e["debit"]) for e, _, _ in carried), _Dec(0))
+    return [*carried, ({**entries[-1], "credit": to_stored_float(total)}, None, CONTROL)]
 
 
 @dataclass(frozen=True)
@@ -2541,7 +3020,7 @@ async def opening_held_documents(session, company_id) -> list[OpeningHeld]:
                 amount, base_amount = -amount, -base_amount
         if kind == "bill":
             lines = snapshot.get("line_items") or []
-            for e, s in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
+            for e, s, _ in await _bill_carriage_parts(session, company_id, row.entity_id, snapshot):
                 if s is not None and bill_line_kind(lines[s]) == "stock":
                     goods[e["account"]] = goods.get(e["account"], _Dec(0)) + to_decimal(e["debit"])
         out.append(OpeningHeld(
@@ -2578,7 +3057,7 @@ async def reverse_imported_carriage(session, *, company_id, user_id, doc_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"{prefix}{n}",
+        je_id=f"{prefix}{n}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{_IMPORTED_REVERSAL}:{n}", "p"),
         memo=f"Reversed: {doc_id} as held in the opening balances",
@@ -2697,10 +3176,11 @@ async def _void_je_if_posted(session, *, company_id, user_id, doc_id: str, je_id
 async def void_supplier_return(session, *, company_id, user_id, doc_id: str, return_key: str,
                                note_id: str) -> None:
     """Reverse the entries one return to the supplier posted on a document (the goods, their
-    corrected cost and their landed cost), when the supplier credit note it raised is voided.
-    An entry already void is skipped, so a retry reverses nothing twice."""
+    corrected cost and their landed cost), when the supplier credit note it raised is voided,
+    each at the entry standing for it (current_entry). An entry already void is skipped, so a
+    retry reverses nothing twice."""
     for kind in ("rtn", "rtn-value", "landed-rtn"):
-        je_id = f"je:auto:{doc_id}:{kind}:{return_key}"
+        je_id = await current_entry(session, company_id, f"je:auto:{doc_id}:{kind}:{return_key}")
         await _void_je_if_posted(
             session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=je_id,
             idem_key=f"{je_id}:void:{note_id}", reason=f"Reversed: supplier credit note {note_id} voided",
@@ -2849,6 +3329,41 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     await _notify_asset_lines(session, company_id, user_id, doc_id, "revert")
 
 
+async def void_record_postings(session, *, company_id, user_id, doc_id: str, trigger: str, reason: str,
+                               goods_movements: bool = False, replaced_by: Mapping[str, str] | None = None) -> int:
+    """Void every posted recognition-family entry of the document as one batch and return its
+    number: one more than the highest ``void_batch`` its void events carry, written in each
+    void's metadata and idempotency key, so every void and unvoid cycle keeps its events
+    distinct and the unvoid restores exactly the latest batch. ``replaced_by`` (entry id
+    suffix -> the id of the copy that replaces it) is written into the data of the voids it
+    names; only Change fund passes it."""
+    void_events = await _doc_void_events(session, company_id, doc_id)
+    batch = 1 + max(
+        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
+        default=0,
+    )
+    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, goods_movements)).items():
+        if (row.state or {}).get("status") != "posted":
+            continue
+        data = je_void_data(reason, row.state)
+        if replaced_by and suffix in replaced_by:
+            data["replaced_by"] = replaced_by[suffix]
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=f"je:auto:{doc_id}:{suffix}",
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=data,
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
+            metadata_={"trigger": trigger, "doc_id": doc_id, "void_batch": batch},
+        )
+    return batch
+
+
 async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
                               goods_movements: bool = False) -> None:
     """Reverse every posted recognition-family auto-JE when a finalized doc is
@@ -2867,28 +3382,8 @@ async def void_for_doc_voided(session, *, company_id, user_id, doc_id: str,
     goods_movements: the doc received goods and sent every one of them back; the entries of
     those receipts and returns reverse with it, so it leaves nothing booked.
     """
-    void_events = await _doc_void_events(session, company_id, doc_id)
-    batch = 1 + max(
-        (int((e.metadata_ or {}).get("void_batch") or 0) for e in void_events),
-        default=0,
-    )
-    for suffix, row in (await _doc_recognition_jes(session, company_id, doc_id, goods_movements)).items():
-        je_id = f"je:auto:{doc_id}:{suffix}"
-        if (row.state or {}).get("status") != "posted":
-            continue
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.voided",
-            data=je_void_data(f"Reversed: {doc_id} voided", row.state),
-            actor_id=user_id,
-            location_id=None,
-            source="auto_je",
-            idempotency_key=je_idempotency_key(doc_id, f"voided:{batch}:{suffix}", "void"),
-            metadata_={"trigger": "doc.voided", "doc_id": doc_id, "void_batch": batch},
-        )
+    await void_record_postings(session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.voided",
+                               reason=f"Reversed: {doc_id} voided", goods_movements=goods_movements)
     await reverse_imported_carriage(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id, trigger="doc.voided",
         carriage=await imported_carriage(session, company_id, doc_id))
@@ -2958,7 +3453,7 @@ async def create_for_doc_cogs_backfill(session, *, company_id, user_id, doc_id: 
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:cogs-backfill",
+        je_id=f"je:auto:{doc_id}:cogs-backfill", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, "invoice.cogs_backfill", "c"),
         idem_posted=je_idempotency_key(doc_id, "invoice.cogs_backfill", "p"),
         memo=f"Auto JE for {doc_id} COGS backfill",
@@ -3198,7 +3693,7 @@ async def create_for_merge_reclassification(
     for code, a in reclass.moves.items():
         lines.append(_lot_line(settings, code, debit=to_stored_float(max(-a, _Dec(0))), credit=to_stored_float(max(a, _Dec(0)))))
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id),
+        session, company_id=company_id, user_id=user_id, je_id=merge_reclass_je_id(merged_id), record_id=None,
         idem_create=je_idempotency_key(merged_id, "item.merged.reclass", "c"),
         idem_posted=je_idempotency_key(merged_id, "item.merged.reclass", "p"),
         memo=f"Inventory reclassified on merge into {merged_sku}",
@@ -4179,7 +4674,7 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
         skus = sorted({str((rows[c.lot_id].state or {}).get("sku") or "") for c in claims if c.lot_id in rows})
         await _emit_auto_posted_je(
             session, company_id=company_id, user_id=user_id,
-            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}",
+            je_id=f"je:auto:{doc_id}:cost-move:{cycle_tag}:{from_doc}", record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"cost_move:{cycle_tag}:{from_doc}", "p"),
             memo=f"Cost of {', '.join(skus)} moved from {from_number} to {doc_number}, which shipped them",
@@ -4457,7 +4952,7 @@ async def create_for_doc_cogs_adjustment(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{family}:{cycle_tag}",
+        je_id=f"je:auto:{doc_id}:{family}:{cycle_tag}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"{family}:{cycle_tag}" if family != "cogs-adj" else f"cogs_adjustment:{cycle_tag}", "p"),
         memo=memo or f"COGS adjustment for {doc_number}",
@@ -4502,46 +4997,102 @@ async def _free_goods_only(session, company_id, doc_id: str, allocations: dict) 
     return out
 
 
+async def current_entry(session, company_id, je_id: str) -> str:
+    """The live entry standing for ``je_id``: the entry itself, unless Change fund voided it
+    and posted it again (``replaced_by``), when the copy it was replaced by, followed to the
+    latest one."""
+    seen = {je_id}
+    while True:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+        state = (row.state or {}) if row is not None else {}
+        nxt = state.get("replaced_by") if state.get("status") == "void" else None
+        if not nxt or nxt in seen:
+            return je_id
+        seen.add(nxt)
+        je_id = nxt
+
+
+async def live_entries(session, company_id, ids) -> dict[str, str]:
+    """Each of ``ids`` -> the entry standing for it now (current_entry): itself, or, where
+    Change fund voided it and posted it again, the copy."""
+    ids = list(dict.fromkeys(ids))
+    replaced = set((await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids),
+        Projection.state["status"].as_string() == "void",
+        Projection.state["replaced_by"].as_string().is_not(None)))).scalars().all()) if ids else set()
+    return {je_id: await current_entry(session, company_id, je_id) if je_id in replaced else je_id for je_id in ids}
+
+
+def _restore_id(doc_id: str, root: str, family) -> str:
+    """The id of the next copy of a recognition family: {root}:unvoid:{n}, n one more than the
+    copies the family already holds, which _recognition_root strips back to the family."""
+    return f"je:auto:{doc_id}:{root}:unvoid:{1 + sum(1 for s in family if s != root)}"
+
+
+async def restore_ids(session, company_id, doc_id: str, goods_movements: bool = False) -> dict[str, str]:
+    """suffix -> the id its copy will take, for each posted recognition-family entry of the
+    document: fixed before a void, so the void can name the copy replacing it."""
+    jes = await _doc_recognition_jes(session, company_id, doc_id, goods_movements)
+    roots = {s: _recognition_root(s, goods_movements) for s in jes}
+    return {s: _restore_id(doc_id, roots[s], [t for t in jes if roots[t] == roots[s]])
+            for s, row in jes.items() if (row.state or {}).get("status") == "posted"}
+
+
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
                                   goods_movements: bool = False) -> None:
-    """Restore exactly what the immediately preceding void removed.
-
-    Finds the recognition JEs the most recent void batch reversed and re-posts
-    each as a new JE copying its memo and entries verbatim - never recomputing:
-    costs may have moved since the doc was voided, and an unvoid must put back the
-    numbers the void took out, not today's. The copy keeps the entry's own date
-    unless that date is locked, when it posts on the open date the shared rule
-    gives (posting_dates.correction_day). Each restore
-    lives at je:auto:{doc_id}:{root}:unvoid:{n}, so repeated void/unvoid cycles
-    keep every generation distinct, and a family that already holds a posted JE
-    is skipped (the restore already happened). One copy mechanism covers every
-    doc type and family: invoice finalize, bill conversion, COGS backfill, and
-    COGS adjustments alike.
-
-    An imported document's own entry from an earlier release is never restored (the
-    opening balances hold the document), and the reversal its void posted of what they
-    hold is taken back (take_back_imported_reversals).
-
-    Docs voided before batch stamping existed have per-JE void events with no
-    batch number; for those, each recognition family whose latest void event
-    came from a doc void (not a revert to draft) restores the JE that event
-    reversed.
+    """Restore exactly what the immediately preceding void removed
+    (repost_record_postings of the latest void batch, with no relabel), then take back the
+    reversal an imported document's void posted of what the opening balances hold
+    (take_back_imported_reversals) and tell the module keeping its assets.
 
     goods_movements: as for void_for_doc_voided, so the receipt and return entries the void
     reversed are restored with the document's own.
     """
-    from celerp.models.ledger import LedgerEntry
+    batches = [int(e.metadata_["void_batch"]) for e in await _doc_void_events(session, company_id, doc_id)
+               if (e.metadata_ or {}).get("void_batch")]
+    await repost_record_postings(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+                                 batch=max(batches) if batches else None, relabel=None, trigger="doc.unvoided",
+                                 goods_movements=goods_movements)
+    await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
+    await _notify_asset_lines(session, company_id, user_id, doc_id, "unvoid")
 
+
+async def repost_record_postings(session, *, company_id, user_id, doc_id: str, batch: int | None,
+                                 relabel: Callable[[list[dict]], list[dict]] | None, trigger: str,
+                                 goods_movements: bool = False) -> dict[str, str]:
+    """Post again each entry void batch ``batch`` of the document reversed, and return voided
+    entry id -> the id of its copy.
+
+    Each copy writes the voided entry's memo and lines again verbatim, funds included
+    (peer_lines.copy_posted_lines), never recomputing: costs may have moved since the void,
+    and the copy must put back the numbers the void took out, not today's. It lives at the
+    family's restore id (_restore_id), so every cycle keeps each generation distinct, and a
+    family that already holds a posted entry is skipped (the restore already happened). One
+    copy mechanism covers every doc type and family: invoice finalize, bill conversion, COGS
+    backfill and COGS adjustments alike. An imported document's own entry from an earlier
+    release is never posted again (the opening balances hold the document).
+
+    ``relabel`` (Change fund only, inside an open fund_change_action, else RuntimeError)
+    rewrites each copy's lines and keeps each entry's own date. Without it the copy keeps
+    the entry's date unless that date is locked, when it posts on the open date the shared
+    rule gives (posting_dates.correction_day).
+
+    ``batch`` None: the document was voided before batch stamping existed, its void events
+    carry no batch number; each recognition family whose latest void came from a doc void
+    (not a revert to draft) posts again the entry that void reversed.
+    """
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.journal_accounts import open_fund_change
+
+    if relabel is not None and open_fund_change(session) is None:
+        raise RuntimeError("A relabelled repost runs only inside an open fund change")
     prefix = f"je:auto:{doc_id}:"
     jes = await _doc_recognition_jes(session, company_id, doc_id, goods_movements)
     void_events = await _doc_void_events(session, company_id, doc_id)
     imported = await imported_document(session, company_id, doc_id)
 
-    batched = [e for e in void_events if (e.metadata_ or {}).get("void_batch")]
-    if batched:
-        last_batch = max(int(e.metadata_["void_batch"]) for e in batched)
-        to_restore = [e.entity_id for e in batched
-                      if int(e.metadata_["void_batch"]) == last_batch]
+    if batch is not None:
+        to_restore = [e.entity_id for e in void_events if int((e.metadata_ or {}).get("void_batch") or 0) == batch]
     else:
         last_void_by_root: dict[str, object] = {}
         for event in void_events:  # oldest first, so the latest event wins
@@ -4551,6 +5102,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         to_restore = [e.entity_id for e in last_void_by_root.values()
                       if (e.metadata_ or {}).get("trigger") == "doc.voided"]
 
+    copies: dict[str, str] = {}
     for voided_je_id in to_restore:
         suffix = voided_je_id[len(prefix):]
         root = _recognition_root(suffix, goods_movements)
@@ -4564,7 +5116,6 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         entries = state.get("entries") or []
         if not entries:
             continue
-        generation = 1 + sum(1 for s in family if s != root)
         created = (await session.execute(
             _select(LedgerEntry)
             .where(
@@ -4583,25 +5134,29 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str,
         if allocations:
             allocations = await _free_goods_only(session, company_id, doc_id, allocations)
         metadata_ = {
-            **_recognition_metadata("doc.unvoided", doc_id, allocations),
+            **_recognition_metadata(trigger, doc_id, allocations),
             "restores": voided_je_id,
         }
         if line_allocations := ((created.metadata_ or {}) if created else {}).get("line_allocations"):
             metadata_["line_allocations"] = line_allocations
+        je_id = _restore_id(doc_id, root, family)
+        generation = je_id.rsplit(":", 1)[1]
+        lines = copy_posted_lines(voided_je_id, entries, reverse=False)
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
             user_id=user_id,
-            je_id=f"je:auto:{doc_id}:{root}:unvoid:{generation}",
+            je_id=je_id, record_id=doc_id,
             idem_create=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "c"),
             idem_posted=je_idempotency_key(doc_id, f"unvoid:{root}:{generation}", "p"),
             memo=state.get("memo") or f"Auto JE for {doc_id} unvoided",
-            ts=await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
-            entries=entries,
+            ts=state.get("ts") if relabel is not None
+            else await correction_day(session, company_id, state.get("ts")) or state.get("ts"),
+            entries=relabel(lines) if relabel is not None else lines,
             metadata_=metadata_,
         )
-    await take_back_imported_reversals(session, company_id=company_id, user_id=user_id, doc_id=doc_id)
-    await _notify_asset_lines(session, company_id, user_id, doc_id, "unvoid")
+        copies[voided_je_id] = je_id
+    return copies
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, lot_costs: dict[str, float], cycle: int = 0, ts: str | None = None) -> None:
@@ -4621,7 +5176,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:{cycle_tag}",
+        je_id=f"je:auto:{doc_id}:{cycle_tag}", record_id=doc_id,
         idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
         idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
@@ -4646,7 +5201,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return:{je_suffix}",
+        je_id=f"je:auto:{cn_id}:return:{je_suffix}", record_id=cn_id,
         idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
@@ -4678,7 +5233,7 @@ async def create_for_consigned_return_bought(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{bill_id}:consigned-return:{lot_id}",
+        je_id=f"je:auto:{bill_id}:consigned-return:{lot_id}", record_id=bill_id,
         idem_create=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "c"),
         idem_posted=je_idempotency_key(bill_id, f"consigned_return:{lot_id}", "p"),
         memo=f"Consigned goods returned by a customer, bought on {bill_id}",
@@ -4703,7 +5258,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}",
+        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}", record_id=cn_id,
         idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
         idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
@@ -4764,7 +5319,7 @@ async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: st
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:landed-left:{undo_key}",
+        je_id=f"je:auto:{doc_id}:landed-left:{undo_key}", record_id=doc_id,
         idem_create=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.left:{undo_key}", "p"),
         memo=f"Auto JE for {doc_id} landed cost the lots no longer hold when its capitalisation was reversed",
@@ -4804,7 +5359,7 @@ async def create_for_mfg_movement(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{order_id}:{movement}",
+        je_id=f"je:auto:{order_id}:{movement}", record_id=order_id,
         idem_create=je_idempotency_key(order_id, f"mfg.{movement}", "c"),
         idem_posted=je_idempotency_key(order_id, f"mfg.{movement}", "p"),
         memo=memo,
@@ -4851,7 +5406,7 @@ async def create_for_line_adjustment(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=_list_adjustment_je_id(scope, kind, cycle),
+        je_id=_list_adjustment_je_id(scope, kind, cycle), record_id=list_id,
         idem_create=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "c"),
         idem_posted=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "p"),
         memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
@@ -5088,7 +5643,7 @@ async def book_opening_inventory(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=ob_je_id,
+        je_id=ob_je_id, record_id=None,
         idem_create=f"opening-inv:{company_id}:c:{version}",
         idem_posted=f"opening-inv:{company_id}:p:{version}",
         memo="Opening inventory balance (pre-system stock)",

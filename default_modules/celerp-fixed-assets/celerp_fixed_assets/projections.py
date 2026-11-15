@@ -132,7 +132,7 @@ def apply_fixed_asset_event(state: dict, event_type: str, data: dict) -> dict:
     if event_type == "fa.reminder.told":
         current.setdefault("told", []).append(data["stage"])
         return current
-    if event_type in ("fa.class.updated", "fa.asset.updated", "fa.maint.updated"):
+    if event_type in ("fa.class.updated", "fa.asset.updated", "fa.maint.updated", "fa.movement.updated"):
         current.update(deepcopy(data["changes"]))
         current["version"] = int(current.get("version") or 0) + 1
         return current

@@ -305,15 +305,12 @@ async def _excluded_stock_document(company_id: uuid.UUID) -> tuple[str, str] | N
             after = rows[-1][0]
 
 
-_LINE_FIELDS = ("account", "debit", "credit", "contact", "fx_debit", "fx_credit",
-                "fx_currency", "fx_rate")
-
-
 async def _read_journals(company_id: uuid.UUID, after: str, since=None) -> list[tuple[str, int, dict]]:
     """The company's own manual journal entries: never one its accountant posted here, and
     never one a document posted, which the document carries. A reversal names what it
     reverses: the accountant's own journal when that is where it came from."""
     from celerp.db import get_session_ctx
+    from celerp.services import peer_journals
     async with get_session_ctx() as session:
         query = select(Projection.entity_id, Projection.version, Projection.state).where(
             Projection.company_id == company_id, Projection.entity_type == "journal_entry",
@@ -334,8 +331,7 @@ async def _read_journals(company_id: uuid.UUID, after: str, since=None) -> list[
         state = dict(state or {})
         data = {"memo": state.get("memo") or "", "ts": str(state.get("ts") or "")[:10],
                 "status": state.get("status"),
-                "entries": [{k: line[k] for k in _LINE_FIELDS if line.get(k) is not None}
-                            for line in state.get("entries") or []]}
+                "entries": peer_journals.transport_lines(state.get("entries"))}
         if state.get("reverses"):
             origin = origins.get(str(state["reverses"]))
             data["reverses"] = ({"origin": origin["journal"]} if isinstance(origin, dict)
@@ -487,8 +483,8 @@ class CelerpConnector(ConnectorBase):
                             or not data.get("location_type") or not data.get("counts")):
                         reason = "Stock count location or entries need review"
                 elif kind == "documents":
-                    from celerp.services.peer_documents import _FIELDS as doc_fields
-                    data = {key: state[key] for key in doc_fields if key in state}
+                    from celerp.services.peer_documents import transport_document
+                    data = transport_document(state)
                     if state.get("accounting_sync_excluded"):
                         result.skipped += 1
                         continue

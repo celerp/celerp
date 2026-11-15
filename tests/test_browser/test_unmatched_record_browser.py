@@ -79,11 +79,6 @@ def _open(page, ui_server, reference):
     cell.dblclick()
     box = _row(page, reference).locator(".combobox-input")
     box.wait_for(state="visible", timeout=5000)
-    # Visible is not ready: wait for the combobox script and HTMX to bind the editor.
-    page.wait_for_function(
-        "() => { const h = document.querySelector('input[type=hidden][hx-patch$=\"/invoice\"]');"
-        " const w = h && h.closest('.combobox-wrap'); const d = h && h['htmx-internal-data'];"
-        " return !!(w && w._comboboxInit && d && d.firstInitCompleted); }", timeout=4000)
     return box
 
 

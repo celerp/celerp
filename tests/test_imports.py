@@ -33,7 +33,7 @@ def test_event_type_values() -> None:
     assert EventType.DOC_LINES_INVOICED == "doc.lines_invoiced"
     assert EventType.DOC_LINES_RETURNED == "doc.lines_returned"
     assert EventType.LIST_FILE_DESCRIPTION_UPDATED == "list.file_description_updated"
-    assert len(EventType) == 129
+    assert len(EventType) == 142
 
 
 def test_log_level_default_is_info() -> None:

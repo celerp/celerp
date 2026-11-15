@@ -1,0 +1,57 @@
+{
+  "id": "subscriptions.retainers",
+  "title": "Retainers for recurring client fees",
+  "summary": "Bill clients a fixed fee on a schedule.",
+  "keywords": [
+    "retainer",
+    "recurring fee",
+    "consulting",
+    "client"
+  ],
+  "routes": [
+    "/retainers"
+  ],
+  "permission": "view_subscriptions",
+  "order": 3,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see every retainer and its status.",
+      "labels": {
+        "nav": "nav.retainers"
+      },
+      "image": null,
+      "capture": {
+        "route": "/retainers",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {new} to set one up: the client, the fee lines and how often it is billed.",
+      "labels": {
+        "new": "page.new_retainer"
+      },
+      "image": null,
+      "capture": {
+        "route": "/retainers",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {gen} to bill every retainer that is due now.",
+      "labels": {
+        "gen": "btn.generate_all_due"
+      },
+      "image": null,
+      "capture": {
+        "route": "/retainers",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "subscriptions.overview"
+  ]
+}

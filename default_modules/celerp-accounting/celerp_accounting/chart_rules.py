@@ -22,10 +22,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, catalog_refusal, refusal
+from celerp.accounting_roles import (CONTINUED_ROLES, INCOME_ACCOUNT_FIELD, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types,
+                                     catalog_refusal, refusal)
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map, scope_codes
 from celerp.services.company_lock import lock_company
+from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS
 from celerp.services.lot_origin import account_balances
 from celerp_accounting.ledger_accounts import check_account_change
 from celerp_accounting.models import Account, BankAccount
@@ -407,12 +409,28 @@ async def removal_problem(session: AsyncSession, company_id: uuid.UUID, code: st
     if await session.scalar(select(Account.code).where(
             Account.company_id == company_id, Account.parent_code == code).limit(1)):
         return "Accounts sit under it, so it can be archived, not removed."
-    if roles := _roles_targeting(await current_settings(session, company_id), code):
+    settings = await current_settings(session, company_id)
+    if roles := _roles_targeting(settings, code):
         return f"It is the posting account for {', '.join(roles)}, so it can be archived, not removed."
     if await session.scalar(select(BankAccount.id).where(
             BankAccount.company_id == company_id, BankAccount.chart_account_code == code).limit(1)):
         return "A bank account uses it, so it can be archived, not removed."
+    if sellers := await _selling_on(session, company_id, settings, code):
+        return f"{', '.join(sellers)} sell on it, so it can be archived, not removed."
     return None
+
+
+async def _selling_on(session: AsyncSession, company_id: uuid.UUID, settings: dict, code: str) -> list[str]:
+    """The items and categories whose sales are credited to ``code`` (their income
+    account), by name."""
+    items = (await session.scalars(select(Projection.state["name"].as_string()).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.state[INCOME_ACCOUNT_FIELD].as_string() == code,
+    ).order_by(Projection.entity_id))).all()
+    names = settings.get("category_display_names") or {}
+    categories = sorted(names.get(key, key) for key, account in (settings.get(CATEGORY_INCOME_ACCOUNTS) or {}).items()
+                        if account == code)
+    return [str(name) for name in items] + categories
 
 
 async def remove_account(session: AsyncSession, company_id: uuid.UUID, code: str) -> None:

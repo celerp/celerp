@@ -237,6 +237,11 @@ async def test_manual_je_double_submit_dedupes(client):
     assert r1.json()["je_id"] == r2.json()["je_id"]
     entries = (await _journal(client, tok))["entries"]
     assert len([e for e in entries if e["je_id"] == r1.json()["je_id"]]) == 1
+    # A retry that arrives after its period was locked still answers with the entry it posted.
+    assert (await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-01-31"})).status_code == 200
+    r3 = await _post_manual_je(client, tok, _bal(25.0), token=shared)
+    assert r3.status_code == 200, r3.text
+    assert r3.json() == r1.json()
 
 
 # ---------------------------------------------------------------------------
@@ -1291,21 +1296,79 @@ async def test_trial_balance_requires_manager(client, session):
     assert (await client.get("/accounting/trial-balance", headers=_h(admin))).status_code == 200
 
 
+# Every field a manual entry request carries, and how a retry under the same token changes
+# it. The token is bound to the whole request, so each change is a different request and is
+# refused; the census test below keeps this list and the request model in step.
+_CHANGED_REQUEST = {
+    "ts": lambda req, ids: {**req, "ts": "2026-01-16"},
+    "memo": lambda req, ids: {**req, "memo": "Other adjustment"},
+    "entries": lambda req, ids: {**req, "entries": req["entries"] + [
+        {"account": "1111", "debit": 1.0, "credit": 0}, {"account": "4100", "debit": 0, "credit": 1.0}]},
+    "entries.account": lambda req, ids: {**req, "entries": [
+        req["entries"][0], {**req["entries"][1], "account": "4200"}]},
+    "entries.debit": lambda req, ids: {**req, "entries": _bal(26.0)},
+    "entries.credit": lambda req, ids: {**req, "entries": [
+        {**req["entries"][0], "debit": 0, "credit": 25.0}, {**req["entries"][1], "debit": 25.0, "credit": 0}]},
+    "entries.contact": lambda req, ids: {**req, "entries": [
+        req["entries"][0], {**req["entries"][1], "contact": ids["contact"]}]},
+    "entries.currency": lambda req, ids: {**req, "entries": [_fx(line, "EUR", 1.0) for line in req["entries"]]},
+    "entries.rate": lambda req, ids: {**req, "entries": [{**line, "rate": 35.0} for line in req["entries"]]},
+    "entries.fund_id": lambda req, ids: {**req, "entries": [
+        {**line, "fund_id": ids["fund"]} for line in req["entries"]]},
+}
+_FX_REQUEST = {"ts": "2026-01-15", "memo": "Adjustment",
+               "entries": [_fx(line, "EUR", 34.0) for line in _bal(25.0)]}
+# Request fields a retry may change: the token itself.
+_NOT_COMPARED = {"idempotency_token"}
+
+
+def _request_fields() -> set[str]:
+    from celerp_accounting.routes import ManualJECreate, ManualJELine
+    line = {f"entries.{name}" for name in ManualJELine.model_fields}
+    return set(ManualJECreate.model_fields) | line
+
+
+def test_every_manual_entry_request_field_is_bound_to_its_token():
+    assert _request_fields() - _NOT_COMPARED == set(_CHANGED_REQUEST)
+
+
 @pytest.mark.asyncio
-async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
+@pytest.mark.parametrize("field", sorted(_CHANGED_REQUEST))
+async def test_manual_je_token_reuse_with_any_other_request_is_refused(client, field):
+    """A retry under a used token posts nothing when ANY part of the request differs (a
+    line's party, fund, currency or rate as much as its amounts), and the same request
+    again answers with the entry it first posted."""
     tok = await _reg(client)
+    await client.put("/accounting/funds/setting", headers=_h(tok), json={"enabled": True})
+    r = await client.post("/accounting/funds", headers=_h(tok), json={
+        "request_key": uuid.uuid4().hex, "name": "Library gift", "restricted": False})
+    assert r.status_code == 200, r.text
+    ids = {"contact": await _contact(client, tok), "fund": r.json()["id"]}
     start = await _journal(client, tok)  # a new company opens with its sample stock booked
+    request = _FX_REQUEST if field == "entries.rate" else {
+        "ts": "2026-01-15", "memo": "Adjustment", "entries": _bal(25.0)}
     shared = uuid.uuid4().hex
-    r1 = await _post_manual_je(client, tok, _bal(25.0), token=shared)
-    assert r1.status_code == 200
-    r2 = await _post_manual_je(client, tok, _bal(99.0), token=shared)
-    assert r2.status_code == 409
-    assert r2.json()["detail"]["code"] == "idempotency_conflict"
-    assert "already posted" in r2.json()["detail"]["message"].lower()
-    # The books still hold only the original entry
-    entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
-    assert len(entries) == 1
-    assert abs(entries[0]["lines"][0]["debit"] - 25.0) < 0.01
+    first = await client.post("/accounting/journal-entries", headers=_h(tok),
+                              json={**request, "idempotency_token": shared})
+    assert first.status_code == 200, first.text
+    changed = _CHANGED_REQUEST[field](request, ids)
+    assert changed != request
+    alone = await client.post("/accounting/journal-entries", headers=_h(tok),
+                              json={**changed, "idempotency_token": uuid.uuid4().hex})
+    assert alone.status_code == 200, alone.text  # the changed request is a valid entry
+    await client.post(f"/accounting/journal-entries/{alone.json()['je_id']}/void", headers=_h(tok), json={})
+
+    again = await client.post("/accounting/journal-entries", headers=_h(tok),
+                              json={**changed, "idempotency_token": shared})
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["message_key"] == "request.key_reused"
+    retry = await client.post("/accounting/journal-entries", headers=_h(tok),
+                              json={**request, "idempotency_token": shared})
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["je_id"] == first.json()["je_id"]
+    posted = [e for e in (await _journal(client, tok))["entries"]
+              if e not in start["entries"] and e["status"] == "posted"]
+    assert [e["je_id"] for e in posted] == [first.json()["je_id"]]
 
 
 @pytest.mark.asyncio
@@ -2608,7 +2671,7 @@ async def test_by_doc_includes_related_credit_and_return_postings(client, sessio
     ):
         je_id = f"je:test:{suffix}:{note_id}"
         await _emit_auto_posted_je(
-            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
             idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
             memo=suffix, ts="2026-02-02", entries=_bal(5.0), metadata_=metadata,
         )
@@ -2636,7 +2699,7 @@ async def test_unclassified_journal_cannot_inherit_invoice_items_by_amount(clien
     company_id, user_id = _ids(tok)
     je_id = f"je:test:unclassified:{doc}"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
         memo="Unclassified journal", ts="2026-02-02", entries=_bal(10.0),
         metadata_={"doc_id": doc},
@@ -2668,7 +2731,7 @@ async def test_by_doc_files_a_stale_line_contact_where_the_ledger_does_and_shows
     company_id, user_id = _ids(tok)
     je_id = f"je:test:{doc}:stale"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo="Stale party", ts="2026-02-04",
         entries=[{"account": "1120", "debit": 7.0, "credit": 0, "contact": "contact:gone"},
                  {"account": "4100", "debit": 0, "credit": 7.0}],
@@ -2730,7 +2793,7 @@ async def test_by_doc_includes_real_supplier_credit_note_application(client, ses
     company_id, user_id = _ids(tok)
     je_id = f"je:test:dnapply:{note_id}"
     await _emit_auto_posted_je(
-        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        session, company_id=company_id, user_id=user_id, je_id=je_id, record_id=None,
         idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
         memo="Supplier note", ts="2026-02-02", entries=_bal(10.0),
         metadata_={"doc_id": bill, "dn_id": note_id, "trigger": "dn.applied"},

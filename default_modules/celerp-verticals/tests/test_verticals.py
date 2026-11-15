@@ -238,7 +238,7 @@ async def test_apply_preset_idempotent(client: AsyncClient):
     )
     assert r1.status_code == 200
     assert r2.status_code == 200
-    assert r1.json()["categories"] == r2.json()["categories"]
+    assert r1.json()["categories"] > 0 and r2.json()["categories"] == 0
 
 
 # ---------------------------------------------------------------------------

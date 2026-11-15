@@ -100,6 +100,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "demo_records": ("session", "company_id", "user_id"),
         "background_loop": (),
         "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+        "doc_posting_dependents": ("session", "company_id", "user_id", "doc_id", "relabel"),
         "label_source": ("session", "company_id", "ids"),
         "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
         "turn_off_preflight": ("session", "company_id"),
@@ -112,6 +113,11 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
 def test_document_asset_lines_slot_is_first_party():
     assert "doc_asset_lines" in slots.FIRST_PARTY_SLOTS
     assert loader._CALLABLE_SLOTS["doc_asset_lines"] == ("handler", True)
+
+
+def test_document_posting_dependents_slot_is_first_party():
+    assert "doc_posting_dependents" in slots.FIRST_PARTY_SLOTS
+    assert loader._CALLABLE_SLOTS["doc_posting_dependents"] == ("handler", True)
 
 
 def test_turn_off_preflight_slot_is_first_party():

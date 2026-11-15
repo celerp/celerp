@@ -25,6 +25,7 @@ SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
     "acc.journal_entry.posted",
     "acc.journal_entry.voided",
+    "acc.journal_entry.fund_changed",
     "payment_batch.recorded",
     "line_action.recorded",
     "sys.migration.applied",

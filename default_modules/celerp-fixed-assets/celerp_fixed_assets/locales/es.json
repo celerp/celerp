@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line}: no existe ese activo.",
   "fixed_assets.err_sale_module_off": "{numbers}: active el módulo Activos fijos para vender un activo.",
   "fixed_assets.err_sale_not_here": "{number} no se está vendiendo mediante esta factura. Inicie la venta desde la página del activo; se creará un borrador de factura.",
-  "fixed_assets.err_credit_not_sold_there": "{number} no se vendió mediante la factura {invoice}."
+  "fixed_assets.err_credit_not_sold_there": "{number} no se vendió mediante la factura {invoice}.",
+  "fixed_assets.err_line_other_fund": "Esta línea está en {line_fund} y {number} en {asset_fund}. Un activo conserva el fondo con el que se adquirió, por lo que debe usar una línea de {asset_fund}.",
+  "fixed_assets.err_change_fund_splits_asset": "{number} se compró con líneas que terminarían en distintos fondos ({funds}). Un activo conserva un solo fondo, por lo que debe elegir el mismo fondo para todas sus líneas.",
+  "fixed_assets.err_change_fund_class_move": "{number} se movió con el cambio de cuenta de {cls} el {date}. Deshaga ese cambio de cuenta, cambie el fondo y vuelva a efectuar el cambio de cuenta."
 }

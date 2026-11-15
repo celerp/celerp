@@ -270,6 +270,21 @@ async def held(session: AsyncSession, credential: object, *,
     return row
 
 
+async def live_grant(session: AsyncSession, company_id: uuid.UUID, source_company_id: uuid.UUID,
+                     scope: str) -> CompanyPeerGrant:
+    """The live grant through which ``source_company_id`` sends ``scope`` records to this
+    company, for a local user posting a record it sent; refused once there is none."""
+    rows = (await session.scalars(select(CompanyPeerGrant).where(
+        CompanyPeerGrant.company_id == company_id,
+        CompanyPeerGrant.source_company_id == source_company_id,
+        CompanyPeerGrant.revoked_at.is_(None),
+        CompanyPeerGrant.expires_at > datetime.now(timezone.utc)))).all()
+    row = next((r for r in rows if scope in r.scopes), None)
+    if row is None:
+        raise HTTPException(409, "The connection that sent this record has ended.")
+    return row
+
+
 def mark_used(grant: CompanyPeerGrant, now: datetime | None = None) -> None:
     """Note that the connected company reached this one with the key: its last sync."""
     when = now or datetime.now(timezone.utc)

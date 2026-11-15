@@ -244,7 +244,7 @@ async def _emit_contact(company_id: str, idem_key: str, data: dict) -> str:
     async with SessionLocal() as session:
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="contact",
-            event_type="crm.contact.created", idem_key=idem_key, data=data,
+            event_type="crm.contact.created", idem_key=idem_key, data=data, origin=None,
         )
         await session.commit()
         return outcome

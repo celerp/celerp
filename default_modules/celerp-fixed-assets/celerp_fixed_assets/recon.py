@@ -91,6 +91,7 @@ async def classify(session, company_id, at: str) -> list[dict]:
     """Every class-account line posted on or before ``at``, each with the rule that
     classifies it, plus a line for each registered source whose journal was voided in
     place. Each carries a key unique across the company's books."""
+    from celerp.services.auto_je import live_entries
     from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 
     classes, _, surpluses, clearings = await _accounts(session, company_id)
@@ -98,8 +99,10 @@ async def classify(session, company_id, at: str) -> list[dict]:
     asset_ids = {eid for eid, _ in await _entities(session, company_id, "fa_asset")}
     claims = [s for _, s in await _entities(session, company_id, "fa_src") if s.get("status") == "claimed"]
     by_journal: dict[str, dict[str, dict]] = {}
+    # A claim reads its line on the entry standing for the one it was claimed from.
+    live = await live_entries(session, company_id, [c["journal_id"] for c in claims])
     for claim in claims:
-        by_journal.setdefault(claim["journal_id"], {})[claim["source"]] = {**claim, "claim": claim}
+        by_journal.setdefault(live[claim["journal_id"]], {})[claim["source"]] = {**claim, "claim": claim}
     for line in await sources.lines(session, company_id):
         held = by_journal.setdefault(line["journal_id"], {})
         held[line["source"]] = {**line, "claim": held.get(line["source"], {}).get("claim")}

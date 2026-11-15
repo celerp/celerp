@@ -223,7 +223,7 @@ async def test_generic_patch_rejects_vertical(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("vertical", ["saas", "no_such_type", ""])
+@pytest.mark.parametrize("vertical", ["property_rental", "no_such_type", ""])
 async def test_hidden_or_unknown_type_rejected(client, vertical):
     h = await _owner(client)
     r = await _set(client, h, vertical)

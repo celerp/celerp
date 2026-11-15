@@ -247,12 +247,22 @@ def _falls_back(body) -> bool:
                or (isinstance(s, ast.Return) and _invented(s.value)) for s in body)
 
 
+def _import_source(path: pathlib.Path, node: ast.ImportFrom) -> str:
+    """The path tail of the module a `from X import name` reads: a relative import resolves
+    from the importing file's package, an absolute one by its dotted name."""
+    tail = "/".join((node.module or "").split(".")) + ".py"
+    return (path.parents[node.level - 1] / tail).as_posix() if node.level else "/" + tail
+
+
 def test_door_reads_never_fall_back_to_an_invented_value():
     """The closed list: every create door function, every UI function it calls (followed
     transitively), and every GET route on a door's POST path (its form loader). None of them
     turns a failed read into an empty value the user is not told about."""
     trees = {p: ast.parse(p.read_text()) for p in ui_sources()}
-    imported = {p: {a.asname or a.name for n in ast.walk(t) if isinstance(n, ast.ImportFrom) for a in n.names}
+    # An imported name resolves to the module it is imported from, never to every function
+    # that happens to share the name.
+    imported = {p: {a.asname or a.name: _import_source(p, n)
+                    for n in ast.walk(t) if isinstance(n, ast.ImportFrom) for a in n.names}
                 for p, t in trees.items()}
     defs: dict[str, list] = {}
     for p, t in trees.items():
@@ -270,7 +280,9 @@ def test_door_reads_never_fall_back_to_an_invented_value():
         for n in _own_nodes(fn):
             if isinstance(n, ast.Call) and _callee(n) in defs:
                 for dp, dfn in defs[_callee(n)]:
-                    if (dp == p or _callee(n) in imported[p]) and (dp, dfn.lineno) not in scope:
+                    source = imported[p].get(_callee(n))
+                    if (dp == p if source is None else dp.as_posix().endswith(source)) \
+                            and (dp, dfn.lineno) not in scope:
                         scope[(dp, dfn.lineno)] = (dp, dfn)
                         work.append((dp, dfn))
     posts = {_route_path(fn, "post") for p, fn in doors.values()} - {None}

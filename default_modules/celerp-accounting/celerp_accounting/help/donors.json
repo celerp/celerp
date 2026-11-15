@@ -1,0 +1,70 @@
+{
+  "id": "accounting.donors",
+  "title": "Donors and donor statements",
+  "summary": "See each donor's gifts and email them a statement.",
+  "keywords": [
+    "donor",
+    "gift",
+    "donation",
+    "statement",
+    "nonprofit"
+  ],
+  "routes": [
+    "/donors"
+  ],
+  "permission": "view_payments",
+  "order": 5,
+  "steps": [
+    {
+      "text": "Open {nav} from the sidebar to see each donor's gifts in the period, net of refunds.",
+      "labels": {
+        "nav": "nav.donors"
+      },
+      "image": null,
+      "capture": {
+        "route": "/donors",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Edit {wording} to set the text each statement opens with.",
+      "labels": {
+        "wording": "donors.wording_title"
+      },
+      "image": null,
+      "capture": {
+        "route": "/donors",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Choose {pdf} beside a donor to see their statement.",
+      "labels": {
+        "pdf": "donors.pdf"
+      },
+      "image": null,
+      "capture": {
+        "route": "/donors",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Under {send}, tick {confirm} and choose {btn}. Every donor with an email address gets their statement. A sent email cannot be recalled.",
+      "labels": {
+        "send": "donors.send_title",
+        "confirm": "donors.confirm_send",
+        "btn": "donors.btn_send"
+      },
+      "image": null,
+      "capture": {
+        "route": "/donors",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": []
+}

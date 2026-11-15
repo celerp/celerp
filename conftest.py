@@ -300,7 +300,7 @@ if _wh_available:
 
 # Slots the harness reads from the modules' own manifests rather than listing below.
 _MANIFEST_SLOTS = ("nav", "periodic_operation", "on_company_restored", "on_company_module_enabled",
-                   "doc_status_guard", "doc_detail_badges")
+                   "doc_status_guard", "doc_detail_badges", "doc_posting_dependents")
 
 
 def _manifest_slot_contributions() -> list[dict]:
@@ -383,6 +383,22 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
             "prefix": "acc.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
             "permission": "view_financial_reports",
+            "_module": "celerp-accounting",
+        },
+    },
+    {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "fund.",
+            "handler": "celerp_accounting.projections:apply_accounting_event",
+            "_module": "celerp-accounting",
+        },
+    },
+    {
+        "slot": "projection_handler",
+        "contrib": {
+            "prefix": "rev_schedule.",
+            "handler": "celerp_accounting.projections:apply_accounting_event",
             "_module": "celerp-accounting",
         },
     },
