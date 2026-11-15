@@ -87,18 +87,18 @@ def upgrade() -> None:
     # The backfill's bank id is a foreign key: its check takes each bank account row.
     lock_tables(bind, _LINES, "reconciliation_rules", "bank_accounts")
 
-    op.add_column(_LINES, sa.Column("bank_account_id", sa.Uuid(as_uuid=True), sa.ForeignKey("bank_accounts.id"), nullable=True))
-    op.add_column(_LINES, sa.Column("fingerprint", sa.String(16), nullable=True))
-    op.add_column(_LINES, sa.Column("counterparty_key", sa.String(128), nullable=True))
-    op.add_column(_LINES, sa.Column("counterparty_account", sa.String(64), nullable=True))
-    op.add_column(_LINES, sa.Column("suggestion", sa.JSON, nullable=True))
-    op.add_column(_LINES, sa.Column("matched_je_ids", sa.JSON, nullable=False, server_default="[]"))
-    op.add_column(_LINES, sa.Column("client_query", sa.JSON, nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("bank_account_id", sa.Uuid(as_uuid=True), sa.ForeignKey("bank_accounts.id"), nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("fingerprint", sa.String(16), nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("counterparty_key", sa.String(128), nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("counterparty_account", sa.String(64), nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("suggestion", sa.JSON, nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("matched_je_ids", sa.JSON, nullable=False, server_default="[]"))
+    op.add_column("bank_statement_lines", sa.Column("client_query", sa.JSON, nullable=True))
     _backfill_lines(bind)
-    op.alter_column(_LINES, "bank_account_id", nullable=False)
-    op.alter_column(_LINES, "fingerprint", nullable=False)
-    op.drop_column(_LINES, "matched_je_id")
-    op.create_index("uq_stmt_line_fingerprint", _LINES, ["company_id", "bank_account_id", "fingerprint"], unique=True)
+    op.alter_column("bank_statement_lines", "bank_account_id", nullable=False)
+    op.alter_column("bank_statement_lines", "fingerprint", nullable=False)
+    op.drop_column("bank_statement_lines", "matched_je_id")
+    op.create_index("uq_stmt_line_fingerprint", "bank_statement_lines", ["company_id", "bank_account_id", "fingerprint"], unique=True)
 
     op.add_column("reconciliation_sessions", sa.Column("period_start", sa.String(16), nullable=True))
     op.add_column("reconciliation_sessions", sa.Column("opening_balance", sa.Numeric(20, 4), nullable=True))
@@ -160,9 +160,9 @@ def downgrade() -> None:
     for col in ("source_file_id", "opening_balance", "period_start"):
         op.drop_column("reconciliation_sessions", col)
 
-    op.drop_index("uq_stmt_line_fingerprint", table_name=_LINES)
-    op.add_column(_LINES, sa.Column("matched_je_id", sa.String(128), nullable=True))
+    op.drop_index("uq_stmt_line_fingerprint", table_name="bank_statement_lines")
+    op.add_column("bank_statement_lines", sa.Column("matched_je_id", sa.String(128), nullable=True))
     _restore_lines(bind)
     for col in ("client_query", "matched_je_ids", "suggestion", "counterparty_account", "counterparty_key",
                 "fingerprint", "bank_account_id"):
-        op.drop_column(_LINES, col)
+        op.drop_column("bank_statement_lines", col)

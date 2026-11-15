@@ -2179,7 +2179,7 @@ async def bank_groups(token: str, bank_id: str, view: str = "open", q: str = "")
 async def bank_action(token: str, bank_id: str, action: str, data: dict) -> dict:
     """One of a bank's line actions: suggest, resolve, unmatch, complete, ask or withdraw-question."""
     async with _api_client(token, timeout=120.0) as c:
-        return _raise(await c.post(f"{_RECON}/bank/{_segment(bank_id)}/{action}", json=data)).json()
+        return _raise(await c.post(f"{_RECON}/bank/{_segment(bank_id)}/{_segment(action)}", json=data)).json()
 
 
 async def delete_statement(token: str, session_id: str, key: str) -> dict:

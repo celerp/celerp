@@ -3633,8 +3633,7 @@ async def start_reconciliation(
     return _recon_to_dict(recon)
 
 
-@router.get("/reconciliation/{session_id}", openapi_extra={"x-celerp-agent": True},
-            summary="Read one reconciliation with its cleared and open book entries and its balance.")
+@router.get("/reconciliation/{session_id}")
 async def get_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3665,8 +3664,7 @@ async def get_reconciliation(
     return d
 
 
-@router.post("/reconciliation/{session_id}/match", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-             summary="Mark book entries as cleared on a reconciliation without a statement line.")
+@router.post("/reconciliation/{session_id}/match")
 async def match_reconciliation(
     session_id: uuid.UUID,
     payload: ReconciliationMatch,
@@ -3685,8 +3683,7 @@ async def match_reconciliation(
 
 @router.post(
     "/reconciliation/{session_id}/unmatch",
-    summary="Undo matching book entries that no statement line holds.",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+    summary="Undo matching book entries that no statement line holds",
 )
 async def unmatch_reconciliation(
     session_id: uuid.UUID,
@@ -3845,8 +3842,7 @@ async def _rule_amount(db: AsyncSession, company_id: uuid.UUID, bank_id, pattern
     return money_value(amount, currency or await _base_currency(db, company_id))
 
 
-@router.get("/reconciliation/{session_id}/statement-lines", openapi_extra={"x-celerp-agent": True},
-            summary="List the statement lines of one reconciliation in date order.")
+@router.get("/reconciliation/{session_id}/statement-lines")
 async def get_statement_lines(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3864,8 +3860,7 @@ async def get_statement_lines(
     return {"items": [_stmt_line_to_dict(l) for l in lines], "total": len(lines)}
 
 
-@router.post("/reconciliation/{session_id}/lines/{line_id}/attach", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-             summary="Attach a receipt or other document to a statement line.")
+@router.post("/reconciliation/{session_id}/lines/{line_id}/attach")
 async def attach_to_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3889,8 +3884,7 @@ async def attach_to_line(
             "filename": meta["filename"]}
 
 
-@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-               summary="Remove a document attached to a statement line.")
+@router.delete("/reconciliation/{session_id}/lines/{line_id}/attach/{att_id}")
 async def remove_line_attachment(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
