@@ -47,15 +47,17 @@ SHOWN_ONCE = "(shown once to you)"
 
 # Why a route is not an assistant tool. Every route is a tool unless its own decorator
 # carries ``openapi_extra=agent_excluded(<key>)`` (or its router calls exclude_router).
-AGENT_EXCLUSIONS: dict[str, str] = {
-    # Not a user action.
+_NOT_USER_ACTIONS: dict[str, str] = {
     "session": "Sign-in, first-boot and session plumbing: runs before or around a signed-in user, "
                "never as an action inside a company.",
     "internal": "An endpoint the app calls by itself (health probe, live-update stream, image source, "
                 "call-to-action fragment), not an action a user takes.",
     "public": "A page served to an outside party who opens a shared link, with no signed-in user.",
     "machine": "Called by another program (a linked company or a connector), never by a person.",
-    # User actions kept off the assistant.
+}
+# User actions kept off the assistant: the operator prompt names each, so the model
+# points the user to the screen instead.
+USER_ACTION_EXCLUSIONS: dict[str, str] = {
     "secret": "Takes a password, one-time code, claim token or service key; typed into the chat it "
               "would go to the AI provider and stay in the conversation log.",
     "company": "Creates, restores, replaces or erases a whole company, including the conversation and "
@@ -64,6 +66,7 @@ AGENT_EXCLUSIONS: dict[str, str] = {
     "assistant": "The assistant's own controls: a tool that confirms, dismisses, reruns or reconfigures "
                  "the assistant would let it approve its own proposals.",
 }
+AGENT_EXCLUSIONS: dict[str, str] = {**_NOT_USER_ACTIONS, **USER_ACTION_EXCLUSIONS}
 
 # Keyed changes that also reach outside the database (an email, the cloud service). A
 # retry is safe only because the route commits its keyed entry before the outside step;

@@ -143,7 +143,7 @@ class AIJobStep(Base):
         ForeignKey("ai_batch_jobs.id", ondelete="CASCADE"), nullable=False, index=True,
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    key: Mapped[str] = mapped_column(String(160), nullable=False)  # file id, "model:{turn}" or "tool:{call_id}"
+    key: Mapped[str] = mapped_column(String(160), nullable=False)  # file id, "model:{turn}", "tool:{call_id}" or "meta:{call_id}"
     operation_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
     step_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
