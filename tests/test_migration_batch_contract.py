@@ -330,3 +330,15 @@ def test_a_rejected_batch_names_each_record_with_its_keyed_reason_in_the_readers
         i18n.set_lang("en")
     assert thai == in_language("th", {**details, "message": str(exc)}) != str(exc)
     assert "loc-1" in thai
+
+
+def test_a_refused_batch_reads_its_reasons_as_sentences_and_closes_the_count_of_the_rest():
+    """The reasons of a refused batch read as one sentence closed by a full stop when they
+    are fragments, so "And n more." starts its own sentence, and that one ends in a full stop too."""
+    from celerp.importers.sinks import REPORTED_RECORD_LIMIT, MigrationBatchError
+
+    errors = [SinkError(source_type="Customer", source_external_id=f"c-{i}", message="needs a name")
+              for i in range(REPORTED_RECORD_LIMIT + 2)]
+    text = str(MigrationBatchError(errors))
+    assert text.endswith("Customer c-9: needs a name. And 2 more."), text
+    assert "needs a name; Customer c-1: needs a name" in text
