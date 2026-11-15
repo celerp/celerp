@@ -25,6 +25,7 @@ from fastapi.routing import APIRoute
 from celerp.db import get_session
 from celerp.main import app  # noqa: F401 - ensures the app (and its routers) import
 from celerp.routers.health import settings_router
+from ui.i18n import refusal_text
 
 
 def _settings_routes() -> list[tuple[str, str]]:
@@ -125,4 +126,4 @@ async def test_readiness_body_is_generic_on_db_failure(client, session):
     assert r.status_code == 503, r.text
     body = r.text
     assert "secret" not in body and "postgresql://" not in body, f"leaked DSN: {body}"
-    assert r.json()["detail"] == "Service not ready."
+    assert refusal_text(r.json()["detail"]) == "Service not ready."

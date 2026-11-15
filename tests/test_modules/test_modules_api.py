@@ -125,13 +125,12 @@ class TestModulesAPIEndpoints:
         assert enabled.count("celerp-labels") == 1  # No duplicate
 
     @pytest.mark.asyncio
-    async def test_disable_not_enabled_module_is_safe(self, client):
-        """Disabling a module that isn't enabled returns 200, no error."""
+    async def test_disabling_a_module_neither_installed_nor_on_is_refused(self, client):
+        """Turning off a module that is not installed and not on is refused as not found."""
         token = await _register(client)
         r = await client.post("/companies/me/modules/nonexistent-module/disable", headers=_h(token))
-        assert r.status_code == 200
-        data = r.json()
-        assert "nonexistent-module" not in data.get("enabled_modules", [])
+        assert r.status_code == 404, r.text
+        assert refusal_text(r.json()["detail"]) == t("company.err_module_not_found", "en")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("running,expected", [(True, False), (False, True)])
@@ -444,7 +443,7 @@ class TestModuleProvenanceAndDelete:
                     files={"file": ("celerp-mine.zip", buf.getvalue(), "application/zip")},
                     data={"source": source})
         assert r.status_code == 422, r.text
-        assert _RESERVED_NAMES in r.json()["detail"]
+        assert _RESERVED_NAMES in refusal_text(r.json()["detail"])
         assert not (module_dir / "celerp-mine").exists()
 
     @pytest.mark.asyncio

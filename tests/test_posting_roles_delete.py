@@ -28,6 +28,7 @@ from test_posting_roles_ingress import _import_rows, _items_by_sku, _raw_record,
 from test_posting_roles_kept_stock import _available, _bulk_status, _ok, _write_off
 from test_posting_roles_older_stock import _without_accounting
 from test_posting_roles_rollout import _startup
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -61,7 +62,7 @@ async def _refused(session, client, auth, *lots: str) -> None:
     books = await assert_books_carry_stock(session, auth["company_id"])
     r = await _delete(client, auth, *lots)
     assert r.status_code == 409, r.text
-    assert all(action in r.json()["detail"] for action in _ACTIONS), r.text
+    assert all(action in refusal_text(r.json()["detail"]) for action in _ACTIONS), r.text
     await session.rollback()  # the refused request's work ends with it, as its own session would
     for lot in lots:
         assert await _exists(session, auth, lot)
