@@ -3,7 +3,9 @@
 """Browser journey for the bank page: drop a statement, check the preview, import, filter
 through the URL, untick a line, answer one line on its own with the searchable Answer,
 see the parts refusal, Post ticked and Undo, Escape out of a panel, the stacked layout
-on a phone, and the Questions list printed with "--" for an empty field."""
+on a phone, and the Questions list printed with "--" for an empty field. A second journey
+names the columns of a file the reader does not know, matches its line to the book entry
+Suggest finds for it and takes the match back with Undo."""
 
 from __future__ import annotations
 
@@ -20,11 +22,16 @@ _CSV = (b"Date,Description,Amount\n"
         b"2026-01-09,WITHDRAWAL,-200.00\n2026-01-12,MIXED PURCHASE,-100.00\n")
 
 
-def _bank(api) -> str:
+def _new_bank(api) -> dict:
     r = api.post("/accounting/bank-accounts", json={
         "bank_name": f"Journey {uuid.uuid4().hex[:6]}", "account_number": "****4242", "bank_type": "checking",
         "currency": api.get("/companies/me").json().get("currency") or "USD", "opening_balance": 0})
     assert r.status_code == 200, r.text
+    return api.get("/accounting/bank-accounts").json()["items"][-1]
+
+
+def _bank(api) -> str:
+    bank_id = _new_bank(api)["id"]
     r = api.post("/accounting/rules", json={"match_pattern": "NETFLIX", "target_account_code": "5100",
                                             "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
@@ -35,7 +42,17 @@ def _bank(api) -> str:
     r = api.post("/companies/me/users", json={"email": f"client-{uuid.uuid4().hex[:6]}@example.com",
                                                "name": "Client", "role": "viewer", "password": "clientpw123"})
     assert r.status_code == 200, r.text
-    return api.get("/accounting/bank-accounts").json()["items"][-1]["id"]
+    return bank_id
+
+
+def _header(page: Page, preview, values: tuple[str, str, str, str]) -> None:
+    """Type the opening and closing balance and the period into the preview's header."""
+    for name, value in zip(("opening_balance", "closing_balance", "period_start", "period_end"), values):
+        cell = preview.locator(f"[data-field={name}]")
+        cell.click()
+        cell.locator("input").fill(value)
+        with page.expect_response(lambda r: "/preview/" in r.url and r.request.method == "POST"):
+            cell.locator("input").press("Enter")
 
 
 def test_bank_page_browser_journey(page: Page, api, tmp_path):
@@ -50,13 +67,7 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     preview = page.locator("[data-testid=statement-preview]")
     expect(preview).to_be_visible(timeout=15000)
     expect(preview.get_by_text("MIXED PURCHASE")).to_be_visible()
-    for name, value in (("opening_balance", "0.00"), ("closing_balance", "-347.97"),
-                        ("period_start", "2026-01-01"), ("period_end", "2026-01-31")):
-        cell = preview.locator(f"[data-field={name}]")
-        cell.click()
-        cell.locator("input").fill(value)
-        with page.expect_response(lambda r: "/preview/" in r.url and r.request.method == "POST"):
-            cell.locator("input").press("Enter")
+    _header(page, preview, ("0.00", "-347.97", "2026-01-01", "2026-01-31"))
     expect(preview.get_by_text("The statement ties")).to_be_visible()
     preview.get_by_role("button", name="Import").click()
     page.get_by_role("button", name="Confirm").click()
@@ -142,3 +153,53 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     page.emulate_media(media="print")
     expect(page.locator("[data-line]").first).to_contain_text("--")
     page.emulate_media(media="screen")
+
+
+def test_bank_page_match_and_undo(page: Page, api, tmp_path):
+    bank = _new_bank(api)
+    r = api.post("/accounting/journal-entries", json={
+        "ts": "2026-03-01", "memo": "Wire to ACME supplier", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": bank["chart_account_code"], "debit": 0, "credit": 5000.0},
+                    {"account": "5100", "debit": 5000.0, "credit": 0}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+
+    # A file whose columns the reader does not know: name them, then the header figures.
+    f = tmp_path / "march.csv"
+    f.write_bytes(b"Col A,Col B,Col C\n2026-03-02,Wire ACME,-5000.00\n")
+    page.goto(f"/accounting/reconcile/bank/{bank['id']}")
+    page.locator('input[type="file"]').set_input_files(str(f))
+    mapper = page.locator("[data-testid=column-mapper]")
+    expect(mapper).to_be_visible(timeout=15000)
+    for column, field in (("Col A", "date"), ("Col B", "description"), ("Col C", "amount")):
+        mapper.locator(f'select[name="map_{column}"]').select_option(field)
+    mapper.get_by_role("button", name="Confirm Mapping").click()
+    preview = page.locator("[data-testid=statement-preview]")
+    expect(preview.get_by_text("Wire ACME")).to_be_visible()
+    _header(page, preview, ("0.00", "-5000.00", "2026-03-01", "2026-03-31"))
+    preview.get_by_role("button", name="Import").click()
+    page.get_by_role("button", name="Confirm").click()
+    expect(page.locator("[data-group]").filter(has_text="Wire ACME")).to_be_visible()
+
+    # Suggest finds the book entry; Post ticked matches the line to it.
+    page.goto(f"/accounting/reconcile/bank/{bank['id']}?view=all")
+    page.get_by_role("button", name="Suggest").click()
+    group = page.locator("[data-group]").filter(has_text="Wire ACME")
+    expect(group.locator("input[type=checkbox][data-role=group]")).to_be_checked()
+    page.get_by_role("button", name="Post ticked").click()
+    page.get_by_role("button", name="Confirm").click()
+    expect(page.locator(".bulk-toolbar, [data-testid=outcome]")).to_contain_text("Posted 1")
+    page.goto(f"/accounting/reconcile/bank/{bank['id']}?view=posted")
+    line = page.locator("[data-line]").filter(has_text="Wire ACME")
+    expect(line).to_contain_text("Matched")
+    table = api.get(f"/accounting/reconciliation/bank/{bank['id']}/groups", params={"view": "all"}).json()
+    assert [l["matched_je_ids"] for g in table["groups"] for l in g["lines"]] == [[je_id]]
+
+    # Undo frees the entry: the line is open again and Suggest offers the entry once more.
+    line.get_by_role("button", name="Undo").click()
+    page.get_by_role("button", name="Confirm").click()
+    expect(line).to_contain_text("Open")
+    page.goto(f"/accounting/reconcile/bank/{bank['id']}?view=all")
+    page.get_by_role("button", name="Suggest").click()
+    expect(page.locator("[data-group]").filter(has_text="Wire ACME")
+           .locator("input[type=checkbox][data-role=group]")).to_be_checked()

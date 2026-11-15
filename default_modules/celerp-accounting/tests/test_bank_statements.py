@@ -634,3 +634,37 @@ async def test_suggested_rows_migrate_to_suggestion():
     assert m.migrated_line({"status": "matched", "matched_je_id": "je:8"}) == {
         "status": "matched", "matched_je_ids": ["je:8"], "suggestion": None}
     assert m.migrated_line({"status": "created", "matched_je_id": "je:9"})["status"] == "posted"
+
+
+async def test_match_validates_the_book_entry(client):
+    """Matching checks the entry itself: an unknown entry is refused, one entry cannot be
+    held by two lines, a line already matched is not matched again, and Undo frees the
+    entry for the other line."""
+    from ui.i18n import t
+
+    co, bk = await _co_bank(client)
+    r = await client.post("/accounting/journal-entries", json={"memo": "wire", "ts": "2026-01-02", "idempotency_token": B.key(), "entries": [
+        {"account": bk["chart_account_code"], "debit": 0, "credit": 1234.56},
+        {"account": "5100", "debit": 1234.56, "credit": 0}]}, headers=co["h"])
+    je = r.json()["je_id"]
+    await _one_month(client, co, bk, [("2026-01-05", "WIRE A", "-1234.56"), ("2026-01-06", "WIRE B", "-1234.56")])
+    first, second = sorted(B.all_lines(await B.groups(client, co, bk["id"])), key=lambda l: l["description"])
+
+    async def match(line):
+        r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "match", "je_ids": [je]}])
+        assert r.status_code == 200, r.text
+        return r.json()["results"][0]
+
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [first["id"]], "kind": "match", "je_ids": ["je:does-not-exist"]}])
+    assert r.json()["results"][0]["ok"] is False and r.json()["results"][0]["reason"]
+    assert (await match(first))["ok"] is True
+    held = await match(second)
+    assert held["ok"] is False and held["reason"] == t("acct.err_recon_book_entry_matched", "en")
+    assert (await match(first))["ok"] is False
+    line = B.line_by_text(await B.groups(client, co, bk["id"], view="all"), "WIRE A")
+    assert line["matched_je_ids"] == [je]
+
+    r = await client.post(f"/accounting/reconciliation/bank/{bk['id']}/unmatch", headers=co["h"],
+                          json={"line_ids": [first["id"]], "idempotency_key": B.key()})
+    assert r.status_code == 200, r.text
+    assert (await match(second))["ok"] is True
