@@ -46,6 +46,9 @@ from celerp.services import import_stage
 from celerp.services.ledger_display import run_reference
 from ui.security import not_permitted_redirect
 from celerp.services.permissions import missing_permission_text, role_has_permission
+from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD
+from ui.components.posting_accounts import income_account_view
+from ui.routes.recognition import flag_view
 from ui.module_slots import (
     connected_connector_ids, module_contribution_visible, required_connectors, visible_slot_contributions,
 )
@@ -1879,14 +1882,19 @@ def setup_routes(app):
 
     @app.post("/inventory/create-blank")
     async def inventory_create_blank(request: Request):
-        """Create a minimal item, or with ?type=component a component (the "+ Add new
-        component" picker option), and open its detail page."""
+        """Create a minimal item, with ?type=component a component (the "+ Add new
+        component" picker option), or with ?type=plan a SaaS plan (a service item in the
+        plan category, from the Plans page), and open its detail page."""
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         blank = {"name": "New Item", "quantity": 0, "sell_by": "piece"}
         if request.query_params.get("type") == "component":
             blank.update(name="New Component", inventory_type="component")
+        elif request.query_params.get("type") == "plan":
+            from ui.routes.subscriptions import PLAN_CATEGORY
+
+            blank.update(name="New Plan", inventory_type="service", category=PLAN_CATEGORY)
         try:
             result = await api.create_item(token, blank)
             item_id = result.get("id", result.get("entity_id", ""))
@@ -1968,6 +1976,20 @@ def setup_routes(app):
         # Attach reorder velocity-suggestion hints (grey placeholder for empty reorder fields).
         await _inject_reorder_hints(token, item)
         detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, category_names, currency=currency)
+        try:  # the chart is read for this one row: the item page never fails on it
+            income_account = await income_account_view(token, "item", entity_id, company.get("settings") or {},
+                                                       _get_role(request))
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            income_account = None
+        if income_account is not None:
+            detail_fields = [*detail_fields, {"key": INCOME_ACCOUNT_FIELD, "label_key": "item.income_account"}]
+            detail_renderers[INCOME_ACCOUNT_FIELD] = lambda *_: income_account
+        recognize = flag_view("item", entity_id, bool(item.get(RECOGNIZE_FIELD)), company.get("settings") or {},
+                              _get_role(request))
+        if recognize is not None:
+            detail_fields = [*detail_fields, {"key": RECOGNIZE_FIELD, "label_key": "item.recognize_over_service_period"}]
+            detail_renderers[RECOGNIZE_FIELD] = lambda *_: recognize
 
         _item_role = _get_role(request)
         _item_settings = company.get("settings") or {}
@@ -5521,7 +5543,7 @@ _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "default_sell_qty", "barcode",
     "batch_no", "hs_code", "location_name", "short_description", "reorder_point",
     "reorder_qty", "purchase_sku", "purchase_name",
-    "purchase_unit", "purchase_conversion_factor",
+    "purchase_unit", "purchase_conversion_factor", INCOME_ACCOUNT_FIELD, RECOGNIZE_FIELD,
 })
 
 

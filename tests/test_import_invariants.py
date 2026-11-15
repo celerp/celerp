@@ -1702,7 +1702,7 @@ class _ImportApi:
         self.calls.append(("numbered_ids", resource, number, doc_type))
         return []
 
-    async def batch_import(self, token, path, records, upsert=False):
+    async def batch_import(self, token, path, records, upsert=False, fund_choices=None):
         stripped = [{k: v for k, v in r.items() if k != "entity_id"} for r in records]
         self.calls.append(("batch_import", path, stripped, upsert))
         return self._answer(tuple(r.get("idempotency_key") for r in records), len(records))

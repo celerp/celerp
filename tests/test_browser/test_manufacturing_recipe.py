@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from .inline_edit import cancel_editor, ready, set_cell, settled
+from .inline_edit import cancel_editor, set_cell, settled
 
 pytestmark = pytest.mark.browser
 
@@ -286,7 +286,6 @@ def test_recipe_quantities_must_be_more_than_nothing(page, ui_server, api):
     page.dblclick(f"{SCOPE} {cell}")
     editor = page.locator(f"{SCOPE} input[name=value]").last
     editor.wait_for(state="visible", timeout=4000)
-    ready(page, f"{SCOPE} input[name=value]")
     editor.fill("0")
     editor.press("Enter")
     # A refused edit swaps in the editor cell, which carries the field on its input.

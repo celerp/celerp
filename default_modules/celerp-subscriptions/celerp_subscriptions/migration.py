@@ -56,10 +56,12 @@ def is_legacy(state: dict) -> bool:
 def legacy_schedule(state: dict) -> dict:
     """The schedule fields an agreement not yet on a schedule means (a template an earlier
     release ran, or a draft from either release), read as the earlier release read them: its
-    terms (legacy_terms), and a template it ran is anchored on its next run date (or start
-    date), a draft on its start date, even when it holds a next run date, which the earlier
-    release's activate never read. ScheduleError saying why when they describe no schedule."""
-    anchor = state.get("anchor_date") or (_ran(state) and state.get("next_run_date")) or state.get("start_date")
+    terms (legacy_terms). An agreement with a trial is anchored on its trial end; otherwise a
+    template it ran is anchored on its next run date (or start date), a draft on its start
+    date, even when it holds a next run date, which the earlier release's activate never read.
+    ScheduleError saying why when they describe no schedule."""
+    anchor = (state.get("anchor_date") or state.get("trial_end")
+              or (_ran(state) and state.get("next_run_date")) or state.get("start_date"))
     if not anchor:
         raise ScheduleError("subscriptions.not_moved_no_date")
     fields = {"anchor_date": anchor, **legacy_terms(state)}

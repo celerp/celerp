@@ -435,6 +435,28 @@ async def test_history_set_aside_through_ui_persists(owner_ui, session):
     assert f'/history/doc:missing/withdraw"' in page and f'/history/doc:missing/set-aside"' not in page
 
 
+async def test_an_agreement_with_documents_in_history_review_names_its_next_bill_not_its_first(owner_ui, session):
+    """An agreement moved from an earlier release with its documents still waiting to be placed has
+    billed before: its page says when the next bill is, not the first."""
+    from uuid import UUID, uuid4
+    from celerp.events.engine import emit_event
+    from agreement_kit import company_id
+
+    eid = await _active_subscription(owner_ui)
+    cid = UUID(await company_id(owner_ui.api, {}))
+    await emit_event(
+        session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": {
+            "history_review": {"new": [{"doc_id": "doc:earlier", "candidates": [-1]}]},
+            "periods": {"new": {"-1": {"state": "unresolved", "release_count": 0}}}}},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(uuid4()),
+    )
+    await session.commit()
+    next_bill = (await owner_ui.api.get(f"/subscriptions/{eid}/periods")).json()["next_bill_date"]
+    note = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser").select_one("#sub-bill-note")
+    assert note.get_text(strip=True) == sentence("subscriptions.next_bill_on", "en", date=next_bill)
+
+
 @pytest.mark.parametrize("method,path,api_call,form", [
     ("post", "/subscriptions/{eid}/periods/0/skip", "subscription_period_action", {"reason": "Closed"}),
     ("patch", "/subscriptions/{eid}/schedule/generation_mode", "update_subscription_schedule", {"value": "manual_due"}),

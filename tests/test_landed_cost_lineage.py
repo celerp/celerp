@@ -145,6 +145,7 @@ _DOCS = "default_modules/celerp-docs/celerp_docs/routes.py"
 _INV = "default_modules/celerp-inventory/celerp_inventory/services.py"
 _MFG = "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py"
 _AJE = "celerp/services/auto_je.py"
+_JA = "celerp/services/journal_accounts.py"
 _FA_DISPOSAL = "default_modules/celerp-fixed-assets/celerp_fixed_assets/disposal.py"
 _FA_OPS = "default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py"
 _FA_ENGINE = "default_modules/celerp-fixed-assets/celerp_fixed_assets/calc/engine.py"
@@ -161,6 +162,7 @@ _SPREADERS = {
     (_AJE, "_shares"): "a cost of sales over its lots and accounts, and a cost claim over its lots",
     (_AJE, "_revenue_shares"): "a credit note's revenue over the accounts its invoice sold on, discounts included",
     (_AJE, "_line_allocations"): "a sale's net and revenue over its lines",
+    (_AJE, "_stamp_gifts"): "a revenue line over its gift part and the rest",
     (_FA_DISPOSAL, "_split"): "an asset's balances over the part disposed of and the rest",
     (_FA_OPS, "register"): "a bill line's cost over the separate assets it registers",
     (_FA_OPS, "plan"): "register's split of that cost, worked out before anything is written",
@@ -177,6 +179,13 @@ _SPREADERS = {
     ("default_modules/celerp-docs/celerp_docs/consignment_buy.py", "_lot_costs"): "a consignment bill line's cost over the lots it buys",
     ("celerp/importers/adapters/odoo/book.py", "read_stock"): "an Odoo stock move's value over its move lines, and a valuation layer over the lots and locations holding the product",
     ("celerp/importers/adapters/exports/sage50.py", "_spread_taxes"): "a Sage 50 tax agency's line over the invoice lines it was charged on",
+    (_AJE, "payment_return_entries"): "a payment given back over the funds its own entry posted on",
+    (_AJE, "taken"): "payment_return_entries' fund shares of what has been given back so far",
+    (_JA, "_shares_within"): "an amount over the funds holding a pooled account, pro rata to each balance",
+    (_JA, "fund_open_shares"): "a settlement over each fund's open part of a document's balance",
+    (_JA, "split_lines_by_fund"): "an entry's line amounts over the funds of its shares",
+    (_JA, "fund_legs"): "a document entry's lines over the funds of the document lines behind them",
+    ("default_modules/celerp-accounting/celerp_accounting/routes.py", "_pooled_offsets"): "a bank statement line's offset over the funds holding the pooled account it moves, in the bank's currency",
 }
 
 # Functions that put a rounding unit on one part, and why that is not a spread over parts.

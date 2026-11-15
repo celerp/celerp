@@ -2575,6 +2575,7 @@ _CALLABLE_SLOTS = {
     "background_loop": ("handler", True),
     "periodic_operation": ("handler", True),
     "doc_asset_lines": ("handler", True),
+    "doc_posting_dependents": ("handler", True),
     "fixed_asset_rules": ("handler", False),
     "label_source": ("handler", True),
     "import_target": ("handler", True),
@@ -2592,6 +2593,7 @@ _HANDLER_KEYWORDS = {
     "background_loop": (),
     "periodic_operation": ("session", "company_id", "today", "budget"),
     "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),
+    "doc_posting_dependents": ("session", "company_id", "user_id", "doc_id", "relabel"),
     "label_source": ("session", "company_id", "ids"),
     "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
     "turn_off_preflight": ("session", "company_id"),
@@ -2731,7 +2733,7 @@ _LABEL_KEYS = {"label": (_TEXT, False), "label_key": (_TEXT, False)}
 # destinations as paths (_DESTINATION_KEYS) and permissions as permission keys.
 _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "nav": {**_LABEL_KEYS, "key": (_TEXT, False), "group": ((str, type(None)), False),
-            "order": (_NUMBER, False)},
+            "order": (_NUMBER, False), "verticals": ((list,), False)},
     "bulk_action": {**_LABEL_KEYS, "action_type": (_TEXT, False)},
     "send_to_targets": {**_LABEL_KEYS, "doc_type": (_TEXT, True)},
     "catalog_channel": {**_LABEL_KEYS, "id": (_TEXT, True), "marker": (_TEXT, False),
@@ -2757,6 +2759,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "background_loop": {},
     "periodic_operation": {"module": (_TEXT, True)},
     "doc_asset_lines": {},
+    "doc_posting_dependents": {},
     "fixed_asset_rules": {"kind": (_TEXT, True), "key": (_TEXT, True)},
     "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
                      "preset": ((dict,), True)},

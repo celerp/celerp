@@ -1,0 +1,50 @@
+{
+  "name": "membership",
+  "display_name": "Membership",
+  "vertical_tags": [
+    "nonprofit"
+  ],
+  "fields": [
+    {
+      "key": "membership_term",
+      "label": "Membership Term",
+      "type": "select",
+      "options": [
+        "Monthly",
+        "Annual",
+        "Lifetime"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "membership_level",
+      "label": "Membership Level",
+      "type": "select",
+      "options": [
+        "Individual",
+        "Family",
+        "Student",
+        "Senior",
+        "Organization"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "benefits",
+      "label": "Benefits",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece",
+  "default_inventory_type": "service",
+  "default_purchase_unit": "piece"
+}

@@ -58,8 +58,8 @@ async def test_apply_preset_idempotent(client):
     r2 = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     assert r1.status_code == 200
     assert r2.status_code == 200
-    # Category count must be stable across applications
-    assert r1.json()["categories"] == r2.json()["categories"]
+    # The second application adds no category
+    assert r1.json()["categories"] > 0 and r2.json()["categories"] == 0
 
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
     schemas = r.json()

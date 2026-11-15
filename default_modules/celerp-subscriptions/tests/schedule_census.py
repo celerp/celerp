@@ -88,6 +88,13 @@ def _required_only(fn) -> bool:
     return bool(raises) and all(under_none(r) for r in raises)
 
 
+# Request models that share a field name with a schedule term but describe something other
+# than an agreement, each with what its field is.
+NOT_AGREEMENT_MODELS = {
+    "RevAmendment": "a revenue recognition schedule's amendment record: its kind is amend or credit",
+}
+
+
 def request_bounds() -> list[tuple[str, str, str]]:
     """[(file:line, Model.field, what)] for every bound a request model of the code puts on a
     schedule term before the schedule builder sees it: a Field constraint, a Literal, or a
@@ -96,7 +103,7 @@ def request_bounds() -> list[tuple[str, str, str]]:
     terms, found = term_fields(), []
     for path, tree in _sources():
         for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
-            if not any("BaseModel" in ast.unparse(b) for b in cls.bases):
+            if not any("BaseModel" in ast.unparse(b) for b in cls.bases) or cls.name in NOT_AGREEMENT_MODELS:
                 continue
             where = f"{path.relative_to(ROOT)}"
             for node in cls.body:

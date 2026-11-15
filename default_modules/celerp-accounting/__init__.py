@@ -18,14 +18,19 @@ PLUGIN_MANIFEST = {
             # so they stay reachable when the reports module is not installed.
             {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
             {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
+            {"group": "Finance", "key": "donors", "href": "/donors", "label": "Donors", "label_key": "nav.donors", "order": 56, "permission": "view_payments", "verticals": ["nonprofit"]},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},
+        "periodic_operation": {"handler": "celerp_accounting.recognition:run_due", "module": "celerp-accounting"},
+        "doc_posting_dependents": {"handler": "celerp_accounting.recognition:dependents"},
         "projection_handler": [
             {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event"},
+            {"prefix": "fund.", "handler": "celerp_accounting.projections:apply_accounting_event"},
+            {"prefix": "rev_schedule.", "handler": "celerp_accounting.projections:apply_accounting_event"},
         ],
         "search_provider": {
             "handler": "celerp_accounting.search:global_search",

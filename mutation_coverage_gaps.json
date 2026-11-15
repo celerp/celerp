@@ -1185,8 +1185,8 @@
  {
   "site": "celerp/services/peer_identity.py resolve_peer_location add",
   "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+  "class": "reached from a route",
+  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
   "site": "celerp/services/peer_inventory.py complete_revision add",
@@ -1196,7 +1196,7 @@
  },
  {
   "site": "celerp/services/peer_journals.py apply_firm_journal emit_event",
-  "count": 4,
+  "count": 2,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
@@ -1208,12 +1208,6 @@
  },
  {
   "site": "celerp/services/peer_journals.py mark execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/peer_journals.py receive_journal emit_event",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
@@ -1379,6 +1373,12 @@
   "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+ },
+ {
+  "site": "default_modules/celerp-docs/celerp_docs/routes_payments.py record_stripe_dispute emit_event",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
   "site": "default_modules/celerp-docs/celerp_docs/routes_payments.py record_stripe_release emit_event",

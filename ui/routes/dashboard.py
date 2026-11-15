@@ -20,6 +20,7 @@ from ui.components.start_options import start_options, supported_sources
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from ui.components.funds import fund_waiting_banner
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
@@ -774,6 +775,7 @@ def setup_routes(app):
             Script("window.celerpUseDays && window.celerpUseDays(true);"),
             _finish_setup_banner(company, settings, role),
             _older_stock_banner(settings, role),
+            await fund_waiting_banner(token, settings, role),
             welcome or "",
             await _demo_note(token, settings, role),
             _kpi_grid(cfg, values, role=role, settings=settings),
@@ -971,20 +973,12 @@ _IMPORT_TARGETS = (
 )
 
 
-async def _getting_started_ai_line(token: str, settings: dict, role: str) -> FT | str:
-    """Points people who may use the AI assistant at /ai, naming the free account's
-    included questions when the install is not on a paid plan and the count is known.
-    A failed read only drops the number."""
+def _getting_started_ai_line(settings: dict, role: str) -> FT | str:
+    """Points people who may use the AI assistant at /ai with a button."""
     if not _role_has_permission(settings, role, "use_ai_assistant"):
         return ""
-    try:
-        offer = await api.ai_offer(token)
-    except APIError:
-        offer = {}
-    text = t("dashboard.getting_started_ai")
-    if not offer.get("paid_ai") and (n := offer.get("free_ai_questions")):
-        text = f"{text} {t('ai.free_questions_included', n=n)}"
-    return P(A(text, href="/ai"), cls="getting-started-ai")
+    return P(A(t("dashboard.getting_started_ai"), href="/ai", cls="btn btn--primary"),
+             cls="getting-started-ai")
 
 
 async def _getting_started_card(token: str, settings: dict, role: str) -> FT | None:
@@ -1032,7 +1026,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         ),
         P(t("dashboard.getting_started_from_spreadsheet"), cls="getting-started-lead"),
         Div(*links, cls="getting-started-links"),
-        await _getting_started_ai_line(token, settings, role),
+        _getting_started_ai_line(settings, role),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
         raw_html("<!-- /getting-started-card -->"),

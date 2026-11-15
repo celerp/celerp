@@ -269,7 +269,7 @@ async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, s
     headers = {"Authorization": f"Bearer {token}"}
     screen = docs_import if resource == "docs" else lists_import
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
 
     async def _search(_tok, params=None):
@@ -300,7 +300,7 @@ async def _docs_import_screen(client, session, monkeypatch):
     company_id, _, token = await _setup(session)
     headers = {"Authorization": f"Bearer {token}"}
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
 
     async def _search(_tok, params=None):
@@ -374,7 +374,7 @@ async def _import_screen(client, session, monkeypatch, resource: str):
     screen = docs_import if resource == "docs" else lists_import
     sent: list[dict] = []
 
-    async def _batch(_tok, path, records, upsert=False):
+    async def _batch(_tok, path, records, upsert=False, fund_choices=None):
         sent.extend(records)
         return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
 

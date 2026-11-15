@@ -37,10 +37,15 @@ def _answer_text(r) -> str:
 
 
 async def _fresh(api, *eids: str) -> str:
-    """The agreements as stored: their records and their period lists, documents named."""
+    """The agreements as stored: their records, their period lists and the numbers of the
+    documents their quantity changes issued, documents named."""
     parts = []
     for eid in eids:
-        parts.append(json.dumps((await api.get(f"/docs/{eid}")).json()))
+        record = (await api.get(f"/docs/{eid}")).json()
+        parts.append(json.dumps(record))
+        for change in record.get("amendments") or []:
+            for doc_id in filter(None, (change.get("credit_note_id"), change.get("invoice_id"))):
+                parts.append(str((await api.get(f"/docs/{doc_id}")).json().get("ref_id")))
         parts.append(json.dumps((await api.get(f"/subscriptions/{eid}/periods")).json()))
     return " ".join(parts)
 
@@ -168,6 +173,20 @@ async def _lifecycle(ui, session, monkeypatch, arm):
     assert (await ui.api.get(f"/docs/{eid}")).json()["status"] == "paused"
 
 
+async def _amend(ui, session, monkeypatch, arm):
+    """A change inside a billed period names its date and the two documents that settle it."""
+    eid = await _due(ui, monkeypatch)
+    assert (await ui.post(f"/subscriptions/{eid}/generate-due", data={"idempotency_key": "k4"})).status_code < 400
+    line = (await ui.api.get(f"/docs/{eid}")).json()["line_items"][0]
+    arm()
+    r = await ui.post(f"/subscriptions/{eid}/amend", data={
+        "effective": "2026-07-01",
+        "quantities": json.dumps({line["line_id"]: float(line.get("quantity") or 1) + 1}),
+        "idempotency_key": "k5"})
+    _not_refused(r)
+    _facts_hold(_answer_text(r), await _fresh(ui.api, eid))
+
+
 async def _period(ui, session, monkeypatch, arm):
     """Skip names the dates it skipped; a send says what happened to the email, as stored."""
     _no_email(monkeypatch)
@@ -229,16 +248,59 @@ async def _import(ui, session, monkeypatch, arm):
     assert [i.get("name") for i in listed] == ["Census Gym"]
 
 
+async def _donor_statements(ui, session, monkeypatch, arm):
+    from income_books import PERIOD, _mailbox, _statement_donors
+
+    donors = await _statement_donors(ui.api, {"headers": {}})
+    sent = _mailbox(monkeypatch)
+    arm()
+    r = await ui.post("/donors/statements/send", data={**PERIOD, "confirm": "on"})
+    _not_refused(r)
+    assert _toast(r)["type"] == "success" and [m["to"] for m in sent] == ["cy@test.test"]
+    rows = {row["contact_id"]: row for row in (await ui.api.get("/donors/statements/preview", params=PERIOD)).json()["donors"]}
+    assert rows[donors["email"]]["statement_sent"] is True and rows[donors["none"]]["statement_sent"] is False
+
+
+async def _donor_wording(ui, session, monkeypatch, arm):
+    arm()
+    r = await ui.put("/donors/statements/wording", data={"text": "With thanks, {name}."})
+    _not_refused(r)
+    assert (await ui.api.get("/donors/statements/wording")).json() == {"text": "With thanks, {name}.", "version": 1}
+
+
+async def _collection(ui, session, monkeypatch, arm):
+    from test_collection import LINK, _bind, _payer, stand_in
+
+    cloud = stand_in(monkeypatch, session)
+    freeze_day(monkeypatch, "2026-06-15")
+    payer = await _payer(ui.api, {})
+    eid = await agreement(ui.api, {}, start="2026-07-01", contact_id=payer)
+    assert await _bind(await company_id(ui.api, {}), payer)
+    failing = arm()
+    r = await ui.post(f"/subscriptions/{eid}/collection/setup-link", data={"delivery": "copy"})
+    _not_refused(r)
+    assert LINK in r.text and [p["delivery"] for p in cloud.sent("setup-link")] == ["copy"]
+    r = await ui.post(f"/subscriptions/{eid}/collection/revoke")
+    _not_refused(r)
+    if failing is not None:
+        failing.clear()
+    assert (await ui.api.get(f"/subscriptions/{eid}/collection")).json()["binding"]["state"] == "revoked"
+
+
 SCENARIOS = {
     "POST /subscriptions/generate-due": _generate_all_due,
     "POST /subscriptions/catch-up/{action}": _catch_up,
     "POST /subscriptions/summary/ack": _summary_ack,
     "POST /subscriptions/new": _new,
+    "POST /subscriptions/{entity_id}/amend": _amend,
     "POST /subscriptions/{entity_id}/{action}": _lifecycle,
     "POST /subscriptions/{entity_id}/periods/{k}/{action}": _period,
     "POST /subscriptions/{entity_id}/history/{doc_id}/{action}": _history,
     "PATCH /subscriptions/{entity_id}/schedule/{field}": _schedule,
     "POST /subscriptions/import/confirm": _import,
+    "POST /donors/statements/send": _donor_statements,
+    "PUT /donors/statements/wording": _donor_wording,
+    "POST /subscriptions/{entity_id}/collection/{action}": _collection,
 }
 
 

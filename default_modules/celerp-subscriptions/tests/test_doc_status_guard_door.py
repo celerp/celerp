@@ -42,7 +42,9 @@ def _status_events() -> set[str]:
     """Every event type whose Documents projection branch writes ``current["status"]``."""
     tree = ast.parse((DOCS / "doc_projections.py").read_text(encoding="utf-8"))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "apply_documents_event")
-    found, branch = set(), next(n for n in fn.body if isinstance(n, ast.If))
+    found = set()
+    branch = next(n for n in fn.body if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                  and getattr(n.test.left, "id", None) == "event_type")
     while branch is not None:
         writes = any(isinstance(t, ast.Subscript) and getattr(t.slice, "value", None) == "status"
                      and getattr(t.value, "id", None) == "current"

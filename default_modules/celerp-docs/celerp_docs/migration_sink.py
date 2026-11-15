@@ -207,7 +207,7 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
     async def write(ready: list[DocImportRecord]):
         return await import_service.import_doc_records(
             context.session, context.company_id, member.user, member.role, member.settings, ready,
-            post_ledger=False,
+            origin="migration", post_ledger=False,
         )
 
     outcomes = await import_prepared([p for p in prepared if p != ""], write)

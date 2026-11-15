@@ -1,0 +1,398 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+"""Donor history and donor statements.
+
+Initial conditions per test: a fresh company with the seeded chart (fixture ``auth``), a gift
+category "Donation" whose income account is 4250, "Dues" and "Ticket" categories that are not
+gifts, and service items in each made through POST /items. Invoices are finalized through
+POST /docs; payments, refunds and credit notes go through their routes; a direct gift is a
+manual journal entry crediting the gift income account with the donor named on the line.
+History is read from GET /donors/{contact}/history and statements through /donors/statements.
+"""
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+from income_books import GIFT_ACCOUNT, PERIOD, _books, _donor, _invoice, _issued, _line, _mailbox, _pay, _statement_donors
+
+pytestmark = pytest.mark.asyncio
+
+
+async def _refund(client, auth, doc: str, amount: float, **extra):
+    r = await client.post(f"/docs/{doc}/refund", headers=auth["headers"], json={
+        "payment_index": 0, "amount": amount, "payment_date": "2026-03-10", "idempotency_key": uuid.uuid4().hex,
+        **extra})
+    assert r.status_code == 200, r.text
+
+
+async def _direct_gift(client, auth, donor: str, amount: float, day: str):
+    r = await client.post("/accounting/journal-entries", headers=auth["headers"], json={
+        "ts": day, "memo": "Gift by bank transfer", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "1111", "debit": amount, "credit": 0.0},
+                    {"account": GIFT_ACCOUNT, "debit": 0.0, "credit": amount, "contact": donor}]})
+    assert r.status_code == 200, r.text
+
+
+async def _history(client, auth, donor: str) -> dict:
+    r = await client.get(f"/donors/{donor}/history", headers=auth["headers"], params=PERIOD)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_donor_history_gift_lines_as_posted_plus_bank_gifts_no_double_count(client, auth):
+    """A gift line counts as its invoice posted it to gift income, whatever has been paid, a
+    ticket line on the same invoice never, a direct gift once, and receipts add nothing again."""
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Ada Donor", "ada@test.test")
+    doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100), _line(items["ticket"], "Dinner ticket", 50))
+    assert float((await _history(client, auth, donor))["total"]) == 100.0
+    await _pay(client, auth, doc, 90)
+    await _pay(client, auth, doc, 60)
+    await _direct_gift(client, auth, donor, 25, "2026-03-12")
+    await _direct_gift(client, auth, donor, 999, "2026-04-02")  # outside the period
+    history = await _history(client, auth, donor)
+    assert float(history["total"]) == 125.0
+    assert sorted(float(g["amount"]) for g in history["gifts"]) == [25.0, 100.0]
+
+
+async def test_gifts_stay_as_posted_when_their_item_category_or_settings_change(client, auth):
+    """A gift counts as it was posted: moving its item to a category that is not a gift, turning
+    the gift setting off and mapping the category to another account afterwards change neither the
+    history nor the statement, and a ticket posted before never becomes a gift."""
+    from income_books import _category, _set_category_account
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Ada Donor", "ada@test.test")
+    await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100), _line(items["ticket"], "Dinner ticket", 50))
+    before = await _history(client, auth, donor)
+    stated = await _preview(client, auth)
+    assert float(before["total"]) == 100.0
+    item = (await client.get(f"/items/{items['gift']}", headers=auth["headers"])).json()
+    donation = item["category"]
+    r = await client.patch(f"/items/{items['gift']}", headers=auth["headers"], json={"category": await _category(
+        client, auth, "Merchandise")})
+    assert r.status_code == 200, r.text
+    r = await client.put(f"/companies/me/categories/{donation}/gift", headers=auth["headers"], json={"gift": False})
+    assert r.status_code == 200, r.text
+    assert (await _set_category_account(client, auth, donation, "4100")).status_code == 200
+    ticket = (await client.get(f"/items/{items['ticket']}", headers=auth["headers"])).json()["category"]
+    r = await client.put(f"/companies/me/categories/{ticket}/gift", headers=auth["headers"], json={"gift": True})
+    assert r.status_code == 200, r.text
+    assert await _history(client, auth, donor) == before
+    assert await _preview(client, auth) == stated
+
+
+async def _preview(client, auth) -> dict:
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_donor_history_counts_a_credit_note_on_its_own_date(client, auth):
+    """A gift credit note counts on its issue date, as its posting takes the gift income back: a
+    period ending before it shows the whole gift, the note's own period what it took back."""
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Cy Donor", "cy@test.test")
+    doc = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100))
+    r = await client.get(f"/docs/{doc}", headers=auth["headers"])
+    line = {**_line(items["gift"], "Credit", 20), "source_line_id": r.json()["line_items"][0]["line_id"]}
+    note = await _issued(client, auth, "credit_note", [line], contact_id=donor, issue_date="2026-04-02",
+                         price_list="Retail", subtotal=20, total=20, original_doc_id=doc)
+    await _pay(client, auth, doc, 80)
+    march = await _history(client, auth, donor)
+    assert float(march["total"]) == 100.0 and note not in {g.get("doc_id") for g in march["gifts"]}
+    r = await client.get(f"/donors/{donor}/history", headers=auth["headers"], params={"from": "2026-04-01", "to": "2026-04-30"})
+    assert r.status_code == 200, r.text
+    assert float(r.json()["total"]) == -20.0 and [g["doc_id"] for g in r.json()["gifts"]] == [note]
+
+
+async def test_donor_history_excludes_dues_tickets_and_gifts_credited_back(client, auth):
+    """Dues and tickets never count; a gift credited back by a credit note crediting no invoice
+    counts nothing; a cash refund or a chargeback with no credit note moves no gift income, so
+    the gift stays as the books keep it."""
+    items = await _books(client, auth)
+    donor = await _donor(client, auth, "Ben Donor", "ben@test.test")
+    dues = await _invoice(client, auth, donor, _line(items["dues"], "Annual dues", 80), _line(items["ticket"], "Dinner ticket", 20))
+    await _pay(client, auth, dues, 100)
+    refunded = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 100))
+    await _pay(client, auth, refunded, 100)
+    await _refund(client, auth, refunded, 30)
+    charged_back = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 50))
+    await _pay(client, auth, charged_back, 50)
+    await _refund(client, auth, charged_back, 50, reason="chargeback")
+    credited = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 40))
+    note = await _invoice(client, auth, donor, _line(items["gift"], "Gift", 40), doc_type="credit_note")
+    r = await client.post(f"/docs/{note}/apply-to-invoice", headers=auth["headers"], json={
+        "target_doc_id": credited, "amount": 40, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    history = await _history(client, auth, donor)
+    assert float(history["total"]) == 150.0
+    by_doc = {g["doc_id"]: float(g["amount"]) for g in history["gifts"]}
+    assert dues not in by_doc and by_doc == {refunded: 100.0, charged_back: 50.0, credited: 40.0, note: -40.0}
+
+
+async def test_donor_statement_bulk_send_preview_idempotent(client, auth, monkeypatch):
+    """Preview lists who a send reaches; the send needs explicit confirmation, reports each
+    donor, skips one without an email, returns its first result when repeated, and sends again
+    only to the donors resend names, or to all once the wording changed."""
+    donors = await _statement_donors(client, auth)
+    sent = _mailbox(monkeypatch)
+    quiet = {"from": "2001-01-01", "to": "2001-01-31"}
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=quiet)
+    assert r.status_code == 200 and r.json()["donors"] == [], r.text
+    r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+    assert r.status_code == 200, r.text
+    preview = {row["contact_id"]: row for row in r.json()["donors"]}
+    assert float(preview[donors["email"]]["total"]) == 75.0 and preview[donors["none"]]["no_email"] is True
+    body = {**PERIOD, "confirm": False}
+    assert (await client.post("/donors/statements/send", headers=auth["headers"], json=body)).status_code == 422
+    first = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})
+    assert first.status_code == 200, first.text
+    results = {row["contact_id"]: row for row in first.json()["results"]}
+    assert set(results) == set(preview)
+    assert results[donors["email"]]["state"] == "sent" and results[donors["none"]]["state"] == "no_email"
+    assert [m["to"] for m in sent] == ["cy@test.test"]
+    again = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})
+    assert {row["contact_id"]: row for row in again.json()["results"]}[donors["email"]] == {**results[donors["email"]], "repeat": True}
+    assert len(sent) == 1
+    resend = await client.post("/donors/statements/send", headers=auth["headers"],
+                               json={**body, "confirm": True, "resend": {donors["email"]: 1}})
+    assert resend.status_code == 200 and len(sent) == 2
+    assert [row["contact_id"] for row in resend.json()["results"]] == [donors["email"]]
+    r = await client.put("/donors/statements/wording", headers=auth["headers"], json={"text": "Thank you, {name}."})
+    assert r.status_code == 200, r.text
+    corrected = await client.post("/donors/statements/send", headers=auth["headers"], json={**body, "confirm": True})
+    assert corrected.status_code == 200 and len(sent) == 3 and "Thank you, Cy Donor." in sent[-1]["html"]
+    # the relay takes a UUID operation id; each send carries its own
+    assert len({str(uuid.UUID(m["operation_id"])) for m in sent}) == 3
+    pdf = await client.get(f"/donors/{donors['email']}/statement.pdf", headers=auth["headers"], params=PERIOD)
+    assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
+
+
+async def test_send_again_names_the_sends_it_saw_so_one_press_sends_once(client, auth, monkeypatch):
+    """Send again names the number of the send it asks for: the same press arriving twice (a double
+    click, a second tab, a colleague) emails the donor once and the second is answered with that
+    send as stored; the next number sends again. A press from a page read before the wording
+    changed sends the new statement once, and a Send for all after it emails that donor no more."""
+    donors = await _statement_donors(client, auth)
+    sent = _mailbox(monkeypatch)
+
+    async def send(**extra):
+        r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True, **extra})
+        assert r.status_code == 200, r.text
+        return {row["contact_id"]: row for row in r.json()["results"]}
+
+    async def sends() -> int:
+        r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
+        return {row["contact_id"]: row for row in r.json()["donors"]}[donors["email"]]["sends"]
+
+    assert await sends() == 0
+    await send()
+    assert await sends() == 1 and len(sent) == 1
+    first, second = await send(resend={donors["email"]: 1}), await send(resend={donors["email"]: 1})
+    mine = donors["email"]
+    assert len(sent) == 2 and first[mine]["state"] == "sent" and "repeat" not in first[mine]
+    assert second[mine] == {**first[mine], "repeat": True} and await sends() == 2
+    assert (await send(resend={mine: 2}))[mine]["state"] == "sent" and len(sent) == 3 and await sends() == 3
+    r = await client.put("/donors/statements/wording", headers=auth["headers"], json={"text": "With thanks, {name}."})
+    assert r.status_code == 200, r.text
+    assert await sends() == 0
+    stale, twin = await send(resend={mine: 3}), await send(resend={mine: 3})
+    assert len(sent) == 4 and "With thanks, Cy Donor." in sent[-1]["html"] and twin[mine] == {**stale[mine], "repeat": True}
+    assert (await send())[mine]["repeat"] is True and len(sent) == 4 and await sends() == 4
+
+
+async def test_donor_gifts_newest_first_and_statement_amounts_right_aligned(client, auth, monkeypatch):
+    """A donor's gifts read newest first in their history and statement, and the statement's
+    amount column, its header included, sits right-aligned over the figures, as on screen."""
+    import re
+
+    from ui.i18n import t
+
+    await _books(client, auth)
+    donor = await _donor(client, auth, "Eve Donor", "eve@test.test")
+    for amount, day in ((10, "2026-03-05"), (30, "2026-03-20"), (20, "2026-03-12")):
+        await _direct_gift(client, auth, donor, amount, day)
+    assert [g["date"] for g in (await _history(client, auth, donor))["gifts"]] == ["2026-03-20", "2026-03-12", "2026-03-05"]
+    sent = _mailbox(monkeypatch)
+    r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True})
+    assert r.status_code == 200 and len(sent) == 1, r.text
+    html = sent[0]["html"]
+    assert re.findall(r"2026-03-\d\d", html) == ["2026-03-01", "2026-03-31", "2026-03-20", "2026-03-12", "2026-03-05"]
+    header = re.search(r"<th([^>]*)>%s</th>" % re.escape(t("label.amount")), html)
+    assert header and "text-align: right" in header.group(1).replace("text-align:right", "text-align: right"), html
+    figures = re.findall(r"<td([^>]*)>\$[\d,.]+</td>", html)
+    assert len(figures) == 4 and all("right" in attrs for attrs in figures), html
+
+
+async def test_thank_you_wording_tax_neutral_default(client, auth):
+    r = await client.get("/donors/statements/wording", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    text = r.json()["text"].lower()
+    assert text and not any(word in text for word in ("deductib", "tax", "receipt for tax", "irs", "charitable contribution"))
+
+
+# --- Oracle: a donor's history equals the gift income the books keep for that donor ---
+
+async def _post_ok(client, auth, path: str, **body):
+    r = await client.post(path, headers=auth["headers"], json={"idempotency_key": uuid.uuid4().hex, **body})
+    assert r.status_code == 200, (path, r.text)
+
+
+async def _cash_indexes(client, auth, doc: str) -> list[int]:
+    r = await client.get(f"/docs/{doc}", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    return [p["index"] for p in r.json().get("payments") or []
+            if p.get("status", "active") == "active" and p.get("method") not in ("credit_note", "applied")]
+
+
+async def _note(client, auth, donor: str, item: str, amount: float, invoice: str | None = None, how: str = "line",
+                line_index: int = 0, **money) -> str:
+    """A finalized credit note for ``donor``: against line ``line_index`` of ``invoice`` (how="line")
+    or the invoice as a whole (how="doc"), or free standing without one."""
+    line = _line(item, "Credit", amount)
+    if invoice and how == "line":
+        r = await client.get(f"/docs/{invoice}", headers=auth["headers"])
+        line["source_line_id"] = r.json()["line_items"][line_index]["line_id"]
+    return await _issued(client, auth, "credit_note", [line], contact_id=donor, issue_date="2026-03-01",
+                         price_list="Retail", subtotal=amount, total=amount,
+                         **({"original_doc_id": invoice} if invoice else {}), **money)
+
+
+async def _ledger_kept(client, auth, donor: str, account: str = GIFT_ACCOUNT) -> float:
+    r = await client.get(f"/accounting/ledger/{account}", headers=auth["headers"], params={"contact_id": donor})
+    assert r.status_code == 200, r.text
+    return round(sum(line["credit"] - line["debit"] for line in r.json()["lines"]), 2)
+
+
+async def _scenario(client, auth, items: dict, rng, n: int) -> tuple[str, str]:
+    """One donor's generated mix: a gift invoice (sometimes with a ticket line) in the books'
+    currency or in EUR at one rate, credit applied before cash, receipts at the invoice's rate or
+    another, sometimes leaving part unpaid, a receipt refunded or voided and paid again, then a
+    credit note on the gift line, the ticket line, the invoice as a whole or none, refunded in
+    cash, applied to another invoice, held on account, or split."""
+    donor = await _donor(client, auth, f"Oracle donor {n}")
+    rate = rng.choice([None, 1.1, 0.9])
+    money = {"currency": "EUR", "conversion_rate": rate} if rate else {}
+    gift = float(rng.choice([40, 75, 100, 160]))
+    lines = [_line(items["gift"], "Gift", gift)]
+    if rng.random() < 0.5:
+        lines.append(_line(items["ticket"], "Dinner ticket", float(rng.choice([20, 50]))))
+    total = round(sum(li["line_total"] for li in lines), 2)
+    doc = await _issued(client, auth, "invoice", lines, contact_id=donor, issue_date="2026-03-01",
+                        price_list="Retail", subtotal=total, total=total, **money)
+    due = total
+    story = [f"invoice {[li['line_total'] for li in lines]} rate {rate}"]
+
+    async def pay(amount: float, day: str = "2026-03-05"):
+        paid_at = rng.choice([rate, 1.2, 0.95]) if rate else None
+        await _post_ok(client, auth, f"/docs/{doc}/payment", amount=amount, payment_date=day, bank_account="1111",
+                       **({"conversion_rate": paid_at} if paid_at else {}))
+        story.append(f"paid {amount} at {paid_at}")
+
+    if rng.random() < 0.4:
+        source = rng.choice(["gift", "ticket"])
+        credit = float(rng.choice([10, 20]))
+        note = await _note(client, auth, donor, items[source], credit, doc if source == "gift" else None, **money)
+        if source == "ticket":  # a gift note against the invoice settles its open balance itself
+            await _post_ok(client, auth, f"/docs/{note}/apply-to-invoice", target_doc_id=doc, amount=credit,
+                           date="2026-03-02")
+        due = round(due - credit, 2)
+        story.append(f"{source} note {credit} before cash")
+    first = round(due / 2, 2) if rng.random() < 0.5 else due
+    second = round(due - first, 2) if rng.random() < 0.7 else 0.0  # sometimes part stays unpaid
+    for amount in (first, second):
+        if amount:
+            await pay(amount)
+    undo = rng.choice([None, "refund", "void"])
+    if undo:
+        index = (await _cash_indexes(client, auth, doc))[0]
+        if undo == "refund":
+            back = float(rng.choice([5, 15]))
+            await _post_ok(client, auth, f"/docs/{doc}/refund", payment_index=index, amount=back, payment_date="2026-03-10")
+            await pay(back, "2026-03-11")
+        else:
+            r = await client.get(f"/docs/{doc}", headers=auth["headers"])
+            amount = next(p["amount"] for p in r.json()["payments"] if p["index"] == index)
+            await _post_ok(client, auth, f"/docs/{doc}/void-payment", payment_index=index, refund_date="2026-03-10")
+            await pay(amount, "2026-03-11")
+        story.append(undo)
+    settle = rng.choice([None, "cash", "apply", "hold", "split"])
+    if settle:
+        on = rng.choice(["gift", "ticket"]) if len(lines) > 1 else "gift"
+        credit = float(rng.choice([lines[0 if on == "gift" else 1]["line_total"],
+                                   round(lines[0 if on == "gift" else 1]["line_total"] / 2, 2)]))
+        how = rng.choice(["line", "doc", "free"])
+        note = await _note(client, auth, donor, items[on], credit, None if how == "free" else doc, how,
+                           0 if on == "gift" else 1, **money)
+        if settle == "cash":
+            await _post_ok(client, auth, f"/docs/{note}/cn-refund", amount=credit, date="2026-03-15", bank_account="1111")
+        elif settle in ("apply", "split"):
+            applied = credit if settle == "apply" else round(credit / 2, 2)
+            ticket = await _issued(client, auth, "invoice", [_line(items["ticket"], "Dinner ticket", applied + 10)],
+                                   contact_id=donor, issue_date="2026-03-01", price_list="Retail",
+                                   subtotal=applied + 10, total=applied + 10, **money)
+            await _post_ok(client, auth, f"/docs/{note}/apply-to-invoice", target_doc_id=ticket, amount=applied,
+                           date="2026-03-16")
+        story.append(f"{on} note {credit} ({how}) {settle}")
+    return donor, "; ".join(story)
+
+
+@pytest.mark.parametrize("gift_mapped", [True, False], ids=["gift-account", "sales-revenue"])
+async def test_donor_history_equals_gift_income_the_books_keep(client, auth, gift_mapped):
+    """Per donor, over generated mixes of currencies and rates, partial receipts, refunds, voided
+    receipts and credit notes on gift and other lines settled every way (cash, applied to another
+    invoice, held on account), the history total, the Donors page and the statement equal what
+    the ledger keeps on the gift income account for that donor, whether the gift category has its
+    own income account or gifts fall to sales revenue."""
+    import random
+
+    items = await _books(client, auth, gift_mapped)
+    account = GIFT_ACCOUNT if gift_mapped else "4100"
+    rng = random.Random(426)
+    wrong = []
+    for n in range(16):
+        donor, story = await _scenario(client, auth, items, rng, n)
+        history = float((await _history(client, auth, donor))["total"])
+        listed = next((float(row["total"]) for row in (await client.get(
+            "/donors", headers=auth["headers"], params=PERIOD)).json()["items"] if row["contact_id"] == donor), 0.0)
+        stated = next((float(row["total"]) for row in (await client.get(
+            "/donors/statements/preview", headers=auth["headers"], params=PERIOD)).json()["donors"]
+            if row["contact_id"] == donor), 0.0)
+        kept = await _ledger_kept(client, auth, donor, account)
+        if not history == listed == stated == kept:
+            wrong.append(f"{story}: history {history}, Donors page {listed}, statement {stated}, books {kept}")
+    assert not wrong, "\n".join(wrong)
+
+
+@pytest.mark.parametrize(("currency", "gifts", "shown"), [
+    ("KWD", (12.345, 0.005), ("12.345", "0.005", "12.350")),
+    ("JPY", (1200, 35), ("1,200", "35", "1,235")),
+])
+async def test_statement_amounts_carry_the_books_currency_places(client, auth, monkeypatch, currency, gifts, shown):
+    """Each gift and the total on the statement email and its PDF show the places the books'
+    currency keeps: three for the Kuwaiti dinar, none for the yen, never a fixed two."""
+    import io
+    import re
+
+    import pypdf
+
+    r = await client.patch("/companies/me/books", headers=auth["headers"], json={"currency": currency})
+    assert r.status_code == 200, r.text
+    await _books(client, auth)
+    donor = await _donor(client, auth, "Kim Donor", "kim@test.test")
+    for amount, day in zip(gifts, ("2026-03-05", "2026-03-06")):
+        await _direct_gift(client, auth, donor, amount, day)
+    sent = _mailbox(monkeypatch)
+    r = await client.post("/donors/statements/send", headers=auth["headers"], json={**PERIOD, "confirm": True})
+    assert r.status_code == 200 and len(sent) == 1, r.text
+    cells = re.findall(r'<td style="text-align: right">([^<]*)</td>', sent[0]["html"])
+    figures = [re.search(r"[\d,]+(?:\.\d+)?", cell).group(0) for cell in cells]
+    assert sorted(figures) == sorted(shown), cells
+    pdf = await client.get(f"/donors/{donor}/statement.pdf", headers=auth["headers"], params=PERIOD)
+    assert pdf.status_code == 200, pdf.text
+    text = "\n".join(page.extract_text() or "" for page in pypdf.PdfReader(io.BytesIO(pdf.content)).pages)
+    for figure in shown:
+        assert re.search(r"(?<![\d.,])%s(?![\d])" % re.escape(figure), text), (figure, text)
+    assert not re.search(r"\d\.\d\d(?!\d)", text) if currency == "KWD" else ".00" not in text, text

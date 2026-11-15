@@ -3106,6 +3106,24 @@ class TestDocumentPolish:
         assert b"combobox-wrap" in r.content
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("doc_type,page", [
+        ("subscription_invoice", "/subscriptions/d:1"), ("subscription_po", "/subscriptions/d:1"), ("invoice", "/docs/d:1"),
+    ])
+    @pytest.mark.parametrize("field", ["contact_id", "terms_template"])
+    async def test_doc_field_patch_redraw_stays_on_the_records_own_page(self, ui_client, doc_type, page, field):
+        """A contact or terms change redraws the whole page: an agreement's own page, where its
+        schedule is edited, not the bare document page."""
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value={**_DOC_DETAIL, "doc_type": doc_type})),
+            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_terms_conditions", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.patch(f"/docs/d:1/field/{field}", data={"value": "x"})
+        assert r.status_code == 204, r.text
+        assert r.headers["HX-Redirect"] == page
+
+    @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_doc_valid_until_field_edit_returns_date_input(self, ui_client):
         """Editing valid_until on doc detail → <input type=date>, not free text."""

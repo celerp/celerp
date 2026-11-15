@@ -600,6 +600,9 @@ input[type="number"] { text-align: right; }
 .badge--paid { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
 .badge--overdue { background: var(--c-red); color: #fff; border: 1px solid var(--c-red); }
 .badge--void { background: var(--c-slate); color: #fff; border: 1px solid var(--c-slate-dark); }
+/* Where a record or line from outside came from (a connected company, an import). */
+.badge--origin { background: rgba(139,148,172,0.1); color: var(--c-text2); border: 1px dashed rgba(139,148,172,0.4); }
+.fund-set-all { display: flex; align-items: center; margin: 0.5rem 0; }
 .badge--sent { background: rgba(14,165,122,0.15); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--accepted { background: rgba(34,197,94,0.15); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
 .badge--sale { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
@@ -986,6 +989,8 @@ input[type="number"] { text-align: right; }
 .doc-lines th.col-account,     .doc-lines td.col-account     { width: 160px; }
 .doc-lines td.col-account { white-space: normal; overflow-wrap: anywhere; }
 .doc-lines td.col-account select { width: 100%; }
+.doc-lines th.col-fund,        .doc-lines td.col-fund        { width: 180px; }
+.doc-lines td.col-fund { white-space: normal; }
 .doc-lines th.col-total,       .doc-lines td.col-total       { width: 120px; text-align: right; padding-right: 8px; }
 /* A line cell holding badges or links (a line's status, what became of a memo line, the memo an
    invoice line came from) wraps them inside the column, whatever its width, so each shows whole.
@@ -1245,6 +1250,8 @@ input[type="number"] { text-align: right; }
 @media (max-width: 768px) { .charts-grid { grid-template-columns: minmax(0, 1fr); } }
 .chart-card { min-width: 0; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
 .chart-card--wide { margin-bottom: 20px; }
+/* A chart canvas never outgrows its card, even before the chart library has drawn it. */
+.chart-card canvas { max-width: 100%; }
 .chart-line-wrap { position: relative; height: 230px; }
 .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--c-text); }
 /* Empty-state shown inside a chart card when there is no data yet. */
@@ -3716,6 +3723,7 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .btn--icon > .import-icon { margin-inline-end: 0; font-size: 16px; }
 .getting-started-note { font-size: 13px; color: var(--c-text2); margin: 8px 0; }
 .getting-started-ai { font-size: 13px; margin: 8px 0; }
+.getting-started-ai .btn { white-space: normal; text-align: center; max-width: 100%; }
 .import-arrow { position: relative; width: fit-content; max-width: 100%; box-sizing: border-box;
   margin: -4px 0 16px; padding: 8px 12px; border-radius: 6px; background: var(--c-accent); color: #fff; font-size: 13px; font-weight: 500;
   line-height: 1.4; box-shadow: 0 4px 14px rgba(0,0,0,.2); animation: import-arrow-in .2s ease-out; }

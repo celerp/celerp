@@ -441,7 +441,7 @@ async def test_journal_csv_neutralizes_formula_memo(ui_client, lead):
 @pytest.mark.asyncio
 async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
     conflict = AsyncMock(side_effect=_api_error(
-        409, {"detail": {"code": "idempotency_conflict", "message": "already posted"}}, ""))
+        409, {"detail": {"message": "already posted", "message_key": "request.key_reused", "params": {}}}, ""))
     ps = _patches()
     for p in ps:
         p.start()
@@ -457,7 +457,7 @@ async def test_je_form_conflict_rerenders_with_fresh_token(ui_client):
         for p in ps:
             p.stop()
     assert r.status_code == 200
-    assert "already posted" in r.text.lower() or "review the journal" in r.text.lower()
+    assert escape(t("request.key_reused")) in r.text
     assert "stale-token" not in r.text  # a fresh token replaces the burnt one
 
 

@@ -25,13 +25,36 @@ def apply_accounting_event(state: dict, event_type: str, data: dict) -> dict:
             current["void_reason"] = data["reason"]
         if data.get("reversed_on"):
             current["reversed_on"] = data["reversed_on"]
+        if data.get("replaced_by"):
+            current["replaced_by"] = data["replaced_by"]
 
+    elif event_type == "acc.journal_entry.fund_changed":
+        # The entry stays as voided, replaced_by naming its copy; this event records the change
+        # itself (reason, before and after) on the ledger.
+        pass
     elif event_type == "acc.period.closed":
         current.update({"entity_type": "period", "period": data["period"], "status": "closed"})
     elif event_type == "acc.period.reopened":
         current.update({"entity_type": "period", "period": data["period"], "status": "open"})
     elif event_type == "acc.reconciliation.reopened":
         current.update({"entity_type": "reconciliation", **data})
+
+    elif event_type == "fund.created":
+        current.update({"entity_type": "fund", **data, "archived": False})
+    elif event_type == "fund.updated":
+        current.update(data)  # the event holds only what changed; a None clears that field
+    elif event_type == "fund.archived":
+        current["archived"] = True
+    elif event_type == "fund.unarchived":
+        current["archived"] = False
+
+    elif event_type == "rev_schedule.created":
+        current = {"entity_type": "rev_schedule", **data}
+    elif event_type == "rev_schedule.amended":
+        current["segments"] = data["segments"]
+        current["amendments"] = [*(current.get("amendments") or []), data["amendment"]]
+    elif event_type == "rev_schedule.fund_changed":
+        current["fund_id"] = data["fund_id"]
     else:
         raise ValueError(f"Unsupported accounting event: {event_type}")
 

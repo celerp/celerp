@@ -842,8 +842,9 @@ async def posting_refused_handler(request: Request, exc: PostingRoleError):
 @app.exception_handler(UnbalancedJournalEntry)
 async def unbalanced_je_handler(request: Request, exc: UnbalancedJournalEntry):
     # An automatic journal entry that would not balance is refused, and the write that
-    # produced it rolls back with it; the message names the document and the amounts.
-    return error_response(request, 422, exc.detail)
+    # produced it rolls back with it; the message names the document and the amounts, and
+    # ``fix`` what the reader can choose to let it post (FundChoiceNeeded).
+    return error_response(request, exc.status_code, exc.detail, **({"fix": exc.fix} if exc.fix else {}))
 
 
 # Kernel routes — always present regardless of module configuration

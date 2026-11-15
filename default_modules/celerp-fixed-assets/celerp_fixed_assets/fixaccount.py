@@ -126,6 +126,7 @@ def _day(books: runs.Books) -> str:
 
 async def _sources(session, company_id, assets: list[tuple[str, dict]], account: str, cut: str) -> list[str | None]:
     """Where the balance on ``account`` was recognized, in the order it is taken back."""
+    from celerp.services.auto_je import live_entries
     from celerp.services.module_journals import ledger_key
 
     from celerp_fixed_assets.operations import asset_movements
@@ -137,22 +138,27 @@ async def _sources(session, company_id, assets: list[tuple[str, dict]], account:
                 je = c.get("journal_id")
                 if je and not je.startswith(f"je:mod:{MODULE}:") and je not in journals:
                     journals.append(je)
-    return [None, *journals, ledger_key(cut)]
+    # A source Change fund replaced is taken back from the copy standing for it.
+    live = await live_entries(session, company_id, journals)
+    return [None, *dict.fromkeys(live[je] for je in journals), ledger_key(cut)]
 
 
 async def _split(session, company_id, account: str, amount: Decimal, keys: list[str | None],
-                 debit: bool, currency: str) -> list:
-    """Lines taking ``amount`` off ``account``, each within what one source recognized there."""
+                 debit: bool, currency: str, fund: str | None, used: dict) -> list:
+    """Lines on ``fund`` taking ``amount`` off ``account``, each within what one source
+    recognized there less what earlier lines of the same journal (``used``) took."""
     from celerp.services.module_journals import JournalLine, recognized_balances
 
     held = await recognized_balances(session, company_id, MODULE, {(account, k) for k in keys})
     lines, left = [], amount
     for key in keys:
-        available = -held[(account, key)] if debit else held[(account, key)]
+        available = (-held[(account, key)] if debit else held[(account, key)]) - used.get(key, Decimal(0))
         take = min(left, max(available, Decimal(0)))
         if take:
             lines.append(JournalLine(account=account, debit=take if debit else Decimal(0),
-                                     credit=Decimal(0) if debit else take, moves_recognized=True, recognized_in=key))
+                                     credit=Decimal(0) if debit else take, moves_recognized=True, recognized_in=key,
+                                     fund_id=fund))
+            used[key] = used.get(key, Decimal(0)) + take
             left -= take
     if left:
         raise conflict(f"The ledger holds {said(amount - left, currency)} on account {account} for these assets and the "
@@ -194,15 +200,22 @@ async def fix_account(session, company_id, user_id, class_id: str, body: dict) -
         books = await runs._books(session, company_id)
         day = _day(books)
         lines = []
-        held = _held(assets, field) if mode == "move" else Decimal(0)
-        if held:
+        # What each fund's assets hold moves on that fund (rule P).
+        by_fund: dict[str, list] = {}
+        for asset in assets if mode == "move" else []:
+            by_fund.setdefault(asset[1].get("fund_id") or "", []).append(asset)
+        used: dict = {}
+        for fund, group in sorted(by_fund.items()):
+            held = _held(group, field)
+            if not held:
+                continue
             debit = held < 0
             amount = abs(held)
-            keys = await _sources(session, company_id, assets, old, setup.cutover(fa))
-            taken = await _split(session, company_id, old, amount, keys, debit, books.currency)
+            keys = await _sources(session, company_id, group, old, setup.cutover(fa))
+            taken = await _split(session, company_id, old, amount, keys, debit, books.currency, fund or None, used)
             new_side = JournalLine(account=account, debit=Decimal(0) if debit else amount,
-                                   credit=amount if debit else Decimal(0))
-            lines = [new_side, *taken]
+                                   credit=amount if debit else Decimal(0), fund_id=fund or None)
+            lines += [new_side, *taken]
         shown = {"class": cls["name"], "field": field, "old_account": old, "new_account": account, "date": day,
                  "journals": [_journal_view(lines, books.currency)] if lines else []}
         return shown, {"cls": cls, "old": old, "day": day, "lines": lines, "assets": assets,

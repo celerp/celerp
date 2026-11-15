@@ -93,7 +93,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
             "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key, operation=operation)
+        return await _emit_doc(session, company_id, data, idem_key, operation=operation, origin=None)
 
 
 def _imported_invoice_markers() -> tuple[str, ...]:
@@ -194,20 +194,40 @@ async def mark_doc_pushed(
 
 async def _emit_doc(
     session, company_id: str, data: dict, idem_key: str,
-    external_identity: tuple[str, str] | None = None, operation: str | None = None,
+    external_identity: tuple[str, str] | None = None, operation: str | None = None, *, origin: str | None,
+    platform: str | None = None,
 ) -> str:
     # ``operation``: the first sync importing the document, recorded on its creation only.
+    # ``platform``: the accounting system an ``accounting_system`` document comes from; its
+    # standing fund default, when active, is the document's fund choice at first arrival.
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
     # Returns "created", "updated", or "noop".
+    import uuid
+
     from celerp.connectors.base import first_sync_metadata
     from celerp.events.engine import connector_upsert
+    from celerp.models.projections import Projection
+    from celerp.services.journal_accounts import hold_fund_ledger
+    from celerp.services.peer_lines import connection_default
+    from celerp_docs.routes import write_fund_choices
+
+    default = None
+    if origin == "accounting_system":
+        await hold_fund_ledger(session, company_id)  # before the document row
+        default = await connection_default(session, company_id, origin, platform)
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
-        external_identity=external_identity, metadata_=first_sync_metadata(operation),
+        external_identity=external_identity, metadata_=first_sync_metadata(operation), origin=origin,
     )
+    if outcome == "created" and default is not None:
+        entity_id = f"doc:{idem_key}"
+        row = await session.get(Projection, (uuid.UUID(str(company_id)), entity_id), populate_existing=True)
+        await write_fund_choices(session, company_id, entity_id, row.state or {}, actor_id=default.set_by,
+                                 idempotency_key=f"{idem_key}:{default.source}", source=default.source,
+                                 lines={}, document=default.fund, every=default.fund)
     await session.commit()
     return outcome
 
@@ -1018,7 +1038,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,
-                metadata_=first_sync_metadata(operation),
+                metadata_=first_sync_metadata(operation), origin=None,
             )
             existing = await session.get(
                 Projection,
@@ -1288,6 +1308,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, operati
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("quickbooks_invoice_id", str(invoice["Id"])), operation=operation,
+            origin="accounting_system", platform="quickbooks",
         )
 
 
@@ -1343,4 +1364,5 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict, operation: st
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("xero_invoice_id", str(invoice["InvoiceID"])), operation=operation,
+            origin="accounting_system", platform="xero",
         )

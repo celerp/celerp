@@ -29,8 +29,8 @@ from celerp_fixed_assets import notices, projections, reclassify, runs, setup, s
 from celerp.services.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
-    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use)
-from celerp_fixed_assets.store import _emit, _entities, _state
+    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use, same_fund)
+from celerp_fixed_assets.store import _emit, _entities, _journal, _state
 from celerp_fixed_assets.projections import BUCKETS, money, said
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
@@ -189,7 +189,7 @@ async def _acquisition_credit(d: Draft) -> str:
     """The account a hand-added asset's acquisition was credited to."""
     for m in d.live:
         for c in m.get("contributions") or []:
-            je = await _state(d.session, d.company_id, str(c.get("journal_id")))
+            je = await _journal(d.session, d.company_id, str(c.get("journal_id")))
             for e in (je or {}).get("entries") or []:
                 if _dec(e.get("credit")) > 0 and e.get("account") != d.cls["asset_account"]:
                     return e["account"]
@@ -317,6 +317,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
     value = value if isinstance(value, dict) else {}
     entry, claim = await _claimed_here(d, str(value.get("old") or ""))
     line = await _open_line(d.session, d.company_id, value.get("new"))
+    await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] != "acquisition":
         raise setup.unprocessable("Replace a source with a bill line or manual journal line acquiring the asset.")
     carrying, held, key = _carrying(d, claim)
@@ -324,7 +325,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
     new_cost = _dec(line["amount"])
     number, account = d.asset["number"], d.cls["asset_account"]
     # A source on another account was moved onto the class account when it was registered.
-    moved = await _state(d.session, d.company_id, f"je:mod:{MODULE}:asset:{d.asset_id.removeprefix('fa:asset:')}:reg:1")
+    moved = await _journal(d.session, d.company_id, f"je:mod:{MODULE}:asset:{d.asset_id.removeprefix('fa:asset:')}:reg:1")
     if moved and moved.get("status") == "posted" and held:
         other = next(e["account"] for e in moved.get("entries") or [] if _dec(e.get("credit")) > 0)
         d.journal(_lines(other, account, held), f"{number} source replaced")
@@ -350,6 +351,7 @@ async def _replace_source(d: Draft, value, fa: dict) -> None:
 async def _link_source(d: Draft, value, fa: dict) -> None:
     line = await _open_line(d.session, d.company_id, (value or {}).get("source") if isinstance(value, dict) else None)
     account = d.cls["asset_account"]
+    await same_fund(d.session, d.company_id, line, d.asset)
     if line["kind"] not in ("acquisition", "reduction") or line["account"] != account:
         raise setup.unprocessable(f"Link a line on {account}, the asset account of this asset's class.")
     amount = _dec(line["amount"]) * (1 if line["kind"] == "acquisition" else -1)
@@ -765,7 +767,7 @@ async def undo(session, company_id, user_id, correction_id: str, body: dict) -> 
         day = saved.get("posting_date") or saved.get("effective_date")
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
             raise conflict(f"{day} is locked, so this correction can no longer be undone. Correct the asset again.")
-        journals = [await _state(session, company_id, j) for j in saved.get("journals") or []]
+        journals = [await _journal(session, company_id, j) for j in saved.get("journals") or []]
         shown = {"correction": correction_id, "number": asset["number"],
                  "journals": [_reversed_lines(je, books.currency) for je in journals if je and je.get("status") == "posted"]}
         return shown, {"record": saved, "basis": [asset.get("version"), asset.get("movement_count"),

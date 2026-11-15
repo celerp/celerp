@@ -94,7 +94,7 @@ async def _received(session, auth, cost: float, *, onto: str | None = None) -> s
                          actor_id=uid, location_id=None, source="api",
                          idempotency_key=f"{po}:line:0", metadata_={"source_doc": po})
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=uid, je_id=f"je:auto:{po}:rcv:1",
+        session, company_id=cid, user_id=uid, je_id=f"je:auto:{po}:rcv:1", record_id=po,
         idem_create=f"{po}:rcv:c", idem_posted=f"{po}:rcv:p", memo=f"Auto JE for {po} received",
         entries=[{"account": "1130-P", "debit": cost, "credit": 0.0},
                  {"account": "2110", "debit": 0.0, "credit": cost}],
@@ -115,7 +115,7 @@ async def _sold_by_older_release(session, auth, lot: str, qty: float) -> None:
                      data={"new_qty": left, "cost_base": round(unit * left, 2)}, actor_id=uid, location_id=None,
                      source="api", idempotency_key=f"{inv}:line:0", metadata_={"source_doc": inv})
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=uid, je_id=f"je:auto:{inv}:fin", idem_create=f"{inv}:fin:c",
+        session, company_id=cid, user_id=uid, je_id=f"je:auto:{inv}:fin", record_id=inv, idem_create=f"{inv}:fin:c",
         idem_posted=f"{inv}:fin:p", memo=f"Auto JE for {inv} finalized",
         entries=[{"account": "5100", "debit": round(unit * qty, 2), "credit": 0.0},
                  {"account": "1130-P", "debit": 0.0, "credit": round(unit * qty, 2)}],
@@ -127,7 +127,7 @@ async def _opening_entry(session, auth, amount: float) -> None:
     """The opening inventory entry an older release posted for pre-system stock."""
     cid = auth["company_id"]
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:opening-inventory:{cid}",
+        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:opening-inventory:{cid}", record_id=None,
         idem_create=f"opening-inv:{cid}:c:{amount}", idem_posted=f"opening-inv:{cid}:p:{amount}",
         memo="Opening inventory balance (pre-system stock)",
         entries=[{"account": "1130-OB", "debit": amount, "credit": 0.0},
@@ -577,7 +577,7 @@ async def test_an_earlier_move_into_purchased_inventory_is_never_made_again(sess
     await _opening_entry(session, auth, 30.0)
     cid = auth["company_id"]
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=None, je_id=f"je:auto:inventory-origin:{cid}",
+        session, company_id=cid, user_id=None, je_id=f"je:auto:inventory-origin:{cid}", record_id=None,
         idem_create=f"inventory-origin:{cid}:c", idem_posted=f"inventory-origin:{cid}:p",
         memo="Opening inventory moved into purchased inventory, where older releases booked its sales",
         entries=[{"account": "1130-P", "debit": 5.0, "credit": 0.0},
@@ -946,7 +946,7 @@ async def _books_over(session, client, auth) -> None:
     that never became a lot."""
     cid, po = auth["company_id"], f"doc:{uuid.uuid4()}"
     await _emit_auto_posted_je(
-        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:{po}:rcv:1",
+        session, company_id=cid, user_id=auth["user_id"], je_id=f"je:auto:{po}:rcv:1", record_id=po,
         idem_create=f"{po}:rcv:c", idem_posted=f"{po}:rcv:p", memo=f"Auto JE for {po} received",
         entries=[{"account": "1130-P", "debit": 40.0, "credit": 0.0},
                  {"account": "2110", "debit": 0.0, "credit": 40.0}],

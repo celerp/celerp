@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line}፦ ይህ ንብረት የለም።",
   "fixed_assets.err_sale_module_off": "{numbers}፦ ንብረት ለመሸጥ የቋሚ ንብረቶች ሞጁልን ያንቁ።",
   "fixed_assets.err_sale_not_here": "{number} በዚህ ደረሰኝ እየተሸጠ አይደለም። የረቂቅ ደረሰኝ ለመፍጠር በንብረቱ ገጽ ሽያጩን ይጀምሩ።",
-  "fixed_assets.err_credit_not_sold_there": "{number} በደረሰኝ {invoice} አልተሸጠም።"
+  "fixed_assets.err_credit_not_sold_there": "{number} በደረሰኝ {invoice} አልተሸጠም።",
+  "fixed_assets.err_line_other_fund": "ይህ መስመር በ{line_fund} ፈንድ ላይ ነው፣ {number} ግን በ{asset_fund} ፈንድ ላይ ነው። ቋሚ ንብረት በተገዛበት ፈንድ ላይ ይቆያል፤ ስለዚህ በ{asset_fund} ፈንድ ላይ ያለ መስመር ይጠቀሙ።",
+  "fixed_assets.err_change_fund_splits_asset": "{number} በተለያዩ ፈንዶች ({funds}) ላይ ሊጨርሱ በሚችሉ መስመሮች ተገዝቷል። ንብረቱ በአንድ ፈንድ ላይ መቆየት አለበት፤ ስለዚህ ለሁሉም መስመሮቹ ተመሳሳይ ፈንድ ይምረጡ።",
+  "fixed_assets.err_change_fund_class_move": "{number} በ{date} በ{cls} የሂሳብ አካውንት ለውጥ ምክንያት ተዛውሯል። ያንን የአካውንት ለውጥ ይመልሱ፣ ፈንዱን ይቀይሩ፣ ከዚያም የአካውንት ለውጡን እንደገና ያድርጉ።"
 }

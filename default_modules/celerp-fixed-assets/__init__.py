@@ -85,6 +85,8 @@ PLUGIN_MANIFEST = {
         "background_loop": {"handler": "celerp_fixed_assets.runs:loop"},
         # Invoices that sell an asset and credit notes that credit its sale.
         "doc_asset_lines": {"handler": "celerp_fixed_assets.sales:on_asset_lines"},
+        # Change fund on a bill moves the assets bought on its lines and their entries.
+        "doc_posting_dependents": {"handler": "celerp_fixed_assets.fundchange:dependents"},
         # An asset sale's invoice and credit notes link back to the sale; a finalized bill's
         # asset lines lead to registering them.
         "doc_detail_actions": [{"render": "celerp_fixed_assets.ui_routes:doc_sale_actions",

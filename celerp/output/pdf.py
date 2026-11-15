@@ -104,9 +104,11 @@ _CURRENCY_SYMBOLS: dict[str, str] = {
 
 
 def _fmt_money(value: Any, currency: str = "USD") -> str:
+    """A money amount on a printed document at the places its currency keeps (KWD 3, JPY 0)."""
+    from celerp.services.money import currency_dp as _cdp
     try:
         symbol = _CURRENCY_SYMBOLS.get(currency, currency)
-        return f"{symbol}\u00a0{float(value):,.2f}"
+        return f"{symbol}\u00a0{float(value):,.{_cdp(currency)}f}"
     except (TypeError, ValueError):
         return "-"
 

@@ -242,7 +242,7 @@ async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_
             outcome = await connector_upsert(
                 s, company_id=company_id, entity_type="item", event_type="item.created",
                 idem_key=idem_key, data={"sku": sku, "name": sku, "quantity": 1, "barcode": barcode},
-                update=functools.partial(update_item_from_connector, company_id=company_id),
+                update=functools.partial(update_item_from_connector, company_id=company_id), origin=None,
             )
             await s.commit()
         return outcome

@@ -109,6 +109,44 @@ async def test_a_later_delivery_of_it_and_of_its_refund_go_to_the_chosen_invoice
     assert body == {"items": [], "refunds": []}
 
 
+@pytest.mark.asyncio
+async def test_a_dispute_of_it_is_recorded_on_the_chosen_invoice(client, session, payments_on):
+    """Stripe reports a dispute of the payment for the invoice it was made for: it is
+    recorded on the payment on the invoice a person chose."""
+    from celerp.services.payments import receive_dispute
+    tok = await _register(client)
+    cid = _company_id(tok)
+    eid, _ = await _payable_invoice(client, tok)
+    await _park(cid)
+    assert (await _record(client, tok, eid)).status_code == 200
+    assert await receive_dispute({
+        "company_id": cid, "entity_id": "doc:deleted", "reference": "pi_lost", "dispute_id": "dp_lost",
+        "state": "created", "outcome": None, "amount_minor": 5000, "currency": "usd",
+        "occurred_at": (PAID + datetime.timedelta(days=2)).isoformat()}) is True
+    [payment] = (await _doc_state(client, tok, eid))["payments"]
+    assert [(k, v["amount_minor"]) for k, v in payment["disputes"].items()] == [("dp_lost", 5000)]
+
+
+@pytest.mark.asyncio
+async def test_a_refund_of_it_gives_the_money_back_on_the_books_it_was_recorded_on(client, session, payments_on):
+    """The company's Stripe deposit account changed after the payment: a refund delivered
+    with the payment page's books of the day still gives the money back on the account
+    the payment was recorded on."""
+    from celerp.services.payments import receive_refund
+    tok = await _register(client)
+    cid = _company_id(tok)
+    eid, _ = await _payable_invoice(client, tok)
+    await _park(cid)
+    assert (await _record(client, tok, eid)).status_code == 200
+    assert await receive_refund({
+        "company_id": cid, "entity_id": "doc:deleted", "reference": "pi_lost", "refund_id": "re_books",
+        "transition": "applied", "cycle": 1, "amount_minor": 5000, "currency": "usd",
+        "occurred_at": (PAID + datetime.timedelta(days=2)).isoformat(),
+        "context": {**BOOKS, "deposit_account": "1110"}}) is True
+    assert (await _doc_state(client, tok, eid))["amount_outstanding"] == 50.0
+    assert (await client.get("/payments/unmatched", headers=_h(tok))).json() == {"items": [], "refunds": []}
+
+
 @pytest.mark.parametrize("reason", ["currency", "too_small", "paid"])
 @pytest.mark.asyncio
 async def test_an_invoice_that_cannot_take_it_is_refused_with_the_reason_and_the_row_stays(

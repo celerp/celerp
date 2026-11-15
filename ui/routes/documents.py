@@ -31,8 +31,12 @@ from celerp.services.line_measures import identifier_backfill, item_measure_meta
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.list_page import date_range_select, filter_field, filter_panel, list_page_header, period_fields, select_field
 from ui.security import not_permitted_redirect
+from celerp.services.peer_lines import UNRESTRICTED
+from ui.components.funds import ALL as FUND_ALL, DOCUMENT as FUND_DOCUMENT, FundView, document_meta as fund_document_meta, editor as fund_editor, line_cell as fund_line_cell, save_answer as fund_save_answer, set_all as fund_set_all, shows_funds
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
+from celerp.services.payments import dispute_status_key
+from celerp.services.record_quantities import TEMPLATE_DOC_TYPES
 from celerp.services.document_lines import line_item_id
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -52,6 +56,7 @@ from ui.components.files import files_error, files_section as _shared_doc_files_
 from ui.components.encode import as_js, call, EVENT, html_response, js_value, raw_html, safe_url, THIS, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
+from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
 from ui.components.operation_key import (
     operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
@@ -277,6 +282,9 @@ def _receive_kind_select(li: dict | None) -> FT:
 # credits. Every save sends them back as stored, so editing a draft keeps its links. A carried
 # value travels as JSON, so a number or a flag comes back as one.
 _CARRIED_LINE_KEYS = ("source_line_id", "asset_id", "asset_returned")
+# An invoice line's keys a credit note created from it leaves behind: its own id and total, and
+# where it came from and its fund, which the note takes from the invoice line it credits.
+_NOT_CREDITED_LINE_KEYS = ("id", "line_total", "line_id", "origin", "fund_choice", "fund_id")
 
 
 def _carried_inputs(li: dict) -> list:
@@ -504,7 +512,7 @@ def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kw
     return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
-from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, t
+from ui.i18n import category_label, doc_type_label, get_lang, refusal_text, sentence, t
 from ui.routes.reports import _company_today, _date_presets, _get_company, _parse_dates, _resolve_preset
 
 logger = logging.getLogger(__name__)
@@ -556,7 +564,7 @@ _PER_PAGE = 50
 _DOC_FLAG_KEYS = ("overdue_only", "awaiting_only", "paid_only", "unfulfilled_only", "not_restocked", "not_stocked")
 _DOC_STATE_KEYS = ("q", "type", "status", "status_in", "contact_id", *_DOC_FLAG_KEYS, "all_issued",
                    "converted_to_type", "view", "ids", "sort", "dir", "per_page", "preset", "from", "to",
-                   "accounting_sync")
+                   "accounting_sync", "fund_choice")
 _DOC_BOOL_KEYS = frozenset({*_DOC_FLAG_KEYS, "all_issued"})
 # The keys a status card replaces when clicked; card links carry everything else.
 _DOC_STATUS_KEYS = ("status", "status_in", *_DOC_FLAG_KEYS, "all_issued", "converted_to_type", "view", "ids")
@@ -630,6 +638,8 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["all_issued"] = "1"
     elif state.get("status"):
         params["status"] = state["status"]
+    elif state.get("fund_choice"):
+        pass  # the documents waiting for a fund choice are drafts and open documents alike
     elif not has_status_filter and state.get("type") in _ALL_ISSUED_DEFAULT_TYPES:
         params["all_issued"] = "1"
     else:
@@ -641,6 +651,8 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["converted_to_type"] = state["converted_to_type"]
     if state.get("accounting_sync") in ("included", "excluded"):
         params["accounting_sync"] = state["accounting_sync"]
+    if state.get("fund_choice") == "needed":
+        params["fund_choice"] = "needed"
     if date_from:
         params["date_from"] = date_from
     if date_to:
@@ -659,11 +671,14 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
 
 async def _doc_list_dates(request: Request, state: dict[str, str], company: dict) -> tuple[str, str, str]:
     """(date_from, date_to, preset) for the list: an explicit id batch is never windowed, an
-    explicit selection wins, else the company default preset."""
+    explicit selection wins, the documents waiting for a fund choice are not windowed by
+    default (a draft of any age waits), else the company default preset."""
     if state.get("ids"):
         return "", "", "all"
     if any(state.get(k) for k in _DATE_KEYS):
         return _parse_dates(request, company)
+    if state.get("fund_choice"):
+        return "", "", "all"
     default_preset = company.get("docs_default_preset") or "last_12m"
     if default_preset == "all":
         return "", "", "all"
@@ -2903,10 +2918,12 @@ def setup_routes(app):
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
             line_suggestions = await _po_line_suggestions(token, doc)
+        doc_funds = await _doc_funds(token, doc, _co_settings)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets, funds=doc_funds,
+                        fund_open=await _doc_fund_open(token, doc, _co_settings)),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3275,10 +3292,12 @@ def setup_routes(app):
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(e)
-        # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
+        # Contact, price_list, terms_template, or currency changes affect multiple sections - full page
+        # refresh, on the page the record is edited on (an agreement's own page holds its schedule).
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+            page = "subscriptions" if doc.get("doc_type") in TEMPLATE_DOC_TYPES else "docs"
+            return _R("", status_code=204, headers={"HX-Redirect": f"/{page}/{entity_id}"})
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
@@ -3393,6 +3412,78 @@ def setup_routes(app):
             except Exception:
                 pass
         return _li_field_display_cell(entity_id, li_index, field, display_value)
+
+    async def _fund_view(request: Request, entity_id: str) -> FundView | FT:
+        """The fund controls' view of a document, or the reason there is none as a cell error."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            settings = (await api.get_company(token)).get("settings") or {}
+            doc = await api.get_doc(token, entity_id)
+            funds = await _doc_funds(token, doc, settings)
+        except APIError as e:
+            return P(error_message(e), cls="cell-error")
+        if funds is None:
+            return P(t("fund.not_enabled"), cls="cell-error")
+        return FundView.of(doc, funds, settings, _get_role(request))
+
+    @app.get("/docs/{entity_id}/funds/{target}")
+    async def doc_fund_display(request: Request, entity_id: str, target: str):
+        view = await _fund_view(request, entity_id)
+        return fund_save_answer(view, target)[0] if isinstance(view, FundView) else view
+
+    @app.get("/docs/{entity_id}/funds/{target}/edit")
+    async def doc_fund_edit(request: Request, entity_id: str, target: str):
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        return fund_editor(view, target) if view.editable or view.changes else fund_save_answer(view, target)[0]
+
+    @app.post("/docs/{entity_id}/funds")
+    async def doc_fund_save(request: Request, entity_id: str):
+        """Save a fund choice: the document's, one line's, or Set all outside lines. A refusal
+        keeps the selection beside its reason; a save answers with every fund control again."""
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        form = await request.form()
+        target, value = str(form.get("target") or ""), str(form.get("value") or "")
+        choice = {FUND_DOCUMENT: {"document": value or None}, FUND_ALL: {"all": value or None}}.get(
+            target, {"lines": {target: value or None}})
+        try:
+            result = await api.choose_doc_funds(token := _token(request), entity_id,
+                                                {"expected_version": _form_version(form), **choice})
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if target == FUND_ALL:
+                return fund_set_all(view, value=value, error=error_message(e))
+            return fund_editor(view, target, value=value, error=error_message(e))
+        return html_response(fund_save_answer(FundView(doc, view.funds, view.editable), target), headers={
+            "HX-Trigger": _json.dumps({"celerpListVersion": {"version": result.get("version")}})})
+
+    @app.post("/docs/{entity_id}/funds/change")
+    async def doc_fund_change(request: Request, entity_id: str):
+        """Change fund on a posted document from outside: the document's or one line's new fund,
+        with a reason; its entries are voided and posted again on the new fund. A refusal keeps
+        the selection, the reason and the form's key (sending it again is the same change); a
+        change answers with every fund control again."""
+        view = await _fund_view(request, entity_id)
+        if not isinstance(view, FundView):
+            return view
+        form = await request.form()
+        target, value = str(form.get("target") or ""), str(form.get("value") or "")
+        reason, key = str(form.get("reason") or ""), str(form.get(OPERATION_KEY_FIELD) or "")
+        choice = {"document": value} if target == FUND_DOCUMENT else {"lines": {target: value}}
+        try:
+            await api.change_doc_fund(token := _token(request), entity_id, {
+                "expected_version": _form_version(form), "request_key": key, "reason": reason, **choice})
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return fund_editor(view, target, value=value, error=error_message(e), reason=reason, key=key)
+        # The entries posted again move the open balance by fund the payment form shows.
+        return html_response(fund_save_answer(FundView(doc, view.funds, view.editable, view.changes), target), headers={
+            "HX-Trigger": _json.dumps({"celerpListVersion": {"version": doc.get("version")}, **doc_money_redraw()})})
 
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of a document's or a list's text fields (terms_text, customer_note) via
@@ -3576,7 +3667,7 @@ def setup_routes(app):
             return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
         # The lines, the header discount and the document taxes are inputs; the API computes the
         # document's subtotal, discount amount, taxes and total from them.
-        patch_data = {"line_items": body.get("line_items", [])}
+        patch_data = {"line_items": [_local_fund(li) for li in body.get("line_items", [])]}
         # Always sent (0 clears it) so removing a discount sticks.
         if "discount" in body:
             patch_data["discount"] = float(body.get("discount") or 0)
@@ -3599,6 +3690,8 @@ def setup_routes(app):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=e.status)
         saved = {"ok": True, "version": result.get("version"), "line_ids": _sent_line_ids(patch_data["line_items"])}
+        if notice := _fund_notice(result.get("fund_choices_cleared")):
+            saved["fund_notice"] = notice
         # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
         # never its own copy.
         try:
@@ -3704,11 +3797,13 @@ def setup_routes(app):
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)
                 # and its taxes: one it cannot carry is refused by name, never left off the note.
+                # Each line names the invoice line it credits (_NOT_CREDITED_LINE_KEYS).
                 source = await api.get_doc(token, entity_id)
                 if (named := uncomputable_tax(source)) is not None:
                     return _action_error(unreadable_tax_refusal(named, source).detail)
                 line_items = [
-                    {k: v for k, v in li.items() if k not in ("id", "line_total")}
+                    {**{k: v for k, v in li.items() if k not in _NOT_CREDITED_LINE_KEYS},
+                     **({"source_line_id": li["line_id"]} if li.get("line_id") else {})}
                     for li in (source.get("line_items") or [])
                 ]
                 cn_payload = {
@@ -3792,6 +3887,7 @@ def setup_routes(app):
                 "payment_date": payment_date,
                 "bank_account": bank_account,
                 "conversion_rate": conversion_rate,
+                **_submitted_fund_allocation(form),
                 **submitted_operation_key(form),
             })
         except APIError as e:
@@ -6300,13 +6396,95 @@ def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, s
     return options
 
 
+FUND_ALLOCATION_FIELD = "fund_allocation:"  # the payment form's amount for one fund: this, then the fund
+
+
+def _payment_fund_split(fund_open: dict | None, outstanding: Decimal, currency: str) -> FT | str:
+    """An invoice's or bill's open balance by fund on its payment form: each fund's open part
+    (``fund_open`` from GET /docs/{id}/fund-open, in the books' currency) and the rule that
+    splits a payment by it, then Allocate by fund: one amount per fund in the document's
+    currency, empty until filled in, each hinting the share the rule gives the whole balance."""
+    from celerp.services.money import allocate_pro_rata
+
+    funds = (fund_open or {}).get("funds") or []
+    if not funds:
+        return ""
+    books, dp = fund_open["currency"], currency_dp(currency)
+    shares = allocate_pro_rata(outstanding, [to_decimal(f["open"]) for f in funds], currency)
+    names = [f["name"] or t("label.unrestricted") for f in funds]
+    return Div(
+        Div(t("documents.by_fund"), cls="form-label"),
+        Table(
+            Thead(Tr(Th(t("th.fund")), Th(t("th.outstanding"), cls="cell--number"))),
+            Tbody(*(Tr(Td(name), Td(fmt_money(f["open"], books), cls="cell--number")) for f, name in zip(funds, names))),
+            cls="data-table data-table--compact",
+        ),
+        P(t("documents.fund_split_rule"), cls="text-muted"),
+        Details(
+            Summary(t("documents.allocate_by_fund")),
+            P(t("documents.allocate_by_fund_hint"), cls="text-muted"),
+            Div(*(Div(Label(name, cls="form-label"),
+                      Input(type="number", name=f"{FUND_ALLOCATION_FIELD}{f['fund']}", placeholder=f"{share:.{dp}f}",
+                            step=_money_step(currency), min="0", cls="form-input"), cls="form-group")
+                  for f, name, share in zip(funds, names, shares)), cls="form-row"),
+        ),
+        cls="payment-fund-split",
+    )
+
+
+def _submitted_fund_allocation(form) -> dict:
+    """The amounts typed under Allocate by fund, as the payment's ``fund_allocation`` (an empty
+    amount counting as nothing), or nothing when every amount was left empty. Each is sent as
+    typed: the API refuses one that is not a number."""
+    typed = {str(k)[len(FUND_ALLOCATION_FIELD):]: str(form.get(k, "")).strip()
+             for k in form.keys() if str(k).startswith(FUND_ALLOCATION_FIELD)}
+    if not any(typed.values()):
+        return {}
+    return {"fund_allocation": {fund: amount or "0" for fund, amount in typed.items()}}
+
+
+def _collection_status(collection: dict | None, tz: str | None) -> FT | str:
+    """How the invoice's automatic collection through Celerp Cloud stands; nothing for an
+    invoice that is not collected."""
+    from celerp.services.business_time import business_date_of
+    from celerp.services.collection import IN_FLIGHT, STOP_REASONS
+    state = (collection or {}).get("state")
+    if not state:
+        return ""
+    if state == "requires_action":
+        url = collection.get("action_url")
+        text = Span(t("collection.status_requires_action"),
+                    *((" ", A(t("collection.payer_action_link"), href=safe_url(url), target="_blank", rel="noopener"))
+                      if url else ()))
+    elif state in IN_FLIGHT:
+        waits = collection.get("waits")
+        text = t("collection.status_waits", document=waits) if waits else t("collection.status_pending")
+    elif state == "failed":
+        at = collection.get("retry_eligible_at")
+        text = sentence("collection.status_failed_retry", date=business_date_of(at, tz)) if at else t("collection.status_failed")
+    elif state == "paid":
+        text = t("collection.status_paid")
+    elif state == "succeeded":
+        text = t("collection.status_succeeded")
+    elif state == "stopped":
+        reason = collection.get("reason") or ""
+        why = t(f"collection.stopped_{reason}") if reason in STOP_REASONS else t("collection.stopped_cloud", reason=reason or EMPTY)
+        text = t("collection.status_stopped", reason=why)
+    elif state == "canceled":
+        text = t("collection.status_canceled")
+    else:
+        text = t("collection.status_unverifiable")
+    return Div(text, cls="text-muted small", id="doc-collection")
+
+
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
                      targets: list[dict] | None = None, tz: str | None = None,
-                     chart_accounts: list[dict] | None = None) -> FT:
+                     chart_accounts: list[dict] | None = None, fund_open: dict | None = None) -> FT:
     """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
 
     DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
     documents a credit note may be applied to; the picker shows only those still open.
+    ``fund_open`` (funds in use) adds the open balance by fund to an invoice's or bill's form.
     Each payment's account reads by code and name from ``chart_accounts`` (``account_label``),
     the bare code only for an account the chart no longer holds.
     Hidden for drafts, void docs, and non-payable doc types.
@@ -6430,7 +6608,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             Td(format_value(p_date, "date")),
             Td(format_value(p_method, "badge")),
             link_col,
-            Td(p_ref or EMPTY),
+            Td(p_ref or EMPTY, *[Div(t("documents.dispute_status", status=t(dispute_status_key(d))),
+                                     cls="text-muted small") for d in (p.get("disputes") or {}).values()]),
             Td(fmt_money(p_amount, currency),
                Div(t("documents.refunded_amount", amount=fmt_money(float(p["refunded"]), currency)), cls="text-muted small")
                if p.get("refunded") else "", cls="cell--number"),
@@ -6469,6 +6648,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
+            _collection_status(doc.get("collection"), tz),
             cls="payment-summary",
         )
 
@@ -6567,6 +6747,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",
                     ),
+                    _payment_fund_split(fund_open, outstanding_d, currency),
                     operation_key_input(),
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
@@ -7461,6 +7642,56 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
                id="doc-header-discount-row", cls="total-row")
 
 
+async def _doc_funds(token: str, doc: dict, settings: dict) -> list | None:
+    """The company's funds, for the fund controls of a document whose lines post to a fund or
+    that came from outside; None with funds off, on any other document, or when they can't be
+    read (the controls are left out then)."""
+    from celerp.services.journal_accounts import funds_enabled
+    from celerp_docs.doc_constants import FUND_DOC_TYPES
+
+    if not funds_enabled(settings) or not (shows_funds(doc) or doc.get("doc_type") in FUND_DOC_TYPES):
+        return None
+    try:
+        return (await api.list_funds(token)).get("items") or []
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return None
+
+
+async def _doc_fund_open(token: str, doc: dict, settings: dict) -> dict | None:
+    """An open invoice's or bill's balance by fund, for its payment form; None with funds off, on
+    any other document, or when it can't be read (the payment still splits by the rule then)."""
+    from celerp.services.journal_accounts import funds_enabled
+
+    if not funds_enabled(settings) or doc.get("doc_type") not in ("invoice", "bill") \
+            or doc.get("status") in ("draft", "void") or not (outstanding_balance(doc) or 0) > 0:
+        return None
+    try:
+        return await api.get_doc_fund_open(token, doc.get("entity_id") or doc.get("id") or "")
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return None
+
+
+def _local_fund(line):
+    """A line as the editor sent it, a local line's Unrestricted stored as no fund."""
+    if isinstance(line, dict) and line.get("fund_id") == UNRESTRICTED:
+        return {**line, "fund_id": None}
+    return line
+
+
+def _fund_notice(cleared: dict | None) -> str:
+    """What a save that changed amounts says about the fund choices it cleared."""
+    if not cleared:
+        return ""
+    lines = ", ".join(str(n) for n in cleared.get("lines") or [])
+    if lines:
+        return t("fund.choices_cleared_both" if cleared.get("document") else "fund.choices_cleared_lines", lines=lines)
+    return t("fund.choices_cleared_document") if cleared.get("document") else ""
+
+
 def _sent_line_ids(lines: list) -> list[str]:
     """The line ids a line save hands back to its page, one per line it sent.
 
@@ -7515,7 +7746,7 @@ def subscription_meta_cells(doc: dict) -> tuple:
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
-                draw_targets: list | None = None) -> FT:
+                draw_targets: list | None = None, funds: list | None = None, fund_open: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -7571,6 +7802,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
     # controls (the API enforces it; the UI must not offer controls that would 403).
     can_edit_lines = is_draft and _can_edit
+    # The fund controls of a record from outside; funds are given only with funds in use.
+    _fv = FundView.of(doc, funds, _s, role) if funds is not None else None
 
     def _on_lines(url: str, confirm: str | None = None, form: bool = False) -> dict:
         """The posting attributes of an action (a button, or a form with form=True) whose server
@@ -8557,6 +8790,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ])
             if account_cell:
                 cells.append(account_cell)
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, li), cls="col-fund"))
             cells.extend([
                 Td(Input(type="number", value=input_money(line_tot, currency), step="0.01",
                          cls="cell-input line-total",
@@ -8675,6 +8910,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ])
             if doc_type in ("purchase_order", "bill"):
                 cells.append(Td(_line_account_picker(chart_accounts, ""), cls="col-account"))
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, {}), cls="col-fund"))
             cells.extend([
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
@@ -8724,6 +8961,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers.extend([Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account"), cls="col-account"))
+        if _fv:
+            _line_headers.append(Th(t("th.fund"), cls="col-fund"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
         if pol["show_onhand"]:
             _line_headers.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
@@ -8842,6 +9081,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # below, or the right edge (consistent with button spacing elsewhere).
                 style="display:flex;justify-content:flex-end;margin:0.75rem 0;padding:0 0.75rem;",
             ) if pol["audit"] and status == _LF else None),
+            (fund_set_all(_fv) if _fv else None),
             Div(
                 Table(
                     *([_line_colgroup] if _line_colgroup else []),
@@ -10061,6 +10301,7 @@ function _celerpCollectLines() {
         const receiveAsEl = row.querySelector('[data-name="receive_as"]');
         const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
+        const fundEl = row.querySelector('[data-name="fund_id"]');
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
         // A row drawn from a memo shows its lot's measures but never sends them: the draw owns them.
@@ -10093,6 +10334,7 @@ function _celerpCollectLines() {
                          ...(category ? {category} : {}),
                          ...(receiveAs ? {receive_as: receiveAs} : {}),
                          ...(accountCode ? {account_code: accountCode} : {}),
+                         ...(fundEl ? {fund_id: fundEl.value || null} : {}),
                          ...(pieces !== null ? {pieces} : {}),
                          ...(weight !== null ? {weight} : {}),
                          ...carried,
@@ -10270,8 +10512,10 @@ async function _celerpRefreshHeldBadges() {
         window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
+        let savedNotice = '';
         try {
             const data = await resp.json();
+            if (data && data.fund_notice) savedNotice = data.fund_notice;
             if (data && data.version != null) _celerpEntityVersion = data.version;
             if (data && Array.isArray(data.line_ids) && data.line_ids.length === savedRows.length)
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
@@ -10285,6 +10529,13 @@ async function _celerpRefreshHeldBadges() {
         _CELERP_ORIGINAL_COUNT = lines.length;
         // After a line save, status-column drafts put each reserved row's stored badge back.
         if (_CELERP_CFG.showItemStatus) _celerpRefreshHeldBadges().catch(function() {});
+        // Changed amounts cleared fund choices on lines from outside: the notice stays beside
+        // the cells until the next save, so it cannot be missed.
+        if (savedNotice) {
+            statusEl.textContent = savedNotice;
+            statusEl.style.color = 'var(--c-amber-dark)';
+            return true;
+        }
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => { statusEl.textContent = ''; }, 1500);
@@ -11014,6 +11265,8 @@ async function celerpCsvImport(input, entityId) {
                 acct_code = li.get("account_code") or ""
                 acct_display = _acct_map.get(acct_code) or acct_code or ""
                 cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
+            if _fv:
+                cells.append(Td(fund_line_cell(_fv, li), cls="col-fund"))
             cells.append(Td(format_value(line_total, "money", currency), cls="cell--number col-total"))
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
@@ -11049,6 +11302,8 @@ async function celerpCsvImport(input, entityId) {
         _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.customs_value") if pol["customs"] else t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))
+        if _fv:
+            _thead_base.append(Th(t("th.fund"), cls="col-fund"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         if pol["show_onhand"]:
             _thead_base.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
@@ -11066,6 +11321,7 @@ async function celerpCsvImport(input, entityId) {
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map, item_meta_map=item_meta_map, draw_panel=_fin_draw_panel) if _fin_show_bulk else None,
+            (fund_set_all(_fv) if _fv else None),
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [
@@ -11367,7 +11623,8 @@ async function celerpCsvImport(input, entityId) {
             _rate_val = doc.get("conversion_rate")
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
-        if not is_list and outstanding_value is not None:
+        # A subscription agreement is a template: what is owed is on the documents it issues.
+        if not is_list and doc_type not in TEMPLATE_DOC_TYPES and outstanding_value is not None:
             _outstanding_hint = P(t("doc.memo_outstanding_hint"), cls="form-hint") if doc_type == "memo" else ""
             _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), _outstanding_hint, cls="form-group"))
 
@@ -11412,6 +11669,7 @@ async function celerpCsvImport(input, entityId) {
                 else _cell("ref_id", ref),
                 cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
+            (fund_document_meta(_fv) if _fv and doc.get("origin") else ""),
             (Div(Div(t("doc.original_label", doc_type=doc_type_label(original.get("doc_type", ""))), cls="meta-label"),
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
                    href=safe_url(doc_href(doc["original_doc_id"]))),
@@ -11491,7 +11749,7 @@ async function celerpCsvImport(input, entityId) {
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
         _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz,
-                         chart_accounts=chart_accounts),
+                         chart_accounts=chart_accounts, fund_open=fund_open),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

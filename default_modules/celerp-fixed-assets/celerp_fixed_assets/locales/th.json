@@ -1080,5 +1080,8 @@
   "fixed_assets.err_line_no_such_asset": "{line}: ไม่พบสินทรัพย์นี้",
   "fixed_assets.err_sale_module_off": "{numbers}: โปรดเปิดใช้งานโมดูลสินทรัพย์ถาวรเพื่อขายสินทรัพย์",
   "fixed_assets.err_sale_not_here": "{number} ไม่ได้ถูกขายในใบแจ้งหนี้นี้ โปรดเริ่มการขายจากหน้าสินทรัพย์เพื่อสร้างใบแจ้งหนี้ฉบับร่าง",
-  "fixed_assets.err_credit_not_sold_there": "{number} ไม่ได้ขายผ่านใบแจ้งหนี้ {invoice}"
+  "fixed_assets.err_credit_not_sold_there": "{number} ไม่ได้ขายผ่านใบแจ้งหนี้ {invoice}",
+  "fixed_assets.err_line_other_fund": "บรรทัดนี้อยู่ในกองทุน {line_fund} แต่ {number} อยู่ในกองทุน {asset_fund} สินทรัพย์ต้องคงอยู่ในกองทุนที่ใช้ซื้อ โปรดใช้บรรทัดในกองทุน {asset_fund}",
+  "fixed_assets.err_change_fund_splits_asset": "{number} ถูกซื้อด้วยบรรทัดที่หลังเปลี่ยนจะอยู่คนละกองทุน ({funds}) สินทรัพย์หนึ่งรายการต้องอยู่กองทุนเดียว โปรดเลือกกองทุนเดียวกันให้ทุกบรรทัด",
+  "fixed_assets.err_change_fund_class_move": "{number} ถูกย้ายเนื่องจากการเปลี่ยนบัญชีของ {cls} เมื่อ {date} โปรดยกเลิกการเปลี่ยนบัญชีนั้นก่อน เปลี่ยนกองทุน แล้วเปลี่ยนบัญชีอีกครั้ง"
 }

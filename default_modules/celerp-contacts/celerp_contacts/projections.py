@@ -144,6 +144,10 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
                 break
     elif event_type in ("crm.contact.file_deleted", "crm.contact.file_removed"):
         current["files"] = [f for f in current.get("files", []) if f.get("id") != data["file_id"]]
+    elif event_type == "crm.contact.statement_sent":
+        pass  # a record of the email on the contact's history; the contact itself is unchanged
+    elif event_type == "crm.contact.collection_binding":
+        current["collection_binding"] = dict(data)
 
     else:
         raise ValueError(f"Unsupported contact event: {event_type}")

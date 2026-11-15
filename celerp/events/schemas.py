@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from celerp.schemas.numbers import PositiveFloat
 
@@ -635,6 +635,23 @@ class CrmContactAddressRemoved(BaseModel):
     address_id: str
 
 
+class CrmContactCollectionBinding(BaseModel):
+    """The contact's card on file for automatic collection, as Celerp Cloud last reported it."""
+    state: str
+    card_brand: str | None = None
+    card_last4: str | None = None
+    receipt_sent: bool
+
+
+class CrmContactStatementSent(BaseModel):
+    """A donor statement emailed to the contact: its period, wording version, total and address."""
+    date_from: str
+    date_to: str
+    version: int
+    total: float
+    email: str
+
+
 # -----------------
 # Documents
 # -----------------
@@ -686,6 +703,19 @@ class DocVoided(BaseModel):
     pre_void_fulfillment: str | None = None
 
 
+class FundChanged(BaseModel):
+    """Change fund on a posted outside record (doc.fund_changed, acc.journal_entry.fund_changed):
+    why, the choices before and after, who held the reallocation authority when the change
+    needed it, and the answer a repeat of the request gets."""
+    model_config = {"populate_by_name": True}
+
+    reason: str
+    from_: dict = Field(alias="from")
+    to: dict
+    authorized_by: str | None = None
+    result: dict
+
+
 class DocRevertedToDraft(BaseModel):
     reverted_by: str
     previous_status: str
@@ -714,6 +744,28 @@ class DocReopened(BaseModel):
 class DocSent(BaseModel):
     sent_via: str | None = None
     sent_to: str | None = None
+
+
+class DocCollection(BaseModel):
+    """The invoice's automatic card collection as it stands after the change (celerp.services.collection)."""
+    model_config = ConfigDict(extra="forbid")
+    state: str
+    asked: bool | None = None
+    attempt_number: int | None = None
+    request_key: str | None = None
+    request: dict | None = None  # the attempt request as first sent; every retry sends it again
+    amount_minor: int | None = None
+    currency: str | None = None
+    failure_code: str | None = None
+    retry_eligible_at: str | None = None
+    action_url: str | None = None
+    definitive: bool | None = None
+    cancel: str | None = None
+    reason: str | None = None
+    replace: bool | None = None  # cancelled for a smaller balance: the next attempt asks what is owed then
+    kept: str | None = None  # the succeeded charge's payment, kept among the unmatched payments
+    charged: bool | None = None  # a charge was recorded on the invoice while the attempt was with Cloud
+    waits: str | None = None  # another invoice of the agreement whose unresolved charge holds this attempt
 
 
 class PaymentBooks(BaseModel):
@@ -787,6 +839,21 @@ class DocPaymentStripeReleased(BaseModel):
     payment_index: int
     reference: str
     released_at: str
+
+
+class DocPaymentDisputed(BaseModel):
+    """A step of a customer's card dispute on an online payment, as Stripe reported it
+    (celerp.services.payments.DISPUTE_STATES). The payment itself is never changed."""
+    model_config = ConfigDict(extra="forbid")
+    payment_index: int
+    reference: str
+    dispute_id: str
+    state: str
+    outcome: str | None = None
+    amount_minor: int
+    currency: str
+    occurred_at: str | None = None
+    posted: list[str] = []  # the DISPUTE_STEPS postings this step made
 
 
 class DocPaymentVoided(BaseModel):
@@ -1176,6 +1243,20 @@ class JELine(BaseModel):
     # a role later points at another account. Absent on lines posted before roles
     # existed; an empty list is a line deliberately left unclassified.
     account_roles: list[str] | None = None
+    # The fund the line belongs to (a fund entity id); absent on a line of the
+    # unrestricted group, which is every line of a company that never used funds.
+    fund_id: str | None = None
+    # A line that came from outside, and the fund this company chose for it (peer_lines).
+    origin: str | None = None
+    fund_choice: str | None = None
+    # The document lines (1-based) whose fund a document's entry gave this line (fund_legs).
+    source_lines: list[int] | None = None
+    # The posted entry this line copies, with its fund (peer_lines.copy_posted_lines).
+    posted_from: str | None = None
+    # A gift, classified once when the line was posted (auto_je._stamp_gifts, or by the company's
+    # rules for any other new line: journal_accounts._stamp_named_gifts); donor history reads
+    # gifts by this alone.
+    gift: bool | None = None
 
 
 class AccJournalEntryFx(BaseModel):
@@ -1212,6 +1293,16 @@ class AccJournalEntryCreated(BaseModel):
     # posted) and the hash of the request that posted it.
     source: dict | None = None
     intent_hash: str | None = None
+    # An outside journal: where it came from (peer_lines.ORIGINS). An automatic
+    # posting: the record it posts for.
+    origin: str | None = None
+    record_id: str | None = None
+    # A settlement split by fund: how (``open_share`` or ``explicit``) and each fund's share
+    # ("unrestricted" for the lines carrying no fund), in the books' currency.
+    fund_allocation: dict | None = None
+    # The other records an automatic posting settles besides its own (a note applied to a
+    # document): a line may follow the fund one of their entries posted with.
+    settles: list[str] | None = None
 
 
 class AccJournalEntryPosted(BaseModel):
@@ -1232,6 +1323,8 @@ class AccJournalEntryVoided(BaseModel):
     # event boundary (posting_dates.void_reversal) from the date the user picked, or
     # today when the entry's own period is locked. The entry stays in its own period.
     reversed_on: str | None = None
+    # The entry posted again in its place with new funds (Change fund only; auto_je.current_entry).
+    replaced_by: str | None = None
 
 
 class AccPeriodClosed(BaseModel):
@@ -1240,6 +1333,74 @@ class AccPeriodClosed(BaseModel):
 
 class AccPeriodReopened(BaseModel):
     period: str
+
+
+class FundCreated(BaseModel):
+    name: str
+    restricted: bool
+    purpose: str | None = None
+    opening_date: str | None = None
+
+
+class FundUpdated(BaseModel):
+    name: str | None = None
+    restricted: bool | None = None
+    purpose: str | None = None
+    opening_date: str | None = None
+
+
+class FundArchived(BaseModel):
+    pass
+
+
+class FundUnarchived(BaseModel):
+    pass
+
+
+class RevSegment(BaseModel):
+    start: str
+    end: str
+    amount: float
+
+
+class RevAmendment(BaseModel):
+    """An amendment (``amend``) or a credit note (``credit``: the note ``note_id`` and the
+    ``amount`` it took off deferred revenue)."""
+    kind: Literal["amend", "credit"]
+    effective: str
+    reason: str | None = None
+    by: str | None = None
+    at: str
+    note_id: str | None = None
+    amount: float | None = None
+
+
+class RevScheduleCreated(BaseModel):
+    """A deferred sale line's schedule (celerp.services.recognition), made at finalize."""
+    doc_id: str
+    line_id: str
+    line: int
+    account: str
+    deferred_account: str
+    fund_id: str | None = None
+    currency: str
+    doc_currency: str
+    rate: float
+    basis: Literal["daily"]
+    source_je: str
+    segments: list[RevSegment]
+    amendments: list[RevAmendment] = []
+
+
+class RevScheduleAmended(BaseModel):
+    """The schedule's segments planned again, and the amendment that did it."""
+    segments: list[RevSegment]
+    amendment: RevAmendment
+
+
+class RevScheduleFundChanged(BaseModel):
+    """Change fund on the schedule's source document: the fund its line now posts on."""
+    fund_id: str | None = None
 
 
 class AccReconciliationReopened(BaseModel):
@@ -1533,6 +1694,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "crm.contact.address_added": CrmContactAddressAdded,
     "crm.contact.address_updated": CrmContactAddressUpdated,
     "crm.contact.address_removed": CrmContactAddressRemoved,
+    "crm.contact.statement_sent": CrmContactStatementSent,
+    "crm.contact.collection_binding": CrmContactCollectionBinding,
     "crm.contact.file_attached": EntityFileAttached,
     "crm.contact.file_tagged": EntityFileTagged,
     "crm.contact.file_deleted": EntityFileDeleted,
@@ -1554,16 +1717,19 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.linked": DocLinked,
     "doc.finalized": DocFinalized,
     "doc.voided": DocVoided,
+    "doc.fund_changed": FundChanged,
     "doc.reverted_to_draft": DocRevertedToDraft,
     "doc.unvoided": DocUnvoided,
     "doc.closed": DocClosed,
     "doc.reopened": DocReopened,
     "doc.converted_to_bill": DocConvertedToBill,
     "doc.sent": DocSent,
+    "doc.collection": DocCollection,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.refund_reversed": DocPaymentRefundReversed,
     "doc.payment.stripe_released": DocPaymentStripeReleased,
+    "doc.payment.disputed": DocPaymentDisputed,
     "payment_batch.recorded": PaymentBatchRecorded,
     "line_action.recorded": LineActionRecorded,
     "doc.payment.voided": DocPaymentVoided,
@@ -1625,9 +1791,17 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.journal_entry.created": AccJournalEntryCreated,
     "acc.journal_entry.posted": AccJournalEntryPosted,
     "acc.journal_entry.voided": AccJournalEntryVoided,
+    "acc.journal_entry.fund_changed": FundChanged,
     "acc.period.closed": AccPeriodClosed,
     "acc.period.reopened": AccPeriodReopened,
     "acc.reconciliation.reopened": AccReconciliationReopened,
+    "fund.created": FundCreated,
+    "fund.updated": FundUpdated,
+    "fund.archived": FundArchived,
+    "fund.unarchived": FundUnarchived,
+    "rev_schedule.created": RevScheduleCreated,
+    "rev_schedule.amended": RevScheduleAmended,
+    "rev_schedule.fund_changed": RevScheduleFundChanged,
 
     # System
     "sys.company.created": SysCompanyCreated,

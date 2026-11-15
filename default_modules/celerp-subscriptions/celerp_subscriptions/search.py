@@ -12,6 +12,7 @@ from sqlalchemy import func as _func, or_ as _or, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
+from celerp_subscriptions.periods import UNSET
 
 SUBSCRIPTION_DOC_TYPES = frozenset({"subscription_invoice", "subscription_po"})
 _SEARCH_FIELDS = ("name", "doc_number", "ref_id", "contact_name")
@@ -45,6 +46,7 @@ async def search_subscription_templates(
     status: str | None = None,
     q: str | None = None,
     review: bool = False,
+    kind: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -62,6 +64,10 @@ async def search_subscription_templates(
     if review:
         # history_review is present only while earlier documents wait for review.
         where.append(Projection.state["history_review"].as_string().isnot(None))
+    if kind:
+        # An agreement without a kind (none stored, or an empty text) reads as its UNSET kind.
+        stored = Projection.state["kind"].as_string()
+        where.append(_or(stored == kind, stored.is_(None), stored == "") if kind == UNSET["kind"] else stored == kind)
     if q and q.strip():
         terms = [t.strip().lower() for t in q.split(",") if t.strip()]
         where.append(_or(*[

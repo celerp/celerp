@@ -288,8 +288,7 @@ def _free_card(free_questions, owner: bool | None, lang: str) -> FT:
         P(t("ai.free_no_account_title", lang), cls="ai-showcase__cta-name"),
         P(t("ai.free_no_account_body", lang), cls="ai-showcase__cta-desc"),
         *([P(t("ai.free_questions_included", lang, n=free_questions),
-             cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight"),
-           P(t("ai.free_terms", lang), cls="ai-showcase__cta-fine")]
+             cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight")]
           if isinstance(free_questions, int) and free_questions > 0 else []),
         Div(
             Button(t("ai.free_create_account", lang), type="button",
