@@ -116,6 +116,7 @@ def setup_routes(app):
         add = A(t("acct.add_bank_account"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")
         return await base_shell(
             page_header(t("bank.list_title"), add),
+            *BG.page_flashes(request.query_params),
             P(t("bank.list_intro") if banks else t("acct.no_bank_accounts_configured"), cls="text-muted"),
             Div(*rows, cls="bank-list settings-card") if rows else None,
             title=page_title("bank.list_title"), nav_active="accounting", request=request)
@@ -142,7 +143,7 @@ def setup_routes(app):
                 return _login()
             if e.status == 403:
                 return await _no_access(request, e, t("nav.reconcile"))
-            return RedirectResponse("/accounting/reconcile/start", status_code=302)
+            return RedirectResponse("/accounting/reconcile/start?msg=" + quote(str(e.detail), safe=""), status_code=302)
         return await base_shell(
             page_header(t("bank.page_title", bank=bank.get("bank_name", "")),
                         A(t("btn.back"), href="/accounting/reconcile/start", cls="btn btn--secondary"),
@@ -200,9 +201,18 @@ def setup_routes(app):
         return BG.header_cell(bank_id, job_id, int(p.get("idx", "0") or 0), field, p.get("value") or None,
                               p.get("state") or BG.preview_state([], None))
 
-    def _state(form) -> tuple[list[dict], dict | None]:
-        state = json.loads(str(form.get("state") or "{}"))
-        return state.get("headers") or [], state.get("column_map")
+    def _state(form) -> tuple[list[dict], dict | None] | None:
+        """The headers and column map the preview carried; None when the form's state is
+        not one the preview rendered."""
+        try:
+            state = json.loads(str(form.get("state") or "{}"))
+            headers, column_map = state.get("headers") or [], state.get("column_map")
+        except (ValueError, AttributeError):
+            return None
+        if not (isinstance(headers, list) and all(isinstance(h, dict) for h in headers)
+                and (column_map is None or isinstance(column_map, dict))):
+            return None
+        return headers, column_map
 
     @app.post("/accounting/reconcile/bank/{bank_id}/preview/{job_id}")
     async def preview_edit(request: Request, bank_id: str, job_id: str):
@@ -212,8 +222,10 @@ def setup_routes(app):
         if not token:
             return _login()
         form = await request.form()
-        headers, column_map = _state(form)
-        field, idx = str(form.get("field", "")), int(str(form.get("idx", "0")) or 0)
+        state, idx = _state(form), str(form.get("idx", "0")) or "0"
+        if state is None or not idx.isdigit():
+            return Response(status_code=400)
+        (headers, column_map), field, idx = state, str(form.get("field", "")), int(idx)
         if field in dict(BG.PREVIEW_FIELDS) and 0 <= idx < len(headers):
             headers[idx][field] = str(form.get("value", "")).strip() or None
         named = {str(v): k[4:] for k, v in form.multi_items() if k.startswith("map_") and v != "ignore"}
@@ -231,7 +243,9 @@ def setup_routes(app):
         if not token:
             return _login()
         form = await request.form()
-        headers, column_map = _state(form)
+        if (state := _state(form)) is None:
+            return Response(status_code=400)
+        headers, column_map = state
         statements = [{"header": h} for h in headers]
         try:
             await api.import_statement(token, {"job_id": job_id, "bank_id": bank_id, "statements": statements,

@@ -60,9 +60,13 @@ async def test_files_refused_without_bank_permission(client, session):
     assert r.status_code == 403, r.text
 
 
-async def test_files_refused_by_type_and_count(client):
+async def test_files_refused_by_type_size_and_count(client, monkeypatch):
     co = await B.company(client)
     r = await _send(client, co["h"], ("run.exe", b"MZ", "application/octet-stream"))
     assert r.status_code == 400 and "run.exe" in r.text
+    monkeypatch.setattr("celerp.ai.files.MAX_UPLOAD_BYTES", 8)
+    r = await _send(client, co["h"], ("big.csv", b"Date,Amount\n", "text/csv"))
+    assert r.status_code == 400 and "big.csv" in r.text
+    monkeypatch.undo()
     r = await _send(client, co["h"], *[(f"f{i}.csv", b"a\n", "text/csv") for i in range(21)])
     assert r.status_code == 400

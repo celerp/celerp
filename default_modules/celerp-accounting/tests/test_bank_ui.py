@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import quote
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -35,6 +36,9 @@ _EMPTY = {"groups": [], "summary": {"lines": 0, "open": 0, "posted": 0}, "statem
           "difference": {"amount": 0.0, "notes": []}}
 
 
+_COMPANY = {"id": "c1", "name": "TestCo", "currency": "USD", "settings": {"currency": "USD"}}
+
+
 @pytest_asyncio.fixture
 async def ui_client():
     from ui.app import app as ui_app
@@ -48,8 +52,8 @@ def _api(table):
             patch("ui.api_client.bank_groups", AsyncMock(return_value=table)),
             patch("ui.api_client.get_chart", AsyncMock(return_value={"items": [
                 {"code": "5100", "name": "Office expenses", "account_type": "expense", "is_active": True}]})),
-            patch("ui.routes.reports._get_company", AsyncMock(return_value={
-                "id": "c1", "name": "TestCo", "currency": "USD", "settings": {"currency": "USD"}}))]
+            patch("ui.api_client.get_company", AsyncMock(return_value=_COMPANY)),
+            patch("ui.routes.reports._get_company", AsyncMock(return_value=_COMPANY))]
 
 
 async def _get(ui_client, url, table, role="owner"):
@@ -146,3 +150,155 @@ async def test_an_import_refusal_shows_on_the_preview_and_keeps_what_was_entered
     assert "A statement already covers 2026-01-01 to 2026-01-31 on this bank." in r.text
     assert preview.await_args.args[2] == [{"header": edited}]
     assert 'value="1234.00"' in r.text and 'data-testid="statement-preview"' in r.text
+
+
+# ── Dropping a statement and its preview ─────────────────────────────────────
+
+_CSV = ("st.csv", b"Date,Description,Amount\n2026-01-05,FEE,-5.00\n", "text/csv")
+_DROP = "/accounting/reconcile/bank/b1/drop"
+
+
+def _signed_in(ui_client, role: str = "owner") -> None:
+    ui_client.cookies.set("celerp_token", make_test_token(role=role))
+
+
+async def _drop(ui_client, kept: AsyncMock, read: AsyncMock | None = None, **send):
+    with patch("ui.api_client.bank_files", kept), \
+         patch("ui.api_client.read_statement", read or AsyncMock(return_value={"job_id": "j1"})):
+        return await ui_client.post(_DROP, **send)
+
+
+async def test_a_dropped_statement_is_read_and_the_page_follows_the_reading(ui_client):
+    files, read = AsyncMock(return_value={"file_ids": ["f1"]}), AsyncMock(return_value={"job_id": "j1"})
+    _signed_in(ui_client)
+    r = await _drop(ui_client, files, read, files={"files": _CSV}, data={"idempotency_key": "k1"})
+    assert r.status_code == 303 and r.headers["location"] == "/accounting/reconcile/bank/b1?preview=j1"
+    assert files.await_args.args[1] == [("st.csv", _CSV[1], "text/csv")]
+    assert read.await_args.args[1] == {"file_ids": ["f1"], "bank_id": "b1", "idempotency_key": "k1"}
+
+
+async def test_a_drop_with_no_file_goes_back_to_the_bank_page_saying_so(ui_client):
+    from ui.i18n import t
+    files = AsyncMock()
+    _signed_in(ui_client)
+    r = await _drop(ui_client, files, data={})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/accounting/reconcile/bank/b1?msg=" + quote(t("bank.err_no_file"), safe="")
+    files.assert_not_awaited()
+    page = await _get(ui_client, r.headers["location"], _TABLE)
+    assert t("bank.err_no_file") in page.text
+
+
+@pytest.mark.parametrize("signed_in", [False, True])
+async def test_a_drop_without_a_session_goes_to_sign_in(ui_client, signed_in):
+    """Signed out, nothing is sent; a session the API no longer accepts also signs in again."""
+    from ui.api_client import APIError
+    files = AsyncMock(side_effect=APIError(401, "expired"))
+    if signed_in:
+        _signed_in(ui_client)
+    r = await _drop(ui_client, files, files={"files": _CSV})
+    assert r.status_code == 302 and r.headers["location"] == "/login"
+    assert files.await_count == (1 if signed_in else 0)
+
+
+@pytest.mark.parametrize("refusal", ["st.csv is larger than the limit", "Statement already completed"])
+async def test_a_refused_drop_goes_back_to_the_bank_page_with_the_refusal(ui_client, refusal):
+    """A file the API will not keep (too large, wrong type) or a reading it refuses reads on
+    the bank page, and no reading starts."""
+    from ui.api_client import APIError
+    read = AsyncMock()
+    _signed_in(ui_client)
+    r = await _drop(ui_client, AsyncMock(side_effect=APIError(400, refusal)), read, files={"files": _CSV})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/accounting/reconcile/bank/b1?msg=" + quote(refusal, safe="")
+    read.assert_not_awaited()
+
+
+_UNMAPPED = {"job_id": "j1", "bank_id": "b1", "receipts": [], "failed_steps": [], "needs_mapping": True,
+             "headers": ["Col A", "Col B", "Col C"], "column_map": None,
+             "statements": [{"file_id": "f1", "header": {}, "lines": [], "tie": {"ok": False}, "blocking": [],
+                             "notices": []}]}
+
+
+async def test_a_file_whose_columns_are_not_recognised_asks_for_them(ui_client):
+    """Each column gets a picker, the preview's state travels with the form and Escape
+    leaves for the bank page."""
+    with patch("ui.api_client.statement_preview", AsyncMock(return_value=_UNMAPPED)):
+        html = (await _get(ui_client, "/accounting/reconcile/bank/b1/preview/j1", _TABLE)).text
+    form = _tag(html, r"<form[^>]+data-testid=\"column-mapper\"[^>]*>")
+    assert 'hx-post="/accounting/reconcile/bank/b1/preview/j1"' in form
+    assert "celerpGoOnEscape" in form and "/accounting/reconcile/bank/b1" in form
+    for column in _UNMAPPED["headers"]:
+        assert f'name="map_{column}"' in html
+    assert 'name="state"' in html
+
+
+async def test_named_columns_read_the_file_again_by_them(ui_client):
+    """Columns left on ignore are not sent; the file is read again with the named columns
+    and nothing is written."""
+    preview = AsyncMock(return_value={**_UNMAPPED, "needs_mapping": False})
+    _signed_in(ui_client)
+    state = json.dumps({"headers": [{"opening_balance": "0.00"}], "column_map": None})
+    with patch("ui.api_client.statement_preview", preview), patch("ui.api_client.import_statement") as imp:
+        r = await ui_client.post("/accounting/reconcile/bank/b1/preview/j1", data={
+            "map_Col A": "date", "map_Col B": "description", "map_Col C": "amount", "map_Col D": "ignore",
+            "state": state})
+    assert r.status_code == 200, r.text
+    assert preview.await_args.args[1:] == ("j1", [{"header": {"opening_balance": "0.00"}}],
+                                           {"date": "Col A", "description": "Col B", "amount": "Col C"})
+    imp.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["/accounting/reconcile/bank/b1/preview/j1",
+                                  "/accounting/reconcile/bank/b1/preview/j1/import"])
+@pytest.mark.parametrize("state", ["!!!not-json!!!", "[1, 2]", '{"headers": "x"}', '{"column_map": [1]}'])
+async def test_a_preview_state_it_did_not_render_is_refused_and_nothing_is_sent(ui_client, path, state):
+    preview, imp = AsyncMock(), AsyncMock()
+    _signed_in(ui_client)
+    with patch("ui.api_client.statement_preview", preview), patch("ui.api_client.import_statement", imp):
+        r = await ui_client.post(path, data={"state": state, "idempotency_key": "k1"})
+    assert r.status_code == 400
+    preview.assert_not_awaited()
+    imp.assert_not_awaited()
+
+
+async def test_a_header_figure_edit_with_an_unreadable_position_is_refused(ui_client):
+    preview = AsyncMock()
+    _signed_in(ui_client)
+    with patch("ui.api_client.statement_preview", preview):
+        r = await ui_client.post("/accounting/reconcile/bank/b1/preview/j1", data={
+            "state": json.dumps({"headers": [{}], "column_map": None}), "field": "closing_balance",
+            "idx": "first", "value": "10"})
+    assert r.status_code == 400
+    preview.assert_not_awaited()
+
+
+async def test_a_bank_page_that_cannot_open_goes_to_the_bank_list_saying_why(ui_client):
+    from ui.api_client import APIError
+    _signed_in(ui_client)
+    with patch("ui.api_client.get_bank_account", AsyncMock(side_effect=APIError(404, "Bank account not found"))):
+        r = await ui_client.get("/accounting/reconcile/bank/b9")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/accounting/reconcile/start?msg=" + quote("Bank account not found", safe="")
+    page = await _get(ui_client, r.headers["location"], _TABLE)
+    assert "Bank account not found" in page.text
+    assert 'href="/settings/accounting?tab=bank-accounts"' in page.text
+
+
+async def test_complete_reads_on_the_bank_page_what_completed_and_where_it_stopped(ui_client):
+    from ui.i18n import t
+    done = AsyncMock(return_value={"completed": [{"id": "s1"}], "stopped_at": {"reason": "Statement s2 does not tie"}})
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", done):
+            r = await ui_client.post("/accounting/reconcile/bank/b1/complete", data={"idempotency_key": "k1"})
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 200, r.text
+    assert done.await_args.args[1:] == ("b1", "complete", {"idempotency_key": "k1"})
+    assert t("bank.completed", n=1) in r.text and "Statement s2 does not tie" in r.text
+    assert 'id="bank-body"' in r.text

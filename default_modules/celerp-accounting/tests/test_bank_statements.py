@@ -338,6 +338,40 @@ async def test_saved_column_map_reused_for_identical_headers(client):
     assert again["statements"][0]["lines"][0]["amount"] == "-6.00"
 
 
+async def test_a_tabular_file_that_would_lose_values_says_why_and_reads_nothing(client):
+    """Two columns with one name would drop a value: the file is a failed step with the
+    shared table reader's refusal, never a statement."""
+    from ui.i18n import t
+    co, bk = await _co_bank(client)
+    preview = await B.read(client, co, [(b"Date,Description,Amount,Amount\n2026-01-01,x,-5000,123\n", "d.csv",
+                                         "text/csv")], bank_id=bk["id"])
+    assert preview["statements"] == []
+    (step,) = preview["failed_steps"]
+    assert step["filename"] == "d.csv" and step["retry"] is False
+    assert step["reason"] == t("import.err_header_duplicate", first="C", column="D", header=repr("Amount"))
+
+
+async def test_a_file_with_a_header_and_no_rows_previews_an_empty_statement(client):
+    """Nothing is imported unseen: the preview shows the statement with no lines before Import."""
+    co, bk = await _co_bank(client)
+    preview = await B.read(client, co, [(b"Date,Description,Amount\n", "e.csv", "text/csv")], bank_id=bk["id"])
+    (st,) = preview["statements"]
+    assert st["lines"] == [] and preview["needs_mapping"] is False
+
+
+async def test_import_refuses_a_column_map_naming_a_column_not_in_the_file(client):
+    from ui.i18n import refusal_text, t
+    co, bk = await _co_bank(client)
+    preview = await B.read(client, co, [(b"Posted,Narrative,Value\n2026-01-05,FEE,-5.00\n", "a.csv", "text/csv")],
+                           bank_id=bk["id"])
+    preview["column_map"] = {"date": "Posted", "description": "Other", "amount": "Value"}
+    out = await B.import_statement(client, co, preview, bank_id=bk["id"], expect=422, header={
+        "opening_balance": "0.00", "closing_balance": "-5.00", "period_start": "2026-01-01",
+        "period_end": "2026-01-31"})
+    assert refusal_text(out["detail"]) == t("acct.err_column_missing", column="Other")
+    assert B.all_lines(await B.groups(client, co, bk["id"], view="all")) == []
+
+
 # ── Transfers ───────────────────────────────────────────────────────────────
 
 async def test_transfer_pair_posts_once_from_either_side(client):
