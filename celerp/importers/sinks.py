@@ -117,8 +117,8 @@ class MigrationBatchError(Exception):
         self.errors = list(errors)
         reasons = [row_refusal(f"{e.source_type} {e.source_external_id}", _keyed_reason(e.message))
                    for e in self.errors[:REPORTED_RECORD_LIMIT]]
-        key = "migration.batch_not_saved_one" if len(self.errors) == 1 else "migration.batch_not_saved"
-        self.refusal = catalog_refusal(key, n=len(self.errors), reasons=reasons)
+        self.refusal = (catalog_refusal("migration.batch_not_saved_one", n=1, reasons=reasons) if len(self.errors) == 1
+                        else catalog_refusal("migration.batch_not_saved", n=len(self.errors), reasons=reasons))
         if (more := len(self.errors) - REPORTED_RECORD_LIMIT) > 0:
             self.refusal["also"] = [catalog_refusal("migration.batch_more", n=more)]
         with english():
