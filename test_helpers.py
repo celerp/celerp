@@ -678,14 +678,26 @@ def message_texts(messages: list) -> list[str]:
     return [message_text(m) for m in messages]
 
 
+def refusal_keys(messages: list) -> list[str | None]:
+    """The catalog key of each refused row's reason (the refusal inside ``import.record_refused``),
+    None for a reason given as text."""
+    keys = []
+    for message in messages:
+        inner = (message.get("params") or {}).get("refusal") if isinstance(message, dict) else None
+        keys.append((inner if isinstance(inner, dict) else message).get("message_key")
+                    if isinstance(message, dict) else None)
+    return keys
+
+
 def refused_records(messages: list) -> dict[str, str]:
-    """An import's refused records: each record's reason in English, by its entity id."""
+    """An import's refused records: each record's reason in English, by its entity id (a row
+    named by its number, import.row_n, by that name in English)."""
     from celerp.importers.results import kept_refusal, message_text
 
     found = {}
     for message in messages:
         if isinstance(message, dict) and message.get("message_key") == "import.record_refused":
-            entity_id = message["params"]["entity_id"]
+            entity_id = message_text(message["params"]["entity_id"])
             found[entity_id] = message_text(kept_refusal(message, entity_id))
         else:
             entity_id, _, reason = message_text(message).partition(": ")
