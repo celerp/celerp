@@ -29,6 +29,7 @@ REFUSALS = ["mfg.reconciliation_required", "mfg.insufficient_stock", "mfg.over_r
             "mfg.wip_account_missing", "mfg.issue_first", "mfg.unaccounted_value", "mfg.over_return",
             "mfg.return_quantity", "mfg.return_after_receipt", "mfg.return_lot_unavailable", "mfg.return_value",
             "mfg.output_changed", "mfg.not_a_receipt", "mfg.reopen_first", "mfg.not_completed", "mfg.recost_conflict",
+            "mfg.recost_conflict_complete", "mfg.recost_conflict_reconcile", "mfg.key_reused_run",
             "mfg.not_unresolved", "mfg.reconcile_values", "mfg.reconcile_missing", "mfg.reconcile_account",
             "mfg.reconcile_held", "mfg.reconcile_left", "mfg.reconcile_short", "mfg.reconcile_excess", "mfg.output_unknown", "mfg.not_on_hold",
             "mfg.not_planned", "mfg.already_on_hold", "mfg.period_locked", "mfg.output_memo_conversion",
@@ -53,12 +54,31 @@ def _fields(text: str) -> set[str]:
     return set(re.findall(r"\{(\w+)", text))
 
 
+def _refusals() -> list[tuple[str, str, ast.Call]]:
+    """Every refusal the manufacturing module writes with ``refuse(status, key, english)``:
+    where it is, its message_key and the call."""
+    found = []
+    for path in sorted((ROOT / "default_modules" / "celerp-manufacturing" / "celerp_manufacturing").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and "refuse" in (getattr(node.func, "id", None), getattr(node.func, "attr", None))
+                    and len(node.args) > 2 and isinstance(node.args[1], ast.Constant)):
+                found.append((f"{path.name}:{node.lineno}", f"mfg.{node.args[1].value}", node))
+    return found
+
+
 def _refusal_keys() -> set[str]:
-    """Every message_key the manufacturing movements refuse with."""
-    src = (ROOT / "default_modules" / "celerp-manufacturing" / "celerp_manufacturing" / "movements.py").read_text()
-    return {f"mfg.{node.args[1].value}" for node in ast.walk(ast.parse(src))
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "refuse"
-            and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)}
+    """Every message_key the manufacturing module refuses with."""
+    return {key for _, key, _ in _refusals()}
+
+
+def _english_shape(message: ast.expr) -> str | None:
+    """The English a refusal writes, each value it fills in as ``{}``; None when the text is
+    not written at the call."""
+    if isinstance(message, ast.Constant) and isinstance(message.value, str):
+        return message.value
+    if isinstance(message, ast.JoinedStr):
+        return "".join(part.value if isinstance(part, ast.Constant) else "{}" for part in message.values)
+    return None
 
 
 def test_the_ui_ships_twelve_languages():
@@ -85,6 +105,21 @@ def test_the_english_catalog_says_what_the_server_says():
                                                                     if r.value == "work_in_progress")]
     assert all(en[f"posting.role.{r.value}"] == label for r, label in ROLE_LABELS.items())
     assert en["mfg.insufficient_stock"].format(**SHORT["params"]) == SHORT["message"]
+
+
+def test_each_refusal_key_says_one_thing_and_the_catalog_says_it_too():
+    """A keyed reader shows the catalog's text for a refusal's key, so a key the catalog
+    words reads exactly as the English the server writes beside it, and fills every value
+    from the params the refusal carries. One key never stands for two different sentences."""
+    en, wrong = _catalog("en"), []
+    for where, key, call in _refusals():
+        shape, catalog = _english_shape(call.args[2]), en.get(key)
+        if shape is None or catalog is None:
+            continue
+        given = {kw.arg for kw in call.keywords}
+        if re.sub(r"\{[^{}]*\}", "{}", catalog) != shape or not _fields(catalog) <= given:
+            wrong.append(f"{where} {key}: writes {shape!r}, params {sorted(given)}; catalog {catalog!r}")
+    assert not wrong, "\n".join(wrong)
 
 
 def test_a_refusal_is_shown_in_the_users_language_with_its_values():

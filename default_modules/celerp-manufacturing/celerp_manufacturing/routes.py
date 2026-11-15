@@ -227,7 +227,7 @@ async def _created_before(session: AsyncSession, company_id, key: str, fingerpri
     stored = await find_event_by_idempotency(session, company_id, key)
     if stored is not None and (stored.event_type != "mfg.order.created"
                                or (stored.metadata_ or {}).get("request") != fingerprint):
-        raise movements.refuse(409, "key_reused", "This request key was already used for a different run. "
+        raise movements.refuse(409, "key_reused_run", "This request key was already used for a different run. "
                                "Send the request again without reusing the key.")
     return stored
 
@@ -882,8 +882,8 @@ async def _once(session: AsyncSession, company_id, user_id, action: str, payload
     stored = await find_event_by_idempotency(session, company_id, key)
     if stored is not None:
         if stored.event_type != "mfg.operation.recorded" or (stored.metadata_ or {}).get("request") != fingerprint:
-            raise movements.refuse(409, "key_reused", "This request key was already used for a different action. "
-                                   "Send the request again without reusing the key.")
+            raise movements.refuse(409, "key_reused", "That action was already sent with different details. "
+                                   "Check the list, then try again.")
         return stored.data["result"]
     result = await act(payload.idempotency_key)
     await emit_event(

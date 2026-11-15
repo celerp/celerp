@@ -219,8 +219,8 @@ async def _replayed(op: _Op, key: str, request: str):
     if stored is None:
         return None
     if stored.entity_id != op.order_id or (stored.data or {}).get("request") != request:
-        raise refuse(409, "key_reused", "This request key was already used for a different action. "
-                     "Send the action again without reusing the key.")
+        raise refuse(409, "key_reused", "That action was already sent with different details. "
+                     "Check the list, then try again.")
     return stored
 
 
@@ -502,8 +502,8 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
         off_books = bool(s) and not is_stock_type(s) and not values[item_id]
         if not is_item_available(s) or s.get("status_doc_id") or (held is None and not off_books):
             raise refuse(409, "return_lot_unavailable",
-                         f"{s.get('sku') or item_id} is no longer stock the company holds (it is "
-                         f"{s.get('status') or 'gone'}), so nothing can be returned to it.",
+                         f"{s.get('sku') or item_id} is no longer stock the company holds, so nothing can be "
+                         "returned to it.",
                          sku=s.get("sku") or item_id, status=s.get("status"))
         await require_unit_precision(op.session, op.company_id, [(s, line["quantity"])])
         befores[item_id] = None if off_books else op.round(held)
@@ -842,8 +842,21 @@ async def _restate(op: _Op, lot_id: str, delta: Decimal, key: str, action: str) 
             data={"cost_total": float(_money(goods_basis(lot.state or {})) + delta), _ORDER_MARK: op.order_id},
             actor_id=op.user_id, source="api", idempotency_key=key, day=op.day)
     except CostRestatementConflict as exc:
-        raise refuse(409, "recost_conflict", f"This run cannot be {action}: {exc}.", reason=str(exc)) from exc
+        raise _recost_refusal(action, str(exc)) from exc
     return lot_account(end.state or {}) if op.books else None
+
+
+def _recost_refusal(action: str, reason: str) -> HTTPException:
+    """Why a run cannot ``action`` (completed, reopened or reconciled): a lot's cost it must
+    change can no longer be changed."""
+    if action == "completed":
+        return refuse(409, "recost_conflict_complete", "This run cannot be completed because the cost of a lot it "
+                      "made can no longer be changed.", reason=reason)
+    if action == "reconciled":
+        return refuse(409, "recost_conflict_reconcile", "This run cannot be reconciled because the cost of a lot "
+                      "it received can no longer be changed.", reason=reason)
+    return refuse(409, "recost_conflict", "This run cannot be reopened because the cost of a lot it made can no "
+                  "longer be changed back.", reason=reason)
 
 
 async def _lineage_end(op: _Op, lot_id: str) -> Projection:
@@ -1411,7 +1424,7 @@ async def repair_output(session: AsyncSession, company_id, user_id, order_id: st
     discarded = await unlotted(session, company_id, order_id, state)
     if discarded is None or discarded < -EPS:
         raise refuse(409, "output_unknown", "Output was received from this run, but its history does not show "
-                     "which lots it went into, so what it received cannot be put right.")
+                     "which lots it went into or what they cost, so it cannot be reconciled.")
     data: dict = {"discarded": max(discarded, 0.0), "repaired_by": str(op.user_id), "request": request}
     if output_item_id:
         if state.get("output_item_id"):
@@ -1564,8 +1577,8 @@ async def reconcile(session: AsyncSession, company_id, user_id, order_id: str, c
         retained = account and account == role_map(settings).get(AccountRole.RETAINED_EARNINGS.value)
         if amount and not retained and account not in inventory:
             raise refuse(422, "reconcile_account",
-                         "Choose the account this value comes off: an inventory account that holds it beyond its "
-                         "stock on hand, or retained earnings for value the books never carried.",
+                         f"Choose the account this value comes off: an inventory account that holds at least {amount} "
+                         "beyond its stock on hand, or retained earnings for value the books never carried.",
                          total=str(amount), account=account)
         if retained or (not amount and account not in inventory):
             # Value from nowhere the books show: only while no inventory account holds more than
