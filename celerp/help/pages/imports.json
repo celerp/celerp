@@ -12,13 +12,13 @@
       "text": "To add a company, open {title}: {fresh} creates an empty company you set up step by step, and {move} brings a company's books over from another accounting system.",
       "labels": {"title": "setup.new_company_title", "fresh": "setup.card_fresh", "move": "setup.card_move"},
       "image": null,
-      "capture": {"route": "/setup/new-company", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/new-company", "selector": ".auth-container", "actions": []}
     },
     {
       "text": "For an empty company, enter its {name} and choose {go}.",
       "labels": {"name": "label.company_name", "go": "btn.continue"},
       "image": null,
-      "capture": {"route": "/setup/new-company/fresh", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/new-company/fresh", "selector": ".auth-container", "actions": []}
     },
     {
       "text": "Under {src}, choose {sys}, upload the export file it gives you and click {analyze}. Nothing is created yet.",
@@ -54,19 +54,19 @@
       "text": "Once the import starts, a progress page shows each step with what was created, skipped or failed. You can leave the page: the move keeps running.",
       "labels": {},
       "image": null,
-      "capture": {"route": "/setup/new-company/migrate", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
     },
     {
       "text": "When it finishes, the results page compares Celerp's totals with your file's, and the company opens from there. A move you no longer want can be discarded from its progress page, which removes the new company and everything imported into it.",
       "labels": {},
       "image": null,
-      "capture": {"route": "/setup/new-company/migrate", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
     },
     {
       "text": "You can also ask the assistant to move your books for you: it can read the export files you give it, start the move and take you through the review. It shows each change as a card and makes it only when you confirm.",
       "labels": {},
       "image": null,
-      "capture": {"route": "/setup/new-company/migrate", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
     }
   ],
   "related": ["core.companies"]

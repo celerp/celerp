@@ -12,7 +12,7 @@
       "text": "{get} opens the Celerp Connect page, which lists what the subscription adds, such as {backup} and {web}, and takes you to checkout.",
       "labels": {"get": "btn.get_connect", "backup": "setup.feature_backup_title", "web": "setup.feature_web_title"},
       "image": null,
-      "capture": {"route": "/setup/cloud", "selector": "main", "actions": []}
+      "capture": {"route": "/setup/cloud", "selector": ".auth-container", "actions": []}
     },
     {
       "text": "Once you subscribe, the same page links to the billing portal, where you change your card, see your invoices or cancel the subscription.",

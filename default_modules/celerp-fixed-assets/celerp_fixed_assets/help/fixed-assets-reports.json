@@ -15,8 +15,8 @@
       "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": []}
     },
     {
-      "text": "On a report, set {from} and {to}, narrow it by {cls} or a search, and choose {show}.",
-      "labels": {"from": "fixed_assets.date_from", "to": "fixed_assets.date_to", "cls": "fixed_assets.class", "show": "fixed_assets.show"},
+      "text": "On a report, narrow it by {cls} or a search and choose {show}. A report over a period also asks for its dates.",
+      "labels": {"cls": "fixed_assets.class", "show": "fixed_assets.show"},
       "image": null,
       "capture": {"route": "/fixed-assets/reports/register", "selector": "main", "actions": []}
     },

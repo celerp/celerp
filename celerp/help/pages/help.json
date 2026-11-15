@@ -30,7 +30,7 @@
       "text": "Each help page opens on its own screen, with {rel} at the foot linking to pages on nearby tasks.",
       "labels": {"rel": "help.related"},
       "image": null,
-      "capture": {"route": "/help", "selector": "main", "actions": []}
+      "capture": {"route": "/help/core.help", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant a question in your own language: it searches these help pages, reads the one that fits and answers from it.",

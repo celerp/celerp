@@ -15,8 +15,8 @@
       "capture": {"route": "/modules", "selector": "main", "actions": []}
     },
     {
-      "text": "{market} lists more modules to add. {build} explains how to write your own on the same public API.",
-      "labels": {"market": "page.explore_marketplace", "build": "modules.build_title"},
+      "text": "{market} lists more modules to add. {community} lists modules others have shared and explains how to write your own on the same public API.",
+      "labels": {"market": "modules.tab_marketplace", "community": "modules.tab_community"},
       "image": null,
       "capture": {"route": "/modules", "selector": "main", "actions": []}
     },

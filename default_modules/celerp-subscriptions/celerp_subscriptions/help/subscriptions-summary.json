@@ -9,8 +9,8 @@
   "checked": "4f0be3705fa9a2f23a3ca774b3202683900c60c66193c616b08010a05ee74cb5",
   "steps": [
     {
-      "text": "{title} lists the bills automatic billing generated and the emails it sent, and anything to check, such as a billing failure or an email waiting to go out. {unread} keeps the list to what is new; {ack} clears it.",
-      "labels": {"title": "subscriptions.summary_title", "unread": "subscriptions.summary_unread", "ack": "subscriptions.summary_ack"},
+      "text": "{title} lists the bills automatic billing generated and the emails it sent since you last looked, and anything to check, such as a billing failure or an email waiting to go out. Mark the list as read once you have checked it; {all} shows everything still listed, read or not.",
+      "labels": {"title": "subscriptions.summary_title", "all": "subscriptions.summary_all"},
       "image": null,
       "capture": {"route": "/subscriptions/summary", "selector": "main", "actions": []}
     },
