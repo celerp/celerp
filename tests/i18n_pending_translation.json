@@ -12,5 +12,718 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "error.recon_completed": {
+      "en": "This statement is completed, so it can't be changed. To change it, reopen it with Reopen beside it under Statements on its bank's page.",
+      "params": []
+    },
+    "acct.recon_no_contact_named": {
+      "en": "No record names a contact, so none is set.",
+      "params": []
+    },
+    "acct.err_recon_line_state": {
+      "en": "This line is {status} already. Undo it first, then try again.",
+      "params": [
+        "status"
+      ]
+    },
+    "acct.err_recon_match_needs_entry": {
+      "en": "Pick at least one book entry to match this line to.",
+      "params": []
+    },
+    "acct.recon_reason_reversal": {
+      "en": "The bank reversed this within 3 days, so neither line needs an entry.",
+      "params": []
+    },
+    "acct.recon_reason_match": {
+      "en": "A book entry of the same amount on {date}.",
+      "params": [
+        "date"
+      ]
+    },
+    "acct.recon_reason_combo": {
+      "en": "Book entries of one counterparty add up to this amount. Check them before matching.",
+      "params": []
+    },
+    "acct.recon_reason_document": {
+      "en": "{ref} is open for the same amount.",
+      "params": [
+        "ref"
+      ]
+    },
+    "acct.recon_reason_rule": {
+      "en": "Your rule for \"{pattern}\".",
+      "params": [
+        "pattern"
+      ]
+    },
+    "acct.recon_reason_transfer": {
+      "en": "A line of the same amount on another of your accounts on {date}.",
+      "params": [
+        "date"
+      ]
+    },
+    "acct.recon_reason_slip": {
+      "en": "A receipt dated {date} for the same amount.",
+      "params": [
+        "date"
+      ]
+    },
+    "acct.recon_reason_no_vat": {
+      "en": "No tax invoice attached: no VAT claimed.",
+      "params": []
+    },
+    "acct.recon_reason_history": {
+      "en": "Posted to {account} {count} times before.",
+      "params": [
+        "account",
+        "count"
+      ]
+    },
+    "acct.recon_reason_question": {
+      "en": "Nothing in your books explains this line yet. Answer it, or ask your client.",
+      "params": []
+    },
+    "acct.recon_duplicate_of": {
+      "en": "Already imported with the statement of {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "acct.recon_read_failed": {
+      "en": "Celerp couldn't read {filename}. Select Try again.",
+      "params": [
+        "filename"
+      ]
+    },
+    "acct.recon_read_failed_pages": {
+      "en": "Celerp couldn't read pages {pages} of {filename}. Select Try again.",
+      "params": [
+        "filename",
+        "pages"
+      ]
+    },
+    "acct.err_reading_not_finished": {
+      "en": "The statement is still being read. Wait for it to finish, then open the preview again.",
+      "params": []
+    },
+    "acct.err_import_needs_bank": {
+      "en": "Choose the bank account for this statement, or add a new one.",
+      "params": []
+    },
+    "acct.err_import_statement_count": {
+      "en": "The statements sent don't match the files that were read. Open the preview again.",
+      "params": []
+    },
+    "acct.err_column_missing": {
+      "en": "The file has no column named {column}. Choose a column from the file.",
+      "params": [
+        "column"
+      ]
+    },
+    "acct.recon_book_before": {
+      "en": "Book balance before {date} is {book}, statement opens at {opening}",
+      "params": [
+        "book",
+        "date",
+        "opening"
+      ]
+    },
+    "posting.role.suspense": {
+      "en": "Suspense",
+      "params": []
+    },
+    "acct.err_amount_zero": {
+      "en": "The amount can't be zero. Enter the amount that moved.",
+      "params": []
+    },
+    "acct.err_amount_minor_unit": {
+      "en": "This amount has more decimal places than {currency} allows. Round it to the smallest unit of {currency}.",
+      "params": [
+        "currency"
+      ]
+    },
+    "acct.err_recon_match_total": {
+      "en": "The entries you picked add up to {total}, but the statement lines add up to {amount}. Pick entries that add up to the lines.",
+      "params": [
+        "amount",
+        "total"
+      ]
+    },
+    "acct.err_transfer_same_bank": {
+      "en": "A transfer needs two different bank accounts. Pick another account to move the money to.",
+      "params": []
+    },
+    "acct.err_recon_one_line": {
+      "en": "This answer works on one statement line at a time. Select a single line and try again.",
+      "params": []
+    },
+    "acct.err_suspense_unmapped": {
+      "en": "Celerp can't add a Suspense account to this chart on its own. Choose the account for the {role} role in Posting accounts, then try again.",
+      "params": [
+        "role"
+      ]
+    },
+    "acct.err_recon_remember_kind": {
+      "en": "Only an answer that posts to an account can be remembered. Untick Remember, or post the line to an account.",
+      "params": []
+    },
+    "acct.err_recon_no_cash_account": {
+      "en": "There is no cash account to move this withdrawal into. Add a bank account of the Cash type, then try again.",
+      "params": []
+    },
+    "acct.err_recon_transfer_needs_bank": {
+      "en": "Pick the bank account the money moved to or from.",
+      "params": []
+    },
+    "acct.err_recon_pay_needs_doc": {
+      "en": "Pick at least one open invoice or bill this line pays.",
+      "params": []
+    },
+    "acct.err_recon_doc_direction": {
+      "en": "A deposit can only pay an invoice, and a withdrawal can only pay a bill. Pick a document that matches the line.",
+      "params": []
+    },
+    "acct.err_recon_needs_account": {
+      "en": "Pick the account this line posts to.",
+      "params": []
+    },
+    "reconciliation.group_closed": {
+      "en": "This group has no open lines left. Someone may have answered them already. Refresh the page to see what is still open.",
+      "params": []
+    },
+    "reconciliation.line_not_open": {
+      "en": "This line is no longer open with a suggestion. Refresh the page to see where it stands.",
+      "params": []
+    },
+    "enum.bank_type.cash": {
+      "en": "Cash",
+      "params": []
+    },
+    "acct.err_rule_sparse_amount": {
+      "en": "A rule on a general description like this one needs an amount too, or it would catch every line with that description. Add the amount.",
+      "params": []
+    },
+    "acct.recon_suggested": {
+      "en": "Suggested an answer for {count} lines. Nothing is posted until you accept it.",
+      "params": [
+        "count"
+      ]
+    },
+    "acct.recon_model_not_run": {
+      "en": "The AI could not run, so {count} lines with no other evidence are left as questions. Check your AI credits, then suggest again.",
+      "params": [
+        "count"
+      ]
+    },
+    "acct.err_recon_delete_settled": {
+      "en": "This statement has lines that are already posted or matched. Undo those lines first, then remove the statement.",
+      "params": []
+    },
+    "acct.recon_opening_memo": {
+      "en": "Opening balance for {bank}",
+      "params": [
+        "bank"
+      ]
+    },
+    "acct.recon_opening_adjusted": {
+      "en": "Opening balance changed for {bank}",
+      "params": [
+        "bank"
+      ]
+    },
+    "acct.err_recon_not_suspense": {
+      "en": "Only a line sitting in Suspense can be moved to another account.",
+      "params": []
+    },
+    "perm.name.answer_bank_questions": {
+      "en": "Answer questions about bank lines",
+      "params": []
+    },
+    "reconciliation.no_client_user": {
+      "en": "No one in this company answers bank questions yet. Invite your client at /settings/users with a role that can answer questions about bank lines, then ask again.",
+      "params": []
+    },
+    "reconciliation.line_not_asked": {
+      "en": "This line has no open question to take back. Refresh the page to see where it stands.",
+      "params": []
+    },
+    "reconciliation.question_settled": {
+      "en": "Your accountant has already settled this line, so it needs no answer now.",
+      "params": []
+    },
+    "reconciliation.receipt_not_saved": {
+      "en": "The receipt could not be saved. Your answer was not saved; try again.",
+      "params": []
+    },
+    "acct.recon_questions_title": {
+      "en": "Questions from your accountant",
+      "params": []
+    },
+    "acct.recon_questions_body": {
+      "en": "Your accountant has {count} open questions about your bank lines.",
+      "params": [
+        "count"
+      ]
+    },
+    "acct.recon_questions_reminder": {
+      "en": "Reminder {n}: your accountant still has {count} open questions about your bank lines.",
+      "params": [
+        "count",
+        "n"
+      ]
+    },
+    "acct.recon_questions_where": {
+      "en": "Sign in to Celerp and open Questions from your accountant to answer them.",
+      "params": []
+    },
+    "acct.recon_asked": {
+      "en": "Asked about {count} lines. {names} can answer them in Celerp and got an email.",
+      "params": [
+        "count",
+        "names"
+      ]
+    },
+    "acct.recon_asked_email_failed": {
+      "en": "Asked about {count} lines. The email to {name} could not be sent: {reason}. They see the questions when they sign in; Remind sends it again.",
+      "params": [
+        "count",
+        "name",
+        "reason"
+      ]
+    },
+    "acct.recon_asked_email_unconfirmed": {
+      "en": "Asked about {count} lines. The email to {name} may have gone out, but it was not confirmed. They see the questions when they sign in.",
+      "params": [
+        "count",
+        "name"
+      ]
+    },
+    "acct.recon_reason_client": {
+      "en": "Client said: {answer}.",
+      "params": [
+        "answer"
+      ]
+    },
+    "ai.warn_credits": {
+      "en": "This reads {count} files with AI credits.",
+      "params": [
+        "count"
+      ]
+    },
+    "ai.warn_credits_one": {
+      "en": "This reads 1 file with AI credits.",
+      "params": []
+    },
+    "acct.recon_block_currency": {
+      "en": "This statement is in {currency}; the bank account is in {bank_currency}.",
+      "params": [
+        "bank_currency",
+        "currency"
+      ]
+    },
+    "acct.recon_block_no_amount": {
+      "en": "Line {n} has no amount that can be read.",
+      "params": [
+        "n"
+      ]
+    },
+    "acct.recon_block_outside_period": {
+      "en": "Line {n} ({date}) is outside the statement period.",
+      "params": [
+        "date",
+        "n"
+      ]
+    },
+    "acct.recon_block_tie_break": {
+      "en": "The running balance stops adding up at line {n}.",
+      "params": [
+        "n"
+      ]
+    },
+    "acct.recon_block_tie_out": {
+      "en": "Opening balance plus the lines does not equal the closing balance.",
+      "params": []
+    },
+    "acct.recon_block_balances_missing": {
+      "en": "Enter the opening and closing balance from the statement.",
+      "params": []
+    },
+    "ai.err_file_not_found": {
+      "en": "Celerp couldn't find this file. It may have been removed. Upload it again.",
+      "params": []
+    },
+    "bank.list_title": {
+      "en": "Bank accounts",
+      "params": []
+    },
+    "bank.list_intro": {
+      "en": "Open a bank to see its statement lines, or drop a new statement on its page.",
+      "params": []
+    },
+    "bank.page_title": {
+      "en": "Bank lines: {bank}",
+      "params": [
+        "bank"
+      ]
+    },
+    "bank.page_intro": {
+      "en": "Each line from this bank's statements, grouped by who the money went to or came from. Tick the groups whose suggestion is right and post them, or answer a line on its own.",
+      "params": []
+    },
+    "bank.view_open": {
+      "en": "Open",
+      "params": []
+    },
+    "bank.view_suggested": {
+      "en": "Suggested",
+      "params": []
+    },
+    "bank.view_questions": {
+      "en": "Questions",
+      "params": []
+    },
+    "bank.view_posted": {
+      "en": "Posted",
+      "params": []
+    },
+    "bank.view_all": {
+      "en": "All",
+      "params": []
+    },
+    "bank.view_empty": {
+      "en": "No lines in this view. Try another view or clear the search.",
+      "params": []
+    },
+    "bank.search_placeholder": {
+      "en": "Search descriptions and references",
+      "params": []
+    },
+    "bank.summary": {
+      "en": "{lines} lines: {open} open, {questions} asked, {posted} posted",
+      "params": [
+        "lines",
+        "open",
+        "posted",
+        "questions"
+      ]
+    },
+    "bank.difference": {
+      "en": "Difference on the statement to {date}: {amount}",
+      "params": [
+        "amount",
+        "date"
+      ]
+    },
+    "bank.in_suspense": {
+      "en": "{n} lines sit in Suspense until you say where they belong.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.statements_heading": {
+      "en": "Statements",
+      "params": []
+    },
+    "bank.suggest": {
+      "en": "Suggest",
+      "params": []
+    },
+    "bank.complete": {
+      "en": "Complete statements",
+      "params": []
+    },
+    "bank.complete_confirm": {
+      "en": "Complete each open statement that balances, oldest first?",
+      "params": []
+    },
+    "bank.completed": {
+      "en": "Completed {n} statements.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.th_group": {
+      "en": "Paid to or from",
+      "params": []
+    },
+    "bank.th_count": {
+      "en": "Lines",
+      "params": []
+    },
+    "bank.th_suggestion": {
+      "en": "Suggestion",
+      "params": []
+    },
+    "bank.th_counterparty": {
+      "en": "Account",
+      "params": []
+    },
+    "bank.th_answer": {
+      "en": "Client answer",
+      "params": []
+    },
+    "bank.show_lines": {
+      "en": "Show lines",
+      "params": []
+    },
+    "bank.status_open": {
+      "en": "Open",
+      "params": []
+    },
+    "bank.status_posted": {
+      "en": "Posted",
+      "params": []
+    },
+    "bank.status_matched": {
+      "en": "Matched",
+      "params": []
+    },
+    "bank.status_no_entry": {
+      "en": "No entry",
+      "params": []
+    },
+    "bank.answer_separately": {
+      "en": "Answer separately",
+      "params": []
+    },
+    "bank.split": {
+      "en": "Split",
+      "params": []
+    },
+    "bank.ask_client": {
+      "en": "Ask the client",
+      "params": []
+    },
+    "bank.remind": {
+      "en": "Remind",
+      "params": []
+    },
+    "bank.post_ticked": {
+      "en": "Post ticked ({n} lines, {total})",
+      "params": [
+        "n",
+        "total"
+      ]
+    },
+    "bank.post_ticked_one": {
+      "en": "Post ticked (1 line, {total})",
+      "params": [
+        "total"
+      ]
+    },
+    "bank.post_ticked_confirm": {
+      "en": "Post the ticked lines with their suggestions?",
+      "params": []
+    },
+    "bank.nothing_ticked": {
+      "en": "Tick the groups or lines to post first.",
+      "params": []
+    },
+    "bank.posted_outcome": {
+      "en": "Posted {n} lines.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.posted_refused": {
+      "en": "{n} lines were not posted: {reason}",
+      "params": [
+        "n",
+        "reason"
+      ]
+    },
+    "bank.undone": {
+      "en": "{n} lines are open again.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.undo_confirm": {
+      "en": "Undo this line? What it posted is voided and the line is open again.",
+      "params": []
+    },
+    "bank.undo_all_confirm": {
+      "en": "Undo these {n} lines? What they posted is voided and the lines are open again.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.answer_label": {
+      "en": "Answer",
+      "params": []
+    },
+    "bank.answer_transfer": {
+      "en": "Transfer to {bank}",
+      "params": [
+        "bank"
+      ]
+    },
+    "bank.answer_cash": {
+      "en": "Cash withdrawal",
+      "params": []
+    },
+    "bank.answer_suspense": {
+      "en": "Suspense (decide later)",
+      "params": []
+    },
+    "bank.answer_no_entry": {
+      "en": "No entry needed",
+      "params": []
+    },
+    "bank.contact_label": {
+      "en": "Paid to or from",
+      "params": []
+    },
+    "bank.err_choose_answer": {
+      "en": "Choose an answer for this line first.",
+      "params": []
+    },
+    "bank.split_hint": {
+      "en": "Split the line across accounts. The parts must add up to the line's amount.",
+      "params": []
+    },
+    "bank.ask_note_label": {
+      "en": "Your question for the client",
+      "params": []
+    },
+    "bank.ask_send": {
+      "en": "Ask",
+      "params": []
+    },
+    "bank.drop_title": {
+      "en": "Drop a statement here",
+      "params": []
+    },
+    "bank.drop_hint": {
+      "en": "PDF, CSV, OFX or QFX. Celerp reads it and shows every line before anything is imported.",
+      "params": []
+    },
+    "bank.drop_another": {
+      "en": "Import another statement",
+      "params": []
+    },
+    "bank.start_without": {
+      "en": "Start without a file",
+      "params": []
+    },
+    "bank.err_no_file": {
+      "en": "Choose a statement file first.",
+      "params": []
+    },
+    "bank.preview_title": {
+      "en": "Check the statement before import",
+      "params": []
+    },
+    "bank.preview_reading": {
+      "en": "Reading the statement. This takes a moment.",
+      "params": []
+    },
+    "bank.preview_ties": {
+      "en": "The statement ties: the opening balance plus every line equals the closing balance.",
+      "params": []
+    },
+    "bank.preview_not_tied": {
+      "en": "The statement does not tie yet. Check the opening and closing balances and the period.",
+      "params": []
+    },
+    "bank.preview_duplicate": {
+      "en": "Already imported",
+      "params": []
+    },
+    "bank.failed_steps": {
+      "en": "{n} pages could not be read. Import the rest, or drop those pages again.",
+      "params": [
+        "n"
+      ]
+    },
+    "bank.import_confirm": {
+      "en": "Import these statements onto this bank?",
+      "params": []
+    },
+    "bank.field_opening": {
+      "en": "Opening balance",
+      "params": []
+    },
+    "bank.field_closing": {
+      "en": "Closing balance",
+      "params": []
+    },
+    "bank.field_start": {
+      "en": "Period start",
+      "params": []
+    },
+    "bank.field_end": {
+      "en": "Period end",
+      "params": []
+    },
+    "nav.bank_questions": {
+      "en": "Questions from your accountant",
+      "params": []
+    },
+    "bank.questions_intro": {
+      "en": "Your accountant asked about these bank lines. Say what each one was and who it was paid to or from, and add a receipt if you have one.",
+      "params": []
+    },
+    "bank.questions_open": {
+      "en": "Waiting",
+      "params": []
+    },
+    "bank.questions_answered": {
+      "en": "Answered",
+      "params": []
+    },
+    "bank.questions_all": {
+      "en": "All",
+      "params": []
+    },
+    "bank.questions_empty": {
+      "en": "No questions are waiting. Thank you.",
+      "params": []
+    },
+    "bank.what_was_it": {
+      "en": "What was it?",
+      "params": []
+    },
+    "bank.receipt": {
+      "en": "Receipt",
+      "params": []
+    },
+    "bank.answer_saved": {
+      "en": "Saved. Your accountant can see your answer now.",
+      "params": []
+    },
+    "bank.write_off_confirm": {
+      "en": "Write off what is left of this statement's difference? Celerp posts a small adjustment to your general expense account.",
+      "params": []
+    },
+    "bank.remove_statement": {
+      "en": "Remove statement",
+      "params": []
+    },
+    "bank.remove_statement_confirm": {
+      "en": "Remove this statement and its lines? You can drop the file again later. A statement with a posted line can't be removed until you undo that line.",
+      "params": []
+    },
+    "bank.reopened": {
+      "en": "The statement is open again. Complete it again when you're done.",
+      "params": []
+    },
+    "bank.statement_removed": {
+      "en": "The statement and its lines are removed.",
+      "params": []
+    },
+    "bank.written_off": {
+      "en": "The difference is written off.",
+      "params": []
+    },
+    "bank.counted_entries": {
+      "en": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
+      "params": []
+    },
+    "bank.entry_undone": {
+      "en": "The entry no longer counts on this statement.",
+      "params": []
+    }
+  }
 }
