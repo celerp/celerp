@@ -1004,9 +1004,13 @@ def _app_functions(roots=APP_ROOTS):
 
 def _field_writes(fn) -> list[tuple[str, int, ast.expr]]:
     """(field, line, value) for every number field (NUMBER_FIELDS) ``fn`` writes: as a dict
-    key, a subscript store or a keyword argument."""
+    key, a subscript store or a keyword argument. The params of a catalog message (a call
+    naming a catalog key, such as a refusal or t()) show a number and write none."""
     found = []
     for n in _own_nodes(fn):
+        if isinstance(n, ast.Call) and any(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                                           and t(a.value, "en") != a.value for a in n.args):
+            continue
         if isinstance(n, ast.Dict):
             found += [(k.value, n.lineno, v) for k, v in zip(n.keys, n.values)
                       if isinstance(k, ast.Constant) and k.value in NUMBER_FIELDS]

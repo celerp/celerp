@@ -5232,9 +5232,7 @@ async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UU
         raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
     if not batch.reversible:
         raise HTTPException(status_code=409, detail={
-            "code": "import_not_reversible",
-            "message": t("inventory.err_import_not_reversible"),
-        })
+            **catalog_refusal("inventory.err_import_not_reversible"), "code": "import_not_reversible"})
     return batch
 
 
@@ -5276,15 +5274,13 @@ async def undo_import_batch(
     batch = await _undoable_batch(session, company_id, batch_uuid, lock=True)
     if list(batch.entity_ids or []) != entity_ids:
         raise HTTPException(status_code=409, detail={
-            "code": "import_items_modified",
-            "message": t("inventory.err_import_items_changed"),
+            **catalog_refusal("inventory.err_import_items_changed"), "code": "import_items_modified",
             "entity_ids": sorted(set(entity_ids) ^ set(batch.entity_ids or [])),
         })
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={
-            "code": "import_entry_changed",
-            "message": t("inventory.err_import_entry_changed"),
+            **catalog_refusal("inventory.err_import_entry_changed"), "code": "import_entry_changed",
             "entity_ids": unexpected,
         })
 
@@ -5317,8 +5313,7 @@ async def undo_import_batch(
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "import_items_modified",
-                "message": t("inventory.err_import_items_changed"),
+                **catalog_refusal("inventory.err_import_items_changed"), "code": "import_items_modified",
                 "entity_ids": sorted(modified),
             },
         )

@@ -15,6 +15,8 @@ from unittest.mock import patch
 import pytest
 from ui.i18n import refusal_text
 
+from ui.i18n import refusal_text
+
 pytestmark = pytest.mark.xdist_group("modules_api")
 
 
