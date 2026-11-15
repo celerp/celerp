@@ -8,6 +8,7 @@ database has a failure path with its test."""
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import pathlib
 import re
@@ -60,7 +61,7 @@ _ID_FIELD = re.compile(r"(_id|_ids|_code|_keys)$|^contact$")
 
 
 def _openapi():
-    return real_agent_app().openapi()
+    return _app().openapi()
 
 
 def _resolve_ref(spec, schema):
@@ -210,10 +211,10 @@ async def test_bank_value_fields_refuse_invalid_values(client, bad):
 
 
 async def test_removed_line_routes_are_gone(client):
-    app = real_agent_app()
+    app = _app()
     served = {(m, r.path) for r in app.routes for m in getattr(r, "methods", ()) or ()}
     assert not [r for r in REMOVED if r in served]
-    compiled = {(c["method"], c["path"]) for c in ai_tools.compile_agent_capabilities(app, {}).values()}
+    compiled = {(c["method"], c["path"]) for c in _caps(None).values()}
     assert not [r for r in REMOVED if r in compiled]
     ui_src = (HERE.parents[2] / "ui" / "api_client.py").read_text()
     for _m, path in REMOVED:
@@ -221,8 +222,16 @@ async def test_removed_line_routes_are_gone(client):
         assert not re.search(r"reconciliation/\{[a-z_]+\}" + re.escape(tail.rstrip("/")) + r"[\"'/]", ui_src), path
 
 
+@functools.cache
+def _app():
+    """One real API surface for this module; its OpenAPI schema is built once."""
+    return real_agent_app()
+
+
+@functools.cache
 def _caps(role="owner"):
-    return ai_tools.compile_agent_capabilities(real_agent_app(), {}, role)
+    """The compiled capabilities for *role*, compiled once per role (read only)."""
+    return ai_tools.compile_agent_capabilities(_app(), {}, role)
 
 
 def _cap(caps, method, path):
