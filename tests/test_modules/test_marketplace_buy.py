@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
+from ui.i18n import refusal_text
+
 pytestmark = pytest.mark.xdist_group("modules_api")
 
 
@@ -133,7 +135,7 @@ async def test_buy_relay_error_maps_status_and_detail(client, relay_env):
                               json={"slug": "celerp-budgeting", "kind": "monthly"},
                               headers=headers)
     assert r.status_code == 402
-    assert "cannot accept charges" in r.json()["detail"]
+    assert "cannot accept charges" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

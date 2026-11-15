@@ -63,7 +63,12 @@ PREMIUM_MARKER = ".celerp-premium"
 
 
 class ModuleImportError(Exception):
-    """User-facing import failure. Message is safe to show in the UI."""
+    """User-facing import failure, raised with a t() text: ``detail`` is that text, which a
+    route answers as its key's refusal (refusal_detail), so it reads in the reader's language."""
+
+    @property
+    def detail(self):
+        return self.args[0]
 
 
 def _validate_name_chars(name: str) -> None:
