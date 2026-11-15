@@ -1388,7 +1388,9 @@ def _line_changes(old, new, currency: str | None) -> list[tuple[str, str, str, s
         elif c.kind == "removed":
             out.append(("line_items", label, _line_value(c.old, currency), EMPTY))
         else:
-            out += [("line_items", f"{label} · {line_field_label(f)}", _line_field_value(f, c.old.get(f), currency),
+            # A line's fund is named, never shown by its raw fund id, as in the one-line summary.
+            out += [("line_items", f"{label} · {t('th.fund')}", EMPTY, EMPTY) if f == "fund_id" else
+                    ("line_items", f"{label} · {line_field_label(f)}", _line_field_value(f, c.old.get(f), currency),
                      _line_field_value(f, c.new.get(f), currency)) for f in c.fields]
     if diff.reordered:
         out.append(("line_items", t("activity.lines_reordered"), EMPTY, EMPTY))

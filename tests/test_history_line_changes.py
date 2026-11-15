@@ -80,3 +80,10 @@ def test_line_rows_carry_the_line_items_field_key():
     e = {"id": 1, "entity_id": "doc:INV-1", "actor_name": "Ana", "ts": "2026-01-01T00:00:00Z", "event_type": "doc.updated",
          "data": {"fields_changed": {"line_items": {"old": [_line(A)], "new": [_line(A, discount_pct=5)]}}}}
     assert [r["field_key"] for r in history_rows([e])] == ["line_items"]
+
+
+def test_a_line_fund_change_is_named_never_shown_by_its_id():
+    f1, f2 = "44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555"
+    rows = _rows([_line(A, fund_id=f1)], [_line(A, fund_id=f2, quantity=2)])
+    assert sorted(rows) == [("Item 1: Ruby · Fund", EMPTY, EMPTY), ("Item 1: Ruby · Qty", "1", "2")]
+    assert not any(f in str(rows) for f in (f1, f2))

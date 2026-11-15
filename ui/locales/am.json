@@ -7845,7 +7845,7 @@
   "subscriptions.err_amend_draft": "ይህ ምዝገባ አሁንም ረቂቅ ነው። በምትኩ በራሱ ገጽ ላይ ያሉትን መስመሮች ይቀይሩ።",
   "subscriptions.history_amended": "ብዛቶች ከ{day} ጀምሮ ተቀይረዋል",
   "subscriptions.quantities_heading": "ብዛቶች",
-  "subscriptions.quantities_hint": "ከተወሰነ ቀን ጀምሮ እንደ የመቀመጫዎች ብዛት ያለ መጠን ይቀይሩ። ከዚያ ቀን ጀምሮ ያሉ የክፍያ ጊዜያት በአዲሱ ብዛት ይከፈላሉ። ቀኑ ቀድሞ ክፍያ በተጠየቀበት ጊዜ ውስጥ ከሆነ፣ የቀሩትን ቀናት ለማስተካከል የብድር ማስታወሻ እና አዲስ ሰነድ ይዘጋጃሉ። ለውጡን ለመቀልበስ ከዚያው ቀን ጀምሮ ብዛቱን ወደ ቀድሞው ይመልሱ።",
+  "subscriptions.quantities_hint": "ከተወሰነ ቀን ጀምሮ እንደ የመቀመጫዎች ብዛት ያለ መጠን ይቀይሩ። ከዚያ ቀን ጀምሮ ያሉ የክፍያ ጊዜያት በአዲሱ ብዛት ይከፈላሉ። ቀኑ ቀድሞ ክፍያ በተጠየቀበት ጊዜ ውስጥ ከሆነ፣ የቀሩትን ቀናት ለማስተካከል የክሬዲት ማስታወሻ እና አዲስ ሰነድ ይዘጋጃሉ። ለውጡን ለመቀልበስ ከዚያው ቀን ጀምሮ ብዛቱን ወደ ቀድሞው ይመልሱ።",
   "subscriptions.th_quantity_now": "አሁን",
   "subscriptions.th_quantity_new": "አዲስ ብዛት",
   "subscriptions.amend_effective": "ከ",
