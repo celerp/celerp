@@ -77,18 +77,22 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
     return rows
 
 
-def write_suggestion(line: BankStatementLine, suggestion: dict | None) -> None:
-    """Store ``suggestion`` on ``line``, keeping a contact only when its evidence names the
-    record that names that contact (an open document, a person's or an answer's rule, a read
-    receipt, history on a named counterparty, or a client answer)."""
-    if suggestion is None:
-        line.suggestion = None
-        return
-    s = {k: v for k, v in suggestion.items() if v is not None}
+def suggestion_value(suggestion: dict) -> dict:
+    """``suggestion`` as stored: a contact stays only when its evidence names the record that
+    names that contact (an open document, a person's or an answer's rule, a read receipt,
+    history on a named counterparty, or a client answer); a posting with no contact says why."""
+    from ui.i18n import t
+    s = {k: v for k, v in suggestion.items() if v is not None or k == "kind"}
     if s.get("contact_id") and not (s.get("evidence") or {}).get("names_contact"):
         s.pop("contact_id")
-        s["contact_reason"] = "acct.recon_no_contact_named"
-    line.suggestion = s
+    if s.get("kind") == "post" and not s.get("contact_id"):
+        s["reason"] = f"{s.get('reason') or ''} {t('acct.recon_no_contact_named')}".strip()
+    return s
+
+
+def write_suggestion(line: BankStatementLine, suggestion: dict | None) -> None:
+    """The one writer of a line's suggestion."""
+    line.suggestion = None if suggestion is None else suggestion_value(suggestion)
 
 
 async def _session(db: AsyncSession, line: BankStatementLine) -> ReconciliationSession:

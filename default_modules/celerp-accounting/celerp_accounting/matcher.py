@@ -41,13 +41,22 @@ def _name_similarity(a: str, b: str) -> float:
 
 def _looks_like_reference(desc: str, memo: str) -> bool:
     """True if description contains keywords from memo (e.g. INV-0042, PO-001)."""
-    import re
-    # Extract identifier-like tokens: INV-123, PO-123, REF-123, 8+ digit numbers
-    tokens = re.findall(r"[A-Z]{2,}-\d+|\d{8,}", memo.upper())
-    if not tokens:
-        return False
     desc_upper = desc.upper()
-    return any(tok in desc_upper for tok in tokens)
+    return any(tok in desc_upper for tok in _reference_tokens(memo))
+
+
+def amount_buckets(rows: list) -> dict[Decimal, list]:
+    """Rows by amount, so a line looks only at entries of an equal or near amount."""
+    out: dict[Decimal, list] = {}
+    for r in rows:
+        out.setdefault(r.amount, []).append(r)
+    return out
+
+
+def _reference_tokens(text: str) -> list[str]:
+    """Identifier-like tokens (INV-123, PO-123, 8+ digit runs) in ``text``."""
+    import re
+    return re.findall(r"[A-Z]{2,}-\d+|\d{8,}", (text or "").upper())
 
 
 def auto_match(
@@ -62,13 +71,19 @@ def auto_match(
     confidence is "high" | "medium" | "low".
 
     Rules (priority order):
-    1. Exact amount + exact date match → high
-    2. Exact amount + date within 3-day window → high
-    3. Exact amount + date within date_window_days → medium
-    4. Description contains reference/invoice number from memo → high
-    5. Amount within tolerance + name similarity > 0.6 → medium
-    6. Recurring pattern (same amount + description similarity > 0.8) → low
+    1. Exact amount + exact date match -> high
+    2. Exact amount + date within 3-day window -> high
+    3. Exact amount + date within date_window_days -> medium
+    4. Description contains reference/invoice number from memo -> high with the
+       exact amount, otherwise low
+    5. Amount within tolerance + name similarity > 0.6 -> medium
+    6. Recurring pattern (same amount + description similarity > 0.8) -> low
+
+    Entries are read through their amount buckets: a line compares only entries of an
+    equal amount, within the tolerance, or naming a reference the line carries.
     """
+    from bisect import bisect_left, bisect_right
+
     lines = [
         _Line(
             id=l["id"],
@@ -82,12 +97,19 @@ def auto_match(
     entries = [
         _Entry(
             id=e["je_id"],
-            ts=e.get("ts", ""),
+            ts=e.get("date") or e.get("ts", ""),
             memo=e.get("memo", ""),
             amount=Decimal(str(e.get("amount", 0))),
         )
         for e in book_entries
     ]
+    order = {e.id: i for i, e in enumerate(entries)}
+    buckets = amount_buckets(entries)
+    amounts = sorted(buckets)
+    by_token: dict[str, list[_Entry]] = {}
+    for entry in entries:
+        for tok in _reference_tokens(entry.memo):
+            by_token.setdefault(tok, []).append(entry)
 
     used_entry_ids: set[str] = set()
     results: list[tuple[str, str, str]] = []
@@ -96,8 +118,15 @@ def auto_match(
         line_dt = _to_date(line.line_date)
         best: tuple[str, str] | None = None
         best_rule = 99
+        band = abs(line.amount) * Decimal(str(tolerance_pct)) / (1 - Decimal(str(tolerance_pct)))
+        near = amounts[bisect_left(amounts, line.amount - band):bisect_right(amounts, line.amount + band)]
+        desc_upper = line.description.upper()
+        candidates = {e.id: e for a in near for e in buckets[a]}
+        for tok, hits in by_token.items():
+            if tok in desc_upper:
+                candidates.update((e.id, e) for e in hits)
 
-        for entry in entries:
+        for entry in sorted(candidates.values(), key=lambda e: order[e.id]):
             if entry.id in used_entry_ids:
                 continue
             entry_dt = _to_date(entry.ts)
@@ -125,10 +154,11 @@ def auto_match(
                         best_rule = 3
                     continue
 
-            # Rule 4: reference match (e.g. INV-0042 in bank description)
+            # Rule 4: reference match (e.g. INV-0042 in bank description); high only
+            # when the amount agrees too
             if _looks_like_reference(line.description, entry.memo):
                 if best_rule > 4:
-                    best = (entry.id, "high")
+                    best = (entry.id, "high" if amt_match else "low")
                     best_rule = 4
                 continue
 
@@ -161,36 +191,37 @@ def auto_match(
 def apply_rules(
     statement_lines: list[dict],
     rules: list[dict],
+    bank_id: str | None = None,
 ) -> list[tuple[str, str]]:
     """Apply reconciliation rules to unmatched statement lines.
 
-    Returns list of (line_id, rule_id) for each rule that matches.
+    A rule reads the line's description, reference, counterparty account or counterparty
+    key; one with an amount matches only that amount, and one with a bank only that
+    bank's lines. Returns (line_id, rule_id) for the first rule each line matches.
     """
-    import re
     results: list[tuple[str, str]] = []
-
     for line in statement_lines:
         if line.get("status", "unmatched") != "unmatched":
             continue
-        desc = line.get("description", "")
         for rule in rules:
             if not rule.get("is_active", True):
                 continue
+            if rule.get("bank_account_id") and bank_id and str(rule["bank_account_id"]) != str(bank_id):
+                continue
+            if rule.get("match_amount") is not None and \
+                    abs(Decimal(str(rule["match_amount"]))) != abs(Decimal(str(line.get("amount", 0)))):
+                continue
             field = rule.get("match_field", "description")
-            pattern = rule.get("match_pattern", "")
+            pattern = (rule.get("match_pattern") or "").lower()
+            target = str(line.get(field) or "").lower()
             match_type = rule.get("match_type", "contains")
-            target = desc if field == "description" else line.get(field, "")
-
-            matched = False
             if match_type == "exact":
-                matched = target.lower() == pattern.lower()
+                matched = target == pattern
             elif match_type == "starts_with":
-                matched = target.lower().startswith(pattern.lower())
-            else:  # contains
-                matched = pattern.lower() in target.lower()
-
+                matched = target.startswith(pattern)
+            else:
+                matched = bool(pattern) and pattern in target
             if matched:
                 results.append((line["id"], rule["id"]))
-                break  # First matching rule wins
-
+                break
     return results

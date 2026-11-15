@@ -7983,5 +7983,18 @@
   "ai.member_keeps_password": "This person already has a Celerp account and keeps their own password.",
   "ai.action_outcome_unknown": "Celerp couldn't tell whether this change was applied. Check here before running it again:",
   "ai.run_again": "Run again",
-  "ai.run_again_warning": "If the first run went through, running it again applies the change twice. Run it again?"
+  "ai.run_again_warning": "If the first run went through, running it again applies the change twice. Run it again?",
+  "acct.recon_no_contact_named": "No record names a contact, so none is set.",
+  "acct.err_recon_line_state": "This line is {status} already. Undo it first, then try again.",
+  "acct.err_recon_match_needs_entry": "Pick at least one book entry to match this line to.",
+  "acct.recon_reason_reversal": "The bank reversed this within 3 days, so neither line needs an entry.",
+  "acct.recon_reason_match": "A book entry of the same amount on {date}.",
+  "acct.recon_reason_combo": "Book entries of one counterparty add up to this amount. Check them before matching.",
+  "acct.recon_reason_document": "{ref} is open for the same amount.",
+  "acct.recon_reason_rule": "Your rule for \"{pattern}\".",
+  "acct.recon_reason_transfer": "A line of the same amount on another of your accounts on {date}.",
+  "acct.recon_reason_slip": "A receipt dated {date} for the same amount.",
+  "acct.recon_reason_no_vat": "No tax invoice attached: no VAT claimed.",
+  "acct.recon_reason_history": "Posted to {account} {count} times before.",
+  "acct.recon_reason_question": "Nothing in your books explains this line yet. Answer it, or ask your client."
 }
