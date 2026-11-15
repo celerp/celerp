@@ -532,10 +532,11 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     """Groups by counterparty and direction, the largest total first (it clears the
     difference fastest); the lines of a group newest first. The statements strip, the
     summary counts and the first open statement's difference come with them."""
-    from celerp_accounting.routes import _je_entries_for_account, _recon_balance
+    from celerp_accounting.routes import _je_entries_for_account, _needs_review, _recon_balance
 
     bank = await _bank(db, company_id, bank_id)
     sessions = await _sessions(db, company_id, bank)
+    entries = await _je_entries_for_account(db, company_id, bank)
     open_ids = {s.id for s in sessions if s.status == "open"}
     rows = sorted(await _bank_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)), reverse=True)
     shown = [l for l in rows if _in_view(l, view, open_ids) and (not q or _searched(l, q))]
@@ -555,14 +556,14 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     for g in ordered:
         g["total"] = _money_text(g["total"], bank.currency)
     first_open = next((s for s in sessions if s.status == "open"), None)
-    balance = None if first_open is None else _recon_balance(
-        first_open, bank, await _je_entries_for_account(db, company_id, bank))
+    balance = None if first_open is None else _recon_balance(first_open, bank, entries)
     waiting = [l for l in rows if _in_view(l, "open", open_ids)]
     return {"bank_id": str(bank.id), "view": view, "q": q, "groups": ordered,
             "statements": [{"id": str(s.id), "period_start": s.period_start, "statement_date": s.statement_date,
                             "opening_balance": _money_text(s.opening_balance or 0, bank.currency),
                             "closing_balance": _money_text(s.statement_balance, bank.currency),
-                            "status": s.status} for s in reversed(sessions)],
+                            "status": s.status, "needs_review": _needs_review(s, bank, entries)}
+                           for s in reversed(sessions)],
             "summary": {"lines": len(rows), "open": len(waiting),
                         "questions": sum(1 for l in waiting if SL.asked(l)),
                         "posted": sum(1 for l in rows if l.status != "unmatched")},

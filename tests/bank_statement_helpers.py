@@ -240,3 +240,28 @@ async def bank_post(client: AsyncClient, h: dict, sid: str, action: str, body: d
     """POST bank/{bank}/<action> (suggest, complete) for the bank of reconciliation ``sid``."""
     return await client.post(f"{API}/bank/{await bank_of(client, h, sid)}/{action}", headers=h,
                              json={"idempotency_key": key(), **(body or {})})
+
+
+async def bank_complete(client, h, sid) -> dict:
+    """Complete the open statements of the session's bank, up to the first that does not balance."""
+    r = await client.get(f"{API}/{sid}", headers=h)
+    if r.status_code != 200:
+        return {"status_code": r.status_code}
+    bank_id = r.json()["bank_account_id"]
+    r = await client.post(f"{API}/bank/{bank_id}/complete", headers=h,
+                          json={"idempotency_key": key()})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def stopped_reason(body: dict) -> str:
+    assert body["stopped_at"], body
+    return body["stopped_at"]["reason"]
+
+
+async def complete(client, h, sid):
+    body = await bank_complete(client, h, sid)
+    assert body["stopped_at"] is None, body
+    got = (await client.get(f"{API}/{sid}", headers=h)).json()
+    assert got["status"] == "completed", got
+    return got

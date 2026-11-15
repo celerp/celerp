@@ -116,6 +116,7 @@ def statements_strip(statements: list[dict], bank: dict, view: str = "open", q: 
               Span(money(s["closing_balance"], currency), cls="bank-strip__closing"),
               Span(display_enum(s["status"], "recon_session_status"), cls=f"badge badge--recon-{s['status']}"),
               Span(*_statement_actions(bank, s, view, q), cls="bank-strip__actions screen-only"),
+              P(t("recon.needs_review"), cls="flash flash--warning") if s.get("needs_review") else None,
               cls="bank-strip__item", data_statement=s["id"])
           for s in statements],
         cls="bank-strip", aria_label=t("bank.statements_heading"))
@@ -308,9 +309,10 @@ def answer_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = 
         cls="bank-panel", data_form="answer", onkeydown=_remove_on_escape("form"))
 
 
-def split_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = "",
+def split_form(bank_id: str, options: list[tuple[str, str]], currency: str | None, *, line_id: str = "",
                parts: list[tuple[str, str]] | None = None, error: str = "") -> FT:
-    """The parts of one line, each an account and a positive amount; blank rows are dropped."""
+    """The parts of one line, each an account and a positive amount in the bank's minor
+    unit; blank rows are dropped."""
     accounts = [(v.split(":", 1)[1], label) for v, label in options if v.startswith("post:")]
     parts = list(parts or []) + [("", "")] * max(0, 3 - len(parts or []))
     return Form(
@@ -320,7 +322,7 @@ def split_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = "
         P(t("bank.split_hint"), cls="text-muted"),
         *[Div(Div(searchable_select("account_code", accounts, value=code, aria_label=t("label.account")),
                   cls="searchable-select"),
-              Input(type="number", name="amount", value=amount, min="0", step="any", cls="form-input",
+              Input(type="number", name="amount", value=amount, min="0", step=money_step(currency), cls="form-input",
                     aria_label=t("label.amount")),
               cls="bank-split__part") for code, amount in parts],
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
@@ -343,9 +345,9 @@ def ask_panel(bank_id: str) -> FT:
         cls="bank-panel", data_panel="ask", onkeydown=_remove_on_escape("[data-panel=ask]"))
 
 
-def panel_templates(bank_id: str, options: list[tuple[str, str]]) -> tuple:
+def panel_templates(bank_id: str, options: list[tuple[str, str]], currency: str | None) -> tuple:
     return (Template(answer_form(bank_id, options), id="bank-tpl-answer"),
-            Template(split_form(bank_id, options), id="bank-tpl-split"),
+            Template(split_form(bank_id, options, currency), id="bank-tpl-split"),
             Template(ask_panel(bank_id), id="bank-tpl-ask"))
 
 

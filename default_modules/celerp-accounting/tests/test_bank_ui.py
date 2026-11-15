@@ -6,6 +6,7 @@ every bank input. API answers are mocked; the API is covered in test_bank_statem
 
 from __future__ import annotations
 
+import json
 import re
 from unittest.mock import AsyncMock, patch
 
@@ -117,3 +118,31 @@ async def test_bank_inputs_leave_on_escape(ui_client):
     assert len(cells) == 4
     for cell in cells:
         assert "celerpCellKey" in cell, cell
+
+
+async def test_an_import_refusal_shows_on_the_preview_and_keeps_what_was_entered(ui_client):
+    """A refused import re-renders the preview with the reason above it and the header
+    figures the user typed, so nothing has to be entered again."""
+    from ui.api_client import APIError
+    edited = {"opening_balance": "1000.00", "closing_balance": "1234.00", "period_start": "2026-01-01",
+              "period_end": "2026-01-31"}
+    found = {"job_id": "j1", "bank_id": "b1", "receipts": [], "failed_steps": [], "statements": [{
+        "file_id": "f1", "header": {**edited, "currency": "USD"}, "lines": [_LINE], "tie": {"ok": False},
+        "blocking": [], "notices": []}]}
+    preview = AsyncMock(return_value=found)
+    patches = [patch("ui.api_client.import_statement", AsyncMock(side_effect=APIError(
+                   409, "A statement already covers 2026-01-01 to 2026-01-31 on this bank."))),
+               patch("ui.api_client.statement_preview", preview)]
+    for p in patches:
+        p.start()
+    try:
+        ui_client.cookies.set("celerp_token", make_test_token(role="owner"))
+        r = await ui_client.post("/accounting/reconcile/bank/b1/preview/j1/import", data={
+            "state": json.dumps({"headers": [edited], "column_map": None}), "idempotency_key": "k1"})
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 200, r.text
+    assert "A statement already covers 2026-01-01 to 2026-01-31 on this bank." in r.text
+    assert preview.await_args.args[2] == [{"header": edited}]
+    assert 'value="1234.00"' in r.text and 'data-testid="statement-preview"' in r.text
