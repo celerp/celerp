@@ -17,6 +17,7 @@ from celerp.models.company_peer import CompanyPeerGrant
 from celerp.routers.migrations import user_owner
 from celerp.services.auth import AuthContext
 from celerp.services import peer_access
+from celerp.ai.tools import agent_excluded
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 
@@ -46,7 +47,7 @@ def _peer_key(authorization: str) -> str:
     return credential
 
 
-@router.post("/grants", status_code=201)
+@router.post("/grants", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/accountant-access"})
 async def create_peer_grant(body: GrantRequest, ctx: AuthContext = Depends(user_owner),
                             session: AsyncSession = Depends(get_session)):
     row, secret = await peer_access.issue(
@@ -56,7 +57,7 @@ async def create_peer_grant(body: GrantRequest, ctx: AuthContext = Depends(user_
     return {**_public(row), "credential": secret}
 
 
-@router.get("/grants")
+@router.get("/grants", openapi_extra={"x-celerp-agent": True})
 async def list_peer_grants(ctx: AuthContext = Depends(user_owner),
                            session: AsyncSession = Depends(get_session)):
     rows = (await session.execute(select(CompanyPeerGrant).where(
@@ -65,7 +66,7 @@ async def list_peer_grants(ctx: AuthContext = Depends(user_owner),
     return {"items": [_public(row) for row in rows]}
 
 
-@router.post("/grants/{grant_id}/revoke")
+@router.post("/grants/{grant_id}/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/accountant-access"})
 async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
                             session: AsyncSession = Depends(get_session)):
     await peer_access.revoke(session, ctx.company_id, grant_id)
@@ -74,7 +75,7 @@ async def revoke_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user
     return {"revoked": True}
 
 
-@router.post("/grants/{grant_id}/renew")
+@router.post("/grants/{grant_id}/renew", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/accountant-access"})
 async def renew_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_owner),
                            session: AsyncSession = Depends(get_session)):
     row = await peer_access.renew(session, ctx.company_id, grant_id)
@@ -83,7 +84,7 @@ async def renew_peer_grant(grant_id: uuid.UUID, ctx: AuthContext = Depends(user_
     return _public(row)
 
 
-@router.get("/verify")
+@router.get("/verify", openapi_extra=agent_excluded("machine"))
 async def verify_peer_grant(source_company_id: uuid.UUID,
                             authorization: str = Header(default=""),
                             session: AsyncSession = Depends(get_session)):

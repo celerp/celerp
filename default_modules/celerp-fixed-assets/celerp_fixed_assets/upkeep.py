@@ -427,19 +427,19 @@ async def tell_reminders(session, company_id, today: date) -> None:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/assets/{asset_id}/upkeep", dependencies=_VIEW)
+@router.get("/assets/{asset_id}/upkeep", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]})
 async def get_upkeep(asset_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                      session: AsyncSession = Depends(get_session)) -> dict:
     return readable(await of_asset(session, company_id, asset_id), money)
 
 
-@router.post("/assets/{asset_id}/reminders", dependencies=_MANAGE)
+@router.post("/assets/{asset_id}/reminders", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
 async def create_reminder(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await add_reminder(session, company_id, user.id, asset_id, body)
 
 
-@router.get("/reminders", dependencies=_VIEW)
+@router.get("/reminders", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True})
 async def list_due(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     today = (await company_today(session, company_id)).isoformat()
     return {"items": [{k: v for k, v in r.items() if k != "told"} for r in await due_items(session, company_id, today)]}
@@ -454,49 +454,49 @@ async def _one(session, company_id, entity_id: str, entity_type: str) -> dict:
     return state
 
 
-@router.get("/reminders/{reminder_id}", dependencies=_VIEW)
+@router.get("/reminders/{reminder_id}", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]})
 async def get_reminder(reminder_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                        session: AsyncSession = Depends(get_session)) -> dict:
     return readable(reminder_out(reminder_id, await _one(session, company_id, reminder_id, REMINDER)), money)
 
 
-@router.post("/reminders/{reminder_id}/done", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/done", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"})
 async def reminder_done(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await mark_done(session, company_id, user.id, reminder_id, body)
 
 
-@router.post("/reminders/{reminder_id}/postpone", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/postpone", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"})
 async def reminder_postpone(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await postpone(session, company_id, user.id, reminder_id, body)
 
 
-@router.patch("/reminders/{reminder_id}", dependencies=_MANAGE)
+@router.patch("/reminders/{reminder_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"})
 async def reminder_edit(reminder_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await edit(session, company_id, user.id, reminder_id, body.get("changes") or {})
 
 
-@router.post("/reminders/{reminder_id}/remove", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"})
 async def reminder_remove(reminder_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                           session: AsyncSession = Depends(get_session)) -> dict:
     return await remove(session, company_id, user.id, reminder_id)
 
 
-@router.post("/reminders/{reminder_id}/undo", dependencies=_MANAGE)
+@router.post("/reminders/{reminder_id}/undo", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/reminders"})
 async def reminder_undo(reminder_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)) -> dict:
     return await undo(session, company_id, user.id, reminder_id)
 
 
-@router.post("/assets/{asset_id}/maintenance", dependencies=_MANAGE)
+@router.post("/assets/{asset_id}/maintenance", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"})
 async def create_entry(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await add_entry(session, company_id, user.id, asset_id, body)
 
 
-@router.get("/maintenance/{maint_id}", dependencies=_VIEW)
+@router.get("/maintenance/{maint_id}", dependencies=_VIEW, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": ["view_financial_reports"]})
 async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), money: bool = Depends(money_shown),
                     company_settings: dict = Depends(get_current_company_settings),
                     session: AsyncSession = Depends(get_session)) -> dict:
@@ -506,25 +506,25 @@ async def get_entry(maint_id: str, company_id=Depends(get_current_company_id), m
         currency=books_currency(company_settings))}, money)
 
 
-@router.patch("/maintenance/{maint_id}", dependencies=_MANAGE)
+@router.patch("/maintenance/{maint_id}", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"})
 async def entry_edit(maint_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await edit_entry(session, company_id, user.id, maint_id, body.get("changes") or {})
 
 
-@router.post("/maintenance/{maint_id}/remove", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/remove", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"})
 async def entry_remove(maint_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                        session: AsyncSession = Depends(get_session)) -> dict:
     return await set_entry_status(session, company_id, user.id, maint_id, "removed")
 
 
-@router.post("/maintenance/{maint_id}/restore", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/restore", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"})
 async def entry_restore(maint_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                         session: AsyncSession = Depends(get_session)) -> dict:
     return await set_entry_status(session, company_id, user.id, maint_id, "active")
 
 
-@router.post("/maintenance/{maint_id}/files", dependencies=_MANAGE)
+@router.post("/maintenance/{maint_id}/files", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"})
 async def entry_file(maint_id: str, file: UploadFile, company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await attach_to_entry(session, company_id, user.id, maint_id, file)

@@ -131,7 +131,7 @@ async def _aging(session: AsyncSession, company_id: uuid.UUID, *, party: str, de
     return {"as_of": today.isoformat(), "lines": lines, "buckets": totals}
 
 
-@router.get("/ar-aging")
+@router.get("/ar-aging", openapi_extra={"x-celerp-agent": True})
 async def ar_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -142,7 +142,7 @@ async def ar_aging(
                         credit_types=("credit_note",), due_fallback="date", unlinked=("unlinked", "Unlinked Invoices"))
 
 
-@router.get("/ap-aging")
+@router.get("/ap-aging", openapi_extra={"x-celerp-agent": True})
 async def ap_aging(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -158,7 +158,7 @@ async def ap_aging(
 # Sales report
 # ---------------------------------------------------------------------------
 
-@router.get("/sales")
+@router.get("/sales", openapi_extra={"x-celerp-agent": True})
 async def sales_report(
     group_by: str = "customer",  # customer | item | period
     period: str = "monthly",     # daily | weekly | monthly (for group_by=period)
@@ -363,7 +363,7 @@ async def sales_report(
 # Purchasing report
 # ---------------------------------------------------------------------------
 
-@router.get("/purchases")
+@router.get("/purchases", openapi_extra={"x-celerp-agent": True})
 async def purchases_report(
     group_by: str = "supplier",  # supplier | item | period
     period: str = "monthly",
@@ -529,7 +529,7 @@ async def purchases_report(
 # Expiring items report
 # ---------------------------------------------------------------------------
 
-@router.get("/expiring")
+@router.get("/expiring", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def expiring_items(
     days: int = 30,
     company_id: uuid.UUID = Depends(get_current_company_id),

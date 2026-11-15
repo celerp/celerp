@@ -50,6 +50,7 @@ from celerp.services.auth import (
     validate_password,
 )
 from ui.i18n import t
+from celerp.ai.tools import agent_excluded
 
 router = APIRouter()
 
@@ -70,7 +71,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@router.get("/bootstrap-status")
+@router.get("/bootstrap-status", openapi_extra=agent_excluded("session"))
 async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Public endpoint: returns whether the system has been bootstrapped.
 
@@ -82,7 +83,7 @@ async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict
     return {"bootstrapped": count is not None, "setup_code_required": bool(bootstrap.setup_code_hash())}
 
 
-@router.post("/register")
+@router.post("/register", openapi_extra=agent_excluded("session"))
 async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Register first admin. Locked out after bootstrap (any user exists).
 
@@ -213,7 +214,7 @@ async def hold_direct_slot(session: AsyncSession, *, taking_over: bool = False) 
         raise HTTPException(status_code=409, detail="direct_connection_limit")
 
 
-@router.post("/login")
+@router.post("/login", openapi_extra=agent_excluded("session"))
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.credentials import issue_token_pair
     user = await authenticate(session, payload.email, payload.password, request_caller(request))
@@ -232,7 +233,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     raise CompanyUnavailable()
 
 
-@router.post("/login-force")
+@router.post("/login-force", openapi_extra=agent_excluded("session"))
 async def login_force(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Like /login but evicts all other active sessions from the tracker first, in the
     same transaction as the new session."""
@@ -257,7 +258,7 @@ class StartCompanyRequest(BaseModel):
     company_name: str
 
 
-@router.post("/start-company")
+@router.post("/start-company", openapi_extra=agent_excluded("session"))
 async def start_company(request: Request, payload: StartCompanyRequest,
                         session: AsyncSession = Depends(get_session)) -> dict:
     """Create a company for a login that has none left, after its last company was reset,
@@ -278,7 +279,7 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-@router.post("/token/refresh")
+@router.post("/token/refresh", openapi_extra=agent_excluded("session"))
 async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends(get_session)) -> dict:
     """Exchange a valid refresh token for a new access token + rotated refresh token.
 
@@ -314,7 +315,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     )
 
 
-@router.get("/my-companies")
+@router.get("/my-companies", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def my_companies(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -354,7 +355,7 @@ async def my_companies(
     return {"items": result, "total": len(result), "deactivated": deactivated}
 
 
-@router.get("/firm-view")
+@router.get("/firm-view", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def firm_view(
     q: str | None = None,
     sync: str | None = None,
@@ -368,7 +369,7 @@ async def firm_view(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/switch-company/{company_id}")
+@router.post("/switch-company/{company_id}", openapi_extra=agent_excluded("session"))
 async def switch_company(
     company_id: uuid.UUID,
     ctx: AuthContext = Depends(get_auth_context),
@@ -429,7 +430,7 @@ def _code_refused() -> HTTPException:
 
 # Per requester; the hourly limit leaves most of the relay's mail allowance for this
 # install (60 an hour per network) to everyone else.
-@router.post("/password-recovery/send")
+@router.post("/password-recovery/send", openapi_extra=agent_excluded("session"))
 @limiter.limit("3/minute;20/hour")
 async def recovery_send(
     request: Request, payload: RecoverySendBody, session: AsyncSession = Depends(get_session),
@@ -452,7 +453,7 @@ async def recovery_send(
     return {"outcome": "unavailable" if sent is Outcome.UNAVAILABLE else "sent", "handle": attempt.handle}
 
 
-@router.post("/password-recovery/reset")
+@router.post("/password-recovery/reset", openapi_extra=agent_excluded("session"))
 @limiter.limit("10/minute")
 async def recovery_reset(
     request: Request, payload: RecoveryResetBody, session: AsyncSession = Depends(get_session),
@@ -490,14 +491,14 @@ async def recovery_reset(
     return {"ok": True}
 
 
-@router.get("/password-recovery/terminal")
+@router.get("/password-recovery/terminal", openapi_extra=agent_excluded("session"))
 async def recovery_terminal(request: Request) -> dict:
     """The terminal reset command, for the person at this computer only: it names this
     computer's folders."""
     return {"command": terminal_command() if is_local_person(request) else None}
 
 
-@router.get("/password-reset-notices")
+@router.get("/password-reset-notices", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def reset_notices(
     user: User = Depends(get_current_user), company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -523,7 +524,7 @@ class NoticeIds(BaseModel):
     ids: list[uuid.UUID]
 
 
-@router.post("/password-reset-notices/acknowledge")
+@router.post("/password-reset-notices/acknowledge", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/members", "x-celerp-agent-any-role": True})
 async def acknowledge_reset_notices(
     payload: NoticeIds, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -540,7 +541,7 @@ class ChangePasswordBody(BaseModel):
     new_password: str
 
 
-@router.post("/change-password")
+@router.post("/change-password", openapi_extra=agent_excluded("secret"))
 async def change_password(
     request: Request,
     payload: ChangePasswordBody,
@@ -562,7 +563,7 @@ class LogoutRequest(BaseModel):
     refresh_token: str | None = None
 
 
-@router.post("/logout")
+@router.post("/logout", openapi_extra=agent_excluded("session"))
 async def logout(
     payload: LogoutRequest | None = None,
     token: str | None = Depends(oauth2_scheme_optional),

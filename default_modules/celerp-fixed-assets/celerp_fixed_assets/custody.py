@@ -71,14 +71,14 @@ async def _locked_held(session, company_id, user_id, asset_id: str) -> dict:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/mine")
+@router.get("/mine", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def list_mine(company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                     session: AsyncSession = Depends(get_session)) -> dict:
     locations = await _locations(session, company_id)
     return {"items": [shown(a, s, locations) for a, s in await mine(session, company_id, user.id)]}
 
 
-@router.get("/mine/{asset_id}")
+@router.get("/mine/{asset_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def get_mine(asset_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                    session: AsyncSession = Depends(get_session)) -> dict:
     state = await held(session, company_id, user.id, asset_id)
@@ -94,7 +94,7 @@ async def download_mine(asset_id: str, file_id: str, company_id=Depends(get_curr
     return files.serve(company_id, match)
 
 
-@router.post("/mine/{asset_id}/confirm")
+@router.post("/mine/{asset_id}/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": True})
 async def confirm(asset_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                   session: AsyncSession = Depends(get_session)) -> dict:
     """The custodian confirms they still hold the asset, today."""
@@ -105,7 +105,7 @@ async def confirm(asset_id: str, company_id=Depends(get_current_company_id), use
     return shown(asset_id, await _state(session, company_id, asset_id), await _locations(session, company_id))
 
 
-@router.post("/mine/{asset_id}/problems")
+@router.post("/mine/{asset_id}/problems", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": True})
 async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile | None = None,
                          company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)) -> dict:

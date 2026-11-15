@@ -83,7 +83,7 @@ class SourcePrintBody(BaseModel):
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
-@router.get("/templates")
+@router.get("/templates", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def list_templates(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -93,7 +93,7 @@ async def list_templates(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/templates", status_code=201)
+@router.post("/templates", status_code=201, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list"})
 async def create_template(
     body: TemplateCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -113,7 +113,7 @@ async def create_template(
     return t.as_dict()
 
 
-@router.get("/templates/{template_id}")
+@router.get("/templates/{template_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def get_template(
     template_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -123,7 +123,7 @@ async def get_template(
     return t.as_dict()
 
 
-@router.put("/templates/{template_id}")
+@router.put("/templates/{template_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list"})
 async def update_template(
     template_id: uuid.UUID,
     body: TemplateUpdate,
@@ -139,7 +139,7 @@ async def update_template(
     return t.as_dict()
 
 
-@router.delete("/templates/{template_id}", status_code=204)
+@router.delete("/templates/{template_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list"})
 async def delete_template(
     template_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -151,7 +151,7 @@ async def delete_template(
     await session.commit()
 
 
-@router.post("/print/{entity_id}")
+@router.post("/print/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list", "x-celerp-agent-result-permissions": ["view_inventory_costs"], "x-celerp-agent-field-visibility": True})
 async def print_single(
     entity_id: str,
     request: Request,
@@ -173,7 +173,7 @@ async def print_single(
     )
 
 
-@router.post("/bulk-print")
+@router.post("/bulk-print", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list", "x-celerp-agent-selection": "entity_ids", "x-celerp-agent-result-permissions": ["view_inventory_costs"], "x-celerp-agent-field-visibility": True})
 async def bulk_print(
     body: BulkPrintBody,
     _: None = require_permission("view_inventory"),
@@ -195,7 +195,7 @@ async def bulk_print(
 
 # ── Other records (the label_source slot) ────────────────────────────────────
 
-@router.get("/sources/{source}")
+@router.get("/sources/{source}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": "label_source", "x-celerp-agent-result-permissions": "*"})
 async def get_source(
     source: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -210,7 +210,7 @@ async def get_source(
             "templates": await _source_templates(session, company_id, entry)}
 
 
-@router.get("/source-rows")
+@router.get("/source-rows", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-permission": "label_source", "x-celerp-agent-result-permissions": "*"})
 async def source_rows(
     source: str,
     ids: str,
@@ -224,7 +224,7 @@ async def source_rows(
     return {"rows": await _rows(session, company_id, entry, ids.split(","))}
 
 
-@router.post("/print-source")
+@router.post("/print-source", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-source", "x-celerp-agent-any-permission": "label_source", "x-celerp-agent-result-permissions": "*"})
 async def print_source(
     body: SourcePrintBody,
     company_id: uuid.UUID = Depends(get_current_company_id),

@@ -26,7 +26,7 @@ from celerp.accounting_roles import refusal
 from celerp import error_body
 from celerp.ai import deadlines
 from celerp.ai.gates import AGENT_GATES
-from celerp.modules.loader import loaded_modules
+from celerp.modules.loader import is_core_folded, loaded_modules
 from celerp.modules.registry import uses_module
 from celerp.services.permissions import PERMISSIONS, is_permission_key, role_has_permission
 from ui.i18n import current_lang, t
@@ -191,6 +191,10 @@ def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str |
     endpoint_module = str(getattr(endpoint, "__module__", "") or "")
     if endpoint_module == "celerp" or endpoint_module.startswith("celerp."):
         return "celerp"
+    # A module folded into core is wired at construction, never loaded, and always runs.
+    folded = endpoint_module.split(".", 1)[0].replace("_", "-")
+    if is_core_folded(folded):
+        return folded
 
     matches: list[dict] = []
     for manifest in loaded_modules():

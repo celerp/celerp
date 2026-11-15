@@ -48,7 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
-from celerp.ai.tools import SHOWN_ONCE
+from celerp.ai.tools import SHOWN_ONCE, exclude_router
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -1936,3 +1936,8 @@ async def retry_failed_job(job_id: uuid.UUID, company_id=Depends(get_current_com
     """Send again, each as a new question, the files that ended without an answer."""
     from celerp.ai import jobs
     return await _job_action(jobs.retry_failed, job_id, company_id, user, session)
+
+
+# The assistant never confirms, dismisses, reruns or reconfigures itself.
+exclude_router(router, "assistant")
+exclude_router(settings_router, "assistant")

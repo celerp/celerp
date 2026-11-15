@@ -57,6 +57,7 @@ from celerp.services.permissions import require_permission
 from celerp_inventory.routes import flatten_item, get_item_projection
 from ui.i18n import t
 from ui.components.encode import inert_media_type
+from celerp.ai.tools import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ async def _locked_item(session: AsyncSession, company_id, entity_id: str) -> Pro
     return row
 
 
-@router.post("/{entity_id}/attachments")
+@router.post("/{entity_id}/attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def upload_attachment(
     entity_id: str,
     file: UploadFile = File(...),
@@ -144,7 +145,7 @@ async def upload_attachment(
     return att
 
 
-@router.delete("/{entity_id}/attachments/{att_id}", status_code=204)
+@router.delete("/{entity_id}/attachments/{att_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def delete_attachment(
     entity_id: str,
     att_id: str,
@@ -164,7 +165,7 @@ async def delete_attachment(
     await session.commit()
 
 
-@router.put("/{entity_id}/attachments/{att_id}/preview", status_code=200)
+@router.put("/{entity_id}/attachments/{att_id}/preview", status_code=200, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def set_preview_image(
     entity_id: str,
     att_id: str,
@@ -192,7 +193,7 @@ async def set_preview_image(
     return {"preview_image_id": att_id}
 
 
-@router.post("/attachments/bulk")
+@router.post("/attachments/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def bulk_attach_legacy(
     file: UploadFile = File(...),
     override_hero: bool = Query(False),
@@ -233,7 +234,7 @@ def _detect_tag_and_label(stem: str) -> tuple[str, str | None, bool]:
     return "product_images", None, True  # bare SKU → hero candidate
 
 
-@router.post("/files/bulk")
+@router.post("/files/bulk", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def bulk_attach_files(
     file: UploadFile = File(...),
     override_hero: bool = Query(False, description="If true, override existing hero image for matched items"),
@@ -382,7 +383,7 @@ def _get_item_file(files: list[dict], file_id: str) -> dict:
     return match
 
 
-@router.post("/{entity_id}/files")
+@router.post("/{entity_id}/files", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def upload_item_file(
     entity_id: str,
     file: UploadFile = File(...),
@@ -411,7 +412,7 @@ async def upload_item_file(
     return {"file_id": meta["id"], **meta, "is_hero": is_hero}
 
 
-@router.post("/{entity_id}/files/{file_id}/tag")
+@router.post("/{entity_id}/files/{file_id}/tag", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def tag_item_file(
     entity_id: str,
     file_id: str,
@@ -441,7 +442,7 @@ async def tag_item_file(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@router.patch("/{entity_id}/files/{file_id}/description")
+@router.patch("/{entity_id}/files/{file_id}/description", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def update_item_file_description(
     entity_id: str,
     file_id: str,
@@ -471,7 +472,7 @@ async def update_item_file_description(
     return (updated.state if updated else {}) | {"id": entity_id}
 
 
-@router.post("/{entity_id}/files/{file_id}/hero")
+@router.post("/{entity_id}/files/{file_id}/hero", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def set_item_file_hero(
     entity_id: str,
     file_id: str,
@@ -502,7 +503,7 @@ async def set_item_file_hero(
     return {"preview_image_id": file_id}
 
 
-@router.delete("/{entity_id}/files/{file_id}", status_code=204)
+@router.delete("/{entity_id}/files/{file_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/inventory"})
 async def delete_item_file(
     entity_id: str,
     file_id: str,
@@ -540,7 +541,7 @@ async def _assert_image_visible(session: AsyncSession, company_id, role: str, ro
         raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
 
 
-@router.get("/{entity_id}/files/{file_id}/thumbnail")
+@router.get("/{entity_id}/files/{file_id}/thumbnail", openapi_extra=agent_excluded("internal"))
 async def item_file_thumbnail(
     entity_id: str,
     file_id: str,

@@ -25,6 +25,7 @@ from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
 from celerp.accounting_roles import catalog_refusal
 from ui.i18n import current_lang, t
+from celerp.ai.tools import agent_excluded
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 # An agent tool. Each result names whether the caller holds its page's permission, so
@@ -94,7 +95,7 @@ async def help_read(
     }
 
 
-@router.get("/help/browse", include_in_schema=False)
+@router.get("/help/browse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def help_browse(module: str | None = None) -> dict:
     """Every help page by module (core first, then each module as the index orders them),
     or one module's pages."""
@@ -110,7 +111,7 @@ async def help_browse(module: str | None = None) -> dict:
     return {"modules": list(by_module.values())}
 
 
-@router.get("/help/img/{page_id}/{step}", include_in_schema=False)
+@router.get("/help/img/{page_id}/{step}", include_in_schema=False, openapi_extra=agent_excluded("internal"))
 async def help_image(page_id: str, step: str) -> Response:
     """The screenshot of one step of a help page."""
     page = get_index().pages.get(page_id)
@@ -126,7 +127,7 @@ def _short_path(address: str) -> str:
     return address
 
 
-@router.get("/help/for-route")
+@router.get("/help/for-route", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def help_for_route(
     path: Annotated[str, AfterValidator(_short_path), Query(max_length=MAX_ADDRESS_LEN, pattern=r"^/")],
 ) -> dict:

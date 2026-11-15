@@ -21,11 +21,12 @@ from fastapi.responses import FileResponse
 from celerp.services.attachments import local_attachment_path
 from celerp.services.auth import get_current_company_id
 from ui.components.encode import inert_media_type
+from celerp.ai.tools import agent_excluded
 
 router = APIRouter(prefix="/static/attachments", tags=["attachments"])
 
 
-@router.get("/{company_id}/{filename}")
+@router.get("/{company_id}/{filename}", openapi_extra=agent_excluded("internal"))
 async def get_attachment(
     company_id: str,
     filename: str,

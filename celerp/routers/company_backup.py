@@ -41,6 +41,7 @@ from celerp.services import company_backup_files as files
 from celerp.services import company_handoff_sender as sender
 from celerp.services.auth import AuthContext, request_caller
 from ui.i18n import t
+from celerp.ai.tools import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class SendCompanyHandoff(BaseModel):
     note: str = Field(default="", max_length=1500)
 
 
-@router.post("/send-handoff")
+@router.post("/send-handoff", openapi_extra=agent_excluded("company"))
 async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(user_owner),
                        session: AsyncSession = Depends(get_session)):
     try:
@@ -132,25 +133,25 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     return sent
 
 
-@router.get("/sender")
+@router.get("/sender", openapi_extra={"x-celerp-agent": True})
 async def last_sender(ctx: AuthContext = Depends(user_owner)):
     """The firm name and reply address of the last send, for the next send form."""
     return await asyncio.to_thread(files.last_sender)
 
 
-@router.get("/handoffs")
+@router.get("/handoffs", openapi_extra={"x-celerp-agent": True})
 async def company_handoffs(ctx: AuthContext = Depends(user_owner)):
     """This company's copies sent; only its owner sees them, and each link they carry."""
     return {"items": await sender.as_http(sender.company_copies(ctx.company_id))}
 
 
-@router.post("/handoffs/{copy_id}/revoke")
+@router.post("/handoffs/{copy_id}/revoke", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
 async def revoke_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
     """The link stops working at once; Undo restores it for a short time."""
     return await sender.as_http(sender.revoke_copy(ctx.company_id, copy_id))
 
 
-@router.post("/handoffs/{copy_id}/restore")
+@router.post("/handoffs/{copy_id}/restore", openapi_extra=agent_excluded("company"))
 async def restore_company_handoff(copy_id: uuid.UUID, ctx: AuthContext = Depends(user_owner)):
     return await sender.as_http(sender.restore_copy(ctx.company_id, copy_id))
 
@@ -159,7 +160,7 @@ class NewCopyLink(BaseModel):
     operation_id: uuid.UUID
 
 
-@router.post("/handoffs/{copy_id}/new-link")
+@router.post("/handoffs/{copy_id}/new-link", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
 async def new_company_handoff_link(copy_id: uuid.UUID, payload: NewCopyLink,
                                    ctx: AuthContext = Depends(user_owner)):
     """Replace the link for the same stored copy: the old link stops working, and the
@@ -349,7 +350,7 @@ class RestoreIn(UploadIn):
     company_name: str | None = None
 
 
-@router.post("/read")
+@router.post("/read", openapi_extra=agent_excluded("company"))
 async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("settings"),
                       handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
                       ctx: AuthContext = Depends(user_owner), session: AsyncSession = Depends(get_session)):
@@ -360,27 +361,27 @@ async def read_backup(file: UploadFile = File(...), mode: RestoreMode = Form("se
         return _error(exc)
 
 
-@router.get("/staged")
+@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"})
 async def staged_backup(upload_token: str, mode: RestoreMode = "settings", ctx: AuthContext = Depends(user_owner),
                         session: AsyncSession = Depends(get_session)):
     return await _staged(session, str(ctx.user.id), upload_token, ctx, mode)
 
 
-@router.post("/prepare")
+@router.post("/prepare", openapi_extra=agent_excluded("company"))
 async def prepare_modules(payload: OwnerPrepareIn, ctx: AuthContext = Depends(user_owner),
                           session: AsyncSession = Depends(get_session)):
     return await _prepare(str(ctx.user.id), payload.upload_token, payload.consent, open_=payload.open,
                           session=session, ctx=ctx, mode=payload.mode)
 
 
-@router.post("/import-module")
+@router.post("/import-module", openapi_extra=agent_excluded("company"))
 async def import_module(file: UploadFile = File(...), upload_token: str = Form(...),
                         mode: RestoreMode = Form("settings"), ctx: AuthContext = Depends(user_owner),
                         session: AsyncSession = Depends(get_session)):
     return await _import_module(file, session, str(ctx.user.id), upload_token, ctx, mode)
 
 
-@router.post("/discard", status_code=204)
+@router.post("/discard", status_code=204, openapi_extra=agent_excluded("company"))
 async def discard_upload(payload: UploadIn, ctx: AuthContext = Depends(user_owner)) -> Response:
     """Delete the caller's staged upload; anything else is left alone."""
     stage = files.stage_path(str(ctx.user.id), payload.upload_token)
@@ -389,7 +390,7 @@ async def discard_upload(payload: UploadIn, ctx: AuthContext = Depends(user_owne
     return Response(status_code=204)
 
 
-@router.post("/restore")
+@router.post("/restore", openapi_extra=agent_excluded("company"))
 async def restore_backup(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
                          session: AsyncSession = Depends(get_session)):
     """Restore a staged backup as the preview showed it and switch the caller to the company:
@@ -424,7 +425,7 @@ class ReplaceUploadIn(ReplaceIn, UploadIn):
     plan_fingerprint: str
 
 
-@router.post("/replace")
+@router.post("/replace", openapi_extra=agent_excluded("company"))
 async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends(user_owner),
                             session: AsyncSession = Depends(get_session)):
     """Replace the caller's company of the same lineage with a staged copy of it, as the
@@ -461,7 +462,7 @@ async def replace_with_copy(payload: ReplaceUploadIn, ctx: AuthContext = Depends
                                                     expected_snonce=ctx.snonce), kept_backup_id=kept_id)
 
 
-@router.get("/kept")
+@router.get("/kept", openapi_extra={"x-celerp-agent": True})
 async def kept_backups(ctx: AuthContext = Depends(user_owner)):
     """The backups kept of this company each time a copy replaced it, newest first."""
     return {"items": await cb.kept_backups(ctx.company_id)}
@@ -477,7 +478,7 @@ async def download_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_own
                         filename=f"{ctx.company.slug}-before-replace{cb.EXTENSION}")
 
 
-@router.delete("/kept/{kept_id}", status_code=204)
+@router.delete("/kept/{kept_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
 async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner)) -> Response:
     """Delete a kept backup. Not undoable: it is the file itself, so the page asks first."""
     try:
@@ -487,7 +488,7 @@ async def delete_kept_backup(kept_id: str, ctx: AuthContext = Depends(user_owner
     return Response(status_code=204)
 
 
-@router.post("/kept/{kept_id}/replace")
+@router.post("/kept/{kept_id}/replace", openapi_extra=agent_excluded("company"))
 async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext = Depends(user_owner),
                               session: AsyncSession = Depends(get_session)):
     """Undo a replace: put a kept backup back in place of this company, the same way, so
@@ -509,7 +510,7 @@ async def restore_kept_backup(kept_id: str, payload: ReplaceIn, ctx: AuthContext
                                                     expected_snonce=ctx.snonce), kept_backup_id=kept)
 
 
-@router.post("/reactivate")
+@router.post("/reactivate", openapi_extra=agent_excluded("company"))
 async def reactivate_restored(payload: RestoreIn, ctx: AuthContext = Depends(user_owner),
                               session: AsyncSession = Depends(get_session)):
     """Reactivate the deactivated company a staged backup was already restored as, instead
@@ -542,7 +543,7 @@ async def _first_run(session: AsyncSession, x_setup_code: str | None) -> None:
     bootstrap.verify_setup_code(x_setup_code)
 
 
-@router.post("/bootstrap/read")
+@router.post("/bootstrap/read", openapi_extra=agent_excluded("session"))
 @limiter.limit("5/minute")
 async def bootstrap_read(request: Request, file: UploadFile = File(...),
                          handoff_copy_id: str | None = Form(None), handoff_proof: str | None = Form(None),
@@ -555,7 +556,7 @@ async def bootstrap_read(request: Request, file: UploadFile = File(...),
         return _error(exc)
 
 
-@router.get("/bootstrap/staged")
+@router.get("/bootstrap/staged", openapi_extra=agent_excluded("session"))
 async def bootstrap_staged(upload_token: str, session: AsyncSession = Depends(get_session)):
     """The upload token was issued against the setup code and names one private upload,
     so showing or deleting that upload needs nothing more."""
@@ -563,14 +564,14 @@ async def bootstrap_staged(upload_token: str, session: AsyncSession = Depends(ge
     return await _staged(session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
 
 
-@router.post("/bootstrap/prepare")
+@router.post("/bootstrap/prepare", openapi_extra=agent_excluded("session"))
 async def bootstrap_prepare(payload: PrepareIn, session: AsyncSession = Depends(get_session),
                             x_setup_code: str | None = Header(None)):
     await _first_run(session, x_setup_code)
     return await _prepare(_BOOTSTRAP, payload.upload_token, payload.consent)
 
 
-@router.post("/bootstrap/import-module")
+@router.post("/bootstrap/import-module", openapi_extra=agent_excluded("session"))
 @limiter.limit("5/minute")
 async def bootstrap_import_module(request: Request, file: UploadFile = File(...), upload_token: str = Form(...),
                                   session: AsyncSession = Depends(get_session),
@@ -579,7 +580,7 @@ async def bootstrap_import_module(request: Request, file: UploadFile = File(...)
     return await _import_module(file, session, _BOOTSTRAP, upload_token, None, _BOOTSTRAP)
 
 
-@router.post("/bootstrap/discard", status_code=204)
+@router.post("/bootstrap/discard", status_code=204, openapi_extra=agent_excluded("session"))
 async def bootstrap_discard(payload: UploadIn, session: AsyncSession = Depends(get_session)) -> Response:
     await ensure_not_bootstrapped(session)
     stage = files.stage_path(_BOOTSTRAP, payload.upload_token)
@@ -596,7 +597,7 @@ class BootstrapRestoreIn(BaseModel):
     company_name: str | None = None
 
 
-@router.post("/bootstrap/restore")
+@router.post("/bootstrap/restore", openapi_extra=agent_excluded("session"))
 @limiter.limit("5/minute")
 async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, session: AsyncSession = Depends(get_session),
                             x_setup_code: str | None = Header(None)):
@@ -634,7 +635,7 @@ async def bootstrap_restore(request: Request, payload: BootstrapRestoreIn, sessi
     return response
 
 
-@router.post("/start-company/read")
+@router.post("/start-company/read", openapi_extra=agent_excluded("company"))
 @limiter.limit("5/minute")
 async def start_company_read(request: Request, file: UploadFile = File(...), email: str = Form(...),
                              password: str = Form(...), handoff_copy_id: str | None = Form(None),
@@ -655,7 +656,7 @@ class StartCompanyRestoreIn(BaseModel):
     company_name: str | None = None
 
 
-@router.post("/start-company/restore")
+@router.post("/start-company/restore", openapi_extra=agent_excluded("company"))
 @limiter.limit("5/minute")
 async def start_company_restore(request: Request, payload: StartCompanyRestoreIn,
                                 session: AsyncSession = Depends(get_session)):

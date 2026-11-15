@@ -36,6 +36,7 @@ from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 from ui.components.encode import call, html_response
+from celerp.ai.tools import agent_excluded
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 
@@ -189,7 +190,7 @@ def _backup_table(items: list[dict]):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/trigger")
+@router.post("/trigger", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/saved-copies"})
 async def trigger_backup():
     """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
     from celerp.services import backup_repo, backup_scheduler
@@ -204,7 +205,7 @@ async def trigger_backup():
     return resp
 
 
-@router.get("/list")
+@router.get("/list", openapi_extra={"x-celerp-agent": True})
 async def list_backups(request: Request):
     """List cloud snapshots.
 
@@ -239,7 +240,7 @@ async def list_backups(request: Request):
     return html_response(_backup_table(items))
 
 
-@router.post("/restore/{backup_id}")
+@router.post("/restore/{backup_id}", openapi_extra=agent_excluded("company"))
 async def restore_backup(backup_id: str):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
@@ -247,7 +248,7 @@ async def restore_backup(backup_id: str):
     return _recovery_response(result, t("system_recovery.restored"))
 
 
-@router.get("/export")
+@router.get("/export", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export"})
 async def export_local() -> FileResponse:
     """Export full local backup as .celerp-backup download."""
     from celerp.services.backup_export import export_full
@@ -266,7 +267,7 @@ def _archive_download(path: Path, label: str) -> FileResponse:
                         background=BackgroundTask(path.unlink, missing_ok=True))
 
 
-@router.get("/export/{backup_id}")
+@router.get("/export/{backup_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export/{backup_id}"})
 async def export_cloud(backup_id: str) -> FileResponse:
     """Download a cloud snapshot, rebuilt as a .celerp-backup archive."""
     from celerp.services.backup_repo import reassemble_snapshot
@@ -277,7 +278,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
     return _archive_download(path, backup_id)
 
 
-@router.post("/import")
+@router.post("/import", openapi_extra=agent_excluded("company"))
 async def import_backup(
     request: Request,
     file: UploadFile = File(...),
@@ -300,7 +301,7 @@ async def import_backup(
         tmp_path.unlink(missing_ok=True)
 
 
-@router.post("/import/continue")
+@router.post("/import/continue", openapi_extra=agent_excluded("company"))
 async def continue_import(
     confirmation_id: str = Form(...),
     digest: str = Form(...),
@@ -320,7 +321,7 @@ public_router = APIRouter()
 
 
 
-@public_router.post("/import-bootstrap")
+@public_router.post("/import-bootstrap", openapi_extra=agent_excluded("session"))
 async def import_backup_bootstrap(
     file: UploadFile = File(...),
     setup_code: str | None = Form(None),

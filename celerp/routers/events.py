@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from celerp.services.auth import oauth2_scheme, validate_access_token
 from celerp.notifications.sse import subscribe, unsubscribe
+from celerp.ai.tools import agent_excluded
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _TICK = object()  # sentinel: asyncio.TimeoutError path
 _STREAM_TICK_SECONDS = 10.0
 
 
-@router.get("/events/stream")
+@router.get("/events/stream", openapi_extra=agent_excluded("internal"))
 async def events_stream(token: str = Depends(oauth2_scheme)):
     """Muxed SSE: delivers notification + session-watch events on one connection.
 

@@ -288,8 +288,10 @@ def _namespace(fn, tree) -> dict:
                 name = importlib.util.resolve_name("." * node.level + name, fn.__module__.rpartition(".")[0])
             module = sys.modules.get(name)
             for alias in node.names:
+                # `is None`, not truthiness: an imported name may be an SQL column, which refuses bool().
+                found = getattr(module, alias.name, None)
                 namespace[alias.asname or alias.name] = (
-                    getattr(module, alias.name, None) or sys.modules.get(f"{name}.{alias.name}"))
+                    found if found is not None else sys.modules.get(f"{name}.{alias.name}"))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 name = alias.name if alias.asname else alias.name.split(".")[0]

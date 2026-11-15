@@ -718,13 +718,17 @@ def script_cfg(html: str, marker: str) -> dict:
 
 
 def _core_route(route) -> bool:
-    """True for a route `celerp.main` declares itself. A test that ran the app's lifespan
-    has also included the modules' routers into it; those come from the module loader."""
+    """True for a route `celerp.main` declares itself, the modules folded into core
+    included. A test that ran the app's lifespan has also included the pluggable modules'
+    routers into it; those come from the module loader."""
+    from celerp.modules.loader import CORE_FOLDED
+
     router = getattr(route, "original_router", None)
     if router is None:
         return True
+    roots = ("celerp.", *(name.replace("-", "_") + "." for name in sorted(CORE_FOLDED)))
     return any(
-        getattr(getattr(sub, "endpoint", None), "__module__", "").startswith("celerp.")
+        getattr(getattr(sub, "endpoint", None), "__module__", "").startswith(roots)
         for sub in router.routes
     )
 

@@ -251,7 +251,7 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
 _READ = (require_permission("view_contacts"), require_permission("view_payments"))
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True})
 async def list_donors(
     date_from: str | None = Query(default=None, alias="from"),
     date_to: str | None = Query(default=None, alias="to"),
@@ -263,7 +263,7 @@ async def list_donors(
     return {"items": await _donor_rows(session, company_id, *_period(date_from, date_to))}
 
 
-@router.get("/statements/preview")
+@router.get("/statements/preview", openapi_extra={"x-celerp-agent": True})
 async def preview_statements(
     date_from: str = Query(alias="from"),
     date_to: str = Query(alias="to"),
@@ -280,7 +280,7 @@ async def preview_statements(
             "wording": words}
 
 
-@router.post("/statements/send")
+@router.post("/statements/send", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/donors", "x-celerp-agent-outside": True})
 async def send_statements_route(
     payload: SendIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -296,7 +296,7 @@ async def send_statements_route(
     return {"results": await send_statements(session, company_id, user.id, payload)}
 
 
-@router.get("/statements/wording")
+@router.get("/statements/wording", openapi_extra={"x-celerp-agent": True})
 async def get_wording(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _c: None = _READ[0], _p: None = _READ[1],
@@ -305,7 +305,7 @@ async def get_wording(
     return wording(await current_settings(session, company_id))
 
 
-@router.put("/statements/wording")
+@router.put("/statements/wording", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/donors"})
 async def put_wording(
     payload: WordingIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -326,7 +326,7 @@ async def put_wording(
     return wording(settings)
 
 
-@router.get("/{contact_id}/history")
+@router.get("/{contact_id}/history", openapi_extra={"x-celerp-agent": True})
 async def donor_history_route(
     contact_id: str,
     date_from: str | None = Query(default=None, alias="from"),
@@ -341,7 +341,7 @@ async def donor_history_route(
     return found.get(contact_id) or {"total": 0.0, "gifts": []}
 
 
-@router.get("/{contact_id}/statement.pdf")
+@router.get("/{contact_id}/statement.pdf", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/donors/{contact_id}/statement.pdf"})
 async def statement_pdf(
     contact_id: str,
     date_from: str = Query(alias="from"),

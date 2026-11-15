@@ -37,6 +37,7 @@ from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 from ui.i18n import t
+from celerp.ai.tools import agent_excluded
 
 log = logging.getLogger(__name__)
 
@@ -419,7 +420,7 @@ async def record_stripe_dispute(session, company_id, row: Projection, payment: d
 _NOT_SET_UP = "Online payment is not set up for this invoice. Please contact the business that sent it."
 
 
-@public_router.get("/pay/{token}")
+@public_router.get("/pay/{token}", openapi_extra=agent_excluded("public"))
 async def start_payment(token: str, session: AsyncSession = Depends(get_session)):
     company_id, entity_id, state = await _doc_for_token(session, token)
     if state is None:
@@ -459,7 +460,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     return RedirectResponse(result["url"], status_code=303)
 
 
-@public_router.get("/pay/{token}/return")
+@public_router.get("/pay/{token}/return", openapi_extra=agent_excluded("public"))
 async def return_from_payment(token: str):
     """Customer's return from Stripe: back to the invoice. Nothing is recorded here;
     Celerp Cloud delivers the payment once Stripe reports it paid."""
@@ -468,7 +469,7 @@ async def return_from_payment(token: str):
 
 # ── Authed: merchant Connect status + one-click connect/disconnect ───────────
 
-@router.get("/payments/enabled")
+@router.get("/payments/enabled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def payments_enabled_flag(user=Depends(get_current_user)) -> dict:
     """Cached feature flag, in-memory: cheap enough for per-page-render gates
     (the settings page uses /payments/status for the authoritative answer)."""
@@ -481,12 +482,12 @@ def _stripe_url(result) -> bool:
     return isinstance(url, str) and url.startswith("https://")
 
 
-@router.get("/payments/status")
+@router.get("/payments/status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()
 
 
-@router.post("/payments/connect", dependencies=[Depends(require_install_owner)])
+@router.post("/payments/connect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"})
 async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
@@ -495,7 +496,7 @@ async def payments_connect() -> dict:
     return {"url": result["url"]}
 
 
-@router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)])
+@router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"})
 async def payments_disconnect() -> dict:
     """What Cloud did: disconnected, or disconnecting while existing payments finish."""
     result = await pay.disconnect()
@@ -504,7 +505,7 @@ async def payments_disconnect() -> dict:
     return result
 
 
-@router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)])
+@router.get("/payments/unmatched", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True})
 async def payments_unmatched(company_id=Depends(get_current_company_id),
                              session: AsyncSession = Depends(get_session)) -> dict:
     """Online payments received for a company or invoice that no longer exists, or
@@ -562,7 +563,7 @@ def _unmatched_refused(reason: str) -> HTTPException:
     return HTTPException(status_code=409, detail={"message": UNMATCHED_REFUSALS[reason], "reason": reason})
 
 
-@router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS)
+@router.get("/payments/unmatched/invoices", dependencies=_UNMATCHED_RECORDERS, openapi_extra={"x-celerp-agent": True})
 async def payments_unmatched_invoices(reference: str, company_id=Depends(get_current_company_id),
                                       session: AsyncSession = Depends(get_session)) -> dict:
     """The invoices of the current company the unmatched payment *reference* can be
@@ -586,7 +587,7 @@ async def payments_unmatched_invoices(reference: str, company_id=Depends(get_cur
     return {"items": sorted(items, key=lambda i: i["ref"])}
 
 
-@router.post("/payments/unmatched/record", dependencies=_UNMATCHED_RECORDERS)
+@router.post("/payments/unmatched/record", dependencies=_UNMATCHED_RECORDERS, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/payments"})
 async def payments_unmatched_record(body: UnmatchedRecordBody, company_id=Depends(get_current_company_id),
                                     session: AsyncSession = Depends(get_session)) -> dict:
     """Record the unmatched payment on an invoice of the current company

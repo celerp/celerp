@@ -29,6 +29,7 @@ from celerp.services.auth import (
 from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
 from ui.i18n import t
+from celerp.ai.tools import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ router = APIRouter()
 settings_router = APIRouter(prefix="/settings", dependencies=[Depends(get_current_user)])
 
 
-@router.get("/health")
+@router.get("/health", openapi_extra=agent_excluded("internal"))
 async def health() -> dict:
     # C2: the version must read the same everywhere - desktop, cloud relay, and pip.
     # The desktop app (Electron) is the authoritative source of the user-facing version,
@@ -55,7 +56,7 @@ async def health() -> dict:
     }
 
 
-@router.get("/health/ready")
+@router.get("/health/ready", openapi_extra=agent_excluded("internal"))
 async def readiness(session: AsyncSession = Depends(get_session)) -> dict:
     try:
         await session.execute(text("SELECT 1"))
@@ -67,13 +68,13 @@ async def readiness(session: AsyncSession = Depends(get_session)) -> dict:
 
 # ── Internal load-balancer probes (bypasses DrainMiddleware) ─────────────────
 
-@router.get("/__celerp/health", include_in_schema=False)
+@router.get("/__celerp/health", include_in_schema=False, openapi_extra=agent_excluded("internal"))
 async def lb_health() -> dict:
     """Always 200 - used by load balancer liveness probes. No DB check."""
     return {"status": "ok"}
 
 
-@router.get("/__celerp/ready", include_in_schema=False)
+@router.get("/__celerp/ready", include_in_schema=False, openapi_extra=agent_excluded("internal"))
 async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
     """503 if DB is unreachable - used by load balancer readiness probes."""
     try:
@@ -84,7 +85,7 @@ async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
         raise HTTPException(503, detail="Service not ready.")
 
 
-@router.get("/__celerp/drain", include_in_schema=False)
+@router.get("/__celerp/drain", include_in_schema=False, openapi_extra=agent_excluded("internal"))
 async def drain_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Return current drain state. Used by drain polling in SSE generator."""
     from celerp.services.runtime_state import get_runtime_state
@@ -92,14 +93,14 @@ async def drain_status(session: AsyncSession = Depends(get_session)) -> dict:
     return {"draining": state.get("draining", False)}
 
 
-@router.get("/health/system", dependencies=[Depends(get_current_user)])
+@router.get("/health/system", dependencies=[Depends(get_current_user)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def system_health() -> dict:
     # Host RAM/CPU/disk figures - authenticated only, never anonymous.
     import asyncio
     return await asyncio.to_thread(get_system_health)
 
 
-@settings_router.get("/cloud-status")
+@settings_router.get("/cloud-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def cloud_status() -> dict:
     """Return transport and entitlement independently.
 
@@ -229,7 +230,7 @@ async def cloud_status() -> dict:
         "cloud_disconnected": False,
     }
 
-@settings_router.get("/billing-catalog")
+@settings_router.get("/billing-catalog", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def billing_catalog_api() -> dict:
     """Non-secret display catalog. Failure omits prices rather than fabricating them."""
     from celerp.gateway.state import relay_http_url, with_relay_client
@@ -245,7 +246,7 @@ async def billing_catalog_api() -> dict:
         return {"plans": {}}
 
 
-@settings_router.post("/cloud/billing-portal", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud/billing-portal", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"})
 async def cloud_billing_portal() -> dict:
     """Create a Stripe Billing Portal session via the relay so the merchant can
     manage their subscription (cancel, change card, download invoices)."""
@@ -258,7 +259,7 @@ async def cloud_billing_portal() -> dict:
     return {"portal_url": url}
 
 
-@settings_router.get("/backup-active")
+@settings_router.get("/backup-active", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def backup_active() -> dict:
     """Whether a backup is running. Writes pause for every login while one does, so any
     signed-in login can read this, and nothing else about the backups."""
@@ -266,7 +267,7 @@ async def backup_active() -> dict:
     return {"active": backup_state.is_active()}
 
 
-@settings_router.get("/backup-status", dependencies=[Depends(require_install_owner)])
+@settings_router.get("/backup-status", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True})
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
     from celerp.config import settings
@@ -291,7 +292,7 @@ async def backup_status() -> dict:
     }
 
 
-@settings_router.post("/cloud-disconnect", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud-disconnect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"})
 async def cloud_disconnect() -> dict:
     """Persist sticky disconnect first, then stop all live cloud activity."""
     from celerp.config import settings as _s, set_cloud_disconnected
@@ -338,7 +339,7 @@ async def _apply_gateway_token_api(
         acknowledged_copy_id=acknowledged_copy_id,
     )
 
-@settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"})
 async def cloud_activate_api(payload: dict | None = None) -> dict:
     """Synchronise Connect using explicit authority and activation intent."""
     import httpx
@@ -606,7 +607,7 @@ async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict 
     return r.json(), None
 
 
-@settings_router.post("/partner-claim/resolve")
+@settings_router.post("/partner-claim/resolve", openapi_extra=agent_excluded("secret"))
 async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_role)) -> dict:
     """Preview the partner identity behind a claim token. Owner/admin only. Binds
     nothing: a resolve leaves the install celerp_direct."""
@@ -627,7 +628,7 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     return identity
 
 
-@settings_router.post("/partner-claim/accept", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/partner-claim/accept", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("secret"))
 async def partner_claim_accept(payload: dict) -> dict:
     """Accept a partner claim: the relay binds the relationship and pushes the new
     commercial context. Owner/admin only. Accepting a token that is no longer
@@ -664,7 +665,7 @@ async def partner_claim_accept(payload: dict) -> dict:
     }
 
 
-@settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"})
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, then restart through the gateway lifecycle."""
     from celerp.config import settings as _s, persist_cloud_settings
@@ -754,7 +755,7 @@ def _ai_counts(methods: dict | None) -> dict:
             "plan_ai_questions": plan_counts or None}
 
 
-@settings_router.get("/ai-offer")
+@settings_router.get("/ai-offer", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def ai_offer_api() -> dict:
     """Whether this install is on a paid AI plan, and the included AI question counts."""
     from celerp.gateway.state import PAID_TIERS, get_subscription_state
@@ -762,7 +763,7 @@ async def ai_offer_api() -> dict:
             **_ai_counts(await relay_auth_methods(AI_OFFER_TIMEOUT))}
 
 
-@settings_router.get("/account-methods")
+@settings_router.get("/account-methods", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def account_methods_api(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -866,7 +867,7 @@ RELAY_ACCOUNT_SIGNUP_TIMEOUT = 8.0
 RELAY_ACCOUNT_STATUS_TIMEOUT = 8.0
 
 
-@settings_router.post("/account-signup", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/account-signup", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("secret"))
 async def account_signup_api(payload: dict) -> dict:
     """Proxy the magic-link signup request using the API-process instance_id."""
     import httpx
@@ -912,7 +913,7 @@ async def account_signup_api(payload: dict) -> dict:
     return {"error": str(detail), "status_code": r.status_code}
 
 
-@settings_router.get("/account-status")
+@settings_router.get("/account-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def account_status_api(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -1031,7 +1032,7 @@ async def _activate_after_claim(
 _CLAIM_FAILED = "Celerp could not complete this request. Try again in a few minutes."
 
 
-@settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("secret"))
 async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
     from celerp.config import activation_challenge, ensure_connect_identity
@@ -1091,7 +1092,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     return {"error": relay_error_detail(r, _CLAIM_FAILED), "status_code": r.status_code,
             "instance_id": iid}
 
-@settings_router.post("/cloud-claim", dependencies=[Depends(require_install_owner)])
+@settings_router.post("/cloud-claim", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("secret"))
 async def cloud_claim_api(payload: dict) -> dict:
     import httpx
     from celerp.config import (
@@ -1213,7 +1214,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         result["notice"] = data["notice"]
     return result
 
-@settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
+@settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")], openapi_extra={"x-celerp-agent": True})
 async def connectors_catalog_api(
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
@@ -1304,7 +1305,7 @@ async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
     return False
 
 
-@settings_router.post("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 @needs_modules_for("platform", PRODUCT_CHANNEL_MODULES)
 async def connector_authorize_url(
     platform: str,

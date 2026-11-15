@@ -77,6 +77,7 @@ from celerp.services.money import (
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from ui.i18n import refusal_text, t
+from celerp.ai.tools import agent_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -603,7 +604,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
     )
 
 
-@router.get("/chart")
+@router.get("/chart", openapi_extra={"x-celerp-agent": True})
 async def get_chart(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -619,7 +620,7 @@ async def get_chart(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/chart/seed")
+@router.post("/chart/seed", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def seed_chart_endpoint(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
@@ -665,7 +666,7 @@ async def seed_chart_endpoint(
     return {"added": added, "already_existed": len(existing_codes), "not_added": not_added}
 
 
-@router.post("/accounts")
+@router.post("/accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def create_account(
     payload: AccountCreate,
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
@@ -683,7 +684,7 @@ async def create_account(
     return _account_to_dict(acc)
 
 
-@router.patch("/accounts/{code}")
+@router.patch("/accounts/{code}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def patch_account(
     code: str,
     payload: AccountPatch,
@@ -748,7 +749,7 @@ def _chart_import_result(plan: ChartImportPlan) -> ChartImportResult:
     )
 
 
-@router.post("/accounts/import/preview", response_model=ChartImportResult)
+@router.post("/accounts/import/preview", response_model=ChartImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False})
 async def preview_chart_import(
     request: Request,
     body: ChartImportRequest,
@@ -761,7 +762,7 @@ async def preview_chart_import(
     return _chart_import_result(await _planned_chart_import(request, body, company_id, session))
 
 
-@router.post("/accounts/import/batch", response_model=ChartImportResult)
+@router.post("/accounts/import/batch", response_model=ChartImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-selection": "records"})
 async def import_chart_accounts(
     request: Request,
     body: ChartImportRequest,
@@ -802,7 +803,7 @@ async def import_accounting_template(
     )
 
 
-@router.post("/import/batch", response_model=BatchImportResult)
+@router.post("/import/batch", response_model=BatchImportResult, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "records[].idempotency_key", "x-celerp-agent-selection": "records"})
 async def batch_import_accounting(
     body: AccBatchImportRequest,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1473,7 +1474,7 @@ async def _journal_payload(
     }, refs, base)
 
 
-@router.get("/journal")
+@router.get("/journal", openapi_extra={"x-celerp-agent": True})
 async def journal(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -1662,7 +1663,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     return lines, "untied"
 
 
-@router.get("/extended-journal")
+@router.get("/extended-journal", openapi_extra={"x-celerp-agent": True})
 async def extended_journal(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -1708,7 +1709,7 @@ async def _party_names(session: AsyncSession, company_id: uuid.UUID, ids: set[st
     return {r.entity_id: str((r.state or {}).get("name") or "") for r in rows}
 
 
-@router.get("/journal/by-doc/{doc_id:path}")
+@router.get("/journal/by-doc/{doc_id:path}", openapi_extra={"x-celerp-agent": True})
 async def journal_by_doc(
     doc_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -1838,7 +1839,7 @@ class BulkJEVoidPayload(BaseModel):
     reversal_date: str | None = None
 
 
-@router.post("/journal-entries")
+@router.post("/journal-entries", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_token"})
 async def create_manual_journal_entry(
     payload: ManualJECreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2033,7 +2034,7 @@ async def _void_one(session, *, company_id, actor_id, entity_id: str, reason: st
     return {"je_id": entity_id, "status": "void", "void_reason": reason, "reversed_on": data.get("reversed_on")}
 
 
-@router.post("/journal-entries/bulk-void")
+@router.post("/journal-entries/bulk-void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-selection": "je_ids", "x-celerp-agent-bulk-of": "POST /accounting/journal-entries/{entity_id}/void"})
 async def bulk_void_journal_entries(
     payload: BulkJEVoidPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2081,7 +2082,7 @@ async def bulk_void_journal_entries(
     return {"results": results, "voided": voided, "refused": len(results) - voided}
 
 
-@router.post("/journal-entries/{entity_id}/void")
+@router.post("/journal-entries/{entity_id}/void", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def void_manual_journal_entry(
     entity_id: str,
     payload: ManualJEVoidPayload | None = None,
@@ -2099,7 +2100,7 @@ async def void_manual_journal_entry(
     )
 
 
-@router.get("/ledger/{account_code}")
+@router.get("/ledger/{account_code}", openapi_extra={"x-celerp-agent": True})
 async def account_ledger(
     account_code: str,
     date_from: str | None = None,
@@ -2224,7 +2225,7 @@ async def account_ledger(
     }
 
 
-@router.get("/trial-balance")
+@router.get("/trial-balance", openapi_extra={"x-celerp-agent": True})
 async def trial_balance(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2288,7 +2289,7 @@ async def trial_balance(
     }
 
 
-@router.get("/general-ledger")
+@router.get("/general-ledger", openapi_extra={"x-celerp-agent": True})
 async def general_ledger(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2413,7 +2414,7 @@ async def general_ledger(
     }
 
 
-@router.get("/pnl")
+@router.get("/pnl", openapi_extra={"x-celerp-agent": True})
 async def profit_and_loss(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -2470,7 +2471,7 @@ async def profit_and_loss(
     }
 
 
-@router.get("/balance-sheet")
+@router.get("/balance-sheet", openapi_extra={"x-celerp-agent": True})
 async def balance_sheet(
     as_of: str | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2570,7 +2571,7 @@ def _tie_out_check(key: str, ledger: Decimal, documents: list[tuple], base: str,
     }
 
 
-@router.get("/opening-tie-out")
+@router.get("/opening-tie-out", openapi_extra={"x-celerp-agent": True})
 async def opening_tie_out(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_financial_reports"),
@@ -2649,7 +2650,7 @@ async def opening_tie_out(
 _CONTROL_ROLES = frozenset({AccountRole.RECEIVABLE.value, AccountRole.PAYABLE.value})
 
 
-@router.get("/soa/{contact_id}")
+@router.get("/soa/{contact_id}", openapi_extra={"x-celerp-agent": True})
 async def statement_of_account(
     contact_id: str,
     date_from: str | None = None,
@@ -2873,7 +2874,7 @@ async def list_bank_accounts(
     return {"items": items, "total": len(items)}
 
 
-@router.get("/bank-accounts/{bank_id}")
+@router.get("/bank-accounts/{bank_id}", openapi_extra={"x-celerp-agent": True})
 async def get_bank_account(
     bank_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2884,7 +2885,7 @@ async def get_bank_account(
     return (await _bank_dicts(session, company_id, [b]))[0]
 
 
-@router.get("/bank-accounts/{bank_id}/reconciliations")
+@router.get("/bank-accounts/{bank_id}/reconciliations", openapi_extra={"x-celerp-agent": True})
 async def list_bank_reconciliations(
     bank_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2903,7 +2904,7 @@ async def list_bank_reconciliations(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/bank-accounts")
+@router.post("/bank-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def create_bank_account(
     payload: BankAccountCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3037,7 +3038,7 @@ async def set_bank_currency(session: AsyncSession, company_id: uuid.UUID, bank: 
     return None
 
 
-@router.patch("/bank-accounts/{bank_id}")
+@router.patch("/bank-accounts/{bank_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def patch_bank_account(
     bank_id: uuid.UUID,
     payload: BankAccountPatch,
@@ -3102,7 +3103,7 @@ class TransferCreate(BaseModel):
     allocation: list[FundShare] | None = None
 
 
-@router.post("/transfers")
+@router.post("/transfers", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_transfer(
     payload: TransferCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4674,7 +4675,7 @@ async def write_off_difference(
 
 # ── Reconciliation Rules ───────────────────────────────────────────────────────
 
-@router.get("/rules")
+@router.get("/rules", openapi_extra={"x-celerp-agent": True})
 async def get_recon_rules(
     bank_account_id: uuid.UUID | None = None,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4688,7 +4689,7 @@ async def get_recon_rules(
     return {"items": [_rule_to_dict(r) for r in rows], "total": len(rows)}
 
 
-@router.post("/rules")
+@router.post("/rules", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def create_recon_rule(
     payload: ReconRuleCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4735,7 +4736,7 @@ async def _locked_rule(db: AsyncSession, company_id: uuid.UUID, rule_id: uuid.UU
     return rule
 
 
-@router.patch("/rules/{rule_id}")
+@router.patch("/rules/{rule_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def patch_recon_rule(
     rule_id: uuid.UUID,
     payload: ReconRulePatch,
@@ -4753,7 +4754,7 @@ async def patch_recon_rule(
     return _rule_to_dict(rule)
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def delete_recon_rule(
     rule_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4831,7 +4832,7 @@ def _split_cash_movement(
     return out
 
 
-@router.get("/cash-flow")
+@router.get("/cash-flow", openapi_extra={"x-celerp-agent": True})
 async def cash_flow(
     date_from: str | None = None,
     date_to: str | None = None,
@@ -4998,7 +4999,7 @@ async def _posting_accounts(session: AsyncSession, company_id) -> dict:
     return await panel(session, company_id) or {"roles": [], "older_stock": {"candidates": []}}
 
 
-@router.get("/posting-accounts")
+@router.get("/posting-accounts", openapi_extra={"x-celerp-agent": True})
 async def get_posting_accounts(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -5008,7 +5009,7 @@ async def get_posting_accounts(
     return await _posting_accounts(session, company_id)
 
 
-@router.put("/posting-accounts/{role}")
+@router.put("/posting-accounts/{role}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def set_posting_account(
     role: str,
     payload: PostingAccountIn,
@@ -5052,7 +5053,7 @@ class PlacementCorrectionIn(BaseModel):
     kind: str = ""
 
 
-@router.get("/older-stock")
+@router.get("/older-stock", openapi_extra={"x-celerp-agent": True})
 async def get_older_stock(
     account: str | None = None,
     q: str | None = None,
@@ -5074,7 +5075,7 @@ async def get_older_stock(
     return await older_stock_view(session, company_id, account, q, offsets, limit)
 
 
-@router.post("/older-stock/move")
+@router.post("/older-stock/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 @rerun_after_placing
 async def move_older_stock(
     payload: OlderStockMoveIn,
@@ -5091,7 +5092,7 @@ async def move_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/move-all")
+@router.post("/older-stock/move-all", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def move_all_older_stock(
     payload: OlderStockMoveAllIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5110,7 +5111,7 @@ async def move_all_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/moves/{move_id}/undo")
+@router.post("/older-stock/moves/{move_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def undo_older_stock_move(
     move_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5126,7 +5127,7 @@ async def undo_older_stock_move(
     return await older_stock_view(session, company_id)
 
 
-@router.post("/older-stock/retry")
+@router.post("/older-stock/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def retry_older_stock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5140,7 +5141,7 @@ async def retry_older_stock(
     return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
 
 
-@router.post("/older-stock/corrections")
+@router.post("/older-stock/corrections", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def correct_older_stock(
     payload: PlacementCorrectionIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5161,7 +5162,7 @@ class CloseYearPayload(BaseModel):
     fiscal_year_end: str  # ISO date, e.g. "2025-12-31"
 
 
-@router.get("/period-lock")
+@router.get("/period-lock", openapi_extra={"x-celerp-agent": True})
 async def get_period_lock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -5195,7 +5196,7 @@ class PeerJournalBatch(BaseModel):
     records: list[PeerJournalRecord] = Field(..., max_length=500)
 
 
-@router.get("/peer/journals")
+@router.get("/peer/journals", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def peer_journal_feed(
     after: str = Query("", max_length=512),
     auth: AuthContext = Depends(get_auth_context),
@@ -5206,7 +5207,7 @@ async def peer_journal_feed(
     return await peer_journals.journal_feed(session, auth, after)
 
 
-@router.post("/peer/journals")
+@router.post("/peer/journals", openapi_extra=agent_excluded("machine"))
 async def peer_journal_receive(
     body: PeerJournalBatch,
     auth: AuthContext = Depends(get_auth_context),
@@ -5219,7 +5220,7 @@ async def peer_journal_receive(
     return await peer_batch(auth, session, body.records)
 
 
-@router.get("/peer/lock")
+@router.get("/peer/lock", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def peer_lock(
     auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
@@ -5228,7 +5229,7 @@ async def peer_lock(
     return await peer_journals.lock_feed(session, auth)
 
 
-@router.get("/journal-entries/from-accountant")
+@router.get("/journal-entries/from-accountant", openapi_extra={"x-celerp-agent": True})
 async def journals_from_accountant(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5238,7 +5239,7 @@ async def journals_from_accountant(
     return {"items": await peer_journals.from_accountant(session, company_id)}
 
 
-@router.post("/journal-entries/{entity_id}/reverse")
+@router.post("/journal-entries/{entity_id}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def reverse_from_accountant(
     entity_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5250,7 +5251,7 @@ async def reverse_from_accountant(
     return await peer_journals.reverse(session, company_id, user.id, entity_id)
 
 
-@router.get("/journal-entries/{entity_id}/prefill")
+@router.get("/journal-entries/{entity_id}/prefill", openapi_extra={"x-celerp-agent": True})
 async def prefill_journal(
     entity_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5317,7 +5318,7 @@ async def _held_fund_lines(session: AsyncSession, company_id: uuid.UUID, items: 
                               for code in held_accounts(item["fix"])]
 
 
-@router.get("/peer/holds")
+@router.get("/peer/holds", openapi_extra={"x-celerp-agent": True})
 async def peer_holds(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5341,7 +5342,7 @@ class PeerAddedAction(BaseModel):
     action: str = Field(pattern="^(keep|archive|remove)$")
 
 
-@router.post("/peer/added/{item_id}")
+@router.post("/peer/added/{item_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def settle_peer_added(
     item_id: str,
     body: PeerAddedAction,
@@ -5362,7 +5363,7 @@ async def settle_peer_added(
     return {"ok": True}
 
 
-@router.post("/peer/holds/{item_id}/fix")
+@router.post("/peer/holds/{item_id}/fix", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def fix_peer_hold(
     item_id: str,
     body: PeerHoldFix,
@@ -5386,7 +5387,7 @@ async def fix_peer_hold(
     return {"ok": True}
 
 
-@router.post("/peer/holds/{item_id}/funds")
+@router.post("/peer/holds/{item_id}/funds", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "request_key"})
 async def post_peer_hold_funds(
     item_id: str,
     body: PeerHeldFunds,
@@ -5406,7 +5407,7 @@ async def post_peer_hold_funds(
     return posted
 
 
-@router.get("/peer/review")
+@router.get("/peer/review", openapi_extra={"x-celerp-agent": True})
 async def peer_review(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -5416,7 +5417,7 @@ async def peer_review(
     return {"companies": await peer_accounts.review(session, company_id)}
 
 
-@router.post("/peer/review")
+@router.post("/peer/review", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def answer_peer_review(
     body: PeerReview,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5431,7 +5432,7 @@ async def answer_peer_review(
     return {"ok": True}
 
 
-@router.post("/period-lock")
+@router.post("/period-lock", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"})
 async def set_period_lock(
     payload: PeriodLockPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5455,7 +5456,7 @@ async def set_period_lock(
     return _period_lock_state(settings)
 
 
-@router.post("/close-year")
+@router.post("/close-year", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-result-permissions": "*"})
 async def close_fiscal_year(
     payload: CloseYearPayload,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -5574,7 +5575,7 @@ class ReverseClosePayload(BaseModel):
     reason: str = Field(min_length=1)
 
 
-@router.post("/close-year/{year_end}/reverse")
+@router.post("/close-year/{year_end}/reverse", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting", "x-celerp-agent-result-permissions": "*"})
 async def reverse_year_close(
     year_end: str,
     payload: ReverseClosePayload,

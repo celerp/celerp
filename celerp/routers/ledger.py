@@ -82,7 +82,7 @@ def _scope(stmt: Select, company_id, settings, role, entity_id=None, entity_type
     return stmt
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"})
 async def list_entries(
     entity_id: str | None = None,
     entity_type: str | None = None,
@@ -139,7 +139,7 @@ async def list_entries(
             "newer": newer, "has_older": has_older}
 
 
-@router.get("/facets")
+@router.get("/facets", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"})
 async def history_facets(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -164,7 +164,7 @@ async def history_facets(
     return {"event_types": sorted(event_types), "fields": sorted(fields), "actors": actors}
 
 
-@router.get("/{entry_id}")
+@router.get("/{entry_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": "*"})
 async def get_entry(entry_id: int, company_id: str = Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await session.get(LedgerEntry, entry_id)
     if entry is None or entry.company_id != company_id or not can_read_event(entry.event_type, settings, role):
@@ -172,7 +172,7 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
     return serialize_event(entry, settings, role)
 
 
-@router.post("/rebuild")
+@router.post("/rebuild", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/history"})
 async def rebuild(
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("manage_company_lifecycle"),

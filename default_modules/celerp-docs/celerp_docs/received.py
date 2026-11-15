@@ -602,7 +602,7 @@ async def _targets(session: AsyncSession, company_id, rows: list[Projection]) ->
     return {p.entity_id: p for p in found}
 
 
-@router.get("/docs/received")
+@router.get("/docs/received", openapi_extra={"x-celerp-agent": True})
 async def list_received(
     company_id: _uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("view_documents"),
@@ -617,7 +617,7 @@ async def list_received(
     return {"items": items}
 
 
-@router.get("/docs/received/{rid}")
+@router.get("/docs/received/{rid}", openapi_extra={"x-celerp-agent": True})
 async def get_received(
     rid: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -636,7 +636,7 @@ async def get_received(
     }
 
 
-@router.post("/docs/received/{rid}/book")
+@router.post("/docs/received/{rid}/book", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs/received", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
 async def book_received(
     rid: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -649,7 +649,7 @@ async def book_received(
     return await book(session, company_id, rid, role=role, settings=settings, user=user)
 
 
-@router.post("/docs/received/{rid}/update-draft")
+@router.post("/docs/received/{rid}/update-draft", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs/received", "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"]})
 async def update_received_draft(
     rid: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),
@@ -662,7 +662,7 @@ async def update_received_draft(
     return await update_draft(session, company_id, rid, role=role, settings=settings, user=user)
 
 
-@router.post("/docs/received/{rid}/mark-reconciled")
+@router.post("/docs/received/{rid}/mark-reconciled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs/received"})
 async def mark_received_reconciled(
     rid: str,
     company_id: _uuid.UUID = Depends(get_current_company_id),

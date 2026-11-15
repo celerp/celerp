@@ -29,6 +29,7 @@ from celerp.services.auth import (
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
 from ui.components.encode import inert_media_type
+from celerp.ai.tools import agent_excluded
 
 log = logging.getLogger(__name__)
 
@@ -61,8 +62,8 @@ _MEDIA_READ_BYTES = 256 * 1024
 
 
 # HEAD is the same operation as GET, so the schema lists it once.
-@media_router.get("/{token}")
-@media_router.head("/{token}", include_in_schema=False)
+@media_router.get("/{token}", openapi_extra=agent_excluded("machine"))
+@media_router.head("/{token}", openapi_extra=agent_excluded("machine"))
 async def connector_media(token: str, request: Request):
     """One product image a sync sent a store, while its token is valid. HEAD answers
     from the file's size without reading it."""
@@ -217,7 +218,7 @@ async def _manual_sync(session: AsyncSession, company_id, connector, entity: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/", response_model=list[ConnectorInfo])
+@router.get("/", response_model=list[ConnectorInfo], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True})
 async def list_connectors(
     _company_id: Annotated[str, Depends(get_current_company_id)],
 ) -> list[ConnectorInfo]:
@@ -235,7 +236,7 @@ async def list_connectors(
     ]
 
 
-@router.post("/{connector_name}/sync", response_model=SyncResponse)
+@router.post("/{connector_name}/sync", response_model=SyncResponse, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def trigger_sync(
     connector_name: str,
     payload: SyncRequest,
@@ -270,7 +271,7 @@ async def trigger_sync(
     )
 
 
-@router.post("/{connector_name}/sync-plan")
+@router.post("/{connector_name}/sync-plan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False})
 async def trigger_sync_plan(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -307,7 +308,7 @@ class DirectionRequest(BaseModel):
     direction: str
 
 
-@open_router.post("/{connector_name}/directions")
+@open_router.post("/{connector_name}/directions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def set_connector_direction(
     connector_name: str,
     payload: DirectionRequest,
@@ -376,7 +377,7 @@ def _relay_https_error() -> dict | None:
             "detail": t("connectors.err_relay_not_https")}
 
 
-@router.post("/{connector_name}/credentials")
+@router.post("/{connector_name}/credentials", openapi_extra=agent_excluded("secret"))
 @needs_modules_for("connector_name", PRODUCT_CHANNEL_MODULES)
 async def store_credentials(
     connector_name: str,
@@ -614,7 +615,7 @@ async def store_credentials(
     return {"ok": True}
 
 
-@open_router.delete("/{connector_name}/credentials")
+@open_router.delete("/{connector_name}/credentials", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def revoke_credentials(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -712,7 +713,7 @@ async def _revoke_remote(
     return None
 
 
-@router.delete("/{connector_name}/unassigned")
+@router.delete("/{connector_name}/unassigned", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def reset_unassigned_connector(
     connector_name: str,
     _owner=Depends(require_install_owner),
@@ -833,7 +834,7 @@ async def _set_order_reconciled(
     return {"entry": entry}
 
 
-@router.post("/woocommerce/orders/{order_id}/reconciled")
+@router.post("/woocommerce/orders/{order_id}/reconciled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/woocommerce"})
 async def mark_order_reconciled(
     order_id: str,
     payload: ReconciledRequest,
@@ -847,7 +848,7 @@ async def mark_order_reconciled(
     return await _set_order_reconciled(session, company_id, order_id, payload.signature, user.id)
 
 
-@router.post("/woocommerce/orders/{order_id}/import-next")
+@router.post("/woocommerce/orders/{order_id}/import-next", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/woocommerce"})
 async def import_order_under_next_number(
     order_id: str,
     payload: ReconciledRequest,
@@ -893,7 +894,7 @@ async def import_order_under_next_number(
     raise HTTPException(status_code=409, detail=waiting["reason"] if waiting else t("error.order_no_attention"))
 
 
-@router.delete("/woocommerce/orders/{order_id}/reconciled")
+@router.delete("/woocommerce/orders/{order_id}/reconciled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/woocommerce"})
 async def unmark_order_reconciled(
     order_id: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -905,7 +906,7 @@ async def unmark_order_reconciled(
     return await _set_order_reconciled(session, company_id, order_id, None, user.id)
 
 
-@router.get("/{connector_name}/first-sync/preview")
+@router.get("/{connector_name}/first-sync/preview", openapi_extra={"x-celerp-agent": True})
 async def preview_first_sync(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -956,7 +957,7 @@ async def _read_preview(session: AsyncSession, connector, company_id, config_id:
             "connectors.err_preview", service=connector.display_name, detail=exc)) from exc
 
 
-@router.get("/{connector_name}/first-sync/summary")
+@router.get("/{connector_name}/first-sync/summary", openapi_extra={"x-celerp-agent": True})
 async def first_sync_summary(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -1072,7 +1073,7 @@ class FirstSyncRequest(BaseModel):
     preview_version: str = Field(default="", max_length=64)
 
 
-@router.post("/{connector_name}/first-sync")
+@router.post("/{connector_name}/first-sync", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def start_first_sync(
     connector_name: str,
     payload: FirstSyncRequest,
@@ -1176,7 +1177,7 @@ def _spawn_first_sync(company_id, connector_name: str) -> None:
     spawn_background(_run())
 
 
-@router.post("/{connector_name}/first-sync/retry")
+@router.post("/{connector_name}/first-sync/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def retry_first_sync(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -1207,7 +1208,7 @@ async def retry_first_sync(
     return {"ok": True}
 
 
-@router.post("/{connector_name}/outbound/retry")
+@router.post("/{connector_name}/outbound/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def retry_outbound(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -1228,7 +1229,7 @@ async def retry_outbound(
     return {"ok": True}
 
 
-@router.post("/{connector_name}/first-sync/undo-links")
+@router.post("/{connector_name}/first-sync/undo-links", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}", "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "set_inventory_prices"]})
 async def undo_first_sync_links(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
@@ -1279,7 +1280,7 @@ class ConflictChoice(BaseModel):
     keep: str  # "store": take the store's values; "celerp": keep Celerp's
 
 
-@router.post("/{connector_name}/products/{record_id}/resolve")
+@router.post("/{connector_name}/products/{record_id}/resolve", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 async def resolve_product_conflict(
     connector_name: str,
     record_id: str,
@@ -1354,7 +1355,7 @@ class ItemSyncRequest(BaseModel):
     confirm_link: dict[str, str] = {}
 
 
-@local_router.post("/{connector_name}/sync")
+@local_router.post("/{connector_name}/sync", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"})
 @needs_modules_for("connector_name", PRODUCT_CHANNEL_MODULES)
 async def set_item_sync(
     connector_name: str, payload: ItemSyncRequest,
