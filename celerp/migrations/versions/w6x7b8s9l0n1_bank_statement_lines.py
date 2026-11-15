@@ -103,6 +103,7 @@ def upgrade() -> None:
     op.add_column("reconciliation_sessions", sa.Column("period_start", sa.String(16), nullable=True))
     op.add_column("reconciliation_sessions", sa.Column("opening_balance", sa.Numeric(20, 4), nullable=True))
     op.add_column("reconciliation_sessions", sa.Column("source_file_id", sa.String(128), nullable=True))
+    op.drop_column("reconciliation_sessions", "auto_matched_count")
 
     op.alter_column("reconciliation_rules", "bank_account_id", nullable=True)
     op.add_column("reconciliation_rules", sa.Column("match_amount", sa.Numeric(20, 4), nullable=True))
@@ -155,6 +156,7 @@ def downgrade() -> None:
         op.drop_column("reconciliation_rules", col)
     op.alter_column("reconciliation_rules", "bank_account_id", nullable=False)
 
+    op.add_column("reconciliation_sessions", sa.Column("auto_matched_count", sa.Integer, nullable=False, server_default="0"))
     for col in ("source_file_id", "opening_balance", "period_start"):
         op.drop_column("reconciliation_sessions", col)
 

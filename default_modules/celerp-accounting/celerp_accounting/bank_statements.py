@@ -167,10 +167,24 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
     return existing, counts
 
 
+def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None) -> bytes:
+    """A spreadsheet statement read through the shared table reader and handed on as CSV,
+    so one parser serves both file types."""
+    from celerp.ai.files import XLSX_CONTENT_TYPE
+    from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
+
+    if content_type == XLSX_CONTENT_TYPE or filename.lower().endswith(".xlsx"):
+        try:
+            cols, rows = read_table(content, "statement.xlsx")
+        except TabularError as e:
+            raise HTTPException(status_code=422, detail=e.detail)
+        return _rows_to_csv(rows, cols).encode("utf-8")
+    return content
+
+
 def _parse_structured(content: bytes, meta: dict, column_map: dict | None) -> dict:
     """A CSV, spreadsheet or OFX statement read without the model."""
     from celerp_accounting.csv_parser import parse_bank_csv, parse_ofx
-    from celerp_accounting.routes import _statement_csv_bytes
     name = meta.get("filename") or ""
     if name.lower().endswith((".ofx", ".qfx")):
         parsed = parse_ofx(content)

@@ -26,10 +26,11 @@ from celerp_accounting.models import BankAccount, BankStatementLine, Reconciliat
 # Request fields that name a record, by the kind ``scoped`` resolves them as.
 RECORD_FIELDS = {
     "line_ids": "line", "line_id": "line", "paired_line_id": "line",
-    "target_bank_id": "bank", "bank_id": "bank",
+    "target_bank_id": "bank", "bank_id": "bank", "bank_account_id": "bank", "from_bank_id": "bank", "to_bank_id": "bank",
     "statement_id": "session", "through_statement_id": "session", "session_id": "session",
     "job_id": "job", "doc_id": "doc", "je_ids": "entry",
-    "account_code": "account", "contact": "contact", "contact_id": "contact", "fund_id": "fund", "rule_id": "rule",
+    "group_keys": "group", "file_ids": "file",
+    "account_code": "account", "target_account_code": "account", "contact": "contact", "contact_id": "contact", "fund_id": "fund", "rule_id": "rule",
 }
 
 SETTLED = ("matched", "posted")
@@ -96,6 +97,18 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
                 raise HTTPException(status_code=409, detail=catalog_refusal(
                     "acct.err_recon_line_state", status=r.status))
     return rows
+
+
+async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> None:
+    """Refuse ``code`` unless it is an active account in the company's chart."""
+    from celerp_accounting.models import Account
+
+    active = (await db.execute(select(Account.is_active).where(
+        Account.company_id == company_id, Account.code == code))).scalar_one_or_none()
+    if active is None:
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_account_unknown", code=code))
+    if not active:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_account_archived", code=code))
 
 
 def suggestion_value(suggestion: dict) -> dict:

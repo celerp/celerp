@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 from typing import Any, Literal
 
@@ -19,13 +19,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.db import get_session
 from celerp.events.engine import (
     emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
 )
 from celerp.importers.results import failure_reason
-from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
 from celerp.services.periods import first_fiscal_year_end, fiscal_year_start_month, last_fiscal_year_end
@@ -3338,7 +3336,6 @@ def _recon_to_dict(r: ReconciliationSession) -> dict:
         "reconciled_je_ids": list(r.reconciled_je_ids or []),
         "csv_filename": r.csv_filename,
         "csv_row_count": r.csv_row_count or 0,
-        "auto_matched_count": r.auto_matched_count or 0,
         "manual_matched_count": r.manual_matched_count or 0,
         "created_count": r.created_count or 0,
         "tolerance": float(r.tolerance) if r.tolerance is not None else 1.0,
@@ -3703,36 +3700,6 @@ async def unmatch_reconciliation(
 
 
 @router.post(
-    "/reconciliation/{session_id}/complete",
-    summary="Complete the reconciliation once the difference is zero",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def complete_reconciliation(
-    session_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=False)
-    if recon.status == "completed":
-        return _recon_to_dict(recon)
-
-    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
-    difference = await _settled_difference(db, recon, bank, all_entries)
-
-    if difference != 0:
-        raise HTTPException(
-            status_code=422,
-            detail=catalog_refusal("acct.err_recon_unbalanced", difference=_money_text(difference, bank.currency)),
-        )
-
-    recon.status = "completed"
-    recon.completed_at = datetime.now(timezone.utc)
-    await db.commit()
-    return _recon_to_dict(recon)
-
-
-@router.post(
     "/reconciliation/{session_id}/reopen",
     summary="Put a completed reconciliation back in progress",
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
@@ -3818,38 +3785,7 @@ async def reconciliation_workbench(
     }
 
 
-# ── Reconciliation V2 — CSV import, statement lines, auto-match, rules ────────
-
-class StmtLineMatchPayload(BaseModel):
-    je_id: str
-    confidence: str = "manual"
-
-
-class StmtLineCreatePayload(BaseModel):
-    account_code: str
-    memo: str = ""
-    amount: FiniteFloat | None = None  # defaults to line amount
-    date: str | None = None      # defaults to line_date
-    # A bank line settled straight to a control account belongs to a party, and
-    # this is the only chance to say which: nothing downstream can infer it.
-    contact: str | None = None
-    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
-    # The fund the entry belongs to, both its lines; none puts it in the unrestricted group.
-    fund_id: str | None = None
-
-
-class StmtLineSplitPayload(BaseModel):
-    splits: list[dict]  # [{account_code, amount, memo, contact, fund_id}]
-    rate: FiniteFloat | None = None  # the account's currency into the books', when they differ
-
-
-class StmtLinePatch(BaseModel):
-    status: str | None = None
-
-
-class BulkConfirmPayload(BaseModel):
-    confidence: str | None = None  # if set, only confirm at this confidence level or above
-
+# ── Reconciliation: statement lines, write-off, rules ────────
 
 class WriteOffPayload(BaseModel):
     account_code: str | None = None  # unset: the company's general expense account
@@ -3900,196 +3836,6 @@ async def _rule_amount(db: AsyncSession, company_id: uuid.UUID, bank_id, pattern
     return money_value(amount, currency or await _base_currency(db, company_id))
 
 
-class StatementFileImport(BaseModel):
-    file_id: str
-    column_map: dict[str, str] | None = None  # {canonical_field: column header}
-
-
-def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None) -> bytes:
-    """Spreadsheet statements are read through the shared table reader and
-    handed on as CSV so one parser serves both file types."""
-    if content_type == XLSX_CONTENT_TYPE or filename.lower().endswith(".xlsx"):
-        try:
-            cols, rows = read_table(content, "statement.xlsx")
-        except TabularError as e:
-            raise HTTPException(status_code=422, detail=e.detail)
-        return _rows_to_csv(rows, cols).encode("utf-8")
-    return content
-
-
-async def _import_statement_lines(
-    db: AsyncSession,
-    recon: ReconciliationSession,
-    company_id: uuid.UUID,
-    content: bytes,
-    filename: str,
-    col_map: dict[str, str] | None,
-) -> dict:
-    """Parse a statement with retry-safe replacement semantics.
-
-    An exact file+mapping replay is a no-op. A changed statement may replace only
-    an untouched session; once reconciliation work exists it is refused so a retry
-    can never erase matching progress.
-    """
-    from celerp_accounting.csv_parser import parse_bank_csv
-
-    try:
-        parsed = parse_bank_csv(content, col_map)
-    except TabularError as e:
-        raise HTTPException(status_code=422, detail=e.detail)
-
-    if parsed["needs_mapping"]:
-        return {
-            "needs_mapping": True,
-            "headers": parsed["headers"],
-            "preview": parsed["preview"],
-            "session_id": str(recon.id),
-        }
-
-    existing = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.reconciliation_id == recon.id
-        ).order_by(BankStatementLine.created_at, BankStatementLine.id)
-    )).scalars().all()
-
-    # Exact replay is a true no-op: keep line ids, match state, attachments and
-    # counters intact. Include both the raw row and its canonical interpretation:
-    # the same bytes with a different column mapping are a deliberate replacement,
-    # not a replay. Decimal normalization avoids DB scale differences turning a
-    # genuine retry into a destructive replacement.
-    def _number(value):
-        if value in (None, ""):
-            return None
-        return Decimal(str(value)).normalize()
-
-    incoming_rows = [
-        (
-            str(line.get("line_date") or ""),
-            str(line.get("description") or ""),
-            _number(line.get("amount")),
-            _number(line.get("raw_balance")),
-            str(line.get("reference") or ""),
-            dict(line.get("raw_csv_row") or {}),
-        )
-        for line in parsed["lines"]
-    ]
-    existing_rows = [
-        (
-            str(line.line_date or ""),
-            str(line.description or ""),
-            _number(line.amount),
-            _number(line.raw_balance),
-            str(line.reference or ""),
-            dict(line.raw_csv_row or {}),
-        )
-        for line in existing
-    ]
-    if existing and incoming_rows == existing_rows:
-        return {
-            "needs_mapping": False,
-            "session_id": str(recon.id),
-            "rows_imported": len(existing),
-            "csv_filename": recon.csv_filename or filename,
-            "replayed": True,
-        }
-
-    if existing:
-        has_progress = bool(recon.reconciled_je_ids) or any(
-            line.status != "unmatched"
-            or line.matched_je_id is not None
-            or bool(line.attachment_ids)
-            for line in existing
-        )
-        if has_progress:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "statement_has_progress",
-                    **catalog_refusal("acct.err_statement_has_progress"),
-                },
-            )
-        for line in existing:
-            await db.delete(line)
-
-    new_lines = []
-    for raw_line in parsed["lines"]:
-        sl = BankStatementLine(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            reconciliation_id=recon.id,
-            line_date=raw_line.get("line_date", ""),
-            description=raw_line.get("description", ""),
-            amount=raw_line.get("amount", "0"),
-            raw_balance=raw_line.get("raw_balance"),
-            reference=raw_line.get("reference"),
-            status="unmatched",
-            attachment_ids=[],
-            raw_csv_row=raw_line.get("raw_csv_row", {}),
-        )
-        db.add(sl)
-        new_lines.append(sl)
-
-    recon.csv_filename = filename
-    recon.csv_row_count = len(new_lines)
-    recon.imported_at = datetime.now(timezone.utc)
-    recon.auto_matched_count = 0
-    recon.manual_matched_count = 0
-    recon.created_count = 0
-
-    await db.commit()
-    return {
-        "needs_mapping": False,
-        "session_id": str(recon.id),
-        "rows_imported": len(new_lines),
-        "csv_filename": filename,
-    }
-
-
-@router.post("/reconciliation/{session_id}/import-csv")
-async def import_recon_csv(
-    session_id: uuid.UUID,
-    file: UploadFile = File(...),
-    column_map: str | None = FastForm(None),  # JSON-encoded dict
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Upload and parse a bank statement CSV, store lines."""
-    import json as _json
-
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    try:
-        content = await read_upload_bytes(file)
-    except TabularError as e:
-        raise HTTPException(status_code=413, detail=e.detail)
-    col_map = _json.loads(column_map) if column_map else None
-    return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
-
-
-@router.post(
-    "/reconciliation/{session_id}/import-file",
-    summary="Import an uploaded statement file (csv or xlsx) into the reconciliation",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def import_recon_file(
-    session_id: uuid.UUID,
-    payload: StatementFileImport,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    from celerp.ai.files import load_file
-    recon, _bank = await _lock_recon(db, session_id, company_id, editable=True)
-    try:
-        content, meta = load_file(payload.file_id, company_id, user.id)
-    except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=422, detail=refusal("error.file_not_found", t("error.file_not_found", "en")))
-    filename = str(meta.get("filename") or "statement.csv")
-    content = _statement_csv_bytes(content, filename, meta.get("content_type"))
-    return await _import_statement_lines(db, recon, company_id, content, filename, payload.column_map)
-
-
 @router.get("/reconciliation/{session_id}/statement-lines")
 async def get_statement_lines(
     session_id: uuid.UUID,
@@ -4106,389 +3852,6 @@ async def get_statement_lines(
     )).scalars().all()
 
     return {"items": [_stmt_line_to_dict(l) for l in lines], "total": len(lines)}
-
-
-@router.post(
-    "/reconciliation/{session_id}/auto-match",
-    summary="Match statement lines to book entries automatically",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def auto_match_recon(
-    session_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Run the auto-matching algorithm against all unmatched statement lines."""
-    from celerp_accounting.matcher import auto_match
-
-    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
-
-    stmt_lines = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.reconciliation_id == session_id,
-            BankStatementLine.status == "unmatched",
-        )
-    )).scalars().all()
-
-    book_entries = await _je_entries_for_account(db, company_id, bank)
-    cleared = _cleared_je_ids(recon, bank)
-    reasons = await _eligible_entries(db, company_id, bank, recon, [e["je_id"] for e in book_entries])
-    # An entry with no amount in the account's currency has nothing to match a statement line on.
-    unmatched_entries = [e for e in book_entries if e["je_id"] not in cleared and reasons[e["je_id"]] is None
-                         and e["amount"] is not None]
-
-    stmt_dicts = [_stmt_line_to_dict(l) for l in stmt_lines]
-    matches = auto_match(stmt_dicts, unmatched_entries)
-
-    high_conf = 0
-    med_conf = 0
-    line_map = {str(l.id): l for l in stmt_lines}
-
-    for line_id, je_id, confidence in matches:
-        sl = line_map.get(line_id)
-        if not sl:
-            continue
-        sl.status = "matched" if confidence == "high" else "suggested"
-        sl.matched_je_id = je_id
-        if confidence == "high":
-            high_conf += 1
-            existing = list(recon.reconciled_je_ids or [])
-            if je_id not in existing:
-                existing.append(je_id)
-                recon.reconciled_je_ids = existing
-        else:
-            med_conf += 1
-
-    recon.auto_matched_count = high_conf
-    await db.commit()
-
-    return {
-        "matched": high_conf,
-        "suggested": med_conf,
-        "total_processed": len(stmt_lines),
-    }
-
-
-async def _next_reconciliation_je_id(
-    db: AsyncSession, company_id: uuid.UUID, base_id: str,
-) -> str:
-    """Return the next usable deterministic JE id after any voided prior attempts.
-
-    The statement-line row lock serializes this allocation. Exact retries of a
-    successful attempt never reach here because the line is already ``created``;
-    after an explicit unmatch has voided that attempt, the next correction gets
-    a new immutable journal entry instead of trying to resurrect a voided one.
-    """
-    attempt = 1
-    while True:
-        entity_id = base_id if attempt == 1 else f"{base_id}:{attempt}"
-        row = await db.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-        if row is None:
-            return entity_id
-        if row.entity_type != "journal_entry":
-            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_entry_exists"))
-        if (row.state or {}).get("status") != "void":
-            raise HTTPException(
-                status_code=409,
-                detail=catalog_refusal("acct.err_recon_line_has_entry"),
-            )
-        attempt += 1
-
-
-async def _void_reconciliation_created_je(
-    db: AsyncSession,
-    *,
-    company_id: uuid.UUID,
-    actor_id,
-    line: BankStatementLine,
-) -> None:
-    """Void the deterministic JE created from a statement line before unmatching it."""
-    from celerp.services.je_keys import je_void_data
-
-    je_id = line.matched_je_id
-    if not je_id:
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_no_entry"))
-    row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
-    if row is None or row.entity_type != "journal_entry":
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
-    state = row.state or {}
-    if state.get("status") == "void":
-        return
-    if state.get("je_type") not in {"recon_create", "recon_split"}:
-        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.voided",
-        data=je_void_data("Reconciliation line unmatched", state),
-        actor_id=actor_id, location_id=None, source="reconciliation",
-        idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={},
-    )
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/match",
-    summary="Match a statement line to a book entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def match_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineMatchPayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        if sl.matched_je_id == payload.je_id:
-            return _stmt_line_to_dict(sl)
-        raise HTTPException(
-            status_code=409,
-            detail=refusal("acct.err_recon_line_created",
-                           "This line already created a journal entry. Unmatch it first so that entry is reversed."),
-        )
-    bank = await db.get(BankAccount, recon.bank_account_id)
-    _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, [payload.je_id], line_id=sl.id))
-    old_je_id = sl.matched_je_id if sl.status in ("matched", "created") else None
-    was_resolved = sl.status in ("matched", "created")
-    sl.status = "matched"
-    sl.matched_je_id = payload.je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if old_je_id and old_je_id != payload.je_id and old_je_id in existing:
-        existing.remove(old_je_id)
-    if payload.je_id not in existing:
-        existing.append(payload.je_id)
-    recon.reconciled_je_ids = existing
-    if not was_resolved:
-        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/unmatch",
-    summary="Undo the match on a statement line",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def unmatch_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    old_je_id = sl.matched_je_id
-    created = sl.status == "created"
-    # The session lets go of the entry before the entry it created is voided, so the
-    # completed-history check sees no session of this line holding it.
-    if old_je_id:
-        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != old_je_id]
-        await db.flush()
-    if created:
-        await _void_reconciliation_created_je(
-            db, company_id=company_id, actor_id=user.id, line=sl,
-        )
-    sl.status = "unmatched"
-    sl.matched_je_id = None
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post(
-    "/reconciliation/{session_id}/lines/{line_id}/create",
-    summary="Post a journal entry for a statement line with no book entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def create_je_from_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineCreatePayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _m: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Create a journal entry from a bank statement line and auto-match it."""
-    from celerp.services.je_keys import je_idempotency_key
-
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        return _stmt_line_to_dict(sl)
-    if sl.status == "matched":
-        raise HTTPException(
-            status_code=409,
-            detail=refusal("acct.err_recon_line_matched",
-                           "This line is already matched. Unmatch it before creating a journal entry."),
-        )
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
-    await require_destinations(db, company_id, {payload.account_code})
-
-    line_amount = abs(float(sl.amount))
-    if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
-        raise HTTPException(
-            status_code=422,
-            detail=catalog_refusal("acct.err_recon_partial"),
-        )
-    entry_date = payload.date or sl.line_date
-    memo = payload.memo or sl.description
-    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:{sl.id}")
-
-    idem_c = je_idempotency_key(je_id, "recon_create", "c")
-    idem_p = je_idempotency_key(je_id, "recon_create", "p")
-
-    # The bank side has no party by nature; the offset side carries the one the
-    # operator named, so a bank line settled to a control account lands on that
-    # party's statement instead of in the unattributed bucket.
-    offset = {"account": payload.account_code}
-    if payload.contact:
-        offset["contact"] = payload.contact
-    if payload.fund_id:
-        offset["fund_id"] = payload.fund_id
-    base = await _base_currency(db, company_id)
-    rate = _bank_rate(bank, base, payload.rate)
-    offsets = await _pooled_offsets(db, company_id, bank, base, rate, [(offset, abs(to_decimal(sl.amount)))],
-                                    inflow=sl.amount > 0, as_of=entry_date)
-    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount > 0)
-    await import_service.check_line_contacts(db, company_id, entries)
-
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": memo, "ts": entry_date, "entries": entries, "je_type": "recon_create"},
-        actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_c, metadata_={"recon_session_id": str(session_id)},
-    )
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": entry_date}, actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_p, metadata_={},
-    )
-
-    sl.status = "created"
-    sl.matched_je_id = je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if je_id not in existing:
-        existing.append(je_id)
-        recon.reconciled_je_ids = existing
-    recon.created_count = (recon.created_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.post("/reconciliation/{session_id}/lines/{line_id}/split")
-async def split_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLineSplitPayload,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    _m: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Split a bank line into multiple JE lines across different accounts."""
-    from celerp.services.je_keys import je_idempotency_key
-
-    recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if sl.status == "created":
-        return _stmt_line_to_dict(sl)
-    if sl.status == "matched":
-        raise HTTPException(
-            status_code=409,
-            detail="This line is already matched. Unmatch it before creating a split journal entry.",
-        )
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
-
-    if not payload.splits:
-        raise HTTPException(status_code=422, detail=t("acct.at_least_one_split_entry_required"))
-    if any(not s.get("account_code") for s in payload.splits):
-        raise HTTPException(status_code=422, detail=refusal(
-            "reconciliation.split.account_required", "Choose an account for every split."))
-    await require_destinations(db, company_id, {s["account_code"] for s in payload.splits})
-
-    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
-    idem_c = je_idempotency_key(je_id, "recon_split", "c")
-    idem_p = je_idempotency_key(je_id, "recon_split", "p")
-
-    offsets = []
-    for s in payload.splits:
-        split = {"account": s["account_code"]}
-        if s.get("contact"):
-            split["contact"] = s["contact"]
-        if s.get("fund_id"):
-            split["fund_id"] = s["fund_id"]
-        offsets.append((split, to_decimal(s.get("amount", 0))))
-    if sum((a for _, a in offsets), Decimal(0)) != abs(to_decimal(sl.amount)):
-        raise HTTPException(status_code=422, detail=t(
-            "acct.err_split_total", total=_money_text(sum((a for _, a in offsets), Decimal(0)), bank.currency),
-            amount=_money_text(abs(to_decimal(sl.amount)), bank.currency)))
-    base = await _base_currency(db, company_id)
-    rate = _bank_rate(bank, base, payload.rate)
-    offsets = await _pooled_offsets(db, company_id, bank, base, rate, offsets, inflow=sl.amount >= 0, as_of=sl.line_date)
-    entries = _bank_entries(bank, base, rate, offsets, inflow=sl.amount >= 0)
-    await import_service.check_line_contacts(db, company_id, entries)
-
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={"memo": sl.description, "ts": sl.line_date, "entries": entries, "je_type": "recon_split"},
-        actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_c, metadata_={"recon_session_id": str(session_id)},
-    )
-    await emit_event(
-        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={"ts": sl.line_date}, actor_id=user.id, location_id=None, source="reconciliation",
-        idempotency_key=idem_p, metadata_={},
-    )
-
-    sl.status = "created"
-    sl.matched_je_id = je_id
-    existing = list(recon.reconciled_je_ids or [])
-    if je_id not in existing:
-        existing.append(je_id)
-        recon.reconciled_je_ids = existing
-    recon.created_count = (recon.created_count or 0) + 1
-    await db.commit()
-    return _stmt_line_to_dict(sl)
-
-
-@router.patch(
-    "/reconciliation/{session_id}/lines/{line_id}",
-    summary="Set a statement line's status, for example skip a line that needs no entry",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def patch_stmt_line(
-    session_id: uuid.UUID,
-    line_id: uuid.UUID,
-    payload: StmtLinePatch,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
-    if payload.status is not None:
-        if payload.status not in ("unmatched", "skipped"):
-            raise HTTPException(
-                status_code=422,
-                detail=catalog_refusal("acct.err_recon_status_set"),
-            )
-        if sl.status in ("matched", "created"):
-            raise HTTPException(
-                status_code=409,
-                detail=catalog_refusal("acct.err_recon_status_matched"),
-            )
-        sl.status = payload.status
-        sl.matched_je_id = None
-    await db.commit()
-    return _stmt_line_to_dict(sl)
 
 
 @router.post("/reconciliation/{session_id}/lines/{line_id}/attach")
@@ -4545,51 +3908,6 @@ async def remove_line_attachment(
     sl.attachment_ids = [u for u in sl.attachment_ids if u != held]
     await db.commit()
     return {"removed": att_id}
-
-
-@router.post(
-    "/reconciliation/{session_id}/bulk-confirm",
-    summary="Confirm every suggested match",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
-)
-async def bulk_confirm_recon(
-    session_id: uuid.UUID,
-    payload: BulkConfirmPayload | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
-) -> dict:
-    """Confirm every suggested match that is still valid. A suggestion whose entry is
-    gone from the account or counted elsewhere meanwhile is left unmatched, its
-    suggestion cleared, and reported with its reason."""
-    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
-
-    lines = (await db.execute(
-        select(BankStatementLine).where(
-            BankStatementLine.company_id == company_id,
-            BankStatementLine.reconciliation_id == session_id,
-            BankStatementLine.status == "suggested",
-        ).order_by(BankStatementLine.line_date, BankStatementLine.created_at).with_for_update()
-    )).scalars().all()
-    reasons = await _eligible_entries(db, company_id, bank, recon, [sl.matched_je_id for sl in lines if sl.matched_je_id])
-
-    confirmed, skipped = 0, []
-    existing = list(recon.reconciled_je_ids or [])
-    for sl in lines:
-        reason = (reasons[sl.matched_je_id] if sl.matched_je_id else "acct.err_recon_book_entry_missing") \
-            or ("acct.err_recon_book_entry_matched" if sl.matched_je_id in existing else None)
-        if reason:
-            sl.status, sl.matched_je_id = "unmatched", None
-            skipped.append({"line_id": str(sl.id), "reason": reason})
-            continue
-        sl.status = "matched"
-        existing.append(sl.matched_je_id)
-        confirmed += 1
-
-    recon.reconciled_je_ids = existing
-    recon.manual_matched_count = (recon.manual_matched_count or 0) + confirmed
-    await db.commit()
-    return {"confirmed": confirmed, "skipped": skipped}
 
 
 @router.post(
@@ -4696,7 +4014,10 @@ async def create_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp_accounting.statement_lines import chart_account
+
     await lock_company(db, company_id)
+    await chart_account(db, company_id, payload.target_account_code)
     if payload.bank_account_id is not None:
         bank = (await db.execute(select(BankAccount.id).where(
             BankAccount.id == payload.bank_account_id, BankAccount.company_id == company_id,
@@ -4748,7 +4069,11 @@ async def patch_recon_rule(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp_accounting.statement_lines import chart_account
+
     rule = await _locked_rule(db, company_id, rule_id)
+    if payload.target_account_code is not None:
+        await chart_account(db, company_id, payload.target_account_code)
     for field in ("match_field", "match_pattern", "match_type", "target_account_code",
                   "contact_id", "default_memo", "is_active"):
         val = getattr(payload, field)

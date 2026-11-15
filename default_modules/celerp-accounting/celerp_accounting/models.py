@@ -86,7 +86,6 @@ class ReconciliationSession(Base):
     # CSV import metadata
     csv_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     csv_row_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
-    auto_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
     manual_matched_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
     created_count: Mapped[int] = mapped_column(sa.Integer, default=0, nullable=False, server_default="0")
     tolerance: Mapped[float] = mapped_column(Numeric(20, 4), default=1.00, nullable=False, server_default="1.00")
