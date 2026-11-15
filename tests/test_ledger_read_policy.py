@@ -82,6 +82,44 @@ async def test_a_custom_grant_opens_accounting_entries_and_its_revocation_closes
 
 
 @pytest.mark.asyncio
+async def test_fund_and_schedule_events_read_with_financial_reports_and_without_costs(client, session):
+    """Fund and revenue schedule events are accounting events: a role granted financial reports
+    reads them, with every cost amount gone from their data and metadata when it cannot see costs;
+    a role without financial reports reads none of them."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+    from celerp.models.ledger import LedgerEntry
+
+    owner, viewer, operator = await _demo(client, session)
+    company_id = (await session.execute(select(Company.id).where(Company.name == "Perm Co"))).scalar_one()
+    session.add_all([LedgerEntry(
+        company_id=company_id, entity_id=entity_id, entity_type=entity_type, event_type=event_type,
+        data={"name": "Building fund", "line_items": [{"name": "Bricks", "cost_price": 48213.57}]},
+        metadata_={"reason": "board_vote", "valued": {"unit_cost": 39102.46}}, source="test",
+        idempotency_key=f"fund-read-{uuid.uuid4()}")
+        for entity_id, entity_type, event_type in (("fund:read", "fund", "fund.created"),
+                                                   ("rev_schedule:read", "rev_schedule", "rev_schedule.created"))])
+    await session.flush()
+    r = await client.patch("/companies/me/role-permissions", headers=owner, json={
+        "perm_key": "view_financial_reports", "role_key": "operator", "granted": True})
+    assert r.status_code == 200, r.text
+
+    seen = _of(await _events(client, operator), ("fund.", "rev_schedule."))
+    assert sorted(e["event_type"] for e in seen) == ["fund.created", "rev_schedule.created"]
+    for e in seen:
+        assert e["data"] == {"name": "Building fund", "line_items": [{"name": "Bricks"}]}
+        assert e["metadata"] == {"reason": "board_vote", "valued": {}}
+        single = await client.get(f"/ledger/{e['id']}", headers=operator)
+        assert single.status_code == 200 and "48213.57" not in single.text and "39102.46" not in single.text
+    assert _of(await _events(client, viewer), ("fund.", "rev_schedule.")) == []
+    whole = _of(await _events(client, owner), ("fund.", "rev_schedule."))
+    assert all(e["data"]["line_items"][0]["cost_price"] == 48213.57 for e in whole) and len(whole) == 2
+
+
+@pytest.mark.asyncio
 async def test_a_module_taken_out_leaves_its_events_to_company_admins(client, session, monkeypatch):
     """Fixed asset events fall to the company-admin default once the module that owns them
     is no longer loaded: its permission no longer opens them."""

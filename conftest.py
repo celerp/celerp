@@ -391,6 +391,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "fund.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
@@ -399,6 +400,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "rev_schedule.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
