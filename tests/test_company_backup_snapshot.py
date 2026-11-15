@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from celerp import db_catalog
 from company_backup_support import manifest, members, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
-from test_company_backup import (
 from ui.i18n import refusal_text
+from test_company_backup import (
     _bk_cb,
     _bk_cloud,
     _bk_extra_ledger,
