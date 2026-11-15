@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Respon
 from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
 from celerp.ai import tools as ai_tools
@@ -243,6 +244,11 @@ async def test_a_revision_read_by_one_tool_is_sent_back_by_the_write():
                                 detail=t("settings_menu.err_changed" if if_match else "settings_menu.err_version_required"))
         state["rev"] = "r2"
         return {"ok": True}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def answer_as_the_app_does(request, exc):
+        from celerp.error_body import error_response
+        return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
 
     for endpoint in (read_menu, write_menu):
         endpoint.__module__ = "celerp.routers.agent_test"

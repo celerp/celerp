@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import HTTPException
 
+from celerp import error_body
 from celerp.accounting_roles import refusal
 from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
@@ -46,7 +47,7 @@ from celerp.modules.loader import CORE_FOLDED, loaded_modules, module_label
 from celerp.modules.registry import uses_module
 from celerp.services.field_schema import field_visibility
 from celerp.services.permissions import read_authority, role_has_permission
-from ui.i18n import current_lang, lang_label, t
+from ui.i18n import current_lang, lang_label, refusal_text, t
 
 log = logging.getLogger(__name__)
 
@@ -174,11 +175,14 @@ NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operat
 
 class _CallerRefused(Exception):
     """The app refused a read because of who asked (``jobs.caller_refusal``); ``code``
-    is what the question ends with."""
+    is what the question ends with, ``detail`` the route's own keyed refusal when it
+    answered one (a refusal that depends on the record or argument asked for), which
+    the answer shows as the screen would."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, detail: dict | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.detail = detail
 
 
 def _error_code(exc: BaseException) -> str:
@@ -202,7 +206,8 @@ def user_error(exc: BaseException, unknown: str = "ai.err_unexpected") -> str:
     if code == "session_expired":
         return t("error.session_expired")
     if code == "read_refused":
-        return t("ai.err_read_refused")
+        detail = getattr(exc, "detail", None)
+        return (refusal_text(detail) if detail else "") or t("ai.err_read_refused")
     if code == "stopped":
         return t("ai.question_stopped")
     if code in ("busy", "operation_in_progress"):
@@ -1083,7 +1088,9 @@ async def _tool_step(journal: jobs.Journal, call_id: str, run, contract) -> dict
         result = await run()
         refused = jobs.caller_refusal(result)
         if refused is not None:
-            raise _CallerRefused(refused)
+            data = result.get("data")
+            detail = data.get("detail") if isinstance(data, dict) else None
+            raise _CallerRefused(refused, detail if isinstance(detail, dict) and error_body.keyed(detail) else None)
         after = await contract()
         stored = {"result": result, "replay": after if after == before else None}
         await journal.ended(key, "done", stored)

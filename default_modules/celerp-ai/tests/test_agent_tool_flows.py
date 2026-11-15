@@ -26,6 +26,7 @@ from celerp.ai.conversations import build_history_context
 from celerp.models.ai import AIMessage
 from celerp.models.company import User
 from test_helpers import asked_in_thread, grant_permission, perm_setup, settled_question
+from ui.i18n import t
 
 from _fixtures import tool_call, tool_result
 from test_action_outcomes import (
@@ -140,7 +141,8 @@ async def test_generated_password_absent_from_history_model_and_ledger(client, s
 @pytest.mark.asyncio
 async def test_label_source_refused_by_argument_reaches_card(client, session, agent_caps, ai_session, monkeypatch):
     """The label tools are shown to a role that can print some labels; asking for a kind
-    of record the role cannot see returns the route's own refusal to the model."""
+    of record the role cannot see ends the question with the route's own refusal, as the
+    label screen would show it."""
     from celerp.modules import slots
 
     # A second kind of record, one the operator can see, so the label tools are theirs.
@@ -156,9 +158,9 @@ async def test_label_source_refused_by_argument_reaches_card(client, session, ag
     )
     conv_id = await _new_conversation(client, ctx["operator_h"])
     with patch("celerp.ai.service.complete", model):
-        await asked_in_thread(client, ctx["operator_h"], conv_id, {"query": "asset tag templates"})
-    fed = str(model.seen[-1])
-    assert "Your role cannot see these records" in fed
+        body = await asked_in_thread(client, ctx["operator_h"], conv_id, {"query": "asset tag templates"})
+    assert body["error_code"] == "read_refused" and body["new_question"] is True
+    assert body["content"] == t("labels.err_your_role_cannot_see_these_records")
 
 
 # -- Upload ---------------------------------------------------------------------------
@@ -242,8 +244,8 @@ async def test_confirm_all_stops_dependent_actions_at_first_failure(client, sess
     assert r.status_code == 200, r.text
     assert (await _record(session, body["id"], "p1"))["status"] == "failed"
     second = await _record(session, body["id"], "p2")
-    assert second["status"] == "pending"
-    assert "an earlier change to the same record failed" in str(second.get("error") or second.get("reason"))
+    assert second.get("status", "pending") == "pending"  # a proposal not yet claimed carries no status
+    assert second["error"]["message_key"] == "ai.not_run_dependent"
 
 
 @pytest.mark.asyncio
