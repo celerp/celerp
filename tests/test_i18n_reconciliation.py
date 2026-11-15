@@ -1,21 +1,19 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Render-time language resolution for the bank reconciliation workspace.
+"""Render-time language resolution for the bank page.
 
-The reconciliation routes build every user-facing label, status badge, toolbar
-button, stat, progress line, and CSV-mapper heading by calling ``t()`` at render
-time, so a request in a non-English language gets translated output. These tests
-register a sentinel language ``xx`` and assert the sentinel text reaches the
-rendered output while ``xx`` is active. They are red against a tree that hardcodes
-the English strings (module-level ``_STATUS_LABEL`` dict, f-string labels, and
-bare button/heading text) instead of resolving them per request.
+The bank page builds every user-facing label, status badge, button, summary and
+column-mapper heading by calling ``t()`` at render time, so a request in a
+non-English language gets translated output. These tests register a sentinel
+language ``xx`` and assert the sentinel text reaches the rendered output while
+``xx`` is active.
 
-Each conversion MECHANISM used in the route is covered at least once:
-- R3 enum display label for the row status badge (``display_enum``),
-- render-time f-string interpolation (workspace title, stats, progress),
-- bare button/heading text now resolved via ``t()`` (auto-match, CSV mapper),
-- an ``add_new_option`` select label (create-expense form).
+Each conversion mechanism is covered at least once:
+- the line status badge, raw status kept in the class, label translated,
+- render-time interpolation (the summary line),
+- bare button and heading text (Suggest, the column mapper),
+- answer picker option labels (the answer form).
 """
 
 import pytest
@@ -23,23 +21,15 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
-from ui.routes.reconciliation import (
-    _workspace_view,
-    _row_status_badge,
-    _mapper_fragment,
-    _create_form,
-)
+from ui.components import bank_groups as BG
 
-# Sentinel catalog: one unmistakable value per key the reconciliation UI renders.
 _XX = {
-    "enum.recon_status.unmatched": "XX_UNMATCHED",
-    "enum.recon_status.matched": "XX_MATCHED",
-    "recon.title": "XX_TITLE {bank} {account}",
-    "recon.stat_matched": "XX_STATMATCHED {n}",
-    "recon.progress_resolved": "XX_RESOLVED {done}/{total}",
-    "recon.auto_match_all": "XX_AUTOMATCH",
+    "bank.status_open": "XX_OPEN",
+    "bank.status_posted": "XX_POSTED",
+    "bank.summary": "XX_SUMMARY {lines}/{open}",
+    "bank.suggest": "XX_SUGGEST",
     "recon.map_csv_columns": "XX_MAPCSV",
-    "recon.add_new_account": "XX_ADDACCT",
+    "bank.answer_cash": "XX_CASH",
 }
 
 
@@ -57,62 +47,30 @@ def _xx_lang():
     i18n._cached_load.cache_clear()
 
 
-def _sample_workspace() -> str:
-    recon = {
-        "statement_balance": 1000.0,
-        "difference": 0.0,
-        "tolerance": 1.0,
-        "statement_date": "2026-08-01",
-    }
-    bank = {"bank_name": "Test Bank", "account_number": "123", "currency": "USD", "books_currency": "USD"}
-    lines = [
-        {"id": "L1", "status": "unmatched", "amount": -50.0,
-         "line_date": "2026-08-01", "description": "Coffee", "reference": "R1"},
-        {"id": "L2", "status": "matched", "amount": 100.0,
-         "line_date": "2026-08-02", "description": "Sale", "matched_je_id": "J1"},
-    ]
-    book_entries = [{"je_id": "J9", "ts": "2026-08-03T00:00:00", "memo": "Entry", "amount": 25.0}]
-    return to_xml(_workspace_view("S1", recon, bank, lines, book_entries, "USD"))
+def _line(status: str) -> str:
+    return to_xml(BG.line_row({"id": "L1", "status": status, "amount": "-50.00", "line_date": "2026-08-01",
+                               "description": "Coffee"}, "B1", "USD"))
 
 
-def test_row_status_badge_translates_enum_label():
-    # R3 display layer: raw status stays canonical in the badge class, label is translated.
-    html = to_xml(_row_status_badge("unmatched"))
-    assert "XX_UNMATCHED" in html
-    assert "badge--recon-unmatched" in html
+def test_line_status_badge_translates():
+    open_html, posted_html = _line("unmatched"), _line("posted")
+    assert "XX_OPEN" in open_html and "badge--recon-unmatched" in open_html
+    assert "XX_POSTED" in posted_html and "badge--recon-posted" in posted_html
 
 
-def test_workspace_status_badges_translate():
-    html = _sample_workspace()
-    assert "XX_UNMATCHED" in html
-    assert "XX_MATCHED" in html
+def test_summary_interpolates_translated():
+    html = to_xml(BG.summary_line({"summary": {"lines": 7, "open": 3, "posted": 4}}, "USD"))
+    assert "XX_SUMMARY 7/3" in html
 
 
-def test_workspace_title_interpolates_translated():
-    html = _sample_workspace()
-    assert "XX_TITLE" in html
-    # Interpolated operands survive the translated template.
-    assert "Test Bank" in html
-
-
-def test_workspace_stat_and_progress_translate():
-    html = _sample_workspace()
-    assert "XX_STATMATCHED" in html
-    assert "XX_RESOLVED" in html
-
-
-def test_workspace_toolbar_button_translates():
-    html = _sample_workspace()
-    assert "XX_AUTOMATCH" in html
+def test_suggest_button_translates():
+    assert "XX_SUGGEST" in to_xml(BG.page_actions("B1", "open", ""))
 
 
 def test_mapper_heading_translates():
-    html = to_xml(_mapper_fragment("S1", ["Date", "Amount"], "", "upload.csv"))
-    assert "XX_MAPCSV" in html
+    assert "XX_MAPCSV" in to_xml(BG.column_mapper("B1", "J1", ["Date", "Amount"], "{}"))
 
 
-def test_create_form_add_new_option_translates():
-    line = {"amount": -50.0, "description": "Coffee"}
-    chart = [{"code": "5000", "name": "Expenses", "account_type": "expense"}]
-    html = to_xml(_create_form("S1", "L1", line, chart, {"currency": "USD", "books_currency": "USD"}, contacts=[]))
-    assert "XX_ADDACCT" in html
+def test_answer_option_label_translates():
+    options = BG.answer_options([{"code": "5000", "name": "Expenses", "account_type": "expense"}], [], "B1")
+    assert "XX_CASH" in to_xml(BG.answer_form({"id": "B1", "currency": "USD"}, options))
