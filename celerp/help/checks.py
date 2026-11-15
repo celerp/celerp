@@ -233,20 +233,22 @@ def check_screen_help(pages: list[PageFile],
     return out
 
 
-def _page_routes(page_data) -> list[str]:
+def _page_paths(page_data) -> list[str]:
+    """The paths of a page's routes. A screen is a route path of the app, so a page covers it
+    when one of its routes serves that path, whatever tab or type the route's query names."""
     routes = page_data.get("routes") if isinstance(page_data, dict) else None
-    return [r for r in routes if isinstance(r, str)] if isinstance(routes, list) else []
+    return [urlsplit(r).path for r in routes if isinstance(r, str)] if isinstance(routes, list) else []
 
 
 def _covered(page_data, screens: dict[str, dict]) -> list[str]:
-    routes = _page_routes(page_data)
-    return [screen for screen in sorted(screens) if covers(routes, screen)]
+    paths = _page_paths(page_data)
+    return [screen for screen in sorted(screens) if covers(paths, screen)]
 
 
 def check_screen_coverage(pages: list[PageFile], screens: dict[str, dict] | None = None) -> list[str]:
     """Every signed-in screen is covered by the routes of at least one page."""
     screens = screen_facts() if screens is None else screens
-    routes = [_page_routes(page.data) for page in pages]
+    routes = [_page_paths(page.data) for page in pages]
     return [f"{screen}: no help page covers this screen"
             for screen in sorted(screens) if not any(covers(r, screen) for r in routes)]
 

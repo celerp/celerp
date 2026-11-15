@@ -74,6 +74,12 @@ def test_page_audit_flags_a_page_that_covers_no_screen():
     other = {"/settings/inventory": SCREENS["/settings/inventory"]}
     assert _reported(checks.check_covers_screen(_pages("good"), screens=other)) == {"add-item.json"}
     assert checks.check_covers_screen(_pages("good"), screens=SCREENS) == []
+    # A route naming a tab or a type covers the screen its path serves.
+    page = _pages("good")[0]
+    tabbed = checks.PageFile(path=page.path, data={**page.data, "routes": ["/settings/inventory?tab=units"]},
+                             module=page.module, help_dir=page.help_dir)
+    assert checks.check_covers_screen([tabbed], screens=SCREENS) == []
+    assert checks.check_screen_coverage([tabbed], screens=SCREENS) == ["/inventory: no help page covers this screen"]
 
 
 def _stamped(screens) -> list[checks.PageFile]:
