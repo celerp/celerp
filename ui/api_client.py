@@ -1064,7 +1064,8 @@ async def get_recognition(token: str) -> dict:
 
 
 async def get_recognition_roll_forward(token: str, params: dict) -> dict:
-    """The deferred revenue roll-forward between ``date_from`` and ``date_to``."""
+    """The deferred revenue roll-forward between ``date_from`` and ``date_to``; an open end
+    runs from the first entry or to today."""
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/recognition/roll-forward", params=params)).json()
 
@@ -2449,11 +2450,12 @@ async def subscriptions_members(token: str) -> dict:
         return _raise(await c.get("/subscriptions/members")).json()
 
 
-async def donor_statements_preview(token: str, date_from: str, date_to: str) -> dict:
-    """Returns {donors, wording}: each donor of the period with their gifts, email and whether
-    their statement under the current wording was sent."""
+async def donor_statements_preview(token: str, params: dict) -> dict:
+    """Returns {donors, wording, period}: each donor of the period (``from``/``to``, an open end
+    left out) with their gifts, email and whether their statement under the current wording was
+    sent, and the period's dates as the API resolved them."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/donors/statements/preview", params={"from": date_from, "to": date_to})).json()
+        return _raise(await c.get("/donors/statements/preview", params=params)).json()
 
 
 async def send_donor_statements(token: str, date_from: str, date_to: str, confirm: bool,
@@ -2475,10 +2477,9 @@ async def set_donor_wording(token: str, text: str) -> dict:
         return _raise(await c.put("/donors/statements/wording", json={"text": text})).json()
 
 
-async def donor_statement_pdf(token: str, contact_id: str, date_from: str, date_to: str) -> bytes:
+async def donor_statement_pdf(token: str, contact_id: str, params: dict) -> bytes:
     async with _api_client(token, timeout=30.0) as c:
-        return _raise(await c.get(f"/donors/{_segment(contact_id)}/statement.pdf",
-                                  params={"from": date_from, "to": date_to})).content
+        return _raise(await c.get(f"/donors/{_segment(contact_id)}/statement.pdf", params=params)).content
 
 
 async def acknowledge_subscriptions_summary(token: str, keys: list[str]) -> dict:

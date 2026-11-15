@@ -6,10 +6,17 @@
   "routes": ["/settings/inventory"],
   "permission": "manage_module_settings",
   "order": 4,
+  "checked": "7da9687585440c133c50e3fe3129a90039fa165582df0d7ffe8862ea1a805830",
   "steps": [
     {
-      "text": "On {title}, the tabs cover {loc}, {cat}, {units} and {reorder}.",
-      "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder"},
+      "text": "On {title}, the tabs cover {loc}, {cat}, {units}, {reorder}, {bulk} and {history}.",
+      "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder", "bulk": "settings.tab_bulk_attach", "history": "settings.tab_import_history"},
+      "image": null,
+      "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to add or change locations, categories or units. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
     }

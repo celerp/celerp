@@ -6,15 +6,16 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 2,
+  "checked": "6b593d1c2f8ec97cf9935fea298dbfdd342f89568fa05759f07a417e070d113e",
   "steps": [
     {
-      "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create or update.",
+      "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create, update or delete. The card also says when the change sends something outside Celerp, or finalizes or voids a document, and a change to many records comes as one card with their count and list.",
       "labels": {},
       "image": null,
       "capture": {"route": "/ai", "selector": "main", "actions": []}
     },
     {
-      "text": "Confirm applies the change and links to the record it created or updated; Dismiss discards the proposal and nothing is written. Several proposals from the same answer can be confirmed together with one Confirm all.",
+      "text": "Confirm applies the change and links to the record it created or updated; Dismiss discards the proposal and nothing is written. Confirm all applies every proposal from the same answer; if one fails, later changes to the same record stay pending with the reason while the others still run. Once every card is answered, the assistant carries on with your request.",
       "labels": {},
       "image": null,
       "capture": {"route": "/ai", "selector": "main", "actions": []}

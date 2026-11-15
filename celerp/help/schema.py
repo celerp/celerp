@@ -15,6 +15,8 @@ from pathlib import Path
 
 PAGE_KEYS = frozenset({"id", "title", "summary", "keywords", "routes", "permission",
                        "order", "steps", "related"})
+# Optional page key: the content hash of the screens the page was last checked against.
+OPTIONAL_PAGE_KEYS = frozenset({"checked"})
 STEP_KEYS = frozenset({"text", "labels", "image", "capture"})
 CAPTURE_KEYS = frozenset({"route", "selector", "actions"})
 # One verb per action; "fill" also carries the text to type.
@@ -27,6 +29,7 @@ MAX_FILE_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 60 * 1024
 
 _ID = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+$")
+_CHECKED = re.compile(r"^[0-9a-f]{64}$")
 PLACEHOLDER = re.compile(r"\{([a-z0-9_]+)\}")
 _IMAGE = re.compile(r"^img/[A-Za-z0-9][A-Za-z0-9_-]*\.webp$")
 
@@ -60,8 +63,8 @@ def _str_list(value) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) for v in value)
 
 
-def _keys(where: str, data: dict, allowed: frozenset[str]) -> list[str]:
-    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed)]
+def _keys(where: str, data: dict, allowed: frozenset[str], optional: frozenset[str] = frozenset()) -> list[str]:
+    errors = [f"{where}unknown key {k!r}" for k in sorted(set(data) - allowed - optional)]
     errors += [f"{where}missing key {k!r}" for k in sorted(allowed - set(data))]
     return errors
 
@@ -121,7 +124,7 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
     owning module's short name (see module_prefix); the page id must start with it."""
     if not isinstance(data, dict):
         return None, ["page must be a JSON object"]
-    errors = _keys("", data, PAGE_KEYS)
+    errors = _keys("", data, PAGE_KEYS, OPTIONAL_PAGE_KEYS)
     if errors:
         return None, errors
     page_id = data["id"]
@@ -145,6 +148,8 @@ def validate(data, help_dir: Path, prefix: str) -> tuple[HelpPage | None, list[s
         errors.append("permission must be a permission key or null")
     if not isinstance(data["order"], int) or isinstance(data["order"], bool):
         errors.append("order must be a whole number")
+    if "checked" in data and not (isinstance(data["checked"], str) and _CHECKED.match(data["checked"])):
+        errors.append("checked must be 64 lower case hex digits")
     steps = data["steps"]
     if not isinstance(steps, list) or not steps:
         errors.append("steps must be a non-empty list")

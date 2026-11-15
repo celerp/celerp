@@ -6,6 +6,7 @@
   "routes": ["/settings/cloud"],
   "permission": "manage_integrations",
   "order": 1,
+  "checked": "d245441f0f26e9e2c55ab4185993d89a364a281db3edcebd8caa13ad93a9f3f8",
   "steps": [
     {
       "text": "Open {access} from Settings. Celerp Connect adds {backup}: your database is encrypted on this machine before it ever leaves it.",
@@ -15,6 +16,12 @@
     },
     {
       "text": "Once Celerp Connect is active, the status tab here shows when the last backup ran and when the next one is due.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant when the last backup ran, to list your backups or to start one now. It shows each change as a card and makes it only when you confirm. Restoring a backup stays with you on this page.",
       "labels": {},
       "image": null,
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}

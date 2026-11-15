@@ -1,0 +1,25 @@
+{
+  "id": "fixed-assets.opening",
+  "title": "Tying opening asset balances to the ledger",
+  "summary": "Tie the register to the ledger at the date you started using fixed assets.",
+  "keywords": ["opening balance", "cutover", "opening journal", "register"],
+  "routes": ["/fixed-assets/opening"],
+  "permission": "manage_accounting",
+  "order": 8,
+  "checked": "7153ca9246f4e173f43e63a4897b4aa9c23b4b70cf2f61fb2c69b8cc56e3fa79",
+  "steps": [
+    {
+      "text": "{title} shows what the ledger and the register hold on each asset account at the cutover. Record the opening journal, or use {add} for an opening asset that is missing, until the differences are zero.",
+      "labels": {"title": "fixed_assets.opening_title", "add": "fixed_assets.add_asset"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant how the opening balances stand, or to finish them. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/opening", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

@@ -14,6 +14,7 @@
   ],
   "permission": "view_subscriptions",
   "order": 5,
+  "checked": "e66a7a30a0d89daed0da6de5cf542a241ce0b1aef87ad53e846c8f72292269c3",
   "steps": [
     {
       "text": "Open {nav} from the sidebar to see every subscriber.",
@@ -60,6 +61,16 @@
             "wait": "main h3"
           }
         ]
+      }
+    },
+    {
+      "text": "You can also ask the assistant to change a subscriber's seats, pause or cancel a subscription. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/subscribers",
+        "selector": "main",
+        "actions": []
       }
     }
   ],

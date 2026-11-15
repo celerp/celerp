@@ -1,0 +1,25 @@
+{
+  "id": "fixed-assets.reminders",
+  "title": "Asset reminders",
+  "summary": "See the services, warranties and other dates due on your assets.",
+  "keywords": ["reminder", "service", "warranty", "insurance", "due"],
+  "routes": ["/fixed-assets/reminders"],
+  "permission": "view_fixed_assets",
+  "order": 10,
+  "checked": "de96a2b1335adcc37794fa14e81935f186b4306a765788ddfd6af5e2467520fd",
+  "steps": [
+    {
+      "text": "{title} lists the reminders set on your assets that fall due soon, with {over} ones first. Click an asset to open it.",
+      "labels": {"title": "fixed_assets.due_soon_title", "over": "fixed_assets.overdue"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which asset reminders are due.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reminders", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

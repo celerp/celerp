@@ -105,6 +105,13 @@ def demo_token(api_server, api):
             # already-started state.
             r = await client.post("/fixed-assets/api/start", headers={"Authorization": f"Bearer {token}"})
             assert r.status_code in (200, 201), r.text
+            # Opening balances and Reconciliation open only once the first managed period is
+            # confirmed: confirm the period the app suggests, as the user does.
+            r = await client.get("/fixed-assets/api/setup", headers=auth)
+            assert r.status_code == 200, r.text
+            r = await client.patch("/fixed-assets/api/settings", headers=auth,
+                                   json={"first_managed_period": r.json()["first_period"]["suggested"]})
+            assert r.status_code == 200, r.text
             # Donors and Subscribers show a donor's statement and a subscriber's quantities only
             # once there is one: a gift by bank transfer from a contact to a gift category's income
             # account, and an active agreement.

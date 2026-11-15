@@ -6,10 +6,17 @@
   "routes": ["/reports/ar-aging"],
   "permission": "view_financial_reports",
   "order": 2,
+  "checked": "e295e0a25196858128f4d04d8aaee64b94afdc69ce2a2b8820d63c9588826587",
   "steps": [
     {
       "text": "Each report has a row of preset periods such as {month}, or a custom range typed into the two date fields beside them.",
       "labels": {"month": "filter.this_month"},
+      "image": null,
+      "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant for a report over any period, such as what customers owed at the end of last month.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/reports/ar-aging", "selector": "main", "actions": []}
     }

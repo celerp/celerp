@@ -53,6 +53,7 @@ from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, catalog_refusal, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
+from celerp.services.business_time import company_today
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
 from celerp.services import peer_accounts, peer_journals
@@ -865,6 +866,19 @@ def _require_date_range(date_from: str | None, date_to: str | None) -> None:
             status_code=422,
             detail=t("acct.err_date_range", start=date_from, end=date_to),
         )
+
+
+async def open_period(session: AsyncSession, company_id, date_from: str | None,
+                      date_to: str | None) -> tuple[str, str]:
+    """The period of a report asked for "All time" or with one end open: a missing start is
+    the day of the first posted journal entry, a missing end the business today. A given end
+    is checked by _require_date_range."""
+    _require_date_range(date_from, date_to)
+    end = date_to or (await company_today(session, company_id)).isoformat()
+    if date_from:
+        return date_from, end
+    first = min((day for _, _, day in await journal_rows(session, company_id) if day), default=end)
+    return min(first, end), end
 
 
 # The longest free-text search the journal accepts. Long enough for a memo or a

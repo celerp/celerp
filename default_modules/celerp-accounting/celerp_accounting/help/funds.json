@@ -26,6 +26,7 @@
   ],
   "permission": "manage_accounting",
   "order": 6,
+  "checked": "73e0c62716b766cb58617706c180f39526c044273acd4cb9287043fdd7d289f0",
   "steps": [
     {
       "text": "A fund is a pot of money you track on its own. A restricted fund holds gifts a donor limited to a purpose. An unrestricted fund holds money you set aside for a use of your own, and you can spend or move it as you decide. Money on no fund shows as {unres}.",
@@ -189,6 +190,16 @@
       "image": null,
       "capture": {
         "route": "/reports/funds/balance-sheet",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "You can also ask the assistant to create or archive a fund, move money between funds, release restricted money or read a fund report. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
         "selector": "main",
         "actions": []
       }

@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, error_message
 from ui.components.encode import safe_url
-from ui.components.report_kit import plain_error_response
+from ui.components.report_kit import date_params, plain_error_response
 from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, doc_href, empty_state_cta, fmt_money
 from ui.config import get_token as _token
@@ -40,8 +40,11 @@ def _page_url(date_from: str, date_to: str) -> str:
     return f"{PAGE}?{urlencode({'from': date_from, 'to': date_to})}"
 
 
+PERIOD_NAMES = ("from", "to")
+
+
 def _period_vals(date_from: str, date_to: str) -> dict:
-    return {"from": date_from, "to": date_to}
+    return dict(zip(PERIOD_NAMES, (date_from, date_to)))
 
 
 def _gift_line(gift: dict, currency: str | None) -> FT:
@@ -147,12 +150,15 @@ def setup_routes(app):
         try:
             company = await _get_company(token)
             d_from, d_to, preset = _parse_dates(request, company)
-            data = await api.donor_statements_preview(token, d_from, d_to)
+            data = await api.donor_statements_preview(token, date_params(d_from, d_to, PERIOD_NAMES))
             rows = data.get("donors") or []
+            # An open end ("All time") is dated by the API, so the send and each statement
+            # cover the dates the list was read for.
+            period = (data["period"]["from"], data["period"]["to"])
             body = Div(
-                donors_table(rows, (d_from, d_to), company.get("currency")),
+                donors_table(rows, period, company.get("currency")),
                 wording_card(data["wording"]),
-                send_card((d_from, d_to)) if rows else "",
+                send_card(period) if rows else "",
             )
             bar = _date_filter_bar(PAGE, d_from, d_to, preset, settings_link="/settings/general?tab=company", lang=lang)
         except APIError as e:
@@ -167,7 +173,8 @@ def setup_routes(app):
             return away
         q = request.query_params
         try:
-            pdf = await api.donor_statement_pdf(_token(request), contact_id, q.get("from", ""), q.get("to", ""))
+            pdf = await api.donor_statement_pdf(_token(request), contact_id,
+                                                date_params(q.get("from", ""), q.get("to", ""), PERIOD_NAMES))
         except APIError as e:
             return plain_error_response(e)
         return Response(content=pdf, media_type="application/pdf",
