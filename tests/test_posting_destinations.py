@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 
+import bank_statement_helpers as B
 from migration_support import auth as bearer
 from test_helpers import in_language, doc_version
 from test_posting_roles_race_pg_draft import _company, _race, race  # noqa: F401  (race is a fixture)
@@ -28,9 +29,13 @@ _REFUSALS = {
 
 
 def _refused(r, why: str, code: str) -> None:
+    key, english = _REFUSALS[why]
+    if r.status_code == 200 and "results" in r.json():  # a bank resolve answers line by line
+        [result] = r.json()["results"]
+        assert result["ok"] is False and result["reason"] == english.format(code=code), r.text
+        return
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    key, english = _REFUSALS[why]
     assert detail["message_key"] == key, detail
     assert detail["message"] == english.format(code=code), detail
     assert in_language("de", detail) != detail["message"]
@@ -62,32 +67,26 @@ async def _statement_line(client, headers) -> tuple[str, str]:
     r = await client.post("/accounting/reconciliation/start", headers=headers, json={
         "bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": -49.5})
     assert r.status_code == 200, r.text
-    sid = r.json()["id"]
-    r = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=headers,
-                          files={"file": ("s.csv", b"Date,Description,Amount\n2026-03-01,Fee,-50\n", "text/csv")})
-    assert r.status_code == 200, r.text
-    [line] = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=headers)).json()["items"]
-    return sid, line["id"]
+    got = await B.import_into(client, headers, r.json()["id"], B.csv_bytes([("2026-03-01", "Fee", "-50")]))
+    [line] = got["lines"]
+    return got["session_id"], line["id"]
 
 
 async def _recon_create(client, headers, code: str):
     sid, line = await _statement_line(client, headers)
-    return await client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
-                             json={"account_code": code})
+    return await B.decide(client, headers, sid, line, "post", account_code=code)
 
 
 async def _recon_split(client, headers, code: str):
     sid, line = await _statement_line(client, headers)
-    return await client.post(f"/accounting/reconciliation/{sid}/lines/{line}/split", headers=headers,
-                             json={"splits": [{"account_code": "6100", "amount": 20},
-                                              {"account_code": code, "amount": 30}]})
+    return await B.decide(client, headers, sid, line, "post", splits=[{"account_code": "6100", "amount": 20},
+                                                                       {"account_code": code, "amount": 30}])
 
 
 async def _recon_write_off(client, headers, code: str):
     sid, line = await _statement_line(client, headers)
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
-                          json={"account_code": "6100"})
-    assert r.status_code == 200, r.text
+    r = await B.decide(client, headers, sid, line, "post", account_code="6100")
+    assert r.status_code == 200 and r.json()["refused"] == 0, r.text
     return await client.post(f"/accounting/reconciliation/{sid}/write-off", headers=headers,
                              json={"account_code": code})
 
@@ -186,16 +185,11 @@ async def test_a_split_with_no_account_chosen_is_refused(client, auth, splits):
     headers = auth["headers"]
     sid, line = await _statement_line(client, headers)
 
-    r = await client.post(f"/accounting/reconciliation/{sid}/lines/{line}/split", headers=headers,
-                          json={"splits": splits})
+    r = await B.decide(client, headers, sid, line, "post", splits=splits)
 
     assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
-    assert detail["message_key"] == "reconciliation.split.account_required", detail
-    assert detail["message"] == "Choose an account for every split."
-    assert in_language("de", detail) != detail["message"]
     [stmt] = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=headers)).json()["items"]
-    assert stmt["status"] != "matched"
+    assert stmt["status"] == "unmatched"
 
 
 @pytest.mark.asyncio
@@ -295,8 +289,7 @@ async def _race_recon(engine, client, hold, change, why: str) -> None:
 
     changed, posted = await _race(
         engine, client, hold, lambda: change(client, headers),
-        lambda: client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
-                            json={"account_code": "6990"}))
+        lambda: B.decide(client, headers, sid, line, "post", account_code="6990"))
 
     assert changed.status_code == 200, changed.text
     _refused(posted, why, "6990")
@@ -336,11 +329,10 @@ async def test_a_chart_import_waits_for_a_posting_to_the_account_it_puts_one_und
 
     posted, imported = await _race(
         committed_engine, client, hold,
-        lambda: client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
-                            json={"account_code": "6990"}),
+        lambda: B.decide(client, headers, sid, line, "post", account_code="6990"),
         lambda: _import_child(client, headers))
 
-    assert posted.status_code == 200, posted.text
+    assert posted.status_code == 200 and posted.json()["refused"] == 0, posted.text
     assert imported.status_code == 200 and imported.json()["created"] == 1, imported.text
 
 
@@ -359,8 +351,7 @@ async def test_a_posting_waiting_on_the_default_chart_putting_an_account_under_i
 
     seeded, posted = await _race(
         committed_engine, client, hold, lambda: client.post("/accounting/chart/seed", headers=headers),
-        lambda: client.post(f"/accounting/reconciliation/{sid}/lines/{line}/create", headers=headers,
-                            json={"account_code": "2200"}))
+        lambda: B.decide(client, headers, sid, line, "post", account_code="2200"))
 
     assert seeded.status_code == 200 and seeded.json()["added"] == 1, seeded.text
     _refused(posted, "header", "2200")

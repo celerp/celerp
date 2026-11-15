@@ -365,7 +365,7 @@ def setup_routes(app):
 
             def again(error: str) -> FT:
                 return BG.split_form(bank_id, options, bank.get("currency"), line_id=line_id, parts=parts, error=error)
-            if not parts:
+            if not parts or not all(c for c, _a in parts):
                 return again(t("reconciliation.split.account_required"))
             decision = {"kind": "post", "splits": [{"account_code": c, "amount": a or 0} for c, a in parts]}
         else:
