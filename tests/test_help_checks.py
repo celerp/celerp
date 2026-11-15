@@ -2,6 +2,7 @@
 so a check whose rule is deleted fails here even while every shipped page is valid."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,52 @@ def test_screen_help_check_flags_each_screen_without_its_page():
     assert checks.check_screen_help([], modules=GOOD_SCREENS)
 
 
+# Signed-in screens of the app and the content hash of each screen's handlers.
+SCREENS = {
+    "/inventory": {"handlers": ["ui.routes.inventory.inventory_page"], "digest": "a" * 64},
+    "/settings/inventory": {"handlers": ["ui.routes.settings_inventory.settings_page"], "digest": "b" * 64},
+}
+
+
+def test_screen_coverage_names_each_screen_no_page_covers():
+    assert checks.check_screen_coverage(_pages("good"), screens=SCREENS) == [
+        "/settings/inventory: no help page covers this screen"]
+    assert checks.check_screen_coverage(_pages("good"), screens={"/inventory": SCREENS["/inventory"]}) == []
+
+
+def test_page_audit_flags_a_page_that_covers_no_screen():
+    other = {"/settings/inventory": SCREENS["/settings/inventory"]}
+    assert _reported(checks.check_covers_screen(_pages("good"), screens=other)) == {"add-item.json"}
+    assert checks.check_covers_screen(_pages("good"), screens=SCREENS) == []
+
+
+def _stamped(screens) -> list[checks.PageFile]:
+    page = _pages("good")[0]
+    return [checks.PageFile(path=page.path, data={**page.data, "checked": checks.page_checked(page.data, screens)},
+                            module=page.module, help_dir=page.help_dir)]
+
+
+def test_checked_stamp_flags_a_missing_or_stale_value():
+    assert _reported(checks.check_checked(_pages("good"), screens=SCREENS)) == {"add-item.json"}
+    assert checks.check_checked(_stamped(SCREENS), screens=SCREENS) == []
+    changed = {**SCREENS, "/inventory": {**SCREENS["/inventory"], "digest": "c" * 64}}
+    stale = checks.check_checked(_stamped(SCREENS), screens=changed)
+    assert len(stale) == 1 and stale[0].startswith("add-item.json:")
+    assert "ui.routes.inventory.inventory_page" in stale[0] and "stamp inventory.add-item" in stale[0]
+    # A screen the page does not cover never re-opens it.
+    unrelated = {**SCREENS, "/settings/inventory": {**SCREENS["/settings/inventory"], "digest": "d" * 64}}
+    assert checks.check_checked(_stamped(SCREENS), screens=unrelated) == []
+
+
+def test_stamp_writes_the_value_once_in_place():
+    text = (FIXTURES / "good" / "add-item.json").read_text(encoding="utf-8")
+    once = checks.stamp_text(text, "e" * 64)
+    assert json.loads(once) == {**json.loads(text), "checked": "e" * 64}
+    again = checks.stamp_text(once, "f" * 64)
+    assert json.loads(again)["checked"] == "f" * 64 and again.count('"checked"') == 1
+
+
 def test_every_check_is_exercised():
     defined = {n for n in dir(checks) if n.startswith("check_")}
-    assert defined == set(EXPECTED) | {"check_screen_help"}
+    assert defined == set(EXPECTED) | {"check_screen_help", "check_screen_coverage", "check_covers_screen",
+                                       "check_checked"}

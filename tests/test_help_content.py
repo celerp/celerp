@@ -32,8 +32,21 @@ def test_help_content_label_keys(pages):
     assert checks.check_label_keys(pages) == []
 
 
-def test_help_content_routes(pages):
-    assert checks.check_routes(pages) == []
+def test_every_help_page_is_in_the_audit(pages):
+    """Every route a page names is a screen of the app, and every page covers at least one
+    signed-in screen."""
+    assert checks.check_routes(pages) + checks.check_covers_screen(pages) == []
+
+
+def test_every_screen_has_a_help_page(pages):
+    assert checks.check_screen_coverage(pages) == []
+
+
+def test_every_help_page_checked_matches_its_screens(pages):
+    """A page's ``checked`` stamp is the content hash of the handlers of the screens it covers,
+    so a change to one of those screens re-opens the page until its steps are re-read and it is
+    stamped again (python -m celerp.help.checks stamp <page id>)."""
+    assert checks.check_checked(pages) == []
 
 
 def test_help_content_permissions(pages):
