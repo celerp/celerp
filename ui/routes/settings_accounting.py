@@ -249,13 +249,17 @@ async def _period_lock_refused(token: str, message: str, close_value: str = "",
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
-    bank_options = [Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"]) for b in banks]
+    bank_names = {b["id"]: f"{b['bank_name']} {b.get('account_number', '')}".strip() for b in banks}
+    bank_options = [Option(t("acct.rule_every_bank"), value=""),
+                    *[Option(name, value=bank_id) for bank_id, name in bank_names.items()]]
     _bank_opt, _bank_js = add_new_option(t("settings_accounting.add_new_bank_account_option"), "/settings/accounting?tab=bank-accounts")
     _MATCH_TYPES = ("contains", "exact", "starts_with")
 
     rows = []
     for r in rules:
+        bank_id = r.get("bank_account_id")
         rows.append(Tr(
+            Td(bank_names.get(bank_id, EMPTY) if bank_id else t("acct.rule_every_bank")),
             Td(r.get("match_pattern", EMPTY)),
             Td(display_enum(r.get("match_type"), "match_type") if r.get("match_type") else EMPTY),
             Td(r.get("target_account_code", EMPTY)),
@@ -279,9 +283,9 @@ def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
           cls="text-muted mb-md"),
         Div(
             Table(
-                Thead(Tr(Th(t("th.pattern")), Th(t("th.match_type")), Th(t("th.account")), Th(t("th.default_memo")),
+                Thead(Tr(Th(t("label.bank_account")), Th(t("th.pattern")), Th(t("th.match_type")), Th(t("th.account")), Th(t("th.default_memo")),
                          Th(t("th.status")), Th(t("th.applied")), Th(""))),
-                Tbody(*rows) if rows else Tbody(Tr(Td(t("acct.no_rules_yet"), colspan="7", cls="empty-state"))),
+                Tbody(*rows) if rows else Tbody(Tr(Td(t("acct.no_rules_yet"), colspan="8", cls="empty-state"))),
                 cls="data-table",
             ),
             id="rules-list",
@@ -1362,14 +1366,14 @@ def setup_routes(app):
             return Div(P(t("error.session_expired")), id="rules-list")
         form = await request.form()
         data = {
-            "bank_account_id": str(form.get("bank_account_id", "")).strip(),
+            "bank_account_id": str(form.get("bank_account_id", "")).strip() or None,
             "match_pattern": str(form.get("match_pattern", "")).strip(),
             "match_type": str(form.get("match_type", "contains")).strip(),
             "target_account_code": str(form.get("target_account_code", "")).strip(),
             "default_memo": str(form.get("default_memo", "")).strip() or None,
         }
-        if not data["bank_account_id"] or not data["match_pattern"] or not data["target_account_code"]:
-            return Div(P(t("acct.bank_account_pattern_and_account_code_are_required"), cls="error-banner"), id="rules-list")
+        if not data["match_pattern"] or not data["target_account_code"]:
+            return Div(P(t("acct.rule_pattern_and_account_code_are_required"), cls="error-banner"), id="rules-list")
         try:
             await api.create_recon_rule(token, data)
             rules_data = await api.get_recon_rules(token)

@@ -302,3 +302,39 @@ async def test_complete_reads_on_the_bank_page_what_completed_and_where_it_stopp
     assert done.await_args.args[1:] == ("b1", "complete", {"idempotency_key": "k1"})
     assert t("bank.completed", n=1) in r.text and "Statement s2 does not tie" in r.text
     assert 'id="bank-body"' in r.text
+
+
+# ── Settings: rules on every bank ───────────────────────────────────────────
+
+async def test_a_rule_can_be_added_for_every_bank(ui_client):
+    """The rules tab offers Every bank first, names each rule's bank, and a rule saved with
+    Every bank goes to the API with no bank, which the API keeps as a rule on every bank."""
+    from ui.i18n import t
+    every = {"id": "r1", "bank_account_id": None, "match_pattern": "FEE", "match_type": "contains",
+             "target_account_code": "5100", "is_active": True, "times_applied": 0}
+    one = {**every, "id": "r2", "bank_account_id": "b1", "match_pattern": "RENT"}
+    create = AsyncMock(return_value=every)
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.create_recon_rule", create), \
+         patch("ui.api_client.get_recon_rules", AsyncMock(return_value={"items": [every, one]})), \
+         patch("ui.api_client.get_bank_accounts", AsyncMock(return_value={"items": [_BANK]})):
+        r = await ui_client.post("/settings/accounting/rules", data={
+            "bank_account_id": "", "match_pattern": "FEE", "match_type": "contains", "target_account_code": "5100"})
+    assert r.status_code == 200 and "error-banner" not in r.text, r.text
+    assert create.await_args.args[1]["bank_account_id"] is None
+    select = re.search(r'<select[^>]*name="bank_account_id".*?</select>', r.text, re.S).group(0)
+    first = re.search(r"<option[^>]*>([^<]*)</option>", select)
+    assert first.group(1) == t("acct.rule_every_bank") and 'value=""' in first.group(0)
+    rows = re.findall(r"<tr>.*?</tr>", r.text, re.S)
+    assert any("FEE" in row and t("acct.rule_every_bank") in row for row in rows)
+    assert any("RENT" in row and "Main Bank" in row for row in rows)
+
+
+async def test_a_rule_without_a_pattern_or_account_is_refused_naming_both(ui_client):
+    from ui.i18n import t
+    create = AsyncMock()
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.create_recon_rule", create):
+        r = await ui_client.post("/settings/accounting/rules", data={"bank_account_id": "", "match_pattern": "",
+                                                                     "target_account_code": "5100"})
+    assert t("acct.rule_pattern_and_account_code_are_required") in r.text and not create.await_count
