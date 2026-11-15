@@ -1526,6 +1526,302 @@
       "params": [
         "tables"
       ]
+    },
+    "migration.label.account": {
+      "en": "Account {name}",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.label.journal": {
+      "en": "Journal {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.transfer": {
+      "en": "Transfer {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.contact": {
+      "en": "Contact {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.document": {
+      "en": "Document {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.debit_note": {
+      "en": "Debit note {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.receipt": {
+      "en": "Receipt {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.payment": {
+      "en": "Payment {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.label.item": {
+      "en": "Item {ref}",
+      "params": [
+        "ref"
+      ]
+    },
+    "migration.record.wrong_group": {
+      "en": "Record type {record_type} does not belong to this part of the migration.",
+      "params": [
+        "record_type"
+      ]
+    },
+    "migration.record.file_target_not_imported": {
+      "en": "Its target record was not imported; the file was not attached.",
+      "params": []
+    },
+    "migration.record.file_target_gone": {
+      "en": "Its target record no longer exists; the file was not attached.",
+      "params": []
+    },
+    "migration.record.file_hash_mismatch": {
+      "en": "The file content does not match its recorded hash; the file was not attached.",
+      "params": []
+    },
+    "migration.record.file_refused": {
+      "en": "{refusal} The file was not attached.",
+      "params": [
+        "refusal"
+      ]
+    },
+    "migration.record.currency_unsupported": {
+      "en": "Currency {code} is not supported.",
+      "params": [
+        "code"
+      ]
+    },
+    "migration.record.currency_decimals": {
+      "en": "The source keeps {code} amounts to {source} decimal places; Celerp keeps {code} to {celerp}.",
+      "params": [
+        "celerp",
+        "code",
+        "source"
+      ]
+    },
+    "migration.record.tax_inclusive": {
+      "en": "Tax code {name} is tax-inclusive, which Celerp tax rates do not support.",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.record.tax_rate_differs": {
+      "en": "A tax named {name} already exists with a different rate.",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.record.location_exists": {
+      "en": "A location named {name} already exists.",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.record.parent_not_imported": {
+      "en": "{label}: its parent account {parent} was not imported.",
+      "params": [
+        "label",
+        "parent"
+      ]
+    },
+    "migration.record.journal_not_base": {
+      "en": "{label} is in {currency}; only {base} journals can be imported.",
+      "params": [
+        "base",
+        "currency",
+        "label"
+      ]
+    },
+    "migration.record.account_not_imported": {
+      "en": "{label}: account {account} was not imported.",
+      "params": [
+        "account",
+        "label"
+      ]
+    },
+    "migration.record.contact_not_imported": {
+      "en": "{label}: contact {contact} was not imported.",
+      "params": [
+        "contact",
+        "label"
+      ]
+    },
+    "migration.record.item_not_imported": {
+      "en": "{label}: item {item} was not imported.",
+      "params": [
+        "item",
+        "label"
+      ]
+    },
+    "migration.record.tax_code_not_imported": {
+      "en": "{label}: tax code {tax_code} was not imported.",
+      "params": [
+        "label",
+        "tax_code"
+      ]
+    },
+    "migration.record.bank_account_not_imported": {
+      "en": "{label}: bank account {account} was not imported.",
+      "params": [
+        "account",
+        "label"
+      ]
+    },
+    "migration.record.document_not_imported": {
+      "en": "{label}: document {document} was not imported.",
+      "params": [
+        "document",
+        "label"
+      ]
+    },
+    "migration.record.bill_not_imported": {
+      "en": "{label}: the bill it notes was not imported.",
+      "params": [
+        "label"
+      ]
+    },
+    "migration.record.document_not_kind": {
+      "en": "{label}: document {document} is not a {kind}.",
+      "params": [
+        "document",
+        "kind",
+        "label"
+      ]
+    },
+    "migration.record.kind_not_importable": {
+      "en": "{label}: {kind} documents cannot be imported as Celerp documents.",
+      "params": [
+        "kind",
+        "label"
+      ]
+    },
+    "migration.record.transfer_sides_differ": {
+      "en": "{label}: the two sides of a transfer in {currency} must be equal.",
+      "params": [
+        "currency",
+        "label"
+      ]
+    },
+    "migration.record.transfer_two_foreign": {
+      "en": "{label} is between {source} and {destination}; transfers between two foreign currencies cannot be imported.",
+      "params": [
+        "destination",
+        "label",
+        "source"
+      ]
+    },
+    "migration.record.no_exchange_rate": {
+      "en": "{label} is in {currency} and carries no exchange rate.",
+      "params": [
+        "currency",
+        "label"
+      ]
+    },
+    "migration.record.unallocated": {
+      "en": "{label}: {amount} is not allocated to a document, which Celerp payments cannot hold.",
+      "params": [
+        "amount",
+        "label"
+      ]
+    },
+    "migration.record.no_name": {
+      "en": "{label} has no name.",
+      "params": [
+        "label"
+      ]
+    },
+    "migration.record.not_imported": {
+      "en": "{label} was not imported.",
+      "params": [
+        "label"
+      ]
+    },
+    "migration.record.stock_of_not_imported": {
+      "en": "{label}: the item it is stock of, {product}, was not imported.",
+      "params": [
+        "label",
+        "product"
+      ]
+    },
+    "migration.record.location_missing": {
+      "en": "{label}: location {location} does not exist.",
+      "params": [
+        "label",
+        "location"
+      ]
+    },
+    "migration.record.negative_quantity": {
+      "en": "{label} would have a negative quantity.",
+      "params": [
+        "label"
+      ]
+    },
+    "migration.record.one_location": {
+      "en": "{label} is kept at one location in Celerp; its position at {location} cannot be imported.",
+      "params": [
+        "label",
+        "location"
+      ]
+    },
+    "notice.mfg_not_created.title": {
+      "en": "Work orders not created",
+      "params": []
+    },
+    "notice.mfg_not_created.body": {
+      "en": "{n} work order(s) could not be created on invoice posting: {products} Fix the recipe, then create the work order from the To-Make board.",
+      "params": [
+        "n",
+        "products"
+      ]
+    },
+    "notice.mfg_not_created.product": {
+      "en": "{product}: {refusal}",
+      "params": [
+        "product",
+        "refusal"
+      ]
+    },
+    "notice.mfg_not_completed.title": {
+      "en": "Work orders need completing",
+      "params": []
+    },
+    "notice.mfg_not_completed.body": {
+      "en": "{n} work order(s) could not auto-complete on invoice posting and are left planned: {runs}. Complete them manually.",
+      "params": [
+        "n",
+        "runs"
+      ]
+    },
+    "notice.mfg_auto_completed.title": {
+      "en": "Work orders auto-completed",
+      "params": []
+    },
+    "notice.mfg_auto_completed.body": {
+      "en": "{n} work order(s) were completed automatically on invoice posting: {runs}.",
+      "params": [
+        "n",
+        "runs"
+      ]
     }
   },
   "modules": {

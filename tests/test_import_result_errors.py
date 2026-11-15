@@ -156,6 +156,37 @@ def test_a_refused_import_row_keeps_its_keyed_refusal():
     assert not texts, f"a refused import row is written as text, use row_refusal: {texts}"
 
 
+def _sentence(node: ast.AST) -> bool:
+    """English prose written in place: a string, or an f-string, with a space in its text."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return " " in node.value.strip()
+    return isinstance(node, ast.JoinedStr) and any(
+        isinstance(v, ast.Constant) and " " in str(v.value) for v in node.values)
+
+
+def test_a_migration_sink_names_every_refused_record_with_a_catalog_key():
+    """A migration sink's reasons for a record it cannot import, and the record names in them,
+    are catalog refusals (migration.record.*, migration.label.*), so a failed batch reads in
+    each reader's language: no sink returns a reason, or hands a refused-record writer one,
+    as English it wrote itself."""
+    from shipped_sources import shipped_sources
+
+    texts = []
+    for rel, path in shipped_sources():
+        if path.name not in ("migration_sink.py", "migration_core_sink.py"):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and (_writes_a_refused_record(node)
+                                               or getattr(node.func, "id", "") in ("row_refusal", "record_refused")):
+                parts = node.args
+            elif isinstance(node, ast.Return) and node.value is not None:
+                parts = node.value.elts if isinstance(node.value, ast.Tuple) else [node.value]
+            else:
+                continue
+            texts += [f"{rel}:{node.lineno}" for part in parts if _sentence(part)]
+    assert not texts, f"a refused migration record is written as English text, use catalog_refusal: {texts}"
+
+
 _BATCH = re.compile(r"/import/(batch|preview)$")
 
 
