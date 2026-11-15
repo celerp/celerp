@@ -18,7 +18,7 @@ PLUGIN_MANIFEST = {
             # so they stay reachable when the reports module is not installed.
             {"group": "Finance", "key": "reports", "href": "/reports", "help": "accounting.financial-reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "permission": "view_financial_reports"},
             {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "help": "accounting.reconcile", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "permission": "manage_accounting"},
-            {"group": "Finance", "key": "donors", "href": "/donors", "label": "Donors", "label_key": "nav.donors", "order": 56, "permission": "view_payments", "verticals": ["nonprofit"]},
+            {"group": "Finance", "key": "donors", "href": "/donors", "help": "accounting.donors", "label": "Donors", "label_key": "nav.donors", "order": 56, "permission": "view_payments", "verticals": ["nonprofit"]},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_books_currency_set": {"handler": "celerp_accounting.routes:default_bank_follows_books_hook"},

@@ -1,17 +1,17 @@
 {
-  "celerp-accounting": "adedf9812338de5d425160b88e41cdaeb4179eab702503af22e337d64397dd68",
+  "celerp-accounting": "5d2c8227eb7de99ee27be333c15fbe1653bdac9636bbaf71e17eb559f5a4ad9e",
   "celerp-admin": "147f161c6ed62b824a6e1de0bda08e57927d55fc47b0769c379cfd29dd206df0",
   "celerp-ai": "68f599a268a0f30a8525e95006dbab4ca6aecdfadda0f7769f54c72e99cdc790",
   "celerp-backup": "eca25f6cfadd0973fddd32219eceef9debe1ca219c7e8e1ccdc3ba2f43f53ed9",
-  "celerp-connectors": "123729849d08fa43ba8ef509131aea05ba670a5735fae0e35ef8f22d2fbb3497",
+  "celerp-connectors": "49f6e0b786c09274e1ca8daab01740816490213a6301541d0def99f46306fca2",
   "celerp-contacts": "507b0a8e341cd902ab484aa2e1842cdfe0a2bccd134d50d0f61fff40dcaaa4fd",
   "celerp-dashboard": "59963a3cda326f537dee50afd03217a75cb7ae75165153e40fdebdc8e2f667d2",
-  "celerp-docs": "182f634816c587a17ea2bbcb8f2e5c0b88ae6a23d66fd945c007e370de702585",
+  "celerp-docs": "9de0cbb2fec2fba94a2e8201a8f7c540dbd7b7c93bf6ffaeb9fdd3ef8a39ea24",
   "celerp-fixed-assets": "6b3436769d5ce3386a30abbfecd15c371edcbde44d4112ae6bab7708e1d768ed",
-  "celerp-inventory": "0625ed478a7268b3776100fc6e49eb08a9b6125bf3f6c1e6971679304b84be57",
+  "celerp-inventory": "3423850e376920355d0e2ebfa137a93624e0dcae8e14a7f8e16c3e8a55af891b",
   "celerp-labels": "d60d8b3ddc31e8a0035f5e39087d59c5dd4fced993585553de9906d0a0715638",
   "celerp-manufacturing": "a319969bb0524248b6b31a787076f442f52a96944989b836b5578b893e512a5b",
   "celerp-reports": "5fbe93a2417b8c8d12a405a63504800146d766c3db389bae3d53dec83b38cf87",
-  "celerp-subscriptions": "8da039e5b9fbc10d4e864c219f66848d4c1454190b45ad4aa617a2d5f029efc0",
+  "celerp-subscriptions": "6bbb89bc71ad387a6d06e4eb1721d7db20b10519d775abe6058977853bfe6e69",
   "celerp-verticals": "d10fe20aff9a4c599ab8b6be34056e1843b8381ae5e283dee415de2d6c40e4d5"
 }

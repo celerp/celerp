@@ -20,7 +20,7 @@
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}
     },
     {
-      "text": "Once Celerp Connect is active, this page gains a Website tab and an Accounting tab; open either one to connect a store or books app and choose how often it syncs.",
+      "text": "Once Celerp Connect is active, this page gains a Website tab and an Accounting tab, where you connect a store or books app and choose how often it syncs, and an Online Payments tab, where you connect Stripe so customers can pay your invoices online.",
       "labels": {},
       "image": null,
       "capture": {"route": "/settings/cloud", "selector": "main", "actions": []}

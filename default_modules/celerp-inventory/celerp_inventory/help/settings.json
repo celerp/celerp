@@ -8,8 +8,8 @@
   "order": 4,
   "steps": [
     {
-      "text": "On {title}, the tabs cover {loc}, {cat}, {units} and {reorder}.",
-      "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder"},
+      "text": "On {title}, the tabs cover {loc}, {cat}, {units}, {reorder}, {bulk} and {history}.",
+      "labels": {"title": "settings_inventory.page_header", "loc": "settings.tab_locations", "cat": "settings.tab_categories", "units": "page.units", "reorder": "settings_inventory.tab_reorder", "bulk": "settings.tab_bulk_attach", "history": "settings.tab_import_history"},
       "image": null,
       "capture": {"route": "/settings/inventory", "selector": "main", "actions": []}
     }

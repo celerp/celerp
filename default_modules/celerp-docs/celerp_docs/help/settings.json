@@ -8,14 +8,14 @@
   "order": 6,
   "steps": [
     {
-      "text": "On {title}, the tabs cover {taxes}, {numbering} and {lines} for sales documents.",
-      "labels": {"title": "settings_sales.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering", "lines": "settings.tab_line_items"},
+      "text": "On {title}, the tabs cover {taxes}, {terms}, {numbering} and {lines} for sales documents.",
+      "labels": {"title": "settings_sales.page_title", "taxes": "settings.tab_taxes", "terms": "page.terms_conditions", "numbering": "settings_sales.tab_numbering", "lines": "settings.tab_line_items"},
       "image": null,
       "capture": {"route": "/settings/sales", "selector": "main", "actions": []}
     },
     {
-      "text": "On {title}, the same {taxes} and {numbering} tabs apply to purchasing documents.",
-      "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "numbering": "settings_sales.tab_numbering"},
+      "text": "On {title}, the same {taxes}, {terms} and {numbering} tabs apply to purchasing documents.",
+      "labels": {"title": "settings_purchasing.page_title", "taxes": "settings.tab_taxes", "terms": "page.terms_conditions", "numbering": "settings_sales.tab_numbering"},
       "image": null,
       "capture": {"route": "/settings/purchasing", "selector": "main", "actions": []}
     }
