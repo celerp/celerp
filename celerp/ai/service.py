@@ -533,11 +533,6 @@ _OPEN_TOOLS_SPEC = {
 }
 
 
-def first_opened(capabilities: dict) -> set[str]:
-    """The tools a run starts with open: the core set the caller may use."""
-    return set(CORE_TOOLS & set(capabilities))
-
-
 def _open_specs(capabilities: dict, opened: set[str]) -> list[dict]:
     """The tool definitions a model call carries: the opened tools, propose_for_each
     when the caller may change data, and the meta tools. None without capabilities."""
@@ -706,7 +701,7 @@ async def _agent_loop(
             name: capability for name, capability in capabilities.items()
             if not capability.get("requires_confirmation", False)
         }
-    opened = first_opened(capabilities)
+    opened = set(CORE_TOOLS & set(capabilities))
     listed: set[str] = set()
     areas = set(agent_areas(company_settings)) | {agent_area(c) for c in capabilities.values()}
     tools = _open_specs(capabilities, opened)

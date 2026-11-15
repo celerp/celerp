@@ -32,7 +32,7 @@ from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 from test_ai_usage import _conversation, owner  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 TERMINAL = {"completed", "failed", "cancelled"}

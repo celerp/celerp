@@ -530,13 +530,28 @@ _CENSUS = mutation_observer.Totals()
 
 
 @pytest.fixture
-def tools_open_from_the_start(monkeypatch):
-    """For tests whose subject is not area loading: an agent run starts with every
-    compiled tool open, as if the model had listed and opened them, so a scripted model
-    may call any tool at once. Area loading itself is tested in test_ai_agent_areas."""
+def tools_open_when_called(monkeypatch):
+    """For tests whose subject is not area loading: a tool the scripted model calls is
+    opened just before the call, as if the model had listed and opened it, so a script
+    may call any compiled tool at once. Area loading itself is tested in
+    test_ai_agent_areas."""
+    import json as _json
+
     from celerp.ai import service
 
-    monkeypatch.setattr(service, "first_opened", set)
+    parse = service._parse_call
+
+    def _opening(call, capabilities, opened):
+        function = call.get("function") or {}
+        names = {function.get("name")}
+        try:
+            names.add((_json.loads(function.get("arguments") or "{}") or {}).get("tool"))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        opened |= names & set(capabilities)
+        return parse(call, capabilities, opened)
+
+    monkeypatch.setattr(service, "_parse_call", _opening)
 
 
 @pytest.fixture(autouse=True)

@@ -21,7 +21,7 @@ from celerp.models.projections import Projection
 from test_helpers import real_agent_app
 from test_reconciliation_v2 import _auth, _create_bank, _create_recon
 
-pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 _AGENT_RECON_ROUTES = {
     ("GET", "/accounting/bank-accounts"),

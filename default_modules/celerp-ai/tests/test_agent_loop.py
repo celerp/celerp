@@ -37,7 +37,7 @@ from celerp.ai.service import (
 
 from _fixtures import raw_tool_call, tool_call, tool_result
 
-pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 
 # -- Fake capabilities (shape mirrors compile_agent_capabilities output) ----

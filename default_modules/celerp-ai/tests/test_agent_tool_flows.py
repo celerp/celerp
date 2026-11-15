@@ -33,7 +33,7 @@ from test_action_outcomes import (
 )
 from test_workflows import ScriptedModel, _new_conversation, _op, agent_caps, ai_session, xlsx_upload  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 
 _USERS = "/companies/me/users"
 _LOCATIONS = "/companies/me/locations"

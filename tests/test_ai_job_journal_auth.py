@@ -39,7 +39,7 @@ from test_helpers import clear_sessions as clear_tracker
 from test_ai_job_run_context import SEARCH, _restarted_between_the_tool_call_and_its_read
 from test_ai_usage import _conversation, _settled, owner  # noqa: F401
 
-pytestmark = pytest.mark.usefixtures("tools_open_from_the_start")
+pytestmark = pytest.mark.usefixtures("tools_open_when_called")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 QUERY = "How do I add a supplier?"
