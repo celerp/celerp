@@ -29,7 +29,7 @@ from celerp.db import get_session
 from celerp.downloads import content_disposition
 from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stripe_receipt,
                                   refuse_stripe_payment_removal, stripe_payment_indexes, stripe_receipt_references)
-from celerp.importers.results import BatchImportResult, row_refusal
+from celerp.importers.results import BatchImportResult, record_refused, row_refusal
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
@@ -10731,7 +10731,7 @@ async def batch_import_lists(
     for rec in body.records:
         if rec.event_type != "list.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type} isn't a supported import type")
+                errors.append(record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             skipped += 1
             continue
         if rec.idempotency_key in existing_keys:

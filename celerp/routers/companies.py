@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
-from celerp.importers.results import BatchImportResult, row_refusal
+from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -638,7 +638,7 @@ async def batch_import_settings(
         # different owners and must never be emitted against the company projection.
         if rec.event_type != "sys.company.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+                errors.append(record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             skipped += 1
             continue
         if rec.idempotency_key in existing_keys:
@@ -727,13 +727,14 @@ async def import_locations_batch(
         r.name
         for r in (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
     }
-    created = skipped = failed = 0
+    created = skipped = 0
+    errors: list[dict] = []
     first = True
-    for rec in payload.records:
+    for i, rec in enumerate(payload.records):
         name = (rec.get("name") or "").strip()
         loc_type = (rec.get("type") or "warehouse").strip()
         if not name:
-            failed += 1
+            errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name in existing:
             skipped += 1
@@ -749,7 +750,7 @@ async def import_locations_batch(
         created += 1
         first = False
     await session.commit()
-    return {"created": created, "skipped": skipped, "failed": failed}
+    return {"created": created, "skipped": skipped, "failed": len(errors), "errors": errors}
 
 
 @router.get("/me/locations", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's locations, such as warehouses, shops and offices.")
@@ -1587,7 +1588,7 @@ async def import_taxes_batch(
         description = str(r.get("description", "") or "").strip()
 
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
 
         key = name.lower()
@@ -1598,11 +1599,11 @@ async def import_taxes_batch(
         try:
             rate = float(rate_raw)
         except Exception:
-            res.errors.append(f"{name}: Invalid rate")
+            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
             continue
 
         if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
+            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
 
         is_default = bool(is_default_raw)
@@ -1687,7 +1688,7 @@ async def import_payment_terms_batch(
         description = str(r.get("description", "") or "").strip()
 
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
 
         key = name.lower()
@@ -1698,7 +1699,7 @@ async def import_payment_terms_batch(
         try:
             days = int(days_raw)
         except Exception:
-            res.errors.append(f"{name}: Invalid days")
+            res.errors.append(row_refusal(name, catalog_refusal("error.days_must_be_number")))
             continue
 
         terms.append({"name": name, "days": days, "description": description})
@@ -1860,7 +1861,7 @@ async def import_purchasing_taxes_batch(
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name.lower() in existing_names:
             res.skipped += 1
@@ -1868,11 +1869,11 @@ async def import_purchasing_taxes_batch(
         try:
             rate = float(r.get("rate", None))
         except Exception:
-            res.errors.append(f"{name}: Invalid rate")
+            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
             continue
         tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
         if tax_type not in {"sales", "purchase", "both"}:
-            res.errors.append(f"{name}: Invalid tax_type: {tax_type}")
+            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
             continue
         is_default_raw = r.get("is_default", False)
         is_default = bool(is_default_raw) if isinstance(is_default_raw, bool) else str(is_default_raw).strip().lower() in {"true", "1", "yes"}
@@ -1932,7 +1933,7 @@ async def import_purchasing_payment_terms_batch(
     for i, r in enumerate(rec.data for rec in (payload.records or [])):
         name = str(r.get("name", "") or "").strip()
         if not name:
-            res.errors.append(f"row:{i}: Missing name")
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
             continue
         if name.lower() in existing_names:
             res.skipped += 1
@@ -1940,7 +1941,7 @@ async def import_purchasing_payment_terms_batch(
         try:
             days = int(r.get("days", None))
         except Exception:
-            res.errors.append(f"{name}: Invalid days")
+            res.errors.append(row_refusal(name, catalog_refusal("error.days_must_be_number")))
             continue
         terms.append({"name": name, "days": days, "description": str(r.get("description", "") or "").strip()})
         existing_names.add(name.lower())

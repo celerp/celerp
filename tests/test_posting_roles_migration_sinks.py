@@ -15,6 +15,9 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+from celerp.importers.results import message_text
+
+from test_helpers import refusal_keys
 from test_migration_sinks import _PROVENANCE, _no_attachments, _persist_mappings
 
 
@@ -184,7 +187,9 @@ async def test_an_imported_document_is_refused_when_the_source_has_no_single_rec
     await _import_chart(context, [*_SOURCE_CHART, ("ar2", "121", "Other debtors", "asset", "receivable")])
     result = await _customer_and_invoice(context)
     assert result.created == 0
-    assert "more than one Accounts receivable account (120, 121)" in result.errors[0].message
+    refused = result.errors[0].message
+    assert refusal_keys([refused]) == ["posting.source_control_ambiguous"]
+    assert "more than one Accounts receivable account (120, 121)" in message_text(refused)
 
 
 @pytest.mark.asyncio

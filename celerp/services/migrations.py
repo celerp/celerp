@@ -96,7 +96,7 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults, hold_owner
-from ui.i18n import current_lang, set_lang, t
+from ui.i18n import current_lang, refusal_text, set_lang, t
 from celerp.accounting_roles import Refused
 
 logger = logging.getLogger(__name__)
@@ -739,7 +739,7 @@ class IncompleteMigrationError(Exception):
 def _failure_details(exc: Exception) -> tuple[int, dict]:
     """The failed batch's rejected-record count and the extra error summary a failure carries."""
     if isinstance(exc, MigrationBatchError):
-        return len(exc.errors), {}
+        return len(exc.errors), {k: exc.refusal[k] for k in ("message_key", "params", "also") if k in exc.refusal}
     if isinstance(exc, IncompleteMigrationError):
         return 0, {"missing": record_identities(exc.missing)}
     return 0, {}
@@ -1342,7 +1342,7 @@ def _error_view(run: MigrationRun) -> dict | None:
     the exception, cursor or module behind it."""
     summary = run.error_summary or {}
     # A keyed message is worded at read time, in the reader's language.
-    message = (t(summary["message_key"], **summary.get("params", {})) if summary.get("message_key")
+    message = (refusal_text({"message": "", **summary}) if summary.get("message_key")
                else summary.get("message"))
     if not message:
         return None

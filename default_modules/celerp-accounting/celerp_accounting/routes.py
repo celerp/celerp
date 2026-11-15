@@ -23,7 +23,7 @@ from celerp.db import get_session
 from celerp.events.engine import (
     emit_event, keyed_event, refuse_other_request, request_fingerprint, write_period_lock,
 )
-from celerp.importers.results import BatchImportResult, failure_reason
+from celerp.importers.results import BatchImportResult, record_refused, row_n, row_refusal
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
 from celerp.services.periods import first_fiscal_year_end, fiscal_year_start_month, last_fiscal_year_end
@@ -74,7 +74,7 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
-from ui.i18n import refusal_text, t
+from ui.i18n import t
 from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,7 @@ class ChartImportRequest(BaseModel):
 class ChartImportResult(BaseModel):
     created: int
     skipped: int
-    errors: list[str]
+    errors: list[str | dict]
     skipped_codes: list[str]
 
 
@@ -487,7 +487,7 @@ class ChartImportPlan:
 
     to_create: list[dict]
     skipped_codes: list[str]
-    errors: list[str]
+    errors: list[str | dict]
 
 
 def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: dict[str, list[str]]) -> ChartImportPlan:
@@ -503,23 +503,20 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
     itself, makes the row invalid, and so does a parent that is inactive or of a
     type the row cannot sit under, and a chain of parents that runs into a loop.
     """
-    row_errors: dict[int, str] = {}
+    row_errors: dict[int, str | dict] = {}
     skipped_codes: list[str] = []
     valid: dict[int, dict] = {}
 
-    def label(i: int, code: str | None = None) -> str:
-        return f"Row {i + 1} ({code})" if code else f"Row {i + 1}"
-
     for i, rec in enumerate(records):
         if not isinstance(rec, dict):
-            row_errors[i] = f"{label(i)}: each row must be an object with code, name and account_type."
+            row_errors[i] = record_refused(row_n(i), "not_a_chart_row")
             continue
         raw_code = rec.get("code")
         shown = raw_code.strip() if isinstance(raw_code, str) else None
         try:
             code = checked_account_code(raw_code)
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, shown)}: {failure_reason(exc)}"
+            row_errors[i] = row_refusal(row_n(i, shown), exc)
             continue
         if code in existing:
             skipped_codes.append(code)
@@ -533,7 +530,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                 "is_active": _parsed_is_active(rec.get("is_active")),
             }
         except HTTPException as exc:
-            row_errors[i] = f"{label(i, code)}: {failure_reason(exc)}"
+            row_errors[i] = row_refusal(row_n(i, code), exc)
 
     in_file: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
@@ -544,13 +541,13 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
         if len(rows) > 1 and code not in existing:
             for i in rows:
                 valid.pop(i, None)
-                row_errors.setdefault(i, f"{label(i, code)}: this code appears more than once in the file.")
+                row_errors.setdefault(i, record_refused(row_n(i, code), "code_repeated"))
 
     # Drop rows whose parent cannot exist, then rows caught in a loop of parents,
     # until every remaining row hangs off the chart it will produce.
     while True:
         adding = {row["code"]: i for i, row in valid.items()}
-        bad: dict[int, str] = {}
+        bad: dict[int, str | dict] = {}
         for i, row in valid.items():
             parent = row["parent_code"]
             if parent is None:
@@ -560,12 +557,12 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
                 )
                 if problem:
-                    bad[i] = f"{label(i, row['code'])}: {refusal_text(problem)}"
+                    bad[i] = row_refusal(row_n(i, row["code"]), problem)
                 continue
             if parent in in_file:
-                bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
+                bad[i] = record_refused(row_n(i, row["code"]), "parent_not_added", parent=parent)
             else:
-                bad[i] = f"{label(i, row['code'])}: its parent {parent} is not in the chart or in this file."
+                bad[i] = record_refused(row_n(i, row["code"]), "parent_missing", parent=parent)
         if not bad:
             parents = {
                 **{code: acc["parent_code"] for code, acc in existing.items()},
@@ -580,8 +577,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     seen.add(node)
                     node = parents.get(node)
                 if node is not None:
-                    bad[i] = (f"{label(i, row['code'])}: its parent accounts form a loop "
-                              f"({' > '.join([*chain, node])}).")
+                    bad[i] = record_refused(row_n(i, row["code"]), "parent_loop", chain=" > ".join([*chain, node]))
         if not bad:
             break
         for i, message in bad.items():

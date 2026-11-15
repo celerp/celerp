@@ -15,6 +15,9 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
+from test_helpers import refusal_keys, refused_records
+from ui.i18n import t
+
 from connector_test_support import connector_routes, connector_session, record_first_sync  # noqa: F401
 
 
@@ -159,8 +162,7 @@ async def test_taxes_batch_import_invalid_rate(client):
     assert r.status_code == 200
     body = r.json()
     assert body["created"] == 0
-    assert len(body["errors"]) == 1
-    assert "Invalid rate" in body["errors"][0]
+    assert refusal_keys(body["errors"]) == ["settings.rate_must_be_a_number"], body
 
 
 @pytest.mark.asyncio
@@ -180,8 +182,7 @@ async def test_taxes_batch_import_missing_name(client):
     )
     assert r.status_code == 200
     body = r.json()
-    assert len(body["errors"]) == 1
-    assert "Missing name" in body["errors"][0]
+    assert refusal_keys(body["errors"]) == ["settings.name_required"], body
 
 
 @pytest.mark.asyncio
@@ -195,8 +196,7 @@ async def test_taxes_batch_import_invalid_tax_type(client):
     )
     assert r.status_code == 200
     body = r.json()
-    assert len(body["errors"]) == 1
-    assert "Invalid tax_type" in body["errors"][0]
+    assert refusal_keys(body["errors"]) == ["import.record.invalid_tax_type"], body
 
 
 # ── Payment terms batch import ────────────────────────────────────────────────
@@ -243,8 +243,7 @@ async def test_payment_terms_batch_import_invalid_days(client):
     )
     assert r.status_code == 200
     body = r.json()
-    assert len(body["errors"]) == 1
-    assert "Invalid days" in body["errors"][0]
+    assert refusal_keys(body["errors"]) == ["error.days_must_be_number"], body
 
 
 @pytest.mark.asyncio
@@ -263,7 +262,7 @@ async def test_payment_terms_batch_import_missing_name(client):
         headers=headers,
     )
     assert r.status_code == 200
-    assert "Missing name" in r.json()["errors"][0]
+    assert refusal_keys(r.json()["errors"]) == ["settings.name_required"], r.json()
 
 
 @pytest.mark.asyncio
@@ -273,7 +272,8 @@ async def test_purchasing_payment_terms_batch_import_creates_and_skips(client):
                            _pt_record("Soon", "x")]}
     r = await client.post("/companies/me/purchasing-payment-terms/import/batch", json=payload, headers=headers)
     assert r.status_code == 200, r.text
-    assert (r.json()["created"], r.json()["skipped"], r.json()["errors"]) == (1, 1, ["Soon: Invalid days"])
+    assert (r.json()["created"], r.json()["skipped"]) == (1, 1), r.json()
+    assert refused_records(r.json()["errors"]) == {"Soon": t("error.days_must_be_number")}, r.json()
     terms = (await client.get("/companies/me/purchasing-payment-terms", headers=headers)).json()
     assert {"name": "Net 75", "days": 75, "description": ""} in terms
 
@@ -284,7 +284,9 @@ async def test_locations_batch_import_creates_and_skips(client):
     payload = {"records": [{"name": "Back Room", "type": "store"}, {"name": "Back Room"}, {"name": " "}]}
     r = await client.post("/companies/me/locations/import/batch", json=payload, headers=headers)
     assert r.status_code == 200, r.text
-    assert r.json() == {"created": 1, "skipped": 1, "failed": 1}
+    body = r.json()
+    assert (body["created"], body["skipped"], body["failed"]) == (1, 1, 1), body
+    assert refused_records(body["errors"]) == {"Row 3": t("settings.name_required")}, body
     names = [loc["name"] for loc in (await client.get("/companies/me/locations", headers=headers)).json()["items"]]
     assert names.count("Back Room") == 1
 

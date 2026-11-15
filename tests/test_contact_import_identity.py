@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import refusal_keys, refused_records
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
@@ -101,7 +102,8 @@ async def test_a_row_matching_two_contacts_is_refused_and_writes_nothing(client,
                           _row({"name": "Other", "email": "other@t.test"}))
     assert (result["created"], result["updated"], result["skipped"]) == (1, 0, 1), result
     [error] = result["errors"]
-    assert error.startswith("Twin: matches 2 existing contacts") and "unique email, phone or name" in error
+    assert error["params"]["entity_id"] == "Twin" and refusal_keys([error]) == ["import.record.contacts_ambiguous"], error
+    assert error["params"]["refusal"]["params"]["n"] == 2, error
     assert await _contact_events(session) == before + 1
     assert {c["name"] for c in await _contacts(None, client, h)} == {"Twin A", "Twin B", "Other"}
 
@@ -137,7 +139,8 @@ async def test_a_customer_imported_again_as_a_vendor_becomes_both(client):
 async def test_an_unknown_currency_refuses_the_row(client, session):
     h = await _reg(client)
     result = await _batch(client, h, _row({"name": "Bad Money", "currency": "XXQ"}))
-    assert result["created"] == 0 and result["errors"] == [f"Bad Money: {t('error.invalid_currency', value='XXQ')}"], result
+    assert result["created"] == 0 and refused_records(result["errors"]) == {
+        "Bad Money": t("error.invalid_currency", value="XXQ")}, result
     assert await _contacts(None, client, h) == []
 
 
@@ -194,8 +197,7 @@ async def test_no_import_path_writes_the_company_own_contact(client, session):
             _row({"name": "Second Me", "is_self": True})]
     result = await _batch(client, h, *rows)
     assert result["created"] == result["updated"] == 0, result
-    assert all(t("contacts.err_import_own_contact") in e for e in result["errors"]), result
-    assert len(result["errors"]) == 3, result
+    assert refusal_keys(result["errors"]) == ["contacts.err_import_own_contact"] * 3, result
     for row in rows:
         single = await client.post("/crm/contacts/import", headers=h, json=row)
         assert single.status_code == 409, single.text

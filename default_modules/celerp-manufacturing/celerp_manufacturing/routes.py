@@ -29,7 +29,7 @@ from celerp.events.schemas import (
     workflow_step_minutes,
 )
 from celerp.models.company import Company, Location, WorkCenter
-from celerp.importers.results import BatchImportResult, failure_reason, row_refusal
+from celerp.importers.results import BatchImportResult, failure_reason, record_refused, row_refusal
 from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import migrations
@@ -1280,7 +1280,7 @@ async def batch_import_manufacturing(
     for rec in body.records:
         if rec.event_type != "mfg.order.created":
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+                errors.append(record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             skipped += 1
             continue
         try:

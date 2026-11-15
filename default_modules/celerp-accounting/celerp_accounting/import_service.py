@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.events.engine import emit_event
-from celerp.importers.results import ImportOutcome, row_refusal
+from celerp.importers.results import ImportOutcome, record_refused, row_refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
@@ -114,7 +114,7 @@ async def import_journal_records(
 
     for rec in records:
         if rec.event_type != JOURNAL_CREATED:
-            outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            outcome.add(rec.entity_id, "rejected", record_refused(rec.entity_id, "not_import_safe", event_type=rec.event_type))
             continue
         if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
             outcome.add(rec.entity_id, "skipped")
