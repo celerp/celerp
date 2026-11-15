@@ -323,6 +323,9 @@ class _Walk:
             detail = _argument(callee, node, "detail")
             if detail is False:
                 continue  # the class builds its detail in its own __init__, walked with it
+            status = _argument(callee, node, "status_code")
+            if isinstance(status, ast.Constant) and status.value == 401:
+                continue  # refuses the session, not the request (error_body.unkeyed_refusal)
             if _given(fn, tree, detail):
                 continue  # a subclass or helper passes its detail on: checked where it is built or called
             if detail is None or not self._keyed(detail, fn, scope, tree):

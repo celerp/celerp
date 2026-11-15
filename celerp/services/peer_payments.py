@@ -16,9 +16,6 @@ from celerp.models.projections import Projection
 from celerp.services.money import round_money, to_decimal
 from ui.i18n import t
 
-# What a peer copy leaves to the person keeping the receiving company's books.
-BY_HAND = "{} is not copied automatically. Enter it in the accountant's copy by hand."
-
 
 def _payment_key(source_company, doc_id: str, index: int) -> str:
     raw = f"{source_company}:{doc_id}:{index}"
@@ -71,7 +68,7 @@ def validate_source_payments(data: dict) -> list[tuple[int, dict]]:
         if refunded and not data.get("payment_events"):
             raise HTTPException(409, t("peer.err_refund_history_required_booked_payments"))
         if payment.get("source_doc_id") or payment.get("target_doc_id"):
-            raise HTTPException(409, BY_HAND.format("A credit note applied to a document"))
+            raise HTTPException(409, t("peer.err_by_hand_credit_applied"))
         if not payment.get("bank_account"):
             raise HTTPException(409, t("peer.err_source_payment_has_no_deposit_account"))
         fields = ("amount", "payment_date", "currency", "method", "reference",

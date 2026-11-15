@@ -8232,5 +8232,19 @@
   "migration.err_scan_busy": "This scan is being updated. Try again in a moment.",
   "migration.err_source_file_missing": "The uploaded file for this migration is missing. Discard it and upload the file again.",
   "migration.err_no_export_set": "Add the export files on this page first, then ask us to move this client.",
-  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}"
+  "migration.err_finish_export_set": "Finish the export set before asking us to move this client: {problems}",
+  "inventory.err_merge_stale": "The merge or its items changed since it was reviewed. Review the merge again.",
+  "inventory.err_merge_unreviewed": "Preview this merge first, then confirm it with the plan_fingerprint the preview returned.",
+  "inventory.err_merge_undone": "This merge was undone. Review the merge again.",
+  "inventory.err_import_entry_changed": "This import cannot be undone because the entry booking its opening stock was changed.",
+  "peer.err_operation_unavailable": "Integration operation unavailable",
+  "peer.err_account_type_differs": "{label} is an account of type {type}. Use another {type} account.",
+  "peer.err_account_currency_differs": "{label} is kept in {currency}. Use an account kept in {currency}.",
+  "peer.err_receiving_document_needs_review": "Receiving document needs review",
+  "peer.err_company_has_documents": "Receiving company already contains documents. Use a new company or a company copy with source identities preserved before starting financial-document synchronization.",
+  "peer.err_issued_in_copy": "The accountant's copy of this document is already issued, so this change was not copied. Nothing is needed in your books; ask your accountant if their copy should change.",
+  "peer.err_peer_only": "Only a connected company's integration key may send a source revision.",
+  "peer.err_by_hand_status": "A {status} document is not copied automatically. Enter it in the accountant's copy by hand.",
+  "peer.err_by_hand_issued": "An issued {doc_type} is not copied automatically. Enter it in the accountant's copy by hand.",
+  "peer.err_by_hand_credit_applied": "A credit note applied to a document is not copied automatically. Enter it in the accountant's copy by hand."
 }

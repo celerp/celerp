@@ -1134,6 +1134,72 @@
       "params": [
         "problems"
       ]
+    },
+    "inventory.err_merge_stale": {
+      "en": "The merge or its items changed since it was reviewed. Review the merge again.",
+      "params": []
+    },
+    "inventory.err_merge_unreviewed": {
+      "en": "Preview this merge first, then confirm it with the plan_fingerprint the preview returned.",
+      "params": []
+    },
+    "inventory.err_merge_undone": {
+      "en": "This merge was undone. Review the merge again.",
+      "params": []
+    },
+    "inventory.err_import_entry_changed": {
+      "en": "This import cannot be undone because the entry booking its opening stock was changed.",
+      "params": []
+    },
+    "peer.err_operation_unavailable": {
+      "en": "Integration operation unavailable",
+      "params": []
+    },
+    "peer.err_account_type_differs": {
+      "en": "{label} is an account of type {type}. Use another {type} account.",
+      "params": [
+        "label",
+        "type"
+      ]
+    },
+    "peer.err_account_currency_differs": {
+      "en": "{label} is kept in {currency}. Use an account kept in {currency}.",
+      "params": [
+        "currency",
+        "label"
+      ]
+    },
+    "peer.err_receiving_document_needs_review": {
+      "en": "Receiving document needs review",
+      "params": []
+    },
+    "peer.err_company_has_documents": {
+      "en": "Receiving company already contains documents. Use a new company or a company copy with source identities preserved before starting financial-document synchronization.",
+      "params": []
+    },
+    "peer.err_issued_in_copy": {
+      "en": "The accountant's copy of this document is already issued, so this change was not copied. Nothing is needed in your books; ask your accountant if their copy should change.",
+      "params": []
+    },
+    "peer.err_peer_only": {
+      "en": "Only a connected company's integration key may send a source revision.",
+      "params": []
+    },
+    "peer.err_by_hand_status": {
+      "en": "A {status} document is not copied automatically. Enter it in the accountant's copy by hand.",
+      "params": [
+        "status"
+      ]
+    },
+    "peer.err_by_hand_issued": {
+      "en": "An issued {doc_type} is not copied automatically. Enter it in the accountant's copy by hand.",
+      "params": [
+        "doc_type"
+      ]
+    },
+    "peer.err_by_hand_credit_applied": {
+      "en": "A credit note applied to a document is not copied automatically. Enter it in the accountant's copy by hand.",
+      "params": []
     }
   },
   "modules": {

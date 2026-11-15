@@ -80,6 +80,19 @@ def failure_reason(exc: BaseException) -> str:
     return str(exc)
 
 
+def row_refusal(entity_id: str, exc: BaseException) -> str | dict:
+    """A refused record's reason naming it: a keyed refusal the write raised stays keyed
+    inside ``import.record_refused``, so it reads in each reader's language; any other
+    reason as text."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.error_body import as_refusal, keyed
+
+    detail = as_refusal(getattr(exc, "detail", None))
+    if isinstance(detail, dict) and keyed(detail):
+        return catalog_refusal("import.record_refused", entity_id=entity_id, refusal=detail)
+    return f"{entity_id}: {failure_reason(exc)}"
+
+
 def message_text(message: str | dict) -> str:
     """An outcome message as English text: a refusal's own message, else the text."""
     return str(message["message"]) if isinstance(message, dict) else str(message)

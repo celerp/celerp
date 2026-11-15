@@ -167,7 +167,7 @@ async def note_delivery(company_id: uuid.UUID, grant_id: uuid.UUID, entity: str,
 
 async def _caller_grant(session: AsyncSession, ctx):
     if ctx.peer is None:
-        raise HTTPException(403, peer_access.UNAVAILABLE)
+        raise HTTPException(403, t(peer_access.UNAVAILABLE))
     return await peer_access.authenticate(session, ctx.peer.credential,
                                           source_company_id=ctx.peer.source_company_id,
                                           scope=ctx.peer.scope)

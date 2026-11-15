@@ -21,7 +21,7 @@ from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-PEER_ONLY = "Only a connected company's integration key may send a source revision."
+PEER_ONLY = "peer.err_peer_only"
 UNEXPECTED = "The receiving company could not apply this record. Its owner can see why in the server log."
 # The field every import record model carries for a connected company's records.
 SourceRevision = Annotated[int | None, Field(ge=1, le=2**63 - 1)]
@@ -66,7 +66,7 @@ class StockCountData(BaseModel):
 def refuse_source_revision(records) -> None:
     """A signed-in user's import is never treated as a connected company's."""
     if any(record.source_revision is not None for record in records):
-        raise HTTPException(422, PEER_ONLY)
+        raise HTTPException(422, t(PEER_ONLY))
 
 
 async def _contact(session, **kw) -> str:
@@ -128,7 +128,7 @@ async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file, ent
     name those ids, None: the route then stores the file with its tag and description."""
     if ctx.peer is None:
         if source_file_id is not None or sha256_hex is not None:
-            raise HTTPException(422, PEER_ONLY)
+            raise HTTPException(422, t(PEER_ONLY))
         return None
     from celerp.services.peer_attachments import receive_attachment
     if entity_type != "doc":  # a connected company sends files to documents only

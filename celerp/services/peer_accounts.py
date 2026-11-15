@@ -79,7 +79,7 @@ def parse(value) -> dict[str, dict]:
     if value is None:
         return {}
     if not isinstance(value, dict) or len(value) > _MAX_ACCOUNTS:
-        raise HTTPException(422, "Invalid accounts")
+        raise HTTPException(422, t("peer.err_invalid_accounts"))
     try:
         out = {code: _Account.model_validate(a).model_dump() for code, a in value.items()}
     except ValidationError:
@@ -476,17 +476,15 @@ async def _notify(session: AsyncSession, company_id: uuid.UUID, key: str, **para
 def use_problem(other: dict, target: dict | None, code: str, books: str) -> str | None:
     """Why ``target`` cannot take the place of the other company's ``other``, or None."""
     if target is None:
-        return f"Account {code} is not in the chart of accounts."
+        return t("posting.older_stock.not_in_chart", code=code)
     if not target["is_active"]:
-        return f"Account {code} is inactive. Choose an active account."
+        return t("posting.destination.inactive", code=code)
     if target["has_children"]:
-        return f"Account {code} is a header account. Choose one of the accounts under it."
+        return t("posting.destination.header", code=code)
     if target["account_type"] != other["account_type"]:
-        return (f"{label(other)} is {_article(other['account_type'])} account. "
-                f"Use another {other['account_type']} account.")
+        return t("peer.err_account_type_differs", label=label(other), type=other["account_type"])
     if _currency(target, books) != _currency(other, books):
-        return (f"{label(other)} is kept in {_currency(other, books)}. "
-                f"Use an account kept in {_currency(other, books)}.")
+        return t("peer.err_account_currency_differs", label=label(other), currency=_currency(other, books))
     return None
 
 

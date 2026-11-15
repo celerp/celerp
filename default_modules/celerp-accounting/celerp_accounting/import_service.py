@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.events.engine import emit_event
-from celerp.importers.results import ImportOutcome, failure_reason
+from celerp.importers.results import ImportOutcome, failure_reason, row_refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
@@ -148,7 +148,7 @@ async def import_journal_records(
             # A concurrent import of the same file can write the row first.
             outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
+            outcome.add(rec.entity_id, "failed", row_refusal(rec.entity_id, exc))
     return outcome
 
 

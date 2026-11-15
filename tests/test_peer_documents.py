@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from celerp.services import peer_documents as documents
+from ui.i18n import t
 
 
 def _grant():
@@ -554,7 +555,7 @@ async def test_a_change_to_an_issued_bill_the_copy_holds_tells_the_client_what_h
             data={**payload, "line_items": [{"description": "Paper", "quantity": 3,
                                              "unit_price": 40.0}]})
     assert refused.value.status_code == 409
-    assert refused.value.detail == documents.ISSUED_IN_COPY
+    assert refused.value.detail == t(documents.ISSUED_IN_COPY)
     assert "doc:" not in refused.value.detail and "Draft" not in refused.value.detail
 
 
@@ -759,7 +760,7 @@ async def test_a_copy_keeps_its_own_line_ids_and_compares_the_source_by_content(
                     assert isinstance(outcome, HTTPException) and outcome.status_code == 422, label
                     continue
                 assert isinstance(outcome, HTTPException) and outcome.status_code == 409, label
-                assert outcome.detail == documents.ISSUED_IN_COPY, label
+                assert outcome.detail == t(documents.ISSUED_IN_COPY), label
                 assert outcome.__cause__.detail["params"]["field"] == key, label
 
 

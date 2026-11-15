@@ -21,7 +21,6 @@ from celerp.models.company import Company, User
 from celerp.services import peer_access, peer_accounts, peer_attention
 from celerp.services.company_lock import locked_company
 from celerp.services.peer_lines import LINE_KEYS
-from celerp.services.peer_payments import BY_HAND
 from celerp.services.peer_identity import (
     claim_peer_revision, commit_peer_revision, holds_peer_revision, peer_identity,
 )
@@ -46,7 +45,7 @@ _RECEIPT_KEYS = ("po_line_index", "item_id", "quantity_received", "condition", "
 _RECEIVING_TYPES = frozenset({"bill", "purchase_order"})
 _FULFILLING_TYPES = frozenset({"invoice"})
 # Issued documents of other types (credit notes, memos, returns, consignments) and other
-# statuses are refused with the BY_HAND reason, which the sender shows as needing attention.
+# statuses are refused as copied by hand, which the sender shows as needing attention.
 _ISSUED_STATUSES = frozenset({
     "final", "sent", "partial", "paid", "awaiting_payment", "received", "partially_received",
 })
@@ -86,8 +85,7 @@ def held_choice_key(request_key: str) -> str:
     return f"peer:doc-funds:{request_key}"
 
 
-ISSUED_IN_COPY = ("The accountant's copy of this document is already issued, so this change was not "
-                  "copied. Nothing is needed in your books; ask your accountant if their copy should change.")
+ISSUED_IN_COPY = "peer.err_issued_in_copy"
 
 
 def requires_stock_movement(data: dict) -> bool:
@@ -180,10 +178,9 @@ async def receive_document(
         return "skipped"
     source_status = data.get("status", "draft")
     if source_status not in _ISSUED_STATUSES | {"draft", "void"}:
-        raise HTTPException(409, BY_HAND.format(f"A {source_status} document"))
+        raise HTTPException(409, t("peer.err_by_hand_status", status=source_status))
     if source_status != "draft" and data["doc_type"] not in _RECEIVING_TYPES | _FULFILLING_TYPES:
-        raise HTTPException(409, BY_HAND.format(
-            "An issued " + str(data["doc_type"]).replace("_", " ")))
+        raise HTTPException(409, t("peer.err_by_hand_issued", doc_type=str(data["doc_type"]).replace("_", " ")))
     if (receipts and data["doc_type"] not in _RECEIVING_TYPES) or (
             fulfilled and data["doc_type"] not in _FULFILLING_TYPES):
         raise HTTPException(422, t("peer.err_stock_operations_do_not_match_document"))
@@ -298,7 +295,7 @@ async def receive_document(
         try:
             assert_finalized_edit(target.state or {}, _doc_import_fields_changed(target.state or {}, incoming))
         except HTTPException as exc:
-            raise HTTPException(409, ISSUED_IN_COPY) from exc
+            raise HTTPException(409, t(ISSUED_IN_COPY)) from exc
     finalizing = source_status != "draft" and (target_status == "draft" or posting is not None)
     if finalizing:
         # Update its draft fields (and a held posting's choices) before the canonical
@@ -315,8 +312,11 @@ async def receive_document(
         ):
             # The import's own reason, such as a locked period, tells the owner what to change.
             message = outcome.records[0].message if len(outcome.records) == 1 else None
-            refused = HTTPException(409, message_text(message).removeprefix(f"{claim.target_id}: ")
-                                    if message else "Receiving document needs review")
+            refused = HTTPException(409, message["params"]["refusal"] if isinstance(message, dict)
+                                    and message.get("message_key") == "import.record_refused"
+                                    else t("error.refusal_as_written",
+                                           text=message_text(message).removeprefix(f"{claim.target_id}: "))
+                                    if message else t("peer.err_receiving_document_needs_review"))
             refused.fix = outcome.records[0].fix if len(outcome.records) == 1 else None
             raise refused
         if posting is not None:

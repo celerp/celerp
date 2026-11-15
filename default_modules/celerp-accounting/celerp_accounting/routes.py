@@ -5230,7 +5230,7 @@ async def peer_journal_receive(
     """A client's journal entries and its answers to this company's; a connected
     company's key only."""
     if auth.peer is None:
-        raise HTTPException(status_code=403, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=403, detail=t(peer_access.UNAVAILABLE))
     return await peer_batch(auth, session, body.records)
 
 

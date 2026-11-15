@@ -241,9 +241,7 @@ async def claim_peer_revision(
             ).limit(1))
             if existing_documents is not None:
                 raise HTTPException(
-                    409, "Receiving company already contains documents. Use a new company "
-                         "or a company copy with source identities preserved before "
-                         "starting financial-document synchronization.")
+                    409, t("peer.err_company_has_documents"))
     target = new_target_identity(source_company, entity_type, source_entity_id)
     if await session.get(Projection, (company_id, target)) is not None:
         raise HTTPException(409, t("peer.err_external_identity_conflicts_with_existing_record"))

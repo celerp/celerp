@@ -418,7 +418,7 @@ async def _peer_context(request: Request, session: AsyncSession, credential: str
 
     entity = peer_access.route_entity(request.method, request.url.path)
     if entity is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t(peer_access.UNAVAILABLE))
     try:
         source = uuid.UUID(request.headers.get(peer_access.SOURCE_HEADER, ""))
     except ValueError:
@@ -430,7 +430,7 @@ async def _peer_context(request: Request, session: AsyncSession, credential: str
         UserCompany.company_id == company.id, UserCompany.role == "owner",
         UserCompany.is_active.is_(True), User.is_active.is_(True)).order_by(User.created_at, User.id).limit(1))
     if user is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=peer_access.UNAVAILABLE)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t(peer_access.UNAVAILABLE))
     return AuthContext(claims={}, user=user, company=company, company_id=company.id, role="owner",
                        snonce="", peer=peer_access.PeerCaller(credential, source, scope))
 

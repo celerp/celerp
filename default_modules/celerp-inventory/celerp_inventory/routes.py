@@ -4232,10 +4232,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 # delivery of the same merge names the same item and the same journal entry.
 _MERGE_ID_NAMESPACE = uuid.UUID("6f1d3c52-9a1e-4c55-9d1e-2a7f5b0e8c41")
 
-_STALE_MERGE = "The merge or its items changed since it was reviewed. Review the merge again."
-_UNREVIEWED_MERGE = "Preview this merge first, then confirm it with the plan_fingerprint the preview returned."
-_UNDONE_MERGE = "This merge was undone. Review the merge again."
-
 
 def _merge_result_id(company_id, idempotency_key: str | None) -> str:
     if not idempotency_key:
@@ -4790,7 +4786,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             if replay.event_type != "item.created" or meta.get("merge_request") != request_digest:
                 raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
             if await _merge_undone(session, company_id, replay.entity_id):
-                raise HTTPException(status_code=409, detail=_UNDONE_MERGE)
+                raise HTTPException(status_code=409, detail=t("inventory.err_merge_undone"))
             return {"id": replay.entity_id, "inventory_reclassification": meta.get("inventory_reclassification")}
 
     # Plan again under the locks, from the settings as last committed, and refuse if
@@ -4798,9 +4794,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     settings = await current_settings(session, company_id)
     plan = await _plan_merge(session, company_id, payload, settings, role, locked_sources)
     if payload.plan_fingerprint is None:
-        raise HTTPException(status_code=422, detail=_UNREVIEWED_MERGE)
+        raise HTTPException(status_code=422, detail=t("inventory.err_merge_unreviewed"))
     if not hmac.compare_digest(payload.plan_fingerprint, plan.fingerprint):
-        raise HTTPException(status_code=409, detail=_STALE_MERGE)
+        raise HTTPException(status_code=409, detail=t("inventory.err_merge_stale"))
 
     new_entity_id = _merge_result_id(company_id, payload.idempotency_key)
     # The merged item is a new physical lot, so it mints a FRESH barcode rather than
@@ -5289,7 +5285,7 @@ async def undo_import_batch(
     if unexpected:
         raise HTTPException(status_code=409, detail={
             "code": "import_entry_changed",
-            "message": "This import cannot be undone because the entry booking its opening stock was changed.",
+            "message": t("inventory.err_import_entry_changed"),
             "entity_ids": unexpected,
         })
 

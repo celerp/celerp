@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reason
+from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reason, row_refusal
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -132,7 +132,7 @@ async def import_doc_records(
                     refuse_reused_import_key(replay, event_type=DOC_CREATED, entity_id=rec.entity_id,
                                              data=rec.data)
             except HTTPException as exc:
-                outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: {failure_reason(exc)}")
+                outcome.add(rec.entity_id, "rejected", row_refusal(rec.entity_id, exc))
                 continue
             if not upsert:
                 outcome.add(rec.entity_id, "skipped")
@@ -156,7 +156,7 @@ async def import_doc_records(
                     )
                     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}",
+            outcome.add(rec.entity_id, "failed", row_refusal(rec.entity_id, exc),
                         fix=getattr(exc, "fix", None))
             continue
         existing_keys.add(rec.idempotency_key)
