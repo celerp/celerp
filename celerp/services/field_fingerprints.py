@@ -42,3 +42,20 @@ def changed_since(link: dict, field: str, value) -> bool:
     """Whether ``value`` differs from what the link last agreed on for ``field``."""
     last = (link.get(LINK_KEY) or {}).get(field)
     return last is None or last != fingerprint(value)
+
+
+def _amount_text(value) -> str:
+    return "" if value is None else _normal(Decimal(str(value)))
+
+
+def statement_line(bank_id, line_date: str, amount, text: str, reference, balance, n: int) -> str:
+    """The identity of one bank statement line on its bank: the date, the amount and running
+    balance as plain numbers, the description with its spacing and case folded, the reference,
+    and ``n``, the line's place among identical lines of the same statement."""
+    return fingerprint([str(bank_id), line_date, _amount_text(amount), " ".join((text or "").upper().split()),
+                        (reference or "").strip(), _amount_text(balance), n])
+
+
+def statement_line_fitid(bank_id, fitid: str) -> str:
+    """The identity of a line its bank numbered itself (OFX FITID)."""
+    return fingerprint([str(bank_id), "FITID", fitid.strip()])
