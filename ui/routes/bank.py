@@ -59,7 +59,7 @@ async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "",
         flash(outcome, "info") if outcome else None,
         Div(*BG.page_actions(bank_id, view, q), cls="bank-actions-bar screen-only"),
         BG.summary_line(table, cur),
-        BG.statements_strip(table["statements"], cur),
+        BG.statements_strip(table["statements"], bank, view, q),
         BG.view_links(bank_id, view, q),
         BG.search_form(bank_id, view, q),
         BG.bulk_toolbar(bank_id, cur, view, q, bulk_outcome, undo_ids),
@@ -138,12 +138,12 @@ def setup_routes(app):
             if e.status == 403:
                 return await _no_access(request, e, t("nav.reconcile"))
             return RedirectResponse("/accounting/reconcile/start", status_code=302)
-        msg = request.query_params.get("msg", "").strip()
         return await base_shell(
             page_header(t("bank.page_title", bank=bank.get("bank_name", "")),
                         A(t("btn.back"), href="/accounting/reconcile/start", cls="btn btn--secondary"),
                         summary=t("bank.page_intro")),
-            flash(msg) if msg else None,
+            *BG.page_flashes(request.query_params),
+            BG.relabel_notice(bank, BG.bank_url(bank_id)),
             body,
             Script(src="/static/bank-page.js"),
             title=page_title("nav.reconcile"), nav_active="accounting", request=request)
@@ -194,21 +194,29 @@ def setup_routes(app):
         if field not in dict(BG.PREVIEW_FIELDS):
             return Response(status_code=400)
         return BG.header_cell(bank_id, job_id, int(p.get("idx", "0") or 0), field, p.get("value") or None,
-                              p.get("headers", "[]"))
+                              p.get("state") or BG.preview_state([], None))
+
+    def _state(form) -> tuple[list[dict], dict | None]:
+        state = json.loads(str(form.get("state") or "{}"))
+        return state.get("headers") or [], state.get("column_map")
 
     @app.post("/accounting/reconcile/bank/{bank_id}/preview/{job_id}")
     async def preview_edit(request: Request, bank_id: str, job_id: str):
-        """Re-check the statements with one header figure changed; nothing is written."""
+        """Re-check the statements with one header figure changed, or a tabular file with
+        its columns named; nothing is written."""
         token = _token(request)
         if not token:
             return _login()
         form = await request.form()
-        headers = json.loads(str(form.get("headers") or "[]"))
+        headers, column_map = _state(form)
         field, idx = str(form.get("field", "")), int(str(form.get("idx", "0")) or 0)
         if field in dict(BG.PREVIEW_FIELDS) and 0 <= idx < len(headers):
             headers[idx][field] = str(form.get("value", "")).strip() or None
+        named = {str(v): k[4:] for k, v in form.multi_items() if k.startswith("map_") and v != "ignore"}
+        if named:
+            column_map = named
         try:
-            found = await api.statement_preview(token, job_id, [{"header": h} for h in headers])
+            found = await api.statement_preview(token, job_id, [{"header": h} for h in headers], column_map)
         except APIError as e:
             return _fragment_error(e)
         return BG.statement_preview(bank_id, job_id, found)
@@ -219,14 +227,15 @@ def setup_routes(app):
         if not token:
             return _login()
         form = await request.form()
-        headers = json.loads(str(form.get("headers") or "[]"))
+        headers, column_map = _state(form)
+        statements = [{"header": h} for h in headers]
         try:
-            await api.import_statement(token, {"job_id": job_id, "bank_id": bank_id,
-                                               "statements": [{"header": h} for h in headers],
+            await api.import_statement(token, {"job_id": job_id, "bank_id": bank_id, "statements": statements,
+                                               "column_map": column_map,
                                                "idempotency_key": str(form.get("idempotency_key"))})
         except APIError as e:
             return Div(_fragment_error(e), BG.statement_preview(
-                bank_id, job_id, await api.statement_preview(token, job_id, [{"header": h} for h in headers])))
+                bank_id, job_id, await api.statement_preview(token, job_id, statements, column_map)))
         return Response(status_code=204, headers={"HX-Redirect": BG.bank_url(bank_id) + "?view=all"})
 
     async def _page_action(request: Request, bank_id: str, action: str) -> FT | Response:
@@ -303,6 +312,41 @@ def setup_routes(app):
             return await _body(token, bank, _view(str(form.get("view"))), str(form.get("q", "")),
                                bulk_outcome=t("bank.undone", n=len(ids)))
         return _line_response(await _fresh_line(token, bank, ids[0]), ids[0])
+
+    @app.post("/accounting/reconcile/bank/{bank_id}/statement/{session_id}/{action}")
+    async def statement_action(request: Request, bank_id: str, session_id: str, action: str):
+        """Reopen a completed statement, write off an open one's difference within
+        tolerance, or remove it while none of its lines is posted; the page body re-renders
+        with what happened."""
+        token = _token(request)
+        if not token:
+            return _login()
+        if action not in ("reopen", "write-off", "remove"):
+            return Response(status_code=404)
+        form = await request.form()
+        view, q = _view(str(form.get("view", ""))), str(form.get("q", "")).strip()
+        key = str(form.get("idempotency_key"))
+        bank = await api.get_bank_account(token, bank_id)
+        try:
+            if action == "reopen":
+                await api.reopen_reconciliation(token, session_id)
+            elif action == "remove":
+                await api.delete_statement(token, session_id, key)
+            else:
+                data: dict = {}
+                raw = str(form.get("rate", "")).strip()
+                if raw:
+                    try:
+                        data["rate"] = float(raw)
+                    except ValueError:
+                        return await _body(token, bank, view, q, outcome=t("acct.err_bank_rate_invalid", raw=raw))
+                await api.write_off_recon(token, session_id, data)
+        except APIError as e:
+            if e.status == 401:
+                return _login()
+            return await _body(token, bank, view, q, outcome=str(e.detail))
+        done = {"reopen": "bank.reopened", "remove": "bank.statement_removed", "write-off": "bank.written_off"}
+        return await _body(token, bank, view, q, outcome=t(done[action]))
 
     @app.post("/accounting/reconcile/bank/{bank_id}/resolve-line")
     async def resolve_line(request: Request, bank_id: str):

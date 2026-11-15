@@ -274,12 +274,13 @@ def _review(st: dict, bank: BankAccount | None, base: str, existing: dict, held:
 
 
 async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uuid.UUID,
-                   given: list[dict] | None = None) -> dict:
+                   given: list[dict] | None = None, column_map: dict | None = None) -> dict:
     """The reading job's statements reviewed for import; ``given`` (one entry per
-    statement, as Import takes them) replaces header figures and lines first."""
+    statement, as Import takes them) replaces header figures and lines first, and
+    ``column_map`` reads a tabular file's columns as Import will."""
     from celerp_accounting.routes import _base_currency
     bank = await _read_bank(db, company_id, job_id)
-    read = await _read_job(db, company_id, user_id, job_id, bank)
+    read = await _read_job(db, company_id, user_id, job_id, bank, column_map=column_map)
     if given is not None and len(given) != len(read["statements"]):
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_import_statement_count"))
     base = await _base_currency(db, company_id)
@@ -317,17 +318,19 @@ class StatementIn(BaseModel):
 
 class PreviewEdit(BaseModel):
     statements: list[StatementIn] = Field(min_length=1, max_length=50)
+    column_map: dict[str, str] | None = None  # {field: column} for a file whose columns were not recognised
 
 
 @router.post(f"{API}/statement-preview/{{job_id}}", summary="Check a reading job's statements again with edited "
-             "header figures or lines, before import", openapi_extra={"x-celerp-agent": True,
+             "header figures, lines or column map, before import", openapi_extra={"x-celerp-agent": True,
                                                                        "x-celerp-agent-confirm": False})
 async def statement_preview_edited(job_id: uuid.UUID, payload: PreviewEdit,
                                    company_id: uuid.UUID = Depends(get_current_company_id),
                                    _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                                    db: AsyncSession = Depends(get_session)) -> dict:
     """Nothing is written: the same review Import runs, on the figures given."""
-    return await _preview(db, company_id, user.id, job_id, [s.model_dump() for s in payload.statements])
+    return await _preview(db, company_id, user.id, job_id, [s.model_dump() for s in payload.statements],
+                          payload.column_map)
 
 
 # ── Import ──────────────────────────────────────────────────────────────────

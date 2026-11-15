@@ -71,7 +71,7 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     page.goto(f"/accounting/reconcile/bank/{bank_id}?view=all")
     withdrawal = page.locator("[data-line]").filter(has_text="WITHDRAWAL")
     withdrawal.get_by_role("button", name="Answer separately").click()
-    answer = withdrawal.locator(".searchable-select input")
+    answer = withdrawal.locator(".searchable-select .combobox-input").first
     answer.fill("Office")
     page.get_by_role("option", name="5100").first.click()
     withdrawal.get_by_role("button", name="Post").click()
@@ -81,9 +81,11 @@ def test_bank_page_browser_journey(page: Page, api, tmp_path):
     mixed = page.locator("[data-line]").filter(has_text="MIXED PURCHASE")
     mixed.get_by_role("button", name="Split").click()
     split = page.locator("form[data-form=split]")
+    split.locator(".combobox-input").first.fill("Office")
+    page.get_by_role("option", name="5100").first.click()
     split.locator("input[name=amount]").first.fill("60")
     split.get_by_role("button", name="Post").click()
-    expect(split).to_contain_text("must add up to")
+    expect(split).to_contain_text("add up to")
     # Escape closes the split form without saving.
     split.locator("input[name=amount]").first.press("Escape")
     expect(page.locator("form[data-form=split]")).to_have_count(0)

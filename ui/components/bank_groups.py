@@ -18,6 +18,7 @@ from celerp.accounting_roles import account_label
 from celerp.output.doc_print import money_step
 from ui.components.attrs import hx_vals
 from ui.components.encode import EVENT, THIS, call
+from ui.components.shell import flash
 from ui.components.table import EMPTY, PARTY_SEARCH_URL, display_enum, searchable_select
 from ui.i18n import t
 
@@ -27,6 +28,8 @@ _STATUS_KEYS = {"unmatched": "bank.status_open", "posted": "bank.status_posted",
 # The header figures of a statement that the preview lets the user correct.
 PREVIEW_FIELDS = (("opening_balance", "bank.field_opening"), ("closing_balance", "bank.field_closing"),
                   ("period_start", "bank.field_start"), ("period_end", "bank.field_end"))
+# What a column of a tabular statement can hold, as the statement parser names it.
+MAP_FIELDS = ("date", "description", "amount", "debit", "credit", "balance", "reference", "ignore")
 
 
 def bank_url(bank_id: str, *tail: str) -> str:
@@ -58,13 +61,61 @@ def _context_inputs(view: str, q: str) -> tuple:
 
 # ── The page around the groups ──────────────────────────────────────────────
 
-def statements_strip(statements: list[dict], currency: str) -> FT | None:
+def relabel_notice(bank: dict, back: str) -> FT | None:
+    """The account is labelled in another currency than the books' while every entry on
+    it carries a books-currency amount only, so none of its amounts can be read. Says so
+    and offers the correction: setting the account to the books' currency changes no
+    amount, and setting it back in the account's settings undoes it."""
+    base = bank.get("relabel_to")
+    if not base:
+        return None
+    return Div(
+        Span(t("recon.relabel_notice", currency=bank.get("currency", ""), base=base)),
+        Form(
+            Input(type="hidden", name="next", value=back),
+            Button(t("recon.relabel_button", base=base), type="submit", cls="btn btn--primary btn--sm"),
+            method="post", action=f"/accounting/reconcile/relabel/{bank.get('id', '')}",
+        ),
+        cls="flash flash--warning recon-relabel",
+    )
+
+
+
+def page_flashes(params) -> tuple:
+    """What a page was sent back with: ``msg`` is a refusal, ``done`` an action that went
+    through."""
+    msg, done = params.get("msg", "").strip(), params.get("done", "").strip()
+    return (flash(msg) if msg else None, flash(done, "success") if done else None)
+
+
+def _statement_actions(bank: dict, statement: dict, view: str, q: str) -> tuple:
+    """Reopen on a completed statement; on an open one, write off a difference within
+    tolerance and remove the statement (the API refuses once a line of it is posted)."""
+    def action(label: str, path: str, confirm: str, *extra) -> FT:
+        return Form(_key_input(), *_context_inputs(view, q), *extra,
+                    Button(label, type="submit", cls="btn btn--ghost btn--sm"),
+                    hx_post=bank_url(bank["id"], "statement", quote(str(statement["id"]), safe=""), path),
+                    hx_target="#bank-body", hx_swap="outerHTML", hx_confirm=confirm, cls="inline-form")
+    if statement["status"] == "completed":
+        return (action(t("btn.reopen"), "reopen", t("recon.reopen_confirm")),)
+    rate = None
+    if bank.get("books_currency") and bank.get("currency") != bank["books_currency"]:
+        rate = Input(type="number", name="rate", step="any", min="0", cls="form-input bank-strip__rate",
+                     placeholder=t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]),
+                     aria_label=t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]))
+    return (action(t("btn.write_off_diff"), "write-off", t("bank.write_off_confirm"), rate),
+            action(t("bank.remove_statement"), "remove", t("bank.remove_statement_confirm")))
+
+
+def statements_strip(statements: list[dict], bank: dict, view: str = "open", q: str = "") -> FT | None:
     if not statements:
         return None
+    currency = bank.get("currency")
     return Div(
         *[Div(Span(f"{s.get('period_start') or EMPTY} - {s['statement_date']}", cls="bank-strip__period"),
               Span(money(s["closing_balance"], currency), cls="bank-strip__closing"),
               Span(display_enum(s["status"], "recon_session_status"), cls=f"badge badge--recon-{s['status']}"),
+              Span(*_statement_actions(bank, s, view, q), cls="bank-strip__actions screen-only"),
               cls="bank-strip__item", data_statement=s["id"])
           for s in statements],
         cls="bank-strip", aria_label=t("bank.statements_heading"))
@@ -317,34 +368,66 @@ def preview_loading(bank_id: str, job_id: str) -> FT:
                hx_trigger="load delay:1s", hx_swap="outerHTML", data_testid="statement-loading")
 
 
-def header_cell(bank_id: str, job_id: str, idx: int, field: str, value, headers_json: str) -> FT:
+def preview_state(headers: list[dict], column_map: dict | None) -> str:
+    """What the preview carries between re-checks and into Import: each statement's header
+    figures and the columns a tabular file is read by."""
+    return json.dumps({"headers": headers, "column_map": column_map})
+
+
+def header_cell(bank_id: str, job_id: str, idx: int, field: str, value, state: str) -> FT:
     """One header figure of the preview: an input that re-checks the statement on Enter
     and puts the figure back on Escape. The span holds no other input."""
     shown = "" if value is None else str(value)
     restore = bank_url(bank_id, "preview", job_id, "cell") + "?" + urlencode(
-        {"idx": idx, "field": field, "value": shown, "headers": headers_json})
+        {"idx": idx, "field": field, "value": shown, "state": state})
     return Span(
         Form(Input(name="value", value=shown, placeholder=EMPTY, cls="editable-cell form-input",
                    aria_label=t(dict(PREVIEW_FIELDS)[field]),
                    onkeydown=call("celerpCellKey", THIS, EVENT, {"url": restore, "target": "[data-field]"})),
              hx_post=bank_url(bank_id, "preview", job_id), hx_target="closest [data-testid=statement-preview]",
-             hx_swap="outerHTML", hx_vals=hx_vals({"idx": idx, "field": field, "headers": headers_json}),
+             hx_swap="outerHTML", hx_vals=hx_vals({"idx": idx, "field": field, "state": state}),
              cls="inline-form"),
         data_field=field, cls="bank-preview__cell")
 
 
+def column_mapper(bank_id: str, job_id: str, columns: list[str], state: str) -> FT:
+    """A tabular file whose columns were not recognised: name what each column holds, then
+    the preview reads the file again. Escape leaves for the bank page."""
+    def guess(column: str) -> str:
+        low = column.strip().lower()
+        return low if low in MAP_FIELDS else "ignore"
+    return Form(
+        H3(t("recon.map_csv_columns")),
+        P(t("acct.we_couldnt_autodetect_your_csv_columns_please_map"), cls="text-muted"),
+        Table(Thead(Tr(Th(t("th.csv_column")), Th(t("th.maps_to")))),
+              Tbody(*[Tr(Td(c), Td(Select(*[Option(f, value=f, selected=f == guess(c)) for f in MAP_FIELDS],
+                                          name=f"map_{c}", cls="form-input", aria_label=c)))
+                      for c in columns]),
+              cls="data-table"),
+        Input(type="hidden", name="state", value=state),
+        Div(Button(t("btn.confirm_mapping"), type="submit", cls="btn btn--primary"),
+            A(t("btn.cancel"), href=bank_url(bank_id), cls="btn btn--secondary"), cls="form-actions"),
+        hx_post=bank_url(bank_id, "preview", job_id), hx_target="closest [data-testid=statement-preview]",
+        hx_swap="outerHTML", onkeydown=call("celerpGoOnEscape", EVENT, bank_url(bank_id)),
+        cls="bank-preview__mapper", data_testid="column-mapper")
+
+
 def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
     """The statements a reading job found, each with its header figures (click to edit),
-    whether it ties, what blocks Import, and its lines. Import confirms first."""
+    whether it ties, what blocks Import, and its lines. A tabular file whose columns were
+    not recognised asks for them first. Import confirms first."""
     headers = [{f: st["header"].get(f) for f, _ in PREVIEW_FIELDS} for st in preview["statements"]]
-    headers_json = json.dumps(headers)
+    state = preview_state(headers, preview.get("column_map"))
+    if preview.get("needs_mapping"):
+        return Div(H2(t("bank.preview_title")), column_mapper(bank_id, job_id, preview.get("headers") or [], state),
+                   cls="bank-preview settings-card", data_testid="statement-preview")
     blocks = []
     for idx, st in enumerate(preview["statements"]):
         cur = st["header"].get("currency")
         tie = st.get("tie") or {}
         blocks.append(Div(
             Div(*[Div(Span(t(label), cls="form-label"),
-                      header_cell(bank_id, job_id, idx, f, st["header"].get(f), headers_json), cls="form-field")
+                      header_cell(bank_id, job_id, idx, f, st["header"].get(f), state), cls="form-field")
                   for f, label in PREVIEW_FIELDS], cls="bank-preview__header"),
             P(t("bank.preview_ties") if tie.get("ok") else t("bank.preview_not_tied"),
               cls="flash flash--success" if tie.get("ok") else "flash flash--warning"),
@@ -362,7 +445,7 @@ def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
         H2(t("bank.preview_title")),
         P(t("bank.failed_steps", n=len(failed)), cls="flash flash--warning") if failed else None,
         *blocks,
-        Form(Input(type="hidden", name="headers", value=headers_json), _key_input(),
+        Form(Input(type="hidden", name="state", value=state), _key_input(),
              Button(t("btn.import"), type="submit", cls="btn btn--primary"),
              hx_post=bank_url(bank_id, "preview", job_id, "import"), hx_confirm=t("bank.import_confirm"),
              hx_target="closest [data-testid=statement-preview]", hx_swap="outerHTML") if importable else None,

@@ -8126,5 +8126,11 @@
   "bank.questions_empty": "No questions are waiting. Thank you.",
   "bank.what_was_it": "What was it?",
   "bank.receipt": "Receipt",
-  "bank.answer_saved": "Saved. Your accountant can see your answer now."
+  "bank.answer_saved": "Saved. Your accountant can see your answer now.",
+  "bank.write_off_confirm": "Write off what is left of this statement's difference? Celerp posts a small adjustment to your general expense account.",
+  "bank.remove_statement": "Remove statement",
+  "bank.remove_statement_confirm": "Remove this statement and its lines? You can drop the file again later. A statement with a posted line can't be removed until you undo that line.",
+  "bank.reopened": "The statement is open again. Complete it again when you're done.",
+  "bank.statement_removed": "The statement and its lines are removed.",
+  "bank.written_off": "The difference is written off."
 }

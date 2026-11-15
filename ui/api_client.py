@@ -2147,14 +2147,15 @@ async def read_statement(token: str, data: dict) -> dict:
         return _raise(await c.post(f"{_RECON}/read-statement", json=data)).json()
 
 
-async def statement_preview(token: str, job_id: str, statements: list[dict] | None = None) -> dict:
+async def statement_preview(token: str, job_id: str, statements: list[dict] | None = None,
+                            column_map: dict | None = None) -> dict:
     """The reading job's statements checked for import; ``statements`` re-checks them
-    with edited header figures."""
+    with edited header figures, ``column_map`` with a tabular file's columns named."""
     path = f"{_RECON}/statement-preview/{_segment(job_id)}"
     async with _api_client(token) as c:
         if statements is None:
             return _raise(await c.get(path)).json()
-        return _raise(await c.post(path, json={"statements": statements})).json()
+        return _raise(await c.post(path, json={"statements": statements, "column_map": column_map})).json()
 
 
 async def import_statement(token: str, data: dict) -> dict:
@@ -2204,103 +2205,9 @@ async def create_transfer(token: str, data: dict) -> dict:
         return _raise(await c.post("/accounting/transfers", json=data)).json()
 
 
-async def start_reconciliation(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/accounting/reconciliation/start", json=data)).json()
-
-
-async def get_reconciliation(token: str, session_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/accounting/reconciliation/{session_id}")).json()
-
-
-async def match_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/match", json={"je_ids": je_ids})).json()
-
-
-async def complete_reconciliation(token: str, session_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/complete")).json()
-
-
 async def reopen_reconciliation(token: str, session_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/reopen")).json()
-
-
-async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
-    import json as _json
-    async with _bulk_api_client(token) as c:
-        files = {"file": (filename, content, "text/csv")}
-        data = {"column_map": _json.dumps(column_map)} if column_map else {}
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/import-csv", files=files, data=data)).json()
-
-
-async def get_statement_lines(token: str, session_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/accounting/reconciliation/{session_id}/statement-lines")).json()
-
-
-async def auto_match_recon(token: str, session_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/auto-match")).json()
-
-
-async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(
-            f"/accounting/reconciliation/{session_id}/lines/{line_id}/match",
-            json={"je_id": je_id},
-        )).json()
-
-
-async def unmatch_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/unmatch", json={"je_ids": je_ids})).json()
-
-
-async def unmatch_recon_line(token: str, session_id: str, line_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch")).json()
-
-
-async def create_recon_expense(token: str, session_id: str, line_id: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(
-            f"/accounting/reconciliation/{session_id}/lines/{line_id}/create",
-            json=data,
-        )).json()
-
-
-async def split_recon_line(token: str, session_id: str, line_id: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(
-            f"/accounting/reconciliation/{session_id}/lines/{line_id}/split",
-            json=data,
-        )).json()
-
-
-async def skip_recon_line(token: str, session_id: str, line_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.patch(
-            f"/accounting/reconciliation/{session_id}/lines/{line_id}",
-            json={"status": "skipped"},
-        )).json()
-
-
-async def attach_recon_line(token: str, session_id: str, line_id: str, content: bytes, filename: str) -> dict:
-    async with _bulk_api_client(token) as c:
-        files = {"file": (filename, content, "application/octet-stream")}
-        return _raise(await c.post(
-            f"/accounting/reconciliation/{session_id}/lines/{line_id}/attach",
-            files=files,
-        )).json()
-
-
-async def bulk_confirm_recon(token: str, session_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/bulk-confirm")).json()
 
 
 async def write_off_recon(token: str, session_id: str, data: dict) -> dict:
