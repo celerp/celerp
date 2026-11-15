@@ -273,7 +273,7 @@ async def test_import_creates_bank_then_sessions_with_dependent_stop(client):
                         "lines": preview["statements"][0]["lines"]}], "idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 422
     banks = (await client.get("/accounting/bank-accounts", headers=co["h"])).json()
-    assert not banks.get("items", banks)
+    assert not [b for b in banks.get("items", banks) if b["bank_name"] == "X"]  # the company's default bank stays
     again = await client.get(f"{B.API}/statement-preview/{preview['job_id']}", headers=co["h"])
     assert again.status_code == 200
     out = await B.import_statement(client, co, preview, new_bank={"bank_name": "Main", "bank_type": "checking",
