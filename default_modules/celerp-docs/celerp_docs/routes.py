@@ -1419,7 +1419,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     return {"items": [_doc_row(*row) for row in rows], "total": total}
 
 
-@router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("", summary="Find sales and purchasing documents by type, status, contact, date, due date, currency or text, for example unpaid invoices or overdue bills. Use Get document to read one in full, and Document totals for counts and sums.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def list_docs(
     filters: DocListFilters = Depends(),
     limit: int | None = None,
@@ -1484,7 +1484,7 @@ async def docs_numbered(
     return {"ids": await _ids_numbered(session, company_id, "doc", number, doc_type)}
 
 
-@router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("/summary", summary="Counts and totals in the company currency for the documents that match the same filters as the document list, such as how much is unpaid or overdue. Use this for questions about how many or how much; use the document list to see the documents themselves.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
     filters: DocListFilters = Depends(),
     company_id: str = Depends(get_current_company_id),
@@ -1911,7 +1911,7 @@ async def _memo_fixed_taken(session: AsyncSession, company_id, entity_id: str, s
             if t["invoice_id"] == entity_id]
 
 
-@router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}", summary="Read one document in full: its contact, lines, totals, dates, status and the payments recorded on it.", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = shown_state(row.state) | {"id": row.entity_id, "version": row.version}
@@ -2052,7 +2052,7 @@ async def get_doc_pdf(
     )
 
 
-@router.post("", openapi_extra=_DOC_WRITE_AGENT)
+@router.post("", summary="Create a new sales or purchasing document, such as a quotation, invoice, credit note, purchase order or vendor bill, with its contact and lines. Search for an existing document first, and use Update document to change one you already made.", openapi_extra=_DOC_WRITE_AGENT)
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -2224,7 +2224,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.patch("/{entity_id}", openapi_extra=_DOC_WRITE_AGENT)
+@router.patch("/{entity_id}", summary="Change a document's details or lines, such as its date, reference, notes, contact or line items. Use Create document for a new one and Record a payment on a document to record money received or paid.", openapi_extra=_DOC_WRITE_AGENT)
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await _refuse_synced(session, company_id, entity_id)
     result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload)
