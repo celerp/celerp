@@ -24,7 +24,7 @@ from celerp.accounting_roles import LOT_ACCOUNT_FIELD, Refused, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import BatchImportResult as _BatchImportResult, ImportOutcome
+from celerp.importers.results import BatchImportResult as _BatchImportResult, ImportOutcome, record_refused
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
@@ -4315,12 +4315,6 @@ def _row_refused(data: dict, reason) -> dict:
     return refusal("import.row_refused", f"Row (SKU={sku}): {text}", sku=sku, refusal=reason)
 
 
-def _record_refused(entity_id: str, key: str, message: str, **params) -> dict:
-    """Why an import record was refused, naming the record by its id."""
-    return refusal("import.record_refused", f"{entity_id}: {message}", entity_id=entity_id,
-                   refusal=refusal(f"import.record.{key}", message, **params))
-
-
 # Codes the writer allocates for a blank cell, so a retry that leaves them blank still repeats its write.
 _ALLOCATED_CODES = frozenset({"sku", "barcode"})
 
@@ -4455,12 +4449,12 @@ async def write_import_batch(
                 if primary.event_type == "item.patched" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                 continue
         elif event_type == "item.created":
             if primary is not None:
                 if primary.event_type != "item.created" or primary.entity_id != entity_id:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                     continue
                 if not body.upsert:
                     outcome.add(primary.entity_id, "skipped")
@@ -4483,17 +4477,17 @@ async def write_import_batch(
                     if replay.event_type == "item.patched" and replay.entity_id == entity_id:
                         outcome.add(entity_id, "skipped")
                     else:
-                        outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                        outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                     continue
         elif event_type == "item.snapshot":
             if primary is not None:
                 if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
                     outcome.add(entity_id, "skipped")
                 else:
-                    outcome.add(entity_id, "rejected", _record_refused(entity_id, "key_reused", "idempotency key was already used for another operation"))
+                    outcome.add(entity_id, "rejected", record_refused(entity_id, "key_reused"))
                 continue
         else:
-            outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_import_safe", f"event type '{event_type}' is not import-safe", event_type=str(event_type)))
+            outcome.add(entity_id, "rejected", record_refused(entity_id, "not_import_safe", event_type=str(event_type)))
             continue
 
         # A status changes through the status action, never through an upsert patch.
@@ -4513,14 +4507,14 @@ async def write_import_batch(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if stored_proj is None or stored_proj.entity_type != "item":
-                outcome.add(entity_id, "rejected", _record_refused(entity_id, "not_found", "upsert target was not found"))
+                outcome.add(entity_id, "rejected", record_refused(entity_id, "not_found"))
                 continue
         else:
             existing_projection = await session.get(
                 Projection, {"company_id": company_id, "entity_id": entity_id}
             )
             if existing_projection is not None:
-                outcome.add(entity_id, "rejected", _record_refused(entity_id, "exists", "entity already exists"))
+                outcome.add(entity_id, "rejected", record_refused(entity_id, "exists"))
                 continue
         # A refused row names its SKU, from the stored item when the row does not carry one.
         named = {**data, "sku": data.get("sku") or ((stored_proj.state or {}).get("sku") if stored_proj is not None else None)}

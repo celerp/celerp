@@ -91,17 +91,34 @@ def failure_reason(exc: BaseException) -> str:
     return str(exc)
 
 
-def row_refusal(entity_id: str, exc: BaseException) -> str | dict:
-    """A refused record's reason naming it: a keyed refusal the write raised stays keyed
-    inside ``import.record_refused``, so it reads in each reader's language; any other
-    reason as text."""
+def row_refusal(entity_id: str | dict, why: BaseException | dict) -> str | dict:
+    """A refused record's reason naming it (``entity_id``, its id or a refusal such as
+    ``import.row_n``): a keyed refusal, given or raised by the write, stays keyed inside
+    ``import.record_refused``, so it reads in each reader's language; any other reason as text."""
     from celerp.accounting_roles import catalog_refusal
     from celerp.error_body import as_refusal, keyed
 
-    detail = as_refusal(getattr(exc, "detail", None))
+    detail = why if isinstance(why, dict) else as_refusal(getattr(why, "detail", None))
     if isinstance(detail, dict) and keyed(detail):
         return catalog_refusal("import.record_refused", entity_id=entity_id, refusal=detail)
-    return f"{entity_id}: {failure_reason(exc)}"
+    return f"{message_text(entity_id)}: {failure_reason(why)}"
+
+
+def record_refused(entity_id: str | dict, key: str, /, **params) -> dict:
+    """A record refused for the reason ``import.record.<key>`` names, naming the record."""
+    from celerp.accounting_roles import catalog_refusal
+
+    return row_refusal(entity_id, catalog_refusal(f"import.record.{key}", **params))
+
+
+def row_n(index: int, code: str | None = None) -> dict:
+    """The name of a file's row that has no id of its own, counted from 1, with the code
+    it gives when it gives one."""
+    from celerp.accounting_roles import catalog_refusal
+
+    if code:
+        return catalog_refusal("import.row_n_code", n=index + 1, code=code)
+    return catalog_refusal("import.row_n", n=index + 1)
 
 
 def kept_refusal(message: str | dict, entity_id: str) -> dict:
