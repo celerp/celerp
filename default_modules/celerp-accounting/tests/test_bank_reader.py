@@ -12,7 +12,6 @@ import pytest
 from celerp_accounting.csv_parser import parse_bank_csv, parse_ofx
 from celerp_accounting.statement_reader import counterparty_key, review_statement
 
-BANK = "11111111-1111-1111-1111-111111111111"
 
 
 def _line(d, amount, desc="Line", balance=None, reference=None):
@@ -21,7 +20,6 @@ def _line(d, amount, desc="Line", balance=None, reference=None):
 
 def _review(header, lines, **kw):
     kw.setdefault("bank_currency", "USD")
-    kw.setdefault("bank_id", BANK)
     return review_statement({"currency": "USD", **header}, lines, **kw)
 
 

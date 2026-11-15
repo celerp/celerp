@@ -57,12 +57,14 @@ def statement_line_ident(line_date: str, amount, text: str, reference, balance) 
             _amount_text(balance))
 
 
-def statement_line(bank_id, line_date: str, amount, text: str, reference, balance, n: int) -> str:
+def statement_line(line_date: str, amount, text: str, reference, balance, n: int) -> str:
     """The identity of one bank statement line on its bank: its ``statement_line_ident`` and
-    ``n``, the line's place among identical lines of the same statement."""
-    return fingerprint([str(bank_id), *statement_line_ident(line_date, amount, text, reference, balance), n])
+    ``n``, the line's place among identical lines of the same statement. The bank is not part
+    of it (the unique index scopes it by bank), so a company restored with new bank ids still
+    knows a line read again."""
+    return fingerprint([*statement_line_ident(line_date, amount, text, reference, balance), n])
 
 
-def statement_line_fitid(bank_id, fitid: str) -> str:
+def statement_line_fitid(fitid: str) -> str:
     """The identity of a line its bank numbered itself (OFX FITID)."""
-    return fingerprint([str(bank_id), "FITID", fitid.strip()])
+    return fingerprint(["FITID", fitid.strip()])

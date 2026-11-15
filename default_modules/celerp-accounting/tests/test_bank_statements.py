@@ -7,7 +7,6 @@ data steps."""
 
 from __future__ import annotations
 
-import importlib
 from decimal import Decimal
 
 import pytest
@@ -605,16 +604,8 @@ async def test_sparse_rule_requires_amount(client):
 
 # ── Migration data steps ────────────────────────────────────────────────────
 
-def _migration():
-    import glob
-    import os
-    here = os.path.join(os.path.dirname(__file__), "..", "..", "..", "celerp", "migrations", "versions")
-    name = next(os.path.basename(p)[:-3] for p in glob.glob(os.path.join(here, "*_bank_statement_lines.py")))
-    return importlib.import_module(f"celerp.migrations.versions.{name}")
-
-
 async def test_fingerprint_backfill_never_collides():
-    m = _migration()
+    from celerp.services import statement_line_upgrade as m
     rows = [{"id": f"id{i}", "bank_account_id": "b1", "statement_date": "2026-01-31", "created_at": "t", "line_date": "2026-01-02",
              "amount": Decimal("-3.0000"), "description": "ATM FEE", "reference": None, "raw_balance": None} for i in range(4)]
     rows.append({**rows[0], "id": "x", "bank_account_id": "b2"})
@@ -627,7 +618,7 @@ async def test_fingerprint_backfill_never_collides():
 
 
 async def test_suggested_rows_migrate_to_suggestion():
-    m = _migration()
+    from celerp.services import statement_line_upgrade as m
     row = {"status": "suggested", "matched_je_id": "je:7"}
     assert m.migrated_line(row) == {"status": "unmatched", "matched_je_ids": [],
                                     "suggestion": {"kind": "match", "je_ids": ["je:7"], "source": "match"}}

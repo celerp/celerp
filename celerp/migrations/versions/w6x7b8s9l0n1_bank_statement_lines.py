@@ -28,7 +28,7 @@ from alembic import op
 from celerp.json_text import dump_json
 from celerp.migrations._json_compat import decode_json_value
 from celerp.migrations._locks import lock_tables
-from celerp.services.field_fingerprints import statement_line, statement_line_ident
+from celerp.services.statement_line_upgrade import backfill_fingerprints, migrated_line
 
 revision = "w6x7b8s9l0n1"
 down_revision = "v5w6x7y8z9a0"
@@ -37,30 +37,6 @@ depends_on = None
 
 _LINES = "bank_statement_lines"
 _BATCH = 1000
-
-
-def backfill_fingerprints(rows: list[dict]) -> dict:
-    """Each row's fingerprint by id. Identical lines on one bank are numbered in the order of
-    their statement date, creation time and id, so no two rows of a bank share one."""
-    seen: dict[tuple, int] = {}
-    out = {}
-    for r in sorted(rows, key=lambda r: (str(r["statement_date"]), str(r["created_at"]), str(r["id"]))):
-        base = (str(r["bank_account_id"]), r["line_date"], r["amount"], r["description"], r["reference"], r["raw_balance"])
-        ident = (base[0], *statement_line_ident(*base[1:]))
-        n = seen.get(ident, 0)
-        seen[ident] = n + 1
-        out[r["id"]] = statement_line(*base, n)
-    return out
-
-
-def migrated_line(row: dict) -> dict:
-    """The status, entry list and suggestion an existing line moves to."""
-    je = row.get("matched_je_id")
-    if row["status"] == "suggested":
-        return {"status": "unmatched", "matched_je_ids": [],
-                "suggestion": {"kind": "match", "je_ids": [je] if je else [], "source": "match"}}
-    status = "posted" if row["status"] == "created" else row["status"]
-    return {"status": status, "matched_je_ids": [je] if je else [], "suggestion": None}
 
 
 def _backfill_lines(bind) -> None:

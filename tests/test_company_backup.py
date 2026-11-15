@@ -694,6 +694,19 @@ async def test_backup_from_before_lines_knew_their_bank_restores_them_on_their_b
     assert rule_origin == "user"
 
 
+def test_older_bank_line_whose_statement_is_missing_is_refused_as_damaged():
+    """An older backup's line is put on its statement's bank: a line naming a statement the
+    backup does not hold has no bank to go on, so the backup is refused as damaged."""
+    from celerp.services import company_backup as cb
+    line = {"id": "l1", "reconciliation_id": "s-gone", "created_at": "t", "status": "matched", "matched_je_id": "je:1",
+            "line_date": "2026-01-15", "amount": 100, "description": "x", "reference": None, "raw_balance": None}
+    tables = {"reconciliation_sessions": [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-01-31"}],
+              "bank_statement_lines": [line]}
+    with pytest.raises(cb.BackupError) as e:
+        list(cb._bank_lines(lambda name: iter(tables[name])))
+    assert e.value.detail == cb.t(cb.DAMAGED)
+
+
 async def test_excluded_installation_state(real_engine, real_client, tmp_path, monkeypatch):
     """Users, passwords, emails and memberships never leave with a backup, and a restore
     brings in no user of the source installation."""

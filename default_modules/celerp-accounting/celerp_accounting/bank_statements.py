@@ -282,7 +282,7 @@ def _review(st: dict, bank: BankAccount | None, base: str, existing: dict, held:
     from celerp_accounting.statement_reader import review_statement
     currency = bank.currency if bank is not None else (st["header"].get("currency") or base)
     return review_statement(st["header"], st["lines"], bank_currency=currency,
-                            bank_id=bank.id if bank is not None else "new", existing=existing, held_counts=held)
+                            existing=existing, held_counts=held)
 
 
 async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uuid.UUID,

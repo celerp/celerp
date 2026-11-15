@@ -119,7 +119,7 @@ def _tie(opening: Decimal | None, closing: Decimal | None, amounts: list[Decimal
     return opening + sum(amounts, Decimal(0)) == closing, None
 
 
-def review_statement(header: dict, lines: list[dict], *, bank_currency: str, bank_id,
+def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
                      existing: dict[str, str] | None = None,
                      held_counts: dict[tuple[str, str], int] | None = None) -> dict:
     """The statement as it would import: each line with its amount at the currency's minor
@@ -157,13 +157,13 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str, ban
     for line in out:
         amount = line["amount"] or Decimal(0)
         if line.get("fitid") or (line.get("source") == "ofx" and line.get("reference")):
-            fp = statement_line_fitid(bank_id, line.get("fitid") or line["reference"])
+            fp = statement_line_fitid(line.get("fitid") or line["reference"])
         else:
             ident = statement_line_ident(line.get("line_date"), amount, line.get("description"),
                                          line.get("reference"), line["raw_balance"])
             n = seen.get(ident, 0)
             seen[ident] = n + 1
-            fp = statement_line(bank_id, line.get("line_date"), amount, line.get("description"),
+            fp = statement_line(line.get("line_date"), amount, line.get("description"),
                                 line.get("reference"), line["raw_balance"], n)
         key, account = counterparty_key(line.get("description") or "", line.get("reference"), amount,
                                         line.get("counterparty_account"))
