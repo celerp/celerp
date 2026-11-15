@@ -7974,5 +7974,14 @@
   "fund.change": "Modifier le fonds",
   "fund.change_journal_hint": "Cette écriture a déjà été comptabilisée. L'enregistrement l'annulera et la comptabilisera de nouveau sur les fonds choisis ci-dessous.",
   "fund.changed": "Fonds modifié. L'écriture a été annulée et comptabilisée à nouveau sur les nouveaux fonds.",
-  "collection.status_succeeded": "Prélevé automatiquement. Si le paiement ne figure pas encore sur cette facture, recherchez-le dans Paiements non rapprochés d'une facture, sous Paramètres, Paiements en ligne."
+  "collection.status_succeeded": "Prélevé automatiquement. Si le paiement ne figure pas encore sur cette facture, recherchez-le dans Paiements non rapprochés d'une facture, sous Paramètres, Paiements en ligne.",
+  "ai.warn_outside_message": "Ce message est envoyé à une personne extérieure à l'entreprise et ne peut pas être rappelé.",
+  "ai.warn_selection_size": "Cette action modifie {count} enregistrements.",
+  "ai.continuing_request": "Poursuite de votre demande",
+  "ai.not_run_dependent": "Non exécuté : une modification précédente du même enregistrement a échoué : {title}",
+  "ai.generated_password_once": "Mot de passe du nouveau membre, affiché une seule fois : {password}. Transmettez-le maintenant ; Celerp n'en garde aucune copie.",
+  "ai.member_keeps_password": "Cette personne a déjà un compte Celerp et conserve son propre mot de passe.",
+  "ai.action_outcome_unknown": "Celerp n'a pas pu déterminer si cette modification a été appliquée. Vérifiez ici avant de la relancer :",
+  "ai.run_again": "Relancer",
+  "ai.run_again_warning": "Si la première exécution a abouti, la relancer appliquera la modification deux fois. Relancer ?"
 }

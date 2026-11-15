@@ -690,7 +690,7 @@ def tool_call_key(tool_call_id: str) -> str:
     return "agent:" + hashlib.sha256(str(tool_call_id).encode("utf-8")).hexdigest()[:32]
 
 
-def _filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dict[str, Any]:
+def filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dict[str, Any]:
     """``template`` with each ``{name}`` replaced by its quoted value, or an agent error."""
     url_path = template
     for name in names:
@@ -701,6 +701,18 @@ def _filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dic
     if "{" in url_path or "}" in url_path:
         return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "A path parameter could not be resolved.")
     return url_path
+
+
+def check_screen(capability: dict[str, Any], arguments: dict[str, Any]) -> str | None:
+    """The screen where the user sees whether a change of an unkeyed tool happened, its
+    placeholders filled from the call's path arguments (the list screen when they are not)."""
+    screen = capability.get("check_screen")
+    if not screen:
+        return None
+    path_values = arguments.get("path") if isinstance(arguments.get("path"), dict) else {}
+    names = [n for n in path_values if "{" + n + "}" in screen]
+    filled = filled_path(screen, names, path_values)
+    return filled if isinstance(filled, str) else screen.split("{", 1)[0]
 
 
 async def execute_agent_capability(
@@ -753,14 +765,14 @@ async def execute_agent_capability(
     if path_names - set(path_values):
         return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "A required path parameter is missing.")
 
-    url_path = _filled_path(str(capability["path"]), capability.get("path_names") or (), path_values)
+    url_path = filled_path(str(capability["path"]), capability.get("path_names") or (), path_values)
     if isinstance(url_path, dict):
         return url_path
     if capability.get("download"):
         # A file never travels through the chat: the answer is the screen's own link,
         # which serves it under the user's session.
         names = [n for n in capability.get("path_names") or () if "{" + n + "}" in capability["download"]]
-        link = _filled_path(str(capability["download"]), names, path_values)
+        link = filled_path(str(capability["download"]), names, path_values)
         return link if isinstance(link, dict) else {"ok": True, "status": 200, "data": {"download": link}}
 
     params: list[tuple[str, str]] = []

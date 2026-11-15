@@ -7974,5 +7974,14 @@
   "fund.change": "Fonds ändern",
   "fund.change_journal_hint": "Diese Buchung ist bereits erfolgt. Beim Speichern wird sie storniert und auf den unten gewählten Fonds erneut gebucht.",
   "fund.changed": "Fonds geändert. Die Buchung wurde storniert und auf den neuen Fonds erneut gebucht.",
-  "collection.status_succeeded": "Automatisch belastet. Falls die Zahlung noch nicht auf dieser Rechnung erscheint, suchen Sie unter Einstellungen, Online-Zahlungen, Zahlungen ohne Rechnungszuordnung."
+  "collection.status_succeeded": "Automatisch belastet. Falls die Zahlung noch nicht auf dieser Rechnung erscheint, suchen Sie unter Einstellungen, Online-Zahlungen, Zahlungen ohne Rechnungszuordnung.",
+  "ai.warn_outside_message": "Diese Nachricht geht an jemanden außerhalb des Unternehmens und kann nicht zurückgerufen werden.",
+  "ai.warn_selection_size": "Dies ändert {count} Datensätze.",
+  "ai.continuing_request": "Ihre Anfrage wird fortgesetzt",
+  "ai.not_run_dependent": "Nicht ausgeführt: Eine frühere Änderung am selben Datensatz ist fehlgeschlagen: {title}",
+  "ai.generated_password_once": "Passwort für das neue Mitglied, nur dieses eine Mal angezeigt: {password}. Geben Sie es jetzt weiter; Celerp speichert keine Kopie.",
+  "ai.member_keeps_password": "Diese Person hat bereits ein Celerp-Konto und behält ihr eigenes Passwort.",
+  "ai.action_outcome_unknown": "Celerp konnte nicht feststellen, ob diese Änderung übernommen wurde. Prüfen Sie hier, bevor Sie sie erneut ausführen:",
+  "ai.run_again": "Erneut ausführen",
+  "ai.run_again_warning": "Falls der erste Lauf durchgegangen ist, wird die Änderung bei erneuter Ausführung doppelt angewendet. Erneut ausführen?"
 }

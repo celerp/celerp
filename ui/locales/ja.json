@@ -7974,5 +7974,14 @@
   "fund.change": "基金を変更",
   "fund.change_journal_hint": "この仕訳は計上済みです。保存すると無効化され、以下で選択した基金に再計上されます。",
   "fund.changed": "基金を変更しました。仕訳を無効化し、新しい基金に再計上しました。",
-  "collection.status_succeeded": "自動請求が完了しました。この請求書にまだ支払が表示されない場合は、「設定 > オンライン決済」の「請求書に未照合の支払」を確認してください。"
+  "collection.status_succeeded": "自動請求が完了しました。この請求書にまだ支払が表示されない場合は、「設定 > オンライン決済」の「請求書に未照合の支払」を確認してください。",
+  "ai.warn_outside_message": "このメッセージは社外の相手に送信され、取り消すことはできません。",
+  "ai.warn_selection_size": "この操作で {count} 件のレコードが変更されます。",
+  "ai.continuing_request": "リクエストを続行しています",
+  "ai.not_run_dependent": "未実行: 同じレコードへの前の変更が失敗しました: {title}",
+  "ai.generated_password_once": "新しいメンバーのパスワード（この一度だけ表示されます）: {password}。今すぐ伝えてください。Celerp は控えを保存しません。",
+  "ai.member_keeps_password": "この方はすでに Celerp アカウントをお持ちで、ご自身のパスワードをそのまま使用します。",
+  "ai.action_outcome_unknown": "この変更が適用されたかどうかを Celerp は確認できませんでした。もう一度実行する前にこちらで確認してください:",
+  "ai.run_again": "もう一度実行",
+  "ai.run_again_warning": "最初の実行が完了していた場合、もう一度実行すると変更が二重に適用されます。もう一度実行しますか?"
 }

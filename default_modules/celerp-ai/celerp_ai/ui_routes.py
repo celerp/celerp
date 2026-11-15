@@ -690,22 +690,18 @@ def setup_ui_routes(app) -> None:
         try:
             result = await api.ai_confirm_action(
                 token, session_token, conversation_id, message_id, tool_call_id,
+                run_again=bool(form.get("run_again")),
             )
         except APIError as e:
-            if e.status == 409 and api.error_code(e) == "action_not_pending":
+            code = api.error_code(e) if e.status == 409 else None
+            if code == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
+            if code == "action_outcome_unknown":
+                return _open_action_panel(conversation_id, message_id, tool_call_id,
+                                          _unknown_text(e.detail, lang), lang, status="unknown")
             return _action_panel(_error_text(e.detail, lang), ok=False)
-        if result.get("action_status") == "retryable":
-            return _retry_action_panel(
-                conversation_id, message_id, tool_call_id,
-                _outcome_text(result, lang)[1], lang,
-            )
-        if result.get("action_status") == "pending":
-            return _pending_action_panel(
-                conversation_id, message_id, tool_call_id,
-                _outcome_text(result, lang)[1], lang,
-            )
-        return _outcome_line(result, lang)
+        card = _outcome_panel(conversation_id, message_id, result, lang) or _outcome_line(result, lang)
+        return html_response((card, *_continuation(result, conversation_id, lang)))
 
     @app.post("/ai/dismiss-action-ui")
     async def ai_dismiss_action_ui(request: Request):
@@ -721,7 +717,7 @@ def setup_ui_routes(app) -> None:
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
         try:
-            await api.ai_dismiss_action(
+            result = await api.ai_dismiss_action(
                 token, session_token, conversation_id, message_id, tool_call_id,
             )
         except APIError as e:
@@ -729,8 +725,8 @@ def setup_ui_routes(app) -> None:
                 # Another tab may already have handled it. Its desired visible
                 # state is still "gone", so make dismissal idempotent in the UI.
                 return _R("")
-            return _action_panel(_error_text(e.detail, lang), ok=False)
-        return _R("")
+            return _action_panel(_error_text(e.detail, get_lang(request)), ok=False)
+        return html_response(tuple(_continuation(result, conversation_id, get_lang(request))))
 
     @app.post("/ai/dismiss-all-ui/{conversation_id}/{message_id}")
     async def ai_dismiss_all_ui(request: Request, conversation_id: str, message_id: str):
@@ -794,7 +790,8 @@ def setup_ui_routes(app) -> None:
         swaps = [_outcome_swap(message_id, o, view, lang, conversation_id=conversation_id)
                  for o in outcomes]
         tail = _confirm_tail(conversation_id, message_id, view, rest, tally, lang)
-        return html_response((tail, *[x for sw in swaps for x in sw]))
+        return html_response((tail, *[x for sw in swaps for x in sw],
+                              *_continuation(result, conversation_id, lang)))
 
     @app.get("/ai/conversations-list")
     async def ai_conversations_list(request: Request):
@@ -1312,54 +1309,79 @@ def _action_warnings(action: dict) -> list[str]:
     return [w for w in (action.get("warnings") or []) if w]
 
 
+def _action_ids(conversation_id: str, message_id: str, tool_call_id: str) -> list[FT]:
+    return [
+        Input(type="hidden", name="conversation_id", value=conversation_id),
+        Input(type="hidden", name="message_id", value=message_id),
+        Input(type="hidden", name="tool_call_id", value=tool_call_id),
+    ]
+
+
+def _action_form(ids: list[FT], url: str, *children: FT) -> FT:
+    return Form(*ids, *children, hx_post=url, hx_target="closest .ai-action__card", hx_swap="outerHTML")
+
+
+def _action_buttons(conversation_id: str, message_id: str, tool_call_id: str, status: str,
+                    lang: str = "en") -> FT:
+    """Confirm (Retry for a retryable change) and Dismiss. A change whose outcome is
+    unknown offers Run again behind a second step that warns it may apply twice."""
+    ids = _action_ids(conversation_id, message_id, tool_call_id)
+    dismiss = _action_form(ids, "/ai/dismiss-action-ui",
+                           Button(t("btn.dismiss", lang), type="submit", cls="btn btn--secondary"))
+    if status == "unknown":
+        run = Details(
+            Summary(t("ai.run_again", lang), cls="btn btn--primary"),
+            P(t("ai.run_again_warning", lang), cls="ai-action__hint"),
+            _action_form(ids, "/ai/confirm-action-ui",
+                         Input(type="hidden", name="run_again", value="1"),
+                         Button(t("ai.run_again", lang), type="submit", cls="btn btn--primary")),
+            cls="ai-action__run-again",
+            onkeydown="if(event.key==='Escape'){this.open=false;this.querySelector('summary').focus();}",
+        )
+    else:
+        run = _action_form(ids, "/ai/confirm-action-ui",
+                           Button(t("btn.retry", lang) if status == "retryable" else t("btn.confirm", lang),
+                                  type="submit", cls="btn btn--primary"))
+    return Div(run, dismiss, cls="ai-action__actions")
+
+
+def _unknown_text(error, lang: str = "en") -> list:
+    """Why a change's outcome is unknown, and a link to the screen that shows whether
+    it was applied."""
+    screen = error.get("check_screen") if isinstance(error, dict) else None
+    text = _error_text(error, lang) if isinstance(error, dict) else t("ai.action_outcome_unknown", lang)
+    return [text, " ", A(screen, href=safe_url(screen), cls="table-link")] if screen else [text]
+
+
 def _action_card(conversation_id: str, message_id: str, action: dict, lang: str = "en") -> FT:
     """Render one proposed change the user must confirm before it runs.
 
     The card names the change, lists what will be written, and flags anything
     the reader should check first. Confirm and Dismiss post identifiers only
     (never mutation arguments), so the server owns both execution and proposal
-    state. Retryable actions reuse the same immutable tool-call identity.
+    state. Retryable actions reuse the same immutable tool-call identity; an
+    action whose outcome is unknown says where to check and offers Run again.
     """
     name = action.get("name", "")
     tool_call_id = action.get("id", "")
     status = action.get("status", "pending")
     failed = status == "failed"
-    retryable = status == "retryable"
+    header: list = [P(_action_title(action), cls="ai-action__title")]
     if failed:
-        badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
+        header.append(Span(t("ai.action_failed_badge", lang), cls="badge badge--error"))
         footer = Div(_action_error_text(action, "ai.action_failed", lang), cls="ai-action__error")
     else:
-        badge = Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
-                     cls="badge badge--proposal")
-        footer = Div(
-            P(_action_error_text(action, "ai.action_hint", lang),
-              cls="ai-action__error" if retryable else "ai-action__hint"),
-            Div(
-                Form(
-                    Input(type="hidden", name="conversation_id", value=conversation_id),
-                    Input(type="hidden", name="message_id", value=message_id),
-                    Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                    Button(t("btn.retry", lang) if retryable else t("btn.confirm", lang),
-                           type="submit", cls="btn btn--primary"),
-                    hx_post="/ai/confirm-action-ui",
-                    hx_target="closest .ai-action__card",
-                    hx_swap="outerHTML",
-                ),
-                Form(
-                    Input(type="hidden", name="conversation_id", value=conversation_id),
-                    Input(type="hidden", name="message_id", value=message_id),
-                    Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                    Button(t("btn.dismiss", lang), type="submit", cls="btn btn--secondary"),
-                    hx_post="/ai/dismiss-action-ui",
-                    hx_target="closest .ai-action__card",
-                    hx_swap="outerHTML",
-                ),
-                cls="ai-action__actions",
-            ),
-            cls="ai-action__footer",
-        )
+        if status == "unknown":
+            note = P(*_unknown_text(action.get("error"), lang), cls="ai-action__error")
+        else:
+            header.append(Span(t("btn.retry", lang) if status == "retryable" else t("ai.action_proposal", lang),
+                               cls="badge badge--proposal"))
+            note = P(_action_error_text(action, "ai.action_hint", lang),
+                     cls="ai-action__error" if status == "retryable" else "ai-action__hint")
+        footer = Div(note, _action_buttons(conversation_id, message_id, tool_call_id, status, lang),
+                     cls="ai-action__footer")
     return Div(
-        Div(P(_action_title(action), cls="ai-action__title"), badge, cls="ai-action__header"),
+        Div(*header, cls="ai-action__header"),
         *_action_body(action, lang),
         footer,
         id=_action_dom_id(message_id, tool_call_id),
@@ -1370,51 +1392,32 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
 
 def _open_action_panel(
     conversation_id: str, message_id: str, tool_call_id: str,
-    error: str, lang: str = "en", *, retryable: bool, oob: bool = False,
+    error: str | list, lang: str = "en", *, status: str, oob: bool = False,
 ) -> FT:
-    """Compact actionable replacement for an open pending/retryable proposal."""
+    """Compact actionable replacement for an open pending, retryable or unknown proposal."""
     attrs = {"hx_swap_oob": "true"} if oob else {}
     return Div(
-        Div(error, cls="ai-action__error"),
-        Div(
-            Form(
-                Input(type="hidden", name="conversation_id", value=conversation_id),
-                Input(type="hidden", name="message_id", value=message_id),
-                Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                Button(t("btn.retry", lang) if retryable else t("btn.confirm", lang),
-                       type="submit", cls="btn btn--primary"),
-                hx_post="/ai/confirm-action-ui", hx_target="closest .ai-action__card",
-                hx_swap="outerHTML",
-            ),
-            Form(
-                Input(type="hidden", name="conversation_id", value=conversation_id),
-                Input(type="hidden", name="message_id", value=message_id),
-                Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                Button(t("btn.dismiss", lang), type="submit", cls="btn btn--secondary"),
-                hx_post="/ai/dismiss-action-ui", hx_target="closest .ai-action__card",
-                hx_swap="outerHTML",
-            ),
-            cls="ai-action__actions",
-        ),
+        Div(*(error if isinstance(error, list) else [error]), cls="ai-action__error"),
+        _action_buttons(conversation_id, message_id, tool_call_id, status, lang),
         id=_action_dom_id(message_id, tool_call_id),
         cls="ai-action ai-action__card", **attrs,
     )
 
 
-def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
-                        error: str, lang: str = "en", *, oob: bool = False) -> FT:
-    return _open_action_panel(
-        conversation_id, message_id, tool_call_id, error, lang,
-        retryable=True, oob=oob,
-    )
+def _outcome_panel(conversation_id: str, message_id: str, outcome: dict, lang: str = "en",
+                   *, oob: bool = False) -> FT | None:
+    """The open card an outcome leaves when the change still needs the user: retry it,
+    confirm it later, or check and run it again. None once it is done or failed."""
+    status = outcome.get("action_status")
+    if status not in _OPEN_STATUSES:
+        return None
+    error = (_unknown_text(outcome.get("error"), lang) if status == "unknown"
+             else _outcome_text(outcome, lang)[1])
+    return _open_action_panel(conversation_id, message_id, outcome.get("tool_call_id", ""),
+                              error, lang, status=status, oob=oob)
 
 
-def _pending_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
-                          error: str, lang: str = "en", *, oob: bool = False) -> FT:
-    return _open_action_panel(
-        conversation_id, message_id, tool_call_id, error, lang,
-        retryable=False, oob=oob,
-    )
+_OPEN_STATUSES = frozenset({"pending", "retryable", "unknown"})
 
 
 # Field names a proposal's body is summarised by in the review table, first match wins.
@@ -1440,7 +1443,11 @@ def _action_status_cell(action: dict, lang: str = "en") -> list:
     if status == "retryable":
         return [Span(t("btn.retry", lang), cls="badge badge--proposal"),
                 Span(_action_error_text(action, None, lang), cls="ai-action__error")]
-    return [Span(t("ai.action_proposal", lang), cls="badge badge--proposal")]
+    if status == "unknown":
+        return [Span(*_unknown_text(action.get("error"), lang), cls="ai-action__error")]
+    reason = _action_error_text(action, None, lang)
+    return [Span(t("ai.action_proposal", lang), cls="badge badge--proposal"),
+            *([Span(reason, cls="ai-action__error")] if reason else [])]
 
 
 def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT]:
@@ -1456,7 +1463,7 @@ def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT
     body = body if isinstance(body, dict) else {}
     warnings = _action_warnings(action)
     status = action.get("status", "pending")
-    open_action = status in {"pending", "retryable"}
+    open_action = status in _OPEN_STATUSES
     pick = []
     if open_action:
         box = {"type": "checkbox", "cls": "bulk-select", "name": "selected", "value": tool_call_id}
@@ -1566,37 +1573,46 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
     parts = [f"{title}: {text}" if title else text]
     if link:
         parts += [" ", A(t("ai.open_record", lang), href=safe_url(link), cls="table-link")]
+    parts += _secret_lines(outcome, lang)
     attrs = {}
     if message_id is not None:
         attrs = {"id": _action_dom_id(message_id, outcome.get("tool_call_id", "")), "hx_swap_oob": "true"}
     return Div(*parts, cls="ai-action__done" if ok else "ai-action__error", **attrs)
 
 
+def _secret_lines(outcome: dict, lang: str = "en") -> list[FT]:
+    """A password the change generated, shown to the person who confirmed it this once
+    (no stored copy holds it), or that an existing account keeps its own."""
+    data = outcome.get("data")
+    if isinstance(data, dict) and data.get("linked"):
+        return [P(t("ai.member_keeps_password", lang), cls="ai-action__hint")]
+    return [P(t("ai.generated_password_once", lang, password=value), cls="ai-action__secret")
+            for value in (outcome.get("shown_once") or {}).values()]
+
+
+def _continuation(result: dict, conversation_id: str, lang: str = "en") -> list[FT]:
+    """When answering the last card carried the request on, the thread gains the
+    running question's bubble, as a reload shows it."""
+    job_id = result.get("continued_job_id")
+    if not job_id:
+        return []
+    return [Div(_msg_bubble("ai", t("ai.continuing_request", lang), lang=lang),
+                _question_bubble({}, conversation_id, str(job_id), lang),
+                hx_swap_oob="beforeend:#ai-messages")]
+
+
 def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
                   *, conversation_id: str = "") -> list[FT]:
     """The out-of-band elements that mark one action finished in the thread."""
     action_status = outcome.get("action_status")
-    retryable = action_status == "retryable"
-    pending = action_status == "pending"
     if view != "table":
-        if retryable:
-            return [_retry_action_panel(
-                conversation_id, message_id, outcome.get("tool_call_id", ""),
-                _outcome_text(outcome, lang)[1], lang, oob=True,
-            )]
-        if pending:
-            return [_pending_action_panel(
-                conversation_id, message_id, outcome.get("tool_call_id", ""),
-                _outcome_text(outcome, lang)[1], lang, oob=True,
-            )]
-        return [_outcome_line(outcome, lang, message_id=message_id)]
+        return [_outcome_panel(conversation_id, message_id, outcome, lang, oob=True)
+                or _outcome_line(outcome, lang, message_id=message_id)]
     dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
     ok, text = _outcome_text(outcome, lang)
     link = _record_link(outcome)
-    if retryable or pending:
-        cell = [Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
-                     cls="badge badge--proposal"),
-                Span(text, cls="ai-action__error")]
+    if action_status in _OPEN_STATUSES:
+        cell = _action_status_cell({"status": action_status, "error": outcome.get("error")}, lang)
         pick = Td(Input(type="checkbox", cls="bulk-select", name="selected",
                         value=outcome.get("tool_call_id", "")),
                   id=f"{dom_id}-pick", hx_swap_oob="true")
@@ -1647,7 +1663,7 @@ class _Tally:
                 data = o.get("data")
                 if "_docs_" in str(o.get("name") or "") and isinstance(data, dict) and data.get("id"):
                     self.doc_ids.append(str(data["id"]))
-            elif o.get("action_status") in {"pending", "retryable"}:
+            elif o.get("action_status") in _OPEN_STATUSES:
                 self.attention += 1
             else:
                 self.failed += 1
@@ -1978,6 +1994,8 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
     failure with Ask again or Ask as new when ``offer_again`` and its question is
     known), then the action cards it proposed."""
     role = entry.get("role")
+    if entry.get("continuation"):
+        return [_msg_bubble("ai", t("ai.continuing_request", lang), lang=lang)]
     text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
     error = bool(entry.get("error"))
     if entry.get("refusal") is not None:

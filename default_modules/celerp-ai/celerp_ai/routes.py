@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
+from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -418,6 +419,7 @@ class ConversationQueryRequest(BaseModel):
 class ConfirmActionRequest(BaseModel):
     message_id: uuid.UUID
     tool_call_id: str = Field(..., min_length=1, max_length=128)
+    run_again: bool = False         # repeat a change whose outcome is unknown, after its warning
 
 
 class ConfirmAllRequest(BaseModel):
@@ -427,7 +429,7 @@ class ConfirmAllRequest(BaseModel):
 
 class DismissAllRequest(BaseModel):
     message_id: uuid.UUID
-    tool_call_ids: list[str] = Field(..., min_length=1, max_length=200)
+    tool_call_ids: list[str] | None = Field(default=None, min_length=1, max_length=200)
 
 
 class MessageOut(BaseModel):
@@ -446,6 +448,7 @@ class MessageOut(BaseModel):
     refusal: dict | None = None         # the AI service's refusal, for a refused question
     refusal_status: int | None = None
     help_pages: list[str] | None = None
+    continuation: bool = False          # the app's own question that carried a request on
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -492,7 +495,7 @@ def _failure_next(code: str | None) -> dict:
 
 
 def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.conversations import help_pages, is_continuation, message_failure, pending_actions, tool_names
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
@@ -501,7 +504,7 @@ def _message_out(m) -> MessageOut:
         file_ids=m.file_ids, credits_used=m.credits_used,
         error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
-        help_pages=help_pages(m.tools_called),
+        help_pages=help_pages(m.tools_called), continuation=is_continuation(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
@@ -952,17 +955,21 @@ async def _run_confirmed_action(
     tool_call_id: str,
     company_id,
     user_id,
+    run_again: bool = False,
 ) -> dict:
     """Claim, execute and finalize one pending action; never raises for action state.
 
     The action is claimed under a row lock and committed before execution. A
-    crash/transport ambiguity becomes retryable; the retry reuses the immutable
-    tool-call id and therefore the canonical operation's idempotency identity.
+    crash/transport ambiguity on a keyed tool becomes retryable; the retry reuses the
+    immutable tool-call id and so the canonical key. On an unkeyed tool it becomes
+    unknown and runs again only when the confirm carries run_again.
     The capability re-enters the app with the user's bearer token, so the target
     route enforces every module permission.
     """
-    from celerp.ai.conversations import claim_tool_call, finalize_tool_call
-    from celerp.ai.tools import execute_agent_capability, keyed_error
+    from celerp.ai.conversations import (
+        ActionOutcomeUnknown, claim_tool_call, finalize_tool_call, outcome_unknown_error,
+    )
+    from celerp.ai.tools import keyed_error
     resolved_arguments, dependency_error, dependency_record = await _resolved_action_arguments(
         session, conversation_id=conversation_id, message_id=message_id,
         tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
@@ -979,14 +986,24 @@ async def _run_confirmed_action(
             outcome["action_status"] = "pending"
         return outcome
 
-    record = await claim_tool_call(
-        session,
-        conversation_id=conversation_id,
-        message_id=message_id,
-        tool_call_id=tool_call_id,
-        company_id=company_id,
-        user_id=user_id,
-    )
+    try:
+        record = await claim_tool_call(
+            session,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            company_id=company_id,
+            user_id=user_id,
+            run_again=run_again,
+        )
+    except ActionOutcomeUnknown as exc:
+        await session.commit()      # nothing changed; releases the row lock
+        return {
+            "tool_call_id": tool_call_id, "name": exc.record.get("name"),
+            "title": exc.record.get("title") or exc.record.get("name"),
+            "ok": False, "status": 409, "action_status": "unknown", "data": None,
+            "error": outcome_unknown_error(exc.record),
+        }
     if record is None:
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
@@ -1007,36 +1024,42 @@ async def _run_confirmed_action(
             "error": unavailable,
         }
 
-    result = await execute_agent_capability(
-        request.app,
-        request.headers.get("authorization", ""),
-        capability,
-        resolved_arguments or {},
-        _confirmed_action_identity(message_id, record["id"]),
-    )
-    if result["ok"] and record["name"] == _DOCS_CREATE and record.get("file_id"):
-        try:
-            await _attach_confirmed_bill_receipt(
-                session, company_id=company_id, user_id=user_id,
-                message_id=message_id, record=record, result=result,
-            )
-        except Exception:
-            result = {
-                "ok": False, "status": 503, "data": None,
-                "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
-            }
-    action_error = _action_error(result)
-    action_status = (
-        "completed" if result["ok"]
-        else "retryable" if _retryable_action_result(result)
-        else "failed"
-    )
+    identity = _confirmed_action_identity(message_id, record["id"])
+    if record.get("runs"):
+        # Run again is the second run the user chose, not a replay: a fresh key.
+        identity = f"{identity}:run{record['runs']}"
+    keyed = record.get("keyed") is True
+    outcomes = None
+    if record.get("for_each"):
+        result, outcomes = await _run_for_each(
+            request, capability, resolved_arguments or {}, identity, record.get("outcomes"),
+            keyed=keyed, company_id=company_id, user_id=user_id)
+        action_status = result["action_status"]
+    else:
+        result = await _execute(request, capability, resolved_arguments or {}, identity,
+                                company_id=company_id, user_id=user_id)
+        if result["ok"] and record["name"] == _DOCS_CREATE and record.get("file_id"):
+            try:
+                await _attach_confirmed_bill_receipt(
+                    session, company_id=company_id, user_id=user_id,
+                    message_id=message_id, record=record, result=result,
+                )
+            except Exception:
+                result = {
+                    "ok": False, "status": 503, "data": None,
+                    "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
+                }
+        action_status = _action_status(result, keyed)
+    action_error = (outcome_unknown_error(record) if action_status == "unknown"
+                    else _action_error(result))
+    shown_once = result.get("shown_once")
     await finalize_tool_call(
         session, message_id=message_id, tool_call_id=tool_call_id,
-        status=action_status, result=result, error=action_error,
+        status=action_status, result=result, error=action_error, outcomes=outcomes,
+        kept={field: SHOWN_ONCE for field in shown_once} if shown_once else None,
     )
     await session.commit()
-    return {
+    outcome = {
         "tool_call_id": tool_call_id,
         "name": record["name"],
         "title": record.get("title") or record["name"],
@@ -1046,6 +1069,58 @@ async def _run_confirmed_action(
         "data": result.get("data"),
         "error": action_error,
     }
+    if shown_once:
+        # Only the person who confirmed sees it, once; every stored copy holds SHOWN_ONCE.
+        outcome["shown_once"] = shown_once
+    return outcome
+
+
+async def _execute(request: Request, capability: dict, arguments: dict, identity: str, *,
+                   company_id, user_id) -> dict:
+    """One run of a confirmed change under the user's own token."""
+    from celerp.ai import tools as ai_tools
+    from celerp.ai.files import load_file
+    return await ai_tools.execute_agent_capability(
+        request.app,
+        request.headers.get("authorization", ""),
+        capability,
+        arguments,
+        identity,
+        load_file=lambda file_id: load_file(file_id, company_id, user_id),
+    )
+
+
+async def _run_for_each(request: Request, capability: dict, arguments: dict, identity: str,
+                        earlier: list | None, *, keyed: bool, company_id, user_id) -> tuple[dict, list[dict]]:
+    """Run one propose_for_each card: the tool once per record, each under its own key.
+    Records are independent, so one refusal never stops the others. A record that
+    already completed or failed is never run again; only the open ones are."""
+    records = arguments.get("records") or []
+    outcomes = [dict(o) for o in (earlier or [])] + [{} for _ in range(len(records) - len(earlier or []))]
+    for index, one in enumerate(records):
+        if outcomes[index].get("status") in {"completed", "failed"}:
+            continue
+        result = await _execute(request, capability, one if isinstance(one, dict) else {},
+                                f"{identity}:{index}", company_id=company_id, user_id=user_id)
+        status = _action_status(result, keyed)
+        outcomes[index] = {"status": status, "http_status": result.get("status")}
+        if status == "failed":
+            outcomes[index]["error"] = _action_error(result)
+    statuses = {o.get("status") for o in outcomes}
+    action_status = next((s for s in ("unknown", "retryable", "failed") if s in statuses), "completed")
+    done = action_status == "completed"
+    return ({"ok": done, "status": 200 if done else 207, "action_status": action_status,
+             "data": {"outcomes": outcomes}}, outcomes)
+
+
+def _action_status(result: dict, keyed: bool) -> str:
+    """completed, failed, or for an answer that never came: retryable when the route looks
+    up the card's key (the retry answers the first result), otherwise unknown."""
+    if result["ok"]:
+        return "completed"
+    if _retryable_action_result(result):
+        return "retryable" if keyed else "unknown"
+    return "failed"
 
 
 def _retryable_action_result(result: dict) -> bool:
@@ -1085,7 +1160,31 @@ def _action_error(result: dict) -> dict | None:
     return keyed_error(code or "route_error", "ai.action_request_failed", status=result.get("status"))
 
 
-_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
+_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable", "action_outcome_unknown"})
+_CONTINUE_QUESTION = "Continue the request with these results."
+
+
+async def _continue_request(session: AsyncSession, *, conversation_id: uuid.UUID, message_id: uuid.UUID,
+                            company_id, user_id, auth: AuthContext) -> str | None:
+    """Carry the request on once its cards are answered: when the message has no open
+    action left and at least one change completed, the same question job an ask starts
+    runs with the outcomes in its history. It only reads or proposes; every change is
+    still a card. Nothing continues when every card was dismissed or failed."""
+    from celerp.ai import jobs
+    from celerp.ai.conversations import CONTINUATION, add_message, get_message, pending_actions
+    msg = await get_message(session, message_id, conversation_id)
+    records = [r for r in (msg.tools_called or []) if isinstance(r, dict) and r.get("name")] if msg else []
+    if not records or pending_actions(records) or not any(r.get("status") == "completed" for r in records):
+        return None
+    question_id = uuid.uuid4()
+    request = jobs.JobRequest.question(company_id=company_id, user_id=user_id, query=_CONTINUE_QUESTION,
+                                       file_ids=None, conversation_id=conversation_id)
+    await add_message(session, conversation_id, "user", _CONTINUE_QUESTION, message_id=question_id,
+                      tools_called=[CONTINUATION])
+    session.add(jobs.question_job(job_id=question_id, request=request, auth_nonce=auth.snonce))
+    await session.commit()
+    jobs.start_job(question_id)
+    return str(question_id)
 
 
 @router.post("/conversations/{conversation_id}/confirm")
@@ -1098,12 +1197,15 @@ async def confirm_action(
     user=Depends(get_current_user),
     role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Execute one pending action the user has confirmed.
 
-    No model turn resumes after a write; the user asks the next question.
-    An action that is no longer pending, or whose module is not enabled, is 409.
+    ``run_again`` repeats a change whose outcome is unknown, after the card's warning.
+    When it was the message's last open action, the request carries on as a job
+    (``continued_job_id``). An action that is no longer pending, whose outcome is
+    unknown (without ``run_again``), or whose module is not enabled, is 409.
     """
     from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     outcome = await _run_confirmed_action(
@@ -1111,10 +1213,15 @@ async def confirm_action(
         request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+        run_again=body.run_again,
     )
     error = outcome.get("error") or {}
-    if error.get("code") in _ACTION_STATE_CODES:
+    # A refused claim is 409; a run that just ended unknown is the card's outcome (200).
+    if outcome.get("status") == 409 and error.get("code") in _ACTION_STATE_CODES:
         raise HTTPException(status_code=409, detail=error)
+    outcome["continued_job_id"] = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user.id, auth=auth)
     return outcome
 
 
@@ -1126,9 +1233,11 @@ async def dismiss_action(
     body: ConfirmActionRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Persist dismissal of one proposal so it stays gone after reload."""
+    """Persist dismissal of one proposal so it stays gone after reload; when another
+    card of the message completed, the request carries on (``continued_job_id``)."""
     from celerp.ai.conversations import dismiss_tool_call
     dismissed = await dismiss_tool_call(
         session, conversation_id=conversation_id, message_id=body.message_id,
@@ -1137,7 +1246,10 @@ async def dismiss_action(
     if not dismissed:
         raise _conflict("action_not_pending", "ai.action_not_pending")
     await session.commit()
-    return {"dismissed": True, "tool_call_id": body.tool_call_id}
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user.id, auth=auth)
+    return {"dismissed": True, "tool_call_id": body.tool_call_id, "continued_job_id": continued}
 
 
 @router.post("/conversations/{conversation_id}/dismiss-all")
@@ -1148,16 +1260,25 @@ async def dismiss_all(
     body: DismissAllRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Persist dismissal of a selected proposal set under one message-row lock."""
-    from celerp.ai.conversations import dismiss_tool_calls
+    """Persist dismissal of a selected proposal set (every open one without
+    ``tool_call_ids``) under one message-row lock."""
+    from celerp.ai.conversations import dismiss_tool_calls, get_message, pending_actions
+    ids = body.tool_call_ids
+    if ids is None:
+        msg = await get_message(session, body.message_id, conversation_id)
+        ids = [r["id"] for r in pending_actions(msg.tools_called if msg else None)]
     dismissed = await dismiss_tool_calls(
         session, conversation_id=conversation_id, message_id=body.message_id,
-        tool_call_ids=body.tool_call_ids, company_id=company_id, user_id=user.id,
+        tool_call_ids=ids, company_id=company_id, user_id=user.id,
     )
     await session.commit()
-    return {"dismissed": dismissed}
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user.id, auth=auth) if dismissed else None
+    return {"dismissed": dismissed, "continued_job_id": continued}
 
 
 def _selected_action_ids(records: list[dict], selection: list[str] | None) -> list[str]:
@@ -1168,10 +1289,9 @@ def _selected_action_ids(records: list[dict], selection: list[str] | None) -> li
     not pending, so its row reports ``action_not_pending`` instead of vanishing.
     An empty result means nothing selected is pending.
     """
-    # ``records`` already comes from pending_actions(), which contains every
-    # action the user may act on: fresh proposals plus retryable/stale claims.
-    # Treat retryable actions exactly like pending ones so a bulk review can
-    # safely retry the same immutable tool-call/idempotency identity.
+    # records comes from pending_actions(): fresh proposals and keyed retryable claims,
+    # which are treated like pending ones because their retry reuses the canonical key.
+    # Unknown records are skipped and reported: confirm-all never re-runs an unknown outcome.
     pending = [r["id"] for r in records]
     if selection is None:
         return pending
@@ -1180,6 +1300,39 @@ def _selected_action_ids(records: list[dict], selection: list[str] | None) -> li
     if not chosen:
         return []
     return chosen + [i for i in wanted if i not in pending]
+
+
+def _action_groups(records: list[dict]) -> dict[str, int]:
+    """Group of each action, in proposal order: two actions share a group when they name
+    the same record (a path value) or the later one says ``after_previous``."""
+    group_of: dict[str, int] = {}
+    by_value: dict[str, int] = {}
+    merged: dict[int, int] = {}
+
+    def root(group: int) -> int:
+        while merged.get(group, group) != group:
+            group = merged[group]
+        return group
+
+    previous: str | None = None
+    for index, record in enumerate(records):
+        arguments = record.get("arguments") or {}
+        joined = {root(by_value[v]) for v in _target_values(arguments) if v in by_value}
+        if arguments.get("after_previous") is True and previous is not None:
+            joined.add(root(group_of[previous]))
+        group = min(joined) if joined else index
+        for other in joined:
+            merged[other] = group
+        for value in _target_values(arguments):
+            by_value[value] = group
+        group_of[record["id"]] = group
+        previous = record["id"]
+    return {action_id: root(group) for action_id, group in group_of.items()}
+
+
+def _target_values(arguments: dict) -> set[str]:
+    path = arguments.get("path")
+    return {str(v) for v in path.values() if v not in (None, "")} if isinstance(path, dict) else set()
 
 
 @router.post("/conversations/{conversation_id}/confirm-all")
@@ -1192,6 +1345,7 @@ async def confirm_all(
     user=Depends(get_current_user),
     role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
+    auth: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Execute the pending actions on one message, in the order they were proposed.
@@ -1199,37 +1353,59 @@ async def confirm_all(
     ``tool_call_ids`` narrows the run to a selection; without it every pending
     action runs. Each action is claimed and finalized on its own, so one
     failure never rolls back the others; the reply lists the outcome per action.
+    At the first failure in a group of dependent actions (same record, or
+    ``after_previous``) the rest of that group stays pending with the reason; other
+    groups keep running. An unknown outcome never runs and counts as a failure.
     """
-    from celerp.ai.conversations import get_conversation, get_message, pending_actions
-    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
+    from celerp.ai.conversations import get_conversation, get_message, note_pending, pending_actions
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller, keyed_error
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     msg = await get_message(session, body.message_id, conversation_id)
     if msg is None:
         raise HTTPException(status_code=404, detail=t("ai.err_message_not_found"))
-    ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
+    open_records = pending_actions(msg.tools_called)
+    ids = _selected_action_ids(open_records, body.tool_call_ids)
     if not ids:
         raise _conflict("action_not_pending", "ai.action_none_pending")
+    groups = _action_groups(open_records)
 
     capabilities = compile_agent_capabilities(
         request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role))
     results = []
+    stopped: dict[int, str] = {}
     for tool_call_id in ids:
-        results.append(await _run_confirmed_action(
+        group = groups.get(tool_call_id)
+        if group in stopped:
+            reason = keyed_error("not_run_dependent", "ai.not_run_dependent", title=stopped[group])
+            await note_pending(session, message_id=body.message_id, tool_call_id=tool_call_id, error=reason)
+            await session.commit()
+            record = next(r for r in open_records if r["id"] == tool_call_id)
+            results.append({"tool_call_id": tool_call_id, "name": record.get("name"),
+                            "title": record.get("title") or record.get("name"), "ok": False,
+                            "status": 409, "action_status": "pending", "data": None, "error": reason})
+            continue
+        outcome = await _run_confirmed_action(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
             tool_call_id=tool_call_id, company_id=company_id, user_id=user.id,
-        ))
+        )
+        results.append(outcome)
+        if not outcome["ok"] and group is not None:
+            stopped[group] = outcome.get("title") or outcome.get("name") or tool_call_id
     completed = sum(1 for r in results if r["ok"])
     attention = sum(
         1 for r in results
-        if not r["ok"] and r.get("action_status") in {"pending", "retryable"}
+        if not r["ok"] and r.get("action_status") in {"pending", "retryable", "unknown"}
     )
     failed = len(results) - completed - attention
+    continued = await _continue_request(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        company_id=company_id, user_id=user.id, auth=auth)
     return {
         "results": results, "completed": completed,
-        "failed": failed, "attention": attention,
+        "failed": failed, "attention": attention, "continued_job_id": continued,
     }
 
 

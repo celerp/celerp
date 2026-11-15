@@ -7974,5 +7974,14 @@
   "fund.change": "Cambia fondo",
   "fund.change_journal_hint": "Questa registrazione è già contabilizzata. Salvando, verrà annullata e contabilizzata nuovamente sui fondi selezionati sotto.",
   "fund.changed": "Fondo modificato. La registrazione è stata annullata e contabilizzata nuovamente sui nuovi fondi.",
-  "collection.status_succeeded": "Addebitato automaticamente. Se il pagamento non compare ancora su questa fattura, cercalo in Pagamenti non abbinati a fattura in Impostazioni, Pagamenti online."
+  "collection.status_succeeded": "Addebitato automaticamente. Se il pagamento non compare ancora su questa fattura, cercalo in Pagamenti non abbinati a fattura in Impostazioni, Pagamenti online.",
+  "ai.warn_outside_message": "Questo messaggio va a una persona esterna all'azienda e non può essere richiamato.",
+  "ai.warn_selection_size": "Questa operazione modifica {count} record.",
+  "ai.continuing_request": "Proseguo con la tua richiesta",
+  "ai.not_run_dependent": "Non eseguito: una modifica precedente allo stesso record non è riuscita: {title}",
+  "ai.generated_password_once": "Password del nuovo membro, mostrata solo questa volta: {password}. Comunicala ora; Celerp non ne conserva una copia.",
+  "ai.member_keeps_password": "Questa persona ha già un account Celerp e mantiene la propria password.",
+  "ai.action_outcome_unknown": "Celerp non è riuscito a capire se questa modifica è stata applicata. Controlla qui prima di eseguirla di nuovo:",
+  "ai.run_again": "Esegui di nuovo",
+  "ai.run_again_warning": "Se la prima esecuzione è andata a buon fine, eseguirla di nuovo applicherà la modifica due volte. Eseguire di nuovo?"
 }

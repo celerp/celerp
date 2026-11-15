@@ -7974,5 +7974,14 @@
   "fund.change": "Đổi quỹ",
   "fund.change_journal_hint": "Bút toán này đã ghi sổ. Khi lưu, hệ thống hủy bút toán đó và ghi sổ lại vào các quỹ được chọn bên dưới.",
   "fund.changed": "Đã đổi quỹ. Bút toán đã bị hủy và được ghi sổ lại vào các quỹ mới.",
-  "collection.status_succeeded": "Đã thu tiền tự động. Nếu khoản thanh toán chưa xuất hiện trên hóa đơn, hãy tìm ở Thanh toán chưa khớp với hóa đơn trong Cài đặt, Thanh toán trực tuyến."
+  "collection.status_succeeded": "Đã thu tiền tự động. Nếu khoản thanh toán chưa xuất hiện trên hóa đơn, hãy tìm ở Thanh toán chưa khớp với hóa đơn trong Cài đặt, Thanh toán trực tuyến.",
+  "ai.warn_outside_message": "Tin nhắn này được gửi tới người ngoài công ty và không thể thu hồi.",
+  "ai.warn_selection_size": "Thao tác này thay đổi {count} bản ghi.",
+  "ai.continuing_request": "Đang tiếp tục yêu cầu của bạn",
+  "ai.not_run_dependent": "Không chạy: một thay đổi trước đó trên cùng bản ghi đã thất bại: {title}",
+  "ai.generated_password_once": "Mật khẩu của thành viên mới, chỉ hiển thị lần này: {password}. Hãy chuyển nó ngay; Celerp không lưu bản sao.",
+  "ai.member_keeps_password": "Người này đã có tài khoản Celerp và giữ mật khẩu riêng của họ.",
+  "ai.action_outcome_unknown": "Celerp không xác định được thay đổi này đã được áp dụng hay chưa. Hãy kiểm tra tại đây trước khi chạy lại:",
+  "ai.run_again": "Chạy lại",
+  "ai.run_again_warning": "Nếu lần chạy đầu đã thành công, chạy lại sẽ áp dụng thay đổi hai lần. Chạy lại?"
 }

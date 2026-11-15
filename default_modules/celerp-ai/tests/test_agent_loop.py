@@ -90,13 +90,13 @@ async def _owner_authority(company_id, user_id):
     return "owner", {}
 
 
-def _install(monkeypatch, results, execute=None):
+def _install(monkeypatch, results, execute=None, caps=CAPS):
     """Wire the fake complete/compile/execute into the service module, and the asker's
     authority (role and company settings) that read replay contracts are made under."""
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
     monkeypatch.setattr(service, "_authority", _owner_authority)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: caps)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)
     return fake
@@ -413,11 +413,11 @@ async def test_tool_calls_per_run_cap_drops_overflow(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_mutation_overflow_noted_in_answer(monkeypatch):
-    over = [
-        tool_call("create_contact", {"body": {"name": str(i)}}, f"m{i}")
-        for i in range(MAX_TOOL_CALLS_PER_TURN + 2)
-    ]
-    _install(monkeypatch, [tool_result(content="Proposed:", calls=over)])
+    # Distinct change tools: the same tool twice in one turn is refused (propose_for_each).
+    names = [f"create_contact_{i}" for i in range(MAX_TOOL_CALLS_PER_TURN + 2)]
+    caps = {**CAPS, **{n: {**CAPS["create_contact"], "name": n, "tool": _tool(n)} for n in names}}
+    over = [tool_call(n, {"body": {"name": n}}, f"m{i}") for i, n in enumerate(names)]
+    _install(monkeypatch, [tool_result(content="Proposed:", calls=over)], caps=caps)
     result = await _run()
     assert len(result.pending_actions) == MAX_TOOL_CALLS_PER_TURN
     assert result.answer.startswith("Proposed:")

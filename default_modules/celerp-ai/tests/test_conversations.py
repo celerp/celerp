@@ -562,7 +562,7 @@ async def test_finalize_tool_call_records_terminal_state(session, company, user,
     assert "data" not in record
     assert tool_names(msg.tools_called) == ["create_contact"]
     history = build_history_context([msg])
-    assert "[completed action: create_contact -> x]" in history[0]["content"]
+    assert '[completed action: create_contact {"body":{"name":"Acme"}} -> x]' in history[0]["content"]
 
 
 @pytest.mark.asyncio

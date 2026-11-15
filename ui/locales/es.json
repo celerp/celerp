@@ -7974,5 +7974,14 @@
   "fund.change": "Cambiar fondo",
   "fund.change_journal_hint": "Este asiento ya está contabilizado. Guardar lo anula y lo contabiliza de nuevo con los fondos seleccionados abajo.",
   "fund.changed": "Fondo cambiado. El asiento se anuló y se contabilizó de nuevo en los nuevos fondos.",
-  "collection.status_succeeded": "Cobrado automáticamente. Si el pago aún no figura en esta factura, búsquelo en Pagos no asociados a una factura, en Configuración, Pagos en línea."
+  "collection.status_succeeded": "Cobrado automáticamente. Si el pago aún no figura en esta factura, búsquelo en Pagos no asociados a una factura, en Configuración, Pagos en línea.",
+  "ai.warn_outside_message": "Este mensaje va a alguien fuera de la empresa y no se puede recuperar.",
+  "ai.warn_selection_size": "Esto cambia {count} registros.",
+  "ai.continuing_request": "Continuando con su solicitud",
+  "ai.not_run_dependent": "No ejecutado: falló un cambio anterior en el mismo registro: {title}",
+  "ai.generated_password_once": "Contraseña del nuevo miembro, se muestra solo esta vez: {password}. Compártala ahora; Celerp no guarda una copia.",
+  "ai.member_keeps_password": "Esta persona ya tiene una cuenta de Celerp y conserva su propia contraseña.",
+  "ai.action_outcome_unknown": "Celerp no pudo saber si este cambio se aplicó. Compruébelo aquí antes de ejecutarlo de nuevo:",
+  "ai.run_again": "Ejecutar de nuevo",
+  "ai.run_again_warning": "Si la primera ejecución se completó, ejecutarlo de nuevo aplicará el cambio dos veces. ¿Ejecutar de nuevo?"
 }

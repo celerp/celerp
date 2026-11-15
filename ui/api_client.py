@@ -3686,17 +3686,19 @@ async def ai_question_state(token: str, session_token: str, conversation_id: str
 
 
 async def ai_confirm_action(token: str, session_token: str, conversation_id: str,
-                            message_id: str, tool_call_id: str) -> dict:
+                            message_id: str, tool_call_id: str, *, run_again: bool = False) -> dict:
     """POST /ai/conversations/{id}/confirm - execute one confirmed pending action.
 
-    Sends IDs only, never business arguments.
-    Returns {"tool_call_id", "title", "ok", "status", "data", "error"}.
+    Sends IDs only, never business arguments; ``run_again`` repeats a change whose
+    outcome is unknown. Returns {"tool_call_id", "title", "ok", "status",
+    "action_status", "data", "error", "continued_job_id"}, plus "shown_once" when
+    the change generated a secret.
     """
     from celerp.ai import deadlines
     async with _ai_api_client(token, session_token, timeout=deadlines.ACTIONS_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm",
-            json={"message_id": message_id, "tool_call_id": tool_call_id},
+            json={"message_id": message_id, "tool_call_id": tool_call_id, "run_again": run_again},
         )).json()
 
 

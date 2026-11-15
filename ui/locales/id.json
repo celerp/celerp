@@ -7974,5 +7974,14 @@
   "fund.change": "Ubah dana",
   "fund.change_journal_hint": "Jurnal ini sudah dibukukan. Menyimpan akan membatalkannya dan membukukan ulang pada dana yang dipilih di bawah.",
   "fund.changed": "Dana diubah. Jurnal dibatalkan dan dibukukan ulang pada dana baru.",
-  "collection.status_succeeded": "Ditagih otomatis. Jika pembayaran belum muncul pada faktur ini, cari di Pembayaran yang belum dicocokkan dengan faktur pada Pengaturan, Pembayaran Online."
+  "collection.status_succeeded": "Ditagih otomatis. Jika pembayaran belum muncul pada faktur ini, cari di Pembayaran yang belum dicocokkan dengan faktur pada Pengaturan, Pembayaran Online.",
+  "ai.warn_outside_message": "Pesan ini dikirim ke seseorang di luar perusahaan dan tidak dapat ditarik kembali.",
+  "ai.warn_selection_size": "Ini mengubah {count} catatan.",
+  "ai.continuing_request": "Melanjutkan permintaan Anda",
+  "ai.not_run_dependent": "Tidak dijalankan: perubahan sebelumnya pada catatan yang sama gagal: {title}",
+  "ai.generated_password_once": "Kata sandi untuk anggota baru, hanya ditampilkan kali ini: {password}. Sampaikan sekarang; Celerp tidak menyimpan salinannya.",
+  "ai.member_keeps_password": "Orang ini sudah memiliki akun Celerp dan tetap memakai kata sandinya sendiri.",
+  "ai.action_outcome_unknown": "Celerp tidak dapat memastikan apakah perubahan ini sudah diterapkan. Periksa di sini sebelum menjalankannya lagi:",
+  "ai.run_again": "Jalankan lagi",
+  "ai.run_again_warning": "Jika eksekusi pertama berhasil, menjalankannya lagi akan menerapkan perubahan dua kali. Jalankan lagi?"
 }

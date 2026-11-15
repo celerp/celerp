@@ -12,6 +12,7 @@ Approximate: 1 token per 4 characters.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -33,9 +34,10 @@ MAX_CONVERSATIONS_PER_USER = 100
 MAX_MESSAGES_PER_CONVERSATION = 200
 HISTORY_TOKEN_BUDGET = 8000
 _CHARS_PER_TOKEN = 4  # conservative estimate
-# A claimed action may outlive the process that started it. Once stale, expose it
-# as retryable: every agent mutation is compiled only after proving canonical
-# idempotency, so the same tool-call id can be retried safely.
+# A claimed action may outlive the process that started it. Once stale, a keyed claim
+# (its route has a key store) is retryable and the retry reuses the same tool-call id
+# and canonical key; an unkeyed claim's outcome is unknown, and only a confirm carrying
+# run_again repeats it.
 EXECUTING_STALE_S = 5 * 60
 
 
@@ -307,8 +309,8 @@ async def add_message(
             .offset(MAX_MESSAGES_PER_CONVERSATION)
         )).all())
         if old_rows:
-            # Unresolved proposals and ambiguous/retryable writes are durable user
-            # decisions, not disposable chat history, and an open job's question is
+            # Unresolved proposals and ambiguous writes (retryable or unknown) are durable
+            # user decisions, not disposable chat history, and an open job's question is
             # what it answers. Preserve them until they reach a terminal state, even
             # if that means temporarily exceeding the soft history cap.
             asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
@@ -482,6 +484,15 @@ def help_pages(tools_called: list | None) -> list[str] | None:
     return None
 
 
+CONTINUATION = {"continuation": True}  # marks the question that carries a request on after its cards
+
+
+def is_continuation(tools_called: list | None) -> bool:
+    """True for the user-role question the app added to carry a request on after its
+    cards were answered, not words the user typed."""
+    return CONTINUATION in (tools_called or [])
+
+
 def tool_names(tools_called: list | None) -> list[str]:
     """Operation-id strings from a stored ``tools_called`` list.
 
@@ -523,11 +534,33 @@ def _stale_executing(record: object, now: datetime) -> bool:
         return False
 
 
-def _claimable(record: object, now: datetime) -> bool:
+def _outcome_unknown(record: object, now: datetime) -> bool:
+    """True when nobody knows whether the change ran: stored ``unknown``, or a stale
+    claim of a tool with no key store (a record without ``keyed`` counts as unkeyed)."""
     if not isinstance(record, dict):
         return False
+    if record.get("status") == "unknown":
+        return True
+    return _stale_executing(record, now) and record.get("keyed") is not True
+
+
+def _claimable(record: object, now: datetime, *, allow_unknown: bool = False) -> bool:
+    """Whether a reader may claim ``record``. An unknown outcome is claimable only with
+    ``allow_unknown``: a confirm carrying run_again, or a dismiss (which runs nothing)."""
+    if not isinstance(record, dict):
+        return False
+    if _outcome_unknown(record, now):
+        return allow_unknown
     status = record.get("status", "pending")
     return _still_pending(record, now) or status == "retryable" or _stale_executing(record, now)
+
+
+class ActionOutcomeUnknown(Exception):
+    """A plain confirm reached a change whose outcome is unknown; only Run again repeats it."""
+
+    def __init__(self, record: dict) -> None:
+        super().__init__(record.get("id"))
+        self.record = record
 
 
 def _has_protected_action(tools_called: list | None) -> bool:
@@ -538,6 +571,8 @@ def _has_protected_action(tools_called: list | None) -> bool:
     for record in tools_called:
         if _still_pending(record, now):
             return True
+        if _outcome_unknown(record, now):
+            return True
         if isinstance(record, dict) and record.get("status") in {"retryable", "executing"}:
             return True
     return False
@@ -546,10 +581,11 @@ def _has_protected_action(tools_called: list | None) -> bool:
 def pending_actions(tools_called: list | None) -> list[dict]:
     """Proposal records still requiring user attention.
 
-    Fresh proposals remain ``pending``. Ambiguous transport/server failures and
-    stale ``executing`` claims are surfaced as ``retryable`` using the same
-    immutable tool-call id. Completed/failed/dismissed actions stay in audit
-    history but no longer render as open proposals.
+    Fresh proposals remain ``pending``. Ambiguous transport/server failures and stale
+    executing claims of a keyed tool are surfaced as retryable with the same immutable
+    tool-call id; those of an unkeyed tool are surfaced as unknown, which only a
+    confirm carrying run_again repeats. Completed/failed/dismissed actions stay in
+    audit history but no longer render as open proposals.
     """
     if not tools_called:
         return []
@@ -558,12 +594,22 @@ def pending_actions(tools_called: list | None) -> list[dict]:
     for record in tools_called:
         if _still_pending(record, now):
             out.append(record)
+        elif _outcome_unknown(record, now):
+            out.append(record if record.get("status") == "unknown" else {
+                **record, "status": "unknown", "error": outcome_unknown_error(record)})
         elif isinstance(record, dict) and record.get("status") == "retryable":
             out.append(record)
         elif _stale_executing(record, now):
             out.append({**record, "status": "retryable",
                         "error": keyed_error("action_unfinished", "ai.action_unfinished")})
     return out
+
+
+def outcome_unknown_error(record: dict) -> dict:
+    """Why a change will not run without Run again, with the screen where the user sees
+    whether it happened."""
+    return {**keyed_error("action_outcome_unknown", "ai.action_outcome_unknown"),
+            "check_screen": record.get("check_screen")}
 
 
 async def pending_action_counts(
@@ -594,12 +640,16 @@ async def claim_tool_call(
     tool_call_id: str,
     company_id: uuid.UUID,
     user_id: uuid.UUID,
+    run_again: bool = False,
 ) -> dict | None:
     """Atomically move a pending action to ``executing``; return its copy or None.
 
     Locks the conversation, then the owning message row (FOR UPDATE), so two
     confirmations of the same action cannot both claim it. Never mutates the JSON
     in place: a new list is assigned so SQLAlchemy persists the change.
+
+    A record whose outcome is unknown raises ``ActionOutcomeUnknown`` unless
+    ``run_again``; a run again counts itself in ``runs``, so its identity is new.
     """
     await _lock_conversation(session, conversation_id)
     q = (
@@ -621,15 +671,17 @@ async def claim_tool_call(
     claimed: dict | None = None
     new_list: list = []
     for item in msg.tools_called:
-        if (
-            claimed is None
-            and isinstance(item, dict)
-            and item.get("id") == tool_call_id
-            and _claimable(item, now)
-        ):
-            claimed = dict(item)
+        if claimed is None and isinstance(item, dict) and item.get("id") == tool_call_id:
+            if _outcome_unknown(item, now) and not run_again:
+                raise ActionOutcomeUnknown(item)
+            if not _claimable(item, now, allow_unknown=run_again):
+                new_list.append(item)
+                continue
             running = {**item, "status": "executing", "executing_since": now.isoformat()}
+            if run_again:
+                running["runs"] = int(item.get("runs") or 0) + 1
             running.pop("error", None)
+            claimed = dict(running)
             new_list.append(running)
         else:
             new_list.append(item)
@@ -648,14 +700,19 @@ async def finalize_tool_call(
     *,
     message_id: uuid.UUID,
     tool_call_id: str,
-    status: Literal["completed", "failed", "retryable", "dismissed"],
+    status: Literal["completed", "failed", "retryable", "unknown", "dismissed"],
     result: dict | None,
     error: dict | None = None,
+    outcomes: list[dict] | None = None,
+    kept: dict | None = None,
 ) -> None:
     """Persist action state while retaining the immutable proposal/audit record.
 
     ``error`` is kept whole ({code, message, message_key, params}), so the reloaded
-    thread reads it in its reader's language, as the live reply did."""
+    thread reads it in its reader's language, as the live reply did. ``outcomes`` is
+    each record's own outcome of a propose_for_each card, so Run again runs only the
+    records still open. ``kept`` is what the record stores as its result when the
+    route's answer must not be stored (a generated password reads as SHOWN_ONCE)."""
     msg = await session.get(AIMessage, message_id)
     if msg is None or not msg.tools_called:
         return
@@ -686,11 +743,30 @@ async def finalize_tool_call(
                 updated["error"] = error
             else:
                 updated.pop("error", None)
+            if outcomes is not None:
+                updated["outcomes"] = outcomes
+            if kept is not None:
+                updated["result"] = kept
             new_list.append(updated)
         else:
             new_list.append(item)
 
     msg.tools_called = new_list
+    session.add(msg)
+    await session.flush()
+
+
+async def note_pending(
+    session: AsyncSession, *, message_id: uuid.UUID, tool_call_id: str, error: dict,
+) -> None:
+    """Say why a pending action was not run (an earlier change to its record failed); it
+    stays pending, and its next claim clears the note."""
+    msg = await session.get(AIMessage, message_id)
+    if msg is None or not msg.tools_called:
+        return
+    await _lock_conversation(session, msg.conversation_id)
+    msg.tools_called = [{**item, "error": error} if isinstance(item, dict) and item.get("id") == tool_call_id
+                        else item for item in msg.tools_called]
     session.add(msg)
     await session.flush()
 
@@ -734,7 +810,7 @@ async def dismiss_tool_calls(
     updated_items: list = []
     for item in msg.tools_called:
         item_id = item.get("id") if isinstance(item, dict) else None
-        if item_id in wanted and _claimable(item, now):
+        if item_id in wanted and _claimable(item, now, allow_unknown=True):
             dismissed = {**item, "status": "dismissed", "finished_at": now.isoformat()}
             dismissed.pop("executing_since", None)
             dismissed.pop("error", None)
@@ -771,13 +847,22 @@ async def dismiss_tool_call(
     ))
 
 
+_ARGUMENTS_IN_HISTORY = 400  # characters of a completed action's arguments the model reads back
+
+
+def _brief(arguments: object) -> str:
+    """A completed action's arguments, compact, so a continued request knows what it did."""
+    text = json.dumps(arguments or {}, ensure_ascii=False, separators=(",", ":"), default=str)
+    return text if len(text) <= _ARGUMENTS_IN_HISTORY else text[:_ARGUMENTS_IN_HISTORY] + "..."
+
+
 def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
     """Build a token-budgeted history for LLM context.
 
     Takes messages (oldest first), returns them chronologically, truncated to
     HISTORY_TOKEN_BUDGET tokens (newest kept first). An assistant message that
     still holds pending action records appends "[proposed action: <name>]" lines
-    so the model knows what it offered. File content and tool results from prior
+    so the model knows what it offered, and a completed action its arguments. File content and tool results from prior
     turns are never included.
     """
     # Reverse to newest-first for token budgeting
@@ -788,6 +873,10 @@ def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
     for msg in reversed_msgs:
         content = msg.content
         for record in pending_actions(msg.tools_called):
+            if record.get("status") == "unknown":
+                content += (f"\n[action outcome unknown: {record.get('name')}; do not propose it again "
+                            "unless you tell the user the earlier outcome is unknown]")
+                continue
             label = "action awaiting retry" if record.get("status") == "retryable" else "proposed action"
             content += f"\n[{label}: {record.get('name')}]"
         for record in (msg.tools_called or []):
@@ -796,7 +885,7 @@ def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
             summary = record.get("result_summary") or {}
             identity = summary.get("id") or summary.get("entity_id") or summary.get("ref_id") or summary.get("event_id")
             suffix = f" -> {identity}" if identity not in (None, "") else ""
-            content += f"\n[completed action: {record.get('name')}{suffix}]"
+            content += f"\n[completed action: {record.get('name')} {_brief(record.get('arguments'))}{suffix}]"
         msg_tokens = len(content) // _CHARS_PER_TOKEN
         if tokens_used + msg_tokens > HISTORY_TOKEN_BUDGET:
             break

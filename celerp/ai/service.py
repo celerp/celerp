@@ -21,7 +21,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -35,6 +35,7 @@ from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
     _agent_error,
     agent_tool_specs,
+    check_screen,
     compile_agent_capabilities,
     execute_agent_capability,
 )
@@ -51,6 +52,8 @@ MAX_MODEL_TURNS = 6            # model responses per run (local bound)
 MAX_TOOL_CALLS_PER_TURN = 5
 MAX_TOOL_CALLS_PER_RUN = 12
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
+MAX_FOR_EACH = 200             # records one propose_for_each card changes
+MAX_FOR_EACH_ARGUMENT_BYTES = 64 * 1024
 MAX_RESULT_BYTES = AGENT_RESULT_MAX_BYTES  # per tool call result
 # Text one model call may carry: messages without their file parts, plus the
 # tool definitions, as JSON. Kept under the AI service's request size limit.
@@ -70,6 +73,10 @@ class PendingAction:
     created_at: str    # ISO 8601 UTC
     expires_at: str
     title: str         # human label from the route summary, shown on the card
+    keyed: bool = False  # its route looks up the card's key, so a lost answer is safe to retry
+    warnings: list[str] = field(default_factory=list)  # shown on the card above its buttons
+    for_each: bool = False  # arguments are {"records": [...]}, one run of the tool per record
+    check_screen: str | None = None  # where to look when the outcome is unknown (unkeyed tools)
 
 
 @dataclass
@@ -208,6 +215,10 @@ You have tools that read live ERP data and tools that propose changes to it. Cal
 read tool to fetch the current data before answering. Proposing a change (creating or
 updating a record) never applies it; the user confirms each proposed change before it
 takes effect, so describe what you intend to do and let the confirmation happen.
+When one change applies to two or more records, propose it once with
+propose_for_each, or with the tool that changes many records at once, never one call
+per record. When the outcome of an earlier change is unknown, say so to the user
+before proposing it again.
 
 Bank and card statements are reconciled the way an accountant works: start the
 reconciliation for the bank account and statement date, import the uploaded
@@ -305,6 +316,82 @@ def _allowed_sections(capability: dict) -> list[str]:
     return sections
 
 
+PROPOSE_FOR_EACH = "propose_for_each"
+_FOR_EACH_SPEC = {
+    "type": "function",
+    "function": {
+        "name": PROPOSE_FOR_EACH,
+        "description": (
+            "Propose one change tool for many records as a single card the user confirms once. "
+            "Use it whenever the same change applies to two or more records; a tool that changes "
+            "many records itself (a bulk tool) is used instead when there is one."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "Name of the change tool to run for each record."},
+                "records": {
+                    "type": "array", "minItems": 1, "maxItems": MAX_FOR_EACH,
+                    "items": {"type": "object", "description": "One record: the tool's own arguments (path, query, body)."},
+                },
+            },
+            "required": ["tool", "records"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _bulk_tool(capabilities: dict, name: str) -> str | None:
+    """The tool that does ``name``'s change for many records at once, when the caller has it."""
+    return next((bulk for bulk, cap in sorted(capabilities.items()) if cap.get("bulk_of") == name), None)
+
+
+def _for_each_target(capabilities: dict, arguments: dict) -> tuple[str | None, dict | None]:
+    """(tool name, error) for a propose_for_each call: the change tool it runs, or why not."""
+    name = arguments.get("tool")
+    records = arguments.get("records")
+    capability = capabilities.get(name) if isinstance(name, str) else None
+    if capability is None or not capability.get("requires_confirmation"):
+        return None, _agent_error("unknown_capability", "ai.action_unavailable",
+                                  f"propose_for_each runs a change tool; {name!r} is not one.")
+    bulk = _bulk_tool(capabilities, name)
+    if bulk:
+        return None, _agent_error("use_bulk_tool", "ai.err_invalid_arguments",
+                                  f"Use {bulk}, which changes many records in one step.")
+    if capability.get("selection") or capability.get("uploads"):
+        return None, _agent_error("invalid_arguments", "ai.err_invalid_arguments",
+                                  f"{name} already takes many records or files; call it directly.")
+    if (not isinstance(records, list) or not 1 <= len(records) <= MAX_FOR_EACH
+            or not all(isinstance(r, dict) for r in records)):
+        return None, _agent_error("invalid_arguments", "ai.err_invalid_arguments",
+                                  f"records must list 1 to {MAX_FOR_EACH} argument objects.")
+    if set(arguments) - {"tool", "records"}:
+        return None, _agent_error("invalid_arguments", "ai.err_invalid_arguments",
+                                  "propose_for_each takes only tool and records.")
+    return name, None
+
+
+def _selection_size(capability: dict, arguments: dict) -> int | None:
+    """How many records a bulk change names, from its ``selection`` body field."""
+    field_name = capability.get("selection")
+    if not field_name:
+        return None
+    chosen = (arguments.get("body") or {}).get(field_name)
+    return len(chosen) if isinstance(chosen, list) else 0
+
+
+def _card_warnings(capability: dict, count: int | None) -> list[str]:
+    """What the card says before the user confirms: how many records it changes and
+    whether a message leaves the company."""
+    warnings: list[str] = []
+    if count is not None:
+        warnings.append(t("ai.warn_selection_size", count=count))
+    if capability.get("outside"):
+        warnings.append(t("ai.warn_outside_message"))
+    return warnings
+
+
 def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, dict | None, dict | None]:
     """Parse one tool call into (call_id, name, capability, arguments, error).
 
@@ -317,7 +404,8 @@ def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, 
 
     error: dict | None = None
     arguments: dict | None = None
-    if not isinstance(raw_args, str) or len(raw_args.encode("utf-8")) > MAX_ARGUMENT_BYTES:
+    limit = MAX_FOR_EACH_ARGUMENT_BYTES if name == PROPOSE_FOR_EACH else MAX_ARGUMENT_BYTES
+    if not isinstance(raw_args, str) or len(raw_args.encode("utf-8")) > limit:
         error = _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments were missing or too large.")
     else:
         try:
@@ -330,9 +418,33 @@ def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, 
                 arguments = None
 
     capability = capabilities.get(name)
-    if error is None and capability is None:
+    if error is None and name == PROPOSE_FOR_EACH and arguments is not None:
+        target, error = _for_each_target(capabilities, arguments)
+        capability = capabilities.get(target) if target else None
+    elif error is None and capability is None:
         error = _agent_error("unknown_capability", "ai.action_unavailable", f"No capability named {name!r} is available.")
+    elif error is None and capability.get("requires_confirmation") and _selection_size(capability, arguments) == 0:
+        error = _agent_error("empty_selection", "ai.err_invalid_arguments",
+                             "This change names no records; choose the records first.")
     return call_id, name, capability, arguments, error
+
+
+def _repeated_changes(parsed: list, capabilities: dict) -> dict[str, dict]:
+    """Errors for calls that repeat one change tool in a turn: many records of one kind
+    go on one card (propose_for_each, or the bulk tool), never one card each."""
+    counts: dict[str, int] = {}
+    for _call_id, name, capability, _arguments, error in parsed:
+        if error is None and capability is not None and capability.get("requires_confirmation"):
+            counts[capability["name"]] = counts.get(capability["name"], 0) + 1
+    refused: dict[str, dict] = {}
+    for call_id, name, capability, _arguments, error in parsed:
+        if error is None and capability is not None and counts.get(capability["name"], 0) > 1:
+            target = _bulk_tool(capabilities, capability["name"]) or PROPOSE_FOR_EACH
+            refused[call_id] = _agent_error(
+                "repeated_change", "ai.err_invalid_arguments",
+                f"{capability['name']} was proposed more than once in one reply. Propose it once "
+                f"with {target} so the user confirms all the records on one card.")
+    return refused
 
 
 async def run_agent(
@@ -417,6 +529,8 @@ async def _agent_loop(
             if not capability.get("requires_confirmation", False)
         }
     tools = agent_tool_specs(capabilities)
+    if any(capability.get("requires_confirmation") for capability in capabilities.values()):
+        tools.append(_FOR_EACH_SPEC)
     earlier = list(history or [])
     shown = _shown_history(earlier, capabilities, role, company_settings)
     admit_reads = functools.partial(_admit_reads, journal, capabilities, company_id, user_id, earlier)
@@ -501,6 +615,9 @@ async def _agent_loop(
         tool_calls_total += len(kept)
 
         parsed = [_parse_call(call, capabilities) for call in kept]
+        refused = _repeated_changes(parsed, capabilities)
+        parsed = [(call_id, name, capability, arguments, refused.get(call_id, error))
+                  for (call_id, name, capability, arguments, error) in parsed]
         mutations = [
             (call_id, name, capability, arguments)
             for (call_id, name, capability, arguments, error) in parsed
@@ -517,9 +634,14 @@ async def _agent_loop(
             expires = now + timedelta(seconds=PENDING_ACTION_TTL_S)
             pending = [
                 PendingAction(
-                    id=call_id, name=name, arguments=arguments,
+                    id=call_id, name=capability["name"], arguments=arguments,
                     created_at=now.isoformat(), expires_at=expires.isoformat(),
                     title=capability["tool"]["function"]["description"],
+                    keyed=capability.get("keyed") is True,
+                    warnings=_card_warnings(capability, len(arguments["records"]) if name == PROPOSE_FOR_EACH
+                                            else _selection_size(capability, arguments)),
+                    for_each=name == PROPOSE_FOR_EACH,
+                    check_screen=check_screen(capability, {} if name == PROPOSE_FOR_EACH else arguments),
                 )
                 for (call_id, name, capability, arguments) in mutations
             ]

@@ -352,7 +352,8 @@ async def _confirmed(monkeypatch, result) -> tuple[dict, dict]:
     returns ``result``, through the real confirm runner and store."""
     from types import SimpleNamespace
     from celerp.ai import conversations, tools
-    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {}}
+    # Keyed, so an answer that never came is retryable and keeps the route's own error.
+    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {}, "keyed": True}
     store = _Store(record)
 
     async def resolved(session, **kw):

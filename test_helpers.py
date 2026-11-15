@@ -137,6 +137,20 @@ async def asked_in_thread(client, headers: dict, conversation_id: str, body: dic
         return (await settled_question(client, headers, conversation_id, r.json()["job_id"]))["message"]
 
 
+@asynccontextmanager
+async def answered_continuation(answer: str = "Done."):
+    """Answering a message's last card carries its request on as a question job. Inside
+    the block a stand-in agent run answers that job with ``answer``, and the block ends
+    once every job has, so a test about the cards never reaches the AI service."""
+    from unittest.mock import AsyncMock, patch
+    from celerp.ai import jobs
+    from celerp.ai.service import AgentResult
+    result = AgentResult(answer=answer, model_used="test", tools_called=[], pending_actions=[])
+    with patch("celerp.ai.service.run_agent", AsyncMock(return_value=result)):
+        yield
+        await until(lambda: not jobs.running_tasks())
+
+
 async def drain_jobs(release=lambda: None) -> None:
     """Let every running AI job finish, then shut the runner down. A task cancelled in
     the middle of a query would leave the test's one shared connection unusable for

@@ -241,7 +241,7 @@ async def test_confirm_all_independent_failure_continues(client, session, agent_
     with patch("celerp.ai.service.complete", ScriptedModel(_two_patches_and_a_create(agent_caps, str(uuid.uuid4())))):
         body = await asked_in_thread(client, admin, conv_id, {"query": "rename and add"})
     await _confirm_all(client, admin, conv_id, body["id"])
-    assert (await _record(session, body["id"], "c1"))["status"] == "succeeded"
+    assert (await _record(session, body["id"], "c1"))["status"] == "completed"
     assert await _location_count(client, admin) == before + 1
 
 

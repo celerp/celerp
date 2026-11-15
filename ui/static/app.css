@@ -2821,6 +2821,10 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-action__done { font-size: 0.85rem; color: var(--c-text2); margin: 0.5rem 0; }
 .ai-action__error { font-size: 0.85rem; color: var(--c-red-text); margin: 0.5rem 0; }
 .ai-action__hint { margin: 0.75rem 0 0; font-size: 0.8rem; color: var(--c-text2); }
+.ai-action__run-again > summary { list-style: none; display: inline-block; }
+.ai-action__run-again > summary::-webkit-details-marker { display: none; }
+.ai-action__run-again > form { margin-top: 0.5rem; }
+.ai-action__secret { margin: 0.5rem 0 0; font-size: 0.85rem; overflow-wrap: anywhere; }
 .ai-action__warnings { margin-top: 0.75rem; padding: 0.5rem 0.75rem; border: 1px solid var(--c-border); border-left: 3px solid var(--c-yellow); border-radius: var(--radius); background: rgba(234,179,8,0.06); }
 .ai-action__warnings-title { margin: 0 0 0.25rem; font-size: 0.8rem; font-weight: 600; }
 .ai-action__warnings-list { margin: 0; padding-left: 1.1rem; font-size: 0.8rem; }

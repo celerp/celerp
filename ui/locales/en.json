@@ -7974,5 +7974,14 @@
   "fund.change": "Change fund",
   "fund.change_journal_hint": "This entry has posted. Saving voids it and posts it again on the funds chosen below.",
   "fund.changed": "Fund changed. The entry was voided and posted again on the new funds.",
-  "collection.status_succeeded": "Charged automatically. If the payment is not on this invoice yet, find it under Payments not matched to an invoice in Settings, Online Payments."
+  "collection.status_succeeded": "Charged automatically. If the payment is not on this invoice yet, find it under Payments not matched to an invoice in Settings, Online Payments.",
+  "ai.warn_outside_message": "This message goes to someone outside the company and cannot be called back.",
+  "ai.warn_selection_size": "This changes {count} records.",
+  "ai.continuing_request": "Continuing your request",
+  "ai.not_run_dependent": "Not run: an earlier change to the same record failed: {title}",
+  "ai.generated_password_once": "Password for the new member, shown only this once: {password}. Pass it on now; Celerp does not keep a copy.",
+  "ai.member_keeps_password": "This person already has a Celerp account and keeps their own password.",
+  "ai.action_outcome_unknown": "Celerp couldn't tell whether this change was applied. Check here before running it again:",
+  "ai.run_again": "Run again",
+  "ai.run_again_warning": "If the first run went through, running it again applies the change twice. Run it again?"
 }
