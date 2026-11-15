@@ -17,6 +17,7 @@ import pytest
 from migration_support import auth as bearer
 from test_helpers import in_language, doc_version
 from test_posting_roles_race_pg_draft import _company, _race, race  # noqa: F401  (race is a fixture)
+from ui.i18n import refusal_text
 
 HEADER = "6000"  # the seeded chart's expenses header
 _REFUSALS = {
@@ -248,7 +249,7 @@ async def test_a_batch_imported_bill_with_a_line_on_a_header_is_refused_alone(cl
 
     assert r.status_code == 200, r.text
     assert r.json()["created"] == 1, r.json()
-    [error] = r.json()["errors"]
+    [error] = [refusal_text(e) for e in r.json()["errors"]]
     assert "doc:IMP-BAD" in error and f"Account {HEADER} is a header account" in error, error
     assert (await client.get("/docs/doc:IMP-BAD", headers=headers)).status_code == 404
 
@@ -273,7 +274,7 @@ async def test_a_transfer_into_a_bank_whose_account_cannot_take_a_posting_is_ref
         await _account(client, headers, f"{code}1", parent=code, account_type="asset")
     else:
         r = await _switch_off(client, headers, code)
-        assert r.status_code == 422 and "Archive the bank account" in r.json()["detail"], r.text
+        assert r.status_code == 422 and "Archive the bank account" in refusal_text(r.json()["detail"]), r.text
         await session.execute(update(Account).where(
             Account.company_id == auth["company_id"], Account.code == code).values(is_active=False))
         await session.flush()

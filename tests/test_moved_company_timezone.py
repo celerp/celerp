@@ -11,6 +11,8 @@ import uuid
 import pytest
 from sqlalchemy import text
 
+from ui.i18n import refusal_text
+
 from company_backup_support import company, owner, token
 from migration_support import (  # noqa: F401
     OWNER_EMAIL,
@@ -112,7 +114,9 @@ async def test_an_unknown_timezone_is_refused_and_creates_nothing(real_client, r
     r = await real_client.post("/migrations/start-from-scan", headers=auth(tok), json={
         "scan_token": scan_token, "company_name": MOVED, "timezone": "Mars/Olympus"})
 
-    assert r.status_code == 422 and "Mars/Olympus" in r.json()["detail"]["timezone"], r.text
+    assert r.status_code == 422, r.text
+    [refused] = [e for e in r.json()["detail"]["errors"] if e.get("field") == "timezone"]
+    assert "Mars/Olympus" in refusal_text(refused), r.text
     assert await count(real_engine, "companies") == companies
 
 

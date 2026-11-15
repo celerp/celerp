@@ -330,6 +330,38 @@ def _manifest_slot_contributions() -> list[dict]:
     return out
 
 
+def _bundled_catalogs() -> dict:
+    """Every bundled module's UI catalogs, registered as the loader registers them, and the
+    i18n registry they make. The harness mounts the modules' routes itself, so without this
+    a module's refusal reads as its bare catalog key until some earlier test in the worker
+    happens to call load_all()."""
+    from celerp.modules.loader import _register_locales, read_manifest
+    from ui import i18n
+
+    i18n.clear_registry()
+    for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
+        manifest = read_manifest(pkg)
+        if manifest.get("name"):
+            _register_locales(manifest["name"], pkg, manifest)
+    return {lang: dict(entry) for lang, entry in i18n._registry.items()}
+
+
+_CATALOGS = _bundled_catalogs()
+
+
+def _restore_catalogs() -> None:
+    """Put the bundled catalogs back when a test (a load_all() of fewer modules, or a test
+    registering its own) left the registry other than they make it."""
+    from ui import i18n
+
+    if i18n._registry.keys() == _CATALOGS.keys() and all(
+            i18n._registry[lang]["catalog"] is entry["catalog"] for lang, entry in _CATALOGS.items()):
+        return
+    i18n._registry.clear()
+    i18n._registry.update({lang: dict(entry) for lang, entry in _CATALOGS.items()})
+    i18n._invalidate_cache()
+
+
 _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
     # --- projection_handler slots ---
     {
@@ -850,7 +882,8 @@ def _reset_loaded_modules(request):
 
     The permission each module's events are read with is kept until the next load, so
     it is dropped after each test: one worked out under doctored slots or admission
-    leaves nothing for later tests."""
+    leaves nothing for later tests. Each test starts with every bundled module's
+    catalogs registered (_restore_catalogs), whatever an earlier load_all() left."""
     if request.node.get_closest_marker("browser"):
         yield
         return
@@ -859,6 +892,7 @@ def _reset_loaded_modules(request):
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
     _module_routes.clear()
+    _restore_catalogs()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
     yield
     _event_permissions.clear()

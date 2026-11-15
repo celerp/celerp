@@ -37,7 +37,7 @@ from fixtures.odoo_backup import build
 from migration_support import count, load_run, maker, real_engine, recognition_peak, scan_upload  # noqa: F401
 from test_helpers import fastest_cpu_seconds
 from test_migration_e2e import _passing, migrate_set
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from shipped_sources import CORE_ROOT, REPO, shipped_sources
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
@@ -750,7 +750,7 @@ async def test_a_backup_that_cannot_be_read_is_refused_with_its_reason(client, m
     data, message = _unreadable()[damage]
     r = await scan_upload(client, data, name="harbour.zip", source="odoo")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == (t(message, "en") if message else
+    assert refusal_text(r.json()["detail"]) == (t(message, "en") if message else
                                   '"harbour.zip" is not a Odoo file. Accepted: Odoo backup (.zip).')
 
 
@@ -792,7 +792,7 @@ async def test_a_damaged_index_of_the_zip_is_refused_whether_odoo_was_chosen_or_
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     r = await scan_upload(client, _misindexed(damage), name="harbour.zip", source=source)
     assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     if damage != "a name that differs from its header":  # the zip names no manifest: not recognisable as Odoo's
         assert detail == t("migration.err_odoo_backup_damaged", "en")
     elif source:

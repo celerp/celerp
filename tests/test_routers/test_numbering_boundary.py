@@ -547,11 +547,12 @@ async def _give(client, h, contacts, door: str, number: str | None, *, target: s
         if door.endswith("batch"):
             r = await client.post(f"/{kind}s/import/batch", headers=h, json={"records": [record]})
             assert r.status_code == 200, r.text
-            errors = r.json()["errors"]
-            # A batch row gives its refusal as English text: the key whose message it begins with.
-            return eid, (next((k for k in ("err_doc_number_taken", "err_list_number_taken")
-                               if t(f"documents.{k}", "en", number="\0").split("\0")[0] in errors[0]),
-                              errors[0]) if errors else None)
+            if not (errors := r.json()["errors"]):
+                return eid, None
+            # A batch row keeps the write's keyed refusal inside import.record_refused: its key,
+            # else the row's reason as text.
+            inner = (errors[0].get("params") or {}).get("refusal") if isinstance(errors[0], dict) else None
+            return eid, inner["message_key"].split(".")[-1] if inner else refusal_text(errors[0])
         r = await client.post(f"/{kind}s/import", headers=h, json=record)
     if r.status_code == 200:
         return eid, None
@@ -768,7 +769,7 @@ async def test_the_number_a_padded_key_holds_is_shown_nowhere(client, session):
         assert "HIDDEN-KEY-1" not in html and KEY_FIELD not in html, kind
         r = await client.get(f"/{kind}s/export/csv", headers=h, params={"cols": KEY_FIELD})
         # Refused as an unknown column, which the refusal does not offer either.
-        assert r.status_code >= 400 and KEY_FIELD not in r.json()["detail"].split("Choose from")[1], r.text[:200]
+        assert r.status_code >= 400 and KEY_FIELD not in refusal_text(r.json()["detail"]).split("Choose from")[1], r.text[:200]
     assert KEY_FIELD not in json.dumps(app.openapi())
 
 
@@ -1004,9 +1005,13 @@ def _app_functions(roots=APP_ROOTS):
 
 def _field_writes(fn) -> list[tuple[str, int, ast.expr]]:
     """(field, line, value) for every number field (NUMBER_FIELDS) ``fn`` writes: as a dict
-    key, a subscript store or a keyword argument."""
+    key, a subscript store or a keyword argument. The params of a catalog message (a call
+    naming a catalog key, such as a refusal or t()) show a number and write none."""
     found = []
     for n in _own_nodes(fn):
+        if isinstance(n, ast.Call) and any(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                                           and t(a.value, "en") != a.value for a in n.args):
+            continue
         if isinstance(n, ast.Dict):
             found += [(k.value, n.lineno, v) for k, v in zip(n.keys, n.values)
                       if isinstance(k, ast.Constant) and k.value in NUMBER_FIELDS]

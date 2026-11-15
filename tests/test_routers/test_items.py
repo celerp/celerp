@@ -681,7 +681,7 @@ async def test_split_blocked_when_allow_splitting_false(client):
         "children": [{"sku": "NO-SPLIT-1", "quantity": 3}]
     }, headers=h)
     assert r.status_code == 422
-    assert "Allow Splitting" in r.json()["detail"]
+    assert "Allow Splitting" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -808,7 +808,7 @@ async def test_split_blocked_after_patch_to_false(client):
 
     r = await client.post(f"/items/{parent_id}/split", json={"children": [{"sku": "PATCH-NO-SPLIT-1", "quantity": 3}]}, headers=h)
     assert r.status_code == 422
-    assert "Allow Splitting" in r.json()["detail"]
+    assert "Allow Splitting" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -894,7 +894,7 @@ async def test_merge_preserves_allow_splitting_false(client):
     # Backend must enforce the flag - split should be rejected
     r = await client.post(f"/items/{merged_id}/split", json={"children": [{"sku": "MERGE-NO-CHILD", "quantity": 2}]}, headers=h)
     assert r.status_code == 422
-    assert "Allow Splitting" in r.json()["detail"]
+    assert "Allow Splitting" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
