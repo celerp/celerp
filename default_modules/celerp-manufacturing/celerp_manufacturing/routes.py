@@ -997,24 +997,25 @@ async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, com
     try:
         async with session.begin_nested():
             if not_created:
-                await _finalize_notice(session, company_id, "notice.mfg_not_created", "high",
+                await _finalize_notice(session, company_id, "not_created", "high",
                                        "/manufacturing/to-make", n=len(not_created), products=not_created)
             if auto_complete and failed:
-                await _finalize_notice(session, company_id, "notice.mfg_not_completed", "high",
+                await _finalize_notice(session, company_id, "not_completed", "high",
                                        "/manufacturing/production?status=planned", n=len(failed),
                                        runs=", ".join(failed))
             elif auto_complete and completed:
-                await _finalize_notice(session, company_id, "notice.mfg_auto_completed", "medium",
+                await _finalize_notice(session, company_id, "auto_completed", "medium",
                                        "/manufacturing/production", n=len(completed), runs=", ".join(completed))
     except Exception as exc:
         log.warning("work order notification failed: %s", exc)
 
 
-async def _finalize_notice(session: AsyncSession, company_id, key: str, priority: str, action_url: str,
+async def _finalize_notice(session: AsyncSession, company_id, outcome: str, priority: str, action_url: str,
                            **params) -> None:
     """A notice of what an invoice's posting did to its work orders, stored in English with
     the keys each reader's language is shown from; a param may be a list of refusals."""
-    title, body = catalog_refusal(f"{key}.title"), catalog_refusal(f"{key}.body", **params)
+    title = catalog_refusal(f"notice.mfg_{outcome}.title")
+    body = catalog_refusal(f"notice.mfg_{outcome}.body", **params)
     await notif_svc.create(session, company_id, category="manufacturing", title=title["message"],
                            body=body["message"], priority=priority, action_url=action_url,
                            i18n={"title": title["message_key"], "body": body["message_key"],

@@ -332,9 +332,10 @@ async def test_core_sink_attaches_source_files_like_the_upload_routes(client, se
     assert (result.created, result.skipped) == (3, 0)
     errors = {e.source_external_id: e.message for e in result.errors}
     assert set(errors) == {"att-missing", "att-hash", "att-exe"}
-    assert "target record was not imported" in errors["att-missing"]
-    assert "does not match its recorded hash" in errors["att-hash"]
-    assert "can't be attached" in errors["att-exe"]
+    assert errors["att-missing"]["message_key"] == "migration.record.file_target_not_imported"
+    assert errors["att-hash"]["message_key"] == "migration.record.file_hash_mismatch"
+    assert errors["att-exe"]["message_key"] == "migration.record.file_refused"
+    assert "can't be attached" in errors["att-exe"]["message"]
     assert "att-missing" not in read_keys
     doc = await session.get(Projection, (company_id, targets["inv-1"]))
     contact = await session.get(Projection, (company_id, targets["cust-1"]))
