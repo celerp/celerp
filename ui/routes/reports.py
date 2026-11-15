@@ -199,6 +199,10 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                header = page_header(t("page.expiring_items"), A(t("label.back"), href="/reports", cls="btn btn--secondary"))
+                return await _page_or_fragment(request, header, Div(t("perm.page_no_access"), cls="error-banner"),
+                                               title=page_title("page.expiring_items"), nav_active="reports")
             data = {"count": 0, "days_threshold": days, "lines": []}
         try:
             category_names = await api.get_category_display_names(token)

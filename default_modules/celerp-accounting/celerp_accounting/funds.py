@@ -285,7 +285,7 @@ async def _default_items(session: AsyncSession, company_id, settings: dict) -> l
     return items
 
 
-@router.get("/funds/connection-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="List the default fund of each connection that brings in records.")
+@router.get("/funds/connection-defaults", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "a connection setting: the fund each connection posts to, with no balance", "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="List the default fund of each connection that brings in records.")
 async def list_connection_defaults(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),

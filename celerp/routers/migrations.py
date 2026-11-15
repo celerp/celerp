@@ -72,6 +72,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/migrations", tags=["migrations"])
 
 OWNER_ONLY = "migration.err_owner_only"
+
+# Why every role reaches the run routes: a run answers only to its creator while they may
+# manage its company (get_owned_migration_run), whichever company the session is on.
+OWN_RUNS = "the caller's own migrations, judged by their role in each migration's company"
+
 BOOTSTRAPPED = "migration.err_bootstrapped"
 MODULES_NOT_SAVED = "migration.err_modules_not_saved"
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
@@ -304,7 +309,7 @@ async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext)
 
 # ── Sources ──────────────────────────────────────────────────────────────────
 
-@router.get("/sources", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the systems the company can move its data in from, such as Xero, QuickBooks or a spreadsheet.")
+@router.get("/sources", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": "the systems any company can move its data in from"}, summary="List the systems the company can move its data in from, such as Xero, QuickBooks or a spreadsheet.")
 async def sources() -> list[dict]:
     return [{
         "key": a.key, "display_name": a.display_name, "accepts": a.accepts,
@@ -622,7 +627,7 @@ async def remove_several(file_id: uuid.UUID, ctx: AuthContext = Depends(user_own
     return Response(status_code=204)
 
 
-@router.delete("/templates/{source_system}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True}, summary="Forget the posting accounts saved from earlier migrations out of one source system.")
+@router.delete("/templates/{source_system}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": "the posting accounts the caller's own migrations saved"}, summary="Forget the posting accounts saved from earlier migrations out of one source system.")
 async def forget_template(source_system: str, ctx: AuthContext = Depends(get_auth_context),
                           session: AsyncSession = Depends(get_session)) -> Response:
     """Forget the posting accounts this person's migrations from ``source_system`` saved."""
@@ -632,14 +637,14 @@ async def forget_template(source_system: str, ctx: AuthContext = Depends(get_aut
     return Response(status_code=204)
 
 
-@router.get("/open", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the user's migrations that are still in progress.")
+@router.get("/open", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the user's migrations that are still in progress.")
 async def get_open_runs(ctx: AuthContext = Depends(get_auth_context),
                         session: AsyncSession = Depends(get_session)) -> dict:
     """This person's moves still in progress, so any page can lead back to them."""
     return {"items": await migrations.open_runs(session, ctx.user.id)}
 
 
-@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the latest migration of the staged company this session is working on.")
+@router.get("/staged", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the latest migration of the staged company this session is working on.")
 async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
                          session: AsyncSession = Depends(get_session)) -> dict:
     """The latest run of the staged company this session is scoped to: where the session belongs."""
@@ -652,13 +657,13 @@ async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
     return await _run_view(session, run_id, ctx)
 
 
-@router.get("/{run_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Read one migration with its status, progress and what it found.")
+@router.get("/{run_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Read one migration with its status, progress and what it found.")
 async def get_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                   session: AsyncSession = Depends(get_session)) -> dict:
     return await _run_view(session, run_id, ctx)
 
 
-@router.get("/{run_id}/reconciliation", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Compare a migration's totals with the source system's figures to show what matches and what differs.")
+@router.get("/{run_id}/reconciliation", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Compare a migration's totals with the source system's figures to show what matches and what differs.")
 async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                              session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -667,7 +672,7 @@ async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_a
     return run.reconciliation
 
 
-@router.get("/{run_id}/reconciliation/pack", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"], "x-celerp-agent-download": "/migrations/{run_id}/pack"}, summary="Download the reconciliation pack of a migration as a file.")
+@router.get("/{run_id}/reconciliation/pack", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"], "x-celerp-agent-download": "/migrations/{run_id}/pack"}, summary="Download the reconciliation pack of a migration as a file.")
 async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                   session: AsyncSession = Depends(get_session)) -> Response:
     run = await _owned_run(session, run_id, ctx)
@@ -682,7 +687,7 @@ async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(
                     headers={"Content-Disposition": f'attachment; filename="reconciliation-{run.id}.csv"'})
 
 
-@router.post("/{run_id}/start", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start a migration that is ready to run.")
+@router.post("/{run_id}/start", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start a migration that is ready to run.")
 async def start_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                     session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -696,7 +701,7 @@ async def start_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_conte
     return await migrations.run_view(session, run)
 
 
-@router.post("/{run_id}/cancel", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Cancel a migration that is running.")
+@router.post("/{run_id}/cancel", status_code=202, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Cancel a migration that is running.")
 async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                      session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -708,7 +713,7 @@ async def cancel_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_cont
     return await migrations.run_view(session, run)
 
 
-@router.get("/{run_id}/posting-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the posting accounts a migration will set when it finishes and the choices for each.")
+@router.get("/{run_id}/posting-accounts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="List the posting accounts a migration will set when it finishes and the choices for each.")
 async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The posting accounts finishing this migration will set, and the choices for each."""
@@ -717,7 +722,7 @@ async def get_posting_accounts(run_id: uuid.UUID, ctx: AuthContext = Depends(get
     return {"roles": await posting_readiness.readiness(session, run.company_id, previous) or []}
 
 
-@router.post("/{run_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Finish a migration and make its data the company's live records.")
+@router.post("/{run_id}/finalize", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Finish a migration and make its data the company's live records.")
 async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
                        ctx: AuthContext = Depends(get_auth_context),
                        session: AsyncSession = Depends(get_session)) -> dict:
@@ -733,7 +738,7 @@ async def finalize_run(run_id: uuid.UUID, body: FinalizeIn | None = None,
     return await migrations.run_view(session, run)
 
 
-@router.post("/{run_id}/discard", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Discard a migration and everything it brought in.")
+@router.post("/{run_id}/discard", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Discard a migration and everything it brought in.")
 async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                       session: AsyncSession = Depends(get_session)) -> dict:
     run = await _owned_run(session, run_id, ctx)
@@ -749,14 +754,14 @@ async def discard_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_con
 
 # ── Xero attachments ─────────────────────────────────────────────────────────
 
-@router.get("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the progress of fetching the files attached to documents in Xero for a migration.")
+@router.get("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Show the progress of fetching the files attached to documents in Xero for a migration.")
 async def get_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                session: AsyncSession = Depends(get_session)) -> dict:
     """The fetch of the files attached to this Xero migration's documents in Xero."""
     return await xero_attachments.view(session, await _owned_run(session, run_id, ctx))
 
 
-@router.post("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start fetching the files attached to documents in Xero for a migration.")
+@router.post("/{run_id}/xero-attachments", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Start fetching the files attached to documents in Xero for a migration.")
 async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                  session: AsyncSession = Depends(get_session)) -> dict:
     """Start fetching them, or return the fetch under way with its Xero sign-in link."""
@@ -768,14 +773,14 @@ async def start_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(g
         raise
 
 
-@router.post("/{run_id}/xero-attachments/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Confirm which Xero organisation to fetch the attached files from.")
+@router.post("/{run_id}/xero-attachments/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Confirm which Xero organisation to fetch the attached files from.")
 async def confirm_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                    session: AsyncSession = Depends(get_session)) -> dict:
     """Fetch from the organisation the Xero sign-in chose, as the owner saw it."""
     return await xero_attachments.confirm(session, await _owned_run(session, run_id, ctx))
 
 
-@router.post("/{run_id}/xero-attachments/stop", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Stop fetching files from Xero for a migration, keeping the files already attached.")
+@router.post("/{run_id}/xero-attachments/stop", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/setup/new-company", "x-celerp-agent-any-role": OWN_RUNS, "x-celerp-agent-result-permissions": ["manage_company_lifecycle"]}, summary="Stop fetching files from Xero for a migration, keeping the files already attached.")
 async def stop_xero_attachments(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                 session: AsyncSession = Depends(get_session)) -> dict:
     """End the fetch and close its Xero access; files already attached stay."""

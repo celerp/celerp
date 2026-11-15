@@ -359,7 +359,7 @@ async def update_contact_file_description(
     return (updated.state if updated else {}) | {"id": contact_id}
 
 
-@router.get("/contacts/{contact_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/contacts/{contact_id}/files/{file_id}/download"}, summary="Download a file attached to a customer or vendor.")
+@router.get("/contacts/{contact_id}/files/{file_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/contacts/{contact_id}/files/{file_id}/download"}, summary="Download a file attached to a customer or vendor.")
 async def download_contact_file(
     contact_id: str,
     file_id: str,
@@ -437,7 +437,7 @@ async def _locked_note(session: AsyncSession, company_id, contact_id: str, note_
             "edit or remove one of those."))
 
 
-@router.get("/contacts/{contact_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the notes written on a customer or vendor, newest first.")
+@router.get("/contacts/{contact_id}/notes", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True}, summary="List the notes written on a customer or vendor, newest first.")
 async def list_contact_notes(
     contact_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -770,7 +770,7 @@ async def import_contact(
 
 # ── CSV export ────────────────────────────────────────────────────────────────
 
-@router.get("/contacts/export/csv", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/crm/export/csv"}, summary="Download the contact list as a CSV file.")
+@router.get("/contacts/export/csv", dependencies=[require_permission("view_contacts"), require_permission("import_export_data")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/crm/export/csv"}, summary="Download the contact list as a CSV file.")
 async def export_contacts_csv(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
