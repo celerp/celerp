@@ -114,7 +114,8 @@ async def test_a_cost_price_event_shows_only_its_price_type_to_a_role_without_co
 @pytest.mark.asyncio
 async def test_activity_search_finds_a_cost_only_for_a_role_that_sees_it(client, session):
     owner, operator, manager, item_id = await _company(client, session)
-    needles = [f"{a}" for a in _AMOUNTS] + [_EXTRA_TEXT, *_HIDDEN_NAMES]
+    # Search reads event data; the metadata cost is no search term for anyone.
+    needles = [f"{a}" for a in _AMOUNTS if a != _META_COST] + [_EXTRA_TEXT, *_HIDDEN_NAMES]
     for q in needles:
         assert await _search_hits(client, operator, q, item_id) == [], q
         assert await _search_hits(client, manager, q, item_id), q

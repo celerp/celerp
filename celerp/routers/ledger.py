@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Select, and_, cast, false, func, or_, select
+from sqlalchemy import Select, and_, false, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,7 @@ from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import (
-    can_read_event, fields_for_role, readable_events, serialize_event,
+    can_read_event, fields_for_role, readable_events, serialize_event, shown_data,
 )
 from celerp.services.ledger_display import actor_choices, display_fields, shown_in_history
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -47,10 +47,10 @@ def _who_matches(key: str):
         return false()
 
 
-def _changes_any(fields: list[str]):
-    """Entries whose recorded changes include any of ``fields``."""
-    changed = LedgerEntry.data["fields_changed"]
-    return and_(func.json_typeof(changed) == "object", cast(changed, JSONB).has_any(array(fields)))
+def _changes_any(fields: list[str], settings, role):
+    """Entries whose recorded changes, as this role is shown them, include any of ``fields``."""
+    changed = shown_data(settings, role).op("->", return_type=JSONB)("fields_changed")
+    return and_(func.jsonb_typeof(changed) == "object", changed.has_any(array(fields)))
 
 
 def _named(values: list[str]) -> list[str]:
@@ -75,7 +75,7 @@ def _scope(stmt: Select, company_id, settings, role, entity_id=None, entity_type
         stmt = stmt.where(LedgerEntry.event_type.in_(_named(event_type)))
     if field:
         visible = _named(fields_for_role(field, settings, role))
-        stmt = stmt.where(_changes_any(visible) if visible else false())
+        stmt = stmt.where(_changes_any(visible, settings, role) if visible else false())
     if who:
         keys = _named(who)
         stmt = stmt.where(or_(*(_who_matches(k) for k in keys)) if keys else false())
@@ -153,9 +153,9 @@ async def history_facets(
         raise HTTPException(status_code=422, detail="entity_id must name a record")
     filters = (company_id, settings, role, entity_id)
     event_types = (await session.execute(_scope(select(LedgerEntry.event_type).distinct(), *filters, history=True))).scalars().all()
-    changed = LedgerEntry.data["fields_changed"]
-    fields = (await session.execute(_scope(select(func.json_object_keys(changed)).where(
-        func.json_typeof(changed) == "object"), *filters, history=True).distinct())).scalars().all()
+    changed = shown_data(settings, role).op("->", return_type=JSONB)("fields_changed")
+    fields = (await session.execute(_scope(select(func.jsonb_object_keys(changed)).where(
+        func.jsonb_typeof(changed) == "object"), *filters, history=True).distinct())).scalars().all()
     fields = fields_for_role(fields, settings, role)
     backup = LedgerEntry.metadata_["backup_actor"]["name"].as_string()
     makers = (await session.execute(_scope(select(
