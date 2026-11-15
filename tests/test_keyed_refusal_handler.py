@@ -4,8 +4,10 @@
 a server error, and the refused request stores nothing."""
 from __future__ import annotations
 
+import json
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import pytest
 from fastapi import Depends
@@ -57,3 +59,14 @@ async def test_keyed_refusal_never_answers_500(client, session, auth, refusing_r
     assert detail["message"]
     session.expire_all()
     assert (await session.execute(select(Projection).where(Projection.entity_id == entity_id))).first() is None
+
+
+async def test_a_refusal_with_an_amount_or_a_date_is_a_json_body():
+    """An amount and a date in a refusal's params travel as text, so answering it never fails
+    to serialise (the route would answer 500 instead of the refusal)."""
+    detail = Refused("error.stripe_amount", value=Decimal("1000.50"), code="CLP").detail
+    body = json.loads(json.dumps(detail))
+    assert body["params"] == {"value": "1000.50", "code": "CLP"}
+    assert body["message"].startswith("1000.50 CLP ")
+    assert json.loads(json.dumps(Refused("error.period_locked", date=date(2026, 1, 31),
+                                         permission="x", place="y").detail))["params"]["date"] == "2026-01-31"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import date
+from decimal import Decimal
 
 from celerp.compat import StrEnum
 
@@ -369,8 +370,10 @@ def refusal(key: str, message: str, /, **params) -> dict:
     """A message the UI can show in the user's language: ``message`` is the English text,
     ``message_key`` and ``params`` let a translation say the same thing (ui.i18n.refusal_text).
     A ``role`` param is shown as that posting role's label, ``type`` and ``types`` as
-    account types; a date travels as its ISO day and is shown as a date in the reader's language."""
-    params = {name: value.isoformat() if isinstance(value, date) else value for name, value in params.items()}
+    account types; a date travels as its ISO day and is shown as a date in the reader's language;
+    an amount travels as its exact digits, so the refusal is always a JSON body."""
+    params = {name: value.isoformat() if isinstance(value, date) else str(value) if isinstance(value, Decimal)
+              else value for name, value in params.items()}
     return {"message": message, "message_key": key, "params": params}
 
 
