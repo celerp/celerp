@@ -175,7 +175,7 @@ def _added_actions(item: dict, lang: str) -> FT:
                         cls="btn btn--xs btn--outline", **_SWAP)
     open_account = A(t("sync_accounts.open_account", lang), href=ledger_path(item["code"]),
                      cls="btn btn--xs btn--ghost") if item.get("code") else ""
-    why = P(item["why"], cls="settings-hint") if item.get("why") else ""
+    why = P(refusal_text(item["why"]), cls="settings-hint") if item.get("why") else ""
     return Div(Div(open_account, keep, settle, cls="flex-row gap-sm"), why)
 
 

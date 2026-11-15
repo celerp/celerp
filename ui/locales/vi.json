@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Tài khoản này không còn trong hệ thống tài khoản.",
+  "acct.err_remove_has_entries": "Tài khoản đã có bút toán, nên chỉ có thể lưu trữ, không thể xóa.",
+  "acct.err_remove_has_children": "Có tài khoản nằm dưới tài khoản này, nên chỉ có thể lưu trữ, không thể xóa.",
+  "acct.err_remove_posting_role": "Đây là tài khoản hạch toán cho {roles}, nên chỉ có thể lưu trữ, không thể xóa.",
+  "acct.err_remove_bank_account": "Một tài khoản ngân hàng đang dùng tài khoản này, nên chỉ có thể lưu trữ, không thể xóa.",
+  "acct.err_remove_sold_on": "{names} được bán qua tài khoản này, nên chỉ có thể lưu trữ, không thể xóa.",
+  "error.backup_download_failed": "Không thể tải xuống bản sao lưu đám mây này. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions. (Chi tiết cho bộ phận hỗ trợ: {detail})",
+  "connectors.err_order_still_refused": "Đơn hàng này vẫn chưa thể nhập: {reason}",
+  "contacts.err_import_refused": "Không thể nhập liên hệ này: {reason}",
+  "contacts.err_delete_linked": "Không thể xóa các liên hệ này khi tài liệu, danh sách hoặc giao dịch vẫn ghi tên họ: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp không xác định được khoản thanh toán Stripe này đã được ghi vào sổ sách nào, nên không thể hoàn tiền hoặc hủy tại đây. Hãy ghi nhận khoản hoàn tiền bằng một bút toán nhật ký.",
+  "pay.err_refund_not_linked_to_stripe": "Khoản thanh toán không còn liên kết với Stripe.",
+  "pay.err_books_bad_rate": "Sổ sách của khoản thanh toán này có tỷ giá không thể sử dụng."
 }

@@ -317,10 +317,10 @@ async def statutory(session, company_id, report_key: str, year) -> dict:
     settings = await setup.company_settings(session, company_id)
     try:
         form = rules.statutory_report(report_key)
-    except rules.RuleUnavailable as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except rules.RuleUnavailable:
+        raise HTTPException(status_code=404, detail=rules.unavailable_refusal("statutory_report", report_key)) from None
     if not rules.is_available("statutory_report", report_key, settings):
-        raise HTTPException(status_code=404, detail=rules.unavailable_reason(t("fixed_assets.err_statutory_report"), report_key))
+        raise HTTPException(status_code=404, detail=rules.unavailable_refusal("statutory_report", report_key))
     book = await taxbooks.book(session, company_id, form.regime, year, settings)
     rendered = form.render(_tax_lines(book), book["year"])
     return {"key": report_key, "label": t(form.label_key), "regime": form.regime, "regime_label": book["label"],

@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Ce compte ne figure plus dans le plan comptable.",
+  "acct.err_remove_has_entries": "Il comporte des écritures : il peut être archivé, pas supprimé.",
+  "acct.err_remove_has_children": "Des comptes en dépendent : il peut être archivé, pas supprimé.",
+  "acct.err_remove_posting_role": "C'est le compte de comptabilisation pour {roles} : il peut être archivé, pas supprimé.",
+  "acct.err_remove_bank_account": "Un compte bancaire l'utilise : il peut être archivé, pas supprimé.",
+  "acct.err_remove_sold_on": "Les ventes de {names} y sont enregistrées : il peut être archivé, pas supprimé.",
+  "error.backup_download_failed": "Cette sauvegarde cloud n'a pas pu être téléchargée. Réessayez ; si cela se reproduit, demandez sur GitHub Issues ou Discussions. (Détails pour le support : {detail})",
+  "connectors.err_order_still_refused": "Cette commande n'a toujours pas pu être importée : {reason}",
+  "contacts.err_import_refused": "Ce contact n'a pas pu être importé : {reason}",
+  "contacts.err_delete_linked": "Ces contacts ne peuvent pas être supprimés tant que des documents, listes ou affaires les mentionnent : {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp ne peut pas savoir dans quels livres ce paiement Stripe a été enregistré : il ne peut donc pas être remboursé ni annulé ici. Enregistrez plutôt le remboursement par une écriture de journal.",
+  "pay.err_refund_not_linked_to_stripe": "Le paiement n'est plus lié à Stripe.",
+  "pay.err_books_bad_rate": "Les livres du paiement portent un taux de change inutilisable."
 }

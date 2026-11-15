@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "この勘定科目はもう勘定科目表にありません。",
+  "acct.err_remove_has_entries": "仕訳があるため、削除はできず、アーカイブのみ可能です。",
+  "acct.err_remove_has_children": "配下に勘定科目があるため、削除はできず、アーカイブのみ可能です。",
+  "acct.err_remove_posting_role": "{roles}の計上先勘定科目のため、削除はできず、アーカイブのみ可能です。",
+  "acct.err_remove_bank_account": "銀行口座で使われているため、削除はできず、アーカイブのみ可能です。",
+  "acct.err_remove_sold_on": "{names}の売上がこの勘定科目に計上されるため、削除はできず、アーカイブのみ可能です。",
+  "error.backup_download_failed": "このクラウドバックアップをダウンロードできませんでした。もう一度お試しください。繰り返し起きる場合は GitHub Issues または Discussions でお問い合わせください。（サポート用の詳細: {detail}）",
+  "connectors.err_order_still_refused": "この注文はまだインポートできませんでした: {reason}",
+  "contacts.err_import_refused": "この連絡先をインポートできませんでした: {reason}",
+  "contacts.err_delete_linked": "書類、リスト、または商談に記載されている間は、これらの連絡先を削除できません: {records}。",
+  "documents.err_stripe_books_unreadable": "この Stripe 支払いがどの帳簿に記録されたか Celerp には判断できないため、ここでは返金も取り消しもできません。代わりに仕訳で返金を記録してください。",
+  "pay.err_refund_not_linked_to_stripe": "この支払いはもう Stripe に紐付いていません。",
+  "pay.err_books_bad_rate": "この支払いの帳簿には使用できない為替レートが設定されています。"
 }

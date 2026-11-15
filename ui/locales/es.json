@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Esta cuenta ya no está en el plan de cuentas.",
+  "acct.err_remove_has_entries": "Tiene asientos, así que se puede archivar, no eliminar.",
+  "acct.err_remove_has_children": "Tiene cuentas debajo, así que se puede archivar, no eliminar.",
+  "acct.err_remove_posting_role": "Es la cuenta de contabilización de {roles}, así que se puede archivar, no eliminar.",
+  "acct.err_remove_bank_account": "Una cuenta bancaria la usa, así que se puede archivar, no eliminar.",
+  "acct.err_remove_sold_on": "{names} se venden en ella, así que se puede archivar, no eliminar.",
+  "error.backup_download_failed": "No se pudo descargar esta copia de seguridad en la nube. Inténtalo de nuevo; si sigue ocurriendo, pregunta en GitHub Issues o Discussions. (Detalles para soporte: {detail})",
+  "connectors.err_order_still_refused": "Este pedido sigue sin poder importarse: {reason}",
+  "contacts.err_import_refused": "No se pudo importar este contacto: {reason}",
+  "contacts.err_delete_linked": "Estos contactos no se pueden eliminar mientras documentos, listas u oportunidades los mencionen: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp no puede saber en qué libros se registró este pago de Stripe, así que no se puede reembolsar ni anular aquí. Registra el reembolso con un asiento de diario.",
+  "pay.err_refund_not_linked_to_stripe": "El pago ya no está vinculado a Stripe.",
+  "pay.err_books_bad_rate": "Los libros del pago tienen un tipo de cambio que no se puede usar."
 }

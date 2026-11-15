@@ -124,7 +124,7 @@ async def test_tax_year_close_order_and_timing(fa, zz):
     assert refused.status_code == 409 and "2026" in refusal_text(refused.json()["detail"])
     # A year that has not ended cannot close.
     early = await fa.post("/tax-years/zz_asset/2027/close", {})
-    assert early.status_code == 409 and "2027-06-30" in refusal_text(early.json()["detail"])
+    assert early.status_code == 409 and "30 Jun 2027" in refusal_text(early.json()["detail"])
     operator = await fa.role_headers("operator")
     assert (await fa.post("/tax-years/zz_asset/2026/reopen", {"reason": "x"}, headers=operator)).status_code == 403
 

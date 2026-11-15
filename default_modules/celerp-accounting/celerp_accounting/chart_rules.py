@@ -399,24 +399,24 @@ async def change_account(
     return acc
 
 
-async def removal_problem(session: AsyncSession, company_id: uuid.UUID, code: str) -> str | None:
-    """Why the account cannot be removed, or None: only an account with no postings,
+async def removal_problem(session: AsyncSession, company_id: uuid.UUID, code: str) -> dict | None:
+    """Why the account cannot be removed (a keyed refusal), or None: only an account with no postings,
     no accounts under it, no posting role and no bank account can be."""
     if await _account(session, company_id, code) is None:
-        return "This account is no longer in the chart."
+        return catalog_refusal("acct.err_remove_not_in_chart")
     if await has_journal_history(session, company_id, code):
-        return "It has entries, so it can be archived, not removed."
+        return catalog_refusal("acct.err_remove_has_entries")
     if await session.scalar(select(Account.code).where(
             Account.company_id == company_id, Account.parent_code == code).limit(1)):
-        return "Accounts sit under it, so it can be archived, not removed."
+        return catalog_refusal("acct.err_remove_has_children")
     settings = await current_settings(session, company_id)
-    if roles := _roles_targeting(settings, code):
-        return f"It is the posting account for {', '.join(roles)}, so it can be archived, not removed."
+    if roles := [r for r, c in sorted(role_map(settings).items()) if c == code]:
+        return catalog_refusal("acct.err_remove_posting_role", roles=roles)
     if await session.scalar(select(BankAccount.id).where(
             BankAccount.company_id == company_id, BankAccount.chart_account_code == code).limit(1)):
-        return "A bank account uses it, so it can be archived, not removed."
+        return catalog_refusal("acct.err_remove_bank_account")
     if sellers := await _selling_on(session, company_id, settings, code):
-        return f"{', '.join(sellers)} sell on it, so it can be archived, not removed."
+        return catalog_refusal("acct.err_remove_sold_on", names=", ".join(sellers))
     return None
 
 

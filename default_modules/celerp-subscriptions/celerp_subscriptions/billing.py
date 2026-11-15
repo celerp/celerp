@@ -529,8 +529,9 @@ async def billing_doc(session, company_id, doc_id: str) -> None:
     (finalize it, or Reopen), or void or gone (Reopen)."""
     doc = await doc_state(session, company_id, doc_id)
     if not bills(doc):
-        key = "subscriptions.err_period_draft" if (doc or {}).get("status") == "draft" else "subscriptions.err_period_void"
-        raise HTTPException(status_code=409, detail=t(key, ref=(doc or {}).get("ref_id") or doc_id))
+        ref = (doc or {}).get("ref_id") or doc_id
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_period_draft", ref=ref)
+                            if (doc or {}).get("status") == "draft" else t("subscriptions.err_period_void", ref=ref))
 
 
 async def guard_bill_status(*, session, entry, transition) -> None:

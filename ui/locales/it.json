@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Questo conto non è più nel piano dei conti.",
+  "acct.err_remove_has_entries": "Ha delle registrazioni, quindi si può archiviare, non rimuovere.",
+  "acct.err_remove_has_children": "Ha dei conti sotto di sé, quindi si può archiviare, non rimuovere.",
+  "acct.err_remove_posting_role": "È il conto di registrazione per {roles}, quindi si può archiviare, non rimuovere.",
+  "acct.err_remove_bank_account": "Un conto bancario lo usa, quindi si può archiviare, non rimuovere.",
+  "acct.err_remove_sold_on": "{names} vendono su questo conto, quindi si può archiviare, non rimuovere.",
+  "error.backup_download_failed": "Non è stato possibile scaricare questo backup nel cloud. Riprova; se continua a succedere, chiedi su GitHub Issues o Discussions. (Dettagli per l'assistenza: {detail})",
+  "connectors.err_order_still_refused": "Questo ordine non è ancora stato importato: {reason}",
+  "contacts.err_import_refused": "Non è stato possibile importare questo contatto: {reason}",
+  "contacts.err_delete_linked": "Questi contatti non si possono eliminare finché documenti, elenchi o trattative li indicano: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp non riesce a stabilire su quali libri è stato registrato questo pagamento Stripe, quindi non può essere rimborsato o annullato qui. Registra il rimborso con una scrittura contabile.",
+  "pay.err_refund_not_linked_to_stripe": "Il pagamento non è più collegato a Stripe.",
+  "pay.err_books_bad_rate": "I libri del pagamento riportano un tasso di cambio non utilizzabile."
 }

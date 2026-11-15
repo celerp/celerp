@@ -65,10 +65,10 @@ class RegisterRow:
     @classmethod
     def of(cls, values) -> RegisterRow:
         if not isinstance(values, dict):
-            raise setup.unprocessable("Every row is a set of named values.")
+            raise setup.refuse("fixed_assets.err_row_named_values")
         unknown = set(values) - set(COLUMNS)
         if unknown:
-            raise setup.unprocessable(f"{sorted(unknown)[0]} is not a register column.")
+            raise setup.refuse("fixed_assets.err_not_register_column", column=sorted(unknown)[0])
         return cls(**{_attr(k): str(v).strip() for k, v in values.items() if v is not None})
 
     def values(self) -> dict:
@@ -197,7 +197,7 @@ def _check(books: _Books, numbered: list[tuple[int, RegisterRow]], excluded: set
                    for k, label in _AMOUNTS}
         if None not in (figures["cost"], figures["accumulated_depreciation"], figures["accumulated_impairment"]) and (
                 figures["accumulated_depreciation"] + figures["accumulated_impairment"] > figures["cost"]):
-            bad("accumulated_depreciation", WRITTEN_OFF_OVER_COST)
+            bad("accumulated_depreciation", t(WRITTEN_OFF_OVER_COST))
         if figures["revaluation_surplus"] and cls and setup.measurement(cls) != "revaluation":
             bad("revaluation_surplus", f"{cls['name']} is measured at cost, so its assets carry no revaluation "
                                        "surplus.")

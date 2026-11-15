@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "لم يعد هذا الحساب في دليل الحسابات.",
+  "acct.err_remove_has_entries": "عليه قيود، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_has_children": "توجد حسابات تحته، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_posting_role": "إنه حساب الترحيل لـ {roles}، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_bank_account": "يستخدمه حساب مصرفي، لذا يمكن أرشفته لا حذفه.",
+  "acct.err_remove_sold_on": "تُسجَّل عليه مبيعات {names}، لذا يمكن أرشفته لا حذفه.",
+  "error.backup_download_failed": "تعذّر تنزيل هذه النسخة الاحتياطية السحابية. حاول مرة أخرى؛ وإذا تكرر ذلك، فاسأل في GitHub Issues أو Discussions. (تفاصيل للدعم: {detail})",
+  "connectors.err_order_still_refused": "لا يزال تعذّر استيراد هذا الطلب: {reason}",
+  "contacts.err_import_refused": "تعذّر استيراد جهة الاتصال هذه: {reason}",
+  "contacts.err_delete_linked": "لا يمكن حذف جهات الاتصال هذه ما دامت مستندات أو قوائم أو صفقات تذكرها: {records}.",
+  "documents.err_stripe_books_unreadable": "لا يستطيع Celerp معرفة الدفاتر التي سُجّلت عليها دفعة Stripe هذه، لذا لا يمكن ردّها أو إلغاؤها هنا. سجّل الاسترداد بقيد يومية بدلاً من ذلك.",
+  "pay.err_refund_not_linked_to_stripe": "لم تعد الدفعة مرتبطة بـ Stripe.",
+  "pay.err_books_bad_rate": "تحمل دفاتر هذا الدفع سعر صرف لا يمكن استخدامه."
 }

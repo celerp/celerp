@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from celerp.accounting_roles import period_locked_refusal
 from celerp.models.ledger import LedgerEntry
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _owner_id, _run, _set_module
@@ -243,11 +244,11 @@ async def test_s4_draft_finalize_completes_sale_atomically(fa, monkeypatch):
     van_inv = await _sell(fa, van)
 
     def broken(*args, **kwargs):
-        raise disposal.conflict("Disposal failed")
+        raise disposal.conflict(period_locked_refusal("2026-04-20"))
 
     monkeypatch.setattr(disposal, "_plan_asset", broken)
     refused = await _doc(fa, van_inv, "finalize")
-    assert refused.status_code == 409 and "Disposal failed" in refusal_text(refused.json()["detail"])
+    assert refused.status_code == 409 and "Your books are locked up to 20 Apr 2026" in refusal_text(refused.json()["detail"])
     assert (await fa.state(van_inv))["status"] == "draft"
     assert not [je for je in await fa.entities("journal_entry") if je["entity_id"].startswith(f"je:auto:{van_inv}:")]
     assert not await _sale_journals(fa, van)

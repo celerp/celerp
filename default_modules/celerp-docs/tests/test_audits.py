@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 from test_helpers import merge_items
+from ui.i18n import refusal_text
 
 
 async def _register(client) -> str:
@@ -915,7 +916,8 @@ async def test_finalize_blocks_a_line_whose_item_no_longer_exists(client, sessio
     await session.commit()
     fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
     assert fin.status_code == 409, fin.text
-    assert "GONE-1" in fin.json()["detail"] and iid not in fin.json()["detail"]
+    detail = refusal_text(fin.json()["detail"])
+    assert "GONE-1" in detail and iid not in detail
     assert (await _state(client, t, audit))["status"] == "draft"
 
 
@@ -980,7 +982,7 @@ async def test_finalize_blocks_a_line_whose_item_was_merged_away(client):
     fin = await client.post(f"/lists/{audit}/finalize", headers=_h(t))
     assert fin.status_code == 409, fin.text
     # Both sources are merged away; either line may be the one reported, by its SKU.
-    detail = fin.json()["detail"]
+    detail = refusal_text(fin.json()["detail"])
     assert detail.partition(": ")[0] in {"MRG-1", "MRG-2"}
     assert src not in detail and other not in detail
     assert (await _state(client, t, audit))["status"] == "draft"

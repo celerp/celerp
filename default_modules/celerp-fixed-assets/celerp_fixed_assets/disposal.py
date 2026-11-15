@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from celerp_fixed_assets import projections, runs, setup
+from celerp.services.units import plain_number
 from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
@@ -58,10 +59,10 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
             return Decimal(1), quantity
         out = setup.number(body["quantity"], "The quantity disposed of")
         if out <= 0 or out > quantity:
-            raise setup.refuse("fixed_assets.err_enter_quantity_disposed_above_0_up", quantity=quantity)
+            raise setup.refuse("fixed_assets.err_enter_quantity_disposed_above_0_up", quantity=plain_number(float(quantity)))
         return out / quantity, out
     if body.get("quantity") not in (None, "") and setup.number(body["quantity"], "The quantity disposed of") != quantity:
-        raise setup.refuse("fixed_assets.err_asset_has_quantity_quantity_dispose_percentage", quantity=quantity)
+        raise setup.refuse("fixed_assets.err_asset_has_quantity_quantity_dispose_percentage", quantity=plain_number(float(quantity)))
     if body.get("percent") in (None, ""):
         return Decimal(1), quantity
     percent = setup.number(body["percent"], "The percent disposed of")

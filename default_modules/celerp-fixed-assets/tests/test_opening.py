@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA, demo_owner
-from ui.i18n import refusal_text
+from ui.i18n import date_text, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -172,7 +172,7 @@ async def test_s7_opening_asset_after_cutover_refused(fa):
     body = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "cost": "1000"}
     late = (date.fromisoformat(cutover) + timedelta(days=1)).isoformat()
     refused = await fa.post("/assets", {**body, "available_date": late, "preview": True, "op_key": "late"})
-    assert refused.status_code == 422 and f"Dated after the cutover {cutover}" in refusal_text(refused.json()["detail"])
+    assert refused.status_code == 422 and f"Dated after the cutover {date_text(date.fromisoformat(cutover))}" in refusal_text(refused.json()["detail"])
     done = await fa.operate("/assets", {**body, "available_date": cutover}, key="on")
     assert done["assets"][0]["number"].startswith("FA-")
 

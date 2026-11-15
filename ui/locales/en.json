@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "This account is no longer in the chart.",
+  "acct.err_remove_has_entries": "It has entries, so it can be archived, not removed.",
+  "acct.err_remove_has_children": "Accounts sit under it, so it can be archived, not removed.",
+  "acct.err_remove_posting_role": "It is the posting account for {roles}, so it can be archived, not removed.",
+  "acct.err_remove_bank_account": "A bank account uses it, so it can be archived, not removed.",
+  "acct.err_remove_sold_on": "{names} sell on it, so it can be archived, not removed.",
+  "error.backup_download_failed": "This cloud backup couldn't be downloaded. Try again; if it keeps happening, ask on GitHub Issues or Discussions. (Details for support: {detail})",
+  "connectors.err_order_still_refused": "This order still couldn't be imported: {reason}",
+  "contacts.err_import_refused": "This contact couldn't be imported: {reason}",
+  "contacts.err_delete_linked": "These contacts can't be deleted while documents, lists or deals name them: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp cannot tell which books this Stripe payment was recorded on, so it cannot be refunded or voided here. Record the refund with a journal entry instead.",
+  "pay.err_refund_not_linked_to_stripe": "The payment is no longer linked to Stripe.",
+  "pay.err_books_bad_rate": "The payment's books carry an unusable exchange rate."
 }

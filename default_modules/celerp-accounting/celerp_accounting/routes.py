@@ -1922,11 +1922,10 @@ async def create_manual_journal_entry(
         # currencies the difference is the exchange difference the author still
         # has to post, and it is the figure they need rather than one to work out.
         gap = abs(total_debit - total_credit)
-        short = "credit" if total_debit > total_credit else "debit"
         raise HTTPException(
             status_code=422,
-            detail=t(f"acct.err_je_unbalanced_{short}", base=base,
-                     debits=total_debit, credits=total_credit, gap=gap),
+            detail=t("acct.err_je_unbalanced_credit" if total_debit > total_credit else "acct.err_je_unbalanced_debit",
+                     base=base, debits=total_debit, credits=total_credit, gap=gap),
         )
     # A line on a bank account kept in another currency than the books' carries its
     # amount in that currency, so the account's reconciliation can read it.

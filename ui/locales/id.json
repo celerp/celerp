@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Akun ini sudah tidak ada di bagan akun.",
+  "acct.err_remove_has_entries": "Akun ini memiliki entri, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_has_children": "Ada akun di bawahnya, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_posting_role": "Ini akun posting untuk {roles}, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_bank_account": "Sebuah rekening bank memakainya, jadi bisa diarsipkan, bukan dihapus.",
+  "acct.err_remove_sold_on": "{names} dijual pada akun ini, jadi bisa diarsipkan, bukan dihapus.",
+  "error.backup_download_failed": "Cadangan cloud ini tidak dapat diunduh. Coba lagi; jika terus terjadi, tanyakan di GitHub Issues atau Discussions. (Detail untuk dukungan: {detail})",
+  "connectors.err_order_still_refused": "Pesanan ini masih tidak dapat diimpor: {reason}",
+  "contacts.err_import_refused": "Kontak ini tidak dapat diimpor: {reason}",
+  "contacts.err_delete_linked": "Kontak ini tidak dapat dihapus selama dokumen, daftar, atau kesepakatan menyebutnya: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp tidak dapat mengetahui pembukuan mana yang mencatat pembayaran Stripe ini, jadi pembayaran ini tidak dapat dikembalikan atau dibatalkan di sini. Catat pengembalian dana dengan entri jurnal sebagai gantinya.",
+  "pay.err_refund_not_linked_to_stripe": "Pembayaran ini sudah tidak terhubung ke Stripe.",
+  "pay.err_books_bad_rate": "Buku pembayaran ini memuat kurs yang tidak dapat digunakan."
 }

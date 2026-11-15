@@ -158,7 +158,7 @@ async def test_move_validates_and_checks_roles(fa):
     yard = await _location(fa, "Yard")
     await _move(fa, car, date="2026-03-01", location_id=yard)
     earlier = await refused({"date": "2026-02-15", "location_id": yard})
-    assert earlier.status_code == 422 and "2026-03-01" in refusal_text(earlier.json()["detail"])
+    assert earlier.status_code == 422 and "1 Mar 2026" in refusal_text(earlier.json()["detail"])
     # Moving an asset is an operator's job; a viewer cannot reach fixed assets at all.
     operator = await fa.role_headers("operator")
     await _move(fa, car, headers=operator, date="2026-03-02", custodian={"name": "Driver", "not_user": True})

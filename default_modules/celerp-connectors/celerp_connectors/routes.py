@@ -27,7 +27,7 @@ from celerp.services.auth import (
     require_install_owner,
 )
 from celerp.services.permissions import get_current_company_settings, require_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from ui.components.encode import inert_media_type
 from celerp.ai.tools import agent_excluded
 
@@ -900,7 +900,8 @@ async def import_order_under_next_number(
         return {"number": (doc.state or {}).get("ref_id"), "doc_id": entity_id}
     waiting = next((e for e in await attention_entries(str(company_id), "woocommerce", SyncEntity.ORDERS.value)
                     if str(e.get("id")) == order_id), None)
-    raise HTTPException(status_code=409, detail=waiting["reason"] if waiting else t("error.order_no_attention"))
+    raise HTTPException(status_code=409, detail=t("connectors.err_order_still_refused", reason=refusal_text(waiting["reason"]))
+                        if waiting else t("error.order_no_attention"))
 
 
 @router.delete("/woocommerce/orders/{order_id}/reconciled", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/woocommerce"}, summary="Clear the reconciled mark of a WooCommerce order so it needs reconciling again.")

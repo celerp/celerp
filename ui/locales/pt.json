@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Esta conta já não está no plano de contas.",
+  "acct.err_remove_has_entries": "Tem lançamentos, por isso pode ser arquivada, não removida.",
+  "acct.err_remove_has_children": "Tem contas abaixo dela, por isso pode ser arquivada, não removida.",
+  "acct.err_remove_posting_role": "É a conta de lançamento de {roles}, por isso pode ser arquivada, não removida.",
+  "acct.err_remove_bank_account": "Uma conta bancária a utiliza, por isso pode ser arquivada, não removida.",
+  "acct.err_remove_sold_on": "{names} são vendidos nesta conta, por isso pode ser arquivada, não removida.",
+  "error.backup_download_failed": "Não foi possível transferir esta cópia de segurança na nuvem. Tente novamente; se continuar a acontecer, pergunte no GitHub Issues ou Discussions. (Detalhes para o suporte: {detail})",
+  "connectors.err_order_still_refused": "Esta encomenda continua sem poder ser importada: {reason}",
+  "contacts.err_import_refused": "Não foi possível importar este contacto: {reason}",
+  "contacts.err_delete_linked": "Estes contactos não podem ser eliminados enquanto documentos, listas ou negócios os indicarem: {records}.",
+  "documents.err_stripe_books_unreadable": "O Celerp não consegue saber em que livros este pagamento Stripe foi registado, por isso não pode ser reembolsado nem anulado aqui. Registe o reembolso com um lançamento de diário.",
+  "pay.err_refund_not_linked_to_stripe": "O pagamento já não está associado ao Stripe.",
+  "pay.err_books_bad_rate": "Os livros do pagamento têm uma taxa de câmbio que não pode ser usada."
 }

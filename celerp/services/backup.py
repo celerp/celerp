@@ -117,6 +117,11 @@ def _find_pg_tool(name: str) -> str:
     )
 
 
+class BackupFailed(RuntimeError):
+    """A backup or restore step that failed; its text is the reason to show, in the
+    language of the request that met it."""
+
+
 @dataclass
 class BackupResult:
     ok: bool
@@ -158,7 +163,7 @@ def dump_database(database_url: str, dest: Path, *, runner=None) -> None:
 
     pg_dump writes ``<dest>.partial`` (a relative name with cwd set, as the restore tools
     are run) and it is renamed over *dest* only when pg_dump succeeded, so a failed dump
-    leaves no partial file and keeps a previous dump at *dest*. Raises RuntimeError with
+    leaves no partial file and keeps a previous dump at *dest*. Raises BackupFailed with
     the message to show.
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
@@ -175,12 +180,12 @@ def dump_database(database_url: str, dest: Path, *, runner=None) -> None:
             )
             if result.returncode != 0:
                 stderr = result.stderr.decode(errors="replace").strip()
-                raise RuntimeError(t("error.backup_failed_detail", detail=stderr))
+                raise BackupFailed(t("error.backup_failed_detail", detail=stderr))
             os.replace(partial, dest)
     except FileNotFoundError as exc:
-        raise RuntimeError(t("error.backup_tool_missing")) from exc
+        raise BackupFailed(t("error.backup_tool_missing")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(t("error.backup_timed_out")) from exc
+        raise BackupFailed(t("error.backup_timed_out")) from exc
     finally:
         partial.unlink(missing_ok=True)
 
@@ -193,7 +198,7 @@ def disk_full_as_error():
     except OSError as exc:
         if exc.errno != errno.ENOSPC:
             raise
-        raise RuntimeError(t("error.backup_disk_full")) from exc
+        raise BackupFailed(t("error.backup_disk_full")) from exc
 
 
 def encrypt_chunks(path: Path, key: bytes, chunk: int = _CHUNK) -> Iterator[bytes]:
@@ -214,10 +219,10 @@ def encrypt_chunks(path: Path, key: bytes, chunk: int = _CHUNK) -> Iterator[byte
 def decrypt_file(src: Path, dst: Path, key: bytes, chunk: int = _CHUNK) -> str:
     """Decrypt a blob written by ``encrypt_chunks`` from *src* to *dst*, *chunk* bytes at a
     time. Returns the sha256 of the plaintext. A damaged blob or a wrong key removes
-    *dst* and raises RuntimeError."""
+    *dst* and raises BackupFailed."""
     size = src.stat().st_size
     if size < ENC_OVERHEAD:
-        raise RuntimeError(t("error.backup_damaged"))
+        raise BackupFailed(t("error.backup_damaged"))
     digest = hashlib.sha256()
     try:
         with src.open("rb") as fin, dst.open("wb") as fout:
@@ -226,7 +231,7 @@ def decrypt_file(src: Path, dst: Path, key: bytes, chunk: int = _CHUNK) -> str:
             while left:
                 data = fin.read(min(chunk, left))
                 if not data:
-                    raise RuntimeError(t("error.backup_damaged"))
+                    raise BackupFailed(t("error.backup_damaged"))
                 plain = decryptor.update(data)
                 left -= len(data)
                 digest.update(plain)
@@ -234,7 +239,7 @@ def decrypt_file(src: Path, dst: Path, key: bytes, chunk: int = _CHUNK) -> str:
             decryptor.finalize_with_tag(fin.read(_TAG_BYTES))
     except InvalidTag as exc:
         dst.unlink(missing_ok=True)
-        raise RuntimeError(t("error.backup_damaged")) from exc
+        raise BackupFailed(t("error.backup_damaged")) from exc
     except BaseException:
         dst.unlink(missing_ok=True)
         raise
@@ -450,12 +455,12 @@ def _check_extensions(extensions: list[str], database_url: str, source: str) -> 
 
 
 def restore_tools() -> tuple[str, str]:
-    """pg_restore and psql, which a database restore needs; RuntimeError naming one that
+    """pg_restore and psql, which a database restore needs; BackupFailed naming one that
     is missing or does not run."""
     try:
         tools = _find_pg_tool("pg_restore"), _find_pg_tool("psql")
     except FileNotFoundError as exc:
-        raise RuntimeError(t("error.restore_tool_missing")) from exc
+        raise BackupFailed(t("error.restore_tool_missing")) from exc
     for tool in tools:
         _run_tool([tool, "--version"], None, timeout=10)
     return tools
@@ -550,12 +555,12 @@ def _run_tool(command: list[str], runner, timeout: int = 600, cwd: Path | None =
     try:
         result = (runner or subprocess.run)(command, capture_output=True, timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
-        raise RuntimeError(t("error.restore_tool_missing")) from exc
+        raise BackupFailed(t("error.restore_tool_missing")) from exc
     except OSError as exc:
-        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name}: {exc.strerror}")) from exc
+        raise BackupFailed(t("error.restore_failed_detail", detail=f"{name}: {exc.strerror}")) from exc
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(t("error.restore_timed_out", seconds=timeout)) from exc
+        raise BackupFailed(t("error.restore_timed_out", seconds=timeout)) from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(t("error.restore_failed_detail", detail=f"{name} (exit {result.returncode}): {stderr}"))
+        raise BackupFailed(t("error.restore_failed_detail", detail=f"{name} (exit {result.returncode}): {stderr}"))
     return result.stdout

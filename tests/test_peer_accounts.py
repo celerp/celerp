@@ -21,7 +21,7 @@ from test_peer_sync_end_to_end import _company_of, _iid, _route_to_app, seed_dem
 from test_peer_two_way_sync import (
     ADJUSTED, _journals, _notices, _pair_journals, _post_journal, _two_way,
 )
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.timeout(120)]  # two companies each seed the demo
 
@@ -584,8 +584,8 @@ async def test_an_added_account_is_kept_archived_or_removed(real_client, real_en
 
     added = await _added(real_client, firm_tok)
     assert set(added) == {"6140", "6150"}
-    assert added["6150"]["removable"] is False and "entries" in added["6150"]["why"]
-    assert added["6140"]["removable"] is False and "under it" in added["6140"]["why"]
+    assert added["6150"]["removable"] is False and "entries" in refusal_text(added["6150"]["why"])
+    assert added["6140"]["removable"] is False and "under it" in refusal_text(added["6140"]["why"])
     r = await _settle(real_client, firm_tok, added["6150"], "remove")
     assert r.status_code == 409 and "archived, not removed" in r.text
     r = await real_client.get("/auth/firm-view", headers=auth(firm_tok))

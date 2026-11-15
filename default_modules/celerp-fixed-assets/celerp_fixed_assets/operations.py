@@ -427,8 +427,9 @@ async def _open_line(session, company_id, source) -> dict:
     claim = line["claim"]
     if claim:
         numbers = claim.get("numbers") or []
-        raise conflict(f"{line['description']} is already registered as {', '.join(numbers)}." if numbers
-                       else f"{line['description']} was already dealt with.")
+        if numbers:
+            raise refuse("fixed_assets.err_line_registered_as", description=line["description"], numbers=", ".join(numbers))
+        raise refuse("fixed_assets.err_line_dealt_with", description=line["description"])
     return line
 
 
@@ -486,7 +487,7 @@ async def register(session, company_id, user_id, body: dict) -> dict:
         cls = await setup.get_class(session, company_id, body.get("class_id"))
         name = str(body.get("name") or line["description"]).strip()
         if not name:
-            raise setup.unprocessable("An asset needs a name.")
+            raise setup.refuse("fixed_assets.err_asset_needs_name")
         available = _date(body.get("available_date") or line["date"], "The available-for-use date")
         quantity = _dec(line["quantity"])
         if mode == "separate":
@@ -561,12 +562,9 @@ async def register(session, company_id, user_id, body: dict) -> dict:
 # What a manual line is marked as when it is not registered: the reason it needs, and the
 # lines it applies to.
 _DISPOSITIONS = {
-    "not_acquisition": ("A reason is required to mark a line as not an acquisition.",
-                        "Only a manual journal line debiting an asset account can be marked as not an acquisition.",
+    "not_acquisition": ("fixed_assets.err_reason_not_acquisition", "fixed_assets.err_only_debit_not_acquisition",
                         ("acquisition",)),
-    "keep": ("A reason is required to keep a depreciation journal as booked.",
-             "Only a manual journal line crediting accumulated depreciation can be kept as booked.",
-             ("depreciation",)),
+    "keep": ("fixed_assets.err_reason_keep_booked", "fixed_assets.err_only_credit_keep_booked", ("depreciation",)),
 }
 
 
@@ -579,10 +577,10 @@ async def disposition(session, company_id, user_id, body: dict, allocation: str)
     async def plan(fa):
         reason = str(body.get("reason") or "").strip()
         if not reason:
-            raise setup.unprocessable(no_reason)
+            raise setup.refuse(no_reason)
         line = await _open_line(session, company_id, body.get("source"))
         if not line["journal_id"].startswith("je:manual:") or line["kind"] not in kinds:
-            raise setup.unprocessable(wrong_line)
+            raise setup.refuse(wrong_line)
         return ({"journals": [], "assets": [], "reason": reason},
                 {"line": line, "reason": reason, "generation": line["generation"]})
 
@@ -642,12 +640,12 @@ async def link_depreciation(session, company_id, user_id, body: dict) -> dict:
 # ── Assets added by hand ─────────────────────────────────────────────────────
 
 
-WRITTEN_OFF_OVER_COST = "Accumulated depreciation and impairment cannot be more than the cost."
+WRITTEN_OFF_OVER_COST = "fixed_assets.err_written_off_over_cost"
 
 
 def after_cutover(cut: str) -> str:
     """Why an opening asset cannot be dated after the cutover, and what to do instead."""
-    return f"Dated after the cutover {cut}. Enter the bill, or use Contributed or acquired without a bill."
+    return t("fixed_assets.err_opening_after_cutover", cut=cut)
 
 
 def _registers(cls: dict, available, policy: dict) -> dict:
@@ -671,7 +669,7 @@ async def _financials(session, company_id, fa: dict, body: dict) -> dict:
         dep = _money_in(body.get("accumulated_depreciation"), "Accumulated depreciation", currency)
         imp = _money_in(body.get("accumulated_impairment"), "Accumulated impairment", currency)
         if dep + imp > cost:
-            raise setup.unprocessable(WRITTEN_OFF_OVER_COST)
+            raise setup.refuse(WRITTEN_OFF_OVER_COST)
         out.update(dep=dep, imp=imp, posting=cut or available)
     elif kind == "contributed":
         credit = str(body.get("credit_account") or "")
@@ -808,8 +806,8 @@ def tag_taken(assets: list[tuple[str, dict]], asset_id: str, tag: str) -> str | 
         return None
     number = held[1].get("number")
     if (held[1].get("tag") or "").casefold() == tag.strip().casefold():
-        return f"Tag {held[1]['tag']} is already on {number}."
-    return f"{number} is another asset's number, so it cannot be a tag here."
+        return t("fixed_assets.err_tag_on_asset", tag=held[1]["tag"], number=number)
+    return t("fixed_assets.err_tag_is_asset_number", number=number)
 
 
 async def _tag_free(session, company_id, asset_id: str, tag: str) -> None:
@@ -836,9 +834,8 @@ async def update_asset(session, company_id, user_id, asset_id: str, body: dict) 
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if set(changes) & {*BUCKETS, "quantity"}:
-        raise setup.unprocessable(
-            "This cost comes from its source lines. Use Replace source to change it." if row.state.get("sources")
-            else "Use Correct to change the cost.")
+        raise setup.refuse("fixed_assets.err_cost_from_source_lines" if row.state.get("sources")
+                           else "fixed_assets.err_use_correct_for_cost")
     unknown = set(changes) - {*DESCRIPTIVE_FIELDS, RESPONSIBLE, "depreciation_account"}
     if unknown:
         raise setup.refuse("fixed_assets.err_value_cannot_edited_here", value=sorted(unknown)[0])

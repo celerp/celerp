@@ -8295,5 +8295,18 @@
   "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
   "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
   "company_backup.err_name_invalid": "{reason} Nothing was restored.",
-  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted."
+  "company_reset.crossing_one": "This company cannot be reset safely: {tables} holds both installation and company data. Nothing was deleted.",
+  "acct.err_remove_not_in_chart": "Dieses Konto ist nicht mehr im Kontenplan.",
+  "acct.err_remove_has_entries": "Es hat Buchungen, daher kann es archiviert, aber nicht entfernt werden.",
+  "acct.err_remove_has_children": "Darunter liegen Konten, daher kann es archiviert, aber nicht entfernt werden.",
+  "acct.err_remove_posting_role": "Es ist das Buchungskonto für {roles}, daher kann es archiviert, aber nicht entfernt werden.",
+  "acct.err_remove_bank_account": "Ein Bankkonto verwendet es, daher kann es archiviert, aber nicht entfernt werden.",
+  "acct.err_remove_sold_on": "{names} werden darauf verkauft, daher kann es archiviert, aber nicht entfernt werden.",
+  "error.backup_download_failed": "Diese Cloud-Sicherung konnte nicht heruntergeladen werden. Versuchen Sie es erneut; wenn es weiterhin passiert, fragen Sie in GitHub Issues oder Discussions. (Details für den Support: {detail})",
+  "connectors.err_order_still_refused": "Diese Bestellung konnte immer noch nicht importiert werden: {reason}",
+  "contacts.err_import_refused": "Dieser Kontakt konnte nicht importiert werden: {reason}",
+  "contacts.err_delete_linked": "Diese Kontakte können nicht gelöscht werden, solange Dokumente, Listen oder Deals sie nennen: {records}.",
+  "documents.err_stripe_books_unreadable": "Celerp kann nicht erkennen, in welchen Büchern diese Stripe-Zahlung erfasst wurde, daher kann sie hier nicht erstattet oder storniert werden. Erfassen Sie die Erstattung stattdessen mit einer Journalbuchung.",
+  "pay.err_refund_not_linked_to_stripe": "Die Zahlung ist nicht mehr mit Stripe verknüpft.",
+  "pay.err_books_bad_rate": "Die Bücher der Zahlung enthalten einen unbrauchbaren Wechselkurs."
 }

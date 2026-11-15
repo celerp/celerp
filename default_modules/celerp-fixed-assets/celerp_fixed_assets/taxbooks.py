@@ -70,8 +70,8 @@ def regime_for(settings: dict | None, key: str):
 
     try:
         regime = rules.regime(key)
-    except rules.RuleUnavailable as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except rules.RuleUnavailable:
+        raise HTTPException(status_code=404, detail=rules.unavailable_refusal("tax_regime", key)) from None
     if key not in (setup.settings_of(settings).get("tax_regimes") or []):
         raise setup.refuse("fixed_assets.err_t_not_one_company_s_tax", t=t(regime.label_key))
     return regime
@@ -417,9 +417,8 @@ async def set_book(session, company_id, user_id, asset_id: str, regime_key: str,
 
     _, settings = await locked_authority(session, company_id, user_id, ("manage_accounting",))
     regime = regime_for(settings, regime_key)
-    reason = unavailable(settings, regime_key)
-    if reason:
-        raise HTTPException(status_code=409, detail=reason)
+    if unavailable(settings, regime_key):
+        raise HTTPException(status_code=409, detail=rules.unavailable_refusal("tax_regime", regime_key))
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
         raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))

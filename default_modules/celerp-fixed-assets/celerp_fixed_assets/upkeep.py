@@ -46,8 +46,8 @@ NOTICE_TITLE = "Asset reminders"
 NOTICE_KEY = "fixed_assets.notice.reminders"
 # Each kind of reminder and the field that says what it is about.
 KINDS = {"maintenance": "work", "warranty": "provider", "insurance": "insurer"}
-_DETAIL_REFUSAL = {"work": "Describe the maintenance work.", "provider": "Name the warranty provider.",
-                   "insurer": "Name the insurer."}
+_DETAIL_REFUSAL = {"work": "fixed_assets.err_describe_maintenance_work", "provider": "fixed_assets.err_name_warranty_provider",
+                   "insurer": "fixed_assets.err_name_insurer"}
 EDITABLE = ("due", "every_months", "lead_days", "responsible_user_id", "policy", "insured_value", *KINDS.values())
 LEAD_DAYS = 30
 MAINT_EDITABLE = ("date", "work", "by")
@@ -73,9 +73,9 @@ def _whole(value, low: int, high: int, refusal: str) -> int:
     try:
         number = int(str(value).strip())
     except ValueError:
-        raise setup.unprocessable(refusal) from None
+        raise setup.refuse(refusal) from None
     if not low <= number <= high:
-        raise setup.unprocessable(refusal)
+        raise setup.refuse(refusal)
     return number
 
 
@@ -86,11 +86,11 @@ async def _field(session, company_id, field: str, value, kind: str):
     if field == "every_months":
         if value in (None, ""):
             return None
-        return _whole(value, 1, 120, "Repeat every whole number of months, from 1 to 120, or leave it empty.")
+        return _whole(value, 1, 120, "fixed_assets.err_repeat_every_months")
     if field == "lead_days":
         if value in (None, ""):
             return LEAD_DAYS
-        return _whole(value, 0, 365, "Tell this many days ahead: a whole number between 0 and 365.")
+        return _whole(value, 0, 365, "fixed_assets.err_lead_days_whole")
     if field == "responsible_user_id":
         if value in (None, ""):
             return None
@@ -111,7 +111,7 @@ async def _field(session, company_id, field: str, value, kind: str):
         return str(round_money(amount, await setup.currency(session, company_id)))
     text = _text(value)
     if field == KINDS[kind] and not text:
-        raise setup.unprocessable(_DETAIL_REFUSAL[field])
+        raise setup.refuse(_DETAIL_REFUSAL[field])
     return text
 
 
@@ -162,8 +162,8 @@ async def add_reminder(session, company_id, user_id, asset_id: str, body: dict) 
 async def _locked(session, company_id, entity_id: str, entity_type: str) -> dict:
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != entity_type:
-        raise HTTPException(status_code=404, detail="No such reminder." if entity_type == REMINDER
-                            else "No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_reminder") if entity_type == REMINDER
+                            else t("fixed_assets.err_no_such_maintenance_entry"))
     return row.state
 
 
@@ -449,8 +449,8 @@ async def _one(session, company_id, entity_id: str, entity_type: str) -> dict:
     state = await _state(session, company_id, entity_id)
     if state is None or not entity_id.startswith(f"fa:{entity_type.removeprefix('fa_')}:") \
             or state.get("status") == "undone":
-        raise HTTPException(status_code=404, detail="No such reminder." if entity_type == REMINDER
-                            else "No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_reminder") if entity_type == REMINDER
+                            else t("fixed_assets.err_no_such_maintenance_entry"))
     return state
 
 

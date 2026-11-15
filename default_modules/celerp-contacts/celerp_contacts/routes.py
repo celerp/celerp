@@ -29,7 +29,7 @@ from celerp.services.peer_import import peer_batch
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.currencies import require_email, require_phone
 from celerp.services.permissions import assert_role_permission, locked_authority, read_authority, require_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 from celerp.importers.results import BatchImportResult
 from celerp.importers.sinks import register_sink
@@ -758,7 +758,7 @@ async def import_contact(
             raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
     record = (await services.import_contact_records(session, company_id, user.id, [body], match_identity=True)).records[0]
     if record.status in ("rejected", "failed"):
-        raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=record.message)
+        raise HTTPException(status_code=409 if record.status == "rejected" else 422, detail=t("contacts.err_import_refused", reason=refusal_text(record.message)))
     await session.commit()
     event_id = await session.scalar(
         select(func.max(LedgerEntry.id)).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == record.entity_id)
@@ -844,8 +844,7 @@ async def bulk_delete_contacts(
         for cid, type_counts in blocking.items():
             summary = ", ".join(f"{n} {dt}(s)" for dt, n in sorted(type_counts.items()))
             parts.append(f"{names.get(cid, cid)}: {summary}")
-        detail = "Cannot delete contact(s) with associated documents, lists, or deals: " + "; ".join(parts)
-        raise HTTPException(status_code=422, detail=detail)
+        raise HTTPException(status_code=422, detail=t("contacts.err_delete_linked", records="; ".join(parts)))
 
     for row in contact_rows:
         await emit_event(

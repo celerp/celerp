@@ -198,7 +198,8 @@ async def trigger_backup():
     backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
 
     if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or t("error.backup_failed_unknown"))
+        raise HTTPException(status_code=422, detail=t("error.backup_failed_detail", detail=result.error)
+                            if result.error else t("error.backup_failed_unknown"))
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)} uploaded)")
     resp.headers["HX-Trigger"] = "backupDone"
@@ -228,7 +229,7 @@ async def list_backups(request: Request):
     try:
         data = await backup_repo.list_snapshots()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable")) from exc
 
     if not request.headers.get("HX-Request"):
         return data
@@ -251,10 +252,11 @@ async def restore_backup(backup_id: str):
 @router.get("/export", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/backup/export"}, summary="Download a full local backup of this installation as a backup file.")
 async def export_local() -> FileResponse:
     """Export full local backup as .celerp-backup download."""
+    from celerp.services.backup import BackupFailed
     from celerp.services.backup_export import export_full
     try:
         path = await export_full()
-    except RuntimeError as exc:
+    except BackupFailed as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return _archive_download(path, f"{datetime.now():%Y-%m-%d-%H%M}")
 
@@ -274,7 +276,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
     try:
         path = await reassemble_snapshot(backup_id)
     except RuntimeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=t("error.backup_download_failed", detail=exc.args[0] if exc.args else ""))
     return _archive_download(path, backup_id)
 
 
