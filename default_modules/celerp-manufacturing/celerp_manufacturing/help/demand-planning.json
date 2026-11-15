@@ -3,7 +3,7 @@
   "title": "Planning what to make",
   "summary": "See which open orders need stock made and start production runs for what is short.",
   "keywords": ["demand", "to make", "production", "manufacturing", "make", "build"],
-  "routes": ["/manufacturing", "/docs?type=production_order"],
+  "routes": ["/manufacturing", "/docs?type=production_order", "/manufacturing/requirements"],
   "permission": "manage_manufacturing",
   "order": 1,
   "steps": [
@@ -24,6 +24,12 @@
       "labels": {"so": "documents.page_stock_orders"},
       "image": null,
       "capture": {"route": "/docs?type=production_order", "selector": "main", "actions": []}
+    },
+    {
+      "text": "With products ticked, print the component requirements: the raw materials and sub-assemblies their shortfall needs, worked out through the recipes.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant what needs making and to create the work orders for it. It shows each change as a card and makes it only when you confirm.",

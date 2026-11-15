@@ -1,0 +1,30 @@
+{
+  "id": "fixed-assets.year-end",
+  "title": "Fixed asset year end",
+  "summary": "Work through the checks that close the year for fixed assets.",
+  "keywords": ["year end", "close", "checklist", "tax year", "period lock"],
+  "routes": ["/fixed-assets/year-end", "/fixed-assets/year-end/print"],
+  "permission": "manage_accounting",
+  "order": 14,
+  "steps": [
+    {
+      "text": "{title} lists what to check before the year closes, for the {year} you choose. Each item links to its fix; mark it Noted to keep a record while it stays open, or Accepted with a reason. The year closes once every item is accepted.",
+      "labels": {"title": "fixed_assets.year_end_title", "year": "fixed_assets.year"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/year-end", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Use {print} for a copy of the checklist to keep with the year's papers.",
+      "labels": {"print": "fixed_assets.print"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/year-end", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant what is still open for the year end.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/year-end", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

@@ -3,7 +3,7 @@
   "title": "Read the profit and loss, balance sheet and other statements",
   "summary": "Open the financial statements and move between them without losing your date range.",
   "keywords": ["profit and loss", "p&l", "balance sheet", "trial balance", "general ledger", "cash flow", "financial statement"],
-  "routes": ["/reports", "/reports/pnl", "/reports/balance-sheet", "/reports/trial-balance", "/reports/general-ledger", "/reports/cash-flow"],
+  "routes": ["/reports", "/reports/pnl", "/reports/balance-sheet", "/reports/trial-balance", "/reports/general-ledger", "/reports/cash-flow", "/reports/ledger/{account_code}", "/reports/extended-journal", "/reports/statement", "/reports/opening-tie-out"],
   "permission": "view_financial_reports",
   "order": 2,
   "steps": [
@@ -18,6 +18,30 @@
       "labels": {"pnl": "acct.tab_pnl"},
       "image": null,
       "capture": {"route": "/reports/pnl", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click an account on a statement to open its ledger: every entry on that account in the period, with a running balance.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/reports/trial-balance", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{soa} shows a customer's, supplier's or account's movements and balance; {pick}",
+      "labels": {"soa": "acct.soa_title", "pick": "acct.soa_pick_contact"},
+      "image": null,
+      "capture": {"route": "/reports/statement", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{ej} lists every journal entry in the period, line by line.",
+      "labels": {"ej": "acct.tab_extended_journal"},
+      "image": null,
+      "capture": {"route": "/reports/extended-journal", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{tie} compares your opening balances with the documents you imported, so a move from another system can be checked.",
+      "labels": {"tie": "rpt.opening_tie_out"},
+      "image": null,
+      "capture": {"route": "/reports/opening-tie-out", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to read these reports for you, such as the profit for last quarter, the cash position at month end or the balance of one account.",

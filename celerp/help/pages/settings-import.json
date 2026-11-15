@@ -1,0 +1,36 @@
+{
+  "id": "core.settings-import",
+  "title": "Import locations, taxes and payment terms",
+  "summary": "Bring in locations, tax rates and payment terms from a spreadsheet.",
+  "keywords": ["import", "locations", "taxes", "payment terms", "spreadsheet", "csv"],
+  "routes": ["/settings/import/locations", "/settings/import/taxes", "/settings/import/payment-terms"],
+  "permission": "manage_module_settings",
+  "order": 10,
+  "steps": [
+    {
+      "text": "{title} adds locations from a spreadsheet. {hint}",
+      "labels": {"title": "settings_import.hdr_locations", "hint": "settings_import.hint_locations"},
+      "image": null,
+      "capture": {"route": "/settings/import/locations", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{title} does the same for tax rates. {hint}",
+      "labels": {"title": "settings_import.hdr_taxes", "hint": "settings_import.hint_taxes"},
+      "image": null,
+      "capture": {"route": "/settings/import/taxes", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{title} does the same for payment terms. {hint}",
+      "labels": {"title": "settings_import.hdr_payment_terms", "hint": "settings_import.hint_terms"},
+      "image": null,
+      "capture": {"route": "/settings/import/payment-terms", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant a spreadsheet of locations, taxes or payment terms: it shows the import as a card that runs only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/settings/import/locations", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["inventory.settings", "docs.settings", "contacts.settings"]
+}

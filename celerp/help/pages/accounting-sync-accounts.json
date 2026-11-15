@@ -1,0 +1,24 @@
+{
+  "id": "core.accounting-sync-accounts",
+  "title": "Sync accounts",
+  "summary": "Give an account to the records a connected company sent, and review the accounts sync added.",
+  "keywords": ["sync", "accounts", "accountant", "connected company", "mapping"],
+  "routes": ["/accounting/sync-accounts"],
+  "permission": "manage_accounting",
+  "order": 7,
+  "steps": [
+    {
+      "text": "{title} lists the records a connected company sent that wait for an account, the accounts sync added here, and a new client's accounts to review. Choose an account for each, or {none} when all is in order.",
+      "labels": {"title": "sync_accounts.title", "none": "sync_accounts.nothing"},
+      "image": null,
+      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which records are waiting for an account.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/accounting/sync-accounts", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["connectors.accountant-access"]
+}

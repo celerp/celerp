@@ -3,7 +3,7 @@
   "title": "Working with received documents",
   "summary": "Documents a vendor shared that are waiting to be booked into the system.",
   "keywords": ["received", "shared", "import", "vendor"],
-  "routes": ["/docs/received"],
+  "routes": ["/docs/received", "/docs/received/{rid}"],
   "permission": "view_documents",
   "order": 4,
   "steps": [
@@ -16,6 +16,12 @@
     {
       "text": "Use {imp} to bring in a document a vendor shared with you, then book it once it is reviewed.",
       "labels": {"imp": "received.import_shared"},
+      "image": null,
+      "capture": {"route": "/docs/received", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a document in the list to open it and read its lines before you book it.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/docs/received", "selector": "main", "actions": []}
     },

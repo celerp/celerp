@@ -1,0 +1,24 @@
+{
+  "id": "subscriptions.catch-up",
+  "title": "Billing waiting for review",
+  "summary": "Bill or skip the periods automatic billing held back.",
+  "keywords": ["catch up", "billing", "held back", "skip", "overdue periods"],
+  "routes": ["/subscriptions/catch-up"],
+  "permission": "view_subscriptions",
+  "order": 8,
+  "steps": [
+    {
+      "text": "{title} lists the periods automatic billing held back because each is further behind than its agreement's catch-up window. Bill the ticked periods, or skip them with a reason; each agreement bills its oldest period first.",
+      "labels": {"title": "subscriptions.catchup_title"},
+      "image": null,
+      "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which periods are waiting, or to bill or skip them. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/subscriptions/catch-up", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["subscriptions.overview", "subscriptions.summary"]
+}

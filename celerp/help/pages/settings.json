@@ -3,7 +3,7 @@
   "title": "Global Config: your account settings",
   "summary": "Change your password from Global Config; admins find Company, Users and Backup here too.",
   "keywords": ["settings", "global config", "password", "change password", "account"],
-  "routes": ["/settings/general?tab=password"],
+  "routes": ["/settings/general?tab=password", "/settings/menu"],
   "permission": null,
   "order": 1,
   "steps": [
@@ -12,6 +12,12 @@
       "labels": {"settings": "nav.settings", "confirm": "settings.confirm_password", "menu": "settings_menu.title"},
       "image": null,
       "capture": {"route": "/settings/general?tab=password", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {title}, choose which entries and groups the side menu shows and in what order, for everyone in the company. Hiding an entry does not block its page. {reset} shows every entry again in its default order.",
+      "labels": {"title": "settings_menu.title", "reset": "settings_menu.reset"},
+      "image": null,
+      "capture": {"route": "/settings/menu", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to change the company's details or what the side menu offers. It shows each change as a card and makes it only when you confirm. Changing your own password stays with you on this page.",

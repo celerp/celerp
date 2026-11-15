@@ -3,7 +3,7 @@
   "title": "Finding help in Celerp",
   "summary": "Open the help for the screen you are on, search every help page, or ask Celerp AI in your own language.",
   "keywords": ["help", "how to", "guide", "manual", "documentation", "support", "instructions"],
-  "routes": ["/help"],
+  "routes": ["/help", "/help/{page_id}"],
   "permission": null,
   "order": 5,
   "steps": [
@@ -22,6 +22,12 @@
     {
       "text": "Help pages are written in English, with button and menu names shown in your language. To ask a question in your own words and language, use {ask}. Its answers list the help pages they came from.",
       "labels": {"ask": "help.ask_ai"},
+      "image": null,
+      "capture": {"route": "/help", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Each help page opens on its own screen, with {rel} at the foot linking to pages on nearby tasks.",
+      "labels": {"rel": "help.related"},
       "image": null,
       "capture": {"route": "/help", "selector": "main", "actions": []}
     },

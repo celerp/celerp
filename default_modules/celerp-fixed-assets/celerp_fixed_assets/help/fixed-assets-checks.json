@@ -1,0 +1,30 @@
+{
+  "id": "fixed-assets.checks",
+  "title": "Check assets are still there",
+  "summary": "Record that an asset was seen, and list the ones not seen since a date.",
+  "keywords": ["physical check", "stock take", "asset tag", "scan", "not seen"],
+  "routes": ["/fixed-assets/checks", "/fixed-assets/checks/not-seen/print"],
+  "permission": "view_fixed_assets",
+  "order": 5,
+  "steps": [
+    {
+      "text": "Scan or type an asset's {tag} and choose {rec} to record that it was seen today.",
+      "labels": {"tag": "fixed_assets.scan_tag", "rec": "fixed_assets.record_check"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Under {title}, pick a date for the assets {since} it, ready to print and look for.",
+      "labels": {"title": "fixed_assets.not_seen_title", "since": "fixed_assets.not_seen_since"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to record that an asset was seen, or which assets have not been seen since a date. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/checks", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

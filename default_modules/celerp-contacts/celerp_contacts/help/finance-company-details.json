@@ -1,0 +1,30 @@
+{
+  "id": "contacts.finance-company-details",
+  "title": "Your company's details",
+  "summary": "Set the name, addresses and contact details your documents show as the sender.",
+  "keywords": ["company details", "address", "letterhead", "sender", "tax id"],
+  "routes": ["/finance/company-details"],
+  "permission": "manage_company_settings",
+  "order": 5,
+  "steps": [
+    {
+      "text": "{title} holds your own company's contact record. {hint}",
+      "labels": {"title": "settings.company_details", "hint": "contacts.identity_on_documents"},
+      "image": null,
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Fill in the name, {bill} and {ship}, email and phone; each change is saved as you go, and {files} keeps documents such as registration papers.",
+      "labels": {"bill": "contacts.field_billing_address", "ship": "contacts.field_shipping_address", "files": "label.files"},
+      "image": null,
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to change the company's details. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/finance/company-details", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["core.settings"]
+}

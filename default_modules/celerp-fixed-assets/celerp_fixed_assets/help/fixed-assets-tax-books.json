@@ -1,0 +1,24 @@
+{
+  "id": "fixed-assets.tax-books",
+  "title": "Tax books",
+  "summary": "See each asset's tax value under a tax regime.",
+  "keywords": ["tax", "tax book", "tax depreciation", "capital allowances", "pools"],
+  "routes": ["/fixed-assets/tax-books"],
+  "permission": "view_fixed_assets",
+  "order": 13,
+  "steps": [
+    {
+      "text": "{title} shows the tax value of each asset under a tax regime, year by year. A category or election set here changes the open years only, and these figures never post to the ledger.",
+      "labels": {"title": "fixed_assets.tax_books_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant for an asset's tax value or the tax depreciation for a year.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/tax-books", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

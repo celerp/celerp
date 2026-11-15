@@ -1,0 +1,24 @@
+{
+  "id": "subscriptions.summary",
+  "title": "Automatic billing summary",
+  "summary": "See what automatic billing generated and sent, and what needs checking.",
+  "keywords": ["automatic billing", "summary", "failed", "sent", "generated"],
+  "routes": ["/subscriptions/summary"],
+  "permission": "view_subscriptions",
+  "order": 9,
+  "steps": [
+    {
+      "text": "{title} lists the bills automatic billing generated and the emails it sent, and anything to check, such as a billing failure or an email waiting to go out. {unread} keeps the list to what is new; {ack} clears it.",
+      "labels": {"title": "subscriptions.summary_title", "unread": "subscriptions.summary_unread", "ack": "subscriptions.summary_ack"},
+      "image": null,
+      "capture": {"route": "/subscriptions/summary", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant what automatic billing did, or to generate the invoices that are due. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/subscriptions/summary", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["subscriptions.overview", "subscriptions.catch-up"]
+}

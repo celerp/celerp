@@ -3,7 +3,7 @@
   "title": "Printing labels",
   "summary": "Print barcode or QR labels for a batch of items.",
   "keywords": ["labels", "barcode", "qr", "print", "sticker"],
-  "routes": ["/labels/print-list"],
+  "routes": ["/labels/print-list", "/labels/print-source"],
   "permission": "manage_labels",
   "order": 1,
   "steps": [
@@ -16,6 +16,12 @@
     {
       "text": "Pick the {tmpl} to use, then confirm with {btn} to open the print dialog.",
       "labels": {"tmpl": "label.label_template", "btn": "btn._print_labels"},
+      "image": null,
+      "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Other screens print labels for their own records the same way, such as asset tags from the fixed asset register, on the first template that fits unless you pick another.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
     },

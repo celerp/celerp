@@ -3,7 +3,7 @@
   "title": "Add an item",
   "summary": "Create a stock item from the inventory list.",
   "keywords": ["item", "stock", "product", "add", "create", "new item"],
-  "routes": ["/inventory", "/inventory/{entity_id}"],
+  "routes": ["/inventory", "/inventory/{entity_id}", "/inventory/{entity_id}/history", "/inventory/{entity_id}/channel/{platform}"],
   "permission": "view_inventory",
   "order": 1,
   "steps": [
@@ -16,6 +16,12 @@
     {
       "text": "Click {add} to create a blank item. Its detail page opens so you can fill in the fields.",
       "labels": {"add": "btn.add_item"},
+      "image": null,
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On an item's page, its history lists every change to it, newest first. Where the item is linked to an online store, a page for that store lets you publish it, set it to draft there or pause its sync; nothing is ever deleted in the store.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/inventory", "selector": "main", "actions": []}
     },

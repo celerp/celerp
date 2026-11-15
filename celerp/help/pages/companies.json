@@ -3,7 +3,7 @@
   "title": "Working with more than one company",
   "summary": "Switch between the companies you have access to, or create a new one, from Global Config.",
   "keywords": ["companies", "switch company", "new company", "multi company", "client companies"],
-  "routes": ["/settings/general?tab=company"],
+  "routes": ["/settings/general?tab=company", "/companies"],
   "permission": "manage_company_settings",
   "order": 3,
   "steps": [
@@ -18,6 +18,12 @@
       "labels": {"clients": "firm_view.title"},
       "image": null,
       "capture": {"route": "/settings/general?tab=company", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{clients} lists every company you can open, with its accountant sync and what needs attention. Use {search} to find one, or {move} to move a company to another firm.",
+      "labels": {"clients": "firm_view.title", "search": "firm_view.search", "move": "firm_view.move"},
+      "image": null,
+      "capture": {"route": "/companies", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant which companies you can open, or for the companies your firm looks after and how each one stands.",

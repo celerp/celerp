@@ -3,7 +3,7 @@
   "title": "Sold, archived and disposed inventory",
   "summary": "Find items that have left the active list, and run stock audits.",
   "keywords": ["sold", "archived", "disposed", "audit", "stock count"],
-  "routes": ["/inventory", "/lists?type=audit"],
+  "routes": ["/inventory", "/lists?type=audit", "/lists/new-audit"],
   "permission": "view_inventory",
   "order": 3,
   "steps": [
@@ -18,6 +18,12 @@
       "labels": {"audits": "nav.audits"},
       "image": null,
       "capture": {"route": "/lists?type=audit", "selector": "main", "actions": []}
+    },
+    {
+      "text": "To start a count, open {title}, pick the {loc} to count and choose {start}. The count lists the stocked items at that location; scan barcodes to confirm stock and adjust it.",
+      "labels": {"title": "documents.new_audit_title", "loc": "label.location", "start": "documents.start_audit"},
+      "image": null,
+      "capture": {"route": "/lists/new-audit", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant what was sold, archived or disposed of, or to restore an item or start a stock audit. It shows each change as a card and makes it only when you confirm.",

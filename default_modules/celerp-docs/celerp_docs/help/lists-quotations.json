@@ -3,7 +3,7 @@
   "title": "Lists and quotations",
   "summary": "Draft a list or quotation and convert it to an invoice once it is accepted.",
   "keywords": ["list", "quotation", "quote", "draft", "convert"],
-  "routes": ["/lists"],
+  "routes": ["/lists", "/lists/{entity_id}", "/lists/import"],
   "permission": "view_documents",
   "order": 3,
   "steps": [
@@ -12,6 +12,18 @@
       "labels": {"lists": "nav.lists_quotations", "new": "page.new_list"},
       "image": null,
       "capture": {"route": "/lists", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a list or quotation to open it, add or change its lines and see its total.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/lists", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {title}, use {dl} for a blank spreadsheet in the expected format, fill it in and upload it to bring in many quotations at once.",
+      "labels": {"title": "lists_import.import_lists", "dl": "btn.download_template"},
+      "image": null,
+      "capture": {"route": "/lists/import", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to create a list or quotation, reprice it, finalize it or convert it into a document. It shows each change as a card and makes it only when you confirm.",

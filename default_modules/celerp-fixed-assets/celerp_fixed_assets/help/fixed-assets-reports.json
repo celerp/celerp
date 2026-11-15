@@ -1,0 +1,30 @@
+{
+  "id": "fixed-assets.reports",
+  "title": "Fixed asset reports",
+  "summary": "Open the register, depreciation, disposals and tax reports for a period.",
+  "keywords": ["report", "register", "depreciation", "disposals", "schedule", "tax", "print", "csv"],
+  "routes": ["/fixed-assets/reports", "/fixed-assets/reports/register", "/fixed-assets/reports/register/print", "/fixed-assets/reports/schedule", "/fixed-assets/reports/schedule/print", "/fixed-assets/reports/depreciation", "/fixed-assets/reports/depreciation/print", "/fixed-assets/reports/disposals", "/fixed-assets/reports/disposals/print", "/fixed-assets/reports/prior-period-adjustments", "/fixed-assets/reports/prior-period-adjustments/print", "/fixed-assets/reports/book-tax", "/fixed-assets/reports/book-tax/print", "/fixed-assets/reports/statutory/{form}", "/fixed-assets/reports/statutory/{form}/print"],
+  "permission": "view_fixed_assets",
+  "order": 12,
+  "steps": [
+    {
+      "text": "{title} lists every report. Each opens for a period you choose, and prints or downloads as CSV.",
+      "labels": {"title": "fixed_assets.reports_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On a report, set {from} and {to}, narrow it by {cls} or a search, and choose {show}.",
+      "labels": {"from": "fixed_assets.date_from", "to": "fixed_assets.date_to", "cls": "fixed_assets.class", "show": "fixed_assets.show"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reports/register", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant to read these reports for you, such as the depreciation for last year or what was disposed of this quarter.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reports", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

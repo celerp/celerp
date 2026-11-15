@@ -1,0 +1,24 @@
+{
+  "id": "accounting.accounting-import",
+  "title": "Import a chart of accounts",
+  "summary": "Add accounts to your chart from a spreadsheet.",
+  "keywords": ["import", "chart of accounts", "accounts", "spreadsheet", "csv"],
+  "routes": ["/accounting/import/chart"],
+  "permission": "manage_accounting",
+  "order": 8,
+  "steps": [
+    {
+      "text": "On {title}, upload a spreadsheet of accounts and match its columns. {hint}",
+      "labels": {"title": "accounting_import.header_chart", "hint": "accounting_import.chart_hint"},
+      "image": null,
+      "capture": {"route": "/accounting/import/chart", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also give the assistant a spreadsheet of accounts: it previews the rows and shows the import as a card that runs only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/accounting/import/chart", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["accounting.settings"]
+}

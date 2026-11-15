@@ -1,0 +1,24 @@
+{
+  "id": "fixed-assets.reviews",
+  "title": "Impairment reviews",
+  "summary": "See the assets due for an impairment review.",
+  "keywords": ["impairment", "review", "due"],
+  "routes": ["/fixed-assets/reviews"],
+  "permission": "view_fixed_assets",
+  "order": 11,
+  "steps": [
+    {
+      "text": "{title} lists the assets whose impairment review falls due, with {over} ones first. Open an asset to revalue or impair it.",
+      "labels": {"title": "fixed_assets.reviews_due_title", "over": "fixed_assets.overdue"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which impairment reviews are due.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/reviews", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

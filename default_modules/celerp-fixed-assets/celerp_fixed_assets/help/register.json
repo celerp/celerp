@@ -3,7 +3,7 @@
   "title": "Add an asset to the register",
   "summary": "Register assets from paid bills, or add one by hand.",
   "keywords": ["asset", "register", "add asset", "fixed asset", "bill", "intake"],
-  "routes": ["/fixed-assets", "/fixed-assets/intake", "/fixed-assets/assets/new"],
+  "routes": ["/fixed-assets", "/fixed-assets/intake", "/fixed-assets/assets/new", "/fixed-assets/assets/{asset_id}", "/fixed-assets/assets/{asset_id}/add", "/fixed-assets/assets/{asset_id}/correct", "/fixed-assets/assets/{asset_id}/place-in-service", "/fixed-assets/assets/{asset_id}/reclassify", "/fixed-assets/assets/{asset_id}/remeasure", "/fixed-assets/assets/{asset_id}/transfer", "/fixed-assets/intake/line"],
   "permission": "view_fixed_assets",
   "order": 1,
   "steps": [
@@ -16,6 +16,18 @@
     {
       "text": "Click {intake} to register an asset from a paid bill's lines, or {add} to add one by hand.",
       "labels": {"intake": "fixed_assets.register_from_bills", "add": "fixed_assets.add_asset"},
+      "image": null,
+      "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
+    },
+    {
+      "text": "On {intake}, choose a line to register it as a new asset, or to add it to one you already hold.",
+      "labels": {"intake": "fixed_assets.intake_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/intake", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click an asset's number to open its page: its figures, its history and the actions for it. From there you can add a later cost or part, correct a figure, place an asset under construction in service, move it to another class, revalue or impair it, or transfer it to another company you keep books for. Each action opens its own page and shows the journal before it posts.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/fixed-assets", "selector": "main", "actions": []}
     },

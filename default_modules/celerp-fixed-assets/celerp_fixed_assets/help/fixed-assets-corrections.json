@@ -1,0 +1,30 @@
+{
+  "id": "fixed-assets.corrections",
+  "title": "Asset corrections",
+  "summary": "See every correction made to an asset's figures, and apply the ones requested.",
+  "keywords": ["correction", "change in estimate", "error", "prior period", "adjustment"],
+  "routes": ["/fixed-assets/corrections", "/fixed-assets/corrections/{correction_id}"],
+  "permission": "manage_accounting",
+  "order": 6,
+  "steps": [
+    {
+      "text": "{title} lists the changes made with Correct on an asset's page, newest first. A correction someone requested waits here until a person who can post applies it.",
+      "labels": {"title": "fixed_assets.corrections_title"},
+      "image": null,
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a correction to see the asset, what changed, from when and why, and the journal it posted.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which corrections are waiting, or to apply one. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/fixed-assets/corrections", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["fixed-assets.register"]
+}

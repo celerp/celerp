@@ -3,7 +3,7 @@
   "title": "Tracking work orders",
   "summary": "Advance production runs from issuing components to receiving finished goods.",
   "keywords": ["work orders", "work in progress", "production run", "wip", "issue", "receive", "manufacturing"],
-  "routes": ["/manufacturing/production"],
+  "routes": ["/manufacturing/production", "/manufacturing/runs/{run_id}/reconcile"],
   "permission": "manage_manufacturing",
   "order": 2,
   "steps": [
@@ -16,6 +16,12 @@
     {
       "text": "Status cards split the queue by stage, from {planned} to {hold} to {done}; tick runs and choose an action from the bulk actions above the table to move them along.",
       "labels": {"planned": "enum.mfg_run_status.planned", "hold": "enum.mfg_run_status.on_hold", "done": "enum.mfg_run_status.completed"},
+      "image": null,
+      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+    },
+    {
+      "text": "A run that ended with materials still held asks to be reconciled: its page lists what it holds so you can record what was used, returned or lost.",
+      "labels": {},
       "image": null,
       "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
     },

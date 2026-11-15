@@ -3,7 +3,7 @@
   "title": "Recurring sales and purchasing subscriptions",
   "summary": "Generate invoices or purchase orders automatically on a schedule.",
   "keywords": ["subscription", "recurring", "generate now", "invoice schedule"],
-  "routes": ["/subscriptions"],
+  "routes": ["/subscriptions", "/subscriptions/{entity_id}"],
   "permission": "view_subscriptions",
   "order": 1,
   "steps": [
@@ -24,6 +24,12 @@
       "labels": {"all": "status.all_issued"},
       "image": null,
       "capture": {"route": "/subscriptions", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Click a subscription to open it: its lines, its {sched} of billing periods and the invoices each period produced.",
+      "labels": {"sched": "subscriptions.schedule_heading"},
+      "image": null,
+      "capture": {"route": "/subscriptions", "selector": "main", "actions": [{"click": "table tbody tr a"}]}
     },
     {
       "text": "You can also ask the assistant to generate the invoices that are due, or to pause, resume, cancel or change a subscription. It shows each change as a card and makes it only when you confirm.",

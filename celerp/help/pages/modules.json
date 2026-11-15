@@ -1,0 +1,30 @@
+{
+  "id": "core.modules",
+  "title": "Modules",
+  "summary": "Turn modules on or off, and find more in the marketplace.",
+  "keywords": ["modules", "marketplace", "features", "turn on", "install"],
+  "routes": ["/modules"],
+  "permission": "manage_company_settings",
+  "order": 8,
+  "steps": [
+    {
+      "text": "{title} lists the modules this company can use. Turn one on to add its screens to the side menu, or off to hide them; turning a module off keeps its records.",
+      "labels": {"title": "modules.title"},
+      "image": null,
+      "capture": {"route": "/modules", "selector": "main", "actions": []}
+    },
+    {
+      "text": "{market} lists more modules to add. {build} explains how to write your own on the same public API.",
+      "labels": {"market": "page.explore_marketplace", "build": "modules.build_title"},
+      "image": null,
+      "capture": {"route": "/modules", "selector": "main", "actions": []}
+    },
+    {
+      "text": "You can also ask the assistant which modules are on, or to turn one on or off. It shows each change as a card and makes it only when you confirm.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/modules", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["core.settings"]
+}

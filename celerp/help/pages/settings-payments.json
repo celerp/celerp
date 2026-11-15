@@ -1,0 +1,18 @@
+{
+  "id": "core.settings-payments",
+  "title": "Online payments",
+  "summary": "Let customers pay your invoices online.",
+  "keywords": ["online payments", "stripe", "pay invoice", "card"],
+  "routes": ["/settings/payments"],
+  "permission": "manage_integrations",
+  "order": 11,
+  "steps": [
+    {
+      "text": "{title} lets customers pay your invoices online. {how}",
+      "labels": {"title": "nav.payments", "how": "pay.upgrade_desc"},
+      "image": null,
+      "capture": {"route": "/settings/payments", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.payments", "core.web-access"]
+}
