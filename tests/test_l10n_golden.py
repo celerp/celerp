@@ -21,6 +21,16 @@ PIN_VERSIONS) seed what core did. A later pack version whose seeds change on pur
 its own expectation, tests/golden/l10n_seed_<code>_<version>.json (the leaves of that one code,
 as the write mode gives them), added by the change that moves the lock to it. Each country is
 compared with the file for the version its lock entry names; a version with neither fails.
+
+The chart of accounts is core's, not a pack's: every country starts with the same rows, and core
+changes them on purpose. So the ``chart`` leaves of every country are compared with
+tests/golden/l10n_default_chart.json instead of the pack expectation, and that file also holds
+the hash of DEFAULT_CHART_OF_ACCOUNTS. The pin's ``_chart`` entry and chart leaves stay as the
+pin's release had them and are not read. A change to the default chart rewrites it in the same
+commit, with the chart write mode (no real packs needed):
+
+    CELERP_L10N_CHART_WRITE=tests/golden/l10n_default_chart.json pytest tests/test_l10n_golden.py \
+        -k chart -o addopts="" -q
 """
 from __future__ import annotations
 
@@ -34,6 +44,8 @@ import pytest
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "golden"
 GOLDEN = GOLDEN_DIR / "l10n_seed_pin.json"
+CHART = GOLDEN_DIR / "l10n_default_chart.json"
+CHART_PREFIX = "chart["
 PIN_VERSIONS = ("2026.1", "2026.2")
 CODES = ("TH", "SG", "MY", "PH", "ID", "VN", "AU", "NZ", "GB", "DE", "FR", "ES", "IT", "PT", "US", "CA",
          "MX", "IN", "JP", "AE", "SA", "ET")
@@ -63,8 +75,7 @@ def _golden(golden_dir: Path = GOLDEN_DIR) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
-def expected_leaves(code: str, lock: dict, golden_dir: Path = GOLDEN_DIR) -> dict:
-    """The leaves a new company in ``code`` must have, for the pack version ``lock`` names."""
+def _pack_leaves(code: str, lock: dict, golden_dir: Path) -> dict:
     pin = _golden(golden_dir)
     version = lock[code]["version"] if code in lock else None
     if version is None or version in PIN_VERSIONS:
@@ -73,6 +84,13 @@ def expected_leaves(code: str, lock: dict, golden_dir: Path = GOLDEN_DIR) -> dic
     path = golden_dir / f"l10n_seed_{code}_{version}.json"
     assert path.is_file(), f"no expected seeds for {code} at pack version {version}: add tests/golden/{path.name}"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def expected_leaves(code: str, lock: dict, golden_dir: Path = GOLDEN_DIR) -> dict:
+    """The leaves a new company in ``code`` must have: its pack's leaves for the version ``lock``
+    names, with the chart leaves taken from core's chart expectation."""
+    pack = {p: h for p, h in _pack_leaves(code, lock, golden_dir).items() if not p.startswith(CHART_PREFIX)}
+    return pack | json.loads((golden_dir / CHART.name).read_text(encoding="utf-8"))["leaves"]
 
 
 def _write(target: str, key: str, value) -> None:
@@ -132,30 +150,42 @@ async def test_l10n_seed_matches_pin_golden(client, code):
         f"country {code or '(none)'}: added {added}, removed {removed}, changed {changed}")
 
 
-def test_chart_rows_unchanged():
-    """The default chart every company starts with is the one the release before the move seeded."""
+async def test_chart_rows_unchanged(client):
+    """The default chart, and the chart a new company starts with, are the ones the chart
+    expectation records."""
     from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS
 
-    assert _hash(DEFAULT_CHART_OF_ACCOUNTS) == _golden()["_chart"]
+    chart = {"_chart": _hash(DEFAULT_CHART_OF_ACCOUNTS),
+             "leaves": {p: _hash(v) for p, v in _leaves((await _snapshot(client, ""))["chart"], "chart")}}
+    target = os.environ.get("CELERP_L10N_CHART_WRITE")
+    if target:
+        Path(target).write_text(json.dumps(chart, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        return
+    assert chart == json.loads(CHART.read_text(encoding="utf-8"))
 
 
 def _golden_dir(tmp_path: Path) -> Path:
-    (tmp_path / GOLDEN.name).write_text(json.dumps({"TH": {"taxes[0].rate": "pin"}, "": {"currency": "none"}}),
-                                        encoding="utf-8")
-    (tmp_path / "l10n_seed_TH_2027.1.json").write_text(json.dumps({"taxes[0].rate": "later"}), encoding="utf-8")
+    (tmp_path / GOLDEN.name).write_text(json.dumps({
+        "TH": {"taxes[0].rate": "pin", "chart[0][0]": "old core"}, "": {"currency": "none"}}), encoding="utf-8")
+    (tmp_path / "l10n_seed_TH_2027.1.json").write_text(
+        json.dumps({"taxes[0].rate": "later", "chart[0][0]": "old core"}), encoding="utf-8")
+    (tmp_path / CHART.name).write_text(json.dumps({"_chart": "core", "leaves": {"chart[0][0]": "core"}}),
+                                       encoding="utf-8")
     return tmp_path
 
 
 @pytest.mark.parametrize("version", PIN_VERSIONS)
 def test_a_pinned_pack_version_is_compared_with_the_pin(tmp_path, version):
     golden = _golden_dir(tmp_path)
-    assert expected_leaves("TH", {"TH": {"version": version}}, golden) == {"taxes[0].rate": "pin"}
-    assert expected_leaves("", {"TH": {"version": version}}, golden) == {"currency": "none"}
+    assert expected_leaves("TH", {"TH": {"version": version}}, golden) == {
+        "taxes[0].rate": "pin", "chart[0][0]": "core"}
+    assert expected_leaves("", {"TH": {"version": version}}, golden) == {"currency": "none", "chart[0][0]": "core"}
 
 
 def test_a_later_pack_version_is_compared_with_its_own_expectation(tmp_path):
     golden = _golden_dir(tmp_path)
-    assert expected_leaves("TH", {"TH": {"version": "2027.1"}}, golden) == {"taxes[0].rate": "later"}
+    assert expected_leaves("TH", {"TH": {"version": "2027.1"}}, golden) == {
+        "taxes[0].rate": "later", "chart[0][0]": "core"}
     pin = (golden / GOLDEN.name).read_bytes()
     with pytest.raises(AssertionError, match=r"TH at pack version 2027\.2: add tests/golden/l10n_seed_TH_2027\.2\.json"):
         expected_leaves("TH", {"TH": {"version": "2027.2"}}, golden)
