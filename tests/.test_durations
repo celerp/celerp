@@ -30472,5 +30472,10 @@
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[4026-every]": 3.2246794890379533,
     "tests/test_browser/test_clear_fields_ui.py::test_select_editor_saves_a_pick_made_as_it_opens[chromium]": 1.15,
     "tests/test_ledger_read_policy.py::test_fund_and_schedule_events_read_with_financial_reports_and_without_costs": 0.560753617901355,
-    "tests/test_history_line_changes.py::test_a_line_fund_change_is_named_never_shown_by_its_id": 0.02621200808789581
+    "tests/test_history_line_changes.py::test_a_line_fund_change_is_named_never_shown_by_its_id": 0.02621200808789581,
+    "tests/test_cost_event_visibility.py::test_a_cost_price_event_shows_only_its_price_type_to_a_role_without_costs": 1.422489558113739,
+    "tests/test_cost_event_visibility.py::test_a_field_changed_inside_a_cost_event_is_no_history_filter_without_costs": 0.49341218697372824,
+    "tests/test_cost_event_visibility.py::test_activity_search_finds_a_cost_only_for_a_role_that_sees_it": 0.667644156026654,
+    "tests/test_cost_event_visibility.py::test_odd_shapes_of_a_cost_price_event_still_show_only_the_price_type": 0.8472528740530834,
+    "tests/test_cost_event_visibility.py::test_random_cost_events_show_and_match_only_their_plain_fields": 0.6719241208629683
 }
