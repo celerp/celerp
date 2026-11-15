@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "Confirmar selecionados",
   "ai.confirm_progress": "Aplicando {done} de {total}.",
   "ai.open_drafts": "Abrir estes {n} rascunhos",
+  "ai.download_file": "Baixar o arquivo",
   "ai.open_record": "Abrir",
   "ai.col_change": "Alteração",
   "ai.col_checks": "Verificações",

@@ -72,7 +72,7 @@ def _other(value):
 def _held(job: AIBatchJob, state: str) -> None:
     if state == "completed":
         job.status, job.results = "completed", {"answer": "The first request's answer.", "model_used": "m",
-                                                "tools_called": [], "help_pages": None, "error": None,
+                                                "tools_called": [], "help_pages": None, "downloads": [], "error": None,
                                                 "error_code": None}
     elif state == "running":
         job.status, job.mode = "running", "background"

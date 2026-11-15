@@ -105,6 +105,7 @@ class QueryResponse(BaseModel):
     retryable: bool = False         # ask again under the same question id
     new_question: bool = False      # only a new question, under a new id, can follow
     help_pages: list[str] | None = None
+    downloads: list[str] = []       # links to the files the answer offers
     message_id: str | None = None   # the question's id in its conversation
     asked_again: bool = False       # the question was already in the conversation
 
@@ -218,7 +219,7 @@ async def ai_query(
     return QueryResponse(
         answer=out["answer"], model_used=out["model_used"],
         tools_called=out["tools_called"], pending_actions=[],
-        help_pages=out["help_pages"],
+        help_pages=out["help_pages"], downloads=out["downloads"],
     )
 
 
@@ -448,6 +449,7 @@ class MessageOut(BaseModel):
     refusal: dict | None = None         # the AI service's refusal, for a refused question
     refusal_status: int | None = None
     help_pages: list[str] | None = None
+    downloads: list[str] = []
     continuation: bool = False          # the app's own question that carried a request on
     created_at: str
 
@@ -495,7 +497,8 @@ def _failure_next(code: str | None) -> dict:
 
 
 def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import help_pages, is_continuation, message_failure, pending_actions, tool_names
+    from celerp.ai.conversations import (downloads, help_pages, is_continuation, message_failure,
+                                         pending_actions, tool_names)
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
@@ -504,14 +507,15 @@ def _message_out(m) -> MessageOut:
         file_ids=m.file_ids, credits_used=m.credits_used,
         error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
-        help_pages=help_pages(m.tools_called), continuation=is_continuation(m.tools_called),
+        help_pages=help_pages(m.tools_called), downloads=downloads(m.tools_called),
+        continuation=is_continuation(m.tools_called),
         created_at=m.created_at.isoformat(),
     )
 
 
 def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
     """The response for a stored assistant message: an answer, or the failure it records."""
-    from celerp.ai.conversations import help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.conversations import downloads, help_pages, message_failure, pending_actions, tool_names
     failure = message_failure(msg.tools_called)
     common = dict(
         model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
@@ -525,7 +529,7 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
     return QueryResponse(
         answer=msg.content,
         pending_actions=[{**p, "message_id": str(msg.id)} for p in pending_actions(msg.tools_called)],
-        help_pages=help_pages(msg.tools_called), **common,
+        help_pages=help_pages(msg.tools_called), downloads=downloads(msg.tools_called), **common,
     )
 
 

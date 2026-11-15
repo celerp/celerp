@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "የተመረጡትን አረጋግጥ",
   "ai.confirm_progress": "ከ{total} ውስጥ {done} እየተተገበረ ነው።",
   "ai.open_drafts": "እነዚህን {n} ረቂቆች ክፈት",
+  "ai.download_file": "ፋይሉን ያውርዱ",
   "ai.open_record": "ክፈት",
   "ai.col_change": "ለውጥ",
   "ai.col_checks": "ማረጋገጫዎች",

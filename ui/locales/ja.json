@@ -3703,6 +3703,7 @@
   "ai.confirm_selected": "選択したものを確定",
   "ai.confirm_progress": "{total} 件中 {done} 件を適用中。",
   "ai.open_drafts": "この {n} 件の下書きを開く",
+  "ai.download_file": "ファイルをダウンロード",
   "ai.open_record": "開く",
   "ai.col_change": "変更",
   "ai.col_checks": "確認事項",

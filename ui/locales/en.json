@@ -3791,6 +3791,7 @@
   "ai.confirm_selected": "Confirm selected",
   "ai.confirm_progress": "Applying {done} of {total}.",
   "ai.open_drafts": "Open these {n} drafts",
+  "ai.download_file": "Download the file",
   "ai.open_record": "Open",
   "ai.col_change": "Change",
   "ai.col_checks": "Checks",

@@ -467,13 +467,16 @@ async def find_question(
     return job, asked, None
 
 
-def help_record(pages: list[str] | None) -> list[dict]:
-    """The citation record for an answer's help pages; nothing when help was not searched.
+def answer_links(pages: list[str] | None, files: list[str]) -> list[dict]:
+    """The record of what an answer links to: the help pages it cites (when it searched
+    help) and the files it offers. Nothing when it links to neither.
 
     The record has no ``name``, ``expires_at`` or ``error``, so ``tool_names``,
     ``pending_actions`` and ``message_failure`` all ignore it.
     """
-    return [] if pages is None else [{"help_pages": list(pages)}]
+    record = {**({} if pages is None else {"help_pages": list(pages)}),
+              **({"downloads": list(files)} if files else {})}
+    return [record] if record else []
 
 
 def help_pages(tools_called: list | None) -> list[str] | None:
@@ -482,6 +485,14 @@ def help_pages(tools_called: list | None) -> list[str] | None:
         if isinstance(item, dict) and isinstance(item.get("help_pages"), list):
             return item["help_pages"]
     return None
+
+
+def downloads(tools_called: list | None) -> list[str]:
+    """The links to the files a stored answer offers."""
+    for item in tools_called or []:
+        if isinstance(item, dict) and isinstance(item.get("downloads"), list):
+            return item["downloads"]
+    return []
 
 
 CONTINUATION = {"continuation": True}  # marks the question that carries a request on after its cards

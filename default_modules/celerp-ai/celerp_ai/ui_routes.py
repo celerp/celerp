@@ -571,7 +571,8 @@ def setup_ui_routes(app) -> None:
         groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
         parts = (
             user_bubble,
-            _msg_bubble("ai", result.get("answer", ""), help_pages=result.get("help_pages"), lang=lang),
+            _msg_bubble("ai", result.get("answer", ""), help_pages=result.get("help_pages"),
+                        downloads=result.get("downloads"), lang=lang),
             *groups,
         )
         return _reply(parts, done=True, question_id=question_id, asked_again=asked_again)
@@ -1091,11 +1092,18 @@ async def _usage_table(token: str, session_token: str, status: dict | None) -> F
 # ---------------------------------------------------------------------------
 
 def _msg_bubble(role: str, text: str, *, error: bool = False, help_pages: list[str] | None = None,
-                lang: str = "en", extra: FT | None = None) -> FT:
+                downloads: list[str] | None = None, lang: str = "en", extra: FT | None = None) -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
     if error:
         cls += " ai-msg--error"
-    return Div(text, *_help_sources(help_pages, lang), *([extra] if extra is not None else []), cls=cls)
+    return Div(text, *_help_sources(help_pages, lang), *_download_links(downloads, lang),
+               *([extra] if extra is not None else []), cls=cls)
+
+
+def _download_links(links: list[str] | None, lang: str) -> list[FT]:
+    """A link to each file the answer offers, as the outcome line links a record."""
+    return [P(A(t("ai.download_file", lang), href=safe_url(link), cls="table-link"), cls="ai-msg__sources")
+            for link in links or []]
 
 
 def _question_key(query: str, file_ids: list[str] | None) -> str:
@@ -2006,7 +2014,8 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
         again = _failure_action(entry, conversation_id, str(asked.get("id", "")),
                                 asked.get("content") or "", asked.get("file_ids"), lang)
     out = [_msg_bubble("user" if role == "user" else "ai", text, error=error,
-                       help_pages=entry.get("help_pages"), lang=lang, extra=again)]
+                       help_pages=entry.get("help_pages"), downloads=entry.get("downloads"),
+                       lang=lang, extra=again)]
     actions = entry.get("pending_actions") or []
     if actions:
         out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
