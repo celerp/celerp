@@ -1,0 +1,199 @@
+{
+  "id": "accounting.funds",
+  "title": "Funds: restricted and unrestricted money",
+  "summary": "Track money by fund, release restricted money once it is spent on its purpose, and move money between funds.",
+  "keywords": [
+    "fund",
+    "funds",
+    "restricted",
+    "unrestricted",
+    "release",
+    "restriction",
+    "transfer",
+    "reallocate",
+    "move",
+    "money",
+    "donor",
+    "grant",
+    "nonprofit",
+    "opening"
+  ],
+  "routes": [
+    "/settings/accounting?tab=funds",
+    "/reports/funds/balance-sheet",
+    "/reports/funds/activity",
+    "/reports/funds/reconciliation"
+  ],
+  "permission": "manage_accounting",
+  "order": 6,
+  "steps": [
+    {
+      "text": "A fund is a pot of money you track on its own. A restricted fund holds gifts a donor limited to a purpose. An unrestricted fund holds money you set aside for a use of your own, and you can spend or move it as you decide. Money on no fund shows as {unres}.",
+      "labels": {
+        "unres": "label.unrestricted"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "To start, open {settings}, choose the {funds} tab and click {on}. Until you do, nothing carries a fund. {off} works again only once every fund is back to zero.",
+      "labels": {
+        "settings": "settings_accounting.finance_settings",
+        "funds": "funds.title",
+        "on": "funds.turn_on",
+        "off": "funds.turn_off"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Click {add} and name the fund. Tick {restricted} when a donor limited what the money may be spent on, and write the {purpose}. Once anything is posted to a fund, whether it is restricted and its purpose can't change. {archive} stops new postings to a fund that holds nothing; {unarchive} brings it back.",
+      "labels": {
+        "add": "funds.add",
+        "restricted": "funds.restricted_check",
+        "purpose": "funds.purpose",
+        "archive": "funds.archive",
+        "unarchive": "funds.unarchive"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "On an invoice, bill or journal entry, set {doc} to put the whole record on one fund, or pick a fund in the {fund} column to put a single line on its own fund. A line left empty takes the fund of its document.",
+      "labels": {
+        "doc": "fund.document_label",
+        "fund": "th.fund"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "When you start using funds, use {opening} to give part of each account's balance to a fund as at the {date}. Each line takes the amount from money with no fund.",
+      "labels": {
+        "opening": "funds.opening_title",
+        "date": "funds.opening_date"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Use {transfer} to move money between two unrestricted funds, or between a fund and money with no fund, for example to set money aside for a project or to give it back.",
+      "labels": {
+        "transfer": "funds.transfer_title"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Use {release} once restricted money has been spent on its purpose. First post that purpose spending with no fund, as an ordinary bill or journal entry. Then tick it under {this}: the release moves that amount from the restricted fund to an unrestricted one and names the spending it pays for.",
+      "labels": {
+        "release": "funds.release_title",
+        "this": "funds.release_this"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Use {realloc} only to move restricted money to another restricted fund with the same purpose, and only when the donor has agreed in writing. Enter that agreement under {auth}.",
+      "labels": {
+        "realloc": "funds.reallocate_title",
+        "auth": "funds.donor_authorization"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Each movement posts its own journal entry with the {reason} you give. To undo one, open {activity} from {reports}, find it under {movements} and click {reverse}.",
+      "labels": {
+        "reason": "label.reason",
+        "activity": "rpt.fund_activity",
+        "reports": "nav.reports",
+        "movements": "fund_reports.movements",
+        "reverse": "fund_reports.reverse"
+      },
+      "image": null,
+      "capture": {
+        "route": "/reports/funds/activity",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Records that arrive from a connection, a file import or your accountant wait for a fund choice; {choose} opens them. To skip the wait, set {defaults} on the connection under Settings, Connectors: its records then take that fund when they arrive.",
+      "labels": {
+        "choose": "fund.waiting.link",
+        "defaults": "fund.defaults_title"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "If a record from outside already posted on the wrong fund, open it and click {change}. Give a {reason} and save: its entries are voided and posted again on the new fund.",
+      "labels": {
+        "change": "fund.change",
+        "reason": "fund.change_reason"
+      },
+      "image": null,
+      "capture": {
+        "route": "/settings/accounting?tab=funds",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Three reports cover funds. {bs} shows each account by fund, with each fund's net assets and how much is restricted. {act} shows what each fund received, spent, released and transferred. {rec} checks that the funds add up to the company ledger.",
+      "labels": {
+        "bs": "rpt.fund_balance_sheet",
+        "act": "rpt.fund_activity",
+        "rec": "rpt.fund_reconciliation"
+      },
+      "image": null,
+      "capture": {
+        "route": "/reports/funds/balance-sheet",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "accounting.donors",
+    "accounting.revenue-recognition",
+    "accounting.financial-reports"
+  ]
+}

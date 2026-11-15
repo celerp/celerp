@@ -1,0 +1,122 @@
+{
+  "id": "accounting.revenue-recognition",
+  "title": "Deferred revenue and revenue recognition",
+  "summary": "Hold revenue for a service as deferred revenue and recognize it month by month over the service period.",
+  "keywords": [
+    "deferred",
+    "revenue",
+    "recognition",
+    "recognize",
+    "schedule",
+    "service period",
+    "subscription",
+    "roll-forward",
+    "amend"
+  ],
+  "routes": [
+    "/accounting/recognition"
+  ],
+  "permission": "manage_accounting",
+  "order": 7,
+  "steps": [
+    {
+      "text": "Revenue you invoice for a service that runs over time is first held as deferred revenue, then recognized month by month over the service period. To start, turn on {flag} on the item, then give each invoice line for it a service start and end.",
+      "labels": {
+        "flag": "item.recognize_over_service_period"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "When the invoice is finalized, each such line gets a revenue schedule: the amount and the service period it is recognized over. Every month that has ended adds a run, the part of the amount that month earns.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Open {page}, also a tab in {settings}. Each ended month's runs wait there until they are posted. Click {post} to post a month, or {reverse} to take a posted month back; it is then outstanding again.",
+      "labels": {
+        "page": "page.revenue_recognition",
+        "settings": "settings_accounting.finance_settings",
+        "post": "btn.post",
+        "reverse": "recognition.reverse"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "Click {auto} to have each month's runs post on their own once the month ends, while that month is open. Earlier months and locked months still wait for you.",
+      "labels": {
+        "auto": "recognition.turn_on"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "{roll} shows the opening deferred revenue, what was deferred, adjusted and recognized in the period, and the closing balance. It should agree with the deferred revenue accounts.",
+      "labels": {
+        "roll": "recognition.roll_forward"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A schedule can be amended when a service is extended, cut short or repriced. The amendment names the day it takes effect, the new service end and, if it changes, the new amount, and it is sent through the Celerp API. What the schedule planned before that day stays; the rest is planned over the new period. If a posted run covers a day from that date on, reverse that month first.",
+      "labels": {},
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "A schedule recognizes on the fund of its invoice line and follows that line when its fund changes, for example through {change} on an invoice from outside. Runs already posted are posted again on the new fund.",
+      "labels": {
+        "change": "fund.change"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    },
+    {
+      "text": "If the invoice is voided, its schedules show {void}. Reverse their posted runs to take the revenue they recognized back to deferred revenue.",
+      "labels": {
+        "void": "recognition.void_source"
+      },
+      "image": null,
+      "capture": {
+        "route": "/accounting/recognition",
+        "selector": "main",
+        "actions": []
+      }
+    }
+  ],
+  "related": [
+    "accounting.funds",
+    "accounting.financial-reports"
+  ]
+}
