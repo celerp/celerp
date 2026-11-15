@@ -1511,7 +1511,7 @@ async def query_items(
     return resp
 
 
-@router.get("", openapi_extra=_ITEM_READ_AGENT)
+@router.get("", summary="Find inventory items by text, status, category, location or other filters, for example everything sold or archived. Use Get item to read one in full and Inventory valuation for counts and totals.", openapi_extra=_ITEM_READ_AGENT)
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
@@ -1547,7 +1547,7 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation", openapi_extra=_ITEM_READ_AGENT)
+@router.get("/valuation", summary="Counts and stock value for the items that match the same filters as the item list, split by status and category. Use this for questions about how many items or what the stock is worth; use the item list to see the items themselves.", openapi_extra=_ITEM_READ_AGENT)
 async def get_valuation(
     filters: ItemListFilters = Depends(),
     attr_filters: list[tuple[str, set[str]]] = Depends(_attr_filters),
@@ -2152,7 +2152,7 @@ async def import_preview(
 
 
 @router.post(
-    "/import/preview", response_model=InventoryImportPreview,
+    "/import/preview", summary="Check an item import file before anything is saved: how its columns map to item fields, which rows are new, which update existing items and which have errors. Fix the mapping here, then run Commit item import.", response_model=InventoryImportPreview,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data")],
 )
@@ -2184,7 +2184,7 @@ class InventoryImportCommit(BaseModel):
 
 
 @router.post(
-    "/import/commit", response_model=BatchImportResult,
+    "/import/commit", summary="Import the items from a file you already checked with Preview item import. Nothing is saved if any row still has an error, and the import can be undone later from the import history.", response_model=BatchImportResult,
     openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-result-permissions": _IMPORT_PERMISSIONS},
     dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
 )
@@ -2224,7 +2224,7 @@ async def import_commit(
     )
 
 
-@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
+@router.get("/{entity_id}", summary="Read one inventory item in full: its fields, quantity, location, prices, status and linked documents.", dependencies=[require_permission("view_inventory")], openapi_extra=_ITEM_READ_AGENT)
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -2274,7 +2274,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
+@router.get("/{entity_id}/reorder-suggestion", summary="Suggest a reorder point and reorder quantity for an item from how fast it has sold recently. Nothing is changed; the answer is empty when the item has no sales history. Use Update item to save new values.", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
@@ -2360,7 +2360,7 @@ async def _require_company_location(session: AsyncSession, company_id, location_
     await require_company_location(session, company_id, location_id)
 
 
-@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices. Search the item list first, and use Update item to change an item that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
                                  "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -2584,7 +2584,7 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     return is_draft and role_has_permission(settings, role, "edit_inventory")
 
 
-@router.patch("/{entity_id}", openapi_extra={
+@router.patch("/{entity_id}", summary="Change an existing inventory item's fields, such as its name, quantity, prices, category, location or reorder settings. Use Add item for a new one.", openapi_extra={
     "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
