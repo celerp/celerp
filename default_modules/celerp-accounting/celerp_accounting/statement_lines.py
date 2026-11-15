@@ -34,6 +34,22 @@ RECORD_FIELDS = {
 
 SETTLED = ("matched", "posted")
 _OWN_ENTRY_TYPES = {"recon_create", "recon_split", "recon_transfer", "recon_suspense"}
+# The entry id a line's own posting takes, by entry type, before ``next_je_id`` numbers retries.
+_ENTRY_BASE = {"recon_create": "je:recon:", "recon_split": "je:recon:split:", "recon_suspense": "je:recon:suspense:",
+               "recon_transfer": "je:recon:transfer:"}
+
+
+def money_value(value, currency: str, *, zero_ok: bool = False) -> Decimal:
+    """``value`` as money in ``currency``: refused when it is zero (unless ``zero_ok``) or
+    finer than the currency's minor unit, never rounded into another figure."""
+    from celerp.services.money import round_money, to_decimal
+
+    amount = to_decimal(value)
+    if amount == 0 and not zero_ok:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_zero"))
+    if round_money(amount, currency) != amount:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_minor_unit", currency=currency))
+    return amount
 
 
 def _not_found(kind: str) -> HTTPException:
@@ -160,9 +176,8 @@ async def post_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: 
         raise HTTPException(status_code=422, detail=t("acct.err_split_total", total=_money_text(total, bank.currency),
                                                       amount=_money_text(amount, bank.currency)))
     await require_destinations(db, company_id, {o["account"] for o, _ in offsets})
-    split = len(offsets) > 1
-    je_type = je_type or ("recon_split" if split else "recon_create")
-    je_id = await next_je_id(db, company_id, f"je:recon:split:{line.id}" if split else f"je:recon:{line.id}")
+    je_type = je_type or ("recon_split" if len(offsets) > 1 else "recon_create")
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE[je_type]}{line.id}")
     when = entry_date or line.line_date
     base = await _base_currency(db, company_id)
     fx = _bank_rate(bank, base, rate)
@@ -171,21 +186,92 @@ async def post_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: 
     await import_service.check_line_contacts(db, company_id, entries)
     await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type=je_type,
                      entries=entries, memo=memo or line.description, entry_date=when, key=key)
-    line.status = "posted"
-    line.matched_je_ids = [je_id]
-    _hold(recon, [je_id])
-    recon.created_count = (recon.created_count or 0) + 1
+    _settle(recon, line, "posted", [je_id])
     return [je_id]
+
+
+def _settle(recon: ReconciliationSession, line: BankStatementLine, status: str, je_ids: list[str]) -> None:
+    line.status = status
+    line.matched_je_ids = list(je_ids)
+    _hold(recon, je_ids)
+    if status == "posted":
+        recon.created_count = (recon.created_count or 0) + 1
+    else:
+        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
+
+
+async def post_transfer(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: BankAccount, line: BankStatementLine,
+                        target: BankAccount, paired: BankStatementLine | None, rate: float | None,
+                        to_amount: float | None, key: str) -> list[str]:
+    """Post ``line`` as a transfer between its bank and ``target`` (one ``recon_transfer``
+    entry) and match ``paired``, the target bank's line for the same money, to that entry.
+    ``to_amount`` is what the target bank moved in its own currency when the two differ."""
+    from celerp_accounting.routes import transfer_entries
+
+    recon = await _session(db, line)
+    amount = abs(Decimal(str(line.amount)))
+    other = None if to_amount is None else Decimal(str(to_amount))
+    when = line.line_date
+    if line.amount < 0:
+        entries = await transfer_entries(db, company_id, bank, target, amount, when, rate=rate,
+                                         to_amount=None if other is None else float(other))
+    else:
+        if target.currency != bank.currency and other is None:
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_to_amount",
+                                                                        currency=target.currency))
+        entries = await transfer_entries(db, company_id, target, bank, other if other is not None else amount, when,
+                                         rate=rate, to_amount=float(amount))
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_transfer']}{line.id}")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_transfer",
+                     entries=entries, memo=line.description, entry_date=when, key=key)
+    _settle(recon, line, "posted", [je_id])
+    if paired is not None:
+        _settle(await _session(db, paired), paired, "matched", [je_id])
+    return [je_id]
+
+
+async def post_parts(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: BankAccount, line: BankStatementLine,
+                     parts: list[tuple[dict, Decimal]], rate: float | None, key: str) -> str:
+    """One entry for the parts of a document payment that are not the documents (a bank
+    fee taken out, an overpayment kept): a part of the line's sign moves money the line's
+    way, an opposite one the other way."""
+    from celerp_accounting.routes import _bank_entries, _bank_rate, _base_currency, _pooled_offsets, require_destinations
+
+    await require_destinations(db, company_id, {f["account"] for f, _ in parts})
+    base = await _base_currency(db, company_id)
+    fx = _bank_rate(bank, base, rate)
+    entries: list[dict] = []
+    for fields, amount in parts:
+        inflow = (line.amount > 0) == (amount > 0)
+        pooled = await _pooled_offsets(db, company_id, bank, base, fx, [(fields, abs(amount))], inflow=inflow,
+                                       as_of=line.line_date)
+        entries += _bank_entries(bank, base, fx, pooled, inflow=inflow)
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_create']}{line.id}")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_create",
+                     entries=entries, memo=line.description, entry_date=line.line_date, key=key)
+    return je_id
+
+
+def settle_payment(recon: ReconciliationSession, line: BankStatementLine, je_ids: list[str]) -> None:
+    """Hold the entries a document payment posted for ``line``."""
+    _settle(recon, line, "posted", je_ids)
 
 
 async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAccount, lines: list[BankStatementLine],
                       je_ids: list[str]) -> None:
     """Match ``lines`` (one or several) to book entries on the bank (one or several) whose
     bank-side total equals theirs. An entry another line already holds is refused."""
-    from celerp_accounting.routes import _eligible_entries, _refuse_ineligible
+    from celerp_accounting.routes import _eligible_entries, _je_entries_for_account, _money_text, _refuse_ineligible
 
     if not je_ids:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_match_needs_entry"))
+    booked = sum((Decimal(str(e["amount"])) for e in await _je_entries_for_account(db, company_id, bank)
+                  if e["je_id"] in je_ids and e["amount"] is not None), Decimal(0))
+    stated = sum((Decimal(str(l.amount)) for l in lines), Decimal(0))
+    if booked != stated:
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_recon_match_total", total=_money_text(booked, bank.currency),
+            amount=_money_text(stated, bank.currency)))
     held: set[str] = set()
     for row in (await db.execute(select(BankStatementLine.matched_je_ids).where(
             BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
@@ -201,11 +287,7 @@ async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAcco
         _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, je_ids,
                                                    line_ids=[l.id for l in group]))
     for line in lines:
-        recon = await _session(db, line)
-        line.status = "matched"
-        line.matched_je_ids = list(je_ids)
-        _hold(recon, je_ids)
-        recon.manual_matched_count = (recon.manual_matched_count or 0) + 1
+        _settle(await _session(db, line), line, "matched", je_ids)
 
 
 async def skip_line(db: AsyncSession, line: BankStatementLine) -> None:
@@ -234,6 +316,8 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, lin
                 continue
             if state.get("je_type") not in _OWN_ENTRY_TYPES:
                 raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
+            if state.get("je_type") == "recon_transfer":
+                await _release_pairs(db, company_id, line, je_id)
             await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                              event_type="acc.journal_entry.voided",
                              data=je_void_data("Reconciliation line unmatched", state),
@@ -241,3 +325,16 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, lin
                              idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={})
     line.status = "unmatched"
     line.matched_je_ids = []
+
+
+async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, je_id: str) -> None:
+    """Unmatch the other bank's line matched to the transfer ``line`` posted, before that
+    entry is voided."""
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.matched_je_ids).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.status == "matched",
+        BankStatementLine.bank_account_id != line.bank_account_id))).all()
+    ids = [i for i, held in rows if je_id in (held or [])]
+    for paired in (await scoped(db, company_id, "line", ids, state=("matched",)) if ids else []):
+        _release(await _session(db, paired), [je_id])
+        paired.status = "unmatched"
+        paired.matched_je_ids = []

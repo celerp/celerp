@@ -3097,22 +3097,56 @@ class FundShare(BaseModel):
 class TransferCreate(BaseModel):
     from_bank_id: uuid.UUID
     to_bank_id: uuid.UUID
-    amount: FiniteFloat
-    date: str  # ISO date "YYYY-MM-DD"
-    description: str = ""
-    reference: str = ""
+    amount: PositiveFloat
+    date: date
+    description: str = Field("", max_length=500)
+    reference: str = Field("", max_length=128)
     # Converts the amount, in the source account's currency, into the books' currency
     # when that account is kept in another.
-    rate: FiniteFloat | None = None
+    rate: PositiveFloat | None = None
     # What the destination account receives in its own currency, when it is kept in
     # another currency than both the source account and the books.
-    to_amount: FiniteFloat | None = None
+    to_amount: PositiveFloat | None = None
     # Each fund's share of the amount, in the books' currency, replacing the split pro rata
     # to what each fund holds on the source account.
     allocation: list[FundShare] | None = None
+    idempotency_key: str = Field(min_length=8, max_length=200)
 
 
-@router.post("/transfers")
+async def transfer_entries(session: AsyncSession, company_id: uuid.UUID, from_bank: BankAccount, to_bank: BankAccount,
+                           amount: Decimal, when: str, *, rate: float | None, to_amount: float | None,
+                           allocation: list[tuple[str | None, Decimal]] | None = None) -> list[dict]:
+    """The lines of one transfer of ``amount`` (in the source account's currency) between two
+    of the company's bank accounts, the one way ``POST /transfers`` and a statement line's
+    transfer or cash decision build it. A destination kept in another currency than both the
+    source and the books receives ``to_amount`` of its own currency."""
+    from celerp_accounting.statement_lines import money_value
+
+    if from_bank.id == to_bank.id:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_same_bank"))
+    money_value(amount, from_bank.currency)
+    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
+    base = await _base_currency(session, company_id)
+    to_fields = {"account": to_bank.chart_account_code}
+    entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, rate), [(to_fields, amount)], inflow=False)
+    if to_bank.currency != from_bank.currency:
+        # The destination moves the same books-currency amount, held in its own currency.
+        moved = to_decimal(entries[0]["credit"])
+        if to_bank.currency == base:
+            entries[1] = _money_line(to_fields, base, None, moved, moved, debit=True)
+        else:
+            received = round_money(to_amount or 0, to_bank.currency)
+            if received <= 0 or moved <= 0:
+                raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
+            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
+                                     received, moved, debit=True)
+    moved = to_decimal(entries[0]["credit"])
+    return split_lines_by_fund(entries, await pooled_split(
+        session, company_id, from_bank.chart_account_code, moved, base, as_of=when, allocation=allocation), base)
+
+
+@router.post("/transfers", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                          "x-celerp-agent-key": "idempotency_key"})
 async def create_transfer(
     payload: TransferCreate,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -3120,60 +3154,21 @@ async def create_transfer(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if payload.amount <= 0:
-        raise HTTPException(status_code=422, detail="Transfer amount must be positive")
+    from celerp_accounting.statement_lines import scoped
+
     await lock_company(session, company_id)
-
-    from_bank = (
-        await session.execute(
-            select(BankAccount).where(
-                BankAccount.id == payload.from_bank_id,
-                BankAccount.company_id == company_id,
-                BankAccount.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    if not from_bank:
-        raise HTTPException(status_code=404, detail="Source bank account not found")
-
-    to_bank = (
-        await session.execute(
-            select(BankAccount).where(
-                BankAccount.id == payload.to_bank_id,
-                BankAccount.company_id == company_id,
-                BankAccount.is_active.is_(True),
-            )
-        )
-    ).scalar_one_or_none()
-    if not to_bank:
-        raise HTTPException(status_code=404, detail="Destination bank account not found")
-    await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
-
-    je_id = f"je:transfer:{uuid.uuid4()}"
+    from_bank, = await scoped(session, company_id, "bank", [payload.from_bank_id])
+    to_bank, = await scoped(session, company_id, "bank", [payload.to_bank_id])
+    when = payload.date.isoformat()
+    je_id = f"je:transfer:{uuid.uuid5(uuid.NAMESPACE_URL, f'celerp:transfer:{company_id}:{payload.idempotency_key}')}"
     idem_c = f"transfer:{je_id}:c"
     idem_p = f"transfer:{je_id}:p"
-    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} → {str(payload.to_bank_id)[:8]}"
+    memo = payload.description or f"Transfer {str(payload.from_bank_id)[:8]} to {str(payload.to_bank_id)[:8]}"
     base = await _base_currency(session, company_id)
-    to_fields = {"account": to_bank.chart_account_code}
-    entries = _bank_entries(from_bank, base, _bank_rate(from_bank, base, payload.rate),
-                            [(to_fields, to_decimal(payload.amount))], inflow=False)
-    if to_bank.currency != from_bank.currency:
-        # The destination moves the same books-currency amount, held in its own currency.
-        moved = to_decimal(entries[0]["credit"])
-        if to_bank.currency == base:
-            entries[1] = _money_line(to_fields, base, None, moved, moved, debit=True)
-        else:
-            received = round_money(payload.to_amount or 0, to_bank.currency)
-            if received <= 0 or moved <= 0:
-                raise HTTPException(status_code=422, detail=t("acct.err_transfer_to_amount", currency=to_bank.currency))
-            entries[1] = _money_line(to_fields, to_bank.currency, checked_exchange_rate(moved / received),
-                                     received, moved, debit=True)
-    moved = to_decimal(entries[0]["credit"])
     allocation = None if payload.allocation is None else [
         (share.fund, round_money(share.amount, base)) for share in payload.allocation]
-    entries = split_lines_by_fund(entries, await pooled_split(
-        session, company_id, from_bank.chart_account_code, moved, base, as_of=payload.date, allocation=allocation), base)
-
+    entries = await transfer_entries(session, company_id, from_bank, to_bank, to_decimal(payload.amount), when,
+                                     rate=payload.rate, to_amount=payload.to_amount, allocation=allocation)
     await emit_event(
         session,
         company_id=company_id,
@@ -3182,7 +3177,7 @@ async def create_transfer(
         event_type="acc.journal_entry.created",
         data={
             "memo": memo,
-            "ts": payload.date,
+            "ts": when,
             "entries": entries,
             "je_type": "transfer",
             "reference": payload.reference,
@@ -3201,7 +3196,7 @@ async def create_transfer(
         entity_id=je_id,
         entity_type="journal_entry",
         event_type="acc.journal_entry.posted",
-        data={"ts": payload.date},
+        data={"ts": when},
         actor_id=user.id,
         location_id=None,
         source="transfer",
@@ -3215,7 +3210,7 @@ async def create_transfer(
         "from_bank_id": str(payload.from_bank_id),
         "to_bank_id": str(payload.to_bank_id),
         "amount": payload.amount,
-        "date": payload.date,
+        "date": when,
         "memo": memo,
         "entries": entries,
     }

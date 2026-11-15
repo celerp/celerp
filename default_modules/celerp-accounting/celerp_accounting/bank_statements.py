@@ -15,6 +15,8 @@ import uuid
 from datetime import date as Date
 from decimal import Decimal
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -23,13 +25,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, request_fingerprint
-from celerp.schemas.numbers import FiniteFloat
+from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 router = APIRouter()
 
@@ -462,3 +464,191 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern="^(o
     return {"bank_id": str(bank.id), "groups": sorted(groups.values(), key=lambda g: (-g["count"], g["key"])),
             "difference": {"notes": await _difference_notes(db, company_id, bank, sessions)},
             "suspense_count": sum(1 for l in rows if is_suspense(l))}
+
+
+# ── Resolve ─────────────────────────────────────────────────────────────────
+
+_KINDS = Literal["post", "match", "no_entry", "transfer", "cash", "pay_doc", "suspense"]
+_PAIR_DAYS = 3
+
+
+class SplitIn(BaseModel):
+    account_code: str = Field(min_length=1, max_length=32)
+    amount: FiniteFloat
+    contact: str | None = Field(None, max_length=128)
+    fund_id: str | None = Field(None, max_length=128)
+
+
+class DocIn(BaseModel):
+    doc_id: str = Field(min_length=1, max_length=128)
+    amount: FiniteFloat
+
+
+class PartIn(BaseModel):
+    account_code: str = Field(min_length=1, max_length=32)
+    amount: FiniteFloat
+
+
+class Decision(BaseModel):
+    """One answer for one or several lines: post to an account (or split), match book
+    entries, no entry needed, a transfer to another of the company's banks, a cash
+    withdrawal, a document payment, or Suspense."""
+    line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    kind: _KINDS
+    account_code: str | None = Field(None, max_length=32)
+    splits: list[SplitIn] | None = Field(None, max_length=50)
+    contact: str | None = Field(None, max_length=128)
+    fund_id: str | None = Field(None, max_length=128)
+    rate: PositiveFloat | None = None
+    memo: str | None = Field(None, max_length=500)
+    date: Date | None = None
+    remember: bool = False
+    je_ids: list[str] | None = Field(None, max_length=200)
+    target_bank_id: uuid.UUID | None = None
+    to_amount: PositiveFloat | None = None
+    docs: list[DocIn] | None = Field(None, max_length=50)
+    parts: list[PartIn] | None = Field(None, max_length=20)
+
+
+class Accept(BaseModel):
+    group_keys: list[str] = Field(min_length=1, max_length=500)
+    line_ids: list[uuid.UUID] | None = Field(None, max_length=5000)
+
+
+class Resolve(BaseModel):
+    decisions: list[Decision] | None = Field(None, max_length=1000)
+    accept: Accept | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+def _reason(exc: Exception) -> str:
+    return refusal_text(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+
+
+def _check_money(decisions: list[Decision], currency: str) -> None:
+    """Every amount a decision carries is real money in the bank's currency, before anything posts."""
+    for d in decisions:
+        for amount in [s.amount for s in d.splits or ()] + [x.amount for x in d.docs or ()] + \
+                [p.amount for p in d.parts or ()]:
+            SL.money_value(amount, currency)
+
+
+def _one(lines: list[BankStatementLine]) -> BankStatementLine:
+    if len(lines) != 1:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_one_line"))
+    return lines[0]
+
+
+async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list,
+                        state: tuple[str, ...] | None = ("unmatched",)) -> list[BankStatementLine]:
+    """The lines under their locks, taken in the one order: each line's statement (in id
+    order, refused when completed), then the lines in id order."""
+    from celerp_accounting.routes import _lock_recon
+
+    sessions = (await db.execute(select(BankStatementLine.reconciliation_id).where(
+        BankStatementLine.id.in_(line_ids), BankStatementLine.company_id == company_id))).scalars()
+    for sid in sorted(set(sessions), key=str):
+        await _lock_recon(db, sid, company_id, editable=True)
+    return await SL.scoped(db, company_id, "line", line_ids, bank=bank, state=state)
+
+
+async def suspense_account(db: AsyncSession, company_id: uuid.UUID, actor_id) -> str:
+    """The Suspense account, added and mapped the first time a line goes there. An account
+    the chart already holds at that number is the company's own, and a chart from elsewhere
+    predates the role, so neither is guessed: the line is refused until the role has its
+    account in Posting accounts."""
+    from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole, chart_from_elsewhere
+    from celerp.models.company import Company
+    from celerp.services.account_roles import role_map, set_role
+    from celerp.services.journal_accounts import lock_accounts
+    from celerp_accounting.import_service import add_posting_account
+
+    role = AccountRole.SUSPENSE
+    settings = (await db.execute(select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
+    if code := role_map(settings).get(role.value):
+        return code
+    code, name, parent = ADDED_WHEN_TURNED_ON[role]
+    if chart_from_elsewhere(settings) or code in (await lock_accounts(db, company_id, {code}) or {}):
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_suspense_unmapped", role=role.value))
+    await add_posting_account(db, company_id, code=code, name=name, account_type="asset", parent_code=parent)
+    await set_role(db, company_id, role.value, code, actor_id)
+    return code
+
+
+async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, d: Decision) -> None:
+    """The company-wide answer rule for the line's counterparty account, else its key (with
+    the amount on a sparse key), one per (field, pattern, amount)."""
+    from celerp_accounting.models import ReconciliationRule
+
+    field, pattern = (("counterparty_account", line.counterparty_account) if line.counterparty_account
+                      else ("counterparty_key", line.counterparty_key or line.description))
+    amount = Decimal(str(line.amount)) if pattern.startswith("SPARSE:") else None
+    q = select(ReconciliationRule).where(
+        ReconciliationRule.company_id == company_id, ReconciliationRule.bank_account_id.is_(None),
+        ReconciliationRule.match_field == field, ReconciliationRule.match_pattern == pattern,
+        ReconciliationRule.match_amount.is_(None) if amount is None else ReconciliationRule.match_amount == amount)
+    rule = (await db.execute(q.with_for_update())).scalars().first()
+    if rule is None:
+        rule = ReconciliationRule(id=uuid.uuid4(), company_id=company_id, bank_account_id=None, match_field=field,
+                                  match_pattern=pattern, match_type="exact", match_amount=amount, origin="answer",
+                                  is_active=True, times_applied=0)
+        db.add(rule)
+    rule.target_account_code = d.account_code if d.kind == "post" else rule.target_account_code
+    rule.target_bank_id = d.target_bank_id if d.kind == "transfer" else None
+    rule.contact_id = d.contact
+    if rule.target_account_code is None:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_remember_kind"))
+
+
+async def _pair(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
+                to_amount: float | None) -> uuid.UUID | None:
+    """The target bank's open line for the same money within three days, if one is there."""
+    from datetime import date as _date
+    want = -Decimal(str(line.amount)) if to_amount is None else Decimal(str(to_amount)) * (1 if line.amount < 0 else -1)
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date).join(
+        ReconciliationSession, ReconciliationSession.id == BankStatementLine.reconciliation_id).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == target.id,
+        BankStatementLine.status == "unmatched", BankStatementLine.amount == want,
+        ReconciliationSession.status == "open"))).all()
+    day = _date.fromisoformat(str(line.line_date)[:10])
+    near = sorted((abs((_date.fromisoformat(str(d)[:10]) - day).days), str(i), i) for i, d in rows)
+    return near[0][2] if near and near[0][0] <= _PAIR_DAYS else None
+
+
+async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> BankAccount:
+    row = (await db.execute(select(BankAccount.id).where(
+        BankAccount.company_id == company_id, BankAccount.is_active.is_(True), BankAccount.bank_type == "cash",
+        BankAccount.id != bank.id).order_by(BankAccount.created_at, BankAccount.id))).scalars().first()
+    if row is None:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_no_cash_account"))
+    return (await SL.scoped(db, company_id, "bank", [row], bank=bank))[0]
+
+
+async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, d: Decision,
+                    key: str) -> dict:
+    if len(d.line_ids) != 1:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_one_line"))
+    if d.kind == "cash":
+        target = await _cash_bank(db, company_id, bank)
+    else:
+        if d.target_bank_id is None:
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_transfer_needs_bank"))
+        target = (await SL.scoped(db, company_id, "bank", [d.target_bank_id], bank=bank))[0]
+    line_id = d.line_ids[0]
+    probe = await db.get(BankStatementLine, line_id)
+    pair_id = None if probe is None or probe.status != "unmatched" else await _pair(db, company_id, probe, target,
+                                                                                   d.to_amount)
+    lines = await _locked_lines(db, company_id, bank, [line_id] + ([pair_id] if pair_id else []), state=None)
+    by_id = {l.id: l for l in lines}
+    line = by_id[line_id]
+    held = list(line.matched_je_ids or [])
+    if line.status == "matched" and held and all(j.startswith("je:recon:transfer:") for j in held):
+        return {str(line.id): held}
+    if line.status != "unmatched":
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_state", status=line.status))
+    paired = by_id.get(pair_id) if pair_id else None
+    if paired is not None and paired.status != "unmatched":
+        paired = None
+    je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
+                                    paired=paired, rate=d.rate, to_amount=d.to_amount, key=key)
+    return {str(line.id): je_ids}
