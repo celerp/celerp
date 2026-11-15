@@ -27,6 +27,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 # argument on to it.
 _DIRECT = {"get", "get_slot", "fire_lifecycle"}
 _INDIRECT = {"visible_slot_contributions": False, "required_connectors": True}
+# A route marker naming a slot, which the assistant's permission gate reads (celerp.ai.tools
+# _any_permission): the marker's value is the read.
+_MARKER = "x-celerp-agent-any-permission"
+_MARKER_READER = ("tools.py", "_any_permission")
 
 
 def _sources() -> list[Path]:
@@ -60,7 +64,14 @@ def _slot_reads() -> tuple[dict[str, list[str]], list[str]]:
                 registries |= {a.asname for a in node.names
                                if a.name == "celerp.modules.slots" and a.asname}
         helpers = {n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
-                   and n.name in _INDIRECT and path.name == "module_slots.py"}
+                   and ((n.name in _INDIRECT and path.name == "module_slots.py")
+                        or (path.name, n.name) == _MARKER_READER)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if (isinstance(key, ast.Constant) and key.value == _MARKER
+                            and isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                        reads.setdefault(value.value, []).append(f"{path.relative_to(_ROOT)}:{node.lineno}")
         inside = {id(c) for h in helpers for c in ast.walk(h)}
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:

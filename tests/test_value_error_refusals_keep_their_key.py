@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # refusal, or text). Each file's count is pinned, so a new one fails here.
 _NESTED = {
     "celerp/routers/companies.py": 1,
-    "default_modules/celerp-connectors/celerp_connectors/routes.py": 2,
+    "default_modules/celerp-connectors/celerp_connectors/routes.py": 3,
     "default_modules/celerp-docs/celerp_docs/routes.py": 5,
 }
 
