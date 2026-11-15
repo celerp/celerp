@@ -30558,7 +30558,6 @@
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_an_amendment_bill_is_the_one_standing_reads": 0.7629867870127782,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_membership_is_what_was_sold[item_made_lifetime_after_the_sale]": 0.575073988060467,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_membership_is_what_was_sold[lifetime_sale_then_item_changed]": 0.6209431129973382,
-    "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it[drop_indexes2-invalid_indexes2-v5w6x7y8z9a0]": 0.32840914092957973,
     "tests/test_auto_stamp.py::test_every_schema_change_in_a_revision_is_read_by_the_walker[v5w6x7y8z9a0_backfill_invoice_items_at_sale]": 0.00563340203370899,
     "tests/test_donors.py::test_statement_amounts_carry_the_books_currency_places[JPY-gifts1-shown1]": 0.49367249896749854,
     "tests/test_donors.py::test_statement_amounts_carry_the_books_currency_places[KWD-gifts0-shown0]": 0.40152001404203475,
