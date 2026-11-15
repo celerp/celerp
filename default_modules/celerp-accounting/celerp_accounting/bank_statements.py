@@ -424,9 +424,11 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
 def _line_dict(line: BankStatementLine, currency: str) -> dict:
     return {"id": str(line.id), "statement_id": str(line.reconciliation_id), "line_date": line.line_date,
             "description": line.description, "amount": _money_text(line.amount, currency), "status": line.status,
+            "reference": line.reference, "counterparty_key": line.counterparty_key,
+            "counterparty_account": line.counterparty_account,
+            "raw_balance": None if line.raw_balance is None else _money_text(line.raw_balance, currency),
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,
-            "counterparty_key": line.counterparty_key, "client_query": line.client_query,
-            "attachments": _attachments(line)}
+            "client_query": line.client_query, "attachments": _attachments(line)}
 
 
 def _attachments(line: BankStatementLine) -> list[dict]:
@@ -466,29 +468,68 @@ async def _difference_notes(db: AsyncSession, company_id: uuid.UUID, bank: BankA
     return [t("acct.recon_book_before", date=first.period_start, book=str(book), opening=str(opening))]
 
 
-@router.get(f"{API}/bank/{{bank_id}}/groups", summary="A bank's open statement lines, grouped by counterparty",
+# The views of the group table: which of a bank's lines each shows.
+VIEWS = ("open", "suggested", "questions", "posted", "all")
+
+
+def _in_view(line: BankStatementLine, view: str, open_ids: set) -> bool:
+    waiting = line.reconciliation_id in open_ids and line.status == "unmatched"
+    return {"open": waiting, "suggested": waiting and bool(line.suggestion),
+            "questions": waiting and SL.asked(line), "posted": line.status != "unmatched", "all": True}[view]
+
+
+def _searched(line: BankStatementLine, q: str) -> bool:
+    text = " ".join(filter(None, (line.description, line.counterparty_key, line.reference))).casefold()
+    return q.casefold() in text
+
+
+@router.get(f"{API}/bank/{{bank_id}}/groups", summary="A bank's statement lines, grouped by counterparty",
             openapi_extra={"x-celerp-agent": True})
-async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern="^(open|all)$"),
+async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^({'|'.join(VIEWS)})$"),
+                      q: str = Query("", max_length=200),
                       company_id: uuid.UUID = Depends(get_current_company_id),
                       _: None = require_permission("manage_accounting"),
                       db: AsyncSession = Depends(get_session)) -> dict:
+    """Groups by counterparty and direction, the largest total first (it clears the
+    difference fastest); the lines of a group newest first. The statements strip, the
+    summary counts and the first open statement's difference come with them."""
+    from celerp_accounting.routes import _je_entries_for_account, _recon_balance
+
     bank = await _bank(db, company_id, bank_id)
     sessions = await _sessions(db, company_id, bank)
     open_ids = {s.id for s in sessions if s.status == "open"}
-    rows = sorted(await _bank_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)))
-    shown = rows if view == "all" else [l for l in rows if l.reconciliation_id in open_ids and l.status == "unmatched"]
+    rows = sorted(await _bank_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)), reverse=True)
+    shown = [l for l in rows if _in_view(l, view, open_ids) and (not q or _searched(l, q))]
     groups: dict = {}
     for row in shown:
         line = _line_dict(row, bank.currency)
         direction = "in" if row.amount > 0 else "out"
         g = groups.setdefault((_group_key(line), direction), {"key": _group_key(line), "direction": direction,
-                                                              "count": 0, "lines": []})
+                                                              "count": 0, "total": Decimal(0), "lines": []})
         g["count"] += 1
+        g["total"] += to_decimal(row.amount)
         g["lines"].append(line)
     for g in groups.values():
         g["ticked"] = all(_starts_ticked(l) for l in g["lines"])
-    return {"bank_id": str(bank.id), "groups": sorted(groups.values(), key=lambda g: (-g["count"], g["key"])),
-            "difference": {"notes": await _difference_notes(db, company_id, bank, sessions)},
+        g["suggestion"] = g["lines"][0]["suggestion"] if len({str(l["suggestion"]) for l in g["lines"]}) == 1 else None
+    ordered = sorted(groups.values(), key=lambda g: (-abs(g["total"]), g["key"]))
+    for g in ordered:
+        g["total"] = _money_text(g["total"], bank.currency)
+    first_open = next((s for s in sessions if s.status == "open"), None)
+    balance = None if first_open is None else _recon_balance(
+        first_open, bank, await _je_entries_for_account(db, company_id, bank))
+    waiting = [l for l in rows if _in_view(l, "open", open_ids)]
+    return {"bank_id": str(bank.id), "view": view, "q": q, "groups": ordered,
+            "statements": [{"id": str(s.id), "period_start": s.period_start, "statement_date": s.statement_date,
+                            "opening_balance": _money_text(s.opening_balance or 0, bank.currency),
+                            "closing_balance": _money_text(s.statement_balance, bank.currency),
+                            "status": s.status} for s in reversed(sessions)],
+            "summary": {"lines": len(rows), "open": len(waiting),
+                        "questions": sum(1 for l in waiting if SL.asked(l)),
+                        "posted": sum(1 for l in rows if l.status != "unmatched")},
+            "difference": {"amount": None if balance is None else _money_text(balance[1], bank.currency),
+                           "statement_date": None if first_open is None else first_open.statement_date,
+                           "notes": await _difference_notes(db, company_id, bank, sessions)},
             "suspense_count": sum(1 for l in rows if is_suspense(l))}
 
 
