@@ -1,13 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Older stock placed on an inventory account by itself, moved in bulk, and undone.
+"""Opening inventory placed on an inventory account by itself, moved in bulk, and undone.
 
 Stock from before lots recorded their inventory account is placed at start, every lot
 of it, on one default account: the account the books show holding most of it, or
 purchased inventory. What the inventory accounts hold short of the stock is recognized
 as opening stock, what they hold beyond it is left unresolved for the accountant
 (test_older_stock_reconciliation), and the company is told. From
-Settings > Accounting > Older stock the lots can be moved to another inventory account
+Settings > Accounting > Opening inventory the lots can be moved to another inventory account
 in bulk, each move undone, and a placement's difference corrected
 (test_older_stock_correction).
 
@@ -49,12 +49,12 @@ from ui import i18n
 
 _FIELD = "inventory_account_code"
 _PLACED = "Existing inventory is ready"
-_UNMAPPED = "Older stock waits for a posting account"
+_UNMAPPED = "Opening inventory waits for a posting account"
 _TAB = "/settings/accounting?tab=older-stock"
 _LOCALES = ("am", "ar", "de", "en", "es", "fr", "id", "it", "ja", "pt", "th", "vi")
 
 
-# --- Older stock as a demo import brings it in -----------------------------------------
+# --- Opening inventory as a demo import brings it in -----------------------------------------
 
 
 async def _imported(session, client, auth, costs: list[float], **fields) -> list[str]:
@@ -99,7 +99,7 @@ async def _written_down(session, auth, code: str, amount: float) -> None:
 
 
 async def _marked(session, auth) -> None:
-    """A company an earlier release already upgraded, its older stock still unplaced."""
+    """A company an earlier release already upgraded, its opening inventory still unplaced."""
     await _settings(session, auth, **{INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA})
 
 
@@ -204,7 +204,7 @@ async def test_thousands_of_imported_older_lots_are_placed_in_one_start(session,
     assert _lines(entry) == {"1130-OB": (10.0, 0.0), "3200": (0.0, 10.0)}
     (notice,) = await _notices(session, auth, _PLACED)
     assert notice.priority == "high" and notice.action_url == f"{_TAB}#older-stock-reconciliation"
-    assert "2000 older stock items" in notice.body
+    assert "2000 opening inventory items" in notice.body
     assert await _net(session, auth, "1130-OB") == (2000.0,)
     assert await _off_books(session, auth) == []
 
@@ -220,7 +220,7 @@ async def test_a_migrated_company_places_its_stock_on_opening_inventory(session,
     assert await _placements(session, auth) == []
     assert await _net(session, auth, "1130-P", "1130-OB") == (0.0, 50.0)
     (notice,) = await _notices(session, auth, _PLACED)
-    assert "2 older stock items" in notice.body
+    assert "2 opening inventory items" in notice.body
     assert await _off_books(session, auth) == []
 
 
@@ -573,7 +573,7 @@ async def test_older_stock_waits_for_retained_earnings_then_is_placed_when_it_is
     (notice,) = await _notices(session, auth, _UNMAPPED)
     assert notice.action_url == "/settings/accounting?tab=posting-accounts"
     assert "Retained earnings has no account set." in notice.body  # an inactive account is never mapped
-    assert "Settings > Accounting > Posting accounts" in notice.body
+    assert "Settings > Accounting > Default Accounts" in notice.body
 
     r = await client.post("/accounting/accounts", headers=auth["headers"], json={
         "code": new, "name": f"Account {new}", "account_type": kind, "parent_code": parent})
@@ -884,7 +884,7 @@ async def test_moving_all_matching_lots_is_refused_when_the_lots_matching_change
     assert await _accounts(session, auth, lots) == ["1130-OB"] * 3
 
 
-# --- Reading the Older stock tab in pages ----------------------------------------------------
+# --- Reading the Opening inventory tab in pages ----------------------------------------------------
 
 
 async def _reads(db_engine, client, auth, **params) -> tuple[dict, list[int]]:
@@ -983,7 +983,7 @@ async def test_older_stock_routes_need_manage_accounting(session, client, auth):
         assert r.status_code == 403, (path, r.status_code, r.text)
 
 
-# --- Settings > Accounting > Older stock -----------------------------------------------
+# --- Settings > Accounting > Opening inventory -----------------------------------------------
 
 
 _VIEW = {
@@ -1051,7 +1051,7 @@ async def test_the_older_stock_tab_lists_placed_lots_and_its_empty_state(ui_clie
     assert ">—<" not in body  # an empty value shows "--", never a dash glyph
 
     body, _ = await _tab(ui_client, _EMPTY)
-    assert "No older stock was placed automatically." in body
+    assert "No opening inventory was placed automatically." in body
     assert "No moves yet." in body
 
 
@@ -1066,7 +1066,7 @@ async def test_the_older_stock_tab_opens_with_where_reconciliation_stands(ui_cli
     body, _ = await _tab(ui_client, {**_EMPTY, "reconciliation": waiting})
     summary = body.split('id="older-stock-reconciliation"')[1].split("</div>")[0]
     assert body.index('id="older-stock-reconciliation"') < body.index('id="older-stock-table"')
-    assert "Action required" in summary and "3 older stock items have no inventory account yet." in summary
+    assert "Action required" in summary and "3 opening inventory items have no inventory account yet." in summary
     assert "Retained earnings" in summary and 'href="/settings/accounting?tab=posting-accounts"' in summary
 
     review = {"state": "review", "waiting": 0, "reasons": [], "open": [
@@ -1080,7 +1080,7 @@ async def test_the_older_stock_tab_opens_with_where_reconciliation_stands(ui_cli
 
     body, _ = await _tab(ui_client, {**_VIEW, "reconciliation": {"state": "reconciled", "waiting": 0,
                                                                   "reasons": [], "open": []}})
-    assert "All older stock is placed and matches the books." in body
+    assert "All opening inventory is placed and matches the books." in body
 
 
 async def test_the_older_stock_tab_shows_an_api_failure_as_an_error(ui_client):

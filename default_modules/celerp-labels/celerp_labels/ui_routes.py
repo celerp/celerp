@@ -17,6 +17,8 @@ PUT    /settings/labels/{id}        Save template -> return refreshed editor pan
 """
 from __future__ import annotations
 
+from ui.components.icons import icon
+
 import httpx
 import logging
 from ui.api_client import error_text
@@ -918,7 +920,7 @@ def _label_settings_root(
     ft = _ft()
     Div, Style = ft["Div"], ft["Style"]
     from ui.components.table import breadcrumbs
-    crumbs = breadcrumbs([("Inventory", "/inventory"), ("\u2699\ufe0f Inventory Settings", "/settings/inventory"), ("Labels", None)])
+    crumbs = breadcrumbs([("Inventory", "/inventory"), (ft["Span"](icon("settings"), t("settings_inventory.page_header")), "/settings/inventory"), ("Labels", None)])
     return Div(
         Style(_LABELS_CSS, id="labels-css"),
         crumbs,

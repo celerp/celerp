@@ -30,7 +30,7 @@ async def _cost(session, auth, item: str) -> float:
 
 
 async def _supply(session, auth, made: str) -> tuple[float, float]:
-    """(on hand, still to come from open runs) for the product, as Demand Planning counts them."""
+    """(on hand, still to come from open runs) for the product, as Production Planning counts them."""
     session.expire_all()
     cid = auth["company_id"]
     runs = (await session.execute(select(Projection).where(

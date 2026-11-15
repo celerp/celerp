@@ -9,6 +9,7 @@ as status text are not icons and are always allowed, and so is ``celerp/cli.py``
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -26,63 +27,14 @@ _SKIPPED_DIRS = {"tests", "__pycache__", "fixtures", "vendor", "locales", "node_
 
 # Emoji (not counting the status text above) per UI source file, as of the icon helper's arrival.
 ALLOWED_IN_CODE: dict[str, int] = {
-    "default_modules/celerp-ai/celerp_ai/ui_routes.py": 10,
     "default_modules/celerp-fixed-assets/__init__.py": 2,
     "default_modules/celerp-labels/__init__.py": 2,
     "default_modules/celerp-manufacturing/__init__.py": 3,
-    "ui/components/files.py": 3,
     "ui/components/shell.py": 2,
-    "ui/routes/accounting.py": 1,
-    "ui/routes/contacts.py": 5,
-    "ui/routes/csv_import.py": 1,
-    "ui/routes/dashboard.py": 3,
-    "ui/routes/documents.py": 21,
-    "ui/routes/inventory.py": 2,
-    "ui/routes/manufacturing.py": 3,
-    "ui/routes/modules_page.py": 1,
-    "ui/routes/reports.py": 1,
-    "ui/routes/search.py": 7,
-    "ui/routes/settings.py": 7,
-    "ui/routes/settings_cloud.py": 6,
     "ui/routes/settings_connectors.py": 7,
-    "ui/routes/settings_inventory.py": 2,
-    "ui/routes/setup.py": 4,
 }
 
-# English strings that carry an emoji today.
-ALLOWED_IN_STRINGS: frozenset[str] = frozenset({
-    "acct.cf_methods_disagree",
-    "acct.imbalance_detected",
-    "acct.out_of_balance",
-    "ai.attached_files",
-    "ai.scenario_batch_bills_user",
-    "ai.scenario_bulk_catalog_reply",
-    "ai.scenario_bulk_catalog_user",
-    "ai.scenario_discrepancy_audit_reply",
-    "ai.scenario_reconcile_user",
-    "ai.scenario_smart_restock_reply",
-    "btn._make_primary",
-    "btn._memory",
-    "btn._print_labels",
-    "doc._labels",
-    "inv.hero_product_image",
-    "inv.u0001f4c1",
-    "inv.u0001f4cb_duplicate",
-    "inv.u1f4e6_archive",
-    "inv.u23f3_expire",
-    "inv.u2702_split",
-    "label._primary",
-    "msg._web_access",
-    "msg.u0001f512",
-    "nav.company_details",
-    "nav.doctor",
-    "nav.modules",
-    "nav.settings",
-    "page._access_celerp_from_anywhere",
-    "settings._changing_the_database_requires_a_restart_and_data",
-    "settings._cost_price_is_tracked_peritem_from_purchase_docum",
-    "settings._default",
-})
+ALLOWED_IN_STRINGS: frozenset[str] = frozenset()
 
 
 def _emoji(text: str) -> list[str]:
@@ -95,7 +47,7 @@ def _ui_sources() -> list[Path]:
     for top in (UI_ROOT, MODULE_ROOT):
         for path in (ROOT / top).rglob("*"):
             rel = path.relative_to(ROOT)
-            if path.suffix in (".py", ".js") and not path.name.endswith(".min.js") and not (_SKIPPED_DIRS & set(rel.parts)):
+            if path.suffix in (".py", ".js", ".css", ".html", ".svg") and not path.name.endswith(".min.js") and not (_SKIPPED_DIRS & set(rel.parts)):
                 found.append(path)
     return sorted(found)
 
@@ -103,7 +55,16 @@ def _ui_sources() -> list[Path]:
 def _in_code() -> dict[str, int]:
     counts = {}
     for path in _ui_sources():
-        n = len(_emoji(path.read_text(encoding="utf-8")))
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".py":
+            # Read runtime literals too: escaped pictographs are invisible to a raw source scan.
+            text = "".join(n.value for n in ast.walk(ast.parse(text))
+                           if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        else:
+            text = re.sub(r"/\*.*?\*/|<!--.*?-->", "", text, flags=re.S)
+            text = re.sub(r"\\(?:u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})",
+                          lambda m: chr(int(m.group()[2:], 16)), text)
+        n = len(_emoji(text))
         if n:
             counts[path.relative_to(ROOT).as_posix()] = n
     return counts
@@ -136,3 +97,15 @@ def test_the_check_finds_an_emoji():
     assert _emoji("\u2699\ufe0f Settings") == ["\u2699"]
     assert _emoji("\u2713 Saved \u2717 Failed") == []
     assert _emoji("plain text, \u00e9\u2014\u2192") == []
+
+
+def test_escaped_money_bag_and_credit_card_are_detected():
+    source = r'icon = "\U0001f4b0"; other = "\U0001f4b3"'
+    strings = [n.value for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Constant)]
+    assert sum(len(_emoji(value)) for value in strings) == 2
+
+
+def test_guard_includes_the_payments_card_and_stylesheets():
+    paths = {p.relative_to(ROOT).as_posix() for p in _ui_sources()}
+    assert "ui/routes/documents.py" in paths
+    assert "ui/static/app.css" in paths

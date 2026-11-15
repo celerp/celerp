@@ -195,6 +195,8 @@ def setup_routes(app):
 
     @app.get("/settings/numbering/{doc_type}/{field}/edit")
     async def numbering_field_edit(request: Request, doc_type: str, field: str):
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -207,6 +209,8 @@ def setup_routes(app):
 
     @app.get("/settings/numbering/{doc_type}/{field}/display")
     async def numbering_field_display(request: Request, doc_type: str, field: str):
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -225,6 +229,8 @@ def setup_routes(app):
 
     @app.patch("/settings/numbering/{doc_type}/{field}")
     async def numbering_field_patch(request: Request, doc_type: str, field: str):
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -261,6 +267,8 @@ def setup_routes(app):
 
     @app.post("/settings/numbering/{doc_type}/reset")
     async def numbering_reset(request: Request, doc_type: str):
+        if r := await _check_permission(request, "manage_module_settings"):
+            return r
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
@@ -356,4 +364,5 @@ def _numbering_row(dt: str, seq: dict, *, editing: tuple[str, str] | None = None
                   hx_target="closest tr", hx_swap="outerHTML",
                   cls="btn btn--xs btn--secondary"),
            "" if editing else error_p),
+        data_numbering_type=dt,
     )

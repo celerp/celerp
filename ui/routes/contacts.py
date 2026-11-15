@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
@@ -397,9 +397,9 @@ def _address_card(cid: str, addr: dict, *, read_only: bool = False) -> FT:
     if not lines:
         lines = [P(EMPTY)]
     primary_btn = (
-        Span(t("label._primary"), cls="badge badge--primary", title=t("contacts.primary_addr_title"))
+        Span(icon("star"), " ", t("label._primary"), cls="badge badge--primary", title=t("contacts.primary_addr_title"))
         if is_default else
-        Button(t("btn._make_primary"),
+        Button(icon("star"), " ", t("btn._make_primary"),
                hx_post=f"/contacts/{cid}/addresses/{addr_id}/make-primary",
                hx_target="#addresses-section",
                hx_swap="outerHTML",
@@ -410,7 +410,7 @@ def _address_card(cid: str, addr: dict, *, read_only: bool = False) -> FT:
         *lines,
         (Div(
             primary_btn,
-            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
+            Button(icon("pencil"), hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
             # The primary address can't be deleted - it keeps the contact (incl. the company) with a
             # billing address at all times; make another address primary first to remove this one.
             (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_address"), cls="btn btn--xs btn--danger", title=t("btn.remove"))
@@ -462,7 +462,7 @@ def _people_section(contact: dict, *, read_only: bool = False) -> FT:
         if person.get("role"):
             name_parts.append(Span(f" ({person['role']})", cls="person-role"))
         if person.get("is_primary"):
-            name_parts.append(" ⭐")
+            name_parts.append(Span(icon("star"), cls="person-primary", title=t("label._primary")))
         extras = []
         if person.get("email"):
             extras.append(Div(person["email"], cls="person-email"))
@@ -472,7 +472,7 @@ def _people_section(contact: dict, *, read_only: bool = False) -> FT:
             Div(*name_parts),
             *extras,
             (Div(
-                Button("✏", hx_get=f"/contacts/{cid}/people/{pid}/edit", hx_target=f"#person-{pid}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
+                Button(icon("pencil"), hx_get=f"/contacts/{cid}/people/{pid}/edit", hx_target=f"#person-{pid}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
                 Button("×", hx_delete=f"/contacts/{cid}/people/{pid}", hx_target="#people-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_person"), cls="btn btn--xs btn--danger", title=t("btn.remove")),
                 cls="person-actions",
             ) if not read_only else ""),
@@ -579,8 +579,9 @@ def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC", *, read_only
 
 def _contact_ledger_table(ledger: list[dict], docs_on: bool) -> FT:
     """Activity history section for contact detail page."""
-    from ui.components.activity import activity_table
-    return activity_table(ledger, max_display=10, docs_on=docs_on)
+    from ui.components.activity import history_table
+    return history_table(ledger, max_display=10, docs_on=docs_on, section_cls="section",
+                         empty_msg=t("activity.empty"))
 
 
 def _contacts_bulk_toolbar() -> FT:
@@ -1334,7 +1335,7 @@ def setup_routes(app):
             sid = None
         if not sid:
             return await base_shell(
-                page_header("🏢 " + t("settings.company_details")),
+                page_header(t("settings.company_details")),
                 empty_state_cta(t("contacts.company_not_initialised")),
                 title=page_title("settings.company_details"), nav_active="company-details", request=request,
             )
@@ -1359,7 +1360,7 @@ def setup_routes(app):
             files_html = files_error_block(t("msg.files_load_failed", detail=str(e.detail)), e.status)
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
-            page_header("🏢 " + t("settings.company_details")),
+            page_header(t("settings.company_details")),
             P(t("contacts.identity_on_documents"), cls="form-hint"),
             Div(
                 Div(_contact_info_card(

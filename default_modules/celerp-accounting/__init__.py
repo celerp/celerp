@@ -26,11 +26,11 @@ PLUGIN_MANIFEST = {
         "periodic_operation": {"handler": "celerp_accounting.recognition:run_due", "module": "celerp-accounting"},
         "doc_posting_dependents": {"handler": "celerp_accounting.recognition:dependents"},
         "projection_handler": [
-            {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "fund.", "handler": "celerp_accounting.projections:apply_accounting_event"},
-            {"prefix": "rev_schedule.", "handler": "celerp_accounting.projections:apply_accounting_event"},
+            {"prefix": "account.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "fund.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
+            {"prefix": "rev_schedule.", "handler": "celerp_accounting.projections:apply_accounting_event", "permission": "view_financial_reports"},
         ],
         "search_provider": {
             "handler": "celerp_accounting.search:global_search",

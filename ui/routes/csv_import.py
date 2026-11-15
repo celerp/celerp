@@ -31,7 +31,7 @@ from fasthtml.common import *
 from starlette.responses import StreamingResponse
 import ui.api_client as api
 from celerp.services import import_stage
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.i18n import get_lang, refusal_text, t
 from ui.components.table import empty_mark, searchable_select
 
@@ -836,7 +836,7 @@ def upload_form(
             Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),
             Div(
-                Div("📄", cls="import-dropzone-icon"),
+                Div(icon("file-text"), cls="import-dropzone-icon"),
                 Div(t("msg.drag_your_file_here_or_click_to_browse"), cls="import-dropzone-text"),
                 Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),

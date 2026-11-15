@@ -118,8 +118,8 @@ async def test_split_parent_mechanical_rows_collapse(client):
     parent_id = await _seed(client, h, quantity=10.0, cost_price=100.0)
     await client.post(f"/items/{parent_id}/split",
                       json={"children": [{"sku": "MUM.1", "quantity": 4.0}]}, headers=h)
-    ledger = await _events(client, h, parent_id)
-    html = to_xml(activity_table(ledger, subject_entity_id=parent_id, currency="USD"))
+    ledger = (await client.get("/ledger", params={"entity_id": parent_id, "history": "true"}, headers=h)).json()["items"]
+    html = to_xml(activity_table(ledger, currency="USD"))
     assert "Item Split - MUM" in html
     assert "Qty: 10 → 6" in html and "Cost: $1,000.00 → $600.00" in html
     # The bare "Qty → 6" mechanical row must not appear (collapsed into the summary).
@@ -401,20 +401,20 @@ def test_doc_tied_item_events_link_doc_number():
                 "ts": "2026-06-21T10:00:00+00:00", "data": data}
     sold = _ev(1, "item.fulfilled", {"source_doc_id": "doc:INV-2606-0001",
                "doc_number": "INV-2606-0001", "quantity_fulfilled": 2, "doc_type": "invoice"})
-    html = to_xml(activity_table([sold], subject_entity_id="item:x"))
+    html = to_xml(activity_table([sold]))
     assert "Sold" in html and "INV-2606-0001" in html
     assert "/docs/doc:INV-2606-0001" in html and "Qty: 2" in html
     # memo -> consigned verb
     cons = _ev(2, "item.fulfilled", {"source_doc_id": "doc:MEMO-1", "doc_number": "MEMO-1",
                "quantity_fulfilled": 1, "doc_type": "memo"})
-    assert "Consigned" in to_xml(activity_table([cons], subject_entity_id="item:x"))
+    assert "Consigned" in to_xml(activity_table([cons]))
     # reversal
     rev = _ev(3, "item.fulfillment_reversed", {"source_doc_id": "doc:INV-9",
               "doc_number": "INV-9", "quantity_restored": 2, "doc_type": "invoice"})
-    assert "Sale reversed" in to_xml(activity_table([rev], subject_entity_id="item:x"))
+    assert "Sale reversed" in to_xml(activity_table([rev]))
     # memo->invoice sale confirmation via status.set
     st = _ev(4, "item.status.set", {"new_status": "sold", "source_doc_id": "doc:INV-7", "doc_number": "INV-7"})
-    h2 = to_xml(activity_table([st], subject_entity_id="item:x"))
+    h2 = to_xml(activity_table([st]))
     assert "Sold" in h2 and "/docs/doc:INV-7" in h2
 
 
@@ -423,7 +423,7 @@ def test_doc_link_falls_back_to_entity_suffix():
     ev = {"id": 1, "event_type": "item.fulfilled", "entity_id": "item:x",
           "ts": "2026-06-21T10:00:00+00:00",
           "data": {"source_doc_id": "doc:INV-9", "quantity_fulfilled": 1, "doc_type": "invoice"}}
-    html = to_xml(activity_table([ev], subject_entity_id="item:x"))
+    html = to_xml(activity_table([ev]))
     assert "INV-9" in html and "/docs/doc:INV-9" in html
 
 
@@ -653,7 +653,7 @@ def _split_event(rid=100):
 
 
 def test_split_renders_one_row_per_child_with_links_and_anchors():
-    html = to_xml(activity_table([_split_event()], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([_split_event()]))
     assert "Item Split - MUM" in html
     assert '/inventory/item:c1#evt-50' in html
     assert '/inventory/item:c2#evt-60' in html
@@ -665,21 +665,9 @@ def test_split_from_links_parent_on_child_page():
     origin = {"id": 50, "event_type": "item.split_from", "entity_id": "item:c1",
               "ts": "2026-06-21T10:00:00+00:00",
               "data": {"parent_id": "item:mum", "parent_sku": "MUM", "qty": 3, "pieces": 3}}
-    created = {"id": 49, "event_type": "item.created", "entity_id": "item:c1",
-               "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "MUM.1", "name": "x"},
-               "metadata": {"parent_id": "item:mum"}}
-    html = to_xml(activity_table([origin, created], subject_entity_id="item:c1"))
+    html = to_xml(activity_table([origin]))
     assert "Split from" in html
     assert "/inventory/item:mum" in html
-    assert "Item added" not in html            # child item.created stays suppressed
-
-
-def test_child_origin_deduped_on_dashboard():
-    origin = {"id": 50, "event_type": "item.split_from", "entity_id": "item:c1",
-              "ts": "2026-06-21T10:00:00+00:00",
-              "data": {"parent_id": "item:mum", "parent_sku": "MUM", "qty": 3}}
-    html = to_xml(activity_table([origin], subject_entity_id=None))
-    assert "Split from" not in html
 
 
 def test_transform_row_links_child():
@@ -688,7 +676,7 @@ def test_transform_row_links_child():
           "data": {"child_id": "item:c1", "child_sku": "CUT-1", "child_category": "Cut",
                    "parent_cost_total": 100.0, "child_cost_total": 90.0, "parent_sku": "MUM",
                    "child_origin_event_id": 51, "qty_before": 10, "qty_after": 0}}
-    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([ev]))
     assert "Item Transform - MUM" in html
     assert "/inventory/item:c1#evt-51" in html
     assert "Qty: 10 → 0" in html
@@ -805,7 +793,7 @@ def test_split_delta_rendered_in_history():
     """A nonzero split delta renders one mother-level 'Delta' line in history."""
     ev = _split_event()
     ev["data"]["delta"] = 2.0
-    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([ev]))
     assert "Delta" in html
 
 
@@ -813,7 +801,7 @@ def test_split_delta_zero_not_rendered():
     """A zero delta is a clean reconciliation and shows no Delta line."""
     ev = _split_event()
     ev["data"]["delta"] = 0.0
-    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([ev]))
     assert "Delta" not in html
 
 
@@ -822,7 +810,7 @@ def test_split_delta_negative_flagged():
     flagged with the negative cell class."""
     ev = _split_event()
     ev["data"]["delta"] = -2.0
-    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([ev]))
     assert "Delta" in html
     assert "cell--negative" in html
 
@@ -835,5 +823,5 @@ def test_transform_delta_rendered_in_history():
                    "parent_cost_total": 100.0, "child_cost_total": 90.0, "parent_sku": "MUM",
                    "child_origin_event_id": 51, "qty_before": 10, "qty_after": 0,
                    "delta": 2.0}}
-    html = to_xml(activity_table([ev], subject_entity_id="item:mum"))
+    html = to_xml(activity_table([ev]))
     assert "Delta" in html

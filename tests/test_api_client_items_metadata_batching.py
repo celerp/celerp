@@ -76,3 +76,30 @@ async def test_get_items_metadata_dedups_and_skips_empty(monkeypatch):
     out = await api.get_items_metadata("tok", ["item:a", "item:a", "item:b"])
     assert set(out.keys()) == {"item:a", "item:b"}
     assert calls[-1] == ["item:a", "item:b"], "duplicate ids must be deduped before the request"
+
+
+@pytest.mark.asyncio
+async def test_list_ledger_reads_history_events_with_names(monkeypatch):
+    """The UI's ledger page read always asks for History's events with record names,
+    whatever filters the caller passes."""
+    import ui.api_client as api
+    seen: list[dict] = []
+
+    class _Client:
+        async def get(self, path, params):
+            seen.append((path, params))
+            return _Resp()
+
+    class _Resp:
+        is_redirect = is_error = False
+
+        def json(self):
+            return {"items": [], "total": 0}
+
+    @asynccontextmanager
+    async def _ctx(token, timeout: float = 10.0):
+        yield _Client()
+
+    monkeypatch.setattr(api, "_api_client", _ctx)
+    assert await api.list_ledger("tok", {"entity_id": "e1", "history": "false", "limit": 5}) == {"items": [], "total": 0}
+    assert seen == [("/ledger", {"resolve": "true", "entity_id": "e1", "history": "true", "limit": 5})]

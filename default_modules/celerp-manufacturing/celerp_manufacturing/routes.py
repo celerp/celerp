@@ -661,7 +661,7 @@ _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 def _skip_as_demand(doc_state: dict) -> bool:
     """Should this document's lines be ignored as production demand?
 
-    Only customer invoices and internal stock orders (production orders) drive production - nothing
+    Only customer invoices and internal production orders drive production - nothing
     else (quotations, transfers, audits and other lists, bills, POs, etc. are not demand). Closed docs
     never drive production. A draft invoice is a pro forma - a tentative, pre-sale document - so it is
     NOT counted as committed demand. An internal production order is likewise only active demand once
@@ -683,7 +683,7 @@ def _peg_order(doc: dict) -> tuple:
 
 
 def _peg(row: dict) -> None:
-    """Settle a Demand Planning row: each document's own reserved stock (``reserved``) covers it
+    """Settle a Production Planning row: each document's own reserved stock (``reserved``) covers it
     first, then free stock (on hand less what is reserved) plus what open runs still have to give
     is FIFO-assigned to what is left, in _peg_order. Annotates each doc in place with covered /
     shortfall / coverage (covered|partial|short) and sets the row's to_make."""
@@ -832,7 +832,7 @@ async def _emit_work_order(session, company_id, actor_id, item_id: str, item_sta
 
 
 def _reserve(row: dict, qty: float) -> None:
-    """Count ``qty`` more in progress for a Demand Planning row, as the board would show once
+    """Count ``qty`` more in progress for a Production Planning row, as the board would show once
     a run for it exists: what is left to make, and each document's pegged shortfall."""
     row["in_progress"] += qty
     _peg(row)
@@ -868,7 +868,7 @@ async def make_work_orders(
 ) -> dict:
     """Create one work order per selected demand line, linked 1:1 to its source order, for the
     line's net shortfall (the FIFO-pegged uncovered quantity). With ``complete=true`` each is also
-    issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
+    issued, received and closed. This is Production Planning's 'Make selected' / 'Make & complete'."""
     out = await _once(session, company_id, user.id, "make_selected", payload,
                       lambda key: make_selected(session, company_id, user.id, payload.lines, payload.complete, key))
     await session.commit()

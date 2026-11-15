@@ -98,6 +98,7 @@ ROWS: dict[str, tuple[str, str]] = {
     **_many("default_modules/celerp-contacts/celerp_contacts/routes.py", "merge_contacts_service", "NON-LINE"),
     **_many("default_modules/celerp-contacts/celerp_contacts/services.py", "import_contact_records create_crm_entity",
             "NON-LINE"),
+    **_many(_ROUTES, "tag_doc_file update_doc_file_description delete_doc_file", "NON-LINE"),
     f"{_DOCS}/consignment_buy.py::buy_consignment": ("COPY", "vendor bill from an issued consignment"),
     f"{_DOCS}/customs_freeze.py::freeze_issued_customs_lists": ("LOCAL", "customs snapshot on stored List lines"),
     **_many(f"{_DOCS}/doc_service.py", "_record_woocommerce_hold set_woocommerce_order_reconciled "

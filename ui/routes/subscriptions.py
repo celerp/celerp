@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 import math
 import unicodedata
 from urllib.parse import urlencode, urlsplit
@@ -42,6 +43,9 @@ from ui.routes.action_answers import _done, _redrawn, _refused, _refused_redrawn
 from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
+from ui.routes.settings_sales import _numbering_content
+from ui.components.module_off import can_open
+from celerp.services.permissions import role_has_permission
 from ui.i18n import refusal_text, sentence, t
 from ui.components.encode import as_js, html_response, safe_url, to_markup
 
@@ -215,12 +219,13 @@ def _billing_failure_change(c: dict) -> str | None:
         else t("subscriptions.notice_billing_failed_title")
 
 
-def _count_change(label: str):
-    """The number of entries after the change; nothing when the number does not change."""
+def _counted(label: str) -> tuple[str, Callable[[dict], str | None]]:
+    """A list field read as its number of entries after the change; nothing when the number
+    does not change."""
     def describe(c: dict) -> str | None:
         old, new = len(c.get("old") or []), len(c.get("new") or [])
         return None if old == new else f"{t(label)}: {new}"
-    return describe
+    return label, describe
 
 
 def _amendments_change(c: dict) -> str | None:
@@ -231,16 +236,16 @@ def _amendments_change(c: dict) -> str | None:
 
 
 register_fields({
-    **{f: _term_change(f) for f in _FIELD_TEXT},
-    "amendments": _amendments_change,
-    "beneficiary_contact_id": _member_change,
-    "consents": _consents_change,
-    "periods": _periods_change,
-    "billing_failure": _billing_failure_change,
-    "history_review": _count_change("subscriptions.history_heading"),
-    "history_set_aside": _count_change("subscriptions.history_set_aside"),
-    "resume_restarts": lambda c: None,
-    "released_bills": lambda c: None,
+    **{f: (_FIELD_TEXT[f][0], _term_change(f)) for f in _FIELD_TEXT},
+    "amendments": ("subscriptions.quantities_heading", _amendments_change),
+    "beneficiary_contact_id": (_FIELD_TEXT["beneficiary_contact_id"][0], _member_change),
+    "consents": ("subscriptions.billing_heading", _consents_change),
+    "periods": ("subscriptions.periods_heading", _periods_change),
+    "billing_failure": ("subscriptions.notice_billing_failed_title", _billing_failure_change),
+    "history_review": _counted("subscriptions.history_heading"),
+    "history_set_aside": _counted("subscriptions.history_set_aside"),
+    "resume_restarts": None,
+    "released_bills": None,
 })
 # Escape clears an inline preview or result panel (GDR 2j).
 _PANEL_ESC_JS = Script("""
@@ -255,6 +260,7 @@ _DIRECTION_DOC_TYPE = {
     "sales": "subscription_invoice",
     "purchasing": "subscription_po",
 }
+_SUBSCRIPTION_DOC_TYPES = frozenset(_DIRECTION_DOC_TYPE.values())
 
 
 # ---------------------------------------------------------------------------
@@ -1604,13 +1610,34 @@ def setup_routes(app) -> None:
             return r
         state = _list_state(request.query_params, path)
         direction, status, review, kind = state["direction"], state["status"], state["review"], state["kind"]
-        q, page, per_page = state["q"], state["page"], state["per_page"]
-        all_items = await _all_agreements(token, direction, review=review, kind=kind)
-        cards, table, total = _list_views(all_items, state)
         side = "sales" if direction == "sales" else "purchasing"
         nav_key = f"subscriptions_{side}" if not kind else path.lstrip("/")
         text = _LIST_TEXT[kind]
         title = t(text.get("title") or f"nav.subscriptions_{side}")
+        company = getattr(request.state, "auth_company", None)
+        if company is None:
+            try:
+                company = await api.get_company(token)
+            except APIError:
+                company = {}
+        numbering_on = can_open(company, "celerp-subscriptions")
+        can_number = numbering_on and role_has_permission(
+            company.get("settings") or {}, api.role_from_company(company), "manage_module_settings")
+        if request.query_params.get("tab") == "numbering":
+            if r := await _check_permission(request, "manage_module_settings"):
+                return r
+            if not numbering_on:
+                return RedirectResponse(path, status_code=302)
+            # Opened from a list, it leads back to that list and keeps its menu entry lit.
+            return await base_shell(
+                breadcrumbs([(t("nav.dashboard"), "/dashboard"), (title, f"{path}?direction={side}"),
+                             (t("page.document_numbering"), None)]),
+                page_header(title),
+                await _numbering_content(token, _SUBSCRIPTION_DOC_TYPES),
+                title=t("page.document_numbering"), request=request, nav_active=nav_key)
+        q, page, per_page = state["q"], state["page"], state["per_page"]
+        all_items = await _all_agreements(token, direction, review=review, kind=kind)
+        cards, table, total = _list_views(all_items, state)
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
                                              "review": "1" if review else ""}.items() if v})
         can_import = await _check_permission(request, "import_export_data") is None
@@ -1628,6 +1655,8 @@ def setup_routes(app) -> None:
                        hx_target="#sub-due-panel", hx_swap="innerHTML", cls="btn btn--secondary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
                   data_import_hint=True) if can_import else "",
+                (A(t("settings_sales.tab_numbering"), href=safe_url(f"{path}?tab=numbering&direction={side}"),
+                   cls="btn btn--secondary") if can_number else ""),
             ),
             *_list_banners(catch_up, summary),
             *[Div(error, cls="flash flash--warning") for error in banner_errors],

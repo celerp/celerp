@@ -26,7 +26,7 @@ import status_census  # noqa: E402
 from agreement_kit import agreement, billed_docs, freeze_day, generate_due, register  # noqa: E402
 from celerp.models.projections import Projection  # noqa: E402
 from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
-from test_subscriptions_upgrade_v280 import _generate, _on, _page, _state, _upgrade, _url  # noqa: E402
+from test_subscriptions_upgrade_v280 import _generate, _on, _page, _set_doc, _state, _upgrade, _url  # noqa: E402
 from ui.i18n import t  # noqa: E402
 
 
@@ -153,15 +153,10 @@ async def test_a_draft_cannot_be_reached_from_history_review(client, session, mo
 async def _two_in_one_period(session, old):
     """A 2.8.0 user issued two documents in one period: the second gets the first one's issue
     date, so both wait for review with a candidate period in common."""
-    from sqlalchemy.orm.attributes import flag_modified
-
-    from celerp.models.projections import Projection
     tpl = await session.get(Projection, {"company_id": old["company_id"], "entity_id": old["runs"][NAME]})
-    docs = [await session.get(Projection, {"company_id": old["company_id"], "entity_id": d})
-            for d in tpl.state["generated_doc_ids"]]
-    docs[-1].state = {**docs[-1].state, "issue_date": docs[-2].state["issue_date"]}
-    flag_modified(docs[-1], "state")
-    await session.commit()
+    first, second = tpl.state["generated_doc_ids"][-2:]
+    issued = (await session.get(Projection, {"company_id": old["company_id"], "entity_id": first})).state["issue_date"]
+    await _set_doc(session, old, second, issue_date=issued)
 
 
 # What each claim door answers on a cancelled or void agreement, per kind of claim it acts on:

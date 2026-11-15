@@ -1,13 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Placing older stock never fails silently.
+"""Placing opening inventory never fails silently.
 
-An unexpected error placing a company's older stock rolls the placement back whole and
+An unexpected error placing a company's opening inventory rolls the placement back whole and
 leaves one standing notice that names the kind of error, never its text, which can
 carry company data. The notice commits with whatever asked for the placement: an
 import, a restore, or the request boundary that placed stock for a refused sale in its
 own transaction. A restore that is itself rolled back leaves no company and no notice.
-The Older stock tab shows a standing failure with a Retry action and a prefilled
+The Opening inventory tab shows a standing failure with a Retry action and a prefilled
 bug report carrying the kind of error only.
 """
 from __future__ import annotations
@@ -146,7 +146,7 @@ async def test_the_older_stock_tab_offers_try_again_and_a_report_without_the_err
 
     body, _ = await _tab(ui_client, {**_VIEW, "failed": {"error": "RuntimeError"}})
 
-    assert "Older stock could not be placed" in body
+    assert "Opening inventory could not be placed" in body
     assert 'hx-post="/settings/accounting/older-stock/retry"' in body and ">Retry<" in body
     href = unquote(body.split('href="https://github.com/celerp/celerp/issues/new?', 1)[1].split('"', 1)[0])
     fields = parse_qs(urlsplit("?" + href.replace("&amp;", "&")).query)
@@ -168,4 +168,4 @@ async def test_trying_again_from_the_tab_re_renders_the_card(ui_client):  # noqa
         r = await ui_client.post("/settings/accounting/older-stock/retry")
     assert r.status_code == 200
     body = r.content.decode()
-    assert 'id="older-stock-card"' in body and "Older stock was placed." in body
+    assert 'id="older-stock-card"' in body and "Opening inventory was placed." in body

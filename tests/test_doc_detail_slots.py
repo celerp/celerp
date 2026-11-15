@@ -17,7 +17,7 @@ from fasthtml.common import Button, Span, to_xml
 
 from celerp.modules import slots
 
-_DOC_TYPES = ("invoice", "quotation", "purchase_order", "bill", "memo")
+_DOC_TYPES = ("invoice", "quotation", "purchase_order", "bill", "memo", "inventory")
 # Each render mints fresh idempotency keys; mask them so two renders compare equal.
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -36,6 +36,12 @@ def _contribute(**over) -> None:
 
 
 def _page(doc_type="invoice", role="owner", settings=None) -> str:
+    if doc_type == "inventory":
+        from ui.routes.inventory import _item_detail_tabs
+        fields = [{"key": "name", "label": "Name", "type": "text"},
+                  {"key": "color", "label": "Color", "type": "text"}]
+        return to_xml(_item_detail_tabs("item:parity", {"name": "Item", "color": "Blue"}, fields, [], [],
+                                       "THB", "details", {}, role=role, settings=settings, manufacturing=True))
     from ui.routes.documents import _doc_detail
     doc = {"entity_id": f"doc:{doc_type}-1", "doc_type": doc_type, "status": "draft",
            "ref_id": "D-1", "line_items": []}
@@ -64,3 +70,15 @@ def test_doc_detail_slot_shown_to_a_permitted_role():
         html = _page(role=role, settings=settings)
         assert "Module action for doc:invoice-1" in html, role
         assert "Module badge" in html, role
+
+
+@pytest.mark.parametrize("doc_type", _DOC_TYPES)
+def test_detail_pages_share_bordered_cards_and_headers(doc_type):
+    from bs4 import BeautifulSoup
+    page = BeautifulSoup(_page(doc_type), "html.parser")
+    assert page.select(".doc-section > .section-header > .section-title")
+    assert not page.select(".section-header img")
+    if doc_type == "inventory":
+        assert page.select_one("#item-attributes-section .doc-section")
+        assert page.select_one("[id^=files-section-].doc-section")
+        assert page.select_one("details.doc-section")

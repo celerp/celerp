@@ -519,7 +519,7 @@ async def test_choose_other_file_deletes_upload(ui, real_engine, real_client, tm
 
 
 OPENED = "This company copy was already restored. Celerp opened the existing company; no duplicate was created."
-DISCONNECTED = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Web Access."
+DISCONNECTED = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Remote Access."
 
 
 async def test_done_page_states_outcome_from_server(ui, real_engine, real_client):

@@ -11,8 +11,8 @@ from fasthtml.common import to_xml
 
 from ui.routes.documents import _list_type_options
 
-_DE = {"quotation": "Angebot", "transfer": "Umlagerung", "audit": "Inventur",
-       "writeoff": "Abschreibung", "shipping_doc": "Versandbeleg"}
+_DE = {"quotation": "Angebot", "transfer": "Umlagerungsauftrag", "audit": "Inventur",
+       "writeoff": "Bestandsanpassung", "shipping_doc": "Lieferschein"}
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def test_list_type_options_are_translated(de):
     options = dict(_list_type_options("de"))
     assert options.pop("") == "Alle"
     assert options == _DE
-    for english in ("Quotation", "Transfer", "Audit", "Write-off", "Shipping Document"):
+    for english in ("Quotation", "Transfer Order", "Stock Count", "Inventory Adjustment", "Delivery Note"):
         assert english not in options.values()
 
 

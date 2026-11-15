@@ -337,6 +337,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "doc.",
             "handler": "celerp_docs.doc_projections:apply_documents_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -345,6 +346,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "list.",
             "handler": "celerp_docs.doc_projections:apply_documents_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -353,6 +355,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "received_doc.",
             "handler": "celerp_docs.received:apply_received_event",
+            "permission": "view_documents",
             "_module": "celerp-docs",
         },
     },
@@ -361,6 +364,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "item.",
             "handler": "celerp_inventory.projections:apply_item_event",
+            "permission": "view_inventory",
             "_module": "celerp-inventory",
         },
     },
@@ -369,6 +373,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "crm.contact.",
             "handler": "celerp_contacts.projections:apply_contact_event",
+            "permission": "view_contacts",
             "_module": "celerp-contacts",
         },
     },
@@ -377,6 +382,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "acc.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
@@ -385,6 +391,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "fund.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
@@ -393,6 +400,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "rev_schedule.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
+            "permission": "view_financial_reports",
             "_module": "celerp-accounting",
         },
     },
@@ -416,6 +424,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "mfg.",
             "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+            "permission": "manage_manufacturing",
             "_module": "celerp-manufacturing",
         },
     },
@@ -440,6 +449,7 @@ _SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
         "contrib": {
             "prefix": "fa.",
             "handler": "celerp_fixed_assets.projections:apply_fixed_asset_event",
+            "permission": "view_fixed_assets",
             "_module": "celerp-fixed-assets",
         },
     },
@@ -477,6 +487,7 @@ if _crm_available:
         "contrib": {
             "prefix": "crm.deal.",
             "handler": "celerp_sales_funnel.projections:apply_deal_event",
+            "permission": "view_contacts",
             "_module": "celerp-sales-funnel",
         },
     })
@@ -795,17 +806,22 @@ def _reset_loaded_modules(request):
     Browser tests are exempt: their server runs in-process and legitimately owns
     a populated _loaded (module-gated UI like the credit-note "Receive Returns"
     button reads loaded_modules()) and slot registry, so wiping it would hide
-    that UI."""
+    that UI.
+
+    The permission each module's events are read with is kept until the next load, so
+    it is dropped after each test: one worked out under doctored slots or admission
+    leaves nothing for later tests."""
     if request.node.get_closest_marker("browser"):
         yield
         return
-    from celerp.modules.loader import _loaded, _module_routes
+    from celerp.modules.loader import _event_permissions, _loaded, _module_routes
     from celerp.modules import outcome as _outcome
     from celerp.modules import slots as _slots_mod
     _loaded.clear()
     _module_routes.clear()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
     yield
+    _event_permissions.clear()
     _loaded.clear()
     _module_routes.clear()
     _outcome._awaiting_ui = False  # a lifespan that loaded modules waits for a UI

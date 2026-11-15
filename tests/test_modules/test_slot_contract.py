@@ -76,7 +76,7 @@ CALLABLE = {
     "on_modules_ready": ("handler", True, {}),
     "doc_finalize_hook": ("handler", True, {}),
     "on_doc_payment": ("handler", True, {}),
-    "projection_handler": ("handler", False, {"prefix": "slotx."}),
+    "projection_handler": ("handler", False, {"prefix": "slotx.", "permission": "view_inventory"}),
 }
 
 _SYNC_FN = "def fn(*args, **kwargs):\n    return None\n"

@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""What the accountant sees of older stock placed automatically.
+"""What the accountant sees of opening inventory placed automatically.
 
 The person selling sees one plain notice that existing inventory is ready. The
-accountant's Older stock tab shows, per inventory account, the lots on it and what
+accountant's Opening inventory tab shows, per inventory account, the lots on it and what
 placements transferred, recognized as opening stock and left unresolved; each placement
 with its classification and original journal entries; every correction with who made it;
 and pages the lots, placements, moves and corrections so a large migration stays usable.
@@ -42,7 +42,7 @@ async def test_the_seller_is_told_existing_inventory_is_ready(session, client, a
     (notice,) = await _notices(session, auth, _PLACED)
 
     assert notice.title == "Existing inventory is ready"
-    assert notice.body == ("Celerp assigned inventory accounts to 3 older stock items. "
+    assert notice.body == ("Celerp assigned inventory accounts to 3 opening inventory items. "
                            "Sales and shipments can continue normally.")
     assert notice.i18n["params"] == {"count": 3}
 
@@ -101,7 +101,7 @@ async def test_corrections_are_listed_newest_first_with_who_made_them(session, c
     assert view["totals"]["corrections"] == 2
 
 
-# --- Settings > Accounting > Older stock -----------------------------------------------
+# --- Settings > Accounting > Opening inventory -----------------------------------------------
 
 
 _PAGED = {**_VIEW,

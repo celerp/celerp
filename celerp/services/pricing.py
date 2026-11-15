@@ -53,13 +53,13 @@ def coerce_price(value) -> float | None:
     """A stored or submitted price-like value as a finite float, else None.
 
     Booleans are not prices (json ``true`` would otherwise coerce to 1.0), and neither are
-    NaN/Infinity or unparseable strings.
+    NaN/Infinity, integers too large for a float or unparseable strings.
     """
     if value is None or isinstance(value, bool):
         return None
     try:
         f = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return f if math.isfinite(f) else None
 

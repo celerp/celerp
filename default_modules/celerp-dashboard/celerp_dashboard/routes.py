@@ -15,6 +15,7 @@ from celerp.models.projections import Projection
 from celerp.services.lot_origin import RETIRED, held_value
 from celerp.services.business_time import business_today
 from celerp.services.holdings import memo_holdings
+from celerp.services.ledger_display import shown_in_history
 from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 from celerp.services.permissions import get_current_company_settings
@@ -145,7 +146,8 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
 async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services.activity_redaction import readable_events
 
-    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id), settings, role)
+    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id,
+                                                     shown_in_history()), settings, role)
     rows = (await session.execute(stmt.order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
     return {"activities": await _hydrate_entries(rows, company_id, session, settings, role)}
 
@@ -164,9 +166,10 @@ async def search_activity(
 ) -> dict:
     from sqlalchemy import func
     import sqlalchemy as _sa
-    from celerp.services.activity_redaction import readable_events
+    from celerp.services.activity_redaction import event_data_matches, readable_events
 
-    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id), settings, role)
+    stmt = readable_events(select(LedgerEntry).where(LedgerEntry.company_id == company_id,
+                                                     shown_in_history()), settings, role)
 
     if date_from:
         try:
@@ -183,14 +186,17 @@ async def search_activity(
             stmt = stmt.where(LedgerEntry.ts < dt_to)
         except ValueError:
             pass
-    if q:
+    if "\x00" in q:
+        # The database never stores a NUL byte in text, so such a search names nothing.
+        stmt = stmt.where(_sa.false())
+    elif q:
         # autoescape: a % or _ in the search is matched as itself, not as a wildcard.
         ql = q.lower()
         stmt = stmt.where(
             _sa.or_(
                 _sa.func.lower(LedgerEntry.event_type).contains(ql, autoescape=True),
                 _sa.func.lower(LedgerEntry.entity_id).contains(ql, autoescape=True),
-                _sa.func.lower(_sa.cast(LedgerEntry.data, _sa.Text)).contains(ql, autoescape=True),
+                event_data_matches(q, settings, role),
             )
         )
 
@@ -210,24 +216,15 @@ async def search_activity(
 
 async def _hydrate_entries(rows, company_id: str, session, settings: dict | None = None, role: str | None = None) -> list[dict]:
     """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
-    from celerp.services.activity_redaction import can_see_costs, redact_event_costs
-    from celerp.services.ledger_display import display_fields, entry_ts
-    show_costs = can_see_costs(settings, role)
+    from celerp.services.activity_redaction import serialize_event
+    from celerp.services.ledger_display import display_fields
 
     activities = []
     for e, shown in zip(rows, await display_fields(rows, company_id, session)):
-        data = e.data if isinstance(e.data, dict) else {}
-        if not show_costs:
-            data = redact_event_costs(e.event_type, data)
         activities.append({
-            "ts": entry_ts(e, settings),
-            "event_type": e.event_type,
-            "entity_id": e.entity_id,
-            "entity_type": e.entity_type,
+            **serialize_event(e, settings, role),
             "name": shown["name"] or None,
             "entity_doc_type": shown["doc_type"],
             **{k: v for k, v in shown.items() if k.startswith("actor_")},
-            "data": data,
-            "metadata_": e.metadata_ if isinstance(e.metadata_, dict) else {},
         })
     return activities

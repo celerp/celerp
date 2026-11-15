@@ -172,6 +172,9 @@ async def list_funds(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """List every fund, archived ones included, by name: whether it is restricted, its
+    purpose and its opening date. Use it to find the fund to put a record on or to move
+    money from."""
     funds = await funds_by_id(session, company_id)
     return {"items": sorted((_view(f, s) for f, s in funds.items()), key=lambda v: v["name"].casefold())}
 
@@ -182,8 +185,9 @@ async def list_waiting_for_funds(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    """The outside records waiting for a fund choice (peer_lines.outside_waiting): the count
-    the dashboard shows, the held items Sync accounts posts and the documents to choose for."""
+    """List the records from outside (a connection, a file import, your accountant) that
+    wait for a fund choice before they post, with how many there are. Choose a fund on each,
+    or set a default fund on the connection so its records stop waiting."""
     return await outside_waiting(session, company_id)
 
 
@@ -195,9 +199,9 @@ async def set_funds_setting(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Turn funds on or off. On is refused while an unposted record carries fund fields
-    sent from outside; off while any fund holds a balance on any account, or an unposted
-    record holds a fund choice or a line's fund."""
+    """Turn funds on or off for the company. They can't be turned on while an unposted
+    record from outside carries fund details, and can't be turned off until every fund is
+    back to zero and no unposted record has a fund chosen."""
     await lock_fund_ledger(session, company_id, shared=False)
     company = await locked_company(session, company_id)
     if funds_enabled(company.settings or {}) != payload.enabled:
@@ -286,9 +290,10 @@ async def list_connection_defaults(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The standing fund of every connection records arrive through, read-only for a user
-    without the fund permission; ``active`` is false while nothing is set or its setter can
-    no longer choose funds."""
+    """List the default fund of each connection that brings in records. Records from a
+    connection with an active default take that fund when they arrive and post without
+    waiting. A default is inactive while none is set or the person who set it can no longer
+    choose funds."""
     company = await session.get(Company, company_id)
     return {"items": await _default_items(session, company_id, dict(company.settings or {}))}
 
@@ -301,10 +306,10 @@ async def set_connection_default(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set, change or clear (``value`` null) the fund records from one connection take at
-    their first arrival. Refused from a stale copy (``expected_version``); a repeat of
-    ``request_key`` with the same request answers with what it wrote; with any other it is
-    refused (refuse_other_request)."""
+    """Set, change or clear the default fund of one connection. New records from it take
+    that fund when they arrive; records already in are not changed. A save made from an
+    out-of-date copy is refused, and sending the same save again answers with what it
+    saved."""
     await lock_fund_ledger(session, company_id, shared=False)
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
@@ -340,8 +345,9 @@ async def create_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a fund. Repeat-safe on ``request_key``: the same request again answers with the
-    fund it made, any other request under the key is refused (keyed_event)."""
+    """Add a fund. Mark it restricted, with a purpose, when a donor limited what the money
+    may be spent on; leave it unrestricted for money you set aside yourself. Sending the same
+    request again answers with the fund it added instead of adding a second one."""
     await lock_fund_ledger(session, company_id, shared=False)
     fund_id = f"fund:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{payload.request_key}')}"
     request = payload.model_dump(mode="json")
@@ -369,8 +375,9 @@ async def update_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Rename a fund, change its opening date, or change what it is restricted to before
-    anything is posted to it."""
+    """Rename a fund or change its opening date. Whether it is restricted, and its purpose,
+    can change only until something is posted to it; after that, add a new fund and move the
+    money to it."""
     await lock_fund_ledger(session, company_id, shared=False)
     state = await _fund(session, company_id, fund_id)
     restricted = state.get("restricted") if payload.restricted is None else payload.restricted
@@ -412,7 +419,8 @@ async def archive_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Archive a fund that holds nothing; it then takes no new posting."""
+    """Archive a fund that holds nothing, so nothing new can be posted to it. Unarchive
+    brings it back."""
     return await _set_archived(session, company_id, fund_id, True, user)
 
 
@@ -424,6 +432,7 @@ async def unarchive_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Bring an archived fund back so records can be posted to it again."""
     return await _set_archived(session, company_id, fund_id, False, user)
 
 
@@ -572,7 +581,9 @@ async def transfer_between_funds(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Move money of an account between two unrestricted funds."""
+    """Move money between two unrestricted funds, or between a fund and money on no fund,
+    for example to set money aside for a project. For restricted money use a release from
+    restriction or a reallocation instead."""
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
     return await _posted(session, post_fund_movement(
@@ -587,10 +598,9 @@ async def list_release_spending(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The purpose spending a release from restriction can still name as backing, newest
-    first: each posted line on an expense account charged to no fund, of an entry no
-    standing reversal undid, with what the releases still standing left of it (``left``).
-    The same lines the release check accepts (journal_accounts._release_backing)."""
+    """List the spending a release from restriction can pay for, newest first: each posted
+    expense line on no fund that has not been reversed, with how much of it is still left to
+    release. Post the purpose spending with no fund first; it then appears here."""
     rows = await journal_rows(session, company_id)
     nodes = {entity_id: state for entity_id, state, _ in rows}
     reversed_ = {state["reverses"] for state in nodes.values() if state.get("reverses")}
@@ -621,8 +631,10 @@ async def release_from_restriction(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Release restricted money to an unrestricted fund for the purpose spending it paid for.
-    Naming no spending is refused with the rule a release answers to, not as a bad field."""
+    """Release restricted money to an unrestricted fund once it has been spent on its
+    purpose. The release names the spending it pays for and can't be more than what is left
+    of it. To move restricted money to another fund with the same purpose, reallocate
+    instead."""
     _distinct(payload.fund, payload.to_fund)
     if not payload.backing:
         funds = await funds_by_id(session, company_id, {payload.fund})
@@ -644,7 +656,9 @@ async def reallocate_restricted_funds(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Move restricted money to another restricted fund of the same purpose, with the donor's authorization."""
+    """Move restricted money to another restricted fund with the same purpose, when the
+    donor has agreed in writing; the movement records that agreement. Money spent on its
+    purpose is released instead."""
     _distinct(payload.from_fund, payload.to_fund)
     account = await _account(session, company_id, payload.account)
     return await _posted(session, post_fund_movement(
@@ -662,7 +676,9 @@ async def opening_balances_by_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Assign balances the unrestricted group holds to funds, as the books' opening by fund."""
+    """Give part of each account's balance to a fund when you start using funds, as at the
+    opening date. Each line takes its amount from money on no fund. Later movements are
+    transfers, releases or reallocations."""
     for assignment in payload.assignments:
         _distinct(None, assignment.fund)
     return await _posted(session, post_fund_movement(
@@ -680,8 +696,9 @@ async def reverse_fund_movement(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo a movement between funds by its reversal. Repeat-safe: the same reversal sent again
-    answers with the reversal it posted; one with another date or reason is refused."""
+    """Undo a movement between funds by posting its reversal; fund activity lists each
+    movement. Sending the same reversal again answers with the one already posted; a second reversal
+    with another date or reason is refused."""
     return await _posted(session, post_fund_movement(
         session, company_id, request_key=f"reverse:{je_id}", request=payload.model_dump(mode="json"), ts=payload.date,
         reason=payload.reason, actor=user.id, reverses=je_id))
@@ -694,8 +711,8 @@ async def journal_funds(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """What Change fund on a journal starts from: its version and each line by number from 1
-    (the numbers the change names lines by), with its account and the fund it posted on."""
+    """Show a posted journal entry's lines, numbered from 1, each with its account and the
+    fund it posted on. Read it before changing the fund of an entry from outside."""
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type != "journal_entry":
         raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_je_not_found"))
@@ -725,8 +742,8 @@ async def change_journal_fund(
     _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Change fund on a posted journal that came from outside: it is voided and posted again
-    as {entity id}:fund:{n} on the new funds in one action (peer_lines.change_posted_fund)."""
+    """Change the fund of a posted journal entry that came from outside, with a reason. The
+    entry is voided and posted again on the new funds in one step."""
     result = await change_posted_fund(session, company_id, entity_id, payload, user.id, journal=True,
                                       **({"document": payload.all} if payload.all is not None else {}))
     await session.commit()

@@ -140,7 +140,7 @@ async def test_financially_active_company_keeps_currency_and_taxes(client):
 
 def test_spanish_navigation_and_issue_date_strings():
     es = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "es.json").read_text())
-    assert es["nav.lists"] == "Listas"
+    assert es["nav.lists"] == "Presupuestos"
     assert es["doc.issue_date"] == "Fecha de emisión:"
 
 

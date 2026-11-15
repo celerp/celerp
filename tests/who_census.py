@@ -3,12 +3,13 @@
 """Census of who a change reads as made by, read from the code.
 
 Who made a change is decided in one place for every activity feed and History table:
-``ledger_display._actor`` gives an entry its display fields (actor_*), and
+``ledger_display._maker`` gives an entry its display fields (actor_*), and
 ``ui.components.activity.actor_label`` turns them into the text a person reads. Work nobody
 started by hand is the work the modules' background loops do; ``celerp.main`` starts each of
 them through ``engine.unattended``, so every event that work writes reads "Automatically".
 
-- ``display_keys()``: the keys ``_actor`` can give an entry.
+- ``display_keys()``: the keys ``_maker`` can give an entry, but ``actor_key``: that names the
+  maker for the History's Who filter and reads as no text.
 - ``key_readers()``: every function outside the tests that reads one of those keys by name,
   with whether it is allowed (the producer and actor_label). Any other reader shows who made a
   change its own way, so it must be none.
@@ -28,7 +29,8 @@ from shipped_sources import APP_ROOTS, MODULE_ROOT, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TOPS = (*APP_ROOTS, PREMIUM_ROOT)
-PRODUCER = ("celerp/services/ledger_display.py", "_actor")
+PRODUCER = ("celerp/services/ledger_display.py", "_maker")
+FILTER_KEY = "actor_key"
 LABEL = ("ui/components/activity.py", "actor_label")
 LOOP_SLOT = "background_loop"
 WRAPPER = "unattended"
@@ -62,13 +64,13 @@ def _callee(call: ast.Call) -> str | None:
 
 
 def display_keys() -> set[str]:
-    """Every key of every dict ``_actor`` returns."""
+    """Every key of every dict ``_maker`` returns, but the Who filter's key."""
     tree = ast.parse((ROOT / PRODUCER[0]).read_text(encoding="utf-8"))
     fn = next(f for f in _functions(tree) if f.name == PRODUCER[1])
     keys = set()
     for ret in (n for n in ast.walk(fn) if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict)):
         keys |= {k.value for k in ret.value.keys if isinstance(k, ast.Constant)}
-    return keys
+    return keys - {FILTER_KEY}
 
 
 def key_readers() -> list[tuple[str, str, str, bool]]:

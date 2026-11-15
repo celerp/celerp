@@ -33,7 +33,7 @@ RELAY = "https://relay.test"
 STORE = "https://store.example.test"
 LIVE_SHOPIFY = {"product_id": "9001", "variant_id": "9002", "sync_enabled": True}
 LIVE_WOO = {"product_id": "77", "sync_enabled": True}
-NOTICE = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Web Access."
+NOTICE = "Connections to other services, such as stores and accounting, are not included in a company copy. Connect each one again in Remote Access."
 
 
 def _local(monkeypatch, tmp_path) -> None:
@@ -366,7 +366,7 @@ async def test_restore_notice_says_integrations_disconnected(real_engine, real_c
     assert r.status_code == 200, r.text
     assert NOTICE in r.text
     # the notice leads straight to where each connection is made again
-    assert re.search(re.escape(NOTICE) + r'\s*<a href="/settings/cloud"[^>]*>Open Web Access</a>', r.text), r.text
+    assert re.search(re.escape(NOTICE) + r'\s*<a href="/settings/cloud"[^>]*>Open Remote Access</a>', r.text), r.text
 
 
 # ── Reconnect ────────────────────────────────────────────────────────────────

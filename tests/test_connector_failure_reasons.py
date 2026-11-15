@@ -29,7 +29,7 @@ def _r(**kw):
 def test_access_refused_says_to_connect_again():
     raw = "Shopify API error: Client error '401 Unauthorized' for url 'https://x.myshopify.com/admin'"
     reason = sync_failure_reason(raw, "Shopify")
-    assert "Shopify refused" in reason and "Disconnect" in reason and "Web Access" in reason
+    assert "Shopify refused" in reason and "Disconnect" in reason and "Remote Access" in reason
     assert "401" not in reason and "myshopify" not in reason
 
 

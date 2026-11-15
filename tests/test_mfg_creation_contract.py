@@ -6,7 +6,7 @@ A run turns stock into stock: its product and every component it issues are stoc
 or components, never a service, a non-stocked item or a freight charge (those belong in a
 recipe's labor and overhead). A run makes exactly one product, named by the item itself;
 what it expects to receive is that product. Every door that creates a run (a run created
-directly, a build, Demand Planning, an import) is held to the same contract, and a run an
+directly, a build, Production Planning, an import) is held to the same contract, and a run an
 older release left that breaks it is refused when it moves.
 
 A run's request key identifies one request: sending it again returns the run it made, and

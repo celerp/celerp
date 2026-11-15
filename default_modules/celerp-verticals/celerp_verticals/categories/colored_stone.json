@@ -72,13 +72,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "pieces",
-      "label": "Pieces",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "color",
       "label": "Color",
       "type": "select",
@@ -186,7 +179,7 @@
       "type": "select",
       "options": [
         "GRS",
-        "G\u00fcbelin",
+        "Gübelin",
         "SSEF",
         "GIA",
         "AGL",

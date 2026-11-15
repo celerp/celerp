@@ -501,7 +501,7 @@ async def test_transformed_goods_cannot_return_on_bill(client, session, auth):
     r = await _return(client, auth, doc, made, 5)
     assert r.status_code == 422, r.text
     assert r.json()["detail"]["message_key"] == "docs.return_lot_transformed", r.text
-    assert "credit note" in r.json()["detail"]["message"]
+    assert "credit memo" in r.json()["detail"]["message"]
     assert await _b(session, auth, *LEGS) == before
     assert (await _return(client, auth, doc, lot, 3)).status_code == 200
     await _inv(client, session, auth, doc, step="returned")

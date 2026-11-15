@@ -650,14 +650,16 @@ def test_can_see_costs_uses_permission():
     assert can_see_costs({}, None) is False
 
 
-def test_redact_entries_granted_operator():
-    from celerp.services.activity_redaction import redact_entries_for_role
+def test_serialize_event_granted_operator():
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.activity_redaction import serialize_event
 
-    entries = [{"event_type": "item.created", "data": {"cost_total": 100.0, "name": "X"}}]
-    out = redact_entries_for_role(entries, _GRANTED, "operator")
-    assert out[0]["data"]["cost_total"] == 100.0
-    out2 = redact_entries_for_role(entries, {}, "operator")
-    assert "cost_total" not in out2[0]["data"]
+    entry = LedgerEntry(id=1, event_type="item.created", entity_id="item:x", entity_type="item",
+                        data={"cost_total": 100.0, "name": "X"}, metadata_={"cost_total": 100.0})
+    out = serialize_event(entry, _GRANTED, "operator")
+    assert out["data"]["cost_total"] == 100.0 and out["metadata"]["cost_total"] == 100.0
+    out2 = serialize_event(entry, {}, "operator")
+    assert out2["data"] == {"name": "X"} and out2["metadata"] == {}
 
 
 async def test_ledger_route_passes_overrides(client, session):

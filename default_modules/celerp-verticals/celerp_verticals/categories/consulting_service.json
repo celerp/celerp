@@ -75,13 +75,6 @@
       "type": "text",
       "options": [],
       "visible_to_roles": []
-    },
-    {
-      "key": "notes",
-      "label": "Notes / Assumptions",
-      "type": "text",
-      "options": [],
-      "visible_to_roles": []
     }
   ],
   "default_sell_by": "piece",

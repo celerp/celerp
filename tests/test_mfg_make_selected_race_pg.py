@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Demand Planning's Make selected under real concurrent transactions.
+"""Production Planning's Make selected under real concurrent transactions.
 
 Two Make selected for the same short demand line arrive together, from two people or as
 one action sent twice. The second waits for the first, then judges the shortfall from what

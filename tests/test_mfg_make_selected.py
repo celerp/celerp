@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Demand Planning's Make selected makes each short demand line once.
+"""Production Planning's Make selected makes each short demand line once.
 
 Each selected line makes at most one run per action: the same action sent again (its answer
 lost, say) returns the runs it made, even when the board would still show the line short,

@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Work orders made when an invoice is posted cover only what Demand Planning says is short.
+"""Work orders made when an invoice is posted cover only what Production Planning says is short.
 
 Finished stock is held as lots under the product, and runs already in progress will add to
-it; both count before anything new is made, exactly as on the Demand Planning board.
+it; both count before anything new is made, exactly as on the Production Planning board.
 """
 from __future__ import annotations
 

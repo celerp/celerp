@@ -299,6 +299,9 @@ async def get_fund_balance_sheet(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """The fund balance sheet on a date: each asset and liability account by fund, with each
+    fund's net assets and how much is restricted. For what changed over a period, use fund
+    activity."""
     _require_iso_date(as_of, t("acct.field_as_of_date"))
     return await fund_balance_sheet(session, company_id, as_of=as_of)
 
@@ -311,6 +314,9 @@ async def get_fund_activity(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """Fund activity over a period: what each fund received, spent, released and
+    transferred, with every movement between funds. A movement is undone from here by
+    reversing it."""
     _require_date_range(date_from, date_to)
     return await fund_activity(session, company_id, date_from=date_from, date_to=date_to)
 
@@ -322,5 +328,7 @@ async def get_fund_reconciliation(
     session: AsyncSession = Depends(get_session),
     _: None = require_permission("view_financial_reports"),
 ) -> dict:
+    """Check on a date that the funds add up to the company ledger, and list anything that
+    needs a look, such as a fund overdrawn or a difference between the two."""
     _require_iso_date(as_of, t("acct.field_as_of_date"))
     return await check_fund_reconciliation(session, company_id, as_of=as_of)

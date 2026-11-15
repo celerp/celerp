@@ -317,7 +317,7 @@ class TestCompanyDetailsSummary:
         assert lines[0] == "Business type saved."
         assert "Categories added: Diamond, Ruby" in lines
         assert "Modules enabled: Manufacturing" in lines
-        assert "Settings updated: Stock cutting method, Payment Terms, Terms & Conditions" in lines
+        assert "Settings updated: Costing method, Payment Terms, Terms & Conditions" in lines
         assert "Demo items replaced: 9" in lines
         assert "Demo items kept because they were edited or used: 1" in lines
 

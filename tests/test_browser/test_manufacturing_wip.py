@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser test: Work In Progress (/manufacturing/production) Phase-2 bulk toolbar + column funnels.
+"""Browser test: Work Orders (/manufacturing/production) Phase-2 bulk toolbar + column funnels.
 
 Drives the REAL UI (no API bypass for the action under test):
 - The shared bulk toolbar (.bulkbar / .bulk-action-select / .bulk-count) is present; the Action
@@ -85,7 +85,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     # ── WIP page: bulk toolbar present, Action select usable with no selection ──
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
-    assert "Work In Progress" in page.locator("body").inner_text()
+    assert "Work Orders" in page.locator("body").inner_text()
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
 
     bulkbar = page.locator(".bulkbar")

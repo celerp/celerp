@@ -16,6 +16,7 @@ import os
 import random
 import threading
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 import httpx
@@ -40,6 +41,49 @@ _WRITE = os.environ.get("HELP_CAPTURE_WRITE") == "1"
 _MAX_WIDTH = 1000
 _EXIF_DESCRIPTION = 0x010E
 _PAGES = [p for p in shipped_pages() if isinstance(p.data, dict)]
+
+
+async def _ok(response: httpx.Response) -> dict:
+    assert response.status_code in (200, 201), response.text
+    return response.json()
+
+
+async def seed_funds_and_deferred_revenue(client: httpx.AsyncClient, auth: dict, contacts: list[dict],
+                                          today: date) -> None:
+    """Funds and revenue recognition show their controls only once they are in use: funds
+    on, a restricted fund, an archived fund and a transfer; an invoice deferring revenue over
+    the last three ended months with the oldest month posted, and a voided one."""
+    def key() -> str:
+        return uuid.uuid4().hex
+
+    await _ok(await client.put("/accounting/funds/setting", headers=auth, json={"enabled": True}))
+    await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Roof appeal", "restricted": True, "purpose": "Repair the roof"}))
+    reserve = await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Reserve"}))
+    fair = await _ok(await client.post("/accounting/funds", headers=auth, json={
+        "request_key": key(), "name": "Summer fair"}))
+    await _ok(await client.post(f"/accounting/funds/{fair['id']}/archive", headers=auth))
+    await _ok(await client.post("/accounting/funds/transfer", headers=auth, json={
+        "request_key": key(), "date": today.isoformat(), "reason": "Set aside a reserve",
+        "from_fund": None, "to_fund": reserve["id"], "amount": 500.0}))
+
+    item = await _ok(await client.post("/items", headers=auth, json={
+        "name": "Support plan", "sell_by": "piece", "inventory_type": "service", "quantity": 0,
+        "status": "available", "retail_price": 900.0, "recognize_over_service_period": True}))
+    this_month = today.replace(day=1)
+    start = (this_month - timedelta(days=85)).replace(day=1)
+    line = {"item_id": item["id"], "name": "Support plan", "quantity": 1, "unit_price": 900.0,
+            "line_total": 900.0, "service_start": start.isoformat(),
+            "service_end": (this_month - timedelta(days=1)).isoformat()}
+    docs = []
+    for _ in range(2):
+        doc = await _ok(await client.post("/docs", headers=auth, json={
+            "doc_type": "invoice", "contact_id": contacts[2]["id"], "line_items": [line], "total": 900.0}))
+        await _ok(await client.post(f"/docs/{doc['id']}/finalize", headers=auth, json={}))
+        docs.append(doc["id"])
+    await _ok(await client.post(f"/accounting/recognition/{start:%Y-%m}/post", headers=auth, json={}))
+    await _ok(await client.post(f"/docs/{docs[1]}/void", headers=auth, json={"reason": "Sent twice"}))
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +133,7 @@ def demo_token(api_server, api):
             assert r.status_code in (200, 201), r.text
             r = await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=auth)
             assert r.status_code == 200, r.text
+            await seed_funds_and_deferred_revenue(client, auth, contacts, date.fromisoformat(today))
             # The default label templates are created through their write route, so no
             # page's first read seeds them: which labels page reads first depends on test order.
             for preset in PRESET_TEMPLATES:

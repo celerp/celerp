@@ -116,7 +116,8 @@ def test_every_amount_of_a_cost_pricing_event_is_redacted(price_type):
 
 
 def test_a_sell_pricing_event_keeps_its_amounts():
-    data = {"price_type": "retail_price", **{k: 1.0 for k in _AMOUNTS}}
+    """A sell price event carries no goods-cost flag (it is set for a goods-cost price type only)."""
+    data = {"price_type": "retail_price", **{k: 1.0 for k in _AMOUNTS if k != "goods_cost_unknown"}}
     assert redact_event_costs("item.pricing.set", data) == data
 
 

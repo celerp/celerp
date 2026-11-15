@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
-from ui.components.icons import import_icon
+from ui.components.icons import icon, import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
@@ -691,11 +691,11 @@ def _company_reset_card(company_name: str) -> FT:
             Div(
                 Div(
                     Div(
-                        Span("⚠", cls="reset-modal__icon"),
+                        Span(icon("alert-triangle"), cls="reset-modal__icon"),
                         H3(t("settings.reset_this_company_q"), cls="modal-dialog__title reset-modal__title--danger"),
                         cls="reset-modal__title-row",
                     ),
-                    Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
+                    Button(icon("x"), type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
                            onclick=close_js),
                     cls="modal-dialog__header",
                 ),
@@ -723,7 +723,7 @@ def _company_reset_card(company_name: str) -> FT:
             Form(
                 Div(
                     H3(t("settings.confirm_deletion"), cls="modal-dialog__title reset-modal__title--danger"),
-                    Button("✕", type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
+                    Button(icon("x"), type="button", cls="modal-dialog__close", aria_label=t("btn.close"),
                            onclick=close_js),
                     cls="modal-dialog__header",
                 ),
@@ -1790,7 +1790,7 @@ def setup_routes(app):
         def _row(r: dict) -> FT:
             status = r.get("status", "")
             cls = {"ok": "status-ok", "unmatched": "status-warn", "error": "status-error"}.get(status, "")
-            hero_icon = "⭐" if r.get("is_hero") else ""
+            hero_icon = icon("star") if r.get("is_hero") else ""
             # data-status lets the client-side filter (celerpBulkFilter) show/hide rows.
             return Tr(
                 Td(r.get("sku", "")),
@@ -1814,8 +1814,8 @@ def setup_routes(app):
             Div(
                 _filter_btn(f"All {len(report)}", "all", "flash--muted", active=True),
                 _filter_btn(f"✓ {n_matched} matched", "ok", "flash--success"),
-                _filter_btn(f"⚠ {n_unmatched} unmatched", "unmatched", "flash--warning") if n_unmatched else "",
-                _filter_btn(f"✕ {n_errors} errors", "error", "flash--error") if n_errors else "",
+                _filter_btn(f"{n_unmatched} unmatched", "unmatched", "flash--warning") if n_unmatched else "",
+                _filter_btn(f"{n_errors} errors", "error", "flash--error") if n_errors else "",
                 cls="bulk-result-summary",
             ),
             Table(
@@ -2412,7 +2412,7 @@ def setup_routes(app):
                     cls="cell",
                 ),
                 Td(
-                    Button("✕", cls="btn btn--danger btn--xs",
+                    Button(icon("x"), cls="btn btn--danger btn--xs",
                            hx_delete=f"/settings/categories/{category_key}",
                            hx_target="closest tr",
                            hx_swap="outerHTML"),

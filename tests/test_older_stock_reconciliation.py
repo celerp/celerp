@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Older stock is placed against what all its inventory accounts hold together.
+"""Opening inventory is placed against what all its inventory accounts hold together.
 
 Older releases booked stock to purchased inventory and to opening inventory, so neither
-account alone says where a lot's value sits. Placing older stock compares the lots'
+account alone says where a lot's value sits. Placing opening inventory compares the lots'
 value with what the two accounts hold together beyond the stock recorded on them:
 
 - split across both: the value is moved onto the default account, nothing is added;
@@ -46,7 +46,7 @@ from test_posting_roles_rollout import _startup
 
 pytestmark = pytest.mark.asyncio
 
-_LOTS = [25000.0] * 4  # 100,000 of older stock
+_LOTS = [25000.0] * 4  # 100,000 of opening inventory
 
 
 async def _posted(session, auth, debit: str, credit: str, amount: float, memo: str) -> None:
@@ -275,7 +275,7 @@ async def test_cash_sales_and_receivables_on_any_account_are_never_counted_as_st
 
 async def test_a_bank_or_receivable_already_in_the_inventory_history_keeps_its_balance(session, client, auth):
     """A company whose purchased inventory history already names a bank account and a
-    receivable, as an older release could leave it, places its older stock from the
+    receivable, as an older release could leave it, places its opening inventory from the
     lines posted as stock only: the cash and the sales stay where they are. Both sales
     were posted by hand with no roles on their lines, and the bank being a bank account
     today says nothing of what an older line on it was for: each is evidence to review,
@@ -326,13 +326,13 @@ async def test_prepaid_rent_on_an_account_once_used_as_purchased_inventory_is_ne
 
 async def test_a_deposit_account_already_on_purchased_inventory_still_places_and_sells(session, client, auth):
     """Settings an older release left with the deposit account on purchased inventory do
-    not stop older stock being placed or sold, and deposits taken there are never stock."""
+    not stop opening inventory being placed or sold, and deposits taken there are never stock."""
     lots = await _older_company(session, client, auth, _LOTS)
     await _given(session, auth, default_deposit="1130-P")
     await _startup(session)
 
     assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
-    assert await _notices(session, auth, "Older stock waits for a posting account") == []
+    assert await _notices(session, auth, "Opening inventory waits for a posting account") == []
     assert (await _sold(client, auth, lots[0])).status_code == 200
     await _posted(session, auth, "1130-P", "4100", 700.0, "Deposit taken")
     assert await _net(session, auth, "1130-P") == (700.0,)
@@ -430,7 +430,7 @@ async def test_an_inactive_opening_account_holding_stock_value_holds_placement_n
 
     assert await _accounts(session, auth, lots) == [None] * 4
     assert await _records(session, auth) == []
-    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    (notice,) = await _notices(session, auth, "Opening inventory waits for a posting account")
     assert "Opening inventory is set to account 1130-OB, which is inactive." in notice.body
 
     await _inactive(session, auth, "1130-OB", active=True)
@@ -442,7 +442,7 @@ async def test_an_inactive_opening_account_holding_stock_value_holds_placement_n
 
 async def test_an_inactive_purchased_account_holding_nothing_leaves_older_stock_on_opening_inventory(
         session, client, auth):
-    """Purchased inventory switched off while it holds nothing: older stock is placed on
+    """Purchased inventory switched off while it holds nothing: opening inventory is placed on
     opening inventory, nothing is recognized, and the stock sells."""
     lots = await _older_company(session, client, auth, _LOTS)
     await _mapped(session, auth)
@@ -450,7 +450,7 @@ async def test_an_inactive_purchased_account_holding_nothing_leaves_older_stock_
     await _startup(session)
 
     assert set(await _accounts(session, auth, lots)) == {"1130-OB"}
-    assert await _notices(session, auth, "Older stock waits for a posting account") == []
+    assert await _notices(session, auth, "Opening inventory waits for a posting account") == []
     (record,) = await _records(session, auth)
     assert (record["account"], record["transferred"], record["recognized"]) == ("1130-OB", 0.0, 0.0)
     assert await assert_books_carry_stock(session, auth["company_id"]) == {
@@ -467,7 +467,7 @@ async def test_an_inactive_purchased_account_holding_stock_value_holds_placement
 
     assert await _accounts(session, auth, lots) == [None] * 4
     assert await _records(session, auth) == []
-    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    (notice,) = await _notices(session, auth, "Opening inventory waits for a posting account")
     assert "Inventory purchased is set to account 1130-P, which is inactive." in notice.body
 
 
@@ -483,7 +483,7 @@ async def test_older_stock_waits_naming_each_inventory_account_and_why_it_cannot
 
     assert await _accounts(session, auth, lots) == [None] * 4
     assert await _records(session, auth) == []
-    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    (notice,) = await _notices(session, auth, "Opening inventory waits for a posting account")
     assert "Inventory purchased is set to account 1130-P, which is inactive." in notice.body
     assert "Opening inventory is set to account 1130-OB, which is inactive." in notice.body
 
@@ -495,7 +495,7 @@ async def test_older_stock_short_of_its_value_waits_naming_the_retained_earnings
     await _startup(session)
 
     assert await _accounts(session, auth, lots) == [None] * 4
-    (notice,) = await _notices(session, auth, "Older stock waits for a posting account")
+    (notice,) = await _notices(session, auth, "Opening inventory waits for a posting account")
     assert "Retained earnings is set to account 3200, which is inactive." in notice.body
 
 

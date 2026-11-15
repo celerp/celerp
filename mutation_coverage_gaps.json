@@ -255,11 +255,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
-  "route": "ui POST /api/items/{entity_id}/archive",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
   "route": "ui DELETE /api/items/{entity_id}/attachments/{att_id}",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api DELETE."
@@ -281,11 +276,6 @@
  },
  {
   "route": "ui POST /api/items/{entity_id}/duplicate",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /api/items/{entity_id}/expire",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
@@ -320,17 +310,7 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
-  "route": "ui POST /api/items/{entity_id}/revert-to-draft",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
   "route": "ui POST /api/items/{entity_id}/split",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /api/items/{entity_id}/split-inline",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
@@ -488,11 +468,6 @@
   "route": "ui POST /docs/{entity_id}/delete-payment",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api DELETE."
- },
- {
-  "route": "ui POST /docs/{entity_id}/files",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui DELETE /docs/{entity_id}/files/{file_id}",

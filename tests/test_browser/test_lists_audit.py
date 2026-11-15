@@ -93,24 +93,24 @@ def test_status_cards_present(page: Page, ui_server: str, api):
 # ── LA-04: New List button ────────────────────────────────────────────────────
 
 def test_new_list_empty_state_shows_two_buttons(page: Page, ui_server: str, api):
-    """LA-04a: When the Lists table is empty, there are two 'New List' controls —
-    the toolbar button and the empty-state CTA (both legitimate). Force the empty
+    """LA-04a: When the Lists table is empty, there are two 'New Quotation' controls (the
+    unfiltered Lists page makes a quotation): the toolbar button and the empty-state CTA. Force the empty
     render with a no-match search so this is deterministic regardless of session."""
     page.goto(f"{ui_server}/lists?q=zzz-no-such-list-zzz", wait_until="domcontentloaded")
     expect(page.locator("#list-table .empty-state-cta-btn")).to_be_visible()
-    assert page.locator("button:has-text('New List')").count() == 2, \
-        "Empty Lists page should show the toolbar + empty-state 'New List' buttons"
+    assert page.locator("button:has-text('New Quotation')").count() == 2, \
+        "Empty Lists page should show the toolbar + empty-state 'New Quotation' buttons"
 
 
 def test_new_list_button_creates_and_redirects(page: Page, ui_server: str, api):
-    """LA-04b: With a list present, only the toolbar 'New List' button shows;
+    """LA-04b: With a list present, only the toolbar 'New Quotation' button shows;
     clicking it creates a draft and redirects to the detail page."""
     _create_list(api)  # ensure the (drafts) view is populated -> single button
     # preset=all so the default date filter doesn't hide the just-created (dateless) draft
     page.goto(f"{ui_server}/lists?view=drafts&preset=all", wait_until="domcontentloaded")
-    new_btns = page.locator("button:has-text('New List')")
+    new_btns = page.locator("button:has-text('New Quotation')")
     assert new_btns.count() == 1, \
-        f"Populated Lists page should show 1 'New List' button, got {new_btns.count()}"
+        f"Populated Lists page should show 1 'New Quotation' button, got {new_btns.count()}"
     new_btns.first.click()
     page.wait_for_url(lambda url: "/lists/" in url, timeout=10000)
     assert "/lists/" in page.url, f"Expected redirect to /lists/{{id}}, got {page.url}"
