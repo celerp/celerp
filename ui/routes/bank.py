@@ -65,7 +65,7 @@ async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "",
         BG.search_form(bank_id, view, q),
         BG.bulk_toolbar(bank_id, cur, view, q, bulk_outcome, undo_ids),
         BG.group_table(table, bank_id, cur),
-        *BG.panel_templates(bank_id, await _answer_options(token, bank_id), cur),
+        *BG.panel_templates(bank, await _answer_options(token, bank_id)),
         Details(Summary(t("bank.drop_another")), BG.drop_zone(bank_id), cls="screen-only"),
         id="bank-body", data_bank=bank_id)
 
@@ -362,13 +362,14 @@ def setup_routes(app):
         line_id, kind = str(form.get("line_id", "")), str(form.get("form", "answer"))
         bank = await api.get_bank_account(token, bank_id)
         options = await _answer_options(token, bank_id)
+        rate = str(form.get("rate", "")).strip()
         if kind == "split":
             parts = [(str(c).strip(), str(a).strip()) for c, a in zip(form.getlist("account_code"),
                                                                        form.getlist("amount"))]
             parts = [(c, a) for c, a in parts if c or a]
 
             def again(error: str) -> FT:
-                return BG.split_form(bank_id, options, bank.get("currency"), line_id=line_id, parts=parts, error=error)
+                return BG.split_form(bank, options, line_id=line_id, parts=parts, rate=rate, error=error)
             if not parts or not all(c for c, _a in parts):
                 return again(t("reconciliation.split.account_required"))
             decision = {"kind": "post", "splits": [{"account_code": c, "amount": a or 0} for c, a in parts]}
@@ -376,8 +377,8 @@ def setup_routes(app):
             answer, contact = str(form.get("answer", "")), str(form.get("contact", "")).strip()
 
             def again(error: str) -> FT:
-                return BG.answer_form(bank_id, options, line_id=line_id,
-                                      values={"answer": answer, "contact": contact}, error=error)
+                return BG.answer_form(bank, options, line_id=line_id,
+                                      values={"answer": answer, "contact": contact, "rate": rate}, error=error)
             head, _, rest = answer.partition(":")
             if head == "post" and rest:
                 decision = {"kind": "post", "account_code": rest}
@@ -389,6 +390,11 @@ def setup_routes(app):
                 return again(t("bank.err_choose_answer"))
             if contact:
                 decision["contact"] = contact
+        if rate:
+            try:
+                decision["rate"] = float(rate)
+            except ValueError:
+                return again(t("acct.err_bank_rate_invalid", raw=rate))
         try:
             out = await api.bank_action(token, bank_id, "resolve", {
                 "decisions": [{"line_ids": [line_id], **decision}],

@@ -88,6 +88,16 @@ def page_flashes(params) -> tuple:
     return (flash(msg) if msg else None, flash(done, "success") if done else None)
 
 
+def rate_input(bank: dict, cls: str = "", value: str = "") -> FT | None:
+    """The exchange rate an entry on a bank kept in another currency than the books is
+    booked at; a bank in the books currency is never asked."""
+    if not bank.get("books_currency") or bank.get("currency") == bank["books_currency"]:
+        return None
+    label = t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"])
+    return Input(type="number", name="rate", step="any", min="0", value=value, placeholder=label,
+                 aria_label=label, cls=f"form-input {cls}".strip())
+
+
 def _statement_actions(bank: dict, statement: dict, view: str, q: str) -> tuple:
     """Reopen on a completed statement; on an open one, write off a difference within
     tolerance and remove the statement (the API refuses once a line of it is posted)."""
@@ -98,12 +108,8 @@ def _statement_actions(bank: dict, statement: dict, view: str, q: str) -> tuple:
                     hx_target="#bank-body", hx_swap="outerHTML", hx_confirm=confirm, cls="inline-form")
     if statement["status"] == "completed":
         return (action(t("btn.reopen"), "reopen", t("recon.reopen_confirm")),)
-    rate = None
-    if bank.get("books_currency") and bank.get("currency") != bank["books_currency"]:
-        rate = Input(type="number", name="rate", step="any", min="0", cls="form-input bank-strip__rate",
-                     placeholder=t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]),
-                     aria_label=t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]))
-    return (action(t("btn.write_off_diff"), "write-off", t("bank.write_off_confirm"), rate),
+    return (action(t("btn.write_off_diff"), "write-off", t("bank.write_off_confirm"),
+                   rate_input(bank, "bank-strip__rate")),
             action(t("bank.remove_statement"), "remove", t("bank.remove_statement_confirm")))
 
 
@@ -309,9 +315,10 @@ def answer_options(chart: list[dict], banks: list[dict], bank_id: str) -> list[t
                    ("no_entry", t("bank.answer_no_entry"))]
 
 
-def answer_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = "", values: dict | None = None,
+def answer_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = "", values: dict | None = None,
                 error: str = "") -> FT:
     values = values or {}
+    bank_id = bank["id"]
     return Form(
         Input(type="hidden", name="line_id", value=line_id), Input(type="hidden", name="form", value="answer"),
         _key_input(),
@@ -322,6 +329,7 @@ def answer_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = 
         Label(t("bank.contact_label"), cls="form-label"),
         Div(searchable_select("contact", [], value=values.get("contact", ""), search_url=PARTY_SEARCH_URL,
                               aria_label=t("bank.contact_label")), cls="searchable-select"),
+        rate_input(bank, value=values.get("rate", "")),
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
                    onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
@@ -329,10 +337,11 @@ def answer_form(bank_id: str, options: list[tuple[str, str]], *, line_id: str = 
         cls="bank-panel", data_form="answer", onkeydown=_remove_on_escape("form"))
 
 
-def split_form(bank_id: str, options: list[tuple[str, str]], currency: str | None, *, line_id: str = "",
-               parts: list[tuple[str, str]] | None = None, error: str = "") -> FT:
+def split_form(bank: dict, options: list[tuple[str, str]], *, line_id: str = "",
+               parts: list[tuple[str, str]] | None = None, rate: str = "", error: str = "") -> FT:
     """The parts of one line, each an account and a positive amount in the bank's minor
     unit; blank rows are dropped."""
+    bank_id, currency = bank["id"], bank.get("currency")
     accounts = [(v.split(":", 1)[1], label) for v, label in options if v.startswith("post:")]
     parts = list(parts or []) + [("", "")] * max(0, 3 - len(parts or []))
     return Form(
@@ -345,6 +354,7 @@ def split_form(bank_id: str, options: list[tuple[str, str]], currency: str | Non
               Input(type="number", name="amount", value=amount, min="0", step=money_step(currency), cls="form-input",
                     aria_label=t("label.amount")),
               cls="bank-split__part") for code, amount in parts],
+        rate_input(bank, value=rate),
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
                    onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
@@ -365,10 +375,10 @@ def ask_panel(bank_id: str) -> FT:
         cls="bank-panel", data_panel="ask", onkeydown=_remove_on_escape("[data-panel=ask]"))
 
 
-def panel_templates(bank_id: str, options: list[tuple[str, str]], currency: str | None) -> tuple:
-    return (Template(answer_form(bank_id, options), id="bank-tpl-answer"),
-            Template(split_form(bank_id, options, currency), id="bank-tpl-split"),
-            Template(ask_panel(bank_id), id="bank-tpl-ask"))
+def panel_templates(bank: dict, options: list[tuple[str, str]]) -> tuple:
+    return (Template(answer_form(bank, options), id="bank-tpl-answer"),
+            Template(split_form(bank, options), id="bank-tpl-split"),
+            Template(ask_panel(bank["id"]), id="bank-tpl-ask"))
 
 
 # ── The drop zone and the statement preview ─────────────────────────────────

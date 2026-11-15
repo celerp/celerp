@@ -662,6 +662,6 @@ async def test_a_three_decimal_statement_balance_can_be_entered():
 async def test_a_zero_decimal_currency_steps_in_whole_units():
     from fasthtml.common import to_xml
     from ui.components.bank_groups import split_form
-    form = to_xml(split_form("b1", [("post:6100", "6100 Bank fees")], "JPY", line_id="l1"))
+    form = to_xml(split_form({"id": "b1", "currency": "JPY"}, [("post:6100", "6100 Bank fees")], line_id="l1"))
     assert 'step="1"' in form and 'step="0.01"' not in form
-    assert 'step="0.001"' in to_xml(split_form("b1", [("post:6100", "6100 Bank fees")], "KWD"))
+    assert 'step="0.001"' in to_xml(split_form({"id": "b1", "currency": "KWD"}, [("post:6100", "6100 Bank fees")]))
