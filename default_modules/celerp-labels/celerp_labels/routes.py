@@ -259,7 +259,7 @@ def _checked_numbers(values: dict) -> dict:
                 values.pop(name, None)
         label_size({"format": values.get("format")})
     except LabelNumberError as e:
-        raise HTTPException(status_code=422, detail=e.text) from None
+        raise HTTPException(status_code=422, detail=e.detail) from None
     return values
 
 
