@@ -42,7 +42,6 @@ from celerp_fixed_assets.operations import (
     _run,
     asset_movements,
     catch_up,
-    conflict,
     in_use,
     refuse,
     label_lines,

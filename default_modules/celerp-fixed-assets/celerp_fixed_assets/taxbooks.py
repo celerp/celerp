@@ -66,7 +66,6 @@ def check_year(year) -> int:
 
 def regime_for(settings: dict | None, key: str):
     """The regime ``key``: 404 when no module provides it, 422 when the company has not chosen it."""
-    from ui.i18n import t
 
     try:
         regime = rules.regime(key)
@@ -302,7 +301,6 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
     gives none, so the price stands for it, as it does for an asset outside the regime's
     book. Anything that stops a value being worked out refuses the transfer (409), naming
     the regime and what to do, so the price never stands in for a value by accident."""
-    from ui.i18n import t
 
     def refuse(why: str) -> HTTPException:
         return HTTPException(status_code=409, detail=t("fixed_assets.err_tax_value_asset_carries_other_company", why=why))
@@ -357,7 +355,6 @@ async def book(session, company_id, regime_key: str, year: int, settings: dict |
     """The book under ``regime_key`` for tax ``year``: open years worked out now, a closed
     year as it was closed. While the regime's module is off the book is read only: a closed
     year still shows, an open one has no figures until the module is back."""
-    from ui.i18n import t
 
     settings = settings if settings is not None else await setup.company_settings(session, company_id)
     regime = regime_for(settings, regime_key)
@@ -413,7 +410,6 @@ async def set_book(session, company_id, user_id, asset_id: str, regime_key: str,
     """Set an asset's tax category (None for its class's) and elections under one regime.
     Changes the open years only; a closed year keeps what it was closed with."""
     from celerp.services.permissions import locked_authority
-    from ui.i18n import t
 
     _, settings = await locked_authority(session, company_id, user_id, ("manage_accounting",))
     regime = regime_for(settings, regime_key)

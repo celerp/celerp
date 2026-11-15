@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from celerp.services.business_time import business_today
 
 from celerp_fixed_assets import projections, runs, setup, sources
-from celerp_fixed_assets.operations import _dec, _move, conflict
+from celerp_fixed_assets.operations import _dec, _move
 from celerp_fixed_assets.store import _entities, movements_by_asset
 
 OPENING_STATES = ("finished", "kept_open")

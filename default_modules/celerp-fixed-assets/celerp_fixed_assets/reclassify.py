@@ -20,7 +20,7 @@ from celerp_fixed_assets import disposal, projections, runs, setup
 from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
-    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, conflict, in_use)
+    _date, _dec, _effects, _journal_view, _lines, _move, _post, _run, asset_movements, catch_up, in_use)
 from celerp_fixed_assets.store import _emit
 from ui.i18n import t
 

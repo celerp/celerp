@@ -42,7 +42,7 @@ from celerp.accounting_roles import refusal
 from celerp.services.business_time import company_today
 
 from celerp_fixed_assets import fixaccount, runs, setup, sources
-from celerp_fixed_assets.operations import MODULE, _dec, conflict
+from celerp_fixed_assets.operations import MODULE, _dec
 from celerp_fixed_assets.projections import fold_movements, money
 from celerp_fixed_assets.store import _emit, _entities
 

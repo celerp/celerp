@@ -35,7 +35,6 @@ from celerp_fixed_assets.operations import (
     asset_movements,
     catch_up,
     changes,
-    conflict,
     in_use,
     reverse_move,
 )

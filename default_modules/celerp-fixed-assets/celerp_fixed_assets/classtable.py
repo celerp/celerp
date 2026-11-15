@@ -16,7 +16,7 @@ import uuid
 from fastapi import HTTPException
 
 from celerp_fixed_assets import setup
-from celerp_fixed_assets.operations import _effects, _run, conflict
+from celerp_fixed_assets.operations import _effects, _run
 from celerp_fixed_assets.store import _emit, _state
 from ui.i18n import t
 

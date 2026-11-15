@@ -239,12 +239,13 @@ async def test_s4_draft_finalize_completes_sale_atomically(fa, monkeypatch):
 
     # A disposal that cannot post refuses the finalize: neither the invoice nor the disposal posts.
     from celerp_fixed_assets import disposal
+    from celerp_fixed_assets.operations import conflict
 
     van = await _contributed(fa, name="Van")
     van_inv = await _sell(fa, van)
 
     def broken(*args, **kwargs):
-        raise disposal.conflict(period_locked_refusal("2026-04-20"))
+        raise conflict(period_locked_refusal("2026-04-20"))
 
     monkeypatch.setattr(disposal, "_plan_asset", broken)
     refused = await _doc(fa, van_inv, "finalize")

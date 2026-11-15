@@ -29,7 +29,7 @@ from celerp_fixed_assets import notices, projections, reclassify, runs, setup, s
 from celerp.services.periods import fiscal_year_start_index, month_index, parse_period, period_label
 from celerp_fixed_assets.operations import (
     MODULE, _claim, _date, _dec, _intent_hash, _journal_view, _lines, _money_in, _move, _op_key, _open_line, _post,
-    _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use, same_fund)
+    _reversed_lines, _run, _same_intent, asset_movements, in_use, same_fund)
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state
 from celerp_fixed_assets.projections import BUCKETS, money, said
 from ui.i18n import t

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.events.engine import emit_event
-from celerp.importers.results import ImportOutcome, failure_reason, row_refusal
+from celerp.importers.results import ImportOutcome, row_refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company

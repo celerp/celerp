@@ -25,7 +25,7 @@ from fastapi import HTTPException
 
 from celerp_fixed_assets import runs, setup
 from celerp_fixed_assets.projections import said
-from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo, conflict
+from celerp_fixed_assets.operations import MODULE, _dec, _effects, _journal_view, _post, _run, _undo
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
 

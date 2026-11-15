@@ -312,7 +312,6 @@ async def statutory(session, company_id, report_key: str, year) -> dict:
     """A country form, drawn by its module from its regime's book for the tax year."""
     from celerp_fixed_assets.calc import rules
     from fastapi import HTTPException
-    from ui.i18n import t
 
     settings = await setup.company_settings(session, company_id)
     try:

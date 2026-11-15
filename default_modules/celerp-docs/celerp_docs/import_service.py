@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.importers.results import ImportOutcome, OutcomeStatus, failure_reason, row_refusal
+from celerp.importers.results import ImportOutcome, OutcomeStatus, row_refusal
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection

@@ -45,7 +45,7 @@ from celerp_fixed_assets.calc.engine import (
     schedule,
 )
 from celerp.services.periods import month_index, parse_period, period_label
-from celerp_fixed_assets.operations import MODULE, _dec, _move, conflict
+from celerp_fixed_assets.operations import MODULE, _dec, _move
 from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException

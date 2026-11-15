@@ -23,7 +23,7 @@ from celerp_fixed_assets import opening, recon, setup
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import (
     WRITTEN_OFF_OVER_COST, _create_asset, _date, _dec, _effects, _money_in, _move, _next_numbers,
-    _run, _undo, after_cutover, conflict, tag_taken)
+    _run, _undo, after_cutover, tag_taken)
 from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
 

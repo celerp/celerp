@@ -22,7 +22,6 @@ from test_disposal import _dispose
 from test_runs import _contributed, _managed_from, _race_company
 from ui.i18n import refusal_text
 from test_transfer import _location, _move
-from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 

@@ -37,11 +37,10 @@ from celerp_fixed_assets.operations import (
     _reversed_lines,
     _run,
     asset_movements,
-    conflict,
     in_use,
     reverse_move,
 )
-from celerp_fixed_assets.store import _emit, _journal, _state
+from celerp_fixed_assets.store import _emit, _journal
 from fastapi import HTTPException
 from sqlalchemy import select
 from ui.i18n import t
