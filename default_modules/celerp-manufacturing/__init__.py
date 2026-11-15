@@ -53,10 +53,12 @@ PLUGIN_MANIFEST = {
                 "label": "Demand Planning",
                 "label_key": "manufacturing.demand_planning",
                 "href": "/manufacturing",
+                "help": "manufacturing.demand-planning",
                 "order": 35,
                 "permission": "manage_manufacturing",
                 # Gear-link on the group header -> Manufacturing settings.
                 "settings_href": "/settings/manufacturing",
+            "settings_help": "manufacturing.settings",
             },
             {
                 "group": "Manufacturing",
@@ -65,6 +67,7 @@ PLUGIN_MANIFEST = {
                 "label": "Work In Progress",
                 "label_key": "manufacturing.work_in_progress",
                 "href": "/manufacturing/production",
+                "help": "manufacturing.production",
                 "order": 36,
                 "permission": "manage_manufacturing",
             },
@@ -75,6 +78,7 @@ PLUGIN_MANIFEST = {
                 "label": "Stock Orders",
                 "label_key": "documents.page_stock_orders",
                 "href": "/docs?type=production_order",
+                "help": "manufacturing.demand-planning",
                 "order": 37,
                 "permission": "manage_manufacturing",
             },
