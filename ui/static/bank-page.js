@@ -27,8 +27,7 @@
     var tpl = document.getElementById('bank-tpl-' + btn.dataset.open);
     if (!line || !tpl) return;
     var slot = line.querySelector('.bank-panel-slot');
-    slot.innerHTML = '';
-    slot.appendChild(tpl.content.cloneNode(true));
+    slot.replaceChildren(tpl.content.cloneNode(true));
     slot.querySelectorAll('input[name=line_id]').forEach(function (i) { i.value = line.dataset.line; });
     slot.querySelectorAll('input[name=idempotency_key]').forEach(function (i) { i.value = freshKey(line.dataset.line); });
     slot.querySelectorAll('.combobox-wrap').forEach(function (w) { initCombobox(w); });
@@ -60,7 +59,7 @@
     var dp = parseInt(button.dataset.dp || '2', 10);
     var ticked = Array.from(document.querySelectorAll('input[data-role=line]:checked'));
     var groups = new Set(ticked.map(function (l) { return l.dataset.group; }));
-    holder.innerHTML = '';
+    holder.replaceChildren();
     function hidden(name, value) {
       var i = document.createElement('input');
       i.type = 'hidden'; i.name = name; i.value = value;

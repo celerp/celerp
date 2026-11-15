@@ -17,7 +17,7 @@ from fasthtml.common import *
 from celerp.accounting_roles import account_label
 from celerp.output.doc_print import money_step
 from ui.components.attrs import hx_vals
-from ui.components.encode import EVENT, THIS, call
+from ui.components.encode import EVENT, THIS, call, safe_url
 from ui.components.funds import UNRESTRICTED, fund_options
 from ui.components.shell import flash
 from ui.components.table import EMPTY, PARTY_SEARCH_URL, display_enum, searchable_select
@@ -34,7 +34,7 @@ MAP_FIELDS = ("date", "description", "amount", "debit", "credit", "balance", "re
 
 
 def bank_url(bank_id: str, *tail: str) -> str:
-    return "/".join(["/accounting/reconcile/bank", quote(str(bank_id), safe=""), *tail])
+    return f"/accounting/reconcile/bank/{quote(str(bank_id), safe='')}{''.join('/' + part for part in tail)}"
 
 
 def new_key() -> str:
@@ -164,9 +164,8 @@ def summary_line(table: dict, currency: str) -> FT:
 
 
 def view_links(bank_id: str, view: str, q: str) -> FT:
-    def href(v: str) -> str:
-        return bank_url(bank_id) + "?" + urlencode({"view": v, **({"q": q} if q else {})})
-    return Nav(*[A(t(f"bank.view_{v}"), href=href(v), cls="tab" + (" tab--active" if v == view else ""),
+    return Nav(*[A(t(f"bank.view_{v}"), href=bank_url(bank_id) + "?" + urlencode({"view": v, **({"q": q} if q else {})}),
+                   cls="tab" + (" tab--active" if v == view else ""),
                    aria_current="page" if v == view else None) for v in VIEWS], cls="tabs bank-views")
 
 
@@ -220,7 +219,7 @@ def _reason(suggestion: dict | None) -> str:
 
 
 def _thumbs(line: dict) -> list:
-    return [A(Img(src=a["url"], alt="", cls="receipt-thumb", loading="lazy"), href=a["url"], target="_blank",
+    return [A(Img(src=safe_url(a["url"]), alt="", cls="receipt-thumb", loading="lazy"), href=safe_url(a["url"]), target="_blank",
               rel="noopener") for a in line.get("attachments") or [] if a.get("url")]
 
 
@@ -300,10 +299,6 @@ def group_table(table: dict, bank_id: str, currency: str) -> FT:
 
 # ── Panels (templates cloned by bank-page.js) ───────────────────────────────
 
-def _remove_on_escape(selector: str) -> str:
-    return call("celerpRemoveClosest", THIS, selector, EVENT)
-
-
 def answer_options(chart: list[dict], banks: list[dict], bank_id: str) -> list[tuple[str, str]]:
     """What a line can be answered with: an account to post to, another bank (a transfer),
     a cash withdrawal, Suspense or no entry."""
@@ -352,7 +347,7 @@ def answer_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | 
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
                    onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
         hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
-        cls="bank-panel", data_form="answer", onkeydown=_remove_on_escape("form"))
+        cls="bank-panel", data_form="answer", onkeydown=call("celerpRemoveClosest", THIS, "form", EVENT))
 
 
 def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
@@ -381,7 +376,7 @@ def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | N
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
                    onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
         hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
-        cls="bank-panel", data_form="split", onkeydown=_remove_on_escape("form"))
+        cls="bank-panel", data_form="split", onkeydown=call("celerpRemoveClosest", THIS, "form", EVENT))
 
 
 def ask_panel(bank_id: str) -> FT:
@@ -394,7 +389,7 @@ def ask_panel(bank_id: str) -> FT:
                    hx_target="closest [data-line]", hx_swap="outerHTML"),
             Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
                    onclick=call("celerpRemoveClosest", THIS, "[data-panel=ask]")), cls="form-actions"),
-        cls="bank-panel", data_panel="ask", onkeydown=_remove_on_escape("[data-panel=ask]"))
+        cls="bank-panel", data_panel="ask", onkeydown=call("celerpRemoveClosest", THIS, "[data-panel=ask]", EVENT))
 
 
 def panel_templates(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None) -> tuple:

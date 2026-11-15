@@ -59,9 +59,9 @@ def money_value(value, currency: str, *, zero_ok: bool = False) -> Decimal:
 
 
 def _not_found(kind: str) -> HTTPException:
-    key = {"line": "acct.err_statement_line_not_found", "bank": "acct.err_bank_account_not_found",
-           "session": "acct.err_recon_not_found"}[kind]
-    return HTTPException(status_code=404, detail=catalog_refusal(key))
+    return HTTPException(status_code=404, detail=catalog_refusal(
+        "acct.err_statement_line_not_found" if kind == "line"
+        else "acct.err_bank_account_not_found" if kind == "bank" else "acct.err_recon_not_found"))
 
 
 async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, *, bank: BankAccount | None = None,
@@ -136,6 +136,17 @@ async def _session(db: AsyncSession, line: BankStatementLine) -> ReconciliationS
     from celerp_accounting.routes import _lock_recon
     recon, _bank = await _lock_recon(db, line.reconciliation_id, line.company_id, editable=True)
     return recon
+
+
+def completed(recon: ReconciliationSession) -> bool:
+    return recon.status == "completed"
+
+
+def complete(recon: ReconciliationSession) -> None:
+    from datetime import datetime, timezone
+
+    recon.status = "completed"
+    recon.completed_at = datetime.now(timezone.utc)
 
 
 def hold(recon: ReconciliationSession, je_ids: list[str]) -> None:

@@ -147,7 +147,7 @@ async def _read_bank(db: AsyncSession, company_id: uuid.UUID, job_id) -> BankAcc
     bank_id = (row.state or {}).get("bank_account_id") if row is not None else None
     return None if bank_id is None else await _bank(db, company_id, bank_id)
 
-async def _bank_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[BankStatementLine]:
+async def _statement_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[BankStatementLine]:
     return list((await db.execute(select(BankStatementLine).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars())
 
@@ -159,7 +159,7 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
     if bank is None:
         return {}, {}
     from celerp_accounting.routes import _je_entries_for_account, _opening_je_id
-    lines = await _bank_lines(db, company_id, bank)
+    lines = await _statement_lines(db, company_id, bank)
     dates = {s.id: s.statement_date for s in (await db.execute(select(ReconciliationSession).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id))).scalars()}
     existing = {l.fingerprint: t("acct.recon_duplicate_of", date=dates.get(l.reconciliation_id, "")) for l in lines}
@@ -236,7 +236,7 @@ async def _read_job(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uu
         file_id, pages = _step_file(step.key)
         result = step.result or {}
         filename = result.get("filename") or file_id
-        if step.state != "done":
+        if not jobs.answered(step):
             reason = result.get("error") or ""
             out["failed_steps"].append({"filename": filename, "pages": pages, "reason": reason, "retry": True,
                                         "text": t("acct.recon_read_failed_pages", pages=pages, filename=filename)
@@ -380,7 +380,7 @@ async def _seed(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, star
     statement's list brought forward; for the bank's first statement, the entries before it
     when they add up to its opening balance, otherwise none (the group table says why)."""
     earlier = [s for s in await _sessions(db, company_id, bank) if s.statement_date < start]
-    done = [s for s in earlier if s.status == "completed"]
+    done = [s for s in earlier if SL.completed(s)]
     if done:
         return list(done[-1].reconciled_je_ids or [])
     if earlier:
@@ -557,7 +557,7 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     sessions = await _sessions(db, company_id, bank)
     entries = await _je_entries_for_account(db, company_id, bank)
     open_ids = {s.id for s in sessions if s.status == "open"}
-    rows = sorted(await _bank_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)), reverse=True)
+    rows = sorted(await _statement_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)), reverse=True)
     shown = [l for l in rows if _in_view(l, view, open_ids) and (not q or _searched(l, q))]
     groups: dict = {}
     for row in shown:
@@ -784,7 +784,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     return {str(line.id): je_ids}
 
 
-def _refused(status: int, key: str, **params) -> HTTPException:
+def _refused(status: int, key: str, /, **params) -> HTTPException:
     return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
@@ -881,7 +881,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
     from celerp.services import account_roles
 
     open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
-    rows = [l for l in await _bank_lines(db, company_id, bank)
+    rows = [l for l in await _statement_lines(db, company_id, bank)
             if l.reconciliation_id in open_ids and l.status == "unmatched"]
     keys = set(accept.group_keys)
     in_groups = {l.id: l for l in rows if _group_key(_line_dict(l, bank.currency)) in keys}
@@ -1150,7 +1150,7 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
         return first
     bank = await _bank(db, company_id, bank_id)
     open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
-    rows = [l for l in await _bank_lines(db, company_id, bank)
+    rows = [l for l in await _statement_lines(db, company_id, bank)
             if l.reconciliation_id in open_ids and l.status == "unmatched"]
     lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
               "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
@@ -1207,8 +1207,6 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
                         db: AsyncSession = Depends(get_session)) -> dict:
     """Each balanced statement is completed and hands the entries it counts to the next
     one, so the next statement's balance starts where this one ended."""
-    from datetime import datetime, timezone
-
     from celerp_accounting.routes import _je_entries_for_account, _lock_recon, _money_text as money_text, \
         _settled_difference
 
@@ -1231,8 +1229,7 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
         except HTTPException as exc:
             stopped_at = {"statement_date": recon.statement_date, "reason": _reason(exc)}
             break
-        recon.status = "completed"
-        recon.completed_at = datetime.now(timezone.utc)
+        SL.complete(recon)
         completed.append(recon.statement_date)
         if i + 1 < len(pending):
             nxt, _b = await _lock_recon(db, pending[i + 1], company_id, editable=True)

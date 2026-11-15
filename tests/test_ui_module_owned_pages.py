@@ -45,7 +45,7 @@ _SCRIPT = textwrap.dedent("""
     paths = json.loads(sys.argv[1])
     out = {}
     for p in paths:
-        method = "POST" if p.endswith(("/tags", "/start")) else "GET"
+        method = "POST" if p.endswith("/tags") else "GET"
         scope = {"type": "http", "method": method, "path": p, "root_path": "",
                  "query_string": b"", "headers": []}
         served = any(r.matches(scope)[0].name == "FULL" for r in uiapp.app.router.routes)

@@ -1297,7 +1297,7 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     ]
     out: list[FT] = [Div(*groups, cls="ai-action__list")]
     if action.get("card_screen"):
-        out.append(A(t("ai.card_open_page", lang), href=action["card_screen"], cls="ai-action__page-link"))
+        out.append(A(t("ai.card_open_page", lang), href=safe_url(action["card_screen"]), cls="ai-action__page-link"))
     warnings = _action_warnings(action)
     if warnings:
         out.append(Div(

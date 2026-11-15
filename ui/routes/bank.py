@@ -17,6 +17,8 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components import bank_groups as BG
+from ui.components.bank_groups import bank_url
+from ui.components.encode import safe_url
 from ui.components.funds import chosen_fund, funds_in_use
 from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title
 from ui.components.table import EMPTY
@@ -106,7 +108,7 @@ def setup_routes(app):
             if e.status == 403:
                 return await _no_access(request, e, t("bank.list_title"))
             banks = []
-        rows = [Div(A(f"{b['bank_name']} {b.get('account_number') or ''}".strip(), href=BG.bank_url(b["id"]),
+        rows = [Div(A(f"{b['bank_name']} {b.get('account_number') or ''}".strip(), href=bank_url(b["id"]),
                       cls="bank-list__name"),
                     Span(b.get("currency") or EMPTY, cls="text-muted"),
                     Span(BG.money(b.get("balance"), b.get("currency")), cls="bank-cell--money"),
@@ -149,7 +151,7 @@ def setup_routes(app):
                         A(t("btn.back"), href="/accounting/reconcile/start", cls="btn btn--secondary"),
                         summary=t("bank.page_intro")),
             *BG.page_flashes(request.query_params),
-            BG.relabel_notice(bank, BG.bank_url(bank_id)),
+            BG.relabel_notice(bank, bank_url(bank_id)),
             body,
             Script(src="/static/bank-page.js"),
             title=page_title("nav.reconcile"), nav_active="accounting", request=request)
@@ -167,7 +169,7 @@ def setup_routes(app):
                 suffix = PurePath(f.filename).suffix.lower()
                 files.append((f.filename, await f.read(),
                               _CONTENT_TYPES.get(suffix) or f.content_type or "application/octet-stream"))
-        back = BG.bank_url(bank_id)
+        back = bank_url(bank_id)
         if not files:
             return RedirectResponse(back + "?msg=" + quote(t("bank.err_no_file"), safe=""), status_code=303)
         try:
@@ -254,7 +256,7 @@ def setup_routes(app):
         except APIError as e:
             return Div(_fragment_error(e), BG.statement_preview(
                 bank_id, job_id, await api.statement_preview(token, job_id, statements, column_map)))
-        return Response(status_code=204, headers={"HX-Redirect": BG.bank_url(bank_id) + "?view=all"})
+        return Response(status_code=204, headers={"HX-Redirect": bank_url(bank_id) + "?view=all"})
 
     async def _page_action(request: Request, bank_id: str, action: str) -> FT | Response:
         token = _token(request)
@@ -452,7 +454,7 @@ def setup_routes(app):
     # ── The client's page ───────────────────────────────────────────────────
 
     def _question_card(q: dict, notice: FT | None = None) -> FT:
-        thumbs = [A(Img(src=a["url"], alt="", cls="receipt-thumb"), href=a["url"], target="_blank", rel="noopener")
+        thumbs = [A(Img(src=safe_url(a["url"]), alt="", cls="receipt-thumb"), href=safe_url(a["url"]), target="_blank", rel="noopener")
                   for a in q.get("attachments") or [] if a.get("url")]
         settled = q.get("status") != "unmatched"
         return Div(

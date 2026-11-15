@@ -296,6 +296,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_fixed_assets.sources:_manual_lines": READ,
     "ui.components.activity:<module>": READ,
     "ui.routes.accounting:setup_routes.journal_new_submit": JOURNAL_LINE,
+    "ui.routes.bank:setup_routes.resolve_line": JOURNAL_LINE,
     "ui.routes.documents:_local_fund": DRAFT,
     "ui.routes.documents:_submitted_fund_allocation": SETTLED,
 }
