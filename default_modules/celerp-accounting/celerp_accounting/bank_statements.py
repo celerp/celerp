@@ -214,6 +214,7 @@ async def _read_job(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uu
     """The statements, receipts and failed reads of a finished reading job, before review."""
     from celerp.ai import jobs
     from celerp.ai.files import load_file
+    from celerp.importers.tabular import TabularError
     from celerp.models.ai import AIJobStep
 
     job = await jobs.owned_job(db, job_id, company_id=company_id, user_id=user_id, shape="documents")
@@ -238,7 +239,13 @@ async def _read_job(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uu
             continue
         if result.get("structured"):
             content, meta = load_file(file_id, company_id, user_id)
-            first = _parse_structured(content, meta, column_map)
+            try:
+                first = _parse_structured(content, meta, column_map)
+            except (TabularError, HTTPException) as exc:  # a header that would lose values, an unreadable sheet
+                reason = refusal_text(exc.detail)
+                out["failed_steps"].append({"filename": filename, "pages": None, "reason": reason, "retry": False,
+                                            "text": reason})
+                continue
             cmap = column_map
             if first["needs_mapping"] and cmap is None and (saved := _saved_map(bank, first["headers"])):
                 first, cmap = _parse_structured(content, meta, saved), saved
