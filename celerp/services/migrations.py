@@ -338,7 +338,7 @@ def prepare_start(scan: store.ScanSession) -> StartPlan:
         manifest = adapter.build_manifest(scan.artifacts, decisions)
         adapter.source_expectations(scan.artifacts, decisions)
     except (ScanError, SourceRevisionError) as exc:
-        raise MigrationError(422, str(exc)) from None
+        raise MigrationError(422, refusal_detail(exc)) from None
     plan = requirements.plan_requirements(dict.fromkeys(_unserved_modules(manifest)))
     unavailable = plan.blocked + plan.needs_consent
     if unavailable:

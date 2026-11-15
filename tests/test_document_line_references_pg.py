@@ -28,6 +28,7 @@ from celerp.services.item_erasure import erase_items
 from celerp_docs import routes as docs
 from celerp_inventory import routes as inventory
 from celerp_inventory.models_import_batch import ImportBatch
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -280,7 +281,7 @@ async def test_a_document_import_with_a_removed_or_unknown_item_is_refused(commi
             auth=types.SimpleNamespace(peer=None))
 
     assert result.created == 1
-    assert len(result.errors) == 1 and missing in result.errors[0] and "Line 2" in result.errors[0]
+    assert len(message_texts(result.errors)) == 1 and missing in message_texts(result.errors)[0] and "Line 2" in message_texts(result.errors)[0]
     assert await _records(committed_engine, company_id, "doc") == [(good["entity_id"], [_KEPT])]
 
 

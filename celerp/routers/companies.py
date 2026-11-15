@@ -2840,7 +2840,7 @@ async def reactivate_company(
     try:
         done = await company_lifecycle.reactivate_company(session, company_id, user.id)
     except company_lifecycle.NotAnOwner as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from None
+        raise HTTPException(status_code=403, detail=refusal_detail(exc)) from None
     return {
         "ok": True,
         "company_id": str(done.company_id),

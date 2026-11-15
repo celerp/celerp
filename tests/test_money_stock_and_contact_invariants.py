@@ -360,7 +360,7 @@ async def test_delete_refuses_contact_named_on_a_deal(client, session):
 
     blocked = await client.post("/crm/contacts/bulk/delete", headers=h, json={"contact_ids": [source]})
     assert blocked.status_code == 422, blocked.text
-    assert "1 deal(s)" in blocked.json()["detail"]
+    assert "1 deal(s)" in refusal_text(blocked.json()["detail"])
 
 
 

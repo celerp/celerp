@@ -23,6 +23,10 @@ from celerp_fixed_assets.store import _emit, _entities, _state
 from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
+
+# Why every role reaches these routes: each answers only for the caller's own custody.
+OWN_CUSTODY = "the assets in the caller's own custody, whatever their role"
+
 # What a custodian sees of an asset in their care.
 SHOWN = ("number", "tag", "name", "description", "serial", "make", "model", "location_id", "custodian",
          "confirmed", "problems")
@@ -72,21 +76,21 @@ async def _locked_held(session, company_id, user_id, asset_id: str) -> dict:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/mine", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the fixed assets the user holds as custodian.")
+@router.get("/mine", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_CUSTODY}, summary="List the fixed assets the user holds as custodian.")
 async def list_mine(company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                     session: AsyncSession = Depends(get_session)) -> dict:
     locations = await _locations(session, company_id)
     return {"items": [shown(a, s, locations) for a, s in await mine(session, company_id, user.id)]}
 
 
-@router.get("/mine/{asset_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read one fixed asset the user holds as custodian.")
+@router.get("/mine/{asset_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_CUSTODY}, summary="Read one fixed asset the user holds as custodian.")
 async def get_mine(asset_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                    session: AsyncSession = Depends(get_session)) -> dict:
     state = await held(session, company_id, user.id, asset_id)
     return shown(asset_id, state, await _locations(session, company_id))
 
 
-@router.get("/mine/{asset_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-download": "/fixed-assets/mine/{asset_id}/files/{file_id}"}, summary="Download a file of a fixed asset the user holds as custodian.")
+@router.get("/mine/{asset_id}/files/{file_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": OWN_CUSTODY, "x-celerp-agent-download": "/fixed-assets/mine/{asset_id}/files/{file_id}"}, summary="Download a file of a fixed asset the user holds as custodian.")
 async def download_mine(asset_id: str, file_id: str, company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     match = files.file_of(await held(session, company_id, user.id, asset_id), file_id)
@@ -95,7 +99,7 @@ async def download_mine(asset_id: str, file_id: str, company_id=Depends(get_curr
     return files.serve(company_id, match)
 
 
-@router.post("/mine/{asset_id}/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": True}, summary="Confirm the user still holds a fixed asset they are custodian of.")
+@router.post("/mine/{asset_id}/confirm", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": OWN_CUSTODY}, summary="Confirm the user still holds a fixed asset they are custodian of.")
 async def confirm(asset_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                   session: AsyncSession = Depends(get_session)) -> dict:
     """The custodian confirms they still hold the asset, today."""
@@ -106,7 +110,7 @@ async def confirm(asset_id: str, company_id=Depends(get_current_company_id), use
     return shown(asset_id, await _state(session, company_id, asset_id), await _locations(session, company_id))
 
 
-@router.post("/mine/{asset_id}/problems", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": True}, summary="Report a problem with a fixed asset the user holds, with a photo if they have one.")
+@router.post("/mine/{asset_id}/problems", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/mine", "x-celerp-agent-any-role": OWN_CUSTODY}, summary="Report a problem with a fixed asset the user holds, with a photo if they have one.")
 async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile | None = None,
                          company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                          session: AsyncSession = Depends(get_session)) -> dict:

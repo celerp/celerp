@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 
 from celerp.modules import loader, slots
 from test_helpers import make_test_token, register_admin
+from ui.i18n import refusal_text
 
 
 def _uid() -> str:
@@ -199,7 +200,7 @@ async def test_turning_off_a_module_the_company_still_needs_is_refused(client, m
     await client.post(f"/companies/me/modules/{main}/enable", headers=a)
     r = await client.post(f"/companies/me/modules/{dep}/disable", headers=a)
     assert r.status_code == 409
-    assert "Turn that off first." in r.json()["detail"]
+    assert "Turn that off first." in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -300,7 +301,7 @@ async def test_a_module_built_into_celerp_is_always_on_and_cannot_be_turned_off(
     a, _b = await _two_companies(client)
     r = await client.post(f"/companies/me/modules/{folded}/disable", headers=a)
     assert r.status_code == 409, r.text
-    assert "always on" in r.json()["detail"]
+    assert "always on" in refusal_text(r.json()["detail"])
     listed = {m["name"]: m for m in (await client.get("/companies/me/modules", headers=a)).json()}
     assert listed[folded]["enabled"] is True and listed[folded]["running"] is True
 
@@ -406,7 +407,7 @@ async def test_documents_turns_off_for_a_company_whose_list_includes_connectors(
 
     held = await client.post("/companies/me/modules/celerp-docs/disable", headers=h)
     assert held.status_code == 409, held.text
-    assert held.json()["detail"] == "Accounting needs this module. Turn that off first."
+    assert refusal_text(held.json()["detail"]) == "Accounting needs this module. Turn that off first."
 
     assert (await client.post("/companies/me/modules/celerp-accounting/disable", headers=h)).status_code == 200
     r = await client.post("/companies/me/modules/celerp-docs/disable", headers=h)

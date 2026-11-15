@@ -33,6 +33,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from celerp import config_store
+from celerp.accounting_roles import refusal_detail
 from celerp.config import settings
 from celerp.importers.adapters import registry
 from celerp.importers.adapters.base import (
@@ -421,7 +422,7 @@ def _recognise(artifacts: ArtifactSet, chosen: SourceAdapter | None) -> SourceAd
             return chosen
         adapter = registry.detect_adapter(artifacts)
     except SourceRevisionError as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
     if adapter is None:
         raise ScanStoreError(422, t("migration.err_celerp_cannot_read_names_yet_accepted", names=names, accepted=_accepted(registry.list_adapters())))
     return adapter
@@ -451,11 +452,11 @@ async def _inspect(adapter: SourceAdapter, artifacts: ArtifactSet, check_only: b
         try:
             return await asyncio.to_thread(adapter.inspect, artifacts)
         except (ScanError, SourceRevisionError) as exc:
-            raise ScanStoreError(422, str(exc)) from exc
+            raise ScanStoreError(422, refusal_detail(exc)) from exc
     try:
         checked = await asyncio.to_thread(check, artifacts)
     except SourceRevisionError as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
     error = ""
     if checked.complete and not check_only:
         try:
@@ -651,7 +652,7 @@ def _rescanned(session: ScanSession, decisions: MigrationDecisions) -> SourceSca
     try:
         return registry.get_adapter(session.adapter_key).inspect(session.artifacts, chosen)
     except (ScanError, SourceRevisionError) as exc:
-        raise ScanStoreError(422, str(exc)) from exc
+        raise ScanStoreError(422, refusal_detail(exc)) from exc
 
 
 def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecisions) -> ScanSession:

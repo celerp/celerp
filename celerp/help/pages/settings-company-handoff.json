@@ -6,7 +6,7 @@
   "routes": ["/settings/company-handoff", "/settings/company-handoffs", "/settings/saved-copies"],
   "permission": "manage_company_settings",
   "order": 9,
-  "checked": "b20a7721eef0463f616c164c3bde952744042b0301b45854520b1e97de170526",
+  "checked": "ef84eebf46260a0381b7d9b67a405efb5da1e8e896eecd70b364bbada3ea77f5",
   "steps": [
     {
       "text": "On {title}, enter the {firm} and the {to} and send. Celerp encrypts the copy on your computer before it leaves.",

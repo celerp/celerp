@@ -16,6 +16,7 @@ import pytest
 from celerp.events.engine import emit_event
 from test_cost_restatement import _item, _state
 from test_mfg_creation_contract import _count, _create
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,7 +30,7 @@ def _record(entity_id: str, key: str, raw: str, made: str, *, qty: float = 2, pe
 async def _import(client, auth, *records: dict) -> dict:
     r = await client.post("/manufacturing/import/batch", headers=auth["headers"], json={"records": list(records)})
     assert r.status_code == 200, r.text
-    return r.json()
+    return {**r.json(), "errors": message_texts(r.json()["errors"])}
 
 
 async def _parts(client, auth) -> tuple[str, str, str, str]:

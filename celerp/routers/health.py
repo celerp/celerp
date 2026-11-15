@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
+from celerp.accounting_roles import refusal_detail
 from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES
 from celerp.db import get_session
 from celerp.modules.boundary import needs_modules_for
@@ -1353,7 +1354,7 @@ async def connector_authorize_url(
             )
         except ConnectorOwnershipError as exc:
             await session.rollback()
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
         return created
 
     ownership_created = await _claim()
@@ -1384,7 +1385,7 @@ async def connector_authorize_url(
         )
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     except Exception:
         await session.rollback()
         return {"error": "Could not save the connector connection state."}

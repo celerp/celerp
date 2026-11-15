@@ -126,7 +126,7 @@ async def test_import_copy_into_populated_company(real_client, real_engine):
     # Undo needs the same typed name, then restores the previous version in one step.
     wrong = await real_client.post(f"/company-backups/kept/{entry['id']}/replace", json={"company_name": "demo"},
                                    headers=auth(done["access_token"]))
-    assert wrong.status_code == 422 and "Nothing was replaced." in wrong.json()["detail"]
+    assert wrong.status_code == 422 and "Nothing was replaced." in refusal_text(wrong.json()["detail"])
     undone = await real_client.post(f"/company-backups/kept/{entry['id']}/replace", json={"company_name": NAME},
                                     headers=auth(done["access_token"]))
     assert undone.status_code == 200, undone.text
@@ -144,7 +144,7 @@ async def test_replace_needs_the_typed_name_and_the_owner(real_client, real_engi
         r = await real_client.post("/company-backups/replace", json={**request, "company_name": typed},
                                    headers=auth(tok))
         assert r.status_code == 422, (typed, r.text)
-        assert "Nothing was replaced." in r.json()["detail"]
+        assert "Nothing was replaced." in refusal_text(r.json()["detail"])
     assert await _companies(real_engine) == [(cid, NAME)]
 
     # An admin of Demo Trading who owns a company of their own opens the copy from there.
@@ -159,7 +159,7 @@ async def test_replace_needs_the_typed_name_and_the_owner(real_client, real_engi
         "upload_token": theirs["upload_token"], "mode": "new_company",
         "plan_fingerprint": theirs["plan_fingerprint"], "company_name": NAME}, headers=auth(admin_tok))
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == f"Only the owner of {NAME} can replace it."
+    assert refusal_text(r.json()["detail"]) == f"Only the owner of {NAME} can replace it."
     assert (cid, NAME) in await _companies(real_engine)
 
 
@@ -177,7 +177,7 @@ async def test_failed_backup_replaces_nothing(real_client, real_engine, monkeypa
         "upload_token": preview["upload_token"], "mode": "settings",
         "plan_fingerprint": preview["plan_fingerprint"], "company_name": NAME}, headers=auth(tok))
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "could not back up" in detail and "x.png" in detail and "Nothing was replaced." in detail
     assert await _companies(real_engine) == [(cid, NAME)]
 
@@ -262,7 +262,7 @@ async def test_a_change_made_after_the_backup_is_kept_stops_the_replace(real_cli
     monkeypatch.setattr(cb, "_keep_backup", keep_then_change)
     r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
     assert r.status_code == 409, r.text
-    assert r.json()["code"] == "changed" and "Nothing was replaced." in r.json()["detail"]
+    assert r.json()["code"] == "changed" and "Nothing was replaced." in refusal_text(r.json()["detail"])
     assert await _companies(real_engine) == [(cid, NAME)]
     assert ("Back room" in await _locations(real_engine, cid)) is (change == "location")
     assert await cb.kept_backups(cid) == []
@@ -341,7 +341,7 @@ async def test_a_failure_after_the_replace_committed_keeps_the_backup(real_clien
     r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
     assert r.status_code == 500, r.text
     assert r.json()["code"] == "replaced_unfinished"
-    assert "Saved copies" in r.json()["detail"] and "Nothing was replaced" not in r.json()["detail"]
+    assert "Saved copies" in refusal_text(r.json()["detail"]) and "Nothing was replaced" not in refusal_text(r.json()["detail"])
     [(new, name)] = await _companies(real_engine)
     assert new != old and name == NAME
     [kept] = await cb.kept_backups(new)
@@ -474,7 +474,7 @@ async def test_a_replace_waiting_for_an_item_edit_replaces_nothing(
     go.set()
     _, replaced = await asyncio.wait_for(asyncio.gather(editing, replace), timeout=30)
     assert replaced.status_code == 409 and replaced.json()["code"] == "changed", replaced.text
-    assert "Nothing was replaced." in replaced.json()["detail"]
+    assert "Nothing was replaced." in refusal_text(replaced.json()["detail"])
     assert await _companies(real_engine) == [(cid, NAME)]
     assert await _item_name(real_engine, cid, item) == "Edited first"
     assert await cb.kept_backups(cid) == []

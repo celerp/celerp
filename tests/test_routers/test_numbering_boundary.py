@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import time
 import uuid
 from urllib.parse import quote
@@ -21,6 +22,7 @@ import sqlalchemy as sa
 from sqlalchemy import event, select, text
 
 from celerp.events.engine import emit_event
+from celerp.importers.results import kept_refusal
 from celerp.main import app
 from celerp.models.projections import KEY_FIELD, NUMBER_FIELDS, Projection, canonical_number, strip_key, strip_number
 from celerp.services.company_lock import locked_company
@@ -547,12 +549,9 @@ async def _give(client, h, contacts, door: str, number: str | None, *, target: s
         if door.endswith("batch"):
             r = await client.post(f"/{kind}s/import/batch", headers=h, json={"records": [record]})
             assert r.status_code == 200, r.text
-            if not (errors := r.json()["errors"]):
-                return eid, None
-            # A batch row keeps the write's keyed refusal inside import.record_refused: its key,
-            # else the row's reason as text.
-            inner = (errors[0].get("params") or {}).get("refusal") if isinstance(errors[0], dict) else None
-            return eid, inner["message_key"].split(".")[-1] if inner else refusal_text(errors[0])
+            errors = r.json()["errors"]
+            # A refused batch row keeps its keyed refusal, read the same way as a single import's.
+            return eid, (kept_refusal(errors[0], eid)["message_key"].split(".")[-1] if errors else None)
         r = await client.post(f"/{kind}s/import", headers=h, json=record)
     if r.status_code == 200:
         return eid, None
@@ -1018,9 +1017,15 @@ def _field_writes(fn) -> list[tuple[str, int, ast.expr]]:
         elif isinstance(n, ast.Assign):
             found += [(t_.slice.value, n.lineno, n.value) for t_ in n.targets if isinstance(t_, ast.Subscript)
                       and isinstance(t_.slice, ast.Constant) and t_.slice.value in NUMBER_FIELDS]
-        elif isinstance(n, ast.Call):
+        elif isinstance(n, ast.Call) and not _is_message(n):
             found += [(k.arg, n.lineno, k.value) for k in n.keywords if k.arg in NUMBER_FIELDS]
     return found
+
+
+def _is_message(call: ast.Call) -> bool:
+    """A call that builds catalog text (a refusal or t()): its keywords fill the message, never a record."""
+    return any(isinstance(a, ast.Constant) and isinstance(a.value, str)
+               and re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z0-9_]+)+", a.value) for a in call.args)
 
 
 def _checked(fn) -> set[str]:

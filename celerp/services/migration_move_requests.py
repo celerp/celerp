@@ -15,6 +15,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal_detail
 from celerp.importers.adapters.base import SourceRevisionError
 from celerp.importers.adapters.registry import get_adapter
 from celerp.services import migration_scan_store as store
@@ -49,7 +50,7 @@ async def send(*, operation_id: uuid.UUID, firm_name: str, client_name: str, rep
     try:
         checked = await asyncio.to_thread(check, artifacts)
     except SourceRevisionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from None
     if not checked.complete:
         raise HTTPException(status_code=422, detail=t(
             "migration.err_finish_export_set", problems=" ".join(checked.problems)))

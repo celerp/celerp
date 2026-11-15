@@ -15,10 +15,10 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from celerp.importers.results import message_text
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import refused_records
 
 pytestmark = pytest.mark.asyncio
 
@@ -122,7 +122,7 @@ async def test_list_batch_import_naming_another_company_location_is_refused(clie
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1, body
-    assert any("list:IMP-2" in message_text(e) and "location" in message_text(e).lower() for e in body["errors"]), body
+    assert "location" in refused_records(body["errors"])["list:IMP-2"].lower(), body
     session.expire_all()
     assert await session.get(Projection, (auth["company_id"], "list:IMP-2")) is None
     assert await session.get(Projection, (auth["company_id"], "list:IMP-3")) is not None
@@ -285,8 +285,8 @@ async def test_doc_batch_import_shipping_from_another_company_location_is_refuse
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1, body
-    assert any("doc:IMP-2" in message_text(e) and "ship-from location" in message_text(e) and foreign not in str(e)
-               for e in body["errors"]), body
+    reason = refused_records(body["errors"]).get("doc:IMP-2", "")
+    assert "ship-from location" in reason and foreign not in reason, body
     session.expire_all()
     assert await session.get(Projection, (auth["company_id"], "doc:IMP-2")) is None
     assert (await session.get(Projection, (auth["company_id"], "doc:IMP-3"))).state["from_location_id"] == own

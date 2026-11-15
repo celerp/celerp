@@ -6,7 +6,7 @@
   "routes": ["/reports", "/reports/ar-aging", "/reports/ap-aging", "/reports/sales", "/reports/purchases", "/reports/expiring"],
   "permission": "view_financial_reports",
   "order": 1,
-  "checked": "f560c8b1e82fe973821853bbce6298ba70c249b455522aeb0f32836a5024fdd9",
+  "checked": "fa449852a7c9717a116eb4ed550b1047427b468dbeba27b644f092d233d5511a",
   "steps": [
     {
       "text": "Open {rep} from the sidebar; the operational reports sit alongside the financial statements.",

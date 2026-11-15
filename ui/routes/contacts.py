@@ -2188,9 +2188,7 @@ def setup_routes(app):
         try:
             data = await api.export_contacts_csv(token, params)
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            data = b"error\n"
+            return api.refusal_response(e)
         from starlette.responses import Response
         return Response(
             content=data,

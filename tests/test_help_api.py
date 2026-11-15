@@ -148,7 +148,7 @@ async def test_help_routes_are_agent_tools():
     compiled = ai_tools.compile_agent_capabilities(real_agent_app(), {})
     assert compiled["help_search"]["path"] == "/help/search"
     assert compiled["help_read"]["path"] == "/help/page/{page_id}"
-    assert not any(cap["path"] == "/help/for-route" for cap in compiled.values())
+    assert any(cap["path"] == "/help/for-route" for cap in compiled.values())
 
 
 async def test_help_for_route_matches_tab_routes(client, monkeypatch):

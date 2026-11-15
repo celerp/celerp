@@ -1246,7 +1246,7 @@
       "params": []
     },
     "company_backup.err_module_no_version": {
-      "en": "The {owner} module does not declare a valid version, so a backup of its data cannot say which version restores it. No copy was made.",
+      "en": "The {owner} module does not declare a valid version, so a company copy of its data cannot say which version restores it. No copy was made.",
       "params": [
         "owner"
       ]

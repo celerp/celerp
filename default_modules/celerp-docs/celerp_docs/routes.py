@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Annotated, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -109,6 +109,9 @@ from celerp.services.shipping import (
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, refusal_text, t
 from ui.components.encode import inert_media_type
+
+if TYPE_CHECKING:
+    from celerp.services import auto_je
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1628,7 +1631,7 @@ class SequencePatch(BaseModel):
     next: int | None = Field(default=None, strict=True)
 
 
-@router.get("/sequences", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the numbering sequence of each document type, such as the next invoice number.")
+@router.get("/sequences", dependencies=[require_permission("manage_module_settings")], openapi_extra={"x-celerp-agent": True}, summary="List the numbering sequence of each document type, such as the next invoice number.")
 async def get_sequences(company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if not company:
@@ -2014,7 +2017,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
     return doc
 
 
-@router.get("/{entity_id}/pdf", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/{entity_id}/pdf", "x-celerp-agent-any-role": True}, summary="Download a document as a PDF file.")
+@router.get("/{entity_id}/pdf", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-download": "/docs/{entity_id}/pdf"}, summary="Download a document as a PDF file.")
 async def get_doc_pdf(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -8430,7 +8433,7 @@ def _note_list_for(session_exec_result) -> list[dict]:
     ]
 
 
-@router.get("/{entity_id}/notes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the notes written on a document, newest first.")
+@router.get("/{entity_id}/notes", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True}, summary="List the notes written on a document, newest first.")
 async def list_doc_notes(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),

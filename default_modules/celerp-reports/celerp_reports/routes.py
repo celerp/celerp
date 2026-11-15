@@ -529,7 +529,7 @@ async def purchases_report(
 # Expiring items report
 # ---------------------------------------------------------------------------
 
-@router.get("/expiring", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the inventory items expiring within a number of days, soonest first.")
+@router.get("/expiring", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True}, summary="List the inventory items expiring within a number of days, soonest first.")
 async def expiring_items(
     days: int = 30,
     company_id: uuid.UUID = Depends(get_current_company_id),

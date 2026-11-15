@@ -11,6 +11,7 @@ from sqlalchemy import select
 from celerp.models.accounting import UserCompany
 from celerp.services.peer_payments import apply_source_payments, validate_source_payments
 from test_payments_stripe import _register, _payable_invoice, _h, _company_id
+from ui.i18n import refusal_text
 
 
 
@@ -273,5 +274,5 @@ def test_a_credit_applied_between_documents_is_entered_by_hand(side):
         validate_source_payments({"status": "paid", "currency": "USD", "amount_paid": 30,
                                   "payments": [payment]})
     assert err.value.status_code == 409
-    assert err.value.detail == ("A credit note applied to a document is not copied automatically. "
+    assert refusal_text(err.value.detail) == ("A credit memo applied to a document is not copied automatically. "
                                 "Enter it in the accountant's copy by hand.")
