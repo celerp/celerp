@@ -749,10 +749,6 @@
   "PATCH /accounting/bank-accounts/{bank_id}": {
     "path:bank_id": "Identifier of the bank or card account."
   },
-  "PATCH /accounting/reconciliation/{session_id}/lines/{line_id}": {
-    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
   "PATCH /accounting/rules/{rule_id}": {
     "path:rule_id": "Identifier of the bank reconciliation rule."
   },
@@ -878,38 +874,7 @@
   "POST /accounting/peer/holds/{item_id}/fix": {
     "path:item_id": "Identifier of the held accounting synchronization item to resolve."
   },
-  "POST /accounting/reconciliation/{session_id}/auto-match": {
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/bulk-confirm": {
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/complete": {
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/import-csv": {
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/import-file": {
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
   "POST /accounting/reconciliation/{session_id}/lines/{line_id}/attach": {
-    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/create": {
-    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/match": {
-    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/split": {
-    "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
-    "path:session_id": "Identifier of the bank reconciliation session."
-  },
-  "POST /accounting/reconciliation/{session_id}/lines/{line_id}/unmatch": {
     "path:line_id": "Identifier of the statement, document, or list line within the parent record.",
     "path:session_id": "Identifier of the bank reconciliation session."
   },
@@ -1739,5 +1704,49 @@
   },
   "PUT /companies/me/categories/{category_key}/gift": {
     "path:category_key": "Stable category key identifying the company category."
+  },
+  "DELETE /accounting/reconciliation/{session_id}": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "GET /accounting/bank-questions": {
+    "query:status": "Which questions to list: open (default), answered, or all."
+  },
+  "GET /accounting/reconciliation/bank/{bank_id}/groups": {
+    "path:bank_id": "Identifier of the bank or card account.",
+    "query:q": "Text to look for in the counterparty, description or reference of the statement lines.",
+    "query:view": "Which lines to show: open (default), suggested, questions, posted, or all."
+  },
+  "GET /accounting/reconciliation/statement-preview/{job_id}": {
+    "path:job_id": "Identifier of the statement reading job."
+  },
+  "POST /accounting/reconciliation/statement-preview/{job_id}": {
+    "path:job_id": "Identifier of the statement reading job."
+  },
+  "POST /accounting/bank-questions/{line_id}/answer": {
+    "path:line_id": "Identifier of the bank statement line."
+  },
+  "POST /accounting/reconciliation/lines/{line_id}/reclassify": {
+    "path:line_id": "Identifier of the bank statement line."
+  },
+  "PUT /accounting/bank-accounts/{bank_id}/opening": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/ask": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/complete": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/resolve": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/suggest": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/unmatch": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
+  "POST /accounting/reconciliation/bank/{bank_id}/withdraw-question": {
+    "path:bank_id": "Identifier of the bank or card account."
   }
 }
