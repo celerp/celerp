@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from alembic.script import ScriptDirectory
 
 from alembic_support import alembic_run, apply_migrations
@@ -98,6 +100,9 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
         eng.dispose()
 
 
+# The walk runs every writing revision down and up again, so its cost grows with the
+# migration chain: about 20s on its own, three times that on a loaded CI shard.
+@pytest.mark.timeout(240)
 def test_every_revision_that_writes_a_company_row_runs_over_one_both_ways():
     """Every revision function that writes a company's rows runs here over a company that has
     them, down and up again from head, so the lock checker judges each one (a writer it never saw stays
