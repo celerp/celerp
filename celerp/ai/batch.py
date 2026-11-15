@@ -218,7 +218,9 @@ async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
         return FileOutcome("done", {"filename": filename, "structured": True})
     if pages:
         file = {**file, "data": _page_slice(file_id, run, pages)}
-    prompt = f"{run.query}\n\nRead the attached document." if run.query else "Read the attached document."
+    # The file's name goes with it: "slip.jpg" beside a statement tells the model what it holds.
+    read = f"Read the attached document, {filename}."
+    prompt = f"{run.query}\n\n{read}" if run.query else read
     system = _STATEMENT_SYSTEM_PROMPT if statement else _BATCH_SYSTEM_PROMPT
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": llm._build_user_content(prompt, [file])}]

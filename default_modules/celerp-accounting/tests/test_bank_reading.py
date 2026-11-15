@@ -99,6 +99,7 @@ async def test_read_statement_retry_reads_failed_steps_only(client, session, mon
 
     def script(identity, body):
         if fail["on"] and identity in fail.get("ids", set()):
+            cloud.state.pop(identity, None)  # the service never ran it
             return httpx.ConnectError("relay down")
         return _statement_reply()
     cloud = install(monkeypatch, FakeCloud(script))
@@ -195,8 +196,7 @@ async def test_bank_statements_year_end_to_end(client, session, monkeypatch):
     preview = await B.read(client, co, files)
     assert len(preview["statements"]) == 3 and len(preview["receipts"]) == 5
     assert all(st["tie"]["ok"] for st in preview["statements"])
-    out = await B.import_statement(client, co, preview, new_bank={"bank_name": "Main", "bank_type": "checking",
-                                                                   "currency": "USD"})
+    out = await B.import_statement(client, co, preview, new_bank={**preview["new_bank"], "bank_name": "Main"})
     bank_id = out["bank_id"]
     assert len(out["sessions"]) == 3
     bank = await B.bank_row(client, co["h"], bank_id)

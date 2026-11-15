@@ -8027,5 +8027,6 @@
   "acct.err_recon_delete_settled": "This statement has lines that are already posted or matched. Undo those lines first, then remove the statement.",
   "acct.recon_opening_memo": "Opening balance for {bank}",
   "acct.recon_opening_adjusted": "Opening balance changed for {bank}",
-  "acct.err_recon_not_suspense": "Only a line sitting in Suspense can be moved to another account."
+  "acct.err_recon_not_suspense": "Only a line sitting in Suspense can be moved to another account.",
+  "perm.name.answer_bank_questions": "Answer questions about bank lines"
 }
