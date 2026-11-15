@@ -97,10 +97,13 @@ async def read(client: AsyncClient, co: dict, files: list[tuple[bytes, str, str]
 
 async def import_statement(client: AsyncClient, co: dict, preview: dict, *, bank_id: str | None = None,
                            new_bank: dict | None = None, header: dict | None = None,
-                           idem: str | None = None, expect: int = 200) -> dict:
+                           idem: str | None = None, expect: int = 200, tick_all: bool = False) -> dict:
+    """Import ``preview``'s statements as reviewed; ``tick_all`` ticks the lines the preview
+    left unticked as probably already in the books."""
     statements = []
     for st in preview["statements"]:
-        statements.append({"header": {**st["header"], **(header or {})}, "lines": st["lines"]})
+        lines = [{**line, "ticked": True} for line in st["lines"]] if tick_all else st["lines"]
+        statements.append({"header": {**st["header"], **(header or {})}, "lines": lines})
     body = {"job_id": preview["job_id"], "statements": statements, "idempotency_key": idem or key()}
     if bank_id:
         body["bank_id"] = bank_id
@@ -114,11 +117,27 @@ async def import_statement(client: AsyncClient, co: dict, preview: dict, *, bank
 
 
 async def statement(client: AsyncClient, co: dict, bank_id: str, rows: list[tuple[str, str, str]], *,
-                    opening: str, closing: str, start: str, end: str) -> dict:
+                    opening: str, closing: str, start: str, end: str, tick_all: bool = False) -> dict:
     """Read and import one CSV statement on ``bank_id``; returns the import answer."""
     preview = await read(client, co, [(csv_bytes(rows), f"st-{end}.csv", "text/csv")], bank_id=bank_id)
-    return await import_statement(client, co, preview, bank_id=bank_id, header={
+    return await import_statement(client, co, preview, bank_id=bank_id, tick_all=tick_all, header={
         "opening_balance": opening, "closing_balance": closing, "period_start": start, "period_end": end})
+
+
+async def co_of(client: AsyncClient, h: dict) -> dict:
+    """The company ``h`` signs in to, in the shape the helpers here take."""
+    me = (await client.get("/companies/me", headers=h)).json()
+    return {"h": h, "company_id": me["id"], "user_id": user_id(h)}
+
+
+async def lines_on(client: AsyncClient, co: dict, bank_id: str, rows: list[tuple[str, str, str]], *,
+                   opening: str, closing: str, start: str, end: str) -> tuple[str, list[dict]]:
+    """Import every line of one statement on ``bank_id``, those that look already booked too:
+    its session id and its lines by date, then description."""
+    sid = (await statement(client, co, bank_id, rows, opening=opening, closing=closing, start=start, end=end,
+                           tick_all=True))["sessions"][0]["id"]
+    mine = [line for line in all_lines(await groups(client, co, bank_id, view="all")) if line["statement_id"] == sid]
+    return sid, sorted(mine, key=lambda line: (line["line_date"], line["description"]))
 
 
 async def groups(client: AsyncClient, co: dict, bank_id: str, **params) -> dict:
