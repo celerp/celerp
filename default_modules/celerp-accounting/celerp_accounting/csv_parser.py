@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Pure CSV parser for bank statements. No DB access."""
+"""Pure parsers for bank statements (CSV and OFX). No DB access."""
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -97,12 +98,14 @@ def _row_to_line(row: dict[str, str], col_map: dict[str, str], idx: int) -> dict
     raw_balance = _parse_decimal(get("balance")) if "balance" in col_map else None
     reference = get("reference") or None
 
+    # A row with no readable amount is flagged, never stored as zero: Import refuses it.
     return {
         "line_date": line_date,
         "description": description,
-        "amount": str(amount) if amount is not None else "0",
+        "amount": str(amount) if amount is not None else None,
         "raw_balance": str(raw_balance) if raw_balance is not None else None,
         "reference": reference,
+        "flags": [] if amount is not None else ["no_amount"],
         "raw_csv_row": dict(row),
         "_row_idx": idx,
     }
@@ -145,3 +148,69 @@ def parse_bank_csv(content: bytes, column_map: dict[str, str] | None = None) -> 
 
     lines = [_row_to_line(dict(r), column_map, i) for i, r in enumerate(rows)]
     return {"needs_mapping": False, "headers": headers, "lines": lines, "preview": preview}
+
+
+# OFX: a tag scanner, never an XML parser, so no entity or DTD in an upload is expanded.
+# OFX 1.x (SGML, unclosed leaf tags) and 2.x (XML) both put each leaf value right after
+# its opening tag, up to the next "<".
+def _ofx_date(raw: str) -> str | None:
+    digits = raw.strip()[:8]
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) == 8 and digits.isdigit() else None
+
+
+def parse_ofx(content: bytes) -> dict:
+    """An OFX statement: its period, currency, closing balance and lines, each line with its
+    FITID as the reference (the line's identity) and BANKACCTTO as its counterparty account."""
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+    out: dict[str, Any] = {"period_start": None, "period_end": None, "closing_balance": None,
+                           "currency": None, "lines": []}
+    line: dict[str, Any] | None = None
+    section: list[str] = []
+    for match in re.finditer(r"<(/?)([A-Za-z0-9.]+)>([^<]*)", text):
+        closing, tag, value = match.group(1), match.group(2).upper(), match.group(3).strip()
+        if closing:
+            if tag == "STMTTRN" and line is not None:
+                out["lines"].append(line)
+                line = None
+            if section and section[-1] == tag:
+                section.pop()
+            continue
+        if tag == "STMTTRN":
+            line = {"line_date": None, "description": "", "amount": None, "raw_balance": None,
+                    "reference": None, "counterparty_account": None, "flags": [], "source": "ofx"}
+            continue
+        if tag in ("LEDGERBAL", "BANKACCTTO"):
+            section.append(tag)
+            continue
+        if not value:
+            continue
+        if line is not None:
+            if tag == "DTPOSTED":
+                line["line_date"] = _ofx_date(value)
+            elif tag == "TRNAMT":
+                amount = _parse_decimal(value)
+                line["amount"] = None if amount is None else str(amount)
+                line["flags"] = [] if amount is not None else ["no_amount"]
+            elif tag == "FITID":
+                line["reference"] = value
+            elif tag == "NAME":
+                line["description"] = (value + " " + line["description"]).strip()
+            elif tag == "MEMO":
+                line["description"] = (line["description"] + " " + value).strip()
+            elif tag == "ACCTID" and section and section[-1] == "BANKACCTTO":
+                line["counterparty_account"] = value
+        elif tag == "DTSTART":
+            out["period_start"] = _ofx_date(value)
+        elif tag == "DTEND":
+            out["period_end"] = _ofx_date(value)
+        elif tag == "CURDEF":
+            out["currency"] = value.upper()
+        elif tag == "BALAMT" and section and section[-1] == "LEDGERBAL":
+            amount = _parse_decimal(value)
+            out["closing_balance"] = None if amount is None else str(amount)
+    if line is not None:
+        out["lines"].append(line)
+    return out
