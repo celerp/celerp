@@ -1375,6 +1375,157 @@
       "params": [
         "reason"
       ]
+    },
+    "peer.err_role_account_none_yours": {
+      "en": "{account} is the {role} account of {sender}, and you have no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+      "params": [
+        "account",
+        "role",
+        "role2",
+        "sender"
+      ]
+    },
+    "peer.err_role_account_none_other": {
+      "en": "{account} is the {role} account of {sender}, and {receiver} has no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+      "params": [
+        "account",
+        "receiver",
+        "role",
+        "role2",
+        "sender"
+      ]
+    },
+    "peer.err_role_account_differs_yours": {
+      "en": "{account} is the {role} account of {sender}, {kind}, and your {role2} account {target} is {target_kind}. Choose one that matches in Settings > Accounting > Posting accounts.",
+      "params": [
+        "account",
+        "kind",
+        "role",
+        "role2",
+        "sender",
+        "target",
+        "target_kind"
+      ]
+    },
+    "peer.err_role_account_differs_other": {
+      "en": "{account} is the {role} account of {sender}, {kind}, and {receiver}'s {role2} account {target} is {target_kind}. Choose one that matches in Settings > Accounting > Posting accounts.",
+      "params": [
+        "account",
+        "kind",
+        "receiver",
+        "role",
+        "role2",
+        "sender",
+        "target",
+        "target_kind"
+      ]
+    },
+    "peer.where_it_posts": {
+      "en": "{account}, where it posts in {chart},",
+      "params": [
+        "account",
+        "chart"
+      ]
+    },
+    "peer.where_sender_posts": {
+      "en": "{account}, where {sender} posts it in {chart},",
+      "params": [
+        "account",
+        "chart",
+        "sender"
+      ]
+    },
+    "peer.where_in": {
+      "en": "{account} in {chart}",
+      "params": [
+        "account",
+        "chart"
+      ]
+    },
+    "peer.err_account_same_code": {
+      "en": "{sender}'s account {account} has the same code as {local} in {chart}. Use {local2} for it, or add it as {suggested}.",
+      "params": [
+        "account",
+        "chart",
+        "local",
+        "local2",
+        "sender",
+        "suggested"
+      ]
+    },
+    "peer.err_account_same_code_role": {
+      "en": "{sender}'s account {account} has the same code as {local} in {chart}, the {role} account there, which {sender2} does not post it as. Use {local2} for it, or add it as {suggested}.",
+      "params": [
+        "account",
+        "chart",
+        "local",
+        "local2",
+        "role",
+        "sender",
+        "sender2",
+        "suggested"
+      ]
+    },
+    "peer.err_account_currency_no_account": {
+      "en": "{sender}'s account {account} is kept in {currency}, and {chart} has no account for it. Use an account kept in {currency2}.",
+      "params": [
+        "account",
+        "chart",
+        "currency",
+        "currency2",
+        "sender"
+      ]
+    },
+    "peer.err_waiting_review_accounts": {
+      "en": "Waiting for {company} to review accounts.",
+      "params": [
+        "company"
+      ]
+    },
+    "peer.kind_text": {
+      "en": "{type_a} account kept in {currency}",
+      "params": [
+        "currency",
+        "type_a"
+      ]
+    },
+    "peer.err_sender_account_type_differs": {
+      "en": "{sender}'s account {account} is {type_a} account, and {where} is {target_type_a} account. Use another {type} account, or add it as {suggested}.",
+      "params": [
+        "account",
+        "sender",
+        "suggested",
+        "target_type_a",
+        "type",
+        "type_a",
+        "where"
+      ]
+    },
+    "peer.err_sender_account_currency_differs": {
+      "en": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
+      "params": [
+        "account",
+        "currency",
+        "currency2",
+        "sender",
+        "target_currency",
+        "where"
+      ]
+    },
+    "peer.err_account_archived": {
+      "en": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
+      "params": [
+        "account",
+        "sender",
+        "target",
+        "who"
+      ]
+    },
+    "company_backup.err_name_invalid": {
+      "en": "{reason} Nothing was restored.",
+      "params": [
+        "reason"
+      ]
     }
   },
   "modules": {

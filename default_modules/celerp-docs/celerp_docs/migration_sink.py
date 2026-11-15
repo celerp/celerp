@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from celerp.accounting_roles import AccountRole
-from celerp.importers.results import RecordOutcome
+from celerp.importers.results import RecordOutcome, failure_reason
 from celerp.importers.schema import (
     CIFDocument,
     CIFSettlement,
@@ -447,7 +447,7 @@ async def _post_document(
                     moves_cash=False,
                 )
     except Exception as exc:
-        return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", f"{label}: {failure_reason(exc)}")
     return outcome
 
 
@@ -494,7 +494,7 @@ async def _import_debit_note(
                 moves_cash=False,
             )
     except Exception as exc:
-        return RecordOutcome("", "failed", f"{label}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", f"{label}: {failure_reason(exc)}")
     status = "skipped" if getattr(entry, "was_deduped", False) else "created"
     return RecordOutcome(f"je:auto:{bill_id}:{suffix}", status, entity_type=JOURNAL)
 
@@ -634,7 +634,7 @@ async def _settle(
                 if not getattr(entry, "was_deduped", False):
                     applied += 1
     except Exception as exc:
-        return RecordOutcome("", "failed", f"Settlement {record.source_external_id}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", f"Settlement {record.source_external_id}: {failure_reason(exc)}")
     return RecordOutcome(settlement_id, "created" if applied else "skipped")
 
 

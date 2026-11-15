@@ -172,14 +172,11 @@ def source_controls(settings: dict | None, role) -> list[str]:
 def source_control(settings: dict | None, role) -> str:
     """The one account the source books kept ``role``'s balances on; a missing or
     ambiguous control is refused rather than guessed."""
-    from ui.i18n import t
-
     codes = source_controls(settings, role)
-    label = ROLE_LABELS[AccountRole(role)].lower().removeprefix("accounts ")
     if not codes:
-        raise Refused("posting.source_control_missing", role=label)
+        raise Refused("posting.source_control_missing", role=AccountRole(role).value)
     if len(codes) > 1:
-        raise Refused("posting.source_control_ambiguous", role=label, codes=", ".join(codes))
+        raise Refused("posting.source_control_ambiguous", role=AccountRole(role).value, codes=", ".join(codes))
     return codes[0]
 
 

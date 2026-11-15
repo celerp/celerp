@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from celerp.services import peer_documents as documents
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 def _grant():
@@ -574,7 +574,7 @@ async def test_a_receiving_refusal_does_not_name_the_receiving_record(monkeypatc
         await documents.receive_document(
             _Session(), grant=_grant(), source_entity_id="doc:source", source_revision=3,
             data={"doc_type": "invoice", "status": "draft", "currency": "USD"})
-    assert refused.value.detail == "The books are locked to 2026-09-30."
+    assert refusal_text(refused.value.detail) == "The books are locked to 2026-09-30."
 
 
 def _applied_credit(**extra) -> dict:

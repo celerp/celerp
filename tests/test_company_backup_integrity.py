@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 from sqlalchemy import text
 
 from company_backup_support import (
@@ -112,8 +112,8 @@ async def test_read_back_refusal_names_no_table(real_engine, real_client, tmp_pa
     async with _r_alter_rows(real_engine):
         r = await restore(real_client, tok, data, mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().MISMATCH)
-    assert "projections" not in r.json()["detail"] and "(" not in r.json()["detail"]
+    assert refusal_text(r.json()["detail"]) == t(_cb().MISMATCH)
+    assert "projections" not in refusal_text(r.json()["detail"]) and "(" not in refusal_text(r.json()["detail"])
     assert await snapshot(real_engine) == before
 
 
@@ -130,7 +130,7 @@ async def test_record_disagreeing_with_history_refused(real_engine, real_client,
     before = await snapshot(real_engine)
     r = await restore(real_client, tok, edited, mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().DISAGREE)
+    assert refusal_text(r.json()["detail"]) == t(_cb().DISAGREE)
     assert await snapshot(real_engine) == before
     assert await count(real_engine, "companies") == 1
 
@@ -149,7 +149,7 @@ async def test_record_without_its_history_refused(real_engine, real_client, tmp_
     before = await snapshot(real_engine)
     r = await restore(real_client, tok, rezip(parts), mode="new_company")
     _r_refused(r)
-    assert r.json()["detail"] == t(_cb().DISAGREE)
+    assert refusal_text(r.json()["detail"]) == t(_cb().DISAGREE)
     assert await snapshot(real_engine) == before
 
 
@@ -199,7 +199,7 @@ async def test_same_backup_with_different_contents_refused(real_engine, real_cli
     before = await snapshot(real_engine)
     r = await read(real_client, tok, changed, mode="new_company")
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t(_cb().CHANGED_COPY)
+    assert refusal_text(r.json()["detail"]) == t(_cb().CHANGED_COPY)
     assert await snapshot(real_engine) == before
     again = await restore(real_client, tok, data, mode="new_company")
     assert again.status_code == 200, again.text

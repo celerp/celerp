@@ -130,7 +130,7 @@ class Text(str):
     params: dict
 
 
-def t(key: str, lang: str | None = None, **kwargs) -> str:
+def t(key: str, /, lang: str | None = None, **kwargs) -> str:
     """Translate *key*. Uses context language when *lang* is not passed.
 
     Falls back: locale -> English -> key itself.
@@ -297,7 +297,7 @@ def field_label_key(label: str) -> str | None:
     return _field_label_keys().get(label)
 
 
-def t_or(key: str, fallback: str, **kwargs) -> str:
+def t_or(key: str, fallback: str, /, **kwargs) -> str:
     """Translate *key* when a catalog has it, else return *fallback* (text the server
     already wrote in English). A translation missing one of *kwargs* falls back too."""
     lang = _current_lang.get()

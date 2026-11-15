@@ -184,7 +184,7 @@ async def test_an_imported_document_is_refused_when_the_source_has_no_single_rec
     await _import_chart(context, [*_SOURCE_CHART, ("ar2", "121", "Other debtors", "asset", "receivable")])
     result = await _customer_and_invoice(context)
     assert result.created == 0
-    assert "more than one receivable account" in result.errors[0].message
+    assert "more than one Accounts receivable account (120, 121)" in result.errors[0].message
 
 
 @pytest.mark.asyncio

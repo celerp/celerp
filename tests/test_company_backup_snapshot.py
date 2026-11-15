@@ -21,6 +21,7 @@ from celerp import db_catalog
 from company_backup_support import manifest, members, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
 from test_company_backup import (
+from ui.i18n import refusal_text
     _bk_cb,
     _bk_cloud,
     _bk_extra_ledger,
@@ -266,7 +267,7 @@ async def test_export_unreadable_attachment_removes_partial(real_engine, real_cl
     for params in (None, {"run_id": str(await _bk_run(real_engine, user, cid))}):
         r = await real_client.get("/company-backups/download", params=params, headers=auth(tok))
         assert r.status_code == 409, (params, r.text)
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert url in detail and "No copy was made." in detail, detail
         assert not [p for p in folder.rglob("*") if p.is_file()]
     out = tmp_path / "bk-out" / "books.celerp-company"

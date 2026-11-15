@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from celerp.events.engine import find_event_by_idempotency
-from celerp.importers.results import RecordOutcome
+from celerp.importers.results import RecordOutcome, failure_reason
 from celerp.importers.schema import (
     CIFInventoryAdjustment,
     CIFItem,
@@ -211,7 +211,7 @@ async def _adjust(
             source="migration", idempotency_key=key,
         )
     except Exception as exc:
-        return RecordOutcome("", "failed", f"Item {record.item_external_id}: {getattr(exc, 'detail', exc)}")
+        return RecordOutcome("", "failed", f"Item {record.item_external_id}: {failure_reason(exc)}")
     return RecordOutcome(item_id, "created")
 
 

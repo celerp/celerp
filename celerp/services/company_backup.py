@@ -1716,7 +1716,7 @@ async def _turn_off_shop_sync(session: AsyncSession, company_id, actor_id) -> No
 def _chosen_name(name: str) -> str:
     name = name.strip()
     if (error := company_name_error(name)) is not None:
-        raise BackupError(422, error, "name_invalid")
+        raise BackupError(422, t("company_backup.err_name_invalid", reason=error), "name_invalid")
     return name
 
 

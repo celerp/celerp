@@ -295,17 +295,20 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
             role_label = ROLE_LABELS[AccountRole(role)]
             target = local.get(roles.get(role) or "")
             if target is None:
-                has = "you have" if receiver is None else f"{receiver} has"
+                reason = (t("peer.err_role_account_none_yours", account=label(other), role=role_label,
+                            sender=sender, role2=role_label) if receiver is None else
+                          t("peer.err_role_account_none_other", account=label(other), role=role_label,
+                            sender=sender, receiver=receiver, role2=role_label))
                 raise AccountHold(
-                    f"{label(other)} is the {role_label} account of {sender}, and {has} no "
-                    f"{role_label} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+                    reason,
                     _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
             if _kind(target, books) != _kind(other, books):
-                whose = "your" if receiver is None else f"{receiver}'s"
+                facts = dict(account=label(other), role=role_label, sender=sender, kind=_kind_text(other, books),
+                             role2=role_label, target=label(target), target_kind=_kind_text(target, books))
+                reason = (t("peer.err_role_account_differs_yours", **facts) if receiver is None else
+                          t("peer.err_role_account_differs_other", receiver=receiver, **facts))
                 raise AccountHold(
-                    f"{label(other)} is the {role_label} account of {sender}, {_kind_text(other, books)}, "
-                    f"and {whose} {role_label} account {label(target)} is {_kind_text(target, books)}. "
-                    f"Choose one that matches in Settings > Accounting > Posting accounts.",
+                    reason,
                     _fix("role", other, add=False, role=role, href=POSTING_ACCOUNTS))
             if not target["is_active"]:
                 raise _archived(names, other, target)
@@ -315,12 +318,12 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
         target = by_id.get(row.account_id) if row is not None else None
         how = None
         if target is not None:
-            _differs(names, other, target, books, f"{label(target)}, where it posts in {names.chart},",
+            _differs(names, other, target, books, t("peer.where_it_posts", account=label(target), chart=names.chart),
                      next_free(code, set(local)), parent)
             plan.seen.append((row, other))
         elif other["yours"] in by_id:
             target, how = by_id[other["yours"]], "match"
-            _differs(names, other, target, books, f"{label(target)}, where {sender} posts it in {names.chart},",
+            _differs(names, other, target, books, t("peer.where_sender_posts", account=label(target), sender=sender, chart=names.chart),
                      next_free(code, set(local)), parent)
         else:
             same = local.get(code)
@@ -334,18 +337,19 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
                 continue
             elif same is not None:
                 suggested = next_free(code, set(local))
-                _differs(names, other, same, books, f"{label(same)} in {names.chart}", suggested, parent)
+                _differs(names, other, same, books, t("peer.where_in", account=label(same), chart=names.chart), suggested, parent)
                 held_role = role_of.get(code)
-                why = (f", the {ROLE_LABELS[AccountRole(held_role)]} account there, which {sender} does not "
-                       f"post it as" if held_role else "")
+                facts = dict(sender=sender, account=label(other), local=label(same), chart=names.chart,
+                             local2=label(same), suggested=suggested)
+                reason = (t("peer.err_account_same_code_role", role=ROLE_LABELS[AccountRole(held_role)],
+                            sender2=sender, **facts) if held_role else t("peer.err_account_same_code", **facts))
                 raise AccountHold(
-                    f"{sender}'s account {label(other)} has the same code as {label(same)} in "
-                    f"{names.chart}{why}. Use {label(same)} for it, or add it as {suggested}.",
+                    reason,
                     _fix("collision", other, local=same, suggested=suggested, parent=parent))
             elif _currency(other, books) != books:
                 raise AccountHold(
-                    f"{sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
-                    f"{names.chart} has no account for it. Use an account kept in {_currency(other, books)}.",
+                    t("peer.err_account_currency_no_account", sender=sender, account=label(other),
+                      currency=_currency(other, books), chart=names.chart, currency2=_currency(other, books)),
                     _fix("currency", other, add=False))
             else:
                 plan.adds.append(other)
@@ -357,7 +361,7 @@ async def place(session: AsyncSession, *, company_id: uuid.UUID, source_company_
         if how is not None:
             plan.links.append((other, target, how))
     if waiting:
-        raise AccountHold(f"Waiting for {receiver or company.name} to review accounts.",
+        raise AccountHold(t("peer.err_waiting_review_accounts", company=receiver or company.name),
                           _fix("review", waiting[0], add=False, accounts=waiting))
     await _write(session, company_id, source_company_id, plan, accounts, local, by_id, linked,
                  sender=sender, record=record)
@@ -369,7 +373,7 @@ def _kind(account: dict, books: str) -> tuple[str, str]:
 
 
 def _kind_text(account: dict, books: str) -> str:
-    return f"{_article(account['account_type'])} account kept in {_currency(account, books)}"
+    return t("peer.kind_text", type_a=_article(account["account_type"]), currency=_currency(account, books))
 
 
 def _differs(names: _Names, other: dict, target: dict, books: str, where: str, suggested: str,
@@ -378,15 +382,15 @@ def _differs(names: _Names, other: dict, target: dict, books: str, where: str, s
     kept in another currency."""
     if target["account_type"] != other["account_type"]:
         raise AccountHold(
-            f"{names.sender}'s account {label(other)} is {_article(other['account_type'])} account, "
-            f"and {where} is {_article(target['account_type'])} account. "
-            f"Use another {other['account_type']} account, or add it as {suggested}.",
+            t("peer.err_sender_account_type_differs", sender=names.sender, account=label(other),
+              type_a=_article(other["account_type"]), where=where, target_type_a=_article(target["account_type"]),
+              type=other["account_type"], suggested=suggested),
             _fix("type", other, local=target, suggested=suggested, parent=parent))
     if _currency(target, books) != _currency(other, books):
         raise AccountHold(
-            f"{names.sender}'s account {label(other)} is kept in {_currency(other, books)}, and "
-            f"{where} is kept in {_currency(target, books)}. "
-            f"Use an account kept in {_currency(other, books)}.",
+            t("peer.err_sender_account_currency_differs", sender=names.sender, account=label(other),
+              currency=_currency(other, books), where=where, target_currency=_currency(target, books),
+              currency2=_currency(other, books)),
             _fix("currency", other, local=target, add=False))
 
 
@@ -403,8 +407,8 @@ def _by_link(names: _Names, code: str, rows: list[CompanyPeerAccount], by_id: di
 
 def _archived(names: _Names, other: dict, target: dict) -> AccountHold:
     return AccountHold(
-        f"Account {label(target)}, which {names.who} archived, is where {names.sender}'s "
-        f"{label(other)} posts. Unarchive it, or use another account.",
+        t("peer.err_account_archived", target=label(target), who=names.who, sender=names.sender,
+          account=label(other)),
         _fix("archived", other, local=target))
 
 

@@ -8279,5 +8279,21 @@
   "migration.err_choose_mode": "Choose Full history or Cutover.",
   "migration.err_mode_blocked": "{mode} cannot run while the source has records Celerp cannot import: {records}.",
   "migration.err_choose_mode_first": "Choose how to move the books before starting.",
-  "migration.err_batch_file_refused": "Celerp could not read this file when it was uploaded. {reason}"
+  "migration.err_batch_file_refused": "Celerp could not read this file when it was uploaded. {reason}",
+  "peer.err_role_account_none_yours": "{account} is the {role} account of {sender}, and you have no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+  "peer.err_role_account_none_other": "{account} is the {role} account of {sender}, and {receiver} has no {role2} account chosen. Choose it in Settings > Accounting > Posting accounts.",
+  "peer.err_role_account_differs_yours": "{account} is the {role} account of {sender}, {kind}, and your {role2} account {target} is {target_kind}. Choose one that matches in Settings > Accounting > Posting accounts.",
+  "peer.err_role_account_differs_other": "{account} is the {role} account of {sender}, {kind}, and {receiver}'s {role2} account {target} is {target_kind}. Choose one that matches in Settings > Accounting > Posting accounts.",
+  "peer.where_it_posts": "{account}, where it posts in {chart},",
+  "peer.where_sender_posts": "{account}, where {sender} posts it in {chart},",
+  "peer.where_in": "{account} in {chart}",
+  "peer.err_account_same_code": "{sender}'s account {account} has the same code as {local} in {chart}. Use {local2} for it, or add it as {suggested}.",
+  "peer.err_account_same_code_role": "{sender}'s account {account} has the same code as {local} in {chart}, the {role} account there, which {sender2} does not post it as. Use {local2} for it, or add it as {suggested}.",
+  "peer.err_account_currency_no_account": "{sender}'s account {account} is kept in {currency}, and {chart} has no account for it. Use an account kept in {currency2}.",
+  "peer.err_waiting_review_accounts": "Waiting for {company} to review accounts.",
+  "peer.kind_text": "{type_a} account kept in {currency}",
+  "peer.err_sender_account_type_differs": "{sender}'s account {account} is {type_a} account, and {where} is {target_type_a} account. Use another {type} account, or add it as {suggested}.",
+  "peer.err_sender_account_currency_differs": "{sender}'s account {account} is kept in {currency}, and {where} is kept in {target_currency}. Use an account kept in {currency2}.",
+  "peer.err_account_archived": "Account {target}, which {who} archived, is where {sender}'s {account} posts. Unarchive it, or use another account.",
+  "company_backup.err_name_invalid": "{reason} Nothing was restored."
 }

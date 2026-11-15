@@ -148,7 +148,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
         try:
             r = await real_client.get("/company-backups/download", headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "updating its database" in r.json()["detail"]
+            assert "updating its database" in refusal_text(r.json()["detail"])
             out = tmp_path / "direct.celerp-company"
             with pytest.raises(_bk_cb().BackupError) as err:
                 await _bk_cb().export_company_snapshot(cid, out)
@@ -160,7 +160,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
             r = await real_client.post("/company-backups/restore", json=confirm(preview, "new_company"),
                                        headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "Nothing was restored" in r.json()["detail"]
+            assert "Nothing was restored" in refusal_text(r.json()["detail"])
             assert await _company_count(real_engine) == before
         finally:
             await holder.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": SCHEMA_KEY})

@@ -423,11 +423,12 @@ def refusal_detail(exc: Exception):
 
 def field_refusal(field: str, text) -> dict:
     """The refusal of one form ``field``: ``text`` (a t() text or a ``refusal``) as the
-    refusal it reads as, naming the field. A form refused field by field answers a list of
-    them under ``errors``."""
-    from celerp.error_body import as_refusal
+    refusal it reads as, plain text under the generic key, naming the field. A form refused
+    field by field answers a list of them under ``errors``."""
+    from celerp.error_body import as_refusal, as_written, keyed
 
-    return {**as_refusal(text), "field": field}
+    refused = as_refusal(text)
+    return {**(refused if keyed(refused) else as_written(refused)), "field": field}
 
 
 def no_account_chosen() -> dict:
