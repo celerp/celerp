@@ -356,12 +356,12 @@ def answer_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | 
 
 
 def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
-               parts: list[tuple[str, str, str]] | None = None, rate: str = "", error: str = "") -> FT:
-    """The parts of one line, each an account, a positive amount in the bank's minor unit
-    and, with funds turned on, its fund; blank rows are dropped."""
+               parts: list[tuple[str, str, str, str]] | None = None, rate: str = "", error: str = "") -> FT:
+    """The parts of one line, each an account, a positive amount in the bank's minor unit,
+    an optional contact and, with funds turned on, its fund; blank rows are dropped."""
     bank_id, currency = bank["id"], bank.get("currency")
     accounts = [(v.split(":", 1)[1], label) for v, label in options if v.startswith("post:")]
-    parts = list(parts or []) + [("", "", "")] * max(0, 3 - len(parts or []))
+    parts = list(parts or []) + [("", "", "", "")] * max(0, 3 - len(parts or []))
     return Form(
         Input(type="hidden", name="line_id", value=line_id), Input(type="hidden", name="form", value="split"),
         _key_input(),
@@ -371,8 +371,10 @@ def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | N
                   cls="searchable-select"),
               Input(type="number", name="amount", value=amount, min="0", step=money_step(currency), cls="form-input",
                     aria_label=t("label.amount")),
+              Div(searchable_select("contact", [], value=contact, search_url=PARTY_SEARCH_URL,
+                                    aria_label=t("bank.contact_label")), cls="searchable-select"),
               _fund_pick(funds, fund),
-              cls="bank-split__part") for code, amount, fund in parts],
+              cls="bank-split__part") for code, amount, contact, fund in parts],
         _fund_hint(funds),
         rate_input(bank, value=rate),
         Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),

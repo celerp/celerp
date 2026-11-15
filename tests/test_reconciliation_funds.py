@@ -147,3 +147,26 @@ async def test_a_statement_line_moving_a_pooled_balance_takes_each_funds_share(o
     assert await _entries(session, result["je_ids"][0]) == sorted([
         (code, 0.0, 30.0, library), ("2140", 30.0, 0.0, library),
         (code, 0.0, 90.0, None), ("2140", 70.0, 0.0, None), ("6200", 20.0, 0.0, None)])
+
+
+async def test_each_part_of_a_split_names_its_own_contact(owner_ui, session):
+    """The split form offers a contact per part, and each part's entry carries the one
+    picked for it; a part left without one carries none."""
+    api = owner_ui.api
+    r = await api.post("/crm/contacts", json={"name": "Paper Mill"})
+    assert r.status_code == 200, r.text
+    mill = r.json()["id"]
+    bank, lines = await _statement(api)
+    page_url = f"/accounting/reconcile/bank/{bank['id']}"
+    split = _template((await owner_ui.get(page_url)).text, "split")
+    assert len(re.findall(r'<input[^>]*\sname="contact"', split)) == 3, split
+
+    r = await owner_ui.post(f"{page_url}/resolve-line", data={
+        "line_id": lines["Supplies"]["id"], "form": "split", "account_code": ["6200", "6300", ""],
+        "amount": ["70", "50", ""], "contact": [mill, "", ""], "idempotency_key": B.key()})
+    assert r.status_code == 200 and "form-error" not in r.text, r.text
+    je = await _je_of(api, bank["id"], lines["Supplies"]["id"])
+    session.expire_all()
+    row = (await session.execute(select(Projection).where(Projection.entity_id == je))).scalar_one()
+    offsets = sorted((e["account"], e.get("contact")) for e in row.state["entries"] if e["account"] in ("6200", "6300"))
+    assert offsets == [("6200", mill), ("6300", None)], row.state["entries"]

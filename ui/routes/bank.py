@@ -369,17 +369,20 @@ def setup_routes(app):
         rate = str(form.get("rate", "")).strip()
         if kind == "split":
             codes, amounts = form.getlist("account_code"), form.getlist("amount")
+            contacts = form.getlist("contact") or [""] * len(codes)
             picked = form.getlist("fund") or [""] * len(codes)
-            parts = [(str(c).strip(), str(a).strip(), str(f)) for c, a, f in zip(codes, amounts, picked)]
-            parts = [(c, a, f) for c, a, f in parts if c or a]
+            parts = [(str(c).strip(), str(a).strip(), str(p).strip(), str(f))
+                     for c, a, p, f in zip(codes, amounts, contacts, picked)]
+            parts = [part for part in parts if part[0] or part[1]]
 
             def again(error: str) -> FT:
                 return BG.split_form(bank, options, funds, line_id=line_id, parts=parts, rate=rate, error=error)
-            if not parts or not all(c for c, _a, _f in parts):
+            if not parts or not all(part[0] for part in parts):
                 return again(t("reconciliation.split.account_required"))
             decision = {"kind": "post", "splits": [
-                {"account_code": c, "amount": a or 0, **({"fund_id": fund} if (fund := chosen_fund(f)) else {})}
-                for c, a, f in parts]}
+                {"account_code": c, "amount": a or 0, **({"contact": p} if p else {}),
+                 **({"fund_id": fund} if (fund := chosen_fund(f)) else {})}
+                for c, a, p, f in parts]}
         else:
             answer, contact = str(form.get("answer", "")), str(form.get("contact", "")).strip()
             fund = str(form.get("fund", ""))
