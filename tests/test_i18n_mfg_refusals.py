@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fasthtml.common import to_xml
+from shipped_sources import MODULE_ROOT, shipped_sources
 
 from celerp.accounting_roles import ROLE_LABELS
 from test_ui import _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
@@ -58,7 +59,9 @@ def _refusals() -> list[tuple[str, str, ast.Call]]:
     """Every refusal the manufacturing module writes with ``refuse(status, key, english)``:
     where it is, its message_key and the call."""
     found = []
-    for path in sorted((ROOT / "default_modules" / "celerp-manufacturing" / "celerp_manufacturing").rglob("*.py")):
+    for rel, path in shipped_sources():
+        if not rel.startswith(f"{MODULE_ROOT}/celerp-manufacturing/"):
+            continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (isinstance(node, ast.Call) and "refuse" in (getattr(node.func, "id", None), getattr(node.func, "attr", None))
                     and len(node.args) > 2 and isinstance(node.args[1], ast.Constant)):
