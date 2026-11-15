@@ -20,6 +20,8 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 from types import SimpleNamespace
 
+from fasthtml.common import to_xml
+
 from celerp.ai.tools import keyed_error
 
 from celerp.ai.conversations import (
@@ -414,15 +416,67 @@ def test_pending_actions_filters_status_and_expiry():
 
 
 def test_pending_actions_reports_stale_executing_as_retryable():
-    """A claim that never finalized can safely retry the same immutable action id."""
+    """A keyed claim that never finalized can safely retry the same immutable action id."""
     stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
-    stale = {**_pending_record("lost"), "status": "executing", "executing_since": stale_since}
+    stale = {**_pending_record("lost"), "keyed": True, "status": "executing", "executing_since": stale_since}
     result = pending_actions([stale])
     assert result[0]["id"] == "lost"
     assert result[0]["status"] == "retryable"
     assert result[0]["error"]["message_key"] == "ai.action_unfinished"
     history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])])
     assert "[action awaiting retry: create_contact]" in history[0]["content"]
+
+
+def test_stale_unkeyed_claim_is_listed_as_unknown():
+    """A crash between claim and finalize on a route with no key store leaves an
+    outcome nobody knows: it is listed as unknown, never as a retry, and the
+    history tells the model not to propose it again silently."""
+    stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    for record in (
+        {**_pending_record("lost"), "keyed": False, "status": "executing", "executing_since": stale_since},
+        {**_pending_record("old"), "status": "executing", "executing_since": stale_since},
+    ):
+        listed = pending_actions([record])
+        assert [r["status"] for r in listed] == ["unknown"], record
+        history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[record])])
+        assert "[action outcome unknown: create_contact;" in history[0]["content"]
+        assert "awaiting retry" not in history[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_pruning_keeps_an_unknown_card(session, company, user):
+    """Pruning keeps a conversation whose only action has an unknown outcome,
+    stored or a stale unkeyed claim, and its card still offers Dismiss and Run again."""
+    from celerp.ai.conversations import _protected_conversation_ids
+    from celerp_ai.ui_routes import _action_card
+    from ui.i18n import t
+    stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    records = {
+        "stored": {**_pending_record("u1"), "keyed": False, "status": "unknown",
+                   "finished_at": stale_since},
+        "stale": {**_pending_record("u2"), "keyed": False, "status": "executing",
+                  "executing_since": stale_since},
+    }
+    ids = {}
+    for label, record in records.items():
+        conv = AIConversation(
+            company_id=company.id, user_id=user.id, title=label,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session.add(conv)
+        await session.flush()
+        session.add(AIMessage(conversation_id=conv.id, role="assistant", content="done?",
+                              tools_called=[record]))
+        ids[label] = conv.id
+    await session.flush()
+    assert await _protected_conversation_ids(session, list(ids.values())) == set(ids.values())
+    for record in records.values():
+        listed = pending_actions([record])
+        assert [r["status"] for r in listed] == ["unknown"]
+        html = to_xml(_action_card(str(uuid.uuid4()), str(uuid.uuid4()), listed[0]))
+        assert t("ai.run_again") in html and t("btn.dismiss") in html
+        assert t("btn.retry") not in html
 
 
 @pytest_asyncio.fixture
