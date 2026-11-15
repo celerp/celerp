@@ -6,6 +6,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from celerp.accounting_roles import KeyedRefusal
+
 log = logging.getLogger(__name__)
 
 # Connectors whose API calls go through the relay. Their context carries the
@@ -14,11 +16,11 @@ _RELAY_CALL_CONNECTORS = frozenset({"xero"})
 
 
 
-class ConnectorUpgradeRequired(Exception):
+class ConnectorUpgradeRequired(KeyedRefusal):
     """The relay serves this connector only to a newer Celerp."""
 
 
-class ConnectRequired(Exception):
+class ConnectRequired(KeyedRefusal):
     """Celerp Connect has ended, so the relay no longer serves this connector's credentials."""
 
 
@@ -154,16 +156,13 @@ async def fetch_context(
         raise RelayUnavailable(str(exc)) from exc
     if r.status_code == 426:
         from celerp.connectors.registry import get as get_connector
-        from ui.i18n import t
 
-        raise ConnectorUpgradeRequired(
-            t("error.connector_update_needed", service=get_connector(connector_name).display_name))
+        raise ConnectorUpgradeRequired("error.connector_update_needed", service=get_connector(connector_name).display_name)
     if r.status_code == 402 and connector_name in _CONNECT_PAUSES:
-        from ui.i18n import t
         from celerp.connectors.registry import service_name
 
         await _note_connect(company_id, connector_name, lapsed=True)
-        raise ConnectRequired(t("connectors.connect_lapsed", service=service_name(connector_name)))
+        raise ConnectRequired("connectors.connect_lapsed", service=service_name(connector_name))
     if r.status_code in _NOT_CONNECTED:
         log.debug("relay token fetch for %s returned %d", connector_name, r.status_code)
         return None

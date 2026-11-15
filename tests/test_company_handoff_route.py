@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from company_backup_support import company, owner, token
+from ui.i18n import refusal_text
 from migration_support import real_client, real_engine  # noqa: F401
 
 
@@ -97,13 +98,13 @@ async def test_handoff_activity_and_revoke_are_company_scoped(real_engine, real_
     # Without the key a new link would open nothing: refused here, never asked of the relay.
     keyless = await real_client.post(f"{url}/{first_copy}/new-link",
                                      json={"operation_id": str(uuid.uuid4())}, headers=headers)
-    assert keyless.status_code == 409 and "Resend" in keyless.json()["detail"]
+    assert keyless.status_code == 409 and "Resend" in refusal_text(keyless.json()["detail"])
     assert not any(path.endswith("/new-link") for _, path, _ in calls)
     company_handoff_sender.files.remember_sent_copy(first, first_copy, {
         "key": company_handoff_sender.encode_key(bytes(32)), "recipient": "client@example.com"})
     gone = await real_client.post(f"{url}/{first_copy}/new-link",
                                   json={"operation_id": str(uuid.uuid4())}, headers=headers)
-    assert gone.status_code == 410 and "Resend" in gone.json()["detail"]
+    assert gone.status_code == 410 and "Resend" in refusal_text(gone.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -155,7 +156,7 @@ async def test_send_link_without_connect_is_refused_with_account_needed(real_eng
     r = await real_client.post("/company-backups/send-handoff", json=body,
                                headers={"Authorization": f"Bearer {bearer}"})
     assert r.status_code == 428, r.text
-    assert "free Celerp account" in r.json()["detail"]
+    assert "free Celerp account" in refusal_text(r.json()["detail"])
     assert not exported
 
 
@@ -265,7 +266,7 @@ async def test_send_shows_the_cloud_refusal_with_its_status(real_engine, real_cl
         "key": base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="),
         "firm_name": "Owner books", "recipient": "client@example.com",
         "reply_to": "verified@example.com", "note": ""}, headers={"Authorization": f"Bearer {bearer}"})
-    assert (r.status_code, r.json()["detail"]) == (status, shown)
+    assert (r.status_code, refusal_text(r.json()["detail"])) == (status, f"Celerp Cloud answered: {shown}")
 
 
 @pytest.mark.asyncio
@@ -282,4 +283,4 @@ async def test_copies_list_without_an_account_asks_for_one(real_engine, real_cli
 
     monkeypatch.setattr(cloud_entitlement, "authenticated_request", no_account)
     r = await real_client.get("/company-backups/handoffs", headers={"Authorization": f"Bearer {bearer}"})
-    assert r.status_code == 428 and "free Celerp account" in r.json()["detail"]
+    assert r.status_code == 428 and "free Celerp account" in refusal_text(r.json()["detail"])

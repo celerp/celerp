@@ -272,7 +272,7 @@ async def test_scheduler_stays_due_when_relay_requires_update():
     cm = _sched_session(config)
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync",
-               new=AsyncMock(side_effect=ConnectorUpgradeRequired("Update Celerp"))):
+               new=AsyncMock(side_effect=ConnectorUpgradeRequired("error.connector_update_needed", service="Xero"))):
         synced = await check_and_run_daily_syncs("co")
     assert synced == []
     assert config.last_daily_sync_at is None           # still due next check

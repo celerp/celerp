@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerGrant
+from ui.i18n import t
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.services import company_handoff_sender as sender
 from celerp.services import peer_attention
@@ -23,7 +24,6 @@ from celerp.services.peer_access import RENEW_WITHIN
 from celerp.services.peer_accounts import ACCOUNTS_PAGE
 
 SYNC_STATES = {"on": "On", "off": "Off", "failing": "Failing", "expiring": "Key expiring"}
-INVALID_SYNC = "Choose a sync status: On, Off, Failing or Key expiring."
 OWNER_ONLY = "Only the company's owner sees its sync and what needs attention."
 KEY_PAGE = "/settings/accountant-access"
 COPIES_PAGE = "/settings/company-handoff"
@@ -119,7 +119,7 @@ async def firm_view(session: AsyncSession, user_id: uuid.UUID, *, q: str | None 
     """The rows newest activity first: one per company the user can open, and one per
     company move the user started that has not finished."""
     if sync is not None and sync not in SYNC_STATES:
-        raise HTTPException(422, INVALID_SYNC)
+        raise HTTPException(422, t("firm_view.err_invalid_sync"))
     q = (q or "").strip() or None
     now = datetime.now(timezone.utc)
     pairs = (await session.execute(

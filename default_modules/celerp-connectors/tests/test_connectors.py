@@ -436,10 +436,11 @@ async def test_sync_asks_for_an_update_when_the_relay_requires_one(
     await record_first_sync(session, config, "completed")
     await session.commit()
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(
-            side_effect=ConnectorUpgradeRequired("Update Celerp to continue syncing Xero."))):
+            side_effect=ConnectorUpgradeRequired("error.connector_update_needed", service="Xero"))):
         resp = await client.post("/connectors/xero/sync", headers=headers, json={"entity": "contacts"})
     assert resp.status_code == 426
-    assert resp.json()["detail"] == "Update Celerp to continue syncing Xero."
+    from ui.i18n import refusal_text
+    assert resp.json()["detail"]["message_key"] == "error.connector_update_needed"
 
 
 @pytest.mark.asyncio

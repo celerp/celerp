@@ -1101,6 +1101,17 @@
     "company.err_module_download_failed": {
       "en": "The module download failed. Try again.",
       "params": []
+    },
+    "connectors.err_sync_refused": {
+      "en": "Nothing was synced with {service}: {reason}",
+      "params": [
+        "reason",
+        "service"
+      ]
+    },
+    "firm_view.err_invalid_sync": {
+      "en": "Choose a sync status: On, Off, Failing or Key expiring.",
+      "params": []
     }
   },
   "modules": {

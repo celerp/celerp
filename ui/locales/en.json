@@ -8224,5 +8224,7 @@
   "migration.move_unconfirmed": "Could not confirm the move request. Retry the same step.",
   "migration.export_request_account_needed": "Sign in to a free Celerp account to email an export checklist.",
   "migration.export_request_unconfirmed": "Could not confirm the export checklist. Retry the same step.",
-  "company.err_module_download_failed": "The module download failed. Try again."
+  "company.err_module_download_failed": "The module download failed. Try again.",
+  "connectors.err_sync_refused": "Nothing was synced with {service}: {reason}",
+  "firm_view.err_invalid_sync": "Choose a sync status: On, Off, Failing or Key expiring."
 }

@@ -116,9 +116,9 @@ async def _connector_context(company_id: str, connector_name: str, **kwargs):
     except RelayUnavailable as exc:
         raise HTTPException(status_code=502, detail=t("error.relay_unreachable")) from exc
     except ConnectorUpgradeRequired as exc:
-        raise HTTPException(status_code=426, detail=str(exc)) from exc
+        raise HTTPException(status_code=426, detail=exc.detail) from exc
     except ConnectRequired as exc:
-        raise HTTPException(status_code=402, detail=str(exc)) from exc
+        raise HTTPException(status_code=402, detail=exc.detail) from exc
 
 
 # The message key for each reason an execution refuses that carries no message of its own.
@@ -146,9 +146,9 @@ def _execution_refusals(connector):
             _EXECUTION_REFUSAL_KEYS.get(exc.reason, "connectors.err_first_sync_needed"),
             service=connector.display_name)) from exc
     except ConnectorUpgradeRequired as exc:
-        raise HTTPException(status_code=426, detail=str(exc)) from exc
+        raise HTTPException(status_code=426, detail=exc.detail) from exc
     except ConnectRequired as exc:
-        raise HTTPException(status_code=402, detail=str(exc)) from exc
+        raise HTTPException(status_code=402, detail=exc.detail) from exc
 
 
 @contextlib.asynccontextmanager
@@ -216,6 +216,10 @@ async def _manual_sync(session: AsyncSession, company_id, connector, entity: str
         raise
     except Refused as exc:
         raise HTTPException(status_code=400, detail=refusal_detail(exc))
+    except ValueError as exc:
+        # A sync engine refuses in its own words (a store's validation errors, a missing SKU).
+        raise HTTPException(status_code=400, detail=t(
+            "connectors.err_sync_refused", service=connector.display_name, reason=str(exc)))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector.name, entity)
         raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
