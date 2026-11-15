@@ -20,7 +20,7 @@ from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
-from celerp.ai.gates import agent_gate
+from celerp.agent_markers import agent_gate
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany

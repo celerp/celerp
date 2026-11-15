@@ -78,7 +78,7 @@ from celerp.services.money import (
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from ui.i18n import refusal_text, t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 

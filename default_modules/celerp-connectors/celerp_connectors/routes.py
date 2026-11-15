@@ -29,7 +29,7 @@ from celerp.services.auth import (
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import refusal_text, t
 from ui.components.encode import inert_media_type
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 log = logging.getLogger(__name__)
 

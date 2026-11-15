@@ -20,7 +20,7 @@ from celerp.services.permissions import require_permission
 from celerp.services.runtime_state import dismiss_star_prompt, star_prompt_dismissed
 from celerp.services.star_cta import get_star_cta, neutral_cta
 from ui.i18n import available_langs
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter()
 

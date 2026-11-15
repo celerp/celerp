@@ -42,7 +42,7 @@ from celerp.services import company_backup_files as files
 from celerp.services import company_handoff_sender as sender
 from celerp.services.auth import AuthContext, request_caller
 from ui.i18n import t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 

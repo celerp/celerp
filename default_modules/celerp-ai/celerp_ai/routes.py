@@ -48,7 +48,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
-from celerp.ai.tools import SHOWN_ONCE, agent_excluded
+from celerp.agent_markers import agent_excluded
+from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter

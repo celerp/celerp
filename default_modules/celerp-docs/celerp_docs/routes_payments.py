@@ -37,7 +37,7 @@ from celerp.services.journal_accounts import require_settlement_account
 from celerp.services.money import books_currency, checked_exchange_rate, require_doc_rate, round_money
 from celerp.services.permissions import require_permission
 from ui.i18n import t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 log = logging.getLogger(__name__)
 

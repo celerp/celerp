@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import importlib.util
 import inspect
@@ -19,6 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
+from celerp import agent_markers
 from celerp.ai import tools as ai_tools
 from celerp.services import cost_visibility, journal_accounts, permissions
 from test_helpers import real_agent_app
@@ -353,6 +355,15 @@ def _imported(name: str):
         return None
 
 
+@functools.cache
+def _calls(fn) -> tuple[tuple[ast.Call, object], ...]:
+    """Each call in ``fn``'s source with what it resolves to, read once per function:
+    the walk below meets the same functions under every capability."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    namespace = _namespace(fn, tree)
+    return tuple((node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call))
+
+
 def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[str], bool, set[str]]:
     """What ``fn`` and every Celerp function it calls consult of the caller's authority:
     the permission keys named to a permission primitive, whether field visibility is
@@ -371,9 +382,7 @@ def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[
             or (fn is journal_accounts._authorize_movement and not granted)):
         return set(), False, set()
     seen.add((fn, granted))
-    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-    namespace = _namespace(fn, tree)
-    calls = [(node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    calls = _calls(fn)
     granted = granted or any(
         inspect.unwrap(target) is inspect.unwrap(journal_accounts.fund_movement_grant)
         for _, target in calls if target is not None)
@@ -610,14 +619,14 @@ def _route_index(app) -> dict[tuple[str, str], APIRoute]:
 
 
 def test_unknown_exclusion_reason_is_refused():
-    assert ai_tools.agent_excluded("session") == {"x-celerp-agent-excluded": "session"}
-    assert set(ai_tools.AGENT_EXCLUSIONS) == {
+    assert agent_markers.agent_excluded("session") == {"x-celerp-agent-excluded": "session"}
+    assert set(agent_markers.AGENT_EXCLUSIONS) == {
         "session", "internal", "public", "machine", "secret", "company", "switch", "no_company",
         "installation", "assistant",
     }
-    assert all(reason.strip().endswith(".") for reason in ai_tools.AGENT_EXCLUSIONS.values())
+    assert all(reason.strip().endswith(".") for reason in agent_markers.AGENT_EXCLUSIONS.values())
     with pytest.raises(ValueError):
-        ai_tools.agent_excluded("convenience")
+        agent_markers.agent_excluded("convenience")
 
 
 def test_every_route_is_a_tool_or_excluded():
@@ -634,7 +643,7 @@ def test_every_route_is_a_tool_or_excluded():
         reason = extra.get("x-celerp-agent-excluded")
         for method in sorted(methods):
             tool = (method, path) in compiled
-            if reason is not None and reason not in ai_tools.AGENT_EXCLUSIONS:
+            if reason is not None and reason not in agent_markers.AGENT_EXCLUSIONS:
                 problems.append(f"{method} {path}: unknown exclusion reason {reason!r}")
             elif tool and reason is not None:
                 problems.append(f"{method} {path}: both a tool and excluded")

@@ -19,7 +19,7 @@ from celerp.services.auth import (
     get_current_user, is_install_owner, require_install_owner,
 )
 from celerp.services.permissions import require_permission
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter()
 

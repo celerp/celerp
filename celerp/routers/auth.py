@@ -50,7 +50,7 @@ from celerp.services.auth import (
     validate_password,
 )
 from ui.i18n import t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter()
 

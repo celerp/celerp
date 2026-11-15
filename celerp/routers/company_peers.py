@@ -17,7 +17,7 @@ from celerp.models.company_peer import CompanyPeerGrant
 from celerp.routers.migrations import user_owner
 from celerp.services.auth import AuthContext
 from celerp.services import peer_access
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter(prefix="/company-peers", tags=["company-peers"])
 

@@ -25,7 +25,7 @@ from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
 from celerp.accounting_roles import catalog_refusal
 from ui.i18n import current_lang, t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 # An agent tool. Each result names whether the caller holds its page's permission, so

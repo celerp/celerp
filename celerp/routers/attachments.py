@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from celerp.services.attachments import local_attachment_path
 from celerp.services.auth import get_current_company_id
 from ui.components.encode import inert_media_type
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 from ui.i18n import t
 
 router = APIRouter(prefix="/static/attachments", tags=["attachments"])

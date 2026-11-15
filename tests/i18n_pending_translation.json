@@ -332,7 +332,7 @@
       "params": []
     },
     "documents.err_credit_note_cannot_undone_goods_released": {
-      "en": "This credit note cannot be undone: goods it released from invoice {number} have left stock since, so the invoice cannot hold them again. Bring the goods back into stock first, or issue a new invoice for them.",
+      "en": "This credit memo cannot be undone: goods it released from invoice {number} have left stock since, so the invoice cannot hold them again. Bring the goods back into stock first, or issue a new invoice for them.",
       "params": [
         "number"
       ]
@@ -374,7 +374,7 @@
       "params": []
     },
     "documents.err_sku_quantity_cannot_come_back_credit": {
-      "en": "{sku}: {quantity} cannot come back on this credit note: the invoice shipped {went}, returned {value}, so {max} can come back",
+      "en": "{sku}: {quantity} cannot come back on this credit memo: the invoice shipped {went}, returned {value}, so {max} can come back",
       "params": [
         "max",
         "quantity",
@@ -992,7 +992,7 @@
       "params": []
     },
     "module_import.manifest_bound_once": {
-      "en": "PLUGIN_MANIFEST must be bound once, as one top-level literal, and never changed or used elsewhere in __init__.py.",
+      "en": "This module's description is written in a way Celerp can't read safely (it must be set once, as plain values, and never changed), so it can't be installed. Ask the module's developer for a fixed version.",
       "params": []
     },
     "module_import.needs_newer_celerp": {
@@ -1198,7 +1198,7 @@
       ]
     },
     "peer.err_by_hand_credit_applied": {
-      "en": "A credit note applied to a document is not copied automatically. Enter it in the accountant's copy by hand.",
+      "en": "A credit memo applied to a document is not copied automatically. Enter it in the accountant's copy by hand.",
       "params": []
     },
     "company_backup.err_modules_unavailable": {

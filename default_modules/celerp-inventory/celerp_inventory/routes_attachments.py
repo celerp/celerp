@@ -57,7 +57,7 @@ from celerp.services.permissions import require_permission
 from celerp_inventory.routes import flatten_item, get_item_projection
 from ui.i18n import t
 from ui.components.encode import inert_media_type
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 

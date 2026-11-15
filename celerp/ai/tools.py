@@ -25,7 +25,7 @@ from fastapi.routing import APIRoute
 from celerp.accounting_roles import refusal
 from celerp import error_body
 from celerp.ai import deadlines
-from celerp.ai.gates import AGENT_GATES
+from celerp.agent_markers import AGENT_GATES
 from celerp.modules.loader import is_core_folded, loaded_modules
 from celerp.modules.registry import uses_module
 from celerp.services.permissions import PERMISSIONS, is_permission_key, role_has_permission
@@ -45,34 +45,6 @@ _MULTIPART = "multipart/form-data"
 # What the model and the stored action keep in place of a secret the system generated.
 SHOWN_ONCE = "(shown once to you)"
 
-# Why a route is not an assistant tool. Every route is a tool unless its own decorator
-# carries ``openapi_extra=agent_excluded(<key>)``.
-_NOT_USER_ACTIONS: dict[str, str] = {
-    "session": "Sign-in, first-boot and session plumbing: runs before or around a signed-in user, "
-               "never as an action inside a company.",
-    "internal": "An endpoint the app calls by itself (health probe, live-update stream, image source, "
-                "call-to-action fragment), not an action a user takes.",
-    "public": "A page served to an outside party who opens a shared link, with no signed-in user.",
-    "machine": "Called by another program (a linked company or a connector), never by a person.",
-}
-# User actions kept off the assistant: the operator prompt names each, so the model
-# points the user to the screen instead.
-USER_ACTION_EXCLUSIONS: dict[str, str] = {
-    "secret": "Takes a password, one-time code, claim token or service key; typed into the chat it "
-              "would go to the AI provider and stay in the conversation log.",
-    "company": "Replaces or erases the whole company, or the installation's data, that the "
-               "conversation and its confirmation run in.",
-    "switch": "Opens a different company and signs the person in to it: the answer is a sign-in "
-              "token, which in the chat would go to the AI provider, and the conversation stays behind.",
-    "no_company": "Serves a login that has no company left; the assistant runs inside a company, so "
-                  "it is never there to take this step.",
-    "installation": "Restarts the server, which stops the assistant before it can record what happened.",
-    "assistant": "The assistant's own controls and chat plumbing: confirming, dismissing, rerunning or "
-                 "stopping its proposals and runs, starting or deleting a conversation, attachments; "
-                 "as tools they would let it approve its own proposals or erase the conversation it runs in.",
-}
-AGENT_EXCLUSIONS: dict[str, str] = {**_NOT_USER_ACTIONS, **USER_ACTION_EXCLUSIONS}
-
 # Keyed changes that also reach outside the database (an email, the cloud service). A
 # retry is safe only because the route commits its keyed entry before the outside step;
 # each entry says where the handler does so.
@@ -89,13 +61,6 @@ KEYED_BEFORE_OUTSIDE: dict[tuple[str, str], str] = {
     ("POST", "/subscriptions/{entity_id}/amend"): _SUBSCRIPTION_BILL_ORDER,
     ("POST", "/subscriptions/{entity_id}/bill-early"): _SUBSCRIPTION_BILL_ORDER,
 }
-
-
-def agent_excluded(reason: str) -> dict[str, str]:
-    """The ``openapi_extra`` that keeps a route off the assistant, with the reason why."""
-    if reason not in AGENT_EXCLUSIONS:
-        raise ValueError(f"unknown agent exclusion reason: {reason!r}")
-    return {"x-celerp-agent-excluded": reason}
 
 
 def keyed_error(code: str, key: str, message: str | None = None, /, **params) -> dict[str, Any]:

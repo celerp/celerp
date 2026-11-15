@@ -29,12 +29,12 @@ from fastapi import HTTPException
 
 from celerp import error_body
 from celerp.accounting_roles import refusal
+from celerp.agent_markers import USER_ACTION_EXCLUSIONS
 from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
-    USER_ACTION_EXCLUSIONS,
     _agent_error,
     agent_tool_specs,
     check_screen,

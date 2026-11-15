@@ -25,7 +25,7 @@ from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, failure_reason
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.ai.gates import agent_gate
+from celerp.agent_markers import agent_excluded, agent_gate
 from celerp.services.auth import (
     AuthContext,
     first_usable_company_link,
@@ -63,7 +63,6 @@ from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS, require_i
 from celerp.services.recognition import GIFT_CATEGORIES
 from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
 from ui.i18n import t
-from celerp.ai.tools import agent_excluded
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 

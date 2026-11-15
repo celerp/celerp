@@ -61,7 +61,7 @@ from celerp_docs.taxes import TaxApplication
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
 from ui.components.encode import html_response
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])

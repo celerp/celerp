@@ -20,6 +20,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
+from celerp import agent_markers
 from celerp.ai import jobs, service
 from celerp.ai import tools as ai_tools
 from celerp.ai.llm import ModelResult
@@ -422,12 +423,12 @@ def test_operator_prompt_names_every_area(real_app):
 
 def test_operator_prompt_names_the_ask_groups():
     prompt = agent_system_prompt("en", CAPS, {})
-    assert ai_tools.USER_ACTION_EXCLUSIONS
-    assert set(ai_tools.USER_ACTION_EXCLUSIONS) <= set(ai_tools.AGENT_EXCLUSIONS)
-    for reason in ai_tools.USER_ACTION_EXCLUSIONS.values():
+    assert agent_markers.USER_ACTION_EXCLUSIONS
+    assert set(agent_markers.USER_ACTION_EXCLUSIONS) <= set(agent_markers.AGENT_EXCLUSIONS)
+    for reason in agent_markers.USER_ACTION_EXCLUSIONS.values():
         assert reason in prompt
-    for key in set(ai_tools.AGENT_EXCLUSIONS) - set(ai_tools.USER_ACTION_EXCLUSIONS):
-        assert ai_tools.AGENT_EXCLUSIONS[key] not in prompt
+    for key in set(agent_markers.AGENT_EXCLUSIONS) - set(agent_markers.USER_ACTION_EXCLUSIONS):
+        assert agent_markers.AGENT_EXCLUSIONS[key] not in prompt
 
 
 def test_help_prompt_names_every_help_module():

@@ -36,7 +36,7 @@ from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 from ui.components.encode import call, html_response
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 

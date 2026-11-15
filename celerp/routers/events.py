@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from celerp.services.auth import oauth2_scheme, validate_access_token
 from celerp.notifications.sse import subscribe, unsubscribe
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 log = logging.getLogger(__name__)
 

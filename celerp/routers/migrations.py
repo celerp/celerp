@@ -65,7 +65,7 @@ from celerp.services.business_time import InvalidTimezoneError, business_timezon
 from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import create_install_owner, provision_migration_company
 from ui.i18n import t
-from celerp.ai.tools import agent_excluded
+from celerp.agent_markers import agent_excluded
 
 logger = logging.getLogger(__name__)
 
