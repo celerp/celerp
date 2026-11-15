@@ -2,15 +2,17 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Each bank reconciliation write, from the route, on a statement with real book entries.
 
-Auto-match, match, bulk confirm, attach, remove and complete each change the session or
-its statement lines; every one is driven here against posted journal entries on the
-bank's own account, and the session's state is read back after each.
+Suggest, accept, match, attach, remove and complete each change the statement or its
+lines; every one is driven here against posted journal entries on the bank's own account,
+and the statement's state is read back after each.
 """
 from __future__ import annotations
 
 import uuid
 
 import pytest
+
+import bank_statement_helpers as B
 
 
 async def _company(client) -> dict:
@@ -46,13 +48,9 @@ async def _session(client):
         "bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": 1300.0,
     })
     assert r.status_code == 200, r.text
-    sid = r.json()["id"]
-    r = await client.post(
-        f"/accounting/reconciliation/{sid}/import-csv", headers=h,
-        files={"file": ("s.csv", b"Date,Description,Amount\n2026-03-05,Deposit,500\n2026-03-14,Rent,-200\n", "text/csv")},
-    )
-    assert r.status_code == 200, r.text
-    return h, sid, deposit, rent
+    got = await B.import_into(client, h, r.json()["id"],
+                              b"Date,Description,Amount\n2026-03-05,Deposit,500\n2026-03-14,Rent,-200\n")
+    return h, got["session_id"], deposit, rent
 
 
 async def _lines(client, h, sid) -> dict:
@@ -65,26 +63,26 @@ async def _state(client, h, sid) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_auto_match_then_bulk_confirm_reconcile_both_book_entries(client):
+async def test_suggest_then_accept_reconcile_both_book_entries(client):
     h, sid, deposit, rent = await _session(client)
+    co, bank_id = await B.co_of(client, h), await B.bank_of(client, h, sid)
 
-    r = await client.post(f"/accounting/reconciliation/{sid}/auto-match", headers=h)
-    assert r.json() == {"matched": 1, "suggested": 1, "total_processed": 2}
+    r = await B.bank_post(client, h, sid, "suggest")
+    assert r.status_code == 200 and r.json()["suggested"] == 2, r.text
+    table = await B.groups(client, co, bank_id)
+    by_text = {l["description"]: l for l in B.all_lines(table)}
+    assert by_text["Deposit"]["suggestion"]["je_ids"] == [deposit]
+    assert by_text["Rent"]["suggestion"]["je_ids"] == [rent]
+    assert {l["status"] for l in (await _lines(client, h, sid)).values()} == {"unmatched"}, "a suggestion posts nothing"
+
+    r = await B.resolve(client, co, bank_id, accept={"group_keys": [g["key"] for g in table["groups"]]})
+    assert r.status_code == 200 and r.json()["refused"] == 0, r.text
     lines = await _lines(client, h, sid)
-    assert (lines["Deposit"]["status"], lines["Deposit"]["matched_je_id"]) == ("matched", deposit)
-    assert (lines["Rent"]["status"], lines["Rent"]["matched_je_id"]) == ("suggested", rent)
-    assert (await _state(client, h, sid))["reconciled_je_ids"] == [deposit]
+    assert (lines["Deposit"]["status"], lines["Deposit"]["matched_je_ids"]) == ("matched", [deposit])
+    assert (lines["Rent"]["status"], lines["Rent"]["matched_je_ids"]) == ("matched", [rent])
+    assert (await _state(client, h, sid))["difference"] == 0
 
-    r = await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)
-    assert r.json() == {"confirmed": 1, "skipped": []}
-    assert (await _lines(client, h, sid))["Rent"]["status"] == "matched"
-    state = await _state(client, h, sid)
-    assert sorted(state["reconciled_je_ids"]) == sorted([deposit, rent])
-    assert state["difference"] == 0
-
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "completed"
+    assert (await B.complete(client, h, sid))["status"] == "completed"
     r = await client.post(f"/accounting/reconciliation/{sid}/match", headers=h, json={"je_ids": [deposit]})
     assert r.status_code == 409
 
@@ -93,8 +91,7 @@ async def test_auto_match_then_bulk_confirm_reconcile_both_book_entries(client):
 async def test_matching_book_entries_by_hand_counts_each_once(client):
     h, sid, deposit, rent = await _session(client)
 
-    r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422, "nothing is matched yet, so a difference remains"
+    assert B.stopped_reason(await B.bank_complete(client, h, sid)), "nothing is matched yet, so a difference remains"
 
     for _ in range(2):
         r = await client.post(f"/accounting/reconciliation/{sid}/match", headers=h,
