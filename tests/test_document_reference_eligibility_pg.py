@@ -27,6 +27,7 @@ from celerp.events.engine import emit_event
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp_docs import routes as docs
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -169,7 +170,7 @@ async def test_a_batch_import_cannot_add_an_ineligible_item(committed_engine, ki
 
     assert not isinstance(outcome, BaseException), outcome
     assert outcome.created == 1, outcome
-    assert any(_REASON[status] in e for e in outcome.errors), outcome.errors
+    assert any(_REASON[status] in e for e in message_texts(outcome.errors)), message_texts(outcome.errors)
     assert await _records(committed_engine, company_id) == {f"{kind}:IMP0": 0}
     assert await _events(committed_engine, company_id, f"{kind}:IMP1") == []
 

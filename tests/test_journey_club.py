@@ -20,6 +20,7 @@ from test_credit_note_settlement_owned import _post
 from test_fund_movements import _setup
 from test_income_accounts import _issued, _item, _line
 from test_revenue_recognition import _freeze
+from test_helpers import refused_records
 
 pytestmark = pytest.mark.asyncio
 
@@ -363,7 +364,7 @@ async def test_e2e1_imports_take_their_funds_on_the_import(client, session, auth
         "records": [_journal(chosen, entries), _journal(left, entries[:2])],
         "fund_choices": {"records": {chosen: "unrestricted"}, "lines": {f"{chosen}:3": R, f"{chosen}:4": R}}})
     assert r.status_code == 200 and r.json()["created"] == 1, r.text
-    assert any(e.startswith(f"{left}: ") and "choose the fund for this document" in e for e in r.json()["errors"]), r.text
+    assert "choose the fund for this document" in refused_records(r.json()["errors"]).get(left, ""), r.text
     state = await _entry_state(session, auth["company_id"], chosen)
     assert [(e.get("fund_id"), e.get("fund_choice")) for e in state["entries"]] == [
         (None, "unrestricted"), (None, "unrestricted"), (R, R), (R, R)]
@@ -387,7 +388,7 @@ async def test_e2e1_imports_take_their_funds_on_the_import(client, session, auth
     lineless = f"doc:IMP-{uuid.uuid4().hex[:8]}"
     r = await client.post("/docs/import/batch", headers=h, json={"records": [_header_only(lineless)]})
     assert r.status_code == 200 and r.json()["created"] == 0, r.text
-    assert any(e.startswith(f"{lineless}: ") and "choose the fund for this document" in e for e in r.json()["errors"])
+    assert "choose the fund for this document" in refused_records(r.json()["errors"]).get(lineless, ""), r.text
     assert (await client.get(f"/docs/{lineless}", headers=h)).status_code == 404
     r = await client.post("/docs/import/batch", headers=h, json={
         "records": [_header_only(lineless)], "fund_choices": {"all": R}})

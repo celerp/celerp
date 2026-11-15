@@ -21,6 +21,7 @@ from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _company_of, _route_to_app
 from test_peer_two_way_sync import _attention, _from_firm, _journals, _notices, _pair_journals, _two_way
+from test_helpers import refused_records
 
 pytestmark = pytest.mark.asyncio
 
@@ -684,8 +685,8 @@ async def test_lineless_outside_document_needs_document_choice(real_client, real
     before = dict(await _journals(real_engine, books))
     if shape == "import":
         eid, body = await _issued_lineless(real_client, tok)
-        assert body["created"] == 0 and any(
-            e.startswith(f"{eid}: ") and "choose the fund for this document" in e for e in body["errors"]), body
+        assert body["created"] == 0 and (
+            "choose the fund for this document" in refused_records(body["errors"]).get(eid, "")), body
         assert await _journals(real_engine, books) == before
         eid, body = await _issued_lineless(real_client, tok, fund_choices={"all": fund})
         assert body["created"] == 1, body

@@ -16,6 +16,7 @@ import pytest
 
 from celerp.events.engine import emit_event
 from test_cost_restatement import _state
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,7 +78,7 @@ async def test_the_batch_refuses_a_row_resent_with_other_contents(client, sessio
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0 and body["updated"] == 0 and len(body["errors"]) == 1, body
-    assert "updating existing records" in body["errors"][0], body
+    assert "updating existing records" in message_texts(body["errors"])[0], body
     assert await _state(session, auth, rec["entity_id"]) == before
 
 

@@ -671,6 +671,28 @@ def in_language(lang: str, detail) -> str:
         i18n.set_lang("en")
 
 
+def message_texts(messages: list) -> list[str]:
+    """An import's outcome messages as English text: a keyed refusal's own message, else the text."""
+    from celerp.importers.results import message_text
+
+    return [message_text(m) for m in messages]
+
+
+def refused_records(messages: list) -> dict[str, str]:
+    """An import's refused records: each record's reason in English, by its entity id."""
+    from celerp.importers.results import kept_refusal, message_text
+
+    found = {}
+    for message in messages:
+        if isinstance(message, dict) and message.get("message_key") == "import.record_refused":
+            entity_id = message["params"]["entity_id"]
+            found[entity_id] = message_text(kept_refusal(message, entity_id))
+        else:
+            entity_id, _, reason = message_text(message).partition(": ")
+            found[entity_id] = reason
+    return found
+
+
 def notice_in(lang: str, item: dict) -> dict:
     """A notice from ``GET /notifications`` as the bell lists it to a reader in ``lang``."""
     from ui.routes.notifications import _in_reader_language

@@ -11,6 +11,7 @@ import pytest
 
 from test_consignment_in_sale import _consign, _sell, _settled, _state
 from test_consignor_payable_per_consignor import CONSIGNOR_FIELD, _consignor, _owed_each
+from test_helpers import message_texts
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,7 +58,7 @@ async def test_a_batch_update_cannot_change_a_fixed_consignor(client, session, a
         "upsert": True, "records": [_record({**snap, "contact_id": b}, con)]})
     assert r.status_code == 200, r.text
     assert r.json()["updated"] == 0 and r.json()["errors"], r.text
-    assert "consignor is fixed" in " ".join(r.json()["errors"])
+    assert "consignor is fixed" in " ".join(message_texts(r.json()["errors"]))
     session.expire_all()
     assert (await _state(session, auth, con))["contact_id"] == a
     assert await _owed_each(client, auth, a, b) == (4.0, 0.0, 0.0)

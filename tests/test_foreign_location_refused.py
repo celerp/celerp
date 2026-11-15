@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import refused_records
 
 pytestmark = pytest.mark.asyncio
 
@@ -284,7 +285,8 @@ async def test_doc_batch_import_shipping_from_another_company_location_is_refuse
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 1, body
-    assert any("doc:IMP-2" in e and "ship-from location" in e and foreign not in e for e in body["errors"]), body
+    reason = refused_records(body["errors"]).get("doc:IMP-2", "")
+    assert "ship-from location" in reason and foreign not in reason, body
     session.expire_all()
     assert await session.get(Projection, (auth["company_id"], "doc:IMP-2")) is None
     assert (await session.get(Projection, (auth["company_id"], "doc:IMP-3"))).state["from_location_id"] == own
