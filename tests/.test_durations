@@ -30470,5 +30470,6 @@
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[11-every]": 3.1117323680082336,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[4026-applied_only]": 1.880746673909016,
     "default_modules/celerp-subscriptions/tests/test_vertical_pages.py::test_lifetime_reads_every_credit_note_that_credits_its_sale[4026-every]": 3.2246794890379533,
-    "tests/test_browser/test_clear_fields_ui.py::test_select_editor_saves_a_pick_made_as_it_opens[chromium]": 1.15
+    "tests/test_browser/test_clear_fields_ui.py::test_select_editor_saves_a_pick_made_as_it_opens[chromium]": 1.15,
+    "tests/test_ledger_read_policy.py::test_fund_and_schedule_events_read_with_financial_reports_and_without_costs": 0.560753617901355
 }
