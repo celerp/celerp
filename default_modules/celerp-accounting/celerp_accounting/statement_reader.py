@@ -88,8 +88,14 @@ def _money(value, currency: str) -> Decimal | None:
         return None
 
 
-def _block(code: str, text: str, line: int | None = None) -> dict:
-    return {"code": code, "line": line, "text": text}
+def _block(code: str, line: int | None = None, **params) -> dict:
+    """A reason Import is blocked: its code, the line it names, and its refusal (the
+    catalog key ``acct.recon_block_<code>``), whose text reads in the user's language."""
+    from celerp.accounting_roles import catalog_refusal
+    from ui.i18n import refusal_text
+
+    refusal = catalog_refusal(f"acct.recon_block_{code}", **params)
+    return {"code": code, "line": line, "refusal": refusal, "text": refusal_text(refusal)}
 
 
 def _tie(opening: Decimal | None, closing: Decimal | None, amounts: list[Decimal],
@@ -119,7 +125,7 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str, ban
     blocking: list[dict] = []
     notices: list[str] = []
     if currency != bank_currency.upper():
-        blocking.append(_block("currency", f"This statement is in {currency}; the bank account is in {bank_currency}."))
+        blocking.append(_block("currency", currency=currency, bank_currency=bank_currency))
     start, end = header.get("period_start"), header.get("period_end")
     out: list[dict] = []
     seen: dict[tuple, int] = {}
@@ -130,10 +136,10 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str, ban
         flags = list(raw.get("flags") or [])
         if amount is None:
             flags = sorted(set(flags) | {"no_amount"})
-            blocking.append(_block("no_amount", f"Line {i + 1} has no amount that can be read.", i))
+            blocking.append(_block("no_amount", i, n=i + 1))
         date = raw.get("line_date") or ""
         if (start and date < start) or (end and date > end):
-            blocking.append(_block("outside_period", f"Line {i + 1} ({date}) is outside the statement period.", i))
+            blocking.append(_block("outside_period", i, n=i + 1, date=date))
         out.append({**{k: v for k, v in raw.items() if not k.startswith("_")}, "amount": amount,
                     "raw_balance": balance, "flags": flags})
     amounts = [l["amount"] or Decimal(0) for l in out]
@@ -179,12 +185,11 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str, ban
                            "(card statements print spending as positive).")
     if first_break is not None:
         first_break = counted[first_break]
-        blocking.append(_block("tie_break", f"The running balance stops adding up at line {first_break + 1}.",
-                               first_break))
+        blocking.append(_block("tie_break", first_break, n=first_break + 1))
     elif ties is False:
-        blocking.append(_block("tie_out", "Opening balance plus the lines does not equal the closing balance."))
+        blocking.append(_block("tie_out"))
     elif ties is None:
-        blocking.append(_block("balances_missing", "Enter the opening and closing balance from the statement."))
+        blocking.append(_block("balances_missing"))
 
     for line in out:
         for field in ("amount", "raw_balance"):

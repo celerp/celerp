@@ -315,7 +315,11 @@ class _Walk:
                 return True
             if not values and node.id in scope:
                 return _held_keyed(scope[node.id])  # a refusal the module builds once
-            return bool(values) and all(keyed(v) for v in values)
+            return bool(values) and all(self._list_keyed(node.id, fn, scope, tree) if isinstance(v, ast.List)
+                                        and not v.elts else keyed(v) for v in values)
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id not in scope \
+                and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, int):
+            return keyed(node.value)  # an entry of a list of refusals
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in scope:
             return _held_keyed(scope[node.value.id], every=True)  # one of a module's refusals
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \

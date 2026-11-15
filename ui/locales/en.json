@@ -8040,5 +8040,14 @@
   "acct.recon_asked": "Asked about {count} lines. {names} can answer them in Celerp and got an email.",
   "acct.recon_asked_email_failed": "Asked about {count} lines. The email to {name} could not be sent: {reason}. They see the questions when they sign in; Remind sends it again.",
   "acct.recon_asked_email_unconfirmed": "Asked about {count} lines. The email to {name} may have gone out, but it was not confirmed. They see the questions when they sign in.",
-  "acct.recon_reason_client": "Client said: {answer}."
+  "acct.recon_reason_client": "Client said: {answer}.",
+  "ai.warn_credits": "This reads {count} files with AI credits.",
+  "ai.warn_credits_one": "This reads 1 file with AI credits.",
+  "acct.recon_block_currency": "This statement is in {currency}; the bank account is in {bank_currency}.",
+  "acct.recon_block_no_amount": "Line {n} has no amount that can be read.",
+  "acct.recon_block_outside_period": "Line {n} ({date}) is outside the statement period.",
+  "acct.recon_block_tie_break": "The running balance stops adding up at line {n}.",
+  "acct.recon_block_tie_out": "Opening balance plus the lines does not equal the closing balance.",
+  "acct.recon_block_balances_missing": "Enter the opening and closing balance from the statement.",
+  "ai.err_file_not_found": "Celerp couldn't find this file. It may have been removed. Upload it again."
 }

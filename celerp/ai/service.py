@@ -220,12 +220,14 @@ propose_for_each, or with the tool that changes many records at once, never one 
 per record. When the outcome of an earlier change is unknown, say so to the user
 before proposing it again.
 
-Bank and card statements are reconciled the way an accountant works: start the
-reconciliation for the bank account and statement date, import the uploaded
-statement file, run auto-match, then read the workbench. For each statement line
-still open, propose a match to the book entry it pays, or propose a new entry
-against the right expense or income account when nothing in the books covers it.
-Complete the reconciliation only when the workbench difference is zero.
+Bank and card statements are reconciled the way an accountant works: read the
+uploaded statement files, check the preview, then import them onto the bank (a new
+bank and its import are proposed together). Run suggest on the bank, then read its
+groups. Propose one resolve for the groups you are sure of, never one call per line:
+accept the suggested groups, or post, split, match or transfer the lines of a group.
+After a resolve is confirmed, read the groups again and propose the next group. Lines
+nobody can explain are asked of the client, or posted to Suspense. Complete the bank
+only when its open statements balance.
 A bill reaches the books only after it is finalized and paid. Draft bills proposed
 from receipts are finalized by the user in Documents before a payment can be
 recorded against them.
@@ -381,12 +383,15 @@ def _selection_size(capability: dict, arguments: dict) -> int | None:
     return len(chosen) if isinstance(chosen, list) else 0
 
 
-def _card_warnings(capability: dict, count: int | None) -> list[str]:
-    """What the card says before the user confirms: how many records it changes and
-    whether a message leaves the company."""
+def _card_warnings(capability: dict, count: int | None, arguments: dict | None) -> list[str]:
+    """What the card says before the user confirms: how many records it changes, how
+    many files it reads with AI credits, and whether a message leaves the company."""
     warnings: list[str] = []
     if count is not None:
         warnings.append(t("ai.warn_selection_size", count=count))
+    files = ((arguments or {}).get("body") or {}).get("file_ids")
+    if capability.get("credits") and isinstance(files, list):
+        warnings.append(t("ai.warn_credits_one") if len(files) == 1 else t("ai.warn_credits", count=len(files)))
     if capability.get("outside"):
         warnings.append(t("ai.warn_outside_message"))
     return warnings
@@ -639,7 +644,8 @@ async def _agent_loop(
                     title=capability["tool"]["function"]["description"],
                     keyed=capability.get("keyed") is True,
                     warnings=_card_warnings(capability, len(arguments["records"]) if name == PROPOSE_FOR_EACH
-                                            else _selection_size(capability, arguments)),
+                                            else _selection_size(capability, arguments),
+                                            None if name == PROPOSE_FOR_EACH else arguments),
                     for_each=name == PROPOSE_FOR_EACH,
                     check_screen=check_screen(capability, {} if name == PROPOSE_FOR_EACH else arguments),
                 )

@@ -376,7 +376,8 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
         lines = given.lines if given.lines is not None else found["lines"]
         reviewed = _review({"header": {**found["header"], **given.header}, "lines": lines}, bank, base, existing, held)
         if reviewed["blocking"]:
-            raise HTTPException(status_code=422, detail=" ".join(b["text"] for b in reviewed["blocking"]))
+            first, *rest = [b["refusal"] for b in reviewed["blocking"]]
+            raise HTTPException(status_code=422, detail={**first, "also": rest} if rest else first)
         header = reviewed["header"]
         start, end = header.get("period_start"), header.get("period_end")
         if any(s.statement_date == end for s in await _sessions(db, company_id, bank)):
