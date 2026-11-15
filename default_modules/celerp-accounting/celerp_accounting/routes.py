@@ -2764,7 +2764,7 @@ _BANK_TYPES = frozenset({"checking", "savings", "credit_card", "cash"})
 
 class BankAccountCreate(BaseModel):
     bank_name: str
-    account_number: str
+    account_number: str = ""  # a cash box, or a bank read from a statement that prints none
     bank_type: str  # checking|savings|credit_card|cash
     currency: str
     opening_balance: FiniteFloat = 0.0
@@ -2905,6 +2905,21 @@ async def list_bank_reconciliations(
     return {"items": items, "total": len(items)}
 
 
+async def post_opening(session: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, je_id: str,
+                       amount: Decimal, when: str, rate: Decimal | None, memo: str) -> None:
+    """Post ``amount`` onto the bank against equity (the retained earnings account) as
+    entry ``je_id`` dated ``when``: the opening balance, or a later change to it."""
+    base = await _base_currency(session, company_id)
+    retained = await resolve(session, company_id, AccountRole.RETAINED_EARNINGS)
+    entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(amount))], inflow=amount > 0)
+    for event_type, data, suffix in (("acc.journal_entry.created", {"memo": memo, "ts": when, "entries": entries}, "c"),
+                                     ("acc.journal_entry.posted", {"ts": when}, "p")):
+        await emit_event(session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+                         event_type=event_type, data=data, actor_id=actor_id, location_id=None,
+                         source="bank_account_opening", idempotency_key=f"{je_id}:{suffix}",
+                         metadata_={"bank_account_id": str(bank.id)} if suffix == "c" else {})
+
+
 async def add_bank(session: AsyncSession, company_id: uuid.UUID, actor_id, payload: BankAccountCreate) -> BankAccount:
     """Add a bank account and post its opening balance; the caller commits (a statement
     import adds its bank in the same transaction as its statements)."""
@@ -2917,9 +2932,7 @@ async def add_bank(session: AsyncSession, company_id: uuid.UUID, actor_id, paylo
 
     opening = bool(payload.opening_balance)
     base = await _base_currency(session, company_id)
-    roles = [AccountRole.CASH_AND_EQUIVALENTS] + ([AccountRole.RETAINED_EARNINGS] if opening else [])
-    targets = await resolve_many(session, company_id, roles)
-    cash_header = targets[AccountRole.CASH_AND_EQUIVALENTS.value]
+    cash_header = await resolve(session, company_id, AccountRole.CASH_AND_EQUIVALENTS)
     # Resolve or auto-assign chart account code
     code = (
         checked_account_code(payload.account_code) if (payload.account_code or "").strip()
@@ -2938,49 +2951,16 @@ async def add_bank(session: AsyncSession, company_id: uuid.UUID, actor_id, paylo
         opening_balance=payload.opening_balance,
     )
 
-    # Create opening balance JE if opening_balance != 0
     if opening:
-        rate = _bank_rate(bank, base, payload.rate)
-        retained = targets[AccountRole.RETAINED_EARNINGS.value]
-        je_id = _opening_je_id(bank.id)
-        idem_c = f"opening:{bank.id}:c"
-        idem_p = f"opening:{bank.id}:p"
         if payload.opening_date is not None:
-            today = payload.opening_date.isoformat()
+            when = payload.opening_date.isoformat()
         else:   # the balance is as of the company's today, in its own timezone
             from celerp.models.company import Company
             from celerp.services.business_time import business_date_at
             company = await session.get(Company, company_id)
-            today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
-        ob = to_decimal(payload.opening_balance)
-        # Debit the bank account, credit equity (the retained earnings account)
-        entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(ob))], inflow=ob > 0)
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.created",
-            data={"memo": f"Opening balance for {payload.bank_name}", "ts": today, "entries": entries},
-            actor_id=actor_id,
-            location_id=None,
-            source="bank_account_opening",
-            idempotency_key=idem_c,
-            metadata_={"bank_account_id": str(bank.id)},
-        )
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=je_id,
-            entity_type="journal_entry",
-            event_type="acc.journal_entry.posted",
-            data={"ts": today},
-            actor_id=actor_id,
-            location_id=None,
-            source="bank_account_opening",
-            idempotency_key=idem_p,
-            metadata_={},
-        )
+            when = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
+        await post_opening(session, company_id, actor_id, bank, _opening_je_id(bank.id), to_decimal(payload.opening_balance),
+                           when, _bank_rate(bank, base, payload.rate), f"Opening balance for {payload.bank_name}")
 
     return bank
 

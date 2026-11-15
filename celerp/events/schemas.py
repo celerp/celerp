@@ -1417,6 +1417,8 @@ class AccBankStatementDone(BaseModel):
     The books change only through the entries the operation posted."""
     operation: str
     bank_account_id: str | None = None
+    # The receipts read with an imported statement, which suggestions match to its lines.
+    receipts: list[dict] = []
 
 
 # -----------------

@@ -8021,5 +8021,11 @@
   "reconciliation.group_closed": "This group has no open lines left. Someone may have answered them already. Refresh the page to see what is still open.",
   "reconciliation.line_not_open": "This line is no longer open with a suggestion. Refresh the page to see where it stands.",
   "enum.bank_type.cash": "Cash",
-  "acct.err_rule_sparse_amount": "A rule on a general description like this one needs an amount too, or it would catch every line with that description. Add the amount."
+  "acct.err_rule_sparse_amount": "A rule on a general description like this one needs an amount too, or it would catch every line with that description. Add the amount.",
+  "acct.recon_suggested": "Suggested an answer for {count} lines. Nothing is posted until you accept it.",
+  "acct.recon_model_not_run": "The AI could not run, so {count} lines with no other evidence are left as questions. Check your AI credits, then suggest again.",
+  "acct.err_recon_delete_settled": "This statement has lines that are already posted or matched. Undo those lines first, then remove the statement.",
+  "acct.recon_opening_memo": "Opening balance for {bank}",
+  "acct.recon_opening_adjusted": "Opening balance changed for {bank}",
+  "acct.err_recon_not_suspense": "Only a line sitting in Suspense can be moved to another account."
 }

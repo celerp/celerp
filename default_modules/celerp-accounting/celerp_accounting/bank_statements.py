@@ -31,6 +31,7 @@ from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
+from celerp_accounting.routes import BankAccountCreate
 from ui.i18n import refusal_text, t
 
 router = APIRouter()
@@ -66,12 +67,13 @@ async def _replayed(db: AsyncSession, company_id: uuid.UUID, key: str, request: 
 
 
 async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
-                    bank_id, result: dict, entity_id: str | None = None) -> dict:
+                    bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> dict:
     """Store ``result`` as the answer to ``key``; the caller commits."""
     entity_id = entity_id or f"bankop:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
     await emit_event(db, company_id=company_id, entity_id=entity_id,
                      entity_type="bank_operation", event_type="acc.bank_statement.done",
-                     data={"operation": operation, "bank_account_id": None if bank_id is None else str(bank_id)},
+                     data={"operation": operation, "bank_account_id": None if bank_id is None else str(bank_id),
+                           **(data or {})},
                      actor_id=actor_id, location_id=None, source="reconciliation", idempotency_key=key,
                      metadata_={"request": request_fingerprint(request), "result": result})
     return result
@@ -290,7 +292,7 @@ class ImportStatement(BaseModel):
     job_id: uuid.UUID
     statements: list[StatementIn] = Field(min_length=1, max_length=50)
     bank_id: uuid.UUID | None = None
-    new_bank: dict | None = None
+    new_bank: BankAccountCreate | None = None
     column_map: dict[str, str] | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
 
@@ -335,7 +337,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
                            db: AsyncSession = Depends(get_session)) -> dict:
     from datetime import datetime, timezone
     from celerp.services.company_lock import lock_company
-    from celerp_accounting.routes import BankAccountCreate, _base_currency, add_bank
+    from celerp_accounting.routes import _base_currency, add_bank
 
     request = _request(payload)
     if (done := await _replayed(db, company_id, payload.idempotency_key, request)) is not None:
@@ -352,7 +354,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
                 raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_column_missing", column=column))
     await lock_company(db, company_id)
     if bank is None:
-        bank = await add_bank(db, company_id, user.id, BankAccountCreate(**payload.new_bank))
+        bank = await add_bank(db, company_id, user.id, payload.new_bank)
     base = await _base_currency(db, company_id)
     out = []
     for given, found in zip(payload.statements, read["statements"]):
@@ -394,7 +396,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     if payload.column_map and read["headers"]:
         bank.statement_column_map = {"headers": read["headers"], "columns": payload.column_map}
     result = await _recorded(db, company_id, user.id, payload.idempotency_key, request, "import", bank.id,
-                             {"bank_id": str(bank.id), "sessions": out})
+                             {"bank_id": str(bank.id), "sessions": out}, data={"receipts": read["receipts"]})
     await db.commit()
     return result
 
@@ -794,7 +796,10 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
 async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[Decision], done: dict,
                       by_line: dict) -> None:
     """Count each rule whose suggestion a posted line followed."""
+    from celerp.services.company_lock import lock_company
     from celerp_accounting.models import ReconciliationRule
+
+    await lock_company(db, company_id)
 
     counts: dict = {}
     for d in decisions:
@@ -848,6 +853,366 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
         results += [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
     if by_line:
         await _bump_rules(db, company_id, decisions, done, by_line)
-    result = await _recorded(db, company_id, actor_id, key, request, "resolve", bank_id, {"results": results})
+    result = await _recorded(db, company_id, actor_id, key, request, "resolve", bank_id, {"results": results, "refused": sum(1 for r in results if not r["ok"])})
+    await db.commit()
+    return result
+
+
+# ── Suggest ─────────────────────────────────────────────────────────────────
+
+class Keyed(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+async def _states(db: AsyncSession, company_id: uuid.UUID, entity_ids) -> dict:
+    from celerp.models.projections import Projection
+
+    ids = sorted(set(entity_ids))
+    if not ids:
+        return {}
+    rows = await db.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id.in_(ids)))
+    return {i: s or {} for i, s in rows.all()}
+
+
+def _contact(state: dict, bank_code: str | None) -> str | None:
+    return next((e["contact"] for e in state.get("entries", []) if e.get("account") != bank_code and e.get("contact")),
+                None)
+
+
+async def _held(db: AsyncSession, company_id: uuid.UUID) -> set[str]:
+    """Every entry a statement or a line of the company already counts."""
+    held: set[str] = set()
+    for ids in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
+            ReconciliationSession.company_id == company_id))).scalars():
+        held.update(ids or [])
+    for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+            BankStatementLine.company_id == company_id))).scalars():
+        held.update(ids or [])
+    return held
+
+
+async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, base: str) -> list[dict]:
+    """Invoices and bills with a balance left, in the bank's currency."""
+    from celerp.models.projections import Projection
+
+    rows = (await db.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
+    out = []
+    for doc_id, state in rows:
+        state = state or {}
+        if state.get("doc_type") not in ("invoice", "bill") or state.get("status") in ("draft", "void"):
+            continue
+        if (state.get("currency") or base) != currency or not state.get("amount_outstanding"):
+            continue
+        out.append({"doc_id": doc_id, "doc_type": state["doc_type"], "contact_id": state.get("contact_id"),
+                    "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id")})
+    return out
+
+
+async def _slips(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:
+    """The receipts read alongside the bank's imported statements."""
+    from celerp.models.projections import Projection
+
+    rows = (await db.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "bank_operation"))).scalars()
+    return [{**r, "party_contact_id": None} for s in rows
+            if (s or {}).get("operation") == "import" and s.get("bank_account_id") == str(bank.id)
+            for r in s.get("receipts") or []]
+
+
+async def _history(db: AsyncSession, company_id: uuid.UUID) -> dict:
+    """What earlier posted lines went to, by counterparty key and by counterparty account."""
+    banks = {b.id: b.chart_account_code for b in (await db.execute(select(BankAccount).where(
+        BankAccount.company_id == company_id))).scalars()}
+    lines = list((await db.execute(select(BankStatementLine).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.status == "posted"))).scalars())
+    states = await _states(db, company_id, [j for l in lines for j in l.matched_je_ids or []])
+    out: dict = {}
+    for line in lines:
+        code = banks.get(line.bank_account_id)
+        for je_id in line.matched_je_ids or []:
+            state = states.get(je_id) or {}
+            if state.get("status") == "void":
+                continue
+            for e in state.get("entries", []):
+                if e.get("account") == code:
+                    continue
+                row = {"account_code": e.get("account"), "contact_id": e.get("contact"), "amount": str(line.amount)}
+                for k in {line.counterparty_key, line.counterparty_account} - {None, ""}:
+                    out.setdefault(k, []).append(row)
+    return out
+
+
+async def _postable(db: AsyncSession, company_id: uuid.UUID) -> list[str]:
+    """The active accounts a line can post to: none that is another account's parent."""
+    from celerp_accounting.models import Account
+
+    rows = (await db.execute(select(Account.code, Account.parent_code, Account.is_active).where(
+        Account.company_id == company_id))).all()
+    parents = {p for _c, p, _a in rows if p}
+    return sorted(c for c, _p, active in rows if active and c not in parents)
+
+
+async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, own_ids: set) -> "object":
+    from celerp.accounting_roles import AccountRole
+    from celerp.services.account_roles import resolve as resolve_role
+    from celerp_accounting import suggest
+    from celerp_accounting.models import ReconciliationRule
+    from celerp_accounting.routes import _base_currency, _je_entries_for_account, _opening_je_id, _rule_to_dict
+
+    held = await _held(db, company_id) | {_opening_je_id(bank.id)}
+    book = [e for e in await _je_entries_for_account(db, company_id, bank)
+            if e["je_id"] not in held and e["amount"] is not None]
+    states = await _states(db, company_id, [e["je_id"] for e in book])
+    entries = [{"je_id": e["je_id"], "amount": str(e["amount"]), "date": str(e["ts"])[:10], "memo": e["memo"],
+                "contact": _contact(states.get(e["je_id"]) or {}, bank.chart_account_code)} for e in book]
+    rules = [_rule_to_dict(r) for r in (await db.execute(select(ReconciliationRule).where(
+        ReconciliationRule.company_id == company_id, ReconciliationRule.is_active.is_(True)))).scalars()]
+    open_sessions = {s.id for s in (await db.execute(select(ReconciliationSession).where(
+        ReconciliationSession.company_id == company_id, ReconciliationSession.status == "open"))).scalars()}
+    pair_lines = [{"id": str(l.id), "bank_id": str(l.bank_account_id), "amount": str(l.amount), "line_date": l.line_date}
+                  for l in (await db.execute(select(BankStatementLine).where(
+                      BankStatementLine.company_id == company_id, BankStatementLine.status == "unmatched",
+                      BankStatementLine.bank_account_id != bank.id))).scalars()
+                  if l.reconciliation_id in open_sessions and l.id not in own_ids]
+    base = await _base_currency(db, company_id)
+    return suggest.LadderContext(
+        bank_id=str(bank.id), entries=entries, open_docs=await _open_docs(db, company_id, bank.currency, base),
+        rules=rules, pair_lines=pair_lines, slips=await _slips(db, company_id, bank),
+        history=await _history(db, company_id), accounts=await _postable(db, company_id),
+        general_expense=await resolve_role(db, company_id, AccountRole.GENERAL_EXPENSE))
+
+
+async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict | None:
+    """The model's replies for the residue groups; None when the model cannot run."""
+    import inspect
+
+    from celerp_accounting import suggest
+
+    rung = suggest.model_rung
+    if rung is None:
+        return None
+    token = suggest.current_call.set(call)
+    replies: dict = {}
+    try:
+        for batch in suggest.model_batches(residue):
+            reply = rung(batch, accounts)
+            replies.update((await reply if inspect.isawaitable(reply) else reply) or {})
+    except Exception:  # the model's failure leaves the lines to questions, said in the summary
+        return None
+    finally:
+        suggest.current_call.reset(token)
+    return replies
+
+
+@router.post(f"{API}/bank/{{bank_id}}/suggest", summary="Suggest an answer for each open statement line of a bank",
+             openapi_extra=_agent(credits=True))
+async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
+                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                        db: AsyncSession = Depends(get_session)) -> dict:
+    """Suggestions only: no line is posted or matched. A replay of the same key answers
+    the first result and the model is not asked again."""
+    from celerp_accounting import suggest
+
+    key, actor_id = payload.idempotency_key, user.id
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
+    rows = [l for l in await _bank_lines(db, company_id, bank)
+            if l.reconciliation_id in open_ids and l.status == "unmatched"]
+    lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
+              "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
+              "counterparty_account": l.counterparty_account, "reference": l.reference} for l in rows]
+    ctx = await _ladder_context(db, company_id, bank, {l.id for l in rows})
+    out, residue = suggest.ladder_rungs(lines, ctx)
+    replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(db, company_id, actor_id, key)) \
+        if residue else {}
+    suggest.apply_model(out, residue, replies or {}, ctx.accounts)
+    found = suggest.finish(out)
+    for line in rows:
+        SL.write_suggestion(line, found.get(str(line.id)))
+    model_ran = bool(residue) and replies is not None
+    summary = t("acct.recon_suggested", count=len(found)) if replies is not None else \
+        t("acct.recon_model_not_run", count=sum(g["count"] for g in residue))
+    result = await _recorded(db, company_id, actor_id, key, request, "suggest", bank.id,
+                             {"model_ran": model_ran, "summary": str(summary), "suggested": len(found)})
+    await db.commit()
+    return result
+
+
+# ── Unmatch, complete, remove a statement ───────────────────────────────────
+
+class Unmatch(BaseModel):
+    line_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.post(f"{API}/bank/{{bank_id}}/unmatch", summary="Undo settled statement lines: void what they posted and "
+             "release what they matched", openapi_extra=_agent("line_ids"))
+async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.UUID = Depends(get_current_company_id),
+                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                        db: AsyncSession = Depends(get_session)) -> dict:
+    """All the lines or none: the entries the lines posted are voided and the lines are open again."""
+    key, actor_id = payload.idempotency_key, user.id
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    lines = await _locked_lines(db, company_id, bank, payload.line_ids, state=("matched", "posted", "skipped"))
+    for line in lines:
+        await SL.unmatch_line(db, company_id=company_id, actor_id=actor_id, line=line)
+    result = await _recorded(db, company_id, actor_id, key, request, "unmatch", bank.id,
+                             {"unmatched": [str(l.id) for l in lines]})
+    await db.commit()
+    return result
+
+
+@router.post(f"{API}/bank/{{bank_id}}/complete", summary="Complete a bank's open statements in date order, up to "
+             "the first that does not balance", openapi_extra=_agent())
+async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
+                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                        db: AsyncSession = Depends(get_session)) -> dict:
+    """Each balanced statement is completed and hands the entries it counts to the next
+    one, so the next statement's balance starts where this one ended."""
+    from datetime import datetime, timezone
+
+    from celerp_accounting.routes import _je_entries_for_account, _lock_recon, _money_text as money_text, \
+        _settled_difference
+
+    key = payload.idempotency_key
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    bank = await _bank(db, company_id, bank_id)
+    entries = await _je_entries_for_account(db, company_id, bank)
+    pending = [s.id for s in await _sessions(db, company_id, bank) if s.status == "open"]
+    completed: list[str] = []
+    stopped_at = None
+    for i, sid in enumerate(pending):
+        recon, bank = await _lock_recon(db, sid, company_id, editable=True)
+        try:
+            difference = await _settled_difference(db, recon, bank, entries)
+            if difference != 0:
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "acct.err_recon_unbalanced", difference=money_text(difference, bank.currency)))
+        except HTTPException as exc:
+            stopped_at = {"statement_date": recon.statement_date, "reason": _reason(exc)}
+            break
+        recon.status = "completed"
+        recon.completed_at = datetime.now(timezone.utc)
+        completed.append(recon.statement_date)
+        if i + 1 < len(pending):
+            nxt, _b = await _lock_recon(db, pending[i + 1], company_id, editable=True)
+            SL.hold(nxt, list(recon.reconciled_je_ids or []))
+    result = await _recorded(db, company_id, user.id, key, request, "complete", bank.id,
+                             {"completed": completed, "stopped_at": stopped_at})
+    await db.commit()
+    return result
+
+
+@router.delete(f"{API}/{{session_id}}", summary="Remove an imported statement with none of its lines settled",
+               openapi_extra=_agent())
+async def delete_statement(session_id: uuid.UUID, payload: Keyed,
+                           company_id: uuid.UUID = Depends(get_current_company_id),
+                           _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                           db: AsyncSession = Depends(get_session)) -> dict:
+    """A statement imported by mistake goes with its lines. One with a settled line is
+    refused until those lines are undone, so nothing it posted is left without its line."""
+    from sqlalchemy import delete
+
+    from celerp_accounting.routes import _lock_recon
+
+    key = payload.idempotency_key
+    request = _request(payload, session_id=session_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
+    settled = (await db.execute(select(BankStatementLine.id).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.reconciliation_id == recon.id,
+        BankStatementLine.status != "unmatched").limit(1))).scalar_one_or_none()
+    if settled is not None:
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_delete_settled"))
+    await db.execute(delete(BankStatementLine).where(BankStatementLine.company_id == company_id,
+                                                     BankStatementLine.reconciliation_id == recon.id))
+    await db.delete(recon)
+    result = await _recorded(db, company_id, user.id, key, request, "delete", bank.id,
+                             {"deleted": str(session_id), "statement_date": recon.statement_date})
+    await db.commit()
+    return result
+
+
+# ── Opening balance and Suspense ────────────────────────────────────────────
+
+class Opening(BaseModel):
+    amount: FiniteFloat
+    date: Date
+    rate: PositiveFloat | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.put("/bank-accounts/{bank_id}/opening", summary="Set a bank's opening balance; a later change posts "
+            "an adjustment", openapi_extra=_agent())
+async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUID = Depends(get_current_company_id),
+                      _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                      db: AsyncSession = Depends(get_session)) -> dict:
+    """The first figure posts the opening entry; a later one posts the difference as an
+    adjustment dated ``date``, so the entries already posted stay as they are."""
+    from celerp.services.journal_accounts import hold_fund_ledger
+    from celerp_accounting.routes import _bank_rate, _base_currency, _opening_je_id, post_opening
+
+    key = payload.idempotency_key
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    await hold_fund_ledger(db, company_id)
+    bank = await _bank(db, company_id, bank_id)
+    await db.refresh(bank, with_for_update=True)
+    amount = SL.money_value(payload.amount, bank.currency, zero_ok=True)
+    current = round_money(to_decimal(bank.opening_balance or 0), bank.currency)
+    states = await _states(db, company_id, [_opening_je_id(bank.id)])
+    posted = bool(states)
+    change = amount - current if posted else amount
+    je_id = None
+    if change != 0:
+        je_id = f"je:opening-adj:{bank.id}:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}" if posted \
+            else _opening_je_id(bank.id)
+        fx = _bank_rate(bank, await _base_currency(db, company_id), payload.rate)
+        memo = t("acct.recon_opening_adjusted" if posted else "acct.recon_opening_memo", bank=bank.bank_name)
+        await post_opening(db, company_id, user.id, bank, je_id, change, payload.date.isoformat(), fx, str(memo))
+    bank.opening_balance = float(amount)
+    result = await _recorded(db, company_id, user.id, key, request, "opening", bank.id,
+                             {"bank_id": str(bank.id), "opening_balance": str(amount), "je_id": je_id})
+    await db.commit()
+    return result
+
+
+class Reclassify(BaseModel):
+    account_code: str = Field(min_length=1, max_length=32)
+    contact: str | None = Field(None, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+@router.post(f"{API}/lines/{{line_id}}/reclassify", summary="Move a line out of Suspense to the account it belongs to",
+             openapi_extra=_agent())
+async def reclassify(line_id: uuid.UUID, payload: Reclassify, company_id: uuid.UUID = Depends(get_current_company_id),
+                     _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                     db: AsyncSession = Depends(get_session)) -> dict:
+    """One entry moves the Suspense posting to ``account_code``, in the same amounts and
+    funds; the Suspense entry stays, so an undo of the line voids both."""
+    key = payload.idempotency_key
+    request = _request(payload, line_id=line_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    line = (await _locked_lines(db, company_id, None, [line_id], state=("posted",)))[0]
+    if not is_suspense(line):
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_not_suspense"))
+    je_id = await SL.reclassify(db, company_id=company_id, actor_id=user.id, line=line,
+                                account=payload.account_code, contact=payload.contact,
+                                suspense=await suspense_account(db, company_id, user.id), key=key)
+    result = await _recorded(db, company_id, user.id, key, request, "reclassify", line.bank_account_id,
+                             {"line_id": str(line.id), "je_id": je_id})
     await db.commit()
     return result

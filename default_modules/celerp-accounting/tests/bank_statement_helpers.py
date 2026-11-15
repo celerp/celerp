@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid as _uuid
+import weakref
 
 from httpx import AsyncClient
 
@@ -20,11 +21,23 @@ def key() -> str:
     return f"k-{_uuid.uuid4().hex}"
 
 
+_owners: "weakref.WeakKeyDictionary[AsyncClient, dict]" = weakref.WeakKeyDictionary()
+
+
 async def company(client: AsyncClient, currency: str = "USD") -> dict:
-    """A fresh company's headers, its id and its user id."""
-    from test_reconciliation_v2 import _auth
+    """A fresh company's headers, its id and its user id: the first registers its owner
+    (the install takes one registration), the next are that owner's further companies."""
     from celerp.services.auth import decode_access_token
-    h = await _auth(client)
+    owner = _owners.get(client)
+    if owner is None:
+        r = await client.post("/auth/register", json={"email": f"bank_{key()}@example.com", "password": "pass1234",
+                                                      "name": "Bank Tester", "company_name": f"BankCo {key()}"})
+        assert r.status_code == 200, r.text
+        h = _owners[client] = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    else:
+        r = await client.post("/companies", json={"name": f"BankCo {key()}"}, headers=owner)
+        assert r.status_code == 200, r.text
+        h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     me = (await client.get("/companies/me", headers=h)).json()
     uid = str(decode_access_token(h["Authorization"].split(" ", 1)[1])["sub"])
     return {"h": h, "company_id": me["id"], "user_id": uid}

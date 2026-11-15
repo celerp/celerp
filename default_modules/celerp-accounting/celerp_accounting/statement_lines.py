@@ -33,10 +33,15 @@ RECORD_FIELDS = {
 }
 
 SETTLED = ("matched", "posted")
-_OWN_ENTRY_TYPES = {"recon_create", "recon_split", "recon_transfer", "recon_suspense"}
+_OWN_ENTRY_TYPES = {"recon_create", "recon_split", "recon_transfer", "recon_suspense", "recon_reclass"}
 # The entry id a line's own posting takes, by entry type, before ``next_je_id`` numbers retries.
 _ENTRY_BASE = {"recon_create": "je:recon:", "recon_split": "je:recon:split:", "recon_suspense": "je:recon:suspense:",
-               "recon_transfer": "je:recon:transfer:"}
+               "recon_transfer": "je:recon:transfer:", "recon_reclass": "je:recon:reclass:"}
+
+
+# What a reclassification carries over from a Suspense line: its amounts and fund. The
+# posting engine stamps roles and gift answers on the new entry itself.
+_MOVED_FIELDS = ("account", "debit", "credit", "fx_debit", "fx_credit", "fx_currency", "fx_rate", "fund_id")
 
 
 def money_value(value, currency: str, *, zero_ok: bool = False) -> Decimal:
@@ -118,7 +123,7 @@ async def _session(db: AsyncSession, line: BankStatementLine) -> ReconciliationS
     return recon
 
 
-def _hold(recon: ReconciliationSession, je_ids: list[str]) -> None:
+def hold(recon: ReconciliationSession, je_ids: list[str]) -> None:
     held = list(recon.reconciled_je_ids or [])
     recon.reconciled_je_ids = held + [j for j in je_ids if j not in held]
 
@@ -192,7 +197,7 @@ async def post_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank: 
 def _settle(recon: ReconciliationSession, line: BankStatementLine, status: str, je_ids: list[str]) -> None:
     line.status = status
     line.matched_je_ids = list(je_ids)
-    _hold(recon, je_ids)
+    hold(recon, je_ids)
     if status == "posted":
         recon.created_count = (recon.created_count or 0) + 1
     else:
@@ -248,6 +253,34 @@ async def post_parts(db: AsyncSession, *, company_id: uuid.UUID, actor_id, bank:
     je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_create']}{line.id}")
     await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_create",
                      entries=entries, memo=line.description, entry_date=line.line_date, key=key)
+    return je_id
+
+
+async def reclassify(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine, account: str,
+                     contact: str | None, suspense: str, key: str) -> str:
+    """Move a line's Suspense posting to ``account``: each Suspense line of its entry is
+    reversed and posted again on ``account`` with the same amounts and fund."""
+    from celerp_accounting import import_service
+    from celerp_accounting.routes import require_destinations
+
+    await require_destinations(db, company_id, {account})
+    row = await db.get(Projection, {"company_id": company_id, "entity_id": line.matched_je_ids[0]})
+    entries: list[dict] = []
+    for e in (row.state or {}).get("entries", []) if row is not None else []:
+        if e.get("account") != suspense:
+            continue
+        money = {k: e[k] for k in _MOVED_FIELDS if k in e}
+        back = {**money, "debit": e.get("credit"), "credit": e.get("debit")}
+        if "fx_debit" in e:
+            back.update({"fx_debit": e.get("fx_credit"), "fx_credit": e.get("fx_debit")})
+        entries += [back, {**money, "account": account, **({"contact": contact} if contact else {})}]
+    if not entries:
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
+    await import_service.check_line_contacts(db, company_id, entries)
+    je_id = await next_je_id(db, company_id, f"{_ENTRY_BASE['recon_reclass']}{line.id}:1")
+    await post_entry(db, company_id=company_id, actor_id=actor_id, line=line, je_id=je_id, je_type="recon_reclass",
+                     entries=entries, memo=line.description, entry_date=line.line_date, key=key)
+    line.matched_je_ids = list(line.matched_je_ids) + [je_id]
     return je_id
 
 

@@ -87,7 +87,7 @@ def _fields(spec, schema, seen=None):
     return out
 
 
-def test_bank_record_fields_are_scoped():
+async def test_bank_record_fields_are_scoped():
     from celerp_accounting.statement_lines import RECORD_FIELDS
     spec = _openapi()
     missing = []
@@ -285,7 +285,7 @@ async def test_import_creates_bank_then_sessions_with_dependent_stop(client):
 _CALLS = {"send_email", "notify_once", "store_file", "apply_doc_payment", "read_statement_files", "model_rung"}
 
 
-def test_bank_external_calls_have_failure_paths():
+async def test_bank_external_calls_have_failure_paths():
     from celerp_accounting.statement_lines import BANK_CALLS
     found = set()
     for name in ("statement_lines.py", "statement_reader.py", "suggest.py"):
