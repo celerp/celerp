@@ -466,9 +466,10 @@ async def company_runs_now(session, company_id: uuid.UUID) -> bool:
         select(AIBatchJob.id).where(AIBatchJob.company_id == company_id, runs_now()).limit(1)) is not None
 
 
-def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID | None = None) -> tuple:
+def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID | None = None,
+                  step_keys: list[str] | None = None) -> tuple:
     """A new reading job for ``request``, held by this process, and one step per file
-    of ``file_ids``; the caller adds them to its session, commits, then starts it. A job
+    of ``file_ids`` (or per ``step_keys``: a statement's page ranges, ``file_id:first-last``); the caller adds them to its session, commits, then starts it. A job
     started in a thread takes the id of the question that asked for it, which it
     answers."""
     from celerp.models.ai import AIBatchJob, AIJobStep
@@ -480,9 +481,9 @@ def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID
                      request_digest=request.digest(), lang=current_lang())
     hold(job)
     steps = []
-    for seq, file_id in enumerate(file_ids):
-        op = file_operation_id(job_id, file_id, 0)
-        steps.append(AIJobStep(job_id=job_id, seq=seq, key=file_id, operation_id=op, step_id=op))
+    for seq, key in enumerate(step_keys or file_ids):
+        op = file_operation_id(job_id, key, 0)
+        steps.append(AIJobStep(job_id=job_id, seq=seq, key=key, operation_id=op, step_id=op))
     return job, steps
 
 
