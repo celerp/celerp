@@ -68,15 +68,14 @@ def _long(index: int) -> str:
     return f"{calendar.month_name[index % 12 + 1]} {index // 12}"
 
 
-def _month(value, field: str = "The month") -> int:
+def _month(value, refusal: str = "fixed_assets.err_month_yyyy_mm") -> int:
     text = str(value or "")
-    refusal = f"Enter {field[0].lower()}{field[1:]} as YYYY-MM, such as 2026-09."
     try:
         index = parse_period(text)
     except ValueError:
-        raise setup.unprocessable(refusal) from None
+        raise setup.refuse(refusal) from None
     if period_label(index) != text:
-        raise setup.unprocessable(refusal)
+        raise setup.refuse(refusal)
     return index
 
 
@@ -683,7 +682,7 @@ async def record_reading(session, company_id, user_id, asset_id: str, body: dict
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     if not rules.method(cls["method"]).uses_readings:
         raise setup.refuse("fixed_assets.err_asset_s_class_does_not_depreciate")
-    month = _month(body.get("period"), "The period")
+    month = _month(body.get("period"), "fixed_assets.err_period_yyyy_mm")
     units = operations._amount(body.get("units"), "Units")
     _still_open(books, asset, month)
     await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.reading.recorded",

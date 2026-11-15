@@ -197,7 +197,7 @@ def _check(books: _Books, numbered: list[tuple[int, RegisterRow]], excluded: set
                    for k, label in _AMOUNTS}
         if None not in (figures["cost"], figures["accumulated_depreciation"], figures["accumulated_impairment"]) and (
                 figures["accumulated_depreciation"] + figures["accumulated_impairment"] > figures["cost"]):
-            bad("accumulated_depreciation", WRITTEN_OFF_OVER_COST)
+            bad("accumulated_depreciation", t(WRITTEN_OFF_OVER_COST))
         if figures["revaluation_surplus"] and cls and setup.measurement(cls) != "revaluation":
             bad("revaluation_surplus", f"{cls['name']} is measured at cost, so its assets carry no revaluation "
                                        "surplus.")

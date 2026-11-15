@@ -25,10 +25,11 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.services.business_time import business_today, company_today
 
 from celerp_fixed_assets import recon, remeasure, runs, setup, taxbooks
+from celerp_fixed_assets.calc import rules
 from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import conflict
@@ -123,9 +124,9 @@ async def waiting_corrections(session, company_id) -> list[dict]:
 def _remedy(found: dict) -> str:
     """What sets a missing tax figure right."""
     if found["status"] == "no_category":
-        return "Set its tax category on its class or its tax book."
+        return t("fixed_assets.err_remedy_no_category")
     if found["status"] == "error":
-        return f"{found.get('reason') or ''} Check the regime's module, then work the year out again.".strip()
+        return t("fixed_assets.err_remedy_tax_error", reason=found.get("reason") or "").strip()
     return found.get("reason") or ""
 
 
@@ -236,9 +237,8 @@ async def _year(session, company_id, user_id, regime_key: str, year):
     await lock_company(session, company_id)
     regime = taxbooks.regime_for(settings, regime_key)
     year = taxbooks.check_year(year)
-    reason = taxbooks.unavailable(settings, regime_key)
-    if reason:
-        raise conflict(reason)
+    if taxbooks.unavailable(settings, regime_key):
+        raise conflict(rules.unavailable_refusal("tax_regime", regime_key))
     saved = await _state(session, company_id, taxbooks.taxyear_id(regime_key, year)) or {}
     return settings, regime, year, saved
 
@@ -261,11 +261,12 @@ async def close(session, company_id, user_id, regime_key: str, year) -> dict:
     # Another regime's missing figures wait on that regime's own close.
     waiting = [i["key"] for i in (await report(session, company_id, year))["items"]
                if i["state"] != "accepted" and i["kind"] != "tax"]
-    refusals = [*([f"Tax year {year} cannot close while it has no tax figure for "
-                   + "; ".join(f"{name} ({_remedy(found)})" for _, name, found in unworked)] if unworked else []),
-                *([f"These year-end items are not accepted: {', '.join(waiting)}."] if waiting else [])]
-    if refusals:
-        raise conflict(" ".join(refusals))
+    not_accepted = catalog_refusal("fixed_assets.err_year_end_not_accepted", items=", ".join(waiting))
+    if unworked:
+        raise conflict({**catalog_refusal("fixed_assets.err_tax_year_no_figure", year=year, items="; ".join(
+            f"{name} ({_remedy(found)})" for _, name, found in unworked)), "also": [not_accepted] if waiting else []})
+    if waiting:
+        raise conflict(not_accepted)
     data = {"regime": regime_key, "year": year, "status": "closed", "start": start.isoformat(),
             "end": end.isoformat(), "rows": figures["rows"], "pools": figures["pools"],
             "history": _history(saved, settings, "closed", user_id)}

@@ -2395,10 +2395,6 @@
         "params": [
           "month"
         ]
-      },
-      "fixed_assets.err_statutory_report": {
-        "en": "statutory_report",
-        "params": []
       }
     },
     "celerp-labels": {

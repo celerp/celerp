@@ -31,7 +31,7 @@ from ui.i18n import t
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 _CHECK = [require_permission("check_fixed_assets")]
 ENTITY_TYPE = "fa_check"
-_LEFT = {"disposed": "Disposed on {date}.", "sold": "Sold on {date}."}
+_LEFT = {"disposed": "fixed_assets.err_check_left.disposed", "sold": "fixed_assets.err_check_left.sold"}
 
 
 async def record_check(session, company_id, user_id, tag: str) -> dict:
@@ -47,7 +47,7 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
         raise setup.refuse("fixed_assets.err_no_asset_with_tag_tag", tag=tag)
     asset_id, asset = found
     if asset.get("status") in _LEFT:
-        raise setup.unprocessable(_LEFT[asset["status"]].format(date=(asset.get("disposal") or {}).get("date")))
+        raise setup.refuse(_LEFT[asset["status"]], date=(asset.get("disposal") or {}).get("date"))
     today = (await company_today(session, company_id)).isoformat()
     for check in await live_checks(session, company_id):
         if (check["asset_id"], check["user_id"], check["date"]) == (asset_id, str(user_id), today):

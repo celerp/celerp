@@ -20,6 +20,7 @@ from celerp.services.business_time import business_date_of
 from fa_fixtures import FA
 from test_disposal import _dispose
 from test_runs import _contributed, _managed_from, _race_company
+from ui.i18n import refusal_text
 from test_transfer import _location, _move
 from ui.i18n import refusal_text
 
@@ -383,7 +384,8 @@ async def test_checks_disposed_removal_and_not_seen_report(fa):
     await _dispose(fa, old, "2026-03-31")
 
     disposed = await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-OLD"})
-    assert disposed.status_code == 422 and disposed.json()["detail"] == "Disposed on 2026-03-31."
+    assert disposed.status_code == 422 and disposed.json()["detail"]["message_key"] == "fixed_assets.err_check_left.disposed" \
+        and refusal_text(disposed.json()["detail"]) == "Disposed on 2026-03-31."
     check = await fa.ok(await fa.client.post("/fixed-assets/api/checks", headers=fa.h, json={"tag": "TAG-1"}))
     # Scanning the asset number works the same when the asset has no tag.
     van_number = (await fa.asset(van))["number"]
