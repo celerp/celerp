@@ -350,6 +350,7 @@ async def run_agent(
     operation_id: uuid.UUID,
     journal: jobs.Journal,
     read_only: bool = False,
+    caller_gates: frozenset[str] = frozenset(),
 ) -> AgentResult:
     """Run the tool-calling agent loop. Returns AgentResult - raises AgentRefusal for the relay refusals llm.complete raises.
 
@@ -366,7 +367,7 @@ async def run_agent(
             app=app, bearer=bearer, query=query,
             company_id=company_id, company_settings=company_settings, role=role,
             user_id=user_id, memory=memory, file_ids=file_ids, history=history,
-            read_only=read_only, tally=tally, journal=journal,
+            read_only=read_only, tally=tally, journal=journal, caller_gates=caller_gates,
         )
         _log_query(company_id, user_id, result.model_used, result.tools_called, len(file_ids or []), t0, result.error)
         return result
@@ -406,8 +407,10 @@ async def _agent_loop(
     read_only: bool = False,
     tally: RunTally,
     journal: jobs.Journal,
+    caller_gates: frozenset[str] = frozenset(),
 ) -> AgentResult:
-    capabilities = compile_agent_capabilities(app, company_settings, role) if bearer else {}
+    capabilities = compile_agent_capabilities(
+        app, company_settings, role, caller_gates=caller_gates) if bearer else {}
     if read_only:
         capabilities = {
             name: capability for name, capability in capabilities.items()

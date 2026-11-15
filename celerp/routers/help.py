@@ -50,7 +50,8 @@ def _summary(page: HelpPage) -> dict:
     return {"id": page.id, "title": page.title, "summary": page.summary}
 
 
-@router.get("/help/search", operation_id="help_search", openapi_extra=_AGENT)
+@router.get("/help/search", operation_id="help_search", openapi_extra=_AGENT,
+            summary="Search the help pages for how to do something in Celerp.")
 async def help_search(
     q: str = Query(..., max_length=_MAX_Q_LEN),
     module: str | None = None,
@@ -71,7 +72,8 @@ async def help_search(
     return {"hits": [{**_summary(h.page), **_flags(h)} for h in hits]}
 
 
-@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra=_AGENT)
+@router.get("/help/page/{page_id}", operation_id="help_read", openapi_extra=_AGENT,
+            summary="Read one help page with its numbered steps and the button names the user sees.")
 async def help_read(
     page_id: str,
     role: str = Depends(get_current_role),

@@ -292,6 +292,7 @@ async def _executor_errors(monkeypatch) -> list[dict]:
         await run(app, "Bearer t", thing, {"path": {"item_id": "a/b"}}, "c"),
         await run(app, "Bearer t", cap("/text"), {}, "c"),
         await run(app, "Bearer t", cap("/big"), {}, "c", result_max_bytes=32),
+        await run(app, "Bearer t", cap("/text", uploads=("file",)), {"file_ids": ["gone"]}, "c"),
     ]
     monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.01)
     results.append(await run(app, "Bearer t", cap("/slow"), {}, "c"))

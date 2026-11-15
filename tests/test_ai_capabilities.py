@@ -124,7 +124,7 @@ def test_declared_idempotent_mutation_compiles_without_a_key():
     assert touch["key_field"] is None
     assert touch["keyed"] is True
     assert touch["expects_body"] is False
-    assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path"}
+    assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path", "after_previous"}
     assert all("unsafe_write" not in name for name in compiled)
 
 

@@ -48,19 +48,19 @@ CAPS = {
     "list_items": {
         "name": "list_items", "method": "GET", "path": "/api/inventory/items",
         "path_names": (), "query_names": ("q",), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("list_items"),
     },
     "get_item": {
         "name": "get_item", "method": "GET", "path": "/api/inventory/items/{item_id}",
         "path_names": ("item_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("get_item"),
     },
     "create_contact": {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",
         "path_names": (), "query_names": (), "expects_body": True,
-        "inject_idempotency": True, "requires_confirmation": True,
+        "key_field": "idempotency_key", "keyed": True, "requires_confirmation": True,
         "tool": _tool("create_contact"),
     },
 }
@@ -96,7 +96,7 @@ def _install(monkeypatch, results, execute=None):
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
     monkeypatch.setattr(service, "_authority", _owner_authority)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)
     return fake
@@ -622,7 +622,7 @@ async def test_relay_409_continuation_expired_maps_to_plain_error(monkeypatch):
         raise RelayError("continuation_expired", "continuation_expired", status=409)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.pending_actions == []
     assert result.error == t("ai.err_step_expired")
@@ -634,7 +634,7 @@ async def test_relay_busy_maps_to_retry_text(monkeypatch):
         raise RelayError("busy", "busy", status=429)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.error == "The AI service is temporarily busy. Please try again in a moment."
 
@@ -651,7 +651,7 @@ async def test_a_service_outage_reads_as_an_outage_never_as_the_service_wrote_it
         raise RelayError("service_unavailable", message, status=503)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: CAPS)
     result = await _run()
     assert result.error == t("ai.err_unavailable")
 

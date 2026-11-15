@@ -43,13 +43,13 @@ _CAPS = {
     "help_search": {
         "name": "help_search", "method": "GET", "path": "/help/search",
         "path_names": (), "query_names": ("q", "module"), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("help_search"),
     },
     "help_read": {
         "name": "help_read", "method": "GET", "path": "/help/page/{page_id}",
         "path_names": ("page_id",), "query_names": (), "expects_body": False,
-        "inject_idempotency": False, "result_permissions": (), "field_visibility": False,
+        "key_field": None, "keyed": False, "result_permissions": (), "field_visibility": False,
         "tool": _tool("help_read"),
     },
 }
@@ -82,7 +82,7 @@ def _script(monkeypatch, turns: list[ModelResult]) -> list[list[dict]]:
 
     monkeypatch.setattr(service, "complete", _complete)
     monkeypatch.setattr(service, "_authority", _owner_authority)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
     return seen
 
 
@@ -127,7 +127,7 @@ async def test_tool_requests_forward_accept_language(thai):
         return {"lang": request.headers.get("accept-language")}
 
     capability = {"name": "echo", "method": "GET", "path": "/echo", "path_names": (),
-                  "query_names": (), "expects_body": False, "inject_idempotency": False}
+                  "query_names": (), "expects_body": False, "key_field": None, "keyed": False}
     result = await execute_agent_capability(app, "Bearer tok", capability, {}, "c1")
     assert result["ok"] is True
     assert result["data"] == {"lang": "th"}

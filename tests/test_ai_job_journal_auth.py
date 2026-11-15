@@ -134,7 +134,7 @@ def _gated_read(app) -> dict:
     """An agent capability over a real read the app refuses without manage_company_settings."""
     path = next(path for path, _, route in tools._api_routes(app) if route.name == "start_report")
     return {"name": "start_report", "method": "GET", "path": path, "module": "celerp",
-            "path_names": (), "query_names": (), "expects_body": False, "inject_idempotency": False,
+            "path_names": (), "query_names": (), "expects_body": False, "key_field": None, "keyed": False,
             "requires_confirmation": False, "required_permissions": ("manage_company_settings",),
             "result_permissions": ("manage_company_settings",), "field_visibility": False,
             "tool": {"type": "function", "function": {"name": "start_report", "description": "last start",
@@ -155,7 +155,7 @@ async def _grant(session, company_id, granted: bool) -> None:
 async def _gated(app, monkeypatch) -> list[dict]:
     """The question's one tool is a read gated on a permission; returns every result it read."""
     caps = {"start_report": _gated_read(app)}
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app_, settings, role=None: caps)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app_, settings, role=None, **_gates: caps)
     real = service.execute_agent_capability
     results: list[dict] = []
 
@@ -341,7 +341,7 @@ async def _item_read_kept_then_failed(client, owner_token, asker_token, cloud, m
     real_agent_app()
     extra = {also["name"]: also} if also else {}
     monkeypatch.setattr(service, "compile_agent_capabilities",
-                        lambda app_, settings, role=None: {**tools.compile_agent_capabilities(app_, settings, role),
+                        lambda app_, settings, role=None, **_gates: {**tools.compile_agent_capabilities(app_, settings, role, **_gates),
                                                            **extra})
     caps = tools.compile_agent_capabilities(app, {}, None)
     name = next(n for n, c in caps.items() if c["method"] == "GET" and c["path"].endswith("/items/{entity_id}"))

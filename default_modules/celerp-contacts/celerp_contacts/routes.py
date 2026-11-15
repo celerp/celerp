@@ -140,7 +140,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
     return row
 
 
-@router.post("/contacts", summary="Add a new customer or vendor. Look the name up with List contacts first, and use Update contact to change one that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.post("/contacts", summary="Add a new customer or vendor. Look the name up with List contacts first, and use Update contact to change one that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     await lock_company(session, company_id)
     if payload.idempotency_key:
@@ -192,7 +192,7 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}", summary="Change details of an existing customer or vendor, such as their email, phone, address or currency.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.patch("/contacts/{contact_id}", summary="Change details of an existing customer or vendor, such as their email, phone, address or currency.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
                                                     "x-celerp-agent-result-permissions": ["edit_contacts", "manage_company_settings"]})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _locked_identity_contact(session, company_id, user, contact_id)

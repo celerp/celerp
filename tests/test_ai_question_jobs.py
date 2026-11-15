@@ -26,7 +26,7 @@ AUTH = lambda token: {"Authorization": f"Bearer {token}"}  # noqa: E731
 
 def _cap(name: str, method: str, *, confirm: bool) -> dict:
     return {"name": name, "method": method, "path": f"/{name}", "path_names": (), "query_names": (),
-            "expects_body": method != "GET", "inject_idempotency": False, "requires_confirmation": confirm,
+            "expects_body": method != "GET", "key_field": None, "keyed": False, "requires_confirmation": confirm,
             "result_permissions": (), "field_visibility": False,
             "tool": {"type": "function", "function": {"name": name, "description": name, "parameters": {}}}}
 
@@ -148,7 +148,7 @@ async def test_ask_again_after_memory_language_and_tools_changed_sends_the_same_
     r = await client.post("/ai/memory/notes", headers=AUTH(token), json={"content": "We buy from Bangkok suppliers."})
     assert r.status_code == 201, r.text
     monkeypatch.setattr(service, "compile_agent_capabilities",
-                        lambda app, settings, role=None: {"contacts_search": _cap("contacts_search", "GET",
+                        lambda app, settings, role=None, **_gates: {"contacts_search": _cap("contacts_search", "GET",
                                                                                    confirm=False)})
     r = await client.post(f"/ai/conversations/{conv}/query", headers={**AUTH(token), "Accept-Language": "th"},
                           json={"query": "How do I add a supplier?", "operation_id": str(qid)})
@@ -168,7 +168,7 @@ async def test_a_replayed_proposal_still_waits_for_the_user(client, owner, cloud
     conv = await _conversation(client, token)
     qid = uuid.uuid4()
     caps = {"contacts_create": _cap("contacts_create", "POST", confirm=True)}
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: caps)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: caps)
     ran: list = []
 
     async def _exec(*a, **k):
@@ -191,7 +191,7 @@ async def test_a_replayed_call_to_a_tool_no_longer_offered_gets_the_tool_error(c
     conv = await _conversation(client, token)
     qid = uuid.uuid4()
     caps = {"contacts_search": _cap("contacts_search", "GET", confirm=False)}
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: caps)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: caps)
     ran: list = []
 
     async def _exec(*a, **k):
@@ -202,7 +202,7 @@ async def test_a_replayed_call_to_a_tool_no_longer_offered_gets_the_tool_error(c
                                            if identity == str(qid) else answer("Done."))
     await _interrupted(client, token, conv, qid, cloud)
 
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     assert (await _ask(client, token, conv, qid)).status_code == 202
     await _settled(client, token, conv, qid)
     assert ran == []
@@ -219,7 +219,7 @@ async def test_a_stopped_question_sends_no_further_step_and_ask_again_continues_
     from the kept step, so the first step is never sent again."""
     token, *_ = owner
     caps = {"contacts_search": _cap("contacts_search", "GET", confirm=False)}
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: caps)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: caps)
 
     async def _exec(*a, **k):
         return {"ok": True, "status": 200, "data": {}}

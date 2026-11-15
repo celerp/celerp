@@ -115,7 +115,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # A document write checks these on what it is given beyond its route's permission:
 # a line price, a contact it copies from, a cost price list.
 _DOC_WRITE_AGENT = {
-    "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+    "x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
     "x-celerp-agent-result-permissions": ["set_sales_doc_prices", "view_contacts", "view_inventory_costs"],
 }
 
@@ -4606,8 +4606,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
 
 @router.post(
     "/{entity_id}/payment",
-    summary="Record a payment on a document",
-    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+    summary="Record a payment on a document.",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"},
 )
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # apply_doc_payment takes the doc row FOR UPDATE and validates against that fresh

@@ -188,6 +188,11 @@ async def user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContex
     return ctx
 
 
+# Read by the agent compiler as require_permission's guard is, so a role without the
+# permission never sees these tools.
+user_owner.required_permission = "manage_company_lifecycle"
+
+
 async def ensure_not_bootstrapped(session: AsyncSession) -> None:
     if await session.scalar(select(User.id).limit(1)) is not None:
         raise HTTPException(status_code=409, detail=t(BOOTSTRAPPED))

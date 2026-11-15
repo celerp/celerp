@@ -1270,6 +1270,7 @@ async def _question_context(session, job) -> dict | None:
     from celerp.ai.memory import get_memory
     from celerp.main import app
     from celerp.models.ai import AIMessage
+    from celerp.ai.tools import gates_of_caller
     from celerp.services.permissions import read_authority
     role, company_settings = await read_authority(session, job.company_id, job.user_id)
     history: list[Earlier] = []
@@ -1282,7 +1283,8 @@ async def _question_context(session, job) -> dict | None:
     return dict(app=app, bearer=_bearer(job, role or ""), operation_id=job.id, query=job.query,
                 company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
                 role=role or "", memory=await get_memory(session, job.company_id),
-                file_ids=job.file_ids or None, history=history, read_only=job.conversation_id is None)
+                file_ids=job.file_ids or None, history=history, read_only=job.conversation_id is None,
+                caller_gates=await gates_of_caller(session, job.user_id, role or ""))
 
 
 async def _earlier(session, job, asked, messages: list) -> list[Earlier]:

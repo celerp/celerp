@@ -138,7 +138,7 @@ async def test_successful_confirmed_write_large_result_stays_successful():
 
     capability = {
         "method": "POST", "path": "/write", "path_names": (), "query_names": (),
-        "expects_body": False, "inject_idempotency": False, "requires_confirmation": True,
+        "expects_body": False, "key_field": None, "keyed": False, "requires_confirmation": True,
     }
     result = await execute_agent_capability(
         app, "Bearer test", capability, {}, "tool-call-1", result_max_bytes=100,

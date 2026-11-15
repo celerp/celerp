@@ -2360,7 +2360,7 @@ async def _require_company_location(session: AsyncSession, company_id, location_
     await require_company_location(session, company_id, location_id)
 
 
-@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices. Search the item list first, and use Update item to change an item that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+@router.post("", summary="Add a new inventory item with its name, SKU, quantity, location and prices. Search the item list first, and use Update item to change an item that already exists.", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
                                  "x-celerp-agent-result-permissions": ["set_inventory_prices"]})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
@@ -2585,7 +2585,7 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
 
 
 @router.patch("/{entity_id}", summary="Change an existing inventory item's fields, such as its name, quantity, prices, category, location or reorder settings. Use Add item for a new one.", openapi_extra={
-    "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+    "x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key",
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     """Change item fields (``fields_changed``: ``{field: {"old": ..., "new": ...}}``). A

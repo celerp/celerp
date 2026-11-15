@@ -100,7 +100,7 @@ def test_reconciliation_capabilities_compile():
     for cap in compiled.values():
         if (cap["method"], cap["path"]) not in _AGENT_RECON_ROUTES:
             continue
-        assert cap["inject_idempotency"] is False
+        assert cap["key_field"] is None
         body = cap["tool"]["function"]["parameters"]["properties"].get("body", {})
         assert "idempotency_key" not in body.get("properties", {})
     assert ("GET", "/accounting/reconciliation/{session_id}/statement-lines") not in routes

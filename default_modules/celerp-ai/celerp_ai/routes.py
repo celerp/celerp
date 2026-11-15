@@ -1105,9 +1105,10 @@ async def confirm_action(
     No model turn resumes after a write; the user asks the next question.
     An action that is no longer pending, or whose module is not enabled, is 409.
     """
-    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     outcome = await _run_confirmed_action(
-        request, session, compile_agent_capabilities(request.app, company_settings, role),
+        request, session, compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role)),
         conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
     )
@@ -1200,7 +1201,7 @@ async def confirm_all(
     failure never rolls back the others; the reply lists the outcome per action.
     """
     from celerp.ai.conversations import get_conversation, get_message, pending_actions
-    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -1211,7 +1212,8 @@ async def confirm_all(
     if not ids:
         raise _conflict("action_not_pending", "ai.action_none_pending")
 
-    capabilities = compile_agent_capabilities(request.app, company_settings, role)
+    capabilities = compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role))
     results = []
     for tool_call_id in ids:
         results.append(await _run_confirmed_action(
@@ -1560,7 +1562,7 @@ async def propose_from_job(
     """
     from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
-    from celerp.ai.tools import compile_agent_capabilities
+    from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
@@ -1599,7 +1601,8 @@ async def propose_from_job(
                 "pending_actions": [],
             }
 
-    capabilities = compile_agent_capabilities(request.app, company_settings, role)
+    capabilities = compile_agent_capabilities(
+        request.app, company_settings, role, caller_gates=await gates_of_caller(session, user.id, role))
     if _DOCS_CREATE not in capabilities:
         raise _conflict("capability_unavailable", "ai.receipt_documents_off")
 

@@ -25,6 +25,7 @@ from celerp.events.engine import emit_event
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
+from celerp.ai.gates import agent_gate
 from celerp.services.auth import (
     AuthContext,
     first_usable_company_link,
@@ -931,13 +932,20 @@ class StaffPasswordBody(BaseModel):
     new_password: str
 
 
-async def _staff_reset_target(
-    session: AsyncSession, company_id, caller: User, caller_role: str, user_id: uuid.UUID, *, lock: bool,
-) -> User:
-    """The staff member whose password the caller may set, or the refusal that says
-    why not and who can. With lock, the rows are held for the reset that follows."""
+async def _company_owner(caller_role: str = Depends(get_current_role)) -> None:
+    """Only the company owner may set a member's password."""
     if caller_role != "owner":
         raise HTTPException(status_code=403, detail=t("users.reset_password_owner_only"))
+
+
+agent_gate(_company_owner, "owner")
+
+
+async def _staff_reset_target(
+    session: AsyncSession, company_id, caller: User, user_id: uuid.UUID, *, lock: bool,
+) -> User:
+    """The staff member whose password the owner may set, or the refusal that says
+    why not and who can. With lock, the rows are held for the reset that follows."""
     target_q = select(User).where(User.id == user_id)
     if lock:
         # The user's row, then the company, then the memberships: the order patch_user
@@ -968,27 +976,25 @@ async def _staff_reset_target(
     return target
 
 
-@router.get("/me/users/{user_id}/password")
+@router.get("/me/users/{user_id}/password", dependencies=[Depends(_company_owner)])
 async def can_reset_user_password(
     user_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
     caller: User = Depends(get_current_user),
-    caller_role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Whether the caller may set this member's password, answered before they type
     one: the same refusal the reset itself gives."""
-    await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=False)
+    await _staff_reset_target(session, company_id, caller, user_id, lock=False)
     return {"ok": True}
 
 
-@router.post("/me/users/{user_id}/password")
+@router.post("/me/users/{user_id}/password", dependencies=[Depends(_company_owner)])
 async def reset_user_password(
     user_id: uuid.UUID,
     payload: StaffPasswordBody,
     company_id=Depends(get_current_company_id),
     caller: User = Depends(get_current_user),
-    caller_role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """An owner sets a new password for a member of their company who is not an owner;
@@ -997,7 +1003,7 @@ async def reset_user_password(
     owner's to reset."""
     from celerp.services.password_reset import reset_password
 
-    target = await _staff_reset_target(session, company_id, caller, caller_role, user_id, lock=True)
+    target = await _staff_reset_target(session, company_id, caller, user_id, lock=True)
     try:
         await reset_password(session, target, payload.new_password, method="owner", by_user=caller)
     except ValueError:

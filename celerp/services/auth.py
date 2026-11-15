@@ -20,6 +20,7 @@ from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
+from celerp.ai.gates import agent_gate
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
@@ -532,6 +533,9 @@ async def require_install_owner(
             detail=t("auth.install_owner_required"),
         )
     return user
+
+
+agent_gate(require_install_owner, "install_owner")
 
 
 async def get_current_company_id(ctx: AuthContext = Depends(get_auth_context)) -> uuid.UUID:

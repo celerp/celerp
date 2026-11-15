@@ -86,7 +86,7 @@ def _relay(monkeypatch, replies: list) -> list:
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     return sent
 
 
@@ -185,7 +185,7 @@ async def test_credits_kept_when_a_later_turn_fails(client, session, owner, monk
         raise RelayError("service_unavailable", "relay down")
 
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     operation = uuid.uuid4()
     async with jobs.gate.slot("interactive"):
         result = await run_agent(
@@ -220,7 +220,7 @@ async def test_credits_kept_when_the_relay_refuses_a_later_turn(client, session,
         raise HTTPException(status_code=413, detail={"code": "free_text_too_large", "message": "too long"})
 
     monkeypatch.setattr(service, "complete", _complete)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     _, reply = await _asked(client, token, conv, uuid.uuid4())
     assert reply["error_code"] == "too_much_data"
@@ -486,7 +486,7 @@ async def test_question_sent_again_while_it_is_answered_runs_once(client, owner,
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _held)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
 
@@ -536,7 +536,7 @@ async def test_repeat_send_in_a_read_window_runs_once(real_client, real_engine, 
 
     set_session_token("s" * 64)
     monkeypatch.setattr(service, "complete", _blocked)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: {})
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: {})
     conv = await _conversation(client, token)
     question = uuid.uuid4()
     real_find = conversations.find_question

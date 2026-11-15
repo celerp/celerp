@@ -576,7 +576,7 @@ async def test_ai_access_lost_mid_job_stops_the_unsent_files_and_resume_sends_th
 
 _CAPS = {"help_search": {
     "name": "help_search", "method": "GET", "path": "/help/search", "path_names": (), "query_names": ("q",),
-    "expects_body": False, "inject_idempotency": False, "required_permissions": (), "result_permissions": (), "field_visibility": False,
+    "expects_body": False, "key_field": None, "keyed": False, "required_permissions": (), "result_permissions": (), "field_visibility": False,
     "tool": {"type": "function", "function": {"name": "help_search", "description": "help_search",
                                               "parameters": {}}}}}
 
@@ -598,7 +598,7 @@ async def test_a_question_past_p_is_promoted_notified_and_resumes_from_its_journ
     model step; resumed from the journal: the first step is not run again and the
     second carries the original tool call id."""
     monkeypatch.setattr(deadlines, "PROMOTE_AFTER_S", 0.2)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
 
     async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
         return {"ok": True, "status": 200, "data": {"pages": ["contacts.add-supplier"]}}
@@ -641,7 +641,7 @@ async def test_a_background_question_resumed_after_a_restart_answers_in_its_aske
     cannot be recovered is stored in Thai."""
     from ui.i18n import set_lang, t
     monkeypatch.setattr(deadlines, "PROMOTE_AFTER_S", 0.2)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None, **_gates: _CAPS)
 
     async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
         return {"ok": True, "status": 200, "data": {"pages": ["contacts.add-supplier"]}}
