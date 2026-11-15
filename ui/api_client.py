@@ -2137,6 +2137,58 @@ async def get_bank_reconciliations(token: str, bank_id: str) -> dict:
         return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}/reconciliations")).json()
 
 
+# ── Bank statements: read, preview, import, then each bank's lines ─────────────
+
+_RECON = "/accounting/reconciliation"
+
+
+async def read_statement(token: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"{_RECON}/read-statement", json=data)).json()
+
+
+async def statement_preview(token: str, job_id: str, statements: list[dict] | None = None) -> dict:
+    """The reading job's statements checked for import; ``statements`` re-checks them
+    with edited header figures."""
+    path = f"{_RECON}/statement-preview/{_segment(job_id)}"
+    async with _api_client(token) as c:
+        if statements is None:
+            return _raise(await c.get(path)).json()
+        return _raise(await c.post(path, json={"statements": statements})).json()
+
+
+async def import_statement(token: str, data: dict) -> dict:
+    async with _api_client(token, timeout=60.0) as c:
+        return _raise(await c.post(f"{_RECON}/import-statement", json=data)).json()
+
+
+async def bank_groups(token: str, bank_id: str, view: str = "open", q: str = "") -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"{_RECON}/bank/{_segment(bank_id)}/groups", params={"view": view, "q": q})).json()
+
+
+async def bank_action(token: str, bank_id: str, action: str, data: dict) -> dict:
+    """One of a bank's line actions: suggest, resolve, unmatch, complete, ask or withdraw-question."""
+    async with _api_client(token, timeout=120.0) as c:
+        return _raise(await c.post(f"{_RECON}/bank/{_segment(bank_id)}/{action}", json=data)).json()
+
+
+async def delete_statement(token: str, session_id: str, key: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.request("DELETE", f"{_RECON}/{_segment(session_id)}",
+                                      json={"idempotency_key": key})).json()
+
+
+async def bank_questions(token: str, status: str = "open") -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/accounting/bank-questions", params={"status": status})).json()
+
+
+async def answer_bank_question(token: str, line_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/bank-questions/{_segment(line_id)}/answer", json=data)).json()
+
+
 async def create_bank_account(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/bank-accounts", json=data)).json()

@@ -15,14 +15,9 @@ from celerp.config import settings
 from ui.i18n import t
 
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-AGENT_UPLOAD_TYPES = frozenset({
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "application/pdf",
-    "text/csv",
-    XLSX_CONTENT_TYPE,
-})
+# Files whose owning module parses them: the model is told the file id, never sent the bytes.
+TABULAR_UPLOAD_TYPES = frozenset({"text/csv", XLSX_CONTENT_TYPE, "application/x-ofx", "application/vnd.intu.qfx"})
+AGENT_UPLOAD_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "application/pdf"}) | TABULAR_UPLOAD_TYPES
 _UPLOAD_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
 
 
@@ -101,14 +96,14 @@ def load_file(file_id: str, company_id: uuid.UUID, user_id: uuid.UUID | None = N
 def load_file_for_llm(file_id: str, company_id: uuid.UUID, user_id: uuid.UUID | None = None) -> dict:
     """Build the model attachment record while avoiding unused tabular base64.
 
-    CSV/XLSX are represented to the model by filename/file_id only and are parsed by
-    canonical local tools, so reading and base64-expanding their bytes here is wasted
+    Tabular files (CSV, XLSX, OFX) are represented to the model by filename/file_id only
+    and are parsed by canonical local tools, so reading and base64-expanding their bytes here is wasted
     memory. Images/PDFs still carry their bytes because the model consumes them.
     """
     bin_path, meta = _file_paths_and_meta(file_id, company_id, user_id)
     media_type = meta.get("content_type", "image/jpeg")
     data = ""
-    if media_type not in {"text/csv", XLSX_CONTENT_TYPE}:
+    if media_type not in TABULAR_UPLOAD_TYPES:
         data = base64.b64encode(bin_path.read_bytes()).decode("utf-8")
     return {
         "media_type": media_type,

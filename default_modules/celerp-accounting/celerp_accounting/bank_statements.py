@@ -273,18 +273,23 @@ def _review(st: dict, bank: BankAccount | None, base: str, existing: dict, held:
                             bank_id=bank.id if bank is not None else "new", existing=existing, held_counts=held)
 
 
-@router.get(f"{API}/statement-preview/{{job_id}}", summary="The statements a reading job found, checked before import",
-            openapi_extra={"x-celerp-agent": True})
-async def statement_preview(job_id: uuid.UUID,
-                            company_id: uuid.UUID = Depends(get_current_company_id),
-                            _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
-                            db: AsyncSession = Depends(get_session)) -> dict:
+async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uuid.UUID,
+                   given: list[dict] | None = None) -> dict:
+    """The reading job's statements reviewed for import; ``given`` (one entry per
+    statement, as Import takes them) replaces header figures and lines first."""
     from celerp_accounting.routes import _base_currency
     bank = await _read_bank(db, company_id, job_id)
-    read = await _read_job(db, company_id, user.id, job_id, bank)
+    read = await _read_job(db, company_id, user_id, job_id, bank)
+    if given is not None and len(given) != len(read["statements"]):
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_import_statement_count"))
     base = await _base_currency(db, company_id)
     existing, held = await _known(db, company_id, bank)
-    statements = [{"file_id": st["file_id"], **_review(st, bank, base, existing, held)} for st in read["statements"]]
+    statements = []
+    for i, st in enumerate(read["statements"]):
+        edit = (given or [{}] * len(read["statements"]))[i]
+        found = {"header": {**st["header"], **(edit.get("header") or {})},
+                 "lines": st["lines"] if edit.get("lines") is None else edit["lines"]}
+        statements.append({"file_id": st["file_id"], **_review(found, bank, base, existing, held)})
     out = {"job_id": str(job_id), "bank_id": None if bank is None else str(bank.id), "statements": statements,
            **{k: read[k] for k in ("receipts", "failed_steps", "needs_mapping", "layout_saved", "column_map")}}
     if bank is None:
@@ -296,12 +301,36 @@ async def statement_preview(job_id: uuid.UUID,
     return out
 
 
-# ── Import ──────────────────────────────────────────────────────────────────
+@router.get(f"{API}/statement-preview/{{job_id}}", summary="The statements a reading job found, checked before import",
+            openapi_extra={"x-celerp-agent": True})
+async def statement_preview(job_id: uuid.UUID,
+                            company_id: uuid.UUID = Depends(get_current_company_id),
+                            _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                            db: AsyncSession = Depends(get_session)) -> dict:
+    return await _preview(db, company_id, user.id, job_id)
+
 
 class StatementIn(BaseModel):
     header: dict
     lines: list[dict] | None = None
 
+
+class PreviewEdit(BaseModel):
+    statements: list[StatementIn] = Field(min_length=1, max_length=50)
+
+
+@router.post(f"{API}/statement-preview/{{job_id}}", summary="Check a reading job's statements again with edited "
+             "header figures or lines, before import", openapi_extra={"x-celerp-agent": True,
+                                                                       "x-celerp-agent-confirm": False})
+async def statement_preview_edited(job_id: uuid.UUID, payload: PreviewEdit,
+                                   company_id: uuid.UUID = Depends(get_current_company_id),
+                                   _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                                   db: AsyncSession = Depends(get_session)) -> dict:
+    """Nothing is written: the same review Import runs, on the figures given."""
+    return await _preview(db, company_id, user.id, job_id, [s.model_dump() for s in payload.statements])
+
+
+# ── Import ──────────────────────────────────────────────────────────────────
 
 class ImportStatement(BaseModel):
     job_id: uuid.UUID

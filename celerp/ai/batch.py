@@ -33,7 +33,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import jobs, llm, service
-from celerp.ai.files import load_file, load_file_for_llm
+from celerp.ai.files import TABULAR_UPLOAD_TYPES, load_file, load_file_for_llm
 from celerp.ai.llm import RelayError
 from ui.i18n import t
 
@@ -75,8 +75,7 @@ If the document is unreadable, return a one-sentence explanation instead of JSON
 STATEMENT_QUERY = "Read this bank or card statement."
 STATEMENT_PAGES = 3
 # Files a statement job never sends: their owning module parses them without credits.
-STRUCTURED_TYPES = {"text/csv", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/x-ofx", "application/vnd.intu.qfx"}
+STRUCTURED_TYPES = TABULAR_UPLOAD_TYPES
 STRUCTURED_SUFFIXES = (".csv", ".xlsx", ".ofx", ".qfx")
 
 _STATEMENT_SYSTEM_PROMPT = """\

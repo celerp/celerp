@@ -22,7 +22,7 @@ import httpx
 from fastapi import HTTPException
 
 from celerp.ai import deadlines, jobs
-from celerp.ai.files import XLSX_CONTENT_TYPE
+from celerp.ai.files import TABULAR_UPLOAD_TYPES
 from celerp.gateway.state import relay_http_url, relay_session_headers, with_relay_client
 from ui.i18n import t
 
@@ -137,7 +137,7 @@ def _build_user_content(
 
     - image/* becomes an image_url part;
     - application/pdf becomes a file part carrying the base64 data-uri;
-    - text/csv and xlsx become a text part naming the file and its file_id so
+    - tabular files (CSV, XLSX, OFX) become a text part naming the file and its file_id so
       the model can call the import-preview capability - the bytes are never
       sent to the model;
     - anything else raises ValueError naming the kinds of file that work.
@@ -159,7 +159,7 @@ def _build_user_content(
                 "type": "file",
                 "file": {"filename": f.get("filename") or "document.pdf", "file_data": data_uri},
             })
-        elif media_type in ("text/csv", XLSX_CONTENT_TYPE):
+        elif media_type in TABULAR_UPLOAD_TYPES:
             parts.append({
                 "type": "text",
                 "text": f"Attached file: {f.get('filename')} (file_id {f.get('file_id')})",
