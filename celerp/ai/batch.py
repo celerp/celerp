@@ -188,6 +188,19 @@ class FileOutcome:
     sent: bool = False
 
 
+def reads_without_model(run: FileRun, file_key: str) -> bool:
+    """Whether a step of ``run`` is read here without the model: a tabular or OFX file of a
+    statement job, which its owning module parses itself. Such a step needs no AI access."""
+    from celerp.ai.files import _file_paths_and_meta
+    if run.query != STATEMENT_QUERY:
+        return False
+    try:
+        _path, meta = _file_paths_and_meta(file_key.partition(":")[0], run.company_id, run.user_id)
+    except (FileNotFoundError, PermissionError):
+        return False
+    return is_structured(meta.get("content_type") or "", meta.get("filename") or "")
+
+
 async def read_file(run: FileRun, file_id: str, operation_id: uuid.UUID, *,
                     before_send: Callable[[int], Awaitable[None]]) -> FileOutcome:
     """Read one file under ``operation_id`` (the caller holds its gate slot). It is

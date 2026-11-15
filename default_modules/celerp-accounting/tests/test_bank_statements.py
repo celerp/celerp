@@ -86,6 +86,8 @@ async def test_first_session_seeds_only_when_opening_ties(client):
     rec = (await client.get(f"{B.API}/{session_id}", headers=co["h"])).json()
     assert r.json()["je_id"] in rec["reconciled_je_ids"]
 
+
+async def test_first_session_untied_seeds_nothing_and_says_why(client):
     co2, bk2 = await _co_bank(client, opening=500.0, opening_date="2025-12-01")
     other2 = await B.bank(client, co2["h"], name="Other")
     await client.post("/accounting/transfers", json={"from_bank_id": bk2["id"], "to_bank_id": other2["id"],

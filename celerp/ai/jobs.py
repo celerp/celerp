@@ -917,9 +917,11 @@ async def _document_step(run, step_pk: uuid.UUID, file_id: str, operation_id: uu
     async with gate.slot("documents"):
         if run.stop_reason is not None or await _cancel_requested(run.job_id):
             return
-        async with SessionLocal() as session:
-            refusal = await _refusal(session, run.company_id, run.user_id)
-            await session.commit()
+        refusal = None
+        if not batch.reads_without_model(run, file_id):
+            async with SessionLocal() as session:
+                refusal = await _refusal(session, run.company_id, run.user_id)
+                await session.commit()
         if refusal is None:
             try:
                 outcome = await batch.read_file(run, file_id, operation_id, before_send=_before_send)
