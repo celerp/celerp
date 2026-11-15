@@ -2593,7 +2593,7 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["created"] == 0, "the entry was imported despite naming no real contact"
-    assert any("contact:nobody" in e for e in body["errors"]), body["errors"]
+    assert any("contact:nobody" in refusal_text(e) for e in body["errors"]), body["errors"]
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 

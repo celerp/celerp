@@ -170,7 +170,7 @@ async def test_chart_import_rejects_options_in_the_query_string(client, query):
     h = await _reg(client)
     r = await client.post(f"{PATH}?{query}", headers=h, json={"records": [_row("8300", "New")]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == "The chart import takes no query parameters."
+    assert refusal_text(r.json()["detail"]) == "The chart import takes no query parameters."
     assert "8300" not in await _chart(client, h)
 
 

@@ -16,7 +16,7 @@ from fastapi import HTTPException
 
 from celerp.events.engine import emit_event
 from test_helpers import remove_company
-from test_list_outcome_concurrency import _barcode, _factory, _seed_company, _state
+from test_list_outcome_concurrency import _barcode, _factory, _scan_request, _seed_company, _state
 
 
 async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting, quantity=1,
@@ -58,7 +58,8 @@ async def _race(factory, company_id, user, doc_id, batches: dict[str, str]) -> d
         async with factory() as session:
             try:
                 outcome[run_key] = await scan_doc(
-                    doc_id, ScanBody(barcode=barcode, run_key=run_key), company_id=company_id, _=None,
+                    doc_id, ScanBody(barcode=barcode, run_key=run_key), request=_scan_request(),
+                    company_id=company_id, _=None,
                     role="owner", settings={}, user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - captured for the outcome assertions
                 outcome[run_key] = exc
