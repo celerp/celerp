@@ -151,7 +151,6 @@ def setup_routes(app):
     @app.post("/accounting/reconcile/bank/{bank_id}/drop")
     async def drop(request: Request, bank_id: str):
         """Upload the dropped files and start reading them; the preview follows the job."""
-        from celerp.gateway.state import get_session_token
         token = _token(request)
         if not token:
             return _login()
@@ -166,7 +165,7 @@ def setup_routes(app):
         if not files:
             return RedirectResponse(back + "?msg=" + quote(t("bank.err_no_file"), safe=""), status_code=303)
         try:
-            ids = (await api.ai_upload(token, get_session_token(), files))["file_ids"]
+            ids = (await api.bank_files(token, files))["file_ids"]
             job = await api.read_statement(token, {"file_ids": ids, "bank_id": bank_id,
                                                    "idempotency_key": str(form.get("idempotency_key") or BG.new_key())})
         except APIError as e:
@@ -471,7 +470,6 @@ def setup_routes(app):
 
     @app.post("/accounting/questions/{line_id}/answer")
     async def answer_question(request: Request, line_id: str):
-        from celerp.gateway.state import get_session_token
         token = _token(request)
         if not token:
             return _login()
@@ -479,7 +477,7 @@ def setup_routes(app):
         files = [(f.filename, await f.read(), f.content_type or "application/octet-stream")
                  for f in form.getlist("files") if getattr(f, "filename", "")]
         try:
-            ids = (await api.ai_upload(token, get_session_token(), files))["file_ids"] if files else []
+            ids = (await api.bank_files(token, files))["file_ids"] if files else []
             await api.answer_bank_question(token, line_id, {
                 "answer": str(form.get("answer", "")).strip(),
                 "contact_text": str(form.get("contact_text", "")).strip() or None,

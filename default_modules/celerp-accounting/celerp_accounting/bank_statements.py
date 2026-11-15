@@ -17,7 +17,7 @@ from decimal import Decimal
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1335,6 +1335,17 @@ async def _question_reader(role: str = Depends(get_current_role),
     if held is None:
         raise missing_permission(_QUESTION_READERS[0])
     await admit_permission(db, company_id, role, held)
+
+
+@router.post(f"{API}/files", status_code=201, summary="Keep statement and receipt files for reading or an answer")
+async def bank_files(files: list[UploadFile] = File(...), company_id: uuid.UUID = Depends(get_current_company_id),
+                     _: None = Depends(_question_reader), user=Depends(get_current_user),
+                     db: AsyncSession = Depends(get_session)) -> dict:
+    """The bank page's file drop and the client's receipts: kept without AI access, since a
+    CSV, Excel or OFX statement is read here and a receipt is stored with its answer. Not a
+    tool: the assistant's files are already kept when they are attached."""
+    from celerp.ai.files import keep_uploads
+    return {"file_ids": await keep_uploads(db, company_id, user.id, files)}
 
 
 class Ask(BaseModel):

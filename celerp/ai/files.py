@@ -49,6 +49,35 @@ def save_upload(company_id: uuid.UUID, user_id: uuid.UUID, filename: str | None,
     return file_id
 
 
+MAX_UPLOAD_FILES = 20
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+async def keep_uploads(session, company_id: uuid.UUID, user_id: uuid.UUID, files: list) -> list[str]:
+    """Check and keep a request's uploaded files (``UploadFile``), returning their file ids:
+    at most MAX_UPLOAD_FILES, each up to MAX_UPLOAD_BYTES and of AGENT_UPLOAD_TYPES. The
+    company is held while they are written, so a company reset waits and then deletes them."""
+    from fastapi import HTTPException
+
+    from celerp.services.company_lock import hold_company
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=t("error.batch_too_many", max=MAX_UPLOAD_FILES))
+    for file in files:
+        file.file.seek(0, 2)
+        size = file.file.tell()
+        file.file.seek(0)
+        if size > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail=t("ai.err_file_too_large", name=file.filename))
+        if file.content_type not in AGENT_UPLOAD_TYPES:
+            raise HTTPException(status_code=400, detail=t("ai.err_file_type_named", name=file.filename))
+    if not await hold_company(session, company_id):
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    try:
+        return [save_upload(company_id, user_id, f.filename, f.content_type, await f.read()) for f in files]
+    finally:
+        await session.rollback()
+
+
 def delete_company_uploads(company_id) -> None:
     """Delete every upload kept for ``company_id``; files already gone count as deleted.
     Raises when a file cannot be deleted."""

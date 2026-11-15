@@ -2142,6 +2142,14 @@ async def get_bank_reconciliations(token: str, bank_id: str) -> dict:
 _RECON = "/accounting/reconciliation"
 
 
+async def bank_files(token: str, files: list[tuple[str, bytes, str]]) -> dict:
+    """POST the bank page's statement files or a client's receipts; returns {"file_ids": [...]}."""
+    from celerp.ai import deadlines
+    budget = deadlines.upload_budget_s(sum(len(data) for _, data, _ in files))
+    async with _bulk_api_client(token, timeout=budget) as c:
+        return _raise(await c.post(f"{_RECON}/files", files=[("files", f) for f in files])).json()
+
+
 async def read_statement(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"{_RECON}/read-statement", json=data)).json()

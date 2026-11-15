@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
-from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
+from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.ai.tools import SHOWN_ONCE
 from celerp.config import settings
@@ -55,7 +55,6 @@ from celerp.routers.auth import limiter as _limiter
 from celerp.services.auth import (
     AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
 )
-from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import refusal_text, t
 from ui.components.encode import inert_media_type
@@ -262,32 +261,8 @@ async def ai_upload(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Upload files for AI batch processing. Returns list of file IDs."""
-    from celerp.ai.files import save_upload
-    if len(files) > 20:
-        raise HTTPException(status_code=400, detail=t("error.batch_too_many", max=20))
-    for file in files:
-        # Check size limit (10MB)
-        file.file.seek(0, 2)
-        size = file.file.tell()
-        file.file.seek(0)
-        if size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail=t("ai.err_file_too_large", name=file.filename))
-        if file.content_type not in AGENT_UPLOAD_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=t("ai.err_file_type_named", name=file.filename),
-            )
-
-    # Held until the files are written: a company reset waits, then deletes them with the company.
-    if not await hold_company(session, company_id):
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    file_ids = []
-    try:
-        for file in files:
-            file_ids.append(save_upload(company_id, user.id, file.filename, file.content_type, await file.read()))
-    finally:
-        await session.rollback()
-    return {"file_ids": file_ids}
+    from celerp.ai.files import keep_uploads
+    return {"file_ids": await keep_uploads(session, company_id, user.id, files)}
 
 
 @router.get("/file/{file_id}")
