@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
-from celerp.importers.results import ImportOutcome, RecordOutcome, message_text
+from celerp.importers.results import ImportOutcome, RecordOutcome
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
@@ -119,7 +120,7 @@ def sink_result(
                 outcome.entity_id, status,
             ))
         else:
-            result.errors.append(sink_error(record, message_text(outcome.message or "The record could not be imported.")))
+            result.errors.append(sink_error(record, outcome.message or catalog_refusal("migration.record_not_imported")))
     return result
 
 
@@ -139,7 +140,7 @@ async def import_prepared(
     return [RecordOutcome("", "rejected", p) if isinstance(p, str) else next(written) for p in prepared]
 
 
-def sink_error(record: CIFSourceRecord, message: str) -> SinkError:
+def sink_error(record: CIFSourceRecord, message: str | dict) -> SinkError:
     return SinkError(record.source_type, record.source_external_id, message)
 
 

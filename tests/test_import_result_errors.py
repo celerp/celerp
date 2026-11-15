@@ -130,16 +130,26 @@ def test_every_result_panel_names_its_records_in_the_users_language():
     assert callers and not [c for c in callers if c[2]], callers
 
 
+def _writes_a_refused_record(call: ast.Call) -> bool:
+    """A call that records a refused row or record: an ``errors.append``, a RecordOutcome,
+    an outcome's ``add``, or a sink error."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id in ("RecordOutcome", "SinkError", "sink_error")
+    return isinstance(func, ast.Attribute) and (
+        func.attr == "add" or (func.attr == "append" and isinstance(func.value, ast.Name) and func.value.id == "errors"))
+
+
 def test_a_refused_import_row_keeps_its_keyed_refusal():
-    """A refused row carries the refusal the write raised (row_refusal), so it reads in each
-    reader's language: no shipped import writes it as the English text of failure_reason."""
+    """A refused row or migration record carries the refusal the write raised (row_refusal),
+    so it reads in each reader's language: no shipped import or migration sink writes it as
+    the English text of failure_reason."""
     from shipped_sources import shipped_sources
 
     texts = []
     for rel, path in shipped_sources():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "append"
-                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "errors"
+            if (isinstance(node, ast.Call) and _writes_a_refused_record(node)
                     and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "failure_reason"
                             for n in ast.walk(node))):
                 texts.append(f"{rel}:{node.lineno}")
