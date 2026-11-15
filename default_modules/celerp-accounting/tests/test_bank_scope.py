@@ -191,6 +191,8 @@ async def test_bank_value_fields_refuse_invalid_values(client, bad):
     for method, path, body in cases:
         if bad == "0" and "opening" in path:
             continue  # a zero opening is a real figure
+        if bad == "0.001" and '"rate"' in body:
+            continue  # a rate is not money: 0.001 is a real exchange rate
         r = await client.request(method, path, content=raw(body), headers=h)
         assert r.status_code == 422, (path, bad, r.text)
     for method, path, body in [

@@ -2768,8 +2768,10 @@ class BankAccountCreate(BaseModel):
     bank_type: str  # checking|savings|credit_card
     currency: str
     opening_balance: FiniteFloat = 0.0
+    # The day the opening balance stands on; the company's today when not given.
+    opening_date: date | None = None
     # Converts an opening balance in another currency than the books' into them.
-    rate: FiniteFloat | None = None
+    rate: PositiveFloat | None = None
     account_code: str | None = None  # optional override; auto-assigned if None
 
 
@@ -2903,14 +2905,9 @@ async def list_bank_reconciliations(
     return {"items": items, "total": len(items)}
 
 
-@router.post("/bank-accounts")
-async def create_bank_account(
-    payload: BankAccountCreate,
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
+async def add_bank(session: AsyncSession, company_id: uuid.UUID, actor_id, payload: BankAccountCreate) -> BankAccount:
+    """Add a bank account and post its opening balance; the caller commits (a statement
+    import adds its bank in the same transaction as its statements)."""
     await hold_fund_ledger(session, company_id)  # before any row lock: its opening balance posts
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=t("acct.err_bank_type", types=_enum_labels("bank_type", sorted(_BANK_TYPES))))
@@ -2948,12 +2945,13 @@ async def create_bank_account(
         je_id = _opening_je_id(bank.id)
         idem_c = f"opening:{bank.id}:c"
         idem_p = f"opening:{bank.id}:p"
-        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa
-        # The balance is as of the company's today, in its own timezone.
-        from celerp.models.company import Company
-        from celerp.services.business_time import business_date_at
-        company = await session.get(Company, company_id)
-        today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
+        if payload.opening_date is not None:
+            today = payload.opening_date.isoformat()
+        else:   # the balance is as of the company's today, in its own timezone
+            from celerp.models.company import Company
+            from celerp.services.business_time import business_date_at
+            company = await session.get(Company, company_id)
+            today = business_date_at(datetime.now(timezone.utc), (company.settings or {}).get("timezone"))
         ob = to_decimal(payload.opening_balance)
         # Debit the bank account, credit equity (the retained earnings account)
         entries = _bank_entries(bank, base, rate, [({"account": retained}, abs(ob))], inflow=ob > 0)
@@ -2964,7 +2962,7 @@ async def create_bank_account(
             entity_type="journal_entry",
             event_type="acc.journal_entry.created",
             data={"memo": f"Opening balance for {payload.bank_name}", "ts": today, "entries": entries},
-            actor_id=user.id,
+            actor_id=actor_id,
             location_id=None,
             source="bank_account_opening",
             idempotency_key=idem_c,
@@ -2977,13 +2975,25 @@ async def create_bank_account(
             entity_type="journal_entry",
             event_type="acc.journal_entry.posted",
             data={"ts": today},
-            actor_id=user.id,
+            actor_id=actor_id,
             location_id=None,
             source="bank_account_opening",
             idempotency_key=idem_p,
             metadata_={},
         )
 
+    return bank
+
+
+@router.post("/bank-accounts")
+async def create_bank_account(
+    payload: BankAccountCreate,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    bank = await add_bank(session, company_id, user.id, payload)
     await session.commit()
     return (await _bank_dicts(session, company_id, [bank]))[0]
 
@@ -3548,10 +3558,10 @@ async def _je_entries_for_account(
 
 async def _eligible_entries(
     db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, recon: ReconciliationSession,
-    je_ids: list[str], *, line_id: uuid.UUID | None = None,
+    je_ids: list[str], *, line_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, str | None]:
-    """Whether each book entry may be matched on *recon* (by its statement line *line_id*
-    when given): None when it may, otherwise the reason key. An entry must be one of the
+    """Whether each book entry may be matched on *recon* (by its statement lines *line_ids*
+    when given, which may share it): None when it may, otherwise the reason key. An entry must be one of the
     account's posted entries, never the opening entry, carry an amount in the account's
     currency (nothing else can be matched or balanced), and not be counted already by
     another line of this session or by another session of the same statement. Sessions
@@ -3560,12 +3570,14 @@ async def _eligible_entries(
     accounts."""
     amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank)}
     amounts.pop(_opening_je_id(bank.id), None)
-    own = None
-    if line_id is not None:
-        line = await db.get(BankStatementLine, line_id)
-        if line is not None and line.status in ("matched", "created"):
-            own = line.matched_je_id
-    taken = set(recon.reconciled_je_ids or []) - {own} if line_id is not None else set()
+    taken: set[str] = set()
+    if line_ids is not None:
+        own: set[str] = set()
+        for line_id in line_ids:
+            line = await db.get(BankStatementLine, line_id)
+            if line is not None and line.status in ("matched", "posted"):
+                own.update(line.matched_je_ids or [])
+        taken = set(recon.reconciled_je_ids or []) - own
     for other in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
         ReconciliationSession.company_id == company_id,
         ReconciliationSession.bank_account_id == bank.id,

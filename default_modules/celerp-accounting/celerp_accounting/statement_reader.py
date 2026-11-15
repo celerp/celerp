@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal, InvalidOperation
 
-from celerp.services.field_fingerprints import statement_line, statement_line_fitid
+from celerp.services.field_fingerprints import statement_line, statement_line_fitid, statement_line_ident
 from celerp.services.money import round_money
 
 # Words banks print around the counterparty, in every locale a statement arrives in.
@@ -148,8 +148,8 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str, ban
         if line.get("fitid") or (line.get("source") == "ofx" and line.get("reference")):
             fp = statement_line_fitid(bank_id, line.get("fitid") or line["reference"])
         else:
-            ident = (line.get("line_date"), str(amount), " ".join((line.get("description") or "").upper().split()),
-                     line.get("reference"), str(line["raw_balance"]))
+            ident = statement_line_ident(line.get("line_date"), amount, line.get("description"),
+                                         line.get("reference"), line["raw_balance"])
             n = seen.get(ident, 0)
             seen[ident] = n + 1
             fp = statement_line(bank_id, line.get("line_date"), amount, line.get("description"),

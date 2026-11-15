@@ -28,7 +28,7 @@ from alembic import op
 from celerp.json_text import dump_json
 from celerp.migrations._json_compat import decode_json_value
 from celerp.migrations._locks import lock_tables
-from celerp.services.field_fingerprints import statement_line
+from celerp.services.field_fingerprints import statement_line, statement_line_ident
 
 revision = "w6x7b8s9l0n1"
 down_revision = "v5w6x7y8z9a0"
@@ -46,8 +46,7 @@ def backfill_fingerprints(rows: list[dict]) -> dict:
     out = {}
     for r in sorted(rows, key=lambda r: (str(r["statement_date"]), str(r["created_at"]), str(r["id"]))):
         base = (str(r["bank_account_id"]), r["line_date"], r["amount"], r["description"], r["reference"], r["raw_balance"])
-        ident = (base[0], r["line_date"], str(r["amount"]), " ".join((r["description"] or "").upper().split()),
-                 (r["reference"] or "").strip(), str(r["raw_balance"]))
+        ident = (base[0], *statement_line_ident(*base[1:]))
         n = seen.get(ident, 0)
         seen[ident] = n + 1
         out[r["id"]] = statement_line(*base, n)

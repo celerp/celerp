@@ -48,12 +48,19 @@ def _amount_text(value) -> str:
     return "" if value is None else _normal(Decimal(str(value)))
 
 
+def statement_line_ident(line_date: str, amount, text: str, reference, balance) -> tuple:
+    """What two identical lines of one statement share: the date, the amount as a magnitude
+    (a card statement read with its signs reversed keeps its identity), the description with
+    its spacing and case folded, the reference and the running balance."""
+    size = None if amount is None else abs(Decimal(str(amount)))
+    return (line_date, _amount_text(size), " ".join((text or "").upper().split()), (reference or "").strip(),
+            _amount_text(balance))
+
+
 def statement_line(bank_id, line_date: str, amount, text: str, reference, balance, n: int) -> str:
-    """The identity of one bank statement line on its bank: the date, the amount and running
-    balance as plain numbers, the description with its spacing and case folded, the reference,
-    and ``n``, the line's place among identical lines of the same statement."""
-    return fingerprint([str(bank_id), line_date, _amount_text(amount), " ".join((text or "").upper().split()),
-                        (reference or "").strip(), _amount_text(balance), n])
+    """The identity of one bank statement line on its bank: its ``statement_line_ident`` and
+    ``n``, the line's place among identical lines of the same statement."""
+    return fingerprint([str(bank_id), *statement_line_ident(line_date, amount, text, reference, balance), n])
 
 
 def statement_line_fitid(bank_id, fitid: str) -> str:

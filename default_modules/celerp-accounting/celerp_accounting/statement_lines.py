@@ -193,9 +193,15 @@ async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAcco
         held.update(row or [])
     if held & set(je_ids):
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_book_entry_matched"))
+    by_session: dict = {}
+    for line in lines:
+        by_session.setdefault(line.reconciliation_id, []).append(line)
+    for group in by_session.values():
+        recon = await _session(db, group[0])
+        _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, je_ids,
+                                                   line_ids=[l.id for l in group]))
     for line in lines:
         recon = await _session(db, line)
-        _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, je_ids, line_id=line.id))
         line.status = "matched"
         line.matched_je_ids = list(je_ids)
         _hold(recon, je_ids)
