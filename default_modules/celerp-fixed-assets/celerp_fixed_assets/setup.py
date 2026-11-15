@@ -349,7 +349,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
             raise refuse("fixed_assets.err_tax_regimes_list_regime_keys")
         for key in chosen:
             if key not in (fa.get("tax_regimes") or []) and not rules.is_available("tax_regime", key, company.settings):
-                raise refuse("fixed_assets.err_key_not_tax_regime_company_can", key=key)
+                raise refuse("fixed_assets.err_key_not_tax_regime_company_can", regime=key)
         fa["tax_regimes"] = list(dict.fromkeys(chosen))
     if "first_managed_period" in body:
         first = day(body["first_managed_period"], "The first managed period")

@@ -22,6 +22,8 @@ def _module_catalogs():
     pkg = Path(__file__).resolve().parent.parent
     manifest = read_manifest(pkg)
     _register_locales(pkg.name, pkg, manifest)
+    labels = pkg.parent / "celerp-labels"  # the label routes the asset tests print through
+    _register_locales(labels.name, labels, read_manifest(labels))
     slots.unregister_module(pkg.name)
     for slot, contribution in manifest["slots"].items():
         for item in contribution if isinstance(contribution, list) else [contribution]:
