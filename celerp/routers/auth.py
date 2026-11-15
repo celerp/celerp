@@ -102,7 +102,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         # two callers racing on a genuinely fresh install.
         existing = (await session.execute(select(User))).scalars().first()
         if existing is not None:
-            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+            raise HTTPException(status_code=403, detail=t("auth.err_system_already_bootstrapped_contact_your_admin"))
 
         # Authenticate the headless setup capability before joining the bootstrap
         # lock queue. An unauthenticated caller must not be able to consume the one
@@ -117,14 +117,14 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
         existing = (await session.execute(select(User))).scalars().first()
         if existing is not None:
-            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+            raise HTTPException(status_code=403, detail=t("auth.err_system_already_bootstrapped_contact_your_admin"))
 
         try:
             validate_password(payload.password)
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+                detail=t("auth.err_password_must_at_least_min_password", min_password_length=MIN_PASSWORD_LENGTH),
             )
 
         company, user = await provision_registered_company(
@@ -143,7 +143,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     except Exception:
         await session.rollback()
         logger.exception("First-admin registration failed")
-        raise HTTPException(status_code=500, detail="Registration failed")
+        raise HTTPException(status_code=500, detail=t("auth.err_registration_failed"))
 
     # Best-effort one-time cleanup AFTER the install has committed. The serialized
     # "any user exists" check permanently blocks a second bootstrap, so a cleanup

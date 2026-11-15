@@ -17,6 +17,7 @@ from celerp.db import one_unit
 from celerp.importers.results import failure_reason
 from celerp.services import peer_access, peer_attention
 from celerp.services.company_lock import lock_company
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -131,9 +132,9 @@ async def receive_file(ctx, session: AsyncSession, source_doc_id: str, file, ent
         return None
     from celerp.services.peer_attachments import receive_attachment
     if entity_type != "doc":  # a connected company sends files to documents only
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, t("error.err_not_found"))
     if source_file_id is None or sha256_hex is None:
-        raise HTTPException(422, "A connected company's file needs its file id and checksum.")
+        raise HTTPException(422, t("peer.err_connected_company_s_file_needs_its"))
     grant = await _grant(session, ctx.peer)
     peer_access.mark_used(grant)
     status = await receive_attachment(
@@ -167,7 +168,7 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
     for record in records:
         try:
             if record.source_revision is None:
-                raise HTTPException(422, "A connected company's record needs its source revision.")
+                raise HTTPException(422, t("peer.err_connected_company_s_record_needs_its"))
             grant = await _grant(session, peer)
             # The company first, then the record's identity and attention rows, in every receiver.
             await lock_company(session, grant.company_id)

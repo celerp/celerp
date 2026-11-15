@@ -32,6 +32,7 @@ from celerp_fixed_assets.operations import (
     _reversed_lines, _run, _same_intent, asset_movements, conflict, in_use, same_fund)
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state
 from celerp_fixed_assets.projections import BUCKETS, money, said
+from ui.i18n import t
 
 ESTIMATE_FIELDS = setup.POLICY_FIELDS
 ERROR_FIELDS = ("cost", "available_date", "class_id", "opening_values", "maintenance")
@@ -82,24 +83,22 @@ def _classify(body: dict) -> tuple[dict, str, str, str | None]:
     """The changes, their classification, its default, and the reason for overriding it."""
     changes = body.get("changes")
     if not isinstance(changes, dict) or not changes:
-        raise setup.unprocessable("Choose what to correct.")
+        raise setup.refuse("fixed_assets.err_choose_what_correct")
     unknown = set(changes) - {*ESTIMATE_FIELDS, *ERROR_FIELDS, *SOURCE_ACTIONS}
     if unknown:
-        raise setup.unprocessable(f"{sorted(unknown)[0]} cannot be corrected.")
+        raise setup.refuse("fixed_assets.err_value_cannot_corrected", value=sorted(unknown)[0])
     default = default_classification(changes)
     if default == "error" and len(changes) != 1:
-        raise setup.unprocessable("Correct one of cost, dates, class, opening values, maintenance or a source at a "
-                                  "time, apart from depreciation settings.")
+        raise setup.refuse("fixed_assets.err_correct_one_cost_dates_class_opening")
     chosen = body.get("classification") or default
     if chosen not in CLASSIFICATIONS:
-        raise setup.unprocessable("A correction is a change in estimate or an error correction.")
+        raise setup.refuse("fixed_assets.err_correction_change_estimate_error_correction")
     reason = str(body.get("override_reason") or "").strip() or None
     if chosen != default:
         if default == "error":
-            raise setup.unprocessable(f"A change to {next(iter(changes))} corrects an error, so it cannot be "
-                                      "treated as a change in estimate.")
+            raise setup.refuse("fixed_assets.err_change_next_corrects_error_so_cannot", next=next(iter(changes)))
         if not reason:
-            raise setup.unprocessable("A reason is required to treat a change in estimate as an error correction.")
+            raise setup.refuse("fixed_assets.err_reason_required_treat_change_estimate_as")
     return changes, chosen, default, reason if chosen != default else None
 
 
@@ -157,14 +156,12 @@ class Draft:
 
         account = role_map(self.books.settings).get("retained_earnings")
         if not account:
-            raise setup.unprocessable("Choose the retained earnings account in Posting accounts first: earlier "
-                                      "years are corrected through it.")
+            raise setup.refuse("fixed_assets.err_choose_retained_earnings_account_posting_accounts")
         return account
 
     def without_estimates(self) -> None:
         if runs.estimates(self.live):
-            raise setup.unprocessable("This asset's depreciation settings were changed as an estimate. Undo that "
-                                      "change first, or correct them as another change in estimate.")
+            raise setup.refuse("fixed_assets.err_asset_s_depreciation_settings_were_changed")
 
 
 # ── Error corrections, one per field ─────────────────────────────────────────
@@ -447,7 +444,7 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
 
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     in_use(asset_id, row.state, "correct")
     from celerp_fixed_assets import sales
 
@@ -487,36 +484,33 @@ async def plan(session, company_id, asset_id: str, body: dict, fa: dict) -> tupl
              "classification": classification, "default_classification": default, "override_reason": reason}
     treatment = body.get("prior_years") or "retained_earnings"
     if treatment not in TREATMENTS:
-        raise setup.unprocessable("Earlier years go to retained earnings or to current profit or loss.")
+        raise setup.refuse("fixed_assets.err_earlier_years_go_retained_earnings_current")
     immaterial = str(body.get("immaterial_reason") or "").strip() or None
     if treatment == "profit_and_loss" and not immaterial:
-        raise setup.unprocessable("A reason is required to post an earlier year's effect to current profit or loss.")
+        raise setup.refuse("fixed_assets.err_reason_required_post_earlier_year_s")
     policy_changes = {k: v for k, v in changes.items() if k in ESTIMATE_FIELDS}
     if policy_changes:
         policy = {**asset["policy"], **policy_changes}
         setup.check_policy(policy, books.settings, asset["policy"])
         if policy == asset["policy"]:
-            raise setup.unprocessable("The depreciation settings are already these.")
+            raise setup.refuse("fixed_assets.err_depreciation_settings_already_these")
     if classification == "estimate":
         d = Draft(session, company_id, asset_id, asset, cls, movements, books, None)
         effective = start
         if body.get("effective_date"):
             effective = month_index(date.fromisoformat(_date(body["effective_date"], "The effective date")))
             if effective < start:
-                raise setup.unprocessable(f"A change in estimate takes effect from {period_label(start)} or later, "
-                                          "the first month not yet depreciated.")
+                raise setup.refuse("fixed_assets.err_change_estimate_takes_effect_from_period", period_label=period_label(start))
         day = _first_day(effective)
         if remeasured and day <= remeasured:
-            raise setup.unprocessable(f"{asset['number']} was remeasured on {remeasured}. A change in estimate "
-                                      "takes effect after that.")
+            raise setup.refuse("fixed_assets.err_number_was_remeasured_remeasured_change_estimate", number=asset['number'], remeasured=remeasured)
         d.move("estimate", day, {}, posting=day, policy=policy, previous=asset["policy"])
         d.changes["policy"] = policy
         shown.update(effective_date=day, posting_date=None)
         treatment, immaterial = None, None
     else:
         if remeasured:
-            raise setup.unprocessable(f"{asset['number']} was remeasured on {remeasured}, so what came before it "
-                                      "is not restated. Undo the remeasurement first while it is the latest change.")
+            raise setup.refuse("fixed_assets.err_number_was_remeasured_remeasured_so_what", number=asset['number'], remeasured=remeasured)
         original = min(m["posting_date"] for m in live)
         d = Draft(session, company_id, asset_id, asset, cls, movements, books,
                   await _posting_day(session, company_id, books, original, body.get("posting_date")))
@@ -629,7 +623,7 @@ async def apply_to_assets(session, company_id, user_id, class_id: str, body: dic
                           if s.get("class_id") == cls["id"] and s.get("status") == "active"
                           and s.get("policy") != policy), key=lambda r: r[1]["number"])
         if not targets:
-            raise setup.unprocessable("Every asset in this class already follows its depreciation settings.")
+            raise setup.refuse("fixed_assets.err_every_asset_class_already_follows_its")
         assets, contexts = [], []
         for asset_id, asset in targets:
             changes = {k: policy[k] for k in ESTIMATE_FIELDS if asset["policy"].get(k) != policy[k]}
@@ -659,7 +653,7 @@ _REQUEST_FIELDS = ("changes", "classification", "override_reason", "effective_da
 async def record(session, company_id, correction_id: str) -> dict:
     state = await _state(session, company_id, correction_id)
     if state is None or not correction_id.startswith("fa:corr:"):
-        raise HTTPException(status_code=404, detail="No such correction.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_correction"))
     return state
 
 
@@ -708,7 +702,7 @@ async def apply_request(session, company_id, user_id, correction_id: str, body: 
     async def planned(fa):
         saved = await record(session, company_id, correction_id)
         if saved.get("state") != "requested":
-            raise conflict(f"This correction was {saved.get('state')}, so there is nothing to apply.")
+            raise setup.refused(409, "fixed_assets.err_correction_was_get_so_there_nothing", get=saved.get('state'))
         stored = {k: saved.get(k) for k in _REQUEST_FIELDS}
         return await plan(session, company_id, saved["asset_id"], {**stored, "posting_date": body.get("posting_date")},
                           fa)
@@ -731,9 +725,9 @@ async def withdraw(session, company_id, user_id, correction_id: str) -> dict:
     await lock_projections(session, company_id, [correction_id])
     saved = await record(session, company_id, correction_id)
     if saved.get("requested_by") != str(user_id):
-        raise HTTPException(status_code=403, detail="Only the user who requested this correction can withdraw it.")
+        raise HTTPException(status_code=403, detail=t("fixed_assets.err_only_user_who_requested_correction_can"))
     if saved.get("state") != "requested":
-        raise conflict(f"This correction was {saved.get('state')}, so it cannot be withdrawn.")
+        raise setup.refused(409, "fixed_assets.err_correction_was_get_so_cannot_withdrawn", get=saved.get('state'))
     await _emit(session, company_id, user_id, correction_id, "fa_correction", "fa.correction.withdrawn", {})
     await _tell_waiting(session, company_id)
     return {"id": correction_id, **saved, "state": "withdrawn"}
@@ -757,16 +751,16 @@ async def undo(session, company_id, user_id, correction_id: str, body: dict) -> 
     async def planned(fa):
         saved = await record(session, company_id, correction_id)
         if saved.get("state") != "applied":
-            raise conflict("Only an applied correction can be undone.")
+            raise setup.refused(409, "fixed_assets.err_only_applied_correction_can_undone")
         asset_id = saved["asset_id"]
         asset = (await lock_projections(session, company_id, [asset_id]))[asset_id].state
         if (int(asset.get("movement_count") or 0) != saved["movement_count"]
                 or any(asset.get(k) != v for k, v in (saved.get("after") or {}).items())):
-            raise conflict(f"{asset['number']} has changed since this correction. Correct it again instead.")
+            raise setup.refused(409, "fixed_assets.err_number_has_changed_since_correction_correct", number=asset['number'])
         books = await runs._books(session, company_id)
         day = saved.get("posting_date") or saved.get("effective_date")
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise conflict(f"{day} is locked, so this correction can no longer be undone. Correct the asset again.")
+            raise setup.refused(409, "fixed_assets.err_day_locked_so_correction_can_no", day=day)
         journals = [await _journal(session, company_id, j) for j in saved.get("journals") or []]
         shown = {"correction": correction_id, "number": asset["number"],
                  "journals": [_reversed_lines(je, books.currency) for je in journals if je and je.get("status") == "posted"]}
@@ -819,7 +813,7 @@ async def fields(session, company_id, asset_id: str) -> dict:
     the lines that may be linked to it."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     movements = projections.live(await asset_movements(session, company_id, asset_id))
     opening = any(m.get("operation") == "opening" for m in movements)
     skip = {"opening_values"} if not opening else {"cost", "available_date", "maintenance"}

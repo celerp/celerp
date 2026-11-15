@@ -63,7 +63,7 @@ async def readiness(session: AsyncSession = Depends(get_session)) -> dict:
         return {"status": "ok", "db": "ok"}
     except Exception:
         logger.exception("readiness probe: database not reachable")
-        raise HTTPException(503, detail="Service not ready.")
+        raise HTTPException(503, detail=t("error.err_service_not_ready"))
 
 
 # ── Internal load-balancer probes (bypasses DrainMiddleware) ─────────────────
@@ -82,7 +82,7 @@ async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
         return {"status": "ok", "db": "ok"}
     except Exception:
         logger.exception("lb readiness probe: database not reachable")
-        raise HTTPException(503, detail="Service not ready.")
+        raise HTTPException(503, detail=t("error.err_service_not_ready"))
 
 
 @router.get("/__celerp/drain", include_in_schema=False, openapi_extra=agent_excluded("internal"))

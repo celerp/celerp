@@ -285,7 +285,7 @@ async def create_company(
     except Exception as e:
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
+        raise HTTPException(status_code=400, detail=t("company.err_could_not_create_company_e", e=e)) from e
     # Creating a company is a continuation of the current owner session: pass the
     # snonce it authenticated on so a concurrent revocation cannot be jumped over.
     return await issue_token_pair(session, user=user, company_id=company.id, expected_snonce=ctx.snonce)
@@ -482,9 +482,9 @@ async def patch_role_permissions(
     """
     perm = next((p for p in PERMISSIONS if p.key == payload.perm_key), None)
     if perm is None:
-        raise HTTPException(status_code=422, detail=f"Unknown permission '{payload.perm_key}'")
+        raise HTTPException(status_code=422, detail=t("settings.unknown_permission", perm_key=payload.perm_key))
     if payload.role_key not in ROLE_LEVELS:
-        raise HTTPException(status_code=422, detail=f"Unknown role '{payload.role_key}'")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_role_role_key", role_key=payload.role_key))
     if not perm.grantable:
         raise HTTPException(status_code=403, detail=t("company.err_permission_fixed"))
 
@@ -898,7 +898,7 @@ async def transfer_install_owner(
     )).scalars().all()
     current = next((u for u in logins if u.is_install_owner), None)
     if current is None or current.id != owner.id:
-        raise HTTPException(status_code=403, detail="Installation owner access required")
+        raise HTTPException(status_code=403, detail=t("company.err_installation_owner_access_required"))
     if current.id == user_id:
         return {"ok": True}
 
@@ -1031,7 +1031,7 @@ async def create_user(
     from celerp.models.accounting import UserCompany
 
     if payload.role not in ROLE_LEVELS:
-        raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
+        raise HTTPException(400, t("company.err_invalid_role_must_one_role_levels", role_levels=', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))))
     _assert_role_assignable(caller_role, payload.role)
 
     # The user's row is held, or inserted, before the company lock (tests/lock_rank.py
@@ -1047,7 +1047,7 @@ async def create_user(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+                detail=t("auth.err_password_must_at_least_min_password", min_password_length=MIN_PASSWORD_LENGTH),
             )
         user = User(
             id=uuid.uuid4(),
@@ -1119,7 +1119,7 @@ async def patch_user(
     security_change = False
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
-            raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
+            raise HTTPException(400, t("company.err_invalid_role_must_one_role_levels", role_levels=', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))))
         # Nor may they promote anyone above their own role.
         _assert_role_assignable(caller_role, payload.role)
         # Guard: cannot demote the last active owner
@@ -1980,7 +1980,7 @@ def _validate_units(units: list[UnitRecord]) -> None:
         if not (0 <= u.decimals <= 6):
             raise HTTPException(status_code=422, detail=t("company.err_unit_decimals", name=u.name))
         if u.unit_type not in _VALID_UNIT_TYPES:
-            raise HTTPException(status_code=422, detail=f"Unit '{u.name}' type must be one of: {', '.join(sorted(_VALID_UNIT_TYPES))}")
+            raise HTTPException(status_code=422, detail=t("company.err_unit_name_type_must_one_valid", name=u.name, valid_unit_types=', '.join(sorted(_VALID_UNIT_TYPES))))
         if u.name in seen:
             raise HTTPException(status_code=422, detail=t("company.err_unit_duplicate", name=u.name))
         seen.add(u.name)
@@ -2196,7 +2196,7 @@ async def disable_module(
 
     if is_core_folded(module_name):
         raise HTTPException(status_code=409, detail=(
-            f"{module_label(module_name)} is part of Celerp and is always on."))
+            t("company.err_module_label_part_celerp_always", module_label=module_label(module_name))))
 
     # Each wait is bounded, so the answer always comes within the UI's wait
     # (api_client.disable_module): turned off, or a 409 that says to try again.
@@ -2225,8 +2225,7 @@ async def disable_module(
         company.settings = disable_for_company(company.settings, module_name)
     except ModuleStillNeeded as exc:
         raise HTTPException(status_code=409, detail=(
-            f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
-            "Turn that off first."))
+            t("company.err_value_needs_module_turn_off_first", value=', '.join((module_label(n) for n in exc.needed_by)))))
     await commit_with_load_set(session, activated=[])
     return {
         "ok": True, "name": module_name, "enabled": False, "restart_required": False,
@@ -2427,7 +2426,7 @@ async def import_module_upload(
     from celerp.modules.meta import IMPORT_SOURCES
 
     if source not in IMPORT_SOURCES:
-        raise HTTPException(status_code=422, detail="Unknown module source.")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_module_source"))
     # Reject on the declared length before reading, then read with a hard cap so
     # an oversize (or lying-Content-Length) body cannot be buffered whole in RAM.
     clen = request.headers.get("content-length")
@@ -3006,7 +3005,7 @@ async def set_company_business_type(
     try:
         return await set_business_type(session, company_id, user.id, payload.vertical)
     except UnknownBusinessType:
-        raise HTTPException(status_code=422, detail=f"Unknown business type: {payload.vertical!r}")
+        raise HTTPException(status_code=422, detail=t("company.err_unknown_business_type_vertical", vertical=f'{payload.vertical!r}'))
 
 
 @router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/general"}, summary="Replace the untouched demo items with the demo set for the company's current business type.")

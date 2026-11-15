@@ -756,7 +756,7 @@ async def import_contact(
     """Accept only the canonical contact-create CIF snapshot transport. A contact that
     already exists is updated, as in the batch import."""
     if body.event_type != "crm.contact.created":
-        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+        raise HTTPException(status_code=422, detail=t("contacts.err_event_type_event_type_not_import", event_type=f'{body.event_type!r}'))
     await locked_authority(session, company_id, user.id, ("edit_contacts", "import_export_data"))
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:

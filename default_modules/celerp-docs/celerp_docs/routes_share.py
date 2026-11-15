@@ -106,7 +106,7 @@ def _import_link(link: str | None, src: str | None, token: str | None) -> str:
     ``src`` + ``token`` pair. Mixed or incomplete input is rejected."""
     if link:
         if src or token:
-            raise HTTPException(status_code=400, detail="Give either link, or src and token, not both")
+            raise HTTPException(status_code=400, detail=t("documents.err_give_either_link_src_token_not"))
         return link
     if not (src and token):
         raise HTTPException(status_code=400, detail=t("documents.err_share_link_required"))
@@ -847,7 +847,7 @@ async def import_bundle_upload(
         try:
             bundle = json.loads(raw)
         except Exception:
-            raise HTTPException(status_code=422, detail="Request body is not valid JSON")
+            raise HTTPException(status_code=422, detail=t("documents.err_request_body_not_valid_json"))
 
     return await _import_bundle(bundle, company_id, user.id, session, None)
 

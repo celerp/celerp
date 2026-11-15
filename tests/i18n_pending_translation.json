@@ -12,5 +12,2244 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "modules.err_ai_queries_run_only_company_signed": {
+      "en": "AI queries run only for the company of the signed-in request.",
+      "params": []
+    },
+    "modules.err_no_such_ai_question": {
+      "en": "No such AI question.",
+      "params": []
+    },
+    "modules.err_module_could_not_prepare_company_s": {
+      "en": "A module could not prepare this company's existing records. Nothing was changed.",
+      "params": []
+    },
+    "modules.err_restart_celerp_load_updated_module_before": {
+      "en": "Restart Celerp to load the updated module before enabling it.",
+      "params": []
+    },
+    "error.err_not_found": {
+      "en": "Not found",
+      "params": []
+    },
+    "auth.err_system_already_bootstrapped_contact_your_admin": {
+      "en": "System already bootstrapped. Contact your admin.",
+      "params": []
+    },
+    "auth.err_registration_failed": {
+      "en": "Registration failed",
+      "params": []
+    },
+    "auth.err_password_must_at_least_min_password": {
+      "en": "Password must be at least {min_password_length} characters.",
+      "params": [
+        "min_password_length"
+      ]
+    },
+    "company.err_unknown_role_role_key": {
+      "en": "Unknown role '{role_key}'",
+      "params": [
+        "role_key"
+      ]
+    },
+    "company.err_installation_owner_access_required": {
+      "en": "Installation owner access required",
+      "params": []
+    },
+    "company.err_invalid_role_must_one_role_levels": {
+      "en": "Invalid role. Must be one of: {role_levels}",
+      "params": [
+        "role_levels"
+      ]
+    },
+    "company.err_module_label_part_celerp_always": {
+      "en": "{module_label} is part of Celerp and is always on.",
+      "params": [
+        "module_label"
+      ]
+    },
+    "company.err_unknown_module_source": {
+      "en": "Unknown module source.",
+      "params": []
+    },
+    "company.err_could_not_create_company_e": {
+      "en": "Could not create company: {e}",
+      "params": [
+        "e"
+      ]
+    },
+    "company.err_unit_name_type_must_one_valid": {
+      "en": "Unit '{name}' type must be one of: {valid_unit_types}",
+      "params": [
+        "name",
+        "valid_unit_types"
+      ]
+    },
+    "company.err_value_needs_module_turn_off_first": {
+      "en": "{value} needs this module. Turn that off first.",
+      "params": [
+        "value"
+      ]
+    },
+    "company.err_unknown_business_type_vertical": {
+      "en": "Unknown business type: {vertical}",
+      "params": [
+        "vertical"
+      ]
+    },
+    "error.err_service_not_ready": {
+      "en": "Service not ready.",
+      "params": []
+    },
+    "error.err_offset_cannot_combined_with_before_after": {
+      "en": "offset cannot be combined with before or after",
+      "params": []
+    },
+    "error.err_entity_id_must_name_record": {
+      "en": "entity_id must name a record",
+      "params": []
+    },
+    "import.err_unknown_export_column_s_unknown_choose": {
+      "en": "Unknown export column(s): {unknown}. Choose from: {allowed_set}",
+      "params": [
+        "allowed_set",
+        "unknown"
+      ]
+    },
+    "migration.err_export_request_not_found": {
+      "en": "Export request not found",
+      "params": []
+    },
+    "migration.err_enter_what": {
+      "en": "Enter the {what}.",
+      "params": [
+        "what"
+      ]
+    },
+    "migration.err_enter_valid_what": {
+      "en": "Enter a valid {what}.",
+      "params": [
+        "what"
+      ]
+    },
+    "migration.err_name_has_no_list_files_export": {
+      "en": "{name} has no list of files to export.",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.err_no_files_have_arrived_yet_they": {
+      "en": "No files have arrived yet. They appear here as the client uploads them.",
+      "params": []
+    },
+    "migration.err_export_file_name_unavailable": {
+      "en": "The export file {name} is unavailable",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.err_export_file_name_could_not_downloaded": {
+      "en": "The export file {name} could not be downloaded",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.err_name_could_not_read_with_request": {
+      "en": "{name} could not be read with this request's key. Ask the client to upload it again. Nothing was added.",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.err_installation_does_not_hold_key_these": {
+      "en": "This installation does not hold the key for these files, so it cannot read them. Send a new request from here.",
+      "params": []
+    },
+    "migration.err_export_file_name_too_large": {
+      "en": "The export file {name} is too large",
+      "params": [
+        "name"
+      ]
+    },
+    "migration.err_move_request_not_found": {
+      "en": "Move request not found",
+      "params": []
+    },
+    "acct.err_account_code_belongs_active_bank_account": {
+      "en": "Account {code} belongs to the active bank account {banks}. Archive the bank account before archiving this account or changing its type.",
+      "params": [
+        "banks",
+        "code"
+      ]
+    },
+    "acct.err_chart_import_takes_no_query_parameters": {
+      "en": "The chart import takes no query parameters.",
+      "params": []
+    },
+    "acct.err_idempotency_token_required": {
+      "en": "idempotency_token is required.",
+      "params": []
+    },
+    "acct.err_transfer_amount_must_positive": {
+      "en": "Transfer amount must be positive",
+      "params": []
+    },
+    "acct.err_source_bank_account_not_found": {
+      "en": "Source bank account not found",
+      "params": []
+    },
+    "acct.err_destination_bank_account_not_found": {
+      "en": "Destination bank account not found",
+      "params": []
+    },
+    "acct.err_line_already_matched_unmatch_before_creating": {
+      "en": "This line is already matched. Unmatch it before creating a split journal entry.",
+      "params": []
+    },
+    "acct.err_record_not_held_by_archived_account": {
+      "en": "This record is not held by an archived account.",
+      "params": []
+    },
+    "admin.err_unknown_checks_invalid": {
+      "en": "Unknown checks: {invalid}",
+      "params": [
+        "invalid"
+      ]
+    },
+    "ai.err_include_protected_requires_offset_0": {
+      "en": "include_protected requires offset=0",
+      "params": []
+    },
+    "connectors.err_display_name_does_not_support_entity": {
+      "en": "{display_name} does not support entity '{entity}'",
+      "params": [
+        "display_name",
+        "entity"
+      ]
+    },
+    "connectors.err_order_id_must_woocommerce_order_number": {
+      "en": "order_id must be a WooCommerce order number",
+      "params": []
+    },
+    "connectors.err_unsupported_catalog_connector": {
+      "en": "Unsupported catalog connector",
+      "params": []
+    },
+    "contacts.err_event_type_event_type_not_import": {
+      "en": "Event type {event_type} is not import-safe",
+      "params": [
+        "event_type"
+      ]
+    },
+    "documents.err_cannot_send_closed_memo_reopen_first": {
+      "en": "Cannot send a closed memo; reopen it first.",
+      "params": []
+    },
+    "documents.err_add_at_least_one_line_item": {
+      "en": "Add at least one line item before sending this document.",
+      "params": []
+    },
+    "documents.err_cannot_void_document_with_payments_void": {
+      "en": "Cannot void a document with payments; void the payments first",
+      "params": []
+    },
+    "documents.err_payment_has_been_refunded_full_so": {
+      "en": "This payment has been refunded in full, so there is nothing left to void.",
+      "params": []
+    },
+    "documents.err_credit_note_applications_cannot_deleted_void": {
+      "en": "Credit note applications cannot be deleted. Void the payment instead.",
+      "params": []
+    },
+    "documents.err_what_not_label_add_label2_first": {
+      "en": "{what}: it is not on this {label}. Add it to the {label2} first.",
+      "params": [
+        "label",
+        "label2",
+        "what"
+      ]
+    },
+    "documents.err_only_issued_doc_type_can_record": {
+      "en": "Only an issued {doc_type} can record goods moved before it came to Celerp",
+      "params": [
+        "doc_type"
+      ]
+    },
+    "documents.err_line_value_does_not_hold_item": {
+      "en": "Line {value} does not hold item {item_id}",
+      "params": [
+        "item_id",
+        "value"
+      ]
+    },
+    "documents.err_line_value_at_most_still_open": {
+      "en": "Line {value}: at most {still_open} can be moved",
+      "params": [
+        "still_open",
+        "value"
+      ]
+    },
+    "documents.err_select_at_least_one_document_ship": {
+      "en": "Select at least one document to ship",
+      "params": []
+    },
+    "documents.err_offset_must_zero_greater": {
+      "en": "offset must be zero or greater",
+      "params": []
+    },
+    "documents.err_limit_must_greater_than_zero": {
+      "en": "limit must be greater than zero",
+      "params": []
+    },
+    "documents.err_finalize_count_before_adjusting_stock": {
+      "en": "Finalize the count before adjusting stock",
+      "params": []
+    },
+    "documents.err_select_at_least_one_item_write": {
+      "en": "Select at least one item to write off",
+      "params": []
+    },
+    "documents.err_enter_quantity_destination_account_each_item": {
+      "en": "Enter a quantity and a destination account for each item you want to write off",
+      "params": []
+    },
+    "documents.err_unknown_list_type_new_type": {
+      "en": "Unknown list type: {new_type}",
+      "params": [
+        "new_type"
+      ]
+    },
+    "documents.err_issue_transfer_before_moving_its_items": {
+      "en": "Issue the transfer before moving its items",
+      "params": []
+    },
+    "documents.err_document_selection_contains_duplicates": {
+      "en": "Document selection contains duplicates",
+      "params": []
+    },
+    "documents.err_document_selection_not_found": {
+      "en": "Document selection not found",
+      "params": []
+    },
+    "documents.err_credit_note_cannot_undone_goods_released": {
+      "en": "This credit note cannot be undone: goods it released from invoice {number} have left stock since, so the invoice cannot hold them again. Bring the goods back into stock first, or issue a new invoice for them.",
+      "params": [
+        "number"
+      ]
+    },
+    "documents.err_value_receipt_cost_stored_float_differs": {
+      "en": "{value}: the receipt cost {to_stored_float} differs from the {doc_label} line ({to_stored_float2}). Receive the goods at the {doc_label2} price, then add a landed cost or correct the item's cost.",
+      "params": [
+        "doc_label",
+        "doc_label2",
+        "to_stored_float",
+        "to_stored_float2",
+        "value"
+      ]
+    },
+    "documents.err_item_item_id_does_not_exist": {
+      "en": "Item {item_id} does not exist",
+      "params": [
+        "item_id"
+      ]
+    },
+    "documents.err_issue_every_document_before_creating_its": {
+      "en": "Issue every document before creating its shipping paperwork",
+      "params": []
+    },
+    "documents.err_reopen_closed_memo_before_creating_its": {
+      "en": "Reopen a closed memo before creating its shipping paperwork",
+      "params": []
+    },
+    "documents.err_offset_must_integer": {
+      "en": "offset must be an integer",
+      "params": []
+    },
+    "documents.err_limit_must_integer": {
+      "en": "limit must be an integer",
+      "params": []
+    },
+    "documents.err_original_count_must_zero_greater": {
+      "en": "original_count must be zero or greater",
+      "params": []
+    },
+    "documents.err_sku_quantity_cannot_come_back_credit": {
+      "en": "{sku}: {quantity} cannot come back on this credit note: the invoice shipped {went}, returned {value}, so {max} can come back",
+      "params": [
+        "max",
+        "quantity",
+        "sku",
+        "value",
+        "went"
+      ]
+    },
+    "documents.err_value_changed_after_audit_was_finalized": {
+      "en": "{value} changed after the audit was finalized; recount it.",
+      "params": [
+        "value"
+      ]
+    },
+    "documents.err_line_id_item_id_required": {
+      "en": "line_id or item_id is required",
+      "params": []
+    },
+    "documents.err_name_choose_destination_account": {
+      "en": "{name}: choose a destination account",
+      "params": [
+        "name"
+      ]
+    },
+    "documents.err_original_count_cannot_exceed_page_limit": {
+      "en": "original_count cannot exceed the {page_limit_max}-line page limit",
+      "params": [
+        "page_limit_max"
+      ]
+    },
+    "documents.err_sku_nothing_left_ship_invoiced_invoiced": {
+      "en": "{sku}: nothing left to ship: invoiced {invoiced}, credited {cut}, shipped 0",
+      "params": [
+        "cut",
+        "invoiced",
+        "sku"
+      ]
+    },
+    "documents.err_label_its_inventory_item_no_longer": {
+      "en": "{label}: its inventory item no longer exists. Remove the line, then try again.",
+      "params": [
+        "label"
+      ]
+    },
+    "documents.err_label_its_inventory_item_was_merged": {
+      "en": "{label}: its inventory item was merged into another item. Remove the line, then try again.",
+      "params": [
+        "label"
+      ]
+    },
+    "documents.err_scan_operation_identity_conflicts_with_previous": {
+      "en": "Scan operation identity conflicts with a previous event",
+      "params": []
+    },
+    "documents.err_scan_operation_has_no_replayable_result": {
+      "en": "Scan operation has no replayable result",
+      "params": []
+    },
+    "documents.err_import_key_was_already_used_different": {
+      "en": "This import key was already used for a different record",
+      "params": []
+    },
+    "documents.err_give_either_link_src_token_not": {
+      "en": "Give either link, or src and token, not both",
+      "params": []
+    },
+    "documents.err_request_body_not_valid_json": {
+      "en": "Request body is not valid JSON",
+      "params": []
+    },
+    "inventory.err_field_field_not_available_suggestions": {
+      "en": "Field '{field}' not available for suggestions",
+      "params": [
+        "field"
+      ]
+    },
+    "inventory.err_nothing_was_deleted_only_draft_never": {
+      "en": "Nothing was deleted. Only a draft that never became stock can be deleted, and these cannot: {skus}. Use Revert to Draft for stock made available by mistake, Archive to retire a product, or Write Off Stock for goods that left the company.",
+      "params": [
+        "skus"
+      ]
+    },
+    "inventory.err_allow_splitting_set_no_item_change": {
+      "en": "Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
+      "params": []
+    },
+    "inventory.err_merge_can_no_longer_undone_merged": {
+      "en": "This merge can no longer be undone: the merged item has changed since it was made.",
+      "params": []
+    },
+    "inventory.err_merge_can_no_longer_undone_one": {
+      "en": "This merge can no longer be undone: one of the merged items has changed since it was made.",
+      "params": []
+    },
+    "inventory.err_merge_was_made_before_merges_could": {
+      "en": "This merge was made before merges could be undone, so the items' earlier state is not on record.",
+      "params": []
+    },
+    "inventory.err_item_not_found_2": {
+      "en": "Item not found",
+      "params": []
+    },
+    "inventory.err_invalid_attachment_type_attachment_type": {
+      "en": "Invalid attachment_type: {attachment_type}",
+      "params": [
+        "attachment_type"
+      ]
+    },
+    "inventory.err_attachment_not_found": {
+      "en": "Attachment not found",
+      "params": []
+    },
+    "inventory.err_preview_image_id_can_only_set": {
+      "en": "preview_image_id can only be set to an image attachment",
+      "params": []
+    },
+    "inventory.err_file_not_image": {
+      "en": "File is not an image",
+      "params": []
+    },
+    "inventory.err_thumbnail_unavailable": {
+      "en": "Thumbnail unavailable",
+      "params": []
+    },
+    "manufacturing.err_item_has_no_recipe_build_from": {
+      "en": "Item has no recipe to build from",
+      "params": []
+    },
+    "manufacturing.err_unknown_bulk_action_action": {
+      "en": "Unknown bulk action: {action}",
+      "params": [
+        "action"
+      ]
+    },
+    "manufacturing.err_your_only_work_center_add_another": {
+      "en": "This is your only work center. Add another before deleting this one.",
+      "params": []
+    },
+    "manufacturing.err_default_work_center_set_another_center": {
+      "en": "This is the default work center. Set another center as default before deleting it.",
+      "params": []
+    },
+    "error.err_company_not_found": {
+      "en": "Company not found",
+      "params": []
+    },
+    "migration.err_uploaded_file_changed_after_was_scanned": {
+      "en": "The uploaded file changed after it was scanned. Upload it again.",
+      "params": []
+    },
+    "migration.err_celerp_cannot_read_names_yet_accepted": {
+      "en": "Celerp cannot read {names} yet. Accepted: {accepted}.",
+      "params": [
+        "accepted",
+        "names"
+      ]
+    },
+    "migration.err_names_not_display_name_file_accepted": {
+      "en": "{names} is not a {display_name} file. Accepted: {accepted}.",
+      "params": [
+        "accepted",
+        "display_name",
+        "names"
+      ]
+    },
+    "peer.err_company_unavailable": {
+      "en": "Company unavailable",
+      "params": []
+    },
+    "peer.err_integration_unavailable": {
+      "en": "Integration unavailable",
+      "params": []
+    },
+    "peer.err_invalid_integration_grant": {
+      "en": "Invalid integration grant",
+      "params": []
+    },
+    "peer.err_connection_sent_record_has_ended": {
+      "en": "The connection that sent this record has ended.",
+      "params": []
+    },
+    "peer.err_key_was_revoked_issue_new_key": {
+      "en": "This key was revoked. Issue a new key instead.",
+      "params": []
+    },
+    "peer.err_too_many_active_integrations": {
+      "en": "Too many active integrations",
+      "params": []
+    },
+    "peer.err_accounting_not_running": {
+      "en": "Accounting is not running.",
+      "params": []
+    },
+    "peer.err_choose_account_use_code_add_as": {
+      "en": "Choose an account to use, or a code to add it as.",
+      "params": []
+    },
+    "peer.err_invalid_accounts": {
+      "en": "Invalid accounts",
+      "params": []
+    },
+    "peer.err_account_not_waiting_review": {
+      "en": "That account is not waiting for review.",
+      "params": []
+    },
+    "peer.err_item_not_fixed_here": {
+      "en": "This item is not fixed here.",
+      "params": []
+    },
+    "peer.err_item_not_open": {
+      "en": "This item is not open.",
+      "params": []
+    },
+    "peer.err_notice_closed": {
+      "en": "This notice is closed.",
+      "params": []
+    },
+    "peer.err_choose_account_label_code_add_as": {
+      "en": "Choose an account for {label}, or a code to add it as.",
+      "params": [
+        "label"
+      ]
+    },
+    "peer.err_label_cannot_added_here_use_account": {
+      "en": "{label} cannot be added here. Use an account kept in {currency}.",
+      "params": [
+        "currency",
+        "label"
+      ]
+    },
+    "peer.err_label_kept_currency_add_bank_account": {
+      "en": "{label} is kept in {currency}. Add a bank account kept in {currency2} in Banking, then use it.",
+      "params": [
+        "currency",
+        "currency2",
+        "label"
+      ]
+    },
+    "peer.err_sender_sent_record_without_name_type": {
+      "en": "{sender} sent {record} without the name, type and currency of its account {code}, so it is not matched to an account in {chart}. It posts when {sender2} sends it again with them.",
+      "params": [
+        "chart",
+        "code",
+        "record",
+        "sender",
+        "sender2"
+      ]
+    },
+    "peer.err_attachment_content_does_not_match_its": {
+      "en": "Attachment content does not match its checksum",
+      "params": []
+    },
+    "peer.err_attachment_exceeds_file_size_limit": {
+      "en": "Attachment exceeds file size limit",
+      "params": []
+    },
+    "peer.err_attachment_identity_changed_during_transfer": {
+      "en": "Attachment identity changed during transfer",
+      "params": []
+    },
+    "peer.err_attachment_identity_was_reused_with_different": {
+      "en": "Attachment identity was reused with different content",
+      "params": []
+    },
+    "peer.err_document_unavailable": {
+      "en": "Document is unavailable",
+      "params": []
+    },
+    "peer.err_document_must_synchronized_before_attachments": {
+      "en": "Document must be synchronized before attachments",
+      "params": []
+    },
+    "peer.err_invalid_attachment_checksum": {
+      "en": "Invalid attachment checksum",
+      "params": []
+    },
+    "peer.err_invalid_attachment_identity": {
+      "en": "Invalid attachment identity",
+      "params": []
+    },
+    "peer.err_invalid_attachment_name": {
+      "en": "Invalid attachment name",
+      "params": []
+    },
+    "peer.err_company_owner_unavailable": {
+      "en": "Company owner unavailable",
+      "params": []
+    },
+    "peer.err_document_exceeds_integration_size_limit": {
+      "en": "Document exceeds integration size limit",
+      "params": []
+    },
+    "peer.err_document_total_must_reconciled_before_void": {
+      "en": "Document total must be reconciled before void",
+      "params": []
+    },
+    "peer.err_invalid_contact_identity": {
+      "en": "Invalid contact identity",
+      "params": []
+    },
+    "peer.err_invalid_document_line": {
+      "en": "Invalid document line",
+      "params": []
+    },
+    "peer.err_invalid_document": {
+      "en": "Invalid document",
+      "params": []
+    },
+    "peer.err_invalid_fulfilled_items": {
+      "en": "Invalid fulfilled items",
+      "params": []
+    },
+    "peer.err_invalid_item_reference": {
+      "en": "Invalid item reference",
+      "params": []
+    },
+    "peer.err_invalid_received_parcel": {
+      "en": "Invalid received parcel",
+      "params": []
+    },
+    "peer.err_invalid_stock_receipt_line": {
+      "en": "Invalid stock receipt line",
+      "params": []
+    },
+    "peer.err_invalid_stock_receipt": {
+      "en": "Invalid stock receipt",
+      "params": []
+    },
+    "peer.err_invalid_stock_receipts": {
+      "en": "Invalid stock receipts",
+      "params": []
+    },
+    "peer.err_only_invoices_support_sent_document_transition": {
+      "en": "Only invoices support a sent document transition",
+      "params": []
+    },
+    "peer.err_previously_issued_document_requires_reconciliation": {
+      "en": "Previously issued document requires reconciliation",
+      "params": []
+    },
+    "peer.err_previously_settled_void_requires_payment_reconciliation": {
+      "en": "Previously settled void requires payment reconciliation",
+      "params": []
+    },
+    "peer.err_received_parcels_do_not_match_source": {
+      "en": "Received parcels do not match the source receipt",
+      "params": []
+    },
+    "peer.err_receiving_document_does_not_match_voided": {
+      "en": "Receiving document does not match voided source",
+      "params": []
+    },
+    "peer.err_receiving_document_must_issued_before_void": {
+      "en": "Receiving document must be issued before void",
+      "params": []
+    },
+    "peer.err_source_document_dependency_not_synchronized": {
+      "en": "Source document dependency is not synchronized",
+      "params": []
+    },
+    "peer.err_source_document_must_synchronized_before_void": {
+      "en": "Source document must be synchronized before void",
+      "params": []
+    },
+    "peer.err_stock_operations_do_not_match_document": {
+      "en": "Stock operations do not match the document type",
+      "params": []
+    },
+    "peer.err_unapproved_document_fields": {
+      "en": "Unapproved document fields",
+      "params": []
+    },
+    "peer.err_unsupported_document_type": {
+      "en": "Unsupported document type",
+      "params": []
+    },
+    "peer.err_company_owned_contacts_cannot_updated_by": {
+      "en": "Company-owned contacts cannot be updated by an integration",
+      "params": []
+    },
+    "peer.err_configure_matching_inventory_location_before_syncing": {
+      "en": "Configure a matching inventory location before syncing counts",
+      "params": []
+    },
+    "peer.err_external_identity_conflict": {
+      "en": "External identity conflict",
+      "params": []
+    },
+    "peer.err_external_identity_conflicts_with_existing_record": {
+      "en": "External identity conflicts with an existing record",
+      "params": []
+    },
+    "peer.err_external_identity_no_longer_matches_its": {
+      "en": "External identity no longer matches its record",
+      "params": []
+    },
+    "peer.err_invalid_external_identity": {
+      "en": "Invalid external identity",
+      "params": []
+    },
+    "peer.err_invalid_product_revision": {
+      "en": "Invalid product revision",
+      "params": []
+    },
+    "peer.err_invalid_source_location_identity": {
+      "en": "Invalid source location identity",
+      "params": []
+    },
+    "peer.err_invalid_source_location": {
+      "en": "Invalid source location",
+      "params": []
+    },
+    "peer.err_invalid_source_revision": {
+      "en": "Invalid source revision",
+      "params": []
+    },
+    "peer.err_inventory_location_already_paired_with_another": {
+      "en": "Inventory location is already paired with another company",
+      "params": []
+    },
+    "peer.err_mapped_location_identity_invalid": {
+      "en": "Mapped location identity is invalid",
+      "params": []
+    },
+    "peer.err_mapped_location_unavailable": {
+      "en": "Mapped location is unavailable",
+      "params": []
+    },
+    "peer.err_product_name_required": {
+      "en": "Product name required",
+      "params": []
+    },
+    "peer.err_product_update_was_not_accepted": {
+      "en": "Product update was not accepted",
+      "params": []
+    },
+    "peer.err_source_revision_already_used": {
+      "en": "Source revision already used",
+      "params": []
+    },
+    "peer.err_unsupported_product_fields": {
+      "en": "Unsupported product fields",
+      "params": []
+    },
+    "peer.err_connected_company_s_file_needs_its": {
+      "en": "A connected company's file needs its file id and checksum.",
+      "params": []
+    },
+    "peer.err_connected_company_s_record_needs_its": {
+      "en": "A connected company's record needs its source revision.",
+      "params": []
+    },
+    "peer.err_document_missing_source_payment": {
+      "en": "Document missing for source payment",
+      "params": []
+    },
+    "peer.err_duplicate_source_refund_identity": {
+      "en": "Duplicate source refund identity",
+      "params": []
+    },
+    "peer.err_invalid_source_paid_balance": {
+      "en": "Invalid source paid balance",
+      "params": []
+    },
+    "peer.err_invalid_source_payment_identity": {
+      "en": "Invalid source payment identity",
+      "params": []
+    },
+    "peer.err_invalid_source_payment": {
+      "en": "Invalid source payment",
+      "params": []
+    },
+    "peer.err_invalid_source_payments": {
+      "en": "Invalid source payments",
+      "params": []
+    },
+    "peer.err_invalid_source_refund_amount_date": {
+      "en": "Invalid source refund amount or date",
+      "params": []
+    },
+    "peer.err_invalid_source_refund_event": {
+      "en": "Invalid source refund event",
+      "params": []
+    },
+    "peer.err_invalid_source_refund_events": {
+      "en": "Invalid source refund events",
+      "params": []
+    },
+    "peer.err_invalid_source_refund_identity": {
+      "en": "Invalid source refund identity",
+      "params": []
+    },
+    "peer.err_invalid_source_refund": {
+      "en": "Invalid source refund",
+      "params": []
+    },
+    "peer.err_refund_history_required_booked_payments": {
+      "en": "Refund history required for booked payments",
+      "params": []
+    },
+    "peer.err_reversed_source_payments_require_reconciliation": {
+      "en": "Reversed source payments require reconciliation",
+      "params": []
+    },
+    "peer.err_settled_source_document_has_no_transferable": {
+      "en": "Settled source document has no transferable payments",
+      "params": []
+    },
+    "peer.err_settled_status_has_no_outstanding_receipt": {
+      "en": "Settled status has no outstanding receipt",
+      "params": []
+    },
+    "peer.err_source_paid_balance_requires_reconciliation": {
+      "en": "Source paid balance requires reconciliation",
+      "params": []
+    },
+    "peer.err_source_paid_balance_unavailable": {
+      "en": "Source paid balance unavailable",
+      "params": []
+    },
+    "peer.err_source_payment_balance_requires_reconciliation": {
+      "en": "Source payment balance requires reconciliation",
+      "params": []
+    },
+    "peer.err_source_payment_cannot_reconciled": {
+      "en": "Source payment cannot be reconciled",
+      "params": []
+    },
+    "peer.err_source_payment_conflicts_with_existing_receipt": {
+      "en": "Source payment conflicts with an existing receipt",
+      "params": []
+    },
+    "peer.err_source_payment_has_no_deposit_account": {
+      "en": "Source payment has no deposit account",
+      "params": []
+    },
+    "peer.err_source_payment_refund_inconsistent": {
+      "en": "Source payment refund is inconsistent",
+      "params": []
+    },
+    "peer.err_source_payment_replay_conflicts_with_existing": {
+      "en": "Source payment replay conflicts with existing books",
+      "params": []
+    },
+    "peer.err_source_refund_balance_requires_reconciliation": {
+      "en": "Source refund balance requires reconciliation",
+      "params": []
+    },
+    "peer.err_source_refund_reversal_inconsistent": {
+      "en": "Source refund reversal is inconsistent",
+      "params": []
+    },
+    "peer.err_source_status_conflicts_with_booked_receipts": {
+      "en": "Source status conflicts with booked receipts",
+      "params": []
+    },
+    "peer.err_unissued_document_has_source_payments": {
+      "en": "Unissued document has source payments",
+      "params": []
+    },
+    "peer.err_restored_refund_history_differs_from_source": {
+      "en": "Restored refund history differs from source",
+      "params": []
+    },
+    "peer.err_restored_refund_reversal_differs_from_source": {
+      "en": "Restored refund reversal differs from source",
+      "params": []
+    },
+    "peer.err_source_receipt_identity_inconsistent": {
+      "en": "Source receipt identity is inconsistent",
+      "params": []
+    },
+    "peer.err_source_refund_events_not_consecutive": {
+      "en": "Source refund events are not consecutive",
+      "params": []
+    },
+    "peer.err_source_refund_has_no_active_receiving": {
+      "en": "Source refund has no active receiving payment",
+      "params": []
+    },
+    "peer.err_source_refund_operation_identity_was_reused": {
+      "en": "Source refund operation identity was reused",
+      "params": []
+    },
+    "peer.err_source_refund_reversal_exceeds_refunded_balance": {
+      "en": "Source refund reversal exceeds refunded balance",
+      "params": []
+    },
+    "peer.err_source_refund_reversal_has_no_matching": {
+      "en": "Source refund reversal has no matching booked refund",
+      "params": []
+    }
+  },
+  "modules": {
+    "celerp-fixed-assets": {
+      "fixed_assets.err_no_such_asset_2": {
+        "en": "No such asset.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_check": {
+        "en": "No such check.",
+        "params": []
+      },
+      "fixed_assets.err_only_person_who_recorded_check_can": {
+        "en": "Only the person who recorded a check can remove it.",
+        "params": []
+      },
+      "fixed_assets.err_no_class_table_was_applied_under": {
+        "en": "No class table was applied under this key.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_correction": {
+        "en": "No such correction.",
+        "params": []
+      },
+      "fixed_assets.err_only_user_who_requested_correction_can": {
+        "en": "Only the user who requested this correction can withdraw it.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_asset_your_care": {
+        "en": "No such asset in your care.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_file_asset": {
+        "en": "No such file on this asset.",
+        "params": []
+      },
+      "fixed_assets.err_file_no_longer_stored": {
+        "en": "This file is no longer stored.",
+        "params": []
+      },
+      "fixed_assets.err_your_role_cannot_open_files_show": {
+        "en": "Your role cannot open files that show amounts.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_asset_class": {
+        "en": "No such asset class.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_import": {
+        "en": "No such import.",
+        "params": []
+      },
+      "fixed_assets.err_only_latest_review_can_withdrawn": {
+        "en": "Only the latest review can be withdrawn.",
+        "params": []
+      },
+      "fixed_assets.err_no_such_sale_action": {
+        "en": "No such sale action.",
+        "params": []
+      },
+      "fixed_assets.err_month_not_skipped": {
+        "en": "This month is not skipped.",
+        "params": []
+      },
+      "fixed_assets.err_revalued_revalued_so_class_stays_revaluation": {
+        "en": "{revalued} are revalued, so this class stays on the revaluation model.",
+        "params": [
+          "revalued"
+        ]
+      },
+      "fixed_assets.err_tax_value_asset_carries_other_company": {
+        "en": "The tax value this asset carries to the other company cannot be worked out. {why}",
+        "params": [
+          "why"
+        ]
+      },
+      "fixed_assets.err_name_detail": {
+        "en": "{name}: {detail}",
+        "params": [
+          "detail",
+          "name"
+        ]
+      },
+      "fixed_assets.err_no_such_maintenance_entry": {
+        "en": "No such maintenance entry.",
+        "params": []
+      },
+      "fixed_assets.err_depreciation_was_charged_number_after_its": {
+        "en": "Depreciation was charged on {number} after its latest change. Use Correct instead.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_already_placed_service_full": {
+        "en": "{number} is already placed in service in full.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_not_use_so_cannot_placed": {
+        "en": "{number} is not in use, so it cannot be placed in service.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_enter_replacement_part_s_life_months": {
+        "en": "Enter the replacement part's life in months.",
+        "params": []
+      },
+      "fixed_assets.err_allocate_cost_at_least_one_asset": {
+        "en": "Allocate the cost to at least one asset.",
+        "params": []
+      },
+      "fixed_assets.err_choose_account_addition_paid_from_pick": {
+        "en": "Choose the account the addition is paid from, or pick its bill line.",
+        "params": []
+      },
+      "fixed_assets.err_choose_what_added_improvement_replacement_part": {
+        "en": "Choose what is added: an improvement or a replacement part.",
+        "params": []
+      },
+      "fixed_assets.err_name_each_asset_placed_service": {
+        "en": "Name each asset placed in service.",
+        "params": []
+      },
+      "fixed_assets.err_name_replacement_part": {
+        "en": "Name the replacement part.",
+        "params": []
+      },
+      "fixed_assets.err_only_line_adds_asset_account_pays": {
+        "en": "Only a line that adds to an asset account pays for an addition.",
+        "params": []
+      },
+      "fixed_assets.err_pick_component_being_replaced_estimate_what": {
+        "en": "Pick the component being replaced, or estimate what the old part cost.",
+        "params": []
+      },
+      "fixed_assets.err_place_construction_cost_class_service": {
+        "en": "Place construction cost in a class that is in service.",
+        "params": []
+      },
+      "fixed_assets.err_life_whole_number_months": {
+        "en": "The life is a whole number of months.",
+        "params": []
+      },
+      "fixed_assets.err_life_at_least_1_month": {
+        "en": "The life is at least 1 month.",
+        "params": []
+      },
+      "fixed_assets.err_estimated_cost_old_part_more_than": {
+        "en": "The estimated cost of the old part is more than 0 and less than {number}'s cost of {said}.",
+        "params": [
+          "number",
+          "said"
+        ]
+      },
+      "fixed_assets.err_allocations_total_said_more_than_said2": {
+        "en": "The allocations total {said}, more than the {said2} {number} holds.",
+        "params": [
+          "number",
+          "said",
+          "said2"
+        ]
+      },
+      "fixed_assets.err_number_has_nothing_undo": {
+        "en": "{number} has nothing to undo.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_not_component_number2": {
+        "en": "{number} is not a component of {number2}.",
+        "params": [
+          "number",
+          "number2"
+        ]
+      },
+      "fixed_assets.err_number_not_under_construction": {
+        "en": "{number} is not under construction.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_choose_date_report_from": {
+        "en": "Choose the date to report from.",
+        "params": []
+      },
+      "fixed_assets.err_scan_type_asset_tag": {
+        "en": "Scan or type an asset tag.",
+        "params": []
+      },
+      "fixed_assets.err_no_asset_with_tag_tag": {
+        "en": "No asset with tag {tag}.",
+        "params": [
+          "tag"
+        ]
+      },
+      "fixed_assets.err_check_was_recorded_date_check_can": {
+        "en": "This check was recorded on {date}. A check can only be removed on the day it was recorded.",
+        "params": [
+          "date"
+        ]
+      },
+      "fixed_assets.err_class_table_was_already_undone": {
+        "en": "This class table was already undone.",
+        "params": []
+      },
+      "fixed_assets.err_class_table_list_classes": {
+        "en": "A class table is a list of classes.",
+        "params": []
+      },
+      "fixed_assets.err_every_class_table_has_its_own": {
+        "en": "Every class in the table has its own name.",
+        "params": []
+      },
+      "fixed_assets.err_only_applied_correction_can_undone": {
+        "en": "Only an applied correction can be undone.",
+        "params": []
+      },
+      "fixed_assets.err_correction_was_get_so_cannot_withdrawn": {
+        "en": "This correction was {get}, so it cannot be withdrawn.",
+        "params": [
+          "get"
+        ]
+      },
+      "fixed_assets.err_correction_was_get_so_there_nothing": {
+        "en": "This correction was {get}, so there is nothing to apply.",
+        "params": [
+          "get"
+        ]
+      },
+      "fixed_assets.err_number_has_changed_since_correction_correct": {
+        "en": "{number} has changed since this correction. Correct it again instead.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_day_locked_so_correction_can_no": {
+        "en": "{day} is locked, so this correction can no longer be undone. Correct the asset again.",
+        "params": [
+          "day"
+        ]
+      },
+      "fixed_assets.err_reason_required_post_earlier_year_s": {
+        "en": "A reason is required to post an earlier year's effect to current profit or loss.",
+        "params": []
+      },
+      "fixed_assets.err_asset_s_depreciation_settings_were_changed": {
+        "en": "This asset's depreciation settings were changed as an estimate. Undo that change first, or correct them as another change in estimate.",
+        "params": []
+      },
+      "fixed_assets.err_correction_change_estimate_error_correction": {
+        "en": "A correction is a change in estimate or an error correction.",
+        "params": []
+      },
+      "fixed_assets.err_reason_required_treat_change_estimate_as": {
+        "en": "A reason is required to treat a change in estimate as an error correction.",
+        "params": []
+      },
+      "fixed_assets.err_choose_retained_earnings_account_posting_accounts": {
+        "en": "Choose the retained earnings account in Posting accounts first: earlier years are corrected through it.",
+        "params": []
+      },
+      "fixed_assets.err_choose_what_correct": {
+        "en": "Choose what to correct.",
+        "params": []
+      },
+      "fixed_assets.err_correct_one_cost_dates_class_opening": {
+        "en": "Correct one of cost, dates, class, opening values, maintenance or a source at a time, apart from depreciation settings.",
+        "params": []
+      },
+      "fixed_assets.err_earlier_years_go_retained_earnings_current": {
+        "en": "Earlier years go to retained earnings or to current profit or loss.",
+        "params": []
+      },
+      "fixed_assets.err_every_asset_class_already_follows_its": {
+        "en": "Every asset in this class already follows its depreciation settings.",
+        "params": []
+      },
+      "fixed_assets.err_depreciation_settings_already_these": {
+        "en": "The depreciation settings are already these.",
+        "params": []
+      },
+      "fixed_assets.err_change_estimate_takes_effect_from_period": {
+        "en": "A change in estimate takes effect from {period_label} or later, the first month not yet depreciated.",
+        "params": [
+          "period_label"
+        ]
+      },
+      "fixed_assets.err_change_next_corrects_error_so_cannot": {
+        "en": "A change to {next} corrects an error, so it cannot be treated as a change in estimate.",
+        "params": [
+          "next"
+        ]
+      },
+      "fixed_assets.err_number_was_remeasured_remeasured_so_what": {
+        "en": "{number} was remeasured on {remeasured}, so what came before it is not restated. Undo the remeasurement first while it is the latest change.",
+        "params": [
+          "number",
+          "remeasured"
+        ]
+      },
+      "fixed_assets.err_number_was_remeasured_remeasured_change_estimate": {
+        "en": "{number} was remeasured on {remeasured}. A change in estimate takes effect after that.",
+        "params": [
+          "number",
+          "remeasured"
+        ]
+      },
+      "fixed_assets.err_value_cannot_corrected": {
+        "en": "{value} cannot be corrected.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_describe_problem": {
+        "en": "Describe the problem.",
+        "params": []
+      },
+      "fixed_assets.err_number_has_changed_since_was_disposed": {
+        "en": "{number} has changed since it was disposed of ({changes}), so the disposal can no longer be undone. Use Correct to change its figures.",
+        "params": [
+          "changes",
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_left_books_when_its_replacement": {
+        "en": "{number} left the books when its replacement was added. Undo the replacement on the asset it belongs to instead.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_was_sold_invoice_invoice_void": {
+        "en": "{number} was sold on invoice {invoice}. Void or credit that invoice instead.",
+        "params": [
+          "invoice",
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_was_transferred_company_name_undo": {
+        "en": "{number} was transferred to {company_name}. Undo the transfer with Undo latest instead.",
+        "params": [
+          "company_name",
+          "number"
+        ]
+      },
+      "fixed_assets.err_effective_date_locked_so_disposal_can": {
+        "en": "{effective_date} is locked, so this disposal can no longer be undone.",
+        "params": [
+          "effective_date"
+        ]
+      },
+      "fixed_assets.err_choose_assets_dispose": {
+        "en": "Choose the assets to dispose of.",
+        "params": []
+      },
+      "fixed_assets.err_choose_why_asset_disposed_scrapped_lost": {
+        "en": "Choose why the asset is disposed of: scrapped, lost, donated or other.",
+        "params": []
+      },
+      "fixed_assets.err_enter_percent_disposed_above_0_up": {
+        "en": "Enter a percent disposed of above 0 and up to 100.",
+        "params": []
+      },
+      "fixed_assets.err_say_why_asset_disposed": {
+        "en": "Say why the asset is disposed of.",
+        "params": []
+      },
+      "fixed_assets.err_several_assets_disposed_whole_dispose_part": {
+        "en": "Several assets are disposed of in whole. Dispose of part of one asset from its page.",
+        "params": []
+      },
+      "fixed_assets.err_record_holds_quantity_so_disposed_by": {
+        "en": "This record holds a quantity, so it is disposed of by quantity.",
+        "params": []
+      },
+      "fixed_assets.err_enter_quantity_disposed_above_0_up": {
+        "en": "Enter a quantity disposed of above 0 and up to {quantity}.",
+        "params": [
+          "quantity"
+        ]
+      },
+      "fixed_assets.err_asset_has_quantity_quantity_dispose_percentage": {
+        "en": "This asset has a quantity of {quantity}. Dispose of a percentage of it instead.",
+        "params": [
+          "quantity"
+        ]
+      },
+      "fixed_assets.err_number_has_no_disposal_undo": {
+        "en": "{number} has no disposal to undo.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_name_each_report_s_files_by": {
+        "en": "Name each of the report's files by its asset and file.",
+        "params": []
+      },
+      "fixed_assets.err_name_report_s_files_remove": {
+        "en": "Name the report's files to remove.",
+        "params": []
+      },
+      "fixed_assets.err_asset_s_file_cannot_tagged_tag": {
+        "en": "An asset's file cannot be tagged {tag}. Choose one of: {asset_file_tags}.",
+        "params": [
+          "asset_file_tags",
+          "tag"
+        ]
+      },
+      "fixed_assets.err_no_assets_use_name_keep_report": {
+        "en": "No assets in use in {name} to keep the report on.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_assets_name_hold_balance_account_value": {
+        "en": "The assets in {name} hold a balance on account {value}. Use Fix posting account, which moves the balance to the new account in one journal.",
+        "params": [
+          "name",
+          "value"
+        ]
+      },
+      "fixed_assets.err_ledger_holds_said_account_account_these": {
+        "en": "The ledger holds {said} on account {account} for these assets and the register {said2}. Open the reconciliation to see the difference.",
+        "params": [
+          "account",
+          "said",
+          "said2"
+        ]
+      },
+      "fixed_assets.err_choose_move_existing_balances_future_postings": {
+        "en": "Choose Move existing balances or Future postings only.",
+        "params": []
+      },
+      "fixed_assets.err_choose_asset_accumulated_depreciation_depreciation_expense": {
+        "en": "Choose the asset, accumulated depreciation or depreciation expense account.",
+        "params": []
+      },
+      "fixed_assets.err_choose_new_account": {
+        "en": "Choose the new account.",
+        "params": []
+      },
+      "fixed_assets.err_depreciation_already_posted_stays_periods_was": {
+        "en": "Depreciation already posted stays in the periods it was posted in. Choose Future postings only.",
+        "params": []
+      },
+      "fixed_assets.err_value_account_balance_sheet_account_so": {
+        "en": "The {value} account is a balance sheet account, so what the assets hold there moves with it. Choose Move existing balances.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_name_already_posts_account_account": {
+        "en": "{name} already posts to account {account}.",
+        "params": [
+          "account",
+          "name"
+        ]
+      },
+      "fixed_assets.err_name_has_no_posting_account_change": {
+        "en": "{name} has no posting account change to undo.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_import_was_already_undone": {
+        "en": "This import was already undone.",
+        "params": []
+      },
+      "fixed_assets.err_import_was_undone_import_rows_again": {
+        "en": "This import was undone. Import the rows again as a new file.",
+        "params": []
+      },
+      "fixed_assets.err_choose_page_1_500_rows": {
+        "en": "Choose a page of 1 to 500 rows.",
+        "params": []
+      },
+      "fixed_assets.err_send_rows_import_with_their_values": {
+        "en": "Send the rows to import with their values.",
+        "params": []
+      },
+      "fixed_assets.err_choose_rows_row_statuses": {
+        "en": "Choose rows that are {row_statuses}.",
+        "params": [
+          "row_statuses"
+        ]
+      },
+      "fixed_assets.err_row_n_not_waiting_import": {
+        "en": "Row {n} is not waiting in this import.",
+        "params": [
+          "n"
+        ]
+      },
+      "fixed_assets.err_choose_one_company_s_locations": {
+        "en": "Choose one of this company's locations.",
+        "params": []
+      },
+      "fixed_assets.err_choose_location_custodian_move": {
+        "en": "Choose a location or a custodian to move to.",
+        "params": []
+      },
+      "fixed_assets.err_choose_assets_move": {
+        "en": "Choose the assets to move.",
+        "params": []
+      },
+      "fixed_assets.err_choose_custodian": {
+        "en": "Choose the custodian.",
+        "params": []
+      },
+      "fixed_assets.err_name_custodian": {
+        "en": "Name the custodian.",
+        "params": []
+      },
+      "fixed_assets.err_custodian_not_member_company_choose_member": {
+        "en": "The custodian is not a member of this company. Choose a member, or name a person who is not a user.",
+        "params": []
+      },
+      "fixed_assets.err_number_has_not_been_moved": {
+        "en": "{number} has not been moved.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_was_last_moved_last_date": {
+        "en": "{number} was last moved on {last}. Date the move on or after it.",
+        "params": [
+          "last",
+          "number"
+        ]
+      },
+      "fixed_assets.err_depreciation_period_label_has_posted_so": {
+        "en": "Depreciation for {period_label} has posted, so the first managed period can no longer move. Reverse the runs back to the first one to move it.",
+        "params": [
+          "period_label"
+        ]
+      },
+      "fixed_assets.err_description_date_registered_new_cutover_new": {
+        "en": "{description} ({date}) is registered, and the new cutover {new_cut} would put it in the opening balances. Undo it first, or choose a later period.",
+        "params": [
+          "date",
+          "description",
+          "new_cut"
+        ]
+      },
+      "fixed_assets.err_number_has_change_dated_posting_date": {
+        "en": "{number} has a change dated {posting_date}, on or before the new cutover {new_cut}. Choose a later period.",
+        "params": [
+          "new_cut",
+          "number",
+          "posting_date"
+        ]
+      },
+      "fixed_assets.err_number_opening_asset_available_from_available": {
+        "en": "{number} is an opening asset available from {available_date}, after the new cutover {new_cut}.",
+        "params": [
+          "available_date",
+          "new_cut",
+          "number"
+        ]
+      },
+      "fixed_assets.err_asset_already_has_its_financial_details": {
+        "en": "This asset already has its financial details.",
+        "params": []
+      },
+      "fixed_assets.err_has_changed_since_so_can_no": {
+        "en": "This has changed since, so it can no longer be undone.",
+        "params": []
+      },
+      "fixed_assets.err_was_already_undone": {
+        "en": "This was already undone.",
+        "params": []
+      },
+      "fixed_assets.err_asset_was_transferred_from_company_name": {
+        "en": "This asset was transferred in from {company_name}. Undo the transfer on {number} there instead.",
+        "params": [
+          "company_name",
+          "number"
+        ]
+      },
+      "fixed_assets.err_description_was_already_registered": {
+        "en": "{description} was already registered.",
+        "params": [
+          "description"
+        ]
+      },
+      "fixed_assets.err_value_locked_period_so_can_no": {
+        "en": "{value} is in a locked period, so this can no longer be undone. Use Correct instead.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_asset_needs_name": {
+        "en": "An asset needs a name.",
+        "params": []
+      },
+      "fixed_assets.err_choose_active_assets_link_depreciation": {
+        "en": "Choose active assets to link the depreciation to.",
+        "params": []
+      },
+      "fixed_assets.err_choose_how_asset_came_opening_contributed": {
+        "en": "Choose how the asset came in: opening, contributed or a physical record.",
+        "params": []
+      },
+      "fixed_assets.err_choose_how_register_line": {
+        "en": "Choose how to register the line.",
+        "params": []
+      },
+      "fixed_assets.err_choose_account_asset_was_contributed_from": {
+        "en": "Choose the account the asset was contributed from.",
+        "params": []
+      },
+      "fixed_assets.err_choose_asset_maintenance_was": {
+        "en": "Choose the asset this maintenance was on.",
+        "params": []
+      },
+      "fixed_assets.err_choose_assets_depreciation_belongs": {
+        "en": "Choose the assets this depreciation belongs to.",
+        "params": []
+      },
+      "fixed_assets.err_choose_expense_account": {
+        "en": "Choose the expense account.",
+        "params": []
+      },
+      "fixed_assets.err_only_line_crediting_accumulated_depreciation_can": {
+        "en": "Only a line crediting accumulated depreciation can be linked to assets.",
+        "params": []
+      },
+      "fixed_assets.err_send_changes_values_they_replace": {
+        "en": "Send the changes and the values they replace.",
+        "params": []
+      },
+      "fixed_assets.err_separate_assets_need_whole_quantity_register": {
+        "en": "Separate assets need a whole quantity. Register one record instead.",
+        "params": []
+      },
+      "fixed_assets.err_responsible_person_not_member_company_choose": {
+        "en": "The responsible person is not a member of this company. Choose a member.",
+        "params": []
+      },
+      "fixed_assets.err_there_nothing_undo_here": {
+        "en": "There is nothing to undo here.",
+        "params": []
+      },
+      "fixed_assets.err_line_dated_before_cutover_so_belongs": {
+        "en": "This line is dated on or before the cutover, so it belongs to the opening register. Add it as an opening asset instead.",
+        "params": []
+      },
+      "fixed_assets.err_line_not_registered": {
+        "en": "This line is not registered.",
+        "params": []
+      },
+      "fixed_assets.err_line_records_depreciation_link_assets_belongs": {
+        "en": "This line records depreciation. Link it to the assets it belongs to.",
+        "params": []
+      },
+      "fixed_assets.err_line_reduces_asset_account_use_correct": {
+        "en": "This line reduces an asset account. Use Correct on the asset it belongs to and link the line there.",
+        "params": []
+      },
+      "fixed_assets.err_amounts_add_up_said_not_said2": {
+        "en": "The amounts add up to {said}, not {said2}.",
+        "params": [
+          "said",
+          "said2"
+        ]
+      },
+      "fixed_assets.err_value_cannot_edited_here": {
+        "en": "{value} cannot be edited here.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_depreciation_posted_through_period_label_reclassify": {
+        "en": "Depreciation is posted through {period_label}. Reclassify from {period_label2}-01 or later.",
+        "params": [
+          "period_label",
+          "period_label2"
+        ]
+      },
+      "fixed_assets.err_class_archived_choose_class_use": {
+        "en": "That class is archived. Choose a class in use.",
+        "params": []
+      },
+      "fixed_assets.err_number_already_name": {
+        "en": "{number} is already in {name}.",
+        "params": [
+          "name",
+          "number"
+        ]
+      },
+      "fixed_assets.err_name_measured_measurement_model_name2_measurement2": {
+        "en": "{name} is measured on the {measurement} model and {name2} on the {measurement2} model. Choose a class on the same model.",
+        "params": [
+          "measurement",
+          "measurement2",
+          "name",
+          "name2"
+        ]
+      },
+      "fixed_assets.err_line_was_noted_when_was_kept": {
+        "en": "This line was noted when it was kept or marked as not an acquisition. Undo that to open it.",
+        "params": []
+      },
+      "fixed_assets.err_difference_now_amount_review_again": {
+        "en": "The difference is now {amount}. Review it again.",
+        "params": [
+          "amount"
+        ]
+      },
+      "fixed_assets.err_reason_required_note_accept_difference": {
+        "en": "A reason is required to note or accept a difference.",
+        "params": []
+      },
+      "fixed_assets.err_choose_open_noted_accepted": {
+        "en": "Choose open, noted or accepted.",
+        "params": []
+      },
+      "fixed_assets.err_describe_accounting_effect_accepting_difference": {
+        "en": "Describe the accounting effect of accepting this difference.",
+        "params": []
+      },
+      "fixed_assets.err_choose_what_review_found_no_indication": {
+        "en": "Choose what the review found: no indication of impairment, or a recoverable amount.",
+        "params": []
+      },
+      "fixed_assets.err_each_asset_revalued_once": {
+        "en": "Each asset is revalued once.",
+        "params": []
+      },
+      "fixed_assets.err_enter_fair_value_each_asset_class": {
+        "en": "Enter a fair value for each asset in the class.",
+        "params": []
+      },
+      "fixed_assets.err_say_what_review_was_based": {
+        "en": "Say what the review was based on.",
+        "params": []
+      },
+      "fixed_assets.err_enter_reading_value_number_first": {
+        "en": "Enter the reading for {value} on {number} first.",
+        "params": [
+          "number",
+          "value"
+        ]
+      },
+      "fixed_assets.err_enter_field": {
+        "en": "Enter the {field}.",
+        "params": [
+          "field"
+        ]
+      },
+      "fixed_assets.err_every_asset_name_revalued_same_date": {
+        "en": "Every asset in {name} is revalued on the same date. Enter a fair value for {missing}.",
+        "params": [
+          "missing",
+          "name"
+        ]
+      },
+      "fixed_assets.err_only_assets_use_name_revalued_with": {
+        "en": "Only assets in use in {name} are revalued with it.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_recoverable_amount_said_not_above_carrying": {
+        "en": "The recoverable amount {said} is not above the carrying amount {said2} of {number}, so there is nothing to reverse.",
+        "params": [
+          "number",
+          "said",
+          "said2"
+        ]
+      },
+      "fixed_assets.err_recoverable_amount_said_not_below_carrying": {
+        "en": "The recoverable amount {said} is not below the carrying amount {said2} of {number}, so it is not impaired.",
+        "params": [
+          "number",
+          "said",
+          "said2"
+        ]
+      },
+      "fixed_assets.err_review_date_before_number_was_available": {
+        "en": "The review date is before {number} was available for use.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_field_must_zero_more": {
+        "en": "The {field} must be zero or more.",
+        "params": [
+          "field"
+        ]
+      },
+      "fixed_assets.err_class_uses_cost_model_change_class": {
+        "en": "This class uses the cost model. Change class to revaluation revalues all {count} assets in it on one date.",
+        "params": [
+          "count"
+        ]
+      },
+      "fixed_assets.err_number_already_carries_what_would_have": {
+        "en": "{number} already carries what it would have without the impairment ({said}), so there is nothing to reverse.",
+        "params": [
+          "number",
+          "said"
+        ]
+      },
+      "fixed_assets.err_number_has_no_impairment_reverse": {
+        "en": "{number} has no impairment to reverse.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_name_intangible_so_revalued_only_by": {
+        "en": "{name} is intangible, so it is revalued only by reference to an active market. Record the active market on the class first.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_end_date_must_after_start_date": {
+        "en": "The end date must be on or after the start date.",
+        "params": []
+      },
+      "fixed_assets.err_reports_start_after_first_managed_period": {
+        "en": "Reports start on or after the first managed period, {first}. What the books held before it is the opening register.",
+        "params": [
+          "first"
+        ]
+      },
+      "fixed_assets.err_choose_page_1_500_assets": {
+        "en": "Choose a page of 1 to 500 assets.",
+        "params": []
+      },
+      "fixed_assets.err_choose_page_1_500_imports": {
+        "en": "Choose a page of 1 to 500 imports.",
+        "params": []
+      },
+      "fixed_assets.err_choose_page_1_500_movements": {
+        "en": "Choose a page of 1 to 500 movements.",
+        "params": []
+      },
+      "fixed_assets.err_only_asset_use_takes_readings_skipped": {
+        "en": "Only an asset in use takes readings or skipped months.",
+        "params": []
+      },
+      "fixed_assets.err_depreciation_period_label_already_posted_use": {
+        "en": "Depreciation for {period_label} is already posted. Use Correct to change it.",
+        "params": [
+          "period_label"
+        ]
+      },
+      "fixed_assets.err_only_latest_posted_run_can_reversed": {
+        "en": "Only the latest posted run can be reversed. Use Correct to change {label}.",
+        "params": [
+          "label"
+        ]
+      },
+      "fixed_assets.err_label_locked_use_correct_change_its": {
+        "en": "{label} is locked. Use Correct to change its depreciation.",
+        "params": [
+          "label"
+        ]
+      },
+      "fixed_assets.err_asset_s_class_does_not_depreciate": {
+        "en": "This asset's class does not depreciate by units, so it takes no readings.",
+        "params": []
+      },
+      "fixed_assets.err_reason_required_skip_month": {
+        "en": "A reason is required to skip a month.",
+        "params": []
+      },
+      "fixed_assets.err_number_already_draft_invoice_doc_number": {
+        "en": "{number} is already on draft invoice {doc_number}.",
+        "params": [
+          "doc_number",
+          "number"
+        ]
+      },
+      "fixed_assets.err_number_not_waiting_sale_invoice": {
+        "en": "{number} is not waiting on a sale invoice.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_choose_buyer_from_your_contacts": {
+        "en": "Choose the buyer from your contacts.",
+        "params": []
+      },
+      "fixed_assets.err_class_assets_under_construction_not_depreciated": {
+        "en": "A class for assets under construction is not depreciated. Choose no depreciation.",
+        "params": []
+      },
+      "fixed_assets.err_class_measured_at_cost_by_revaluation": {
+        "en": "A class is measured at cost or by revaluation.",
+        "params": []
+      },
+      "fixed_assets.err_class_tangible_intangible": {
+        "en": "A class is tangible or intangible.",
+        "params": []
+      },
+      "fixed_assets.err_class_needs_name": {
+        "en": "A class needs a name.",
+        "params": []
+      },
+      "fixed_assets.err_new_class_uses_cost_model_change": {
+        "en": "A new class uses the cost model. Change class to revaluation once its assets are in.",
+        "params": []
+      },
+      "fixed_assets.err_active_market_has_date_basis": {
+        "en": "An active market has a date and a basis.",
+        "params": []
+      },
+      "fixed_assets.err_archived_true_false": {
+        "en": "Archived is true or false.",
+        "params": []
+      },
+      "fixed_assets.err_choose_how_depreciation_runs_prepare_post": {
+        "en": "Choose how depreciation runs: prepare, post or manual.",
+        "params": []
+      },
+      "fixed_assets.err_say_where_active_market_quoted": {
+        "en": "Say where the active market is quoted.",
+        "params": []
+      },
+      "fixed_assets.err_tax_categories_name_category_each_tax": {
+        "en": "Tax categories name a category for each tax regime.",
+        "params": []
+      },
+      "fixed_assets.err_tax_regimes_list_regime_keys": {
+        "en": "Tax regimes are a list of regime keys.",
+        "params": []
+      },
+      "fixed_assets.err_first_managed_period_starts_first_day": {
+        "en": "The first managed period starts on the first day of a month.",
+        "params": []
+      },
+      "fixed_assets.err_run_day_day_month_from_1": {
+        "en": "The run day is a day of the month from 1 to 28.",
+        "params": []
+      },
+      "fixed_assets.err_tax_year_end_month_day_such": {
+        "en": "The tax year end is a month and day, such as 12-31.",
+        "params": []
+      },
+      "fixed_assets.err_under_construction_true_false": {
+        "en": "Under construction is true or false.",
+        "params": []
+      },
+      "fixed_assets.err_use_change_class_revaluation_which_revalues": {
+        "en": "Use Change class to revaluation, which revalues every asset in the class on one date.",
+        "params": []
+      },
+      "fixed_assets.err_unknown_class_field_value": {
+        "en": "Unknown class field: {value}.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_unknown_setting_value": {
+        "en": "Unknown setting: {value}.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_category_not_category_tax_regime_regime": {
+        "en": "{category} is not a category of the tax regime {regime_key}.",
+        "params": [
+          "category",
+          "regime_key"
+        ]
+      },
+      "fixed_assets.err_key_not_tax_regime_company_can": {
+        "en": "{key} is not a tax regime this company can use.",
+        "params": [
+          "key"
+        ]
+      },
+      "fixed_assets.err_regime_key_not_tax_regime_any": {
+        "en": "{regime_key} is not a tax regime any installed module provides.",
+        "params": [
+          "regime_key"
+        ]
+      },
+      "fixed_assets.err_source_line_not_posted_asset_line": {
+        "en": "That source line is not a posted asset line.",
+        "params": []
+      },
+      "fixed_assets.err_elections_set_named_choices": {
+        "en": "Elections are a set of named choices.",
+        "params": []
+      },
+      "fixed_assets.err_tax_year_year_such_as_2026": {
+        "en": "The tax year is a year, such as 2026.",
+        "params": []
+      },
+      "fixed_assets.err_t_not_one_company_s_tax": {
+        "en": "{t} is not one of this company's tax regimes. Choose it in the fixed asset settings first.",
+        "params": [
+          "t"
+        ]
+      },
+      "fixed_assets.err_unknown_tax_book_field_value": {
+        "en": "Unknown tax book field: {value}.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_category_not_category_label": {
+        "en": "{category} is not a category of {label}.",
+        "params": [
+          "category",
+          "label"
+        ]
+      },
+      "fixed_assets.err_name_number": {
+        "en": "{name} is a number.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_name_not_election_label": {
+        "en": "{name} is not an election of {label}.",
+        "params": [
+          "label",
+          "name"
+        ]
+      },
+      "fixed_assets.err_name_text": {
+        "en": "{name} is text.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_number_has_changed_since_was_transferred": {
+        "en": "{number} has changed since it was transferred, so the transfer can no longer be undone.",
+        "params": [
+          "number"
+        ]
+      },
+      "fixed_assets.err_day_locked_period_their_name_transfer": {
+        "en": "{day} is in a locked period in {their_name}. Transfer on or after {isoformat}.",
+        "params": [
+          "day",
+          "isoformat",
+          "their_name"
+        ]
+      },
+      "fixed_assets.err_day_locked_name_so_transfer_can": {
+        "en": "{day} is locked in {name}, so this transfer can no longer be undone.",
+        "params": [
+          "day",
+          "name"
+        ]
+      },
+      "fixed_assets.err_day_locked_so_transfer_can_no": {
+        "en": "{day} is locked, so this transfer can no longer be undone.",
+        "params": [
+          "day"
+        ]
+      },
+      "fixed_assets.err_number_has_changed_name_since_was": {
+        "en": "{number} has changed in {name} since it was transferred, so the transfer can no longer be undone. Use Correct in each company instead.",
+        "params": [
+          "name",
+          "number"
+        ]
+      },
+      "fixed_assets.err_their_name_does_not_use_fixed": {
+        "en": "{their_name} does not use fixed assets. Turn the module on there and confirm its first managed period first.",
+        "params": [
+          "their_name"
+        ]
+      },
+      "fixed_assets.err_choose_another_company_transfer_asset": {
+        "en": "Choose another company to transfer the asset to.",
+        "params": []
+      },
+      "fixed_assets.err_choose_company_transfer_asset": {
+        "en": "Choose the company to transfer the asset to.",
+        "params": []
+      },
+      "fixed_assets.err_exchange_rate_more_than_zero": {
+        "en": "The exchange rate is more than zero.",
+        "params": []
+      },
+      "fixed_assets.err_account_code_name_type_found_related": {
+        "en": "Account {code} in {name} is of type {found}. The related company's account there must be {article} {wanted} account.",
+        "params": [
+          "article",
+          "code",
+          "found",
+          "name",
+          "wanted"
+        ]
+      },
+      "fixed_assets.err_both_companies_keep_their_books_ours": {
+        "en": "Both companies keep their books in {ours}, so no exchange rate is needed.",
+        "params": [
+          "ours"
+        ]
+      },
+      "fixed_assets.err_choose_account_related_company_name": {
+        "en": "Choose the account for the related company in {name}.",
+        "params": [
+          "name"
+        ]
+      },
+      "fixed_assets.err_class_archived_their_name_choose_class": {
+        "en": "That class is archived in {their_name}. Choose a class in use.",
+        "params": [
+          "their_name"
+        ]
+      },
+      "fixed_assets.err_our_name_keeps_its_books_ours": {
+        "en": "{our_name} keeps its books in {ours} and {their_name} in {theirs}. Enter the exchange rate from {ours2} to {theirs2}.",
+        "params": [
+          "our_name",
+          "ours",
+          "ours2",
+          "their_name",
+          "theirs",
+          "theirs2"
+        ]
+      },
+      "fixed_assets.err_their_name_manages_fixed_assets_from": {
+        "en": "{their_name} manages fixed assets from {first_managed_period}. Date the transfer on or after it.",
+        "params": [
+          "first_managed_period",
+          "their_name"
+        ]
+      },
+      "fixed_assets.err_send_maintenance_entry_s_changes_as": {
+        "en": "Send the maintenance entry's changes as named fields.",
+        "params": []
+      },
+      "fixed_assets.err_send_reminder_s_changes_as_named": {
+        "en": "Send the reminder's changes as named fields.",
+        "params": []
+      },
+      "fixed_assets.err_choose_maintenance_warranty_insurance": {
+        "en": "Choose maintenance, warranty or insurance.",
+        "params": []
+      },
+      "fixed_assets.err_describe_maintenance_work": {
+        "en": "Describe the maintenance work.",
+        "params": []
+      },
+      "fixed_assets.err_enter_insured_value_as_amount_such": {
+        "en": "Enter the insured value as an amount, such as 25000.",
+        "params": []
+      },
+      "fixed_assets.err_nothing_undo_reminder": {
+        "en": "Nothing to undo on this reminder.",
+        "params": []
+      },
+      "fixed_assets.err_say_why_postponed": {
+        "en": "Say why it is postponed.",
+        "params": []
+      },
+      "fixed_assets.err_kind_reminder_cannot_changed_remove_add": {
+        "en": "The kind of a reminder cannot be changed. Remove it and add a new one.",
+        "params": []
+      },
+      "fixed_assets.err_maintenance_came_from_bill_remove_undo": {
+        "en": "This maintenance came from a bill. To remove it, undo its registration.",
+        "params": []
+      },
+      "fixed_assets.err_reminder_already_done": {
+        "en": "This reminder is already done.",
+        "params": []
+      },
+      "fixed_assets.err_reminder_already_removed": {
+        "en": "This reminder is already removed.",
+        "params": []
+      },
+      "fixed_assets.err_reminder_was_removed_undo_removal_first": {
+        "en": "This reminder was removed. Undo the removal first.",
+        "params": []
+      },
+      "fixed_assets.err_postpone_date_after_due": {
+        "en": "Postpone to a date after {due}.",
+        "params": [
+          "due"
+        ]
+      },
+      "fixed_assets.err_value_comes_from_bill_correct_bill": {
+        "en": "The {value} comes from the bill. Correct the bill to change it.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_value_cannot_edited_maintenance_entry": {
+        "en": "{value} cannot be edited on a maintenance entry.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_value_cannot_edited_reminder": {
+        "en": "{value} cannot be edited on this reminder.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_close_tax_year_value_first": {
+        "en": "Close tax year {value} first.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_reopen_tax_year_value_first": {
+        "en": "Reopen tax year {value} first.",
+        "params": [
+          "value"
+        ]
+      },
+      "fixed_assets.err_tax_year_year_ends_isoformat_so": {
+        "en": "Tax year {year} ends on {isoformat}, so it cannot close yet.",
+        "params": [
+          "isoformat",
+          "year"
+        ]
+      },
+      "fixed_assets.err_tax_year_year_already_closed": {
+        "en": "Tax year {year} is already closed.",
+        "params": [
+          "year"
+        ]
+      },
+      "fixed_assets.err_tax_year_year_not_closed": {
+        "en": "Tax year {year} is not closed.",
+        "params": [
+          "year"
+        ]
+      },
+      "fixed_assets.err_label_tax_year_keeps_its_figures": {
+        "en": "{label}. A tax year keeps its figures for the years after it, so a missing figure cannot be accepted. {remedy} Note it while it waits.",
+        "params": [
+          "label",
+          "remedy"
+        ]
+      },
+      "fixed_assets.err_reason_required_note_accept_year_end": {
+        "en": "A reason is required to note or accept a year-end item.",
+        "params": []
+      },
+      "fixed_assets.err_reason_required_reopen_tax_year": {
+        "en": "A reason is required to reopen a tax year.",
+        "params": []
+      },
+      "fixed_assets.err_describe_effect_accepting_item_figures": {
+        "en": "Describe the effect of accepting this item on the figures.",
+        "params": []
+      },
+      "fixed_assets.err_run_before_first_period": {
+        "en": "{month} is before the first managed period.",
+        "params": [
+          "month"
+        ]
+      },
+      "fixed_assets.err_run_month_locked": {
+        "en": "{month} is locked. Run a later month; what it owes is caught up there.",
+        "params": [
+          "month"
+        ]
+      }
+    },
+    "celerp-labels": {
+      "labels.err_labels_not_printed_source_records": {
+        "en": "Labels are not printed for {source} records.",
+        "params": [
+          "source"
+        ]
+      },
+      "labels.err_your_role_cannot_see_these_records": {
+        "en": "Your role cannot see these records, so it cannot print their labels.",
+        "params": []
+      },
+      "labels.err_choose_records_print_labels": {
+        "en": "Choose the records to print labels for.",
+        "params": []
+      },
+      "labels.err_print_at_most_max_source_ids": {
+        "en": "Print at most {max_source_ids} labels at a time.",
+        "params": [
+          "max_source_ids"
+        ]
+      }
+    }
+  }
 }

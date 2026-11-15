@@ -27,6 +27,7 @@ from celerp.services import migration_scan_store as store
 from celerp.services.company_handoff_crypto import MAX_CIPHERTEXT, decrypt_file
 from celerp.services.company_handoff_links import spaces_object_url
 from celerp.services.company_handoff_sender import cloud_json, decode_key, encode_key
+from ui.i18n import t
 
 ACCOUNT_NEEDED = "Sign in to a free Celerp account to email an export checklist."
 UNCONFIRMED = "Could not confirm the export checklist. Retry the same step"
@@ -39,7 +40,7 @@ def required_text(value: str, what: str) -> str:
     """``value`` trimmed, refused as "Enter the <what>." when blank, too long or holding control characters."""
     value = (value or "").strip()
     if not value or len(value) > _TEXT_MAX or any(ord(ch) < 0x20 for ch in value):
-        raise HTTPException(status_code=422, detail=f"Enter the {what}.")
+        raise HTTPException(status_code=422, detail=t("migration.err_enter_what", what=what))
     return value
 
 
@@ -49,7 +50,7 @@ def required_email(value: str, what: str) -> str:
     local, sep, host = value.partition("@")
     if (not sep or not local or "@" in host or "." not in host or len(value) > _EMAIL_MAX
             or any(ch.isspace() or ord(ch) < 0x20 for ch in value)):
-        raise HTTPException(status_code=422, detail=f"Enter a valid {what}.")
+        raise HTTPException(status_code=422, detail=t("migration.err_enter_valid_what", what=what))
     return value
 
 
@@ -66,7 +67,7 @@ async def send_request(*, operation_id: uuid.UUID, firm_name: str, client_name: 
     checklist = getattr(adapter, "checklist", None)
     if checklist is None:
         name = adapter.display_name if adapter is not None else source
-        raise HTTPException(status_code=422, detail=f"{name} has no list of files to export.")
+        raise HTTPException(status_code=422, detail=t("migration.err_name_has_no_list_files_export", name=name))
     payload = {"operation_id": str(operation_id), "firm_name": required_text(firm_name, "firm name"),
                "client_name": required_text(client_name, "client name"),
                "recipient": required_email(recipient, "client email"), "reply_to": required_email(reply_to, "reply-to email"),
@@ -103,7 +104,7 @@ async def _row(request_id: uuid.UUID) -> dict:
     for row in await list_requests():
         if row.get("id") == str(request_id):
             return row
-    raise HTTPException(status_code=404, detail="Export request not found")
+    raise HTTPException(status_code=404, detail=t("migration.err_export_request_not_found"))
 
 
 async def _download(client: httpx.AsyncClient, request_id: uuid.UUID, file: dict, folder: Path,
@@ -114,27 +115,26 @@ async def _download(client: httpx.AsyncClient, request_id: uuid.UUID, file: dict
     try:
         url = spaces_object_url(grant.get("download_url"), f"/export-requests/{request_id.hex}/{file_id}")
     except ValueError:
-        raise HTTPException(status_code=502, detail=f"The export file {name} is unavailable") from None
+        raise HTTPException(status_code=502, detail=t("migration.err_export_file_name_unavailable", name=name)) from None
     encrypted, plain = folder / f"{file_id}.encrypted", folder / f"{file_id}.plain"
     try:
         with files.private_file(encrypted) as target:
             async with client.stream("GET", url) as incoming:
                 if incoming.status_code != 200:
-                    raise HTTPException(status_code=502, detail=f"The export file {name} could not be downloaded")
+                    raise HTTPException(status_code=502, detail=t("migration.err_export_file_name_could_not_downloaded", name=name))
                 total = 0
                 async for chunk in incoming.aiter_bytes(chunk_size=1024 * 1024):
                     total += len(chunk)
                     if total > MAX_CIPHERTEXT:
-                        raise HTTPException(status_code=413, detail=f"The export file {name} is too large")
+                        raise HTTPException(status_code=413, detail=t("migration.err_export_file_name_too_large", name=name))
                     target.write(chunk)
     except (httpx.HTTPError, TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=f"The export file {name} could not be downloaded") from exc
+        raise HTTPException(status_code=502, detail=t("migration.err_export_file_name_could_not_downloaded", name=name)) from exc
     try:
         await asyncio.to_thread(decrypt_file, encrypted, plain, secret)
     except (ValueError, InvalidTag):
         raise HTTPException(status_code=422, detail=(
-            f"{name} could not be read with this request's key. Ask the client to upload it again. "
-            "Nothing was added.")) from None
+            t("migration.err_name_could_not_read_with_request", name=name))) from None
     finally:
         encrypted.unlink(missing_ok=True)
     return plain
@@ -156,14 +156,13 @@ async def add_files(request_id: uuid.UUID, draft_token: str | None, *, owner: st
     row = await _row(request_id)
     uploaded = [f for f in row.get("files") or [] if isinstance(f, dict)]
     if not uploaded:
-        raise HTTPException(status_code=422, detail="No files have arrived yet. They appear here as the client uploads them.")
+        raise HTTPException(status_code=422, detail=t("migration.err_no_files_have_arrived_yet_they"))
     key = await asyncio.to_thread(_key_for, row)
     try:
         secret = decode_key(key)
     except ValueError:
         raise HTTPException(status_code=409, detail=(
-            "This installation does not hold the key for these files, so it cannot read them. "
-            "Send a new request from here.")) from None
+            t("migration.err_installation_does_not_hold_key_these"))) from None
     with tempfile.TemporaryDirectory(prefix="download-", dir=files.export_requests_dir()) as folder:
         folder = Path(folder)
         async with httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(120, connect=10)) as client:

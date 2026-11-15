@@ -30,6 +30,7 @@ from celerp_fixed_assets.calc import rules
 from celerp_fixed_assets.calc.tax import PoolInputs, TaxAssetInputs, TaxTransferResult, TaxYearResult
 from celerp_fixed_assets.projections import REMEASUREMENTS, _dec, live
 from celerp_fixed_assets.store import _emit, _entities, _state, movements_by_asset
+from ui.i18n import t
 
 _ZERO = Decimal(0)
 FIGURES = ("opening", "additions", "disposals", "allowance", "closing")
@@ -59,7 +60,7 @@ def tax_year_end(settings: dict | None) -> str:
 
 def check_year(year) -> int:
     if not isinstance(year, int) or isinstance(year, bool) or year not in _YEARS:
-        raise setup.unprocessable("The tax year is a year, such as 2026.")
+        raise setup.refuse("fixed_assets.err_tax_year_year_such_as_2026")
     return year
 
 
@@ -72,8 +73,7 @@ def regime_for(settings: dict | None, key: str):
     except rules.RuleUnavailable as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     if key not in (setup.settings_of(settings).get("tax_regimes") or []):
-        raise setup.unprocessable(f"{t(regime.label_key)} is not one of this company's tax regimes. "
-                                  "Choose it in the fixed asset settings first.")
+        raise setup.refuse("fixed_assets.err_t_not_one_company_s_tax", t=t(regime.label_key))
     return regime
 
 
@@ -305,8 +305,7 @@ async def transfer_values(session, company_id, settings: dict, asset_id: str, da
     from ui.i18n import t
 
     def refuse(why: str) -> HTTPException:
-        return HTTPException(status_code=409, detail="The tax value this asset carries to the other company "
-                                                     f"cannot be worked out. {why}")
+        return HTTPException(status_code=409, detail=t("fixed_assets.err_tax_value_asset_carries_other_company", why=why))
 
     out = {}
     end_setting = tax_year_end(settings)
@@ -390,22 +389,22 @@ async def book(session, company_id, regime_key: str, year: int, settings: dict |
 
 def _elections(regime, label: str, value) -> dict:
     if not isinstance(value, dict):
-        raise setup.unprocessable("Elections are a set of named choices.")
+        raise setup.refuse("fixed_assets.err_elections_set_named_choices")
     out = {}
     for name, chosen in value.items():
         kind = regime.elections_schema.get(name)
         if kind is None:
-            raise setup.unprocessable(f"{name} is not an election of {label}.")
+            raise setup.refuse("fixed_assets.err_name_not_election_label", name=name, label=label)
         if kind == "bool":
             if not isinstance(chosen, bool):
-                raise setup.unprocessable(f"{name} is true or false.")
+                raise setup.refuse("fixed_assets.err_true_or_false", name=name)
         elif kind == "decimal":
             try:
                 chosen = str(Decimal(str(chosen)))
             except InvalidOperation:
-                raise setup.unprocessable(f"{name} is a number.") from None
+                raise setup.refuse("fixed_assets.err_name_number", name=name) from None
         elif not isinstance(chosen, str):
-            raise setup.unprocessable(f"{name} is text.")
+            raise setup.refuse("fixed_assets.err_name_text", name=name)
         out[name] = chosen
     return out
 
@@ -423,17 +422,17 @@ async def set_book(session, company_id, user_id, asset_id: str, regime_key: str,
         raise HTTPException(status_code=409, detail=reason)
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset_id.startswith("fa:asset:"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     unknown = set(body) - {"category", "elections"}
     if unknown:
-        raise setup.unprocessable(f"Unknown tax book field: {sorted(unknown)[0]}.")
+        raise setup.refuse("fixed_assets.err_unknown_tax_book_field_value", value=sorted(unknown)[0])
     label = t(regime.label_key)
     current = await _state(session, company_id, taxbook_id(asset_id, regime_key)) or {}
     category, elections = current.get("category"), dict(current.get("elections") or {})
     if "category" in body:
         category = body["category"] or None
         if category is not None and category not in {c.key for c in regime.categories}:
-            raise setup.unprocessable(f"{category} is not a category of {label}.")
+            raise setup.refuse("fixed_assets.err_category_not_category_label", category=category, label=label)
     if "elections" in body:
         elections = _elections(regime, label, body["elections"])
     data = {"asset_id": asset_id, "regime": regime_key, "category": category, "elections": elections}

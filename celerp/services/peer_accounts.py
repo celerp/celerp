@@ -41,6 +41,7 @@ from celerp.services.account_roles import role_map
 from celerp.services.company_lock import locked_company
 from celerp.services.journal_accounts import chart_access
 from celerp.services.money import books_currency
+from ui.i18n import t
 
 # Where a company sees the accounts sync held, added, or is waiting for it to review.
 ACCOUNTS_PAGE = "/accounting/sync-accounts"
@@ -84,7 +85,7 @@ def parse(value) -> dict[str, dict]:
     except ValidationError:
         raise HTTPException(422, "Invalid accounts") from None
     if any(code != a["code"] for code, a in out.items()) or len({a["id"] for a in out.values()}) != len(out):
-        raise HTTPException(422, "Invalid accounts")
+        raise HTTPException(422, t("peer.err_invalid_accounts"))
     return out
 
 
@@ -394,9 +395,7 @@ def _by_link(names: _Names, code: str, rows: list[CompanyPeerAccount], by_id: di
     of it: the one account a link of that code points to, else the record is held."""
     target = by_id.get(rows[0].account_id) if len(rows) == 1 else None
     if target is None:
-        raise HTTPException(409, f"{names.sender} sent {record} without the name, type and currency of "
-                                 f"its account {code}, so it is not matched to an account in {names.chart}. "
-                                 f"It posts when {names.sender} sends it again with them.")
+        raise HTTPException(409, t("peer.err_sender_sent_record_without_name_type", sender=names.sender, record=record, code=code, chart=names.chart, sender2=names.sender))
     if not target["is_active"]:
         raise _archived(names, {"code": code, "name": rows[0].other_name}, target)
     return target["code"]
@@ -507,9 +506,9 @@ async def _item_to_change(session: AsyncSession, company_id: uuid.UUID, item_id,
 
 
 async def held_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
-    item = await _item_to_change(session, company_id, item_id, "This item is not open.")
+    item = await _item_to_change(session, company_id, item_id, t("peer.err_item_not_open"))
     if not item.fix:
-        raise HTTPException(404, "This item is not open.")
+        raise HTTPException(404, t("peer.err_item_not_open"))
     return item
 
 
@@ -532,11 +531,10 @@ async def add_account(session: AsyncSession, company_id: uuid.UUID, source_compa
                       other: dict, code: str, parent: str | None) -> dict:
     """Add the other company's ``other`` to the receiver's chart as ``code`` and post it there."""
     if chart_access() is None:
-        raise HTTPException(409, "Accounting is not running.")
+        raise HTTPException(409, t("peer.err_accounting_not_running"))
     company = await session.get(Company, company_id)
     if _currency(other, books_currency(company.settings or {})) != books_currency(company.settings or {}):
-        raise HTTPException(422, f"{label(other)} is kept in {other['currency']}. Add a bank account kept in "
-                                 f"{other['currency']} in Banking, then use it.")
+        raise HTTPException(422, t("peer.err_label_kept_currency_add_bank_account", label=label(other), currency=other['currency'], currency2=other['currency']))
     made, _ = await create(session, company_id, other, code, parent)
     await link(session, company_id=company_id, source_company_id=source_company_id,
                other=other, local=made, how="chosen")
@@ -549,15 +547,15 @@ async def fix_hold(session: AsyncSession, company_id: uuid.UUID, item: CompanyPe
     fix = item.fix or {}
     other = fix.get("other")
     if fix.get("kind") in ("role", "review", "added") or not isinstance(other, dict):
-        raise HTTPException(422, "This item is not fixed here.")
+        raise HTTPException(422, t("peer.err_item_not_fixed_here"))
     if action == "use" and account:
         await use_account(session, company_id, item.source_company_id, other, account)
     elif action == "add" and code and fix.get("add"):
         await add_account(session, company_id, item.source_company_id, other, code, fix.get("parent"))
     elif action == "add":
-        raise HTTPException(422, f"{label(other)} cannot be added here. Use an account kept in {other['currency']}.")
+        raise HTTPException(422, t("peer.err_label_cannot_added_here_use_account", label=label(other), currency=other['currency']))
     else:
-        raise HTTPException(422, "Choose an account to use, or a code to add it as.")
+        raise HTTPException(422, t("peer.err_choose_account_use_code_add_as"))
 
 
 async def holds(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
@@ -576,9 +574,9 @@ async def added(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
 
 
 async def added_item(session: AsyncSession, company_id: uuid.UUID, item_id) -> CompanyPeerAttention:
-    item = await _item_to_change(session, company_id, item_id, "This notice is closed.")
+    item = await _item_to_change(session, company_id, item_id, t("peer.err_notice_closed"))
     if item.kind != peer_attention.ADDED:
-        raise HTTPException(404, "This notice is closed.")
+        raise HTTPException(404, t("peer.err_notice_closed"))
     return item
 
 
@@ -694,13 +692,13 @@ async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_com
     for answer in answers:
         other = others.get(answer.get("account"))
         if other is None or answer.get("account") not in pending:
-            raise HTTPException(422, "That account is not waiting for review.")
+            raise HTTPException(422, t("peer.err_account_not_waiting_review"))
         if answer.get("use"):
             await use_account(session, company_id, source_company_id, other, answer["use"])
         elif answer.get("add"):
             await add_account(session, company_id, source_company_id, other, answer["add"], None)
         else:
-            raise HTTPException(422, f"Choose an account for {label(other)}, or a code to add it as.")
+            raise HTTPException(422, t("peer.err_choose_account_label_code_add_as", label=label(other)))
     if finish:
         company = await locked_company(session, company_id)
         settings = dict(company.settings or {})

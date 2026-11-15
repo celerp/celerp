@@ -26,6 +26,7 @@ from celerp_fixed_assets.custody import _locations
 from celerp_fixed_assets.moves import _GONE
 from celerp_fixed_assets.operations import by_tag
 from celerp_fixed_assets.store import _emit, _entities, _state
+from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 _CHECK = [require_permission("check_fixed_assets")]
@@ -38,12 +39,12 @@ async def record_check(session, company_id, user_id, tag: str) -> dict:
     a repeat returns the standing check marked ``already``."""
     tag = str(tag or "").strip()
     if not tag:
-        raise setup.unprocessable("Scan or type an asset tag.")
+        raise setup.refuse("fixed_assets.err_scan_type_asset_tag")
     # Tags move under the company lock, so resolve the tag only once any move has committed.
     await lock_company(session, company_id)
     found = by_tag(await _entities(session, company_id, "fa_asset"), tag)
     if found is None:
-        raise setup.unprocessable(f"No asset with tag {tag}.")
+        raise setup.refuse("fixed_assets.err_no_asset_with_tag_tag", tag=tag)
     asset_id, asset = found
     if asset.get("status") in _LEFT:
         raise setup.unprocessable(_LEFT[asset["status"]].format(date=(asset.get("disposal") or {}).get("date")))
@@ -71,7 +72,7 @@ async def not_seen(session, company_id, since: str) -> list[dict]:
     try:
         since = date.fromisoformat(str(since)).isoformat()
     except ValueError:
-        raise setup.unprocessable("Choose the date to report from.") from None
+        raise setup.refuse("fixed_assets.err_choose_date_report_from") from None
     last: dict[str, str] = {}
     for check in await live_checks(session, company_id):
         last[check["asset_id"]] = max(last.get(check["asset_id"], ""), check["date"])
@@ -111,12 +112,11 @@ async def remove_check(check_id: str, company_id=Depends(get_current_company_id)
     """Its author removes a check recorded by mistake, on the day it was recorded."""
     row = (await lock_projections(session, company_id, [check_id])).get(check_id)
     if row is None or row.entity_type != ENTITY_TYPE or row.state.get("removed"):
-        raise HTTPException(status_code=404, detail="No such check.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_check"))
     if row.state["user_id"] != str(user.id):
-        raise HTTPException(status_code=403, detail="Only the person who recorded a check can remove it.")
+        raise HTTPException(status_code=403, detail=t("fixed_assets.err_only_person_who_recorded_check_can"))
     if row.state["date"] != (await company_today(session, company_id)).isoformat():
-        raise setup.unprocessable(f"This check was recorded on {row.state['date']}. A check can only be removed on "
-                                  "the day it was recorded.")
+        raise setup.refuse("fixed_assets.err_check_was_recorded_date_check_can", date=row.state['date'])
     await _emit(session, company_id, user.id, check_id, ENTITY_TYPE, "fa.check.removed", {"user_id": str(user.id)})
     await session.commit()
     return {"id": check_id, **(await _state(session, company_id, check_id) or {})}

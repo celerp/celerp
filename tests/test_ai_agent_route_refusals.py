@@ -125,6 +125,23 @@ def _given(fn, tree, detail) -> bool:
         for n in ast.walk(tree))
 
 
+def _catalog_key(node, scope) -> bool:
+    """Whether a t() key is a catalog key wherever it comes from: written there, a constant
+    the module holds, either branch of a choice, or a lookup in a mapping of keys whose
+    fallback is one too."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) and node.value in _EN
+    if isinstance(node, ast.IfExp):
+        return _catalog_key(node.body, scope) and _catalog_key(node.orelse, scope)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+            and isinstance(held := _resolve(node.func.value, scope) if not isinstance(node.func.value, ast.Name)
+                           else scope.get(node.func.value.id), dict):
+        return bool(held) and all(isinstance(v, str) and v in _EN for v in held.values()) \
+            and len(node.args) == 2 and _catalog_key(node.args[1], scope)
+    value = scope.get(node.id) if isinstance(node, ast.Name) else _resolve(node, scope)
+    return isinstance(value, str) and value in _EN
+
+
 def _held_keyed(value, every: bool = False) -> bool:
     """Whether a refusal built ahead of time is keyed: a ``refusal`` whose key is in the
     catalog or, with ``every``, a mapping of them."""
@@ -344,8 +361,7 @@ class _Walk:
                 self.carried.update((c, self._where(fn, node)) for c in classes)
                 return True
             if callee is i18n.t and node.args:
-                key = node.args[0]
-                return isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value in _EN
+                return _catalog_key(node.args[0], scope)
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN

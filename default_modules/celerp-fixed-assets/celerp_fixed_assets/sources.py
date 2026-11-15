@@ -156,6 +156,6 @@ async def intake(session, company_id) -> list[dict]:
 async def line(session, company_id, source: str) -> dict:
     found = next((f for f in await lines(session, company_id) if f["source"] == source), None)
     if found is None:
-        raise setup.unprocessable("That source line is not a posted asset line.")
+        raise setup.refuse("fixed_assets.err_source_line_not_posted_asset_line")
     return found
 

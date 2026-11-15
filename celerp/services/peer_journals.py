@@ -765,7 +765,7 @@ async def post_held(session: AsyncSession, company_id: uuid.UUID, item_id, *, re
             session, company_id, item, revision=revision, every=every, lines=lines,
             request_key=request_key, request=bound, actor_id=actor_id)
     if fix.get("kind") != "funds":
-        raise HTTPException(422, "This item is not fixed here.")
+        raise HTTPException(422, t("peer.err_item_not_fixed_here"))
     if revision != fix.get("revision"):
         raise HTTPException(409, catalog_refusal("posting.fund.hold_changed"))
     entries, grant = await chosen_entries(session, company_id, fix.get("entries") or [], every=every, lines=lines)

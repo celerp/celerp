@@ -413,15 +413,13 @@ def _recognise(artifacts: ArtifactSet, chosen: SourceAdapter | None) -> SourceAd
     try:
         if chosen is not None:
             if not chosen.detect(artifacts).matched:
-                raise ScanStoreError(422, f"{names} is not a {chosen.display_name} file. "
-                                          f"Accepted: {_accepted([chosen])}.")
+                raise ScanStoreError(422, t("migration.err_names_not_display_name_file_accepted", names=names, display_name=chosen.display_name, accepted=_accepted([chosen])))
             return chosen
         adapter = registry.detect_adapter(artifacts)
     except SourceRevisionError as exc:
         raise ScanStoreError(422, str(exc)) from exc
     if adapter is None:
-        raise ScanStoreError(422, f"Celerp cannot read {names} yet. "
-                                  f"Accepted: {_accepted(registry.list_adapters())}.")
+        raise ScanStoreError(422, t("migration.err_celerp_cannot_read_names_yet_accepted", names=names, accepted=_accepted(registry.list_adapters())))
     return adapter
 
 
@@ -710,7 +708,7 @@ def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
                 raise ScanStoreError(500, t(STORE_FAILED)) from exc
             if changed:
                 _discard(directory)
-                raise ScanStoreError(409, "The uploaded file changed after it was scanned. Upload it again.")
+                raise ScanStoreError(409, t("migration.err_uploaded_file_changed_after_was_scanned"))
     return session
 
 

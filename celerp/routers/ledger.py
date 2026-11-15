@@ -107,7 +107,7 @@ async def list_entries(
     With ``history`` only the events History shows are read and counted."""
     filters = (company_id, settings, role, entity_id, entity_type, event_type, field, who, history)
     if offset is not None and (before is not None or after is not None):
-        raise HTTPException(status_code=422, detail="offset cannot be combined with before or after")
+        raise HTTPException(status_code=422, detail=t("error.err_offset_cannot_combined_with_before_after"))
     q = _scope(select(LedgerEntry), *filters)
     if after is not None:
         rows = list(reversed((await session.execute(
@@ -150,7 +150,7 @@ async def history_facets(
     """What a record's History filters can offer, over its whole history: the event types, the
     fields its events changed, and who made them (``actor_key`` is the Who filter's value)."""
     if not entity_id.strip():
-        raise HTTPException(status_code=422, detail="entity_id must name a record")
+        raise HTTPException(status_code=422, detail=t("error.err_entity_id_must_name_record"))
     filters = (company_id, settings, role, entity_id)
     event_types = (await session.execute(_scope(select(LedgerEntry.event_type).distinct(), *filters, history=True))).scalars().all()
     changed = shown_data(settings, role).op("->", return_type=JSONB)("fields_changed")

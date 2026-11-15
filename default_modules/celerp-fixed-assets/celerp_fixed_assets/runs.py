@@ -50,6 +50,7 @@ from celerp_fixed_assets.projections import REMEASUREMENTS, live, money
 from celerp_fixed_assets.store import _emit, _entities, _journal, _state, movements_by_asset
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -455,9 +456,9 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
         raise setup.refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
                             fill={"field": "month", "value": last, "action": "fixed_assets.action.review_through"})
     if month < books.first:
-        raise setup.unprocessable(f"{label} is before the first managed period.")
+        raise setup.refuse("fixed_assets.err_run_before_first_period", month=label)
     if books.locked(month):
-        raise conflict(f"{label} is locked. Run a later month; what it owes is caught up there.")
+        raise setup.refused(409, "fixed_assets.err_run_month_locked", month=label)
     start = books.next
     charges = await _charges(session, company_id, books, month, start)
     open_months = [k for k in range(start, month + 1) if not books.locked(k)]
@@ -520,7 +521,7 @@ async def _post(session, company_id, user_id, context: dict, op_key: str, *, man
     books: Books = context["books"]
     currency = books.currency
     if not context["items"] or not context["exceptions"]:
-        raise setup.unprocessable("Nothing to depreciate yet. Add or register an asset first.")
+        raise setup.refuse("fixed_assets.nothing_to_depreciate")
     runs = []
     for k in context["months"]:
         label, items, held = period_label(k), context["items"][k], context["held"][k]
@@ -617,9 +618,9 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         books = await _books(session, company_id)
         record = books.records.get(month)
         if books.last != month or record is None or record.get("status") not in _POSTED:
-            raise conflict(f"Only the latest posted run can be reversed. Use Correct to change {label}.")
+            raise setup.refused(409, "fixed_assets.err_only_latest_posted_run_can_reversed", label=label)
         if books.locked(month):
-            raise conflict(f"{label} is locked. Use Correct to change its depreciation.")
+            raise setup.refused(409, "fixed_assets.err_label_locked_use_correct_change_its", label=label)
         last: dict[str, int] = {}
         for movement_id in record.get("movements") or []:
             mv = await _state(session, company_id, movement_id)
@@ -664,16 +665,16 @@ async def _open_asset(session, company_id, user_id, asset_id: str, keys: tuple[s
     await setup.require_managed(session, company_id)
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if row.state.get("status") != "active":
-        raise conflict("Only an asset in use takes readings or skipped months.")
+        raise setup.refused(409, "fixed_assets.err_only_asset_use_takes_readings_skipped")
     return row.state, await _books(session, company_id)
 
 
 def _still_open(books: Books, asset: dict, month: int) -> None:
     held = (asset.get("exception") or {}).get("months") or []
     if books.last is not None and month <= books.last and period_label(month) not in held:
-        raise conflict(f"Depreciation for {period_label(month)} is already posted. Use Correct to change it.")
+        raise setup.refused(409, "fixed_assets.err_depreciation_period_label_already_posted_use", period_label=period_label(month))
 
 
 async def record_reading(session, company_id, user_id, asset_id: str, body: dict) -> dict:
@@ -681,7 +682,7 @@ async def record_reading(session, company_id, user_id, asset_id: str, body: dict
     asset, books = await _open_asset(session, company_id, user_id, asset_id, ("manage_fixed_assets",))
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     if not rules.method(cls["method"]).uses_readings:
-        raise setup.unprocessable("This asset's class does not depreciate by units, so it takes no readings.")
+        raise setup.refuse("fixed_assets.err_asset_s_class_does_not_depreciate")
     month = _month(body.get("period"), "The period")
     units = operations._amount(body.get("units"), "Units")
     _still_open(books, asset, month)
@@ -696,7 +697,7 @@ async def skip_month(session, company_id, user_id, asset_id: str, body: dict) ->
     month = _month(body.get("month"))
     reason = str(body.get("reason") or "").strip()
     if not reason:
-        raise setup.unprocessable("A reason is required to skip a month.")
+        raise setup.refuse("fixed_assets.err_reason_required_skip_month")
     _still_open(books, asset, month)
     await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.skip.recorded",
                 {"month": period_label(month), "reason": reason})
@@ -707,7 +708,7 @@ async def withdraw_skip(session, company_id, user_id, asset_id: str, label: str)
     asset, _ = await _open_asset(session, company_id, user_id, asset_id, ("manage_accounting",))
     month = period_label(_month(label))
     if month not in (asset.get("skips") or {}):
-        raise HTTPException(status_code=404, detail="This month is not skipped.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_month_not_skipped"))
     await _emit(session, company_id, user_id, asset_id, "fa_asset", "fa.skip.withdrawn", {"month": month})
     return {"asset_id": asset_id, "month": month}
 

@@ -589,7 +589,7 @@ class CompanyGone(HTTPException):
     """The company was deleted before its file could be stored."""
 
     def __init__(self) -> None:
-        super().__init__(status_code=404, detail="Company not found")
+        super().__init__(status_code=404, detail=t("error.err_company_not_found"))
 
 
 class CompanyFiles:

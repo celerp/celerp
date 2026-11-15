@@ -44,6 +44,7 @@ from celerp_fixed_assets.operations import (
 from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
 from sqlalchemy import select
+from ui.i18n import t
 
 # The rights a transfer needs in each company.
 KEYS = ("manage_accounting", "manage_fixed_assets")
@@ -93,7 +94,7 @@ def _company_id(value) -> uuid.UUID:
     try:
         return uuid.UUID(str(value))
     except ValueError:
-        raise setup.unprocessable("Choose the company to transfer the asset to.") from None
+        raise setup.refuse("fixed_assets.err_choose_company_transfer_asset") from None
 
 
 async def _lock_both(session, ours, theirs) -> None:
@@ -118,31 +119,29 @@ async def _related_account(session, company_id, name: str, code: str, role) -> N
     from celerp.services.journal_accounts import require_destinations
 
     if not code:
-        raise setup.unprocessable(f"Choose the account for the related company in {name}.")
+        raise setup.refuse("fixed_assets.err_choose_account_related_company_name", name=name)
     try:
         accounts = await require_destinations(session, company_id, {code})
     except HTTPException as exc:
         detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
-        raise HTTPException(status_code=exc.status_code, detail=f"{name}: {detail}") from None
+        raise HTTPException(status_code=exc.status_code, detail=t("fixed_assets.err_name_detail", name=name, detail=detail)) from None
     (wanted,) = ROLE_TYPES[role]
     found = ((accounts or {}).get(code) or {}).get("account_type")
     if accounts is not None and found != wanted:
         article = "an" if wanted[0] in "aeiou" else "a"
-        raise setup.unprocessable(f"Account {code} in {name} is of type {found}. The related company's account "
-                                  f"there must be {article} {wanted} account.")
+        raise setup.refuse("fixed_assets.err_account_code_name_type_found_related", code=code, name=name, found=found, article=article, wanted=wanted)
 
 
 def _rate(body: dict, ours: str, theirs: str, our_name: str, their_name: str) -> Decimal:
     if ours == theirs:
         if body.get("rate") not in (None, ""):
-            raise setup.unprocessable(f"Both companies keep their books in {ours}, so no exchange rate is needed.")
+            raise setup.refuse("fixed_assets.err_both_companies_keep_their_books_ours", ours=ours)
         return Decimal(1)
     if body.get("rate") in (None, ""):
-        raise setup.unprocessable(f"{our_name} keeps its books in {ours} and {their_name} in {theirs}. Enter the "
-                                  f"exchange rate from {ours} to {theirs}.")
+        raise setup.refuse("fixed_assets.err_our_name_keeps_its_books_ours", our_name=our_name, ours=ours, their_name=their_name, theirs=theirs, ours2=ours, theirs2=theirs)
     rate = setup.number(body["rate"], "The exchange rate")
     if rate <= 0:
-        raise setup.unprocessable("The exchange rate is more than zero.")
+        raise setup.refuse("fixed_assets.err_exchange_rate_more_than_zero")
     return rate
 
 
@@ -166,7 +165,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
 
     theirs = _company_id(body.get("target_company_id"))
     if theirs == uuid.UUID(str(company_id)):
-        raise setup.unprocessable("Choose another company to transfer the asset to.")
+        raise setup.refuse("fixed_assets.err_choose_another_company_transfer_asset")
     await _lock_both(session, company_id, theirs)
 
     async def plan(fa):
@@ -174,22 +173,19 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         _, their_settings = await locked_authority(session, theirs, user_id, KEYS)
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         asset = row.state
         in_use(asset_id, asset, "transfer")
         day = _date(body.get("date"), "The transfer date")
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):
-            raise conflict(f"{their_name} does not use fixed assets. Turn the module on there and confirm its "
-                           "first managed period first.")
+            raise setup.refused(409, "fixed_assets.err_their_name_does_not_use_fixed", their_name=their_name)
         their_fa = setup.settings_of(their_settings)
         if day < their_fa["first_managed_period"]:
-            raise setup.unprocessable(f"{their_name} manages fixed assets from {their_fa['first_managed_period']}. "
-                                      "Date the transfer on or after it.")
+            raise setup.refuse("fixed_assets.err_their_name_manages_fixed_assets_from", their_name=their_name, first_managed_period=their_fa['first_managed_period'])
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise conflict(f"{day} is in a locked period in {their_name}. Transfer on or after "
-                           f"{(their_books.lock + timedelta(days=1)).isoformat()}.")
+            raise setup.refused(409, "fixed_assets.err_day_locked_period_their_name_transfer", day=day, their_name=their_name, isoformat=(their_books.lock + timedelta(days=1)).isoformat())
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         receivable = str(body.get("receivable_account") or "")
         payable = str(body.get("payable_account") or "")
@@ -203,7 +199,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         cls = await setup.get_class(session, company_id, asset.get("class_id"))
         their_cls = await setup.get_class(session, theirs, body.get("class_id"))
         if their_cls.get("archived"):
-            raise setup.unprocessable(f"That class is archived in {their_name}. Choose a class in use.")
+            raise setup.refuse("fixed_assets.err_class_archived_their_name_choose_class", their_name=their_name)
         movements = await asset_movements(session, company_id, asset_id)
         item = disposal._plan_asset(books, asset_id, asset, cls, movements, day, Decimal(1),
                                     _dec(asset.get("quantity")), disposal.accounts(books), proceeds=price,
@@ -293,19 +289,17 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         await locked_authority(session, theirs, user_id, KEYS)
         asset = (await lock_projections(session, company_id, [asset_id]))[asset_id].state
         if int(latest["id"].rsplit(":", 1)[1]) != int(asset.get("movement_count") or 0):
-            raise conflict(f"{asset['number']} has changed since it was transferred, so the transfer can no "
-                           "longer be undone.")
+            raise setup.refused(409, "fixed_assets.err_number_has_changed_since_was_transferred", number=asset['number'])
         day, name = latest["effective_date"], target["company_name"]
         books = await runs._books(session, company_id)
         if books.lock is not None and date.fromisoformat(day) <= books.lock:
-            raise conflict(f"{day} is locked, so this transfer can no longer be undone.")
+            raise setup.refused(409, "fixed_assets.err_day_locked_so_transfer_can_no", day=day)
         their = (await lock_projections(session, theirs, [target["asset_id"]]))[target["asset_id"]].state
         if their.get("status") != "active" or int(their.get("movement_count") or 0) > 1:
-            raise conflict(f"{their['number']} has changed in {name} since it was transferred, so the transfer "
-                           "can no longer be undone. Use Correct in each company instead.")
+            raise setup.refused(409, "fixed_assets.err_number_has_changed_name_since_was", number=their['number'], name=name)
         their_books = await runs._books(session, theirs)
         if their_books.lock is not None and date.fromisoformat(day) <= their_books.lock:
-            raise conflict(f"{day} is locked in {name}, so this transfer can no longer be undone.")
+            raise setup.refused(409, "fixed_assets.err_day_locked_name_so_transfer_can", day=day, name=name)
         (their_movement,) = await asset_movements(session, theirs, target["asset_id"])
         journals = [(company_id, latest["journal_id"]), (theirs, their_movement.get("journal_id"))]
         held_in = {company_id: books.currency, theirs: their_books.currency}

@@ -34,6 +34,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.company_lock import lock_company
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
 from celerp_labels.models import LabelTemplate
+from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -283,9 +284,9 @@ def _label_source(source: str, role: str, settings: dict) -> dict:
     entry = next((c for c in get_slot("label_source")
                   if c.get("entity_type") == source and uses_module(settings, c.get("_module"))), None)
     if entry is None:
-        raise HTTPException(status_code=404, detail=f"Labels are not printed for {source} records.")
+        raise HTTPException(status_code=404, detail=t("labels.err_labels_not_printed_source_records", source=source))
     if not role_has_permission(settings, role, entry["permission"]):
-        raise HTTPException(status_code=403, detail="Your role cannot see these records, so it cannot print their labels.")
+        raise HTTPException(status_code=403, detail=t("labels.err_your_role_cannot_see_these_records"))
     return entry
 
 
@@ -294,9 +295,9 @@ async def _rows(session: AsyncSession, company_id: uuid.UUID, entry: dict, ids: 
 
     wanted = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
     if not wanted:
-        raise HTTPException(status_code=422, detail="Choose the records to print labels for.")
+        raise HTTPException(status_code=422, detail=t("labels.err_choose_records_print_labels"))
     if len(wanted) > _MAX_SOURCE_IDS:
-        raise HTTPException(status_code=422, detail=f"Print at most {_MAX_SOURCE_IDS} labels at a time.")
+        raise HTTPException(status_code=422, detail=t("labels.err_print_at_most_max_source_ids", max_source_ids=_MAX_SOURCE_IDS))
     found = {r["id"]: r for r in await resolve_handler(entry["handler"])(
         session=session, company_id=company_id, ids=wanted)}
     return [found[i] for i in wanted if i in found]
@@ -385,10 +386,10 @@ async def _get_or_404(session: AsyncSession, company_id: uuid.UUID, template_id:
         # A writer takes the company's lock before the template, as every template writer does.
         await lock_company(session, company_id)
         query = query.with_for_update()
-    t = (await session.execute(query)).scalar_one_or_none()
-    if not t:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return t
+    template = (await session.execute(query)).scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail=t("labels.template_not_found"))
+    return template
 
 
 async def _resolve_template(

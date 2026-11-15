@@ -24,6 +24,7 @@ from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number
 from celerp_fixed_assets.store import _entities, _state, movements_by_asset
+from ui.i18n import t
 
 _ZERO = Decimal(0)
 # The cost column each operation moves within the period; any other operation is an addition.
@@ -51,11 +52,10 @@ async def _range(session, company_id, date_from, date_to) -> tuple[dict, date, d
     fa = await setup.require_managed(session, company_id)
     start, end = _day(date_from, "The start date"), _day(date_to, "The end date")
     if end < start:
-        raise setup.unprocessable("The end date must be on or after the start date.")
+        raise setup.refuse("fixed_assets.err_end_date_must_after_start_date")
     first = fa["first_managed_period"]
     if start.isoformat() < first:
-        raise setup.unprocessable(f"Reports start on or after the first managed period, {first}. "
-                                  "What the books held before it is the opening register.")
+        raise setup.refuse("fixed_assets.err_reports_start_after_first_managed_period", first=first)
     return fa, start, end
 
 

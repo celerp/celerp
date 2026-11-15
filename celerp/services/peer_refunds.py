@@ -12,6 +12,7 @@ from sqlalchemy import select
 from celerp.events.engine import find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
 from celerp.services.money import round_money
+from ui.i18n import t
 
 
 def _proof(event: dict) -> str:
@@ -48,7 +49,7 @@ async def replay_source_refunds(
         receipt = await find_event_by_idempotency(session, cid, receipt_key)
         if receipt is not None:
             if receipt.event_type != "doc.payment.received" or receipt.entity_id != target_doc_id:
-                raise HTTPException(409, "Source receipt identity is inconsistent")
+                raise HTTPException(409, t("peer.err_source_receipt_identity_inconsistent"))
             target_index = receipt.data["index"]
         else:
             target_index = source_index
@@ -57,7 +58,7 @@ async def replay_source_refunds(
         payment = next((p for p in (row.state or {}).get("payments", [])
                         if p.get("index") == target_index), None)
         if payment is None or payment.get("status", "active") != "active":
-            raise HTTPException(409, "Source refund has no active receiving payment")
+            raise HTTPException(409, t("peer.err_source_refund_has_no_active_receiving"))
         number = source["refund_number"]
         currency = row.state.get("currency") or "USD"
         amount = round_money(source["amount"], currency)
@@ -71,21 +72,21 @@ async def replay_source_refunds(
             if (prior.event_type != expected_type
                     or prior.entity_id != target_doc_id
                     or (prior.metadata_ or {}).get("request") != proof):
-                raise HTTPException(409, "Source refund operation identity was reused")
+                raise HTTPException(409, t("peer.err_source_refund_operation_identity_was_reused"))
             continue
         if reversed_event:
             earlier = existing.get((target_index, number))
             if (earlier is None
                     or round_money(earlier.data.get("amount"), currency) != amount):
-                raise HTTPException(409, "Source refund reversal has no matching booked refund")
+                raise HTTPException(409, t("peer.err_source_refund_reversal_has_no_matching"))
             prior_reversal = reversals.get((target_index, number))
             if prior_reversal is not None:
                 if (round_money(prior_reversal.data.get("amount"), currency) != amount
                         or prior_reversal.data.get("reversal_date") != source["reversal_date"]):
-                    raise HTTPException(409, "Restored refund reversal differs from source")
+                    raise HTTPException(409, t("peer.err_restored_refund_reversal_differs_from_source"))
                 continue
             if round_money(payment.get("refunded") or 0, currency) < amount:
-                raise HTTPException(409, "Source refund reversal exceeds refunded balance")
+                raise HTTPException(409, t("peer.err_source_refund_reversal_exceeds_refunded_balance"))
             result = await reverse_payment_refund(
                 session, cid, target_doc_id, row, payment,
                 refund=earlier.data, reversal_date=source["reversal_date"],
@@ -102,10 +103,10 @@ async def replay_source_refunds(
             if (earlier is None
                     or round_money(earlier.data.get("amount"), currency) != amount
                     or earlier.data.get("refund_date") != source["refund_date"]):
-                raise HTTPException(409, "Restored refund history differs from source")
+                raise HTTPException(409, t("peer.err_restored_refund_history_differs_from_source"))
             continue
         if number != count:
-            raise HTTPException(409, "Source refund events are not consecutive")
+            raise HTTPException(409, t("peer.err_source_refund_events_not_consecutive"))
         result = await apply_payment_refund(
             session, cid, target_doc_id, row, payment,
             amount=amount, refund_date=source["refund_date"],

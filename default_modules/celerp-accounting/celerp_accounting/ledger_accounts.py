@@ -56,5 +56,4 @@ async def check_account_change(
     )).all()
     if banks:
         raise HTTPException(status_code=422, detail=(
-            f"Account {acc.code} belongs to the active bank account {', '.join(banks)}. Archive the bank "
-            "account before archiving this account or changing its type."))
+            t("acct.err_account_code_belongs_active_bank_account", code=acc.code, banks=', '.join(banks))))

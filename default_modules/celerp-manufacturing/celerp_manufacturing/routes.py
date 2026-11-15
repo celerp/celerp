@@ -521,7 +521,7 @@ async def build_item(
         raise HTTPException(status_code=404, detail=t("manufacturing.err_item_not_found"))
     movements.require_stock(item.state or {}, item_id)
     if not is_manufacturable(item.state):
-        raise HTTPException(status_code=422, detail="Item has no recipe to build from")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_item_has_no_recipe_build_from"))
     refuse_draft(item.state or {}, item_id)
     key = payload.idempotency_key or str(uuid.uuid4())
     # The run id follows the key, so a retried build finds the run it made instead of a second one.
@@ -1093,7 +1093,7 @@ async def bulk_run_action(
     Runs in a state that does not permit the action are skipped (not a hard error)."""
     action = payload.action
     if action not in _BULK_RUN_ACTIONS:
-        raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
+        raise HTTPException(status_code=422, detail=t("manufacturing.err_unknown_bulk_action_action", action=action))
     out = await _once(session, company_id, user.id, "bulk_action", payload,
                       lambda rk: _bulk_run_action(session, company_id, user.id, payload.run_ids, action, rk))
     await session.commit()
@@ -1604,11 +1604,11 @@ async def delete_work_center(
     if others is None:
         raise HTTPException(
             status_code=409,
-            detail="This is your only work center. Add another before deleting this one.")
+            detail=t("manufacturing.err_your_only_work_center_add_another"))
     if wc.is_default:
         raise HTTPException(
             status_code=409,
-            detail="This is the default work center. Set another center as default before deleting it.")
+            detail=t("manufacturing.err_default_work_center_set_another_center"))
     await session.delete(wc)
     await session.commit()
     return {"ok": True}

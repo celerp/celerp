@@ -40,6 +40,7 @@ from celerp_fixed_assets.operations import (
 )
 from celerp_fixed_assets.store import _emit, _journal, _state
 from fastapi import HTTPException
+from ui.i18n import t
 
 REASONS = ("scrapped", "lost", "donated", "other")
 _AD, _IMP, _SURPLUS = "accumulated_depreciation", "accumulated_impairment", "revaluation_surplus"
@@ -52,20 +53,20 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
     quantity = _dec(asset.get("quantity"))
     if quantity > 1:
         if body.get("percent") not in (None, ""):
-            raise setup.unprocessable("This record holds a quantity, so it is disposed of by quantity.")
+            raise setup.refuse("fixed_assets.err_record_holds_quantity_so_disposed_by")
         if body.get("quantity") in (None, ""):
             return Decimal(1), quantity
         out = setup.number(body["quantity"], "The quantity disposed of")
         if out <= 0 or out > quantity:
-            raise setup.unprocessable(f"Enter a quantity disposed of above 0 and up to {quantity}.")
+            raise setup.refuse("fixed_assets.err_enter_quantity_disposed_above_0_up", quantity=quantity)
         return out / quantity, out
     if body.get("quantity") not in (None, "") and setup.number(body["quantity"], "The quantity disposed of") != quantity:
-        raise setup.unprocessable(f"This asset has a quantity of {quantity}. Dispose of a percentage of it instead.")
+        raise setup.refuse("fixed_assets.err_asset_has_quantity_quantity_dispose_percentage", quantity=quantity)
     if body.get("percent") in (None, ""):
         return Decimal(1), quantity
     percent = setup.number(body["percent"], "The percent disposed of")
     if percent <= 0 or percent > 100:
-        raise setup.unprocessable("Enter a percent disposed of above 0 and up to 100.")
+        raise setup.refuse("fixed_assets.err_enter_percent_disposed_above_0_up")
     share = percent / 100
     return share, quantity if share == 1 else Decimal(0)
 
@@ -266,10 +267,9 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
     if bulk:
         asset_ids = body.get("asset_ids")
         if not isinstance(asset_ids, list) or not asset_ids or not all(isinstance(a, str) for a in asset_ids):
-            raise setup.unprocessable("Choose the assets to dispose of.")
+            raise setup.refuse("fixed_assets.err_choose_assets_dispose")
         if body.get("percent") not in (None, "") or body.get("quantity") not in (None, ""):
-            raise setup.unprocessable("Several assets are disposed of in whole. Dispose of part of one asset "
-                                      "from its page.")
+            raise setup.refuse("fixed_assets.err_several_assets_disposed_whole_dispose_part")
         asset_ids = list(dict.fromkeys(asset_ids))
 
     async def plan(fa):
@@ -277,15 +277,15 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
         for asset_id in asset_ids:
             row = rows.get(asset_id)
             if row is None or row.entity_type != "fa_asset":
-                raise HTTPException(status_code=404, detail="No such asset.")
+                raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
             in_use(asset_id, row.state, "dispose")
         day = _date(body.get("date"), "The disposal date")
         reason = body.get("reason")
         if reason not in REASONS:
-            raise setup.unprocessable("Choose why the asset is disposed of: scrapped, lost, donated or other.")
+            raise setup.refuse("fixed_assets.err_choose_why_asset_disposed_scrapped_lost")
         note = str(body.get("note") or "").strip() or None
         if reason == "other" and not note:
-            raise setup.unprocessable("Say why the asset is disposed of.")
+            raise setup.refuse("fixed_assets.err_say_why_asset_disposed")
         books = await runs._books(session, company_id)
         items = []
         for asset_id in asset_ids:
@@ -331,23 +331,20 @@ async def undo_refusal(session, company_id, asset: dict, movements: list[dict]) 
     if latest is None:
         return None
     if latest.get("reason") == "replaced":
-        return conflict(f"{asset['number']} left the books when its replacement was added. Undo the replacement "
-                        "on the asset it belongs to instead.")
+        return setup.refused(409, "fixed_assets.err_number_left_books_when_its_replacement", number=asset['number'])
     if latest.get("reason") == "transferred":
-        return conflict(f"{asset['number']} was transferred to {latest['target']['company_name']}. Undo the "
-                        "transfer with Undo latest instead.")
+        return setup.refused(409, "fixed_assets.err_number_was_transferred_company_name_undo", number=asset['number'], company_name=latest['target']['company_name'])
     if latest.get("reason") == "sold":
         from celerp_fixed_assets.sales import doc_number
 
         invoice = doc_number(await _state(session, company_id, latest["invoice_id"]), latest["invoice_id"])
-        return conflict(f"{asset['number']} was sold on invoice {invoice}. Void or credit that invoice instead.")
+        return setup.refused(409, "fixed_assets.err_number_was_sold_invoice_invoice_void", number=asset['number'], invoice=invoice)
     since = [m for m in movements if int(m["id"].rsplit(":", 1)[1]) > int(latest["id"].rsplit(":", 1)[1])]
     if since:
-        return conflict(f"{asset['number']} has changed since it was disposed of ({changes(since)}), so the "
-                        "disposal can no longer be undone. Use Correct to change its figures.")
+        return setup.refused(409, "fixed_assets.err_number_has_changed_since_was_disposed", number=asset['number'], changes=changes(since))
     books = await runs._books(session, company_id)
     if books.lock is not None and date.fromisoformat(latest["effective_date"]) <= books.lock:
-        return conflict(f"{latest['effective_date']} is locked, so this disposal can no longer be undone.")
+        return setup.refused(409, "fixed_assets.err_effective_date_locked_so_disposal_can", effective_date=latest['effective_date'])
     return None
 
 
@@ -359,12 +356,12 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     async def plan(fa):
         row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
         if row is None or row.entity_type != "fa_asset":
-            raise HTTPException(status_code=404, detail="No such asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
         asset = row.state
         movements = await asset_movements(session, company_id, asset_id)
         latest = _latest_disposal(movements)
         if latest is None:
-            raise setup.unprocessable(f"{asset['number']} has no disposal to undo.")
+            raise setup.refuse("fixed_assets.err_number_has_no_disposal_undo", number=asset['number'])
         if refusal := await undo_refusal(session, company_id, asset, movements):
             raise refusal
         books = await runs._books(session, company_id)

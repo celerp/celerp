@@ -23,6 +23,7 @@ from celerp_fixed_assets import setup, views
 from celerp_fixed_assets.moves import _locked_assets
 from celerp_fixed_assets.store import _emit, _state
 from ui.components.encode import inert_media_type
+from ui.i18n import t
 
 ENTITY_TYPE = "fa_asset"
 ATTACHED = "fa.asset.file_attached"
@@ -41,7 +42,7 @@ _MANAGE = [require_permission("manage_fixed_assets")]
 def file_of(state: dict, file_id: str) -> dict:
     match = next((f for f in state.get("files") or [] if f.get("id") == file_id), None)
     if match is None:
-        raise HTTPException(status_code=404, detail="No such file on this asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_file_asset"))
     return match
 
 
@@ -49,7 +50,7 @@ def checked_tag(tag: str | None) -> str | None:
     """A tag an asset's file may carry, or None for no tag; anything else is refused by name."""
     tag = (tag or "").strip() or None
     if tag is not None and tag not in ASSET_FILE_TAGS:
-        raise setup.unprocessable(f"An asset's file cannot be tagged {tag}. Choose one of: {', '.join(ASSET_FILE_TAGS)}.")
+        raise setup.refuse("fixed_assets.err_asset_s_file_cannot_tagged_tag", tag=tag, asset_file_tags=', '.join(ASSET_FILE_TAGS))
     return tag
 
 
@@ -60,7 +61,7 @@ def serve(company_id, match: dict):
         return RedirectResponse(url)
     dest = local_attachment_url_path(str(company_id), url)
     if dest is None or not dest.exists():
-        raise HTTPException(status_code=404, detail="This file is no longer stored.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_file_no_longer_stored"))
     return FileResponse(path=str(dest), filename=match["filename"],
                         media_type=inert_media_type(match.get("mime")))
 
@@ -135,7 +136,7 @@ async def linked(session, company_id, state: dict) -> list[dict]:
 async def _asset_state(session, company_id, asset_id: str) -> dict:
     state = await _state(session, company_id, asset_id)
     if state is None or not state.get("number"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     return state
 
 
@@ -179,7 +180,7 @@ async def download_file(asset_id: str, file_id: str, company_id=Depends(get_curr
                         money: bool = Depends(views.money_shown), session: AsyncSession = Depends(get_session)):
     f = file_of(await _asset_state(session, company_id, asset_id), file_id)
     if not money and views.financial_file(f):
-        raise HTTPException(status_code=403, detail="Your role cannot open files that show amounts.")
+        raise HTTPException(status_code=403, detail=t("fixed_assets.err_your_role_cannot_open_files_show"))
     return serve(company_id, f)
 
 
@@ -192,7 +193,7 @@ async def attach_valuer_report(class_id: str, file: UploadFile, company_id=Depen
     cls = await setup.get_class(session, company_id, class_id)
     asset_ids = [a for a, _ in await class_assets(session, company_id, class_id)]
     if not asset_ids:
-        raise setup.unprocessable(f"No assets in use in {cls['name']} to keep the report on.")
+        raise setup.refuse("fixed_assets.err_no_assets_use_name_keep_report", name=cls['name'])
     stored = await store_on_assets(session, company_id, user.id, asset_ids, file, "valuations")
     return {"filename": file.filename, "files": stored}
 
@@ -203,15 +204,15 @@ async def remove_valuer_report(class_id: str, body: dict = Body(...), company_id
     """Take a valuer's report attached by mistake off every asset it was kept on."""
     files = body.get("files") or []
     if not isinstance(files, list) or not all(isinstance(c, dict) for c in files):
-        raise setup.unprocessable("Name each of the report's files by its asset and file.")
+        raise setup.refuse("fixed_assets.err_name_each_report_s_files_by")
     copies = [(str(c.get("asset_id") or ""), str(c.get("file_id") or "")) for c in files]
     if not copies:
-        raise setup.unprocessable("Name the report's files to remove.")
+        raise setup.refuse("fixed_assets.err_name_report_s_files_remove")
     held = dict(await _locked_assets(session, company_id, sorted({a for a, _ in copies})))
     for asset_id, file_id in copies:
         state = held.get(asset_id) or {}
         if state.get("class_id") != class_id:
-            raise HTTPException(status_code=404, detail="No such file on this asset.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_file_asset"))
         f = file_of(state, file_id)
         await _emit(session, company_id, user.id, asset_id, ENTITY_TYPE, "fa.asset.file_deleted",
                     {"entity_id": asset_id, "entity_type": ENTITY_TYPE, "file_id": file_id,

@@ -1688,7 +1688,7 @@ async def get_field_values(
     })
     import re as _re
     if field in _BLOCKED_FIELDS or not _re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', field):
-        raise HTTPException(status_code=400, detail=f"Field '{field}' not available for suggestions")
+        raise HTTPException(status_code=400, detail=t("inventory.err_field_field_not_available_suggestions", field=field))
     demo_eids = set(await demo_item_ids(session, company_id))
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
@@ -3082,9 +3082,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     if blocked:
         skus = ", ".join(sorted(str((rows[e].state or {}).get("sku") or e) for e in blocked))
         raise HTTPException(status_code=409, detail=(
-            f"Nothing was deleted. Only a draft that never became stock can be deleted, and these cannot: {skus}. "
-            f"Use Revert to Draft for stock made available by mistake, Archive to retire a product, "
-            f"or Write Off Stock for goods that left the company."))
+            t("inventory.err_nothing_was_deleted_only_draft_never", skus=skus)))
     files = await holding_files(session, company_id, rows)
     # An item kept as Deleted still names what it names (a sub-assembly's recipe names
     # its parts), so whatever it names in the selection is kept with it.
@@ -3317,7 +3315,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if not splitting_allowed(parent.state):
         raise HTTPException(
             status_code=422,
-            detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
+            detail=t("inventory.err_allow_splitting_set_no_item_change"),
         )
 
     parent_qty = float(parent.state.get("quantity") or 0)
@@ -4966,23 +4964,23 @@ async def undo_merge(entity_id: str, company_id=Depends(get_current_company_id),
     marker = await _latest_item_event(session, company_id, entity_id)
     if marker is None or marker.event_type != "item.merged":
         raise HTTPException(status_code=409, detail=(
-            "This merge can no longer be undone: the merged item has changed since it was made."))
+            t("inventory.err_merge_can_no_longer_undone_merged")))
     source_ids = list(marker.data["source_entity_ids"])
     locked = await _lock_items_for_physical_mutation(session, company_id, [entity_id, *source_ids])
     marker = await _latest_item_event(session, company_id, entity_id)
     if marker is None or marker.event_type != "item.merged" or entity_id not in locked:
         raise HTTPException(status_code=409, detail=(
-            "This merge can no longer be undone: the merged item has changed since it was made."))
+            t("inventory.err_merge_can_no_longer_undone_merged")))
     restores = []
     for sid in source_ids:
         last = await _latest_item_event(session, company_id, sid)
         if sid not in locked or last is None or last.event_type != "item.source_deactivated" \
                 or (last.data or {}).get("merged_into") != entity_id:
             raise HTTPException(status_code=409, detail=(
-                "This merge can no longer be undone: one of the merged items has changed since it was made."))
+                t("inventory.err_merge_can_no_longer_undone_one")))
         if not (last.data or {}).get("original_status"):
             raise HTTPException(status_code=409, detail=(
-                "This merge was made before merges could be undone, so the items' earlier state is not on record."))
+                t("inventory.err_merge_was_made_before_merges_could")))
         restores.append((sid, last.data))
 
     from celerp.services.auto_je import void_for_merge_reclassification

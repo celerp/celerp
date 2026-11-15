@@ -20,6 +20,7 @@ from celerp.services.business_time import company_today
 from celerp_fixed_assets import files, setup
 from celerp_fixed_assets.moves import _GONE, _locked_assets
 from celerp_fixed_assets.store import _emit, _entities, _state
+from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 # What a custodian sees of an asset in their care.
@@ -57,14 +58,14 @@ async def mine(session, company_id, user_id) -> list[tuple[str, dict]]:
 async def held(session, company_id, user_id, asset_id: str) -> dict:
     state = await _state(session, company_id, asset_id)
     if not held_by(state, user_id):
-        raise HTTPException(status_code=404, detail="No such asset in your care.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_your_care"))
     return state
 
 
 async def _locked_held(session, company_id, user_id, asset_id: str) -> dict:
     ((_, state),) = await _locked_assets(session, company_id, [asset_id])
     if not held_by(state, user_id):
-        raise HTTPException(status_code=404, detail="No such asset in your care.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_your_care"))
     return state
 
 
@@ -90,7 +91,7 @@ async def download_mine(asset_id: str, file_id: str, company_id=Depends(get_curr
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     match = files.file_of(await held(session, company_id, user.id, asset_id), file_id)
     if match.get("document_tag") not in files.CUSTODIAN_TAGS:
-        raise HTTPException(status_code=404, detail="No such file on this asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_file_asset"))
     return files.serve(company_id, match)
 
 
@@ -115,11 +116,11 @@ async def report_problem(asset_id: str, text: str = Form(""), photo: UploadFile 
 
     text = text.strip()
     if not text:
-        raise setup.unprocessable("Describe the problem.")
+        raise setup.refuse("fixed_assets.err_describe_problem")
 
     async def record(state: dict, _meta: dict | None = None) -> None:
         if not held_by(state, user.id):
-            raise HTTPException(status_code=404, detail="No such asset in your care.")
+            raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_your_care"))
         problem = {"id": str(uuid.uuid4()), "text": text, "user_id": str(user.id),
                    "date": (await company_today(session, company_id)).isoformat()}
         await _emit(session, company_id, user.id, asset_id, "fa_asset", "fa.asset.problem", {"problem": problem})

@@ -75,7 +75,7 @@ async def connector_media(token: str, request: Request):
     media = await media_file(token)
     size = await company_file_size(media.company_id, media.url) if media else None
     if size is None or size > MAX_FILE_BYTES:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=t("error.err_not_found"))
     headers = {"Cache-Control": "no-store", "Content-Length": str(size)}
     if request.method == "HEAD":
         return Response(media_type=inert_media_type(media.mime), headers=headers)
@@ -254,7 +254,7 @@ async def trigger_sync(
     if not implements(connector, payload.entity.value):
         raise HTTPException(
             status_code=400,
-            detail=f"{connector.display_name} does not support entity '{payload.entity}'",
+            detail=t("connectors.err_display_name_does_not_support_entity", display_name=connector.display_name, entity=payload.entity),
         )
 
     await _ready_config(session, company_id, connector)
@@ -797,7 +797,7 @@ async def _set_order_reconciled(
     )
 
     if not order_id.isdigit():
-        raise HTTPException(status_code=422, detail="order_id must be a WooCommerce order number")
+        raise HTTPException(status_code=422, detail=t("connectors.err_order_id_must_woocommerce_order_number"))
     from celerp.services.company_lock import lock_company
     await lock_company(session, uuid.UUID(str(company_id)))
 
@@ -868,7 +868,7 @@ async def import_order_under_next_number(
 
     require_on(await company_settings(company_id), "celerp-docs")
     if not order_id.isdigit():
-        raise HTTPException(status_code=422, detail="order_id must be a WooCommerce order number")
+        raise HTTPException(status_code=422, detail=t("connectors.err_order_id_must_woocommerce_order_number"))
     connector = connectors.get("woocommerce")
     await _ready_config(session, company_id, connector)
     await lock_company(session, uuid.UUID(str(company_id)))
@@ -1370,7 +1370,7 @@ async def set_item_sync(
     sent again in ``confirm_link`` with that product's id. Unpublish sets the store product
     to draft and keeps the link, so Publish undoes it; nothing is ever deleted in the store."""
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
-        raise HTTPException(status_code=404, detail="Unsupported catalog connector")
+        raise HTTPException(status_code=404, detail=t("connectors.err_unsupported_catalog_connector"))
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail=t("error.sync_none_selected"))
     if len(payload.entity_ids) > _ITEM_SYNC_LIMIT:

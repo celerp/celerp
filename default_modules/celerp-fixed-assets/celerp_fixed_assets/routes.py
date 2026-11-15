@@ -24,6 +24,7 @@ from celerp_fixed_assets import (
     runs, sales, setup, sources, taxbooks, transfer, views, yearend)
 from celerp_fixed_assets.events import register_events
 from celerp_fixed_assets.search import matching
+from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 
@@ -61,7 +62,7 @@ def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
 async def _asset(session, company_id, asset_id: str) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": asset_id})
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     return row.state
 
 
@@ -197,7 +198,7 @@ async def import_register(body: dict = Body(...), company_id=Depends(get_current
 async def list_imports(limit: int = 50, offset: int = 0, company_id=Depends(get_current_company_id),
                        session: AsyncSession = Depends(get_session)) -> dict:
     if limit < 1 or limit > 500 or offset < 0:
-        raise setup.unprocessable("Choose a page of 1 to 500 imports.")
+        raise setup.refuse("fixed_assets.err_choose_page_1_500_imports")
     found = await imports.batches(session, company_id)
     return {"items": found[offset:offset + limit], "total": len(found), "limit": limit, "offset": offset}
 
@@ -240,7 +241,7 @@ async def list_assets(class_id: str | None = None, q: str | None = None, limit: 
                       company_id=Depends(get_current_company_id), money: bool = _MONEY,
                       session: AsyncSession = Depends(get_session)) -> dict:
     if limit < 1 or limit > 500 or offset < 0:
-        raise setup.unprocessable("Choose a page of 1 to 500 assets.")
+        raise setup.refuse("fixed_assets.err_choose_page_1_500_assets")
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "fa_asset"))).all()
     found = [(eid, s) for eid, s in matching(rows, q) if not class_id or s.get("class_id") == class_id]
@@ -312,7 +313,7 @@ async def list_movements(asset_id: str, limit: int = 50, offset: int = 0,
                          company_id=Depends(get_current_company_id), money: bool = _MONEY,
                          session: AsyncSession = Depends(get_session)) -> dict:
     if limit < 1 or limit > 500 or offset < 0:
-        raise setup.unprocessable("Choose a page of 1 to 500 movements.")
+        raise setup.refuse("fixed_assets.err_choose_page_1_500_movements")
     await _asset(session, company_id, asset_id)
     items = sorted(await operations.asset_movements(session, company_id, asset_id),
                    key=lambda m: (m.get("posting_date") or "", int(m["id"].rsplit(":", 1)[1])), reverse=True)
@@ -402,7 +403,7 @@ async def change_sale(asset_id: str, action: str, body: dict = Body(...), compan
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     call = {"credit": sales.credit, "reissue": sales.reissue, "cancel": sales.cancel}.get(action)
     if call is None:
-        raise HTTPException(status_code=404, detail="No such sale action.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_sale_action"))
     return await _write(session, call, company_id, user.id, asset_id, body)
 
 

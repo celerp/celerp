@@ -2490,7 +2490,7 @@ async def update_item_from_connector(session: AsyncSession, entity_id: str, data
     # a sync that lowers the quantity is judged against what invoices hold under it.
     row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found_2"))
     state = row.state or {}
     if is_deleted(state):
         return False

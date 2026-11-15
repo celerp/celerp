@@ -25,6 +25,7 @@ from celerp_fixed_assets.operations import (
     WRITTEN_OFF_OVER_COST, _create_asset, _date, _dec, _effects, _money_in, _move, _next_numbers,
     _run, _undo, after_cutover, conflict, tag_taken)
 from celerp_fixed_assets.store import _emit, _entities, _state
+from ui.i18n import t
 
 KEYS = ("manage_accounting",)
 MAX_ROWS = 10_000
@@ -479,7 +480,7 @@ async def import_register(session, *, company_id, user_id, rows, as_at, source, 
 async def _batch(session, company_id, batch_id: str) -> dict:
     batch = await _state(session, company_id, batch_id)
     if batch is None or not batch_id.startswith("fa:import:"):
-        raise HTTPException(status_code=404, detail="No such import.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_import"))
     return batch
 
 
@@ -488,18 +489,18 @@ async def import_rows(session, company_id, user_id, batch_id: str, body: dict) -
     into the same batch."""
     fixes = body.get("rows")
     if not isinstance(fixes, list) or not fixes or not all(isinstance(f, dict) for f in fixes):
-        raise setup.unprocessable("Send the rows to import with their values.")
+        raise setup.refuse("fixed_assets.err_send_rows_import_with_their_values")
 
     async def plan(fa):
         batch = await _batch(session, company_id, batch_id)
         if batch["state"] == "undone":
-            raise conflict("This import was undone. Import the rows again as a new file.")
+            raise setup.refused(409, "fixed_assets.err_import_was_undone_import_rows_again")
         waiting = {r["row"]: r for r in await _batch_rows(session, company_id, batch_id) if r["status"] == "rejected"}
         numbered = []
         for fix in fixes:
             n = fix.get("row")
             if n not in waiting:
-                raise setup.unprocessable(f"Row {n} is not waiting in this import.")
+                raise setup.refuse("fixed_assets.err_row_n_not_waiting_import", n=n)
             numbered.append((n, RegisterRow.of(fix.get("values"))))
         books = await _books(session, company_id, fa)
         shown, context = await _plan(session, company_id, books, numbered, set(), bool(body.get("preview")))
@@ -525,7 +526,7 @@ async def undo_import(session, company_id, user_id, batch_id: str, body: dict) -
     as undone. Refused, naming them, when an imported asset has changed since."""
     batch = await _batch(session, company_id, batch_id)
     if batch["state"] == "undone":
-        raise conflict("This import was already undone.")
+        raise setup.refused(409, "fixed_assets.err_import_was_already_undone")
 
     async def done(op_key):
         await _record_batch(session, company_id, user_id, batch_id, {**batch, "state": "undone", "undone_by": op_key})
@@ -551,9 +552,9 @@ async def batches(session, company_id) -> list[dict]:
 async def batch_view(session, company_id, batch_id: str, *, status: str | None, limit: int, offset: int) -> dict:
     """An import with its rows (all, or those of one status) and the opening reconciliation."""
     if status is not None and status not in ROW_STATUSES:
-        raise setup.unprocessable(f"Choose rows that are {', '.join(ROW_STATUSES)}.")
+        raise setup.refuse("fixed_assets.err_choose_rows_row_statuses", row_statuses=', '.join(ROW_STATUSES))
     if limit < 1 or limit > 500 or offset < 0:
-        raise setup.unprocessable("Choose a page of 1 to 500 rows.")
+        raise setup.refuse("fixed_assets.err_choose_page_1_500_rows")
     batch = await _batch(session, company_id, batch_id)
     rows = [r for r in await _batch_rows(session, company_id, batch_id) if status is None or r["status"] == status]
     return {**batch_out(batch_id, batch), "accounts": (await opening.view(session, company_id))["accounts"],

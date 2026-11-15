@@ -599,7 +599,7 @@ async def list_convs(
     from celerp.ai.conversations import list_conversation_history, list_conversations, pending_action_counts
     if include_protected:
         if offset:
-            raise HTTPException(status_code=400, detail="include_protected requires offset=0")
+            raise HTTPException(status_code=400, detail=t("ai.err_include_protected_requires_offset_0"))
         convs = await list_conversation_history(
             session, company_id, user.id, limit=limit,
         )

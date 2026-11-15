@@ -29,5 +29,9 @@
   "labels.selected": "ተመርጧል: {ids}{more}",
   "labels.template_deleted": "አብነቱ ተሰርዟል።",
   "labels.template_not_found": "አብነቱ አልተገኘም።",
-  "labels.width_example": "ለምሳሌ. 50"
+  "labels.width_example": "ለምሳሌ. 50",
+  "labels.err_labels_not_printed_source_records": "Labels are not printed for {source} records.",
+  "labels.err_your_role_cannot_see_these_records": "Your role cannot see these records, so it cannot print their labels.",
+  "labels.err_choose_records_print_labels": "Choose the records to print labels for.",
+  "labels.err_print_at_most_max_source_ids": "Print at most {max_source_ids} labels at a time."
 }

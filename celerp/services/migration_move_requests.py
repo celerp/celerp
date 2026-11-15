@@ -20,6 +20,7 @@ from celerp.importers.adapters.registry import get_adapter
 from celerp.services import migration_scan_store as store
 from celerp.services.company_handoff_sender import cloud_json
 from celerp.services.migration_export_requests import required_email, required_text
+from ui.i18n import t
 
 ACCOUNT_NEEDED = "Sign in to a free Celerp account to ask us to move a client."
 UNCONFIRMED = "Could not confirm the move request. Retry the same step"
@@ -75,7 +76,7 @@ async def _row(request_id: uuid.UUID) -> dict:
     for row in await list_requests():
         if row.get("id") == str(request_id):
             return row
-    raise HTTPException(status_code=404, detail="Move request not found")
+    raise HTTPException(status_code=404, detail=t("migration.err_move_request_not_found"))
 
 
 async def withdraw(request_id: uuid.UUID) -> dict:

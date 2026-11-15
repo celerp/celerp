@@ -712,7 +712,7 @@ async def _planned_chart_import(
 ) -> ChartImportPlan:
     """Check the request and decide every row against the company's chart."""
     if request.query_params:
-        raise HTTPException(status_code=422, detail="The chart import takes no query parameters.")
+        raise HTTPException(status_code=422, detail=t("acct.err_chart_import_takes_no_query_parameters"))
     if body.upsert:
         raise HTTPException(
             status_code=422,
@@ -1868,7 +1868,7 @@ async def create_manual_journal_entry(
     if len(payload.entries) < 2:
         raise HTTPException(status_code=422, detail=t("acct.err_je_two_lines"))
     if not payload.idempotency_token:
-        raise HTTPException(status_code=422, detail="idempotency_token is required.")
+        raise HTTPException(status_code=422, detail=t("acct.err_idempotency_token_required"))
     # The token is bound to the whole request: sent again unchanged it answers with the
     # entry it posted (even once the period is locked), with any change it is refused.
     request = payload.model_dump(mode="json", exclude=_NOT_FINGERPRINTED)
@@ -3126,7 +3126,7 @@ async def create_transfer(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     if payload.amount <= 0:
-        raise HTTPException(status_code=422, detail="Transfer amount must be positive")
+        raise HTTPException(status_code=422, detail=t("acct.err_transfer_amount_must_positive"))
     await lock_company(session, company_id)
 
     from_bank = (
@@ -3139,7 +3139,7 @@ async def create_transfer(
         )
     ).scalar_one_or_none()
     if not from_bank:
-        raise HTTPException(status_code=404, detail="Source bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_source_bank_account_not_found"))
 
     to_bank = (
         await session.execute(
@@ -3151,7 +3151,7 @@ async def create_transfer(
         )
     ).scalar_one_or_none()
     if not to_bank:
-        raise HTTPException(status_code=404, detail="Destination bank account not found")
+        raise HTTPException(status_code=404, detail=t("acct.err_destination_bank_account_not_found"))
     await require_destinations(session, company_id, {from_bank.chart_account_code, to_bank.chart_account_code})
 
     je_id = f"je:transfer:{uuid.uuid4()}"
@@ -4403,7 +4403,7 @@ async def split_stmt_line(
     if sl.status == "matched":
         raise HTTPException(
             status_code=409,
-            detail="This line is already matched. Unmatch it before creating a split journal entry.",
+            detail=t("acct.err_line_already_matched_unmatch_before_creating"),
         )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
@@ -5391,7 +5391,7 @@ async def fix_peer_hold(
     item = await peer_accounts.held_item(session, company_id, item_id)
     if body.action == "unarchive":
         if (item.fix or {}).get("kind") != "archived" or not item.fix.get("local"):
-            raise HTTPException(status_code=422, detail="This record is not held by an archived account.")
+            raise HTTPException(status_code=422, detail=t("acct.err_record_not_held_by_archived_account"))
         await change_account(session, company_id, item.fix["local"], is_active=True)
     else:
         await peer_accounts.fix_hold(session, company_id, item, action=body.action,

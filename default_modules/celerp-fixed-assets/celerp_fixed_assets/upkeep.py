@@ -33,6 +33,7 @@ from celerp_fixed_assets.moves import _GONE, _locked_assets, member_name
 from celerp_fixed_assets.operations import in_use
 from celerp_fixed_assets.store import _emit, _entities, _state
 from celerp_fixed_assets.views import money_shown, readable
+from ui.i18n import t
 
 router = APIRouter(prefix="/fixed-assets/api", tags=["fixed-assets"], dependencies=[Depends(get_current_user)])
 _VIEW = [require_permission("view_fixed_assets")]
@@ -94,7 +95,7 @@ async def _field(session, company_id, field: str, value, kind: str):
         if value in (None, ""):
             return None
         if not await member_name(session, company_id, value):
-            raise setup.unprocessable("The responsible person is not a member of this company. Choose a member.")
+            raise setup.refuse("fixed_assets.err_responsible_person_not_member_company_choose")
         return str(uuid.UUID(str(value)))
     if field == "insured_value":
         if value in (None, ""):
@@ -106,7 +107,7 @@ async def _field(session, company_id, field: str, value, kind: str):
         except HTTPException:
             raise setup.unprocessable("Enter the insured value as an amount, such as 25000.") from None
         if amount < 0:
-            raise setup.unprocessable("Enter the insured value as an amount, such as 25000.")
+            raise setup.refuse("fixed_assets.err_enter_insured_value_as_amount_such")
         return str(round_money(amount, await setup.currency(session, company_id)))
     text = _text(value)
     if field == KINDS[kind] and not text:
@@ -131,7 +132,7 @@ def reminder_out(reminder_id: str, state: dict) -> dict:
 async def _live_asset(session, company_id, asset_id: str) -> dict:
     ((_, state),) = await _locked_assets(session, company_id, [asset_id])
     if not state.get("number"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     if state.get("status") in _GONE:
         in_use(asset_id, state, "upkeep")
     return state
@@ -140,7 +141,7 @@ async def _live_asset(session, company_id, asset_id: str) -> dict:
 async def _new_reminder(session, company_id, user_id, asset_id: str, body: dict) -> str:
     kind = body.get("kind")
     if not isinstance(kind, str) or kind not in KINDS:
-        raise setup.unprocessable("Choose maintenance, warranty or insurance.")
+        raise setup.refuse("fixed_assets.err_choose_maintenance_warranty_insurance")
     state = {"asset_id": asset_id, "kind": kind, "status": "open"}
     for field in (KINDS[kind], "due", "every_months", "lead_days", "responsible_user_id",
                   *(("policy", "insured_value") if kind == "insurance" else ())):
@@ -175,7 +176,7 @@ async def _change(session, company_id, user_id, reminder_id: str, changes: dict,
 
 def _open(reminder: dict) -> None:
     if reminder["status"] == "done":
-        raise setup.unprocessable("This reminder is already done.")
+        raise setup.refuse("fixed_assets.err_reminder_already_done")
     if reminder["status"] == "removed":
         raise setup.unprocessable("This reminder was removed. Undo the removal first.")
 
@@ -211,26 +212,26 @@ async def postpone(session, company_id, user_id, reminder_id: str, body: dict) -
     to = _day(body.get("to"), "The date to postpone to")
     reason = _text(body.get("reason"))
     if not reason:
-        raise setup.unprocessable("Say why it is postponed.")
+        raise setup.refuse("fixed_assets.err_say_why_postponed")
     if to <= reminder["due"]:
-        raise setup.unprocessable(f"Postpone to a date after {reminder['due']}.")
+        raise setup.refuse("fixed_assets.err_postpone_date_after_due", due=reminder['due'])
     return await _change(session, company_id, user_id, reminder_id, {"due": to},
                          _history("postponed", user_id, {"due": reminder["due"]}, {"due": to}, reason=reason))
 
 
 async def edit(session, company_id, user_id, reminder_id: str, changes: dict) -> dict:
     if not isinstance(changes, dict):
-        raise setup.unprocessable("Send the reminder's changes as named fields.")
+        raise setup.refuse("fixed_assets.err_send_reminder_s_changes_as_named")
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder was removed. Undo the removal first.")
+        raise setup.refuse("fixed_assets.err_reminder_was_removed_undo_removal_first")
     if "kind" in changes:
-        raise setup.unprocessable("The kind of a reminder cannot be changed. Remove it and add a new one.")
+        raise setup.refuse("fixed_assets.err_kind_reminder_cannot_changed_remove_add")
     allowed = {KINDS[reminder["kind"]], "due", "every_months", "lead_days", "responsible_user_id",
                *(("policy", "insured_value") if reminder["kind"] == "insurance" else ())}
     unknown = sorted(set(changes) - allowed)
     if unknown:
-        raise setup.unprocessable(f"{unknown[0]} cannot be edited on this reminder.")
+        raise setup.refuse("fixed_assets.err_value_cannot_edited_reminder", value=unknown[0])
     after = {f: await _field(session, company_id, f, v, reminder["kind"]) for f, v in changes.items()}
     after = {k: v for k, v in after.items() if reminder.get(k) != v}
     if not after:
@@ -242,7 +243,7 @@ async def edit(session, company_id, user_id, reminder_id: str, changes: dict) ->
 async def remove(session, company_id, user_id, reminder_id: str) -> dict:
     reminder = await _locked(session, company_id, reminder_id, REMINDER)
     if reminder["status"] == "removed":
-        raise setup.unprocessable("This reminder is already removed.")
+        raise setup.refuse("fixed_assets.err_reminder_already_removed")
     return await _change(session, company_id, user_id, reminder_id, {"status": "removed"},
                          _history("removed", user_id, {"status": reminder["status"]}, {"status": "removed"}))
 
@@ -255,7 +256,7 @@ async def undo(session, company_id, user_id, reminder_id: str) -> dict:
     index = next((i for i, h in enumerate(reminder.get("history") or [])
                   if h["action"] not in ("created", "undone") and not h.get("undone")), None)
     if index is None:
-        raise setup.unprocessable("Nothing to undo on this reminder.")
+        raise setup.refuse("fixed_assets.err_nothing_undo_reminder")
     latest = reminder["history"][index]
     if latest.get("maint_id"):
         await _emit(session, company_id, user_id, latest["maint_id"], MAINT, "fa.maint.status", {"status": "undone"})
@@ -288,18 +289,17 @@ async def add_entry(session, company_id, user_id, asset_id: str, body: dict) -> 
 
 async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict) -> dict:
     if not isinstance(changes, dict):
-        raise setup.unprocessable("Send the maintenance entry's changes as named fields.")
+        raise setup.refuse("fixed_assets.err_send_maintenance_entry_s_changes_as")
     entry = await _locked(session, company_id, maint_id, MAINT)
     from_bill = bool(entry.get("source"))
     if from_bill and {"date", "amount"} & set(changes):
-        raise setup.unprocessable(f"The {'date' if 'date' in changes else 'amount'} comes from the bill. Correct the "
-                                  "bill to change it.")
+        raise setup.refuse("fixed_assets.err_value_comes_from_bill_correct_bill", value='date' if 'date' in changes else 'amount')
     unknown = sorted(set(changes) - set(MAINT_EDITABLE))
     if unknown:
-        raise setup.unprocessable(f"{unknown[0]} cannot be edited on a maintenance entry.")
+        raise setup.refuse("fixed_assets.err_value_cannot_edited_maintenance_entry", value=unknown[0])
     after = {k: _day(v, "The date the work was done") if k == "date" else _text(v) for k, v in changes.items()}
     if "work" in after and not after["work"]:
-        raise setup.unprocessable("Describe the maintenance work.")
+        raise setup.refuse("fixed_assets.err_describe_maintenance_work")
     after = {k: v for k, v in after.items() if entry.get(k) != v}
     if after:
         await _emit(session, company_id, user_id, maint_id, MAINT, "fa.maint.updated", {"changes": after})
@@ -310,9 +310,9 @@ async def edit_entry(session, company_id, user_id, maint_id: str, changes: dict)
 async def set_entry_status(session, company_id, user_id, maint_id: str, status: str) -> dict:
     entry = await _locked(session, company_id, maint_id, MAINT)
     if entry.get("source"):
-        raise setup.unprocessable("This maintenance came from a bill. To remove it, undo its registration.")
+        raise setup.refuse("fixed_assets.err_maintenance_came_from_bill_remove_undo")
     if entry["status"] == "undone":
-        raise HTTPException(status_code=404, detail="No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_maintenance_entry"))
     if entry["status"] != status:
         await _emit(session, company_id, user_id, maint_id, MAINT, "fa.maint.status", {"status": status})
         await session.commit()
@@ -323,7 +323,7 @@ async def attach_to_entry(session, company_id, user_id, maint_id: str, file: Upl
     """Store a receipt or report on the asset, tagged maintenance, and list it on the entry."""
     entry = await _state(session, company_id, maint_id)
     if entry is None or entry.get("status") == "undone":
-        raise HTTPException(status_code=404, detail="No such maintenance entry.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_maintenance_entry"))
 
     async def note(_state_of_asset: dict, meta: dict) -> None:
         locked = await _locked(session, company_id, maint_id, MAINT)
@@ -352,7 +352,7 @@ async def of_asset(session, company_id, asset_id: str) -> dict:
     """An asset's reminders, open ones soonest first, and its maintenance log, newest first."""
     asset = await _state(session, company_id, asset_id)
     if asset is None or not asset.get("number"):
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=t("fixed_assets.err_no_such_asset_2"))
     currency = await setup.currency(session, company_id)
     reminders = [reminder_out(r, s) for r, s in await _entities(session, company_id, REMINDER)
                  if s["asset_id"] == asset_id]

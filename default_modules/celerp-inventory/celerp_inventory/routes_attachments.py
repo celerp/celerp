@@ -107,7 +107,7 @@ async def _locked_item(session: AsyncSession, company_id, entity_id: str) -> Pro
     drop the earlier one's change, so each waits for the last to commit before reading."""
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found_2"))
     return row
 
 
@@ -126,7 +126,7 @@ async def upload_attachment(
     Pass ?attachment_type=view_360 to tag a 360 image/video explicitly.
     """
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
-        raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
+        raise HTTPException(status_code=422, detail=t("inventory.err_invalid_attachment_type_attachment_type", attachment_type=f'{attachment_type!r}'))
 
     await get_item_projection(session, company_id, entity_id)
 
@@ -184,9 +184,9 @@ async def set_preview_image(
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
     if target is None:
-        raise HTTPException(status_code=404, detail="Attachment not found")
+        raise HTTPException(status_code=404, detail=t("inventory.err_attachment_not_found"))
     if target["type"] != "image":
-        raise HTTPException(status_code=422, detail="preview_image_id can only be set to an image attachment")
+        raise HTTPException(status_code=422, detail=t("inventory.err_preview_image_id_can_only_set"))
 
     await _patch_item_attachments(session, company_id, entity_id, user.id, attachments, att_id)
     await session.commit()
@@ -561,11 +561,11 @@ async def item_file_thumbnail(
     atts = row.state.get("attachments") or []
     match = _get_item_file(files + atts, file_id)
     if not str(match.get("mime", "")).startswith("image/"):
-        raise HTTPException(status_code=404, detail="File is not an image")
+        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_image"))
     await _assert_image_visible(session, company_id, role, row, match)
     data = await get_or_create_thumbnail(session, str(company_id), match)
     if data is None:
-        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+        raise HTTPException(status_code=404, detail=t("inventory.err_thumbnail_unavailable"))
     return Response(
         content=data,
         media_type="image/jpeg",
