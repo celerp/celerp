@@ -18,6 +18,7 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
+from celerp.importers.results import message_text
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock
@@ -61,7 +62,7 @@ async def _refused(session, client, auth, *lots: str) -> None:
     books = await assert_books_carry_stock(session, auth["company_id"])
     r = await _delete(client, auth, *lots)
     assert r.status_code == 409, r.text
-    assert all(action in r.json()["detail"] for action in _ACTIONS), r.text
+    assert all(action in message_text(r.json()["detail"]) for action in _ACTIONS), r.text
     await session.rollback()  # the refused request's work ends with it, as its own session would
     for lot in lots:
         assert await _exists(session, auth, lot)
