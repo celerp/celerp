@@ -87,9 +87,8 @@
       }
     },
     {
-      "text": "Tick the groups whose suggestion is right and click {post}. The button shows how many lines and what total you are posting. Each posted line keeps an Undo until its statement is complete. {suggest} looks again for an answer to every open line.",
+      "text": "Tick the groups whose suggestion is right and click Post ticked. The button shows how many lines and what total you are posting. Each posted line keeps an Undo until its statement is complete. {suggest} looks again for an answer to every open line.",
       "labels": {
-        "post": "bank.post_ticked",
         "suggest": "bank.suggest"
       },
       "image": null,

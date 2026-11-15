@@ -26,6 +26,7 @@ from playwright.sync_api import expect
 from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
 from celerp.services.business_time import business_today
 from celerp_labels.presets import PRESET_TEMPLATES
+from test_helpers import grant_permission
 from ui.i18n import t
 
 from .conftest import set_session_cookies
@@ -192,6 +193,17 @@ async def seed_bank_statement(client: httpx.AsyncClient, auth: dict, today: date
         "job_id": job_id, "bank_id": bank_id, "idempotency_key": uuid.uuid4().hex,
         "statements": [{"header": {**st["header"], **header}, "lines": st["lines"]}
                        for st in preview.json()["statements"]]})
+    assert r.status_code == 200, r.text
+    # A client who answers questions without keeping the books, asked about the ATM line,
+    # so the questions page shows a card with its answer form.
+    await grant_permission(client, auth, "answer_bank_questions", "viewer")
+    r = await client.post("/companies/me/users", headers=auth, json={
+        "email": "client@example.com", "name": "Client", "role": "viewer", "password": "userpw123"})
+    assert r.status_code == 200, r.text
+    table = (await client.get(f"/accounting/reconciliation/bank/{bank_id}/groups", headers=auth)).json()
+    atm = next(line for g in table["groups"] for line in g["lines"] if "ATM" in line["description"])
+    r = await client.post(f"/accounting/reconciliation/bank/{bank_id}/ask", headers=auth, json={
+        "line_ids": [atm["id"]], "note": "What was this cash for?", "idempotency_key": uuid.uuid4().hex})
     assert r.status_code == 200, r.text
 
 
