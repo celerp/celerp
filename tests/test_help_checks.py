@@ -10,9 +10,17 @@ from celerp.help import checks
 
 FIXTURES = Path(__file__).parent / "fixtures" / "help"
 MODULE = "celerp-inventory"
-# The bad set leaves one nav entry of the fixture module without a page.
-NAV = {MODULE: ["/inventory", "/inventory?status=sold", "/settings/inventory"]}
-GOOD_NAV = {MODULE: ["/inventory", "/inventory?status=sold"]}
+# Screens of the fixture module and the help page each names, over the good page set.
+GOOD_SCREENS = {MODULE: [("/inventory", "inventory.add-item"), ("/inventory?status=sold", "inventory.add-item")]}
+BAD_SCREENS = {
+    MODULE: [
+        ("/inventory", "inventory.add-item"),
+        ("/settings/inventory", None),             # names no page
+        ("/inventory/import", "inventory.gone"),   # names a page nobody ships
+        ("/docs?type=invoice", "inventory.add-item"),  # names a page that does not list the screen
+    ],
+    "celerp-docs": [("/inventory", "inventory.add-item")],  # names another module's page
+}
 
 EXPECTED = {
     "check_schema": {"placeholder.json", "per-locale.json"},
@@ -38,14 +46,16 @@ def test_each_check_flags_its_fixture(name):
     assert check(_pages("good")) == []
 
 
-def test_coverage_check_flags_uncovered_nav_entry():
-    messages = checks.check_module_coverage(_pages("bad"), modules=NAV)
-    assert len(messages) == 1 and "/settings/inventory" in messages[0]
-    assert checks.check_module_coverage(_pages("good"), modules=GOOD_NAV) == []
-    # An empty page set covers nothing.
-    assert checks.check_module_coverage([], modules=GOOD_NAV)
+def test_screen_help_check_flags_each_screen_without_its_page():
+    messages = checks.check_screen_help(_pages("good"), modules=BAD_SCREENS)
+    assert sorted(m.split(":", 2)[1].strip() for m in messages) == [
+        "/docs?type=invoice", "/inventory", "/inventory/import", "/settings/inventory"]
+    assert all(m.startswith(("celerp-inventory:", "celerp-docs:")) for m in messages)
+    assert checks.check_screen_help(_pages("good"), modules=GOOD_SCREENS) == []
+    # An empty page set resolves nothing.
+    assert checks.check_screen_help([], modules=GOOD_SCREENS)
 
 
 def test_every_check_is_exercised():
     defined = {n for n in dir(checks) if n.startswith("check_")}
-    assert defined == set(EXPECTED) | {"check_module_coverage"}
+    assert defined == set(EXPECTED) | {"check_screen_help"}
