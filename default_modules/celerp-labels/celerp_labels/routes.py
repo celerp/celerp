@@ -103,15 +103,15 @@ async def create_template(
 ) -> dict:
     values = _checked_numbers(body.model_dump())
     await lock_company(session, company_id)
-    t = LabelTemplate(
+    template = LabelTemplate(
         id=uuid.uuid4(),
         company_id=company_id,
         **values,
     )
-    session.add(t)
+    session.add(template)
     await session.commit()
-    log.debug("Created label template %s for company %s", t.id, company_id)
-    return t.as_dict()
+    log.debug("Created label template %s for company %s", template.id, company_id)
+    return template.as_dict()
 
 
 @router.get("/templates/{template_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Read one label template.")
@@ -120,8 +120,8 @@ async def get_template(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    t = await _get_or_404(session, company_id, template_id)
-    return t.as_dict()
+    template = await _get_or_404(session, company_id, template_id)
+    return template.as_dict()
 
 
 @router.put("/templates/{template_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list"}, summary="Change a label template.")
@@ -133,11 +133,11 @@ async def update_template(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     values = _checked_numbers(body.model_dump(exclude_none=True))
-    t = await _get_or_404(session, company_id, template_id, for_update=True)
+    template = await _get_or_404(session, company_id, template_id, for_update=True)
     for k, v in values.items():
-        setattr(t, k, v)
+        setattr(template, k, v)
     await session.commit()
-    return t.as_dict()
+    return template.as_dict()
 
 
 @router.delete("/templates/{template_id}", status_code=204, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/labels/print-list"}, summary="Delete a label template.")
@@ -147,8 +147,8 @@ async def delete_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    t = await _get_or_404(session, company_id, template_id, for_update=True)
-    await session.delete(t)
+    template = await _get_or_404(session, company_id, template_id, for_update=True)
+    await session.delete(template)
     await session.commit()
 
 
@@ -399,7 +399,7 @@ async def _resolve_template(
     if template_id_str:
         try:
             tid = uuid.UUID(template_id_str)
-            t = (
+            template = (
                 await session.execute(
                     select(LabelTemplate).where(
                         LabelTemplate.id == tid,
@@ -407,8 +407,8 @@ async def _resolve_template(
                     )
                 )
             ).scalar_one_or_none()
-            if t:
-                return t.as_dict()
+            if template:
+                return template.as_dict()
         except ValueError:
             pass
 

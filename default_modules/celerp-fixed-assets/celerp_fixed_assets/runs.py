@@ -468,16 +468,16 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     exceptions = {}
     for c in charges:
         for k, amount in c.postable():
-            t = target.get(k, month)
-            items[t].append({"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
+            into = target.get(k, month)
+            items[into].append({"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
                              "month": k, "amount": amount, "expense": c.expense, "accumulated": c.accumulated,
-                             "fund": c.asset.get("fund_id"), "catch_up": t != k})
+                             "fund": c.asset.get("fund_id"), "catch_up": into != k})
         by_month: dict[int, list[int]] = {}
         for k in c.held(month):
             by_month.setdefault(target.get(k, month), []).append(k)
-        for t, months in by_month.items():
+        for into, months in by_month.items():
             amount = c.held_amount(months)
-            held[t][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
+            held[into][c.asset_id] = {"asset_id": c.asset_id, "number": c.asset["number"], "name": c.asset.get("name"),
                                    "amount": None if amount is None else money(amount, currency), "action": c.action,
                                    "reason": c.reason if c.action == "method_unavailable" else None}
         exceptions[c.asset_id] = (c.asset.get("exception"), c.exception(month, user_id))
