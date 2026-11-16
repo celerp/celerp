@@ -261,3 +261,53 @@ async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the
     since = [i for x in reads if x[2] is not None for i in x[2]]
     assert since and all(i.startswith("je:recon:") for i in since), reads
     assert not [i for i in loaded if i.startswith("je:seed:")], len(loaded)
+
+
+async def test_an_accept_of_a_suggested_line_on_a_completed_statement_is_refused(client, session):
+    """A statement completed with a small difference written off keeps its unmatched line and that
+    line's suggestion; an accept confirmed before the completion is refused, nothing posts."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    imp = await B.statement(client, co, bk["id"], [("2026-01-05", "CHARGE", "-0.50")], opening="0.00",
+                            closing="-0.50", start="2026-01-01", end="2026-01-31")
+    r = await client.post("/accounting/rules", json={"match_pattern": "CHARGE", "target_account_code": "5100",
+                                                     "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    r = await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    table = await B.groups(client, co, bk["id"])
+    accept = B.accept(table, [g["key"] for g in table["groups"]])
+    assert len(accept["line_ids"]) == 1, table
+    sid = imp["sessions"][0]["id"]
+    r = await client.post(f"/accounting/reconciliation/{sid}/write-off", json={"adjustment_account": "6950"},
+                          headers=co["h"])
+    assert r.status_code == 200, r.text
+    r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.json()["completed"] == ["2026-01-31"], r.text
+    line = B.all_lines(await B.groups(client, co, bk["id"], view="all"))[0]
+    assert line["status"] == "unmatched" and line["suggestion_version"] == accept["versions"][line["id"]], line
+    r = await B.resolve(client, co, bk["id"], accept=accept)
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "reconciliation.line_not_open", r.text
+    assert [j for j in await _entries(session, co) if not j.startswith("je:recon:writeoff:")] == []
+
+
+async def test_an_entry_before_the_first_statement_that_makes_up_its_opening_is_never_a_twin(client):
+    """Statement first, then the books: an entry keyed after the import, dated before the
+    statement and making up its opening balance, is the statement's carry-in (worked out from the
+    books, not the list stored at import, which was empty). A line of the same money near it posts
+    instead of being matched to the carry-in."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    await B.statement(client, co, bk["id"], [("2026-01-02", "SUPPLIER", "-80.00")], opening="-80.00",
+                      closing="-160.00", start="2026-01-01", end="2026-01-31")
+    r = await client.post("/accounting/journal-entries", headers=co["h"], json={
+        "ts": "2025-12-30", "memo": "carried in", "idempotency_token": B.key(),
+        "entries": [{"account": "5100", "debit": 80.0, "credit": 0.0},
+                    {"account": bk["chart_account_code"], "debit": 0.0, "credit": 80.0}]})
+    assert r.status_code == 200, r.text
+    carried = r.json()["je_id"]
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "post",
+                                                          "account_code": "5100"}])
+    row = r.json()["results"][0]
+    assert row["ok"] and not row["matched_instead"] and carried not in row["je_ids"], row
