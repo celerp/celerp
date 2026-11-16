@@ -13,7 +13,7 @@ from ui.i18n import t
 
 pytestmark = pytest.mark.browser
 
-_TRY_AGAIN_KEY = "acct.line_not_found"
+_TRY_AGAIN_KEY = "acct.err_statement_line_not_found"
 _RETRY_PROSE_KEY = "shell.request_failed"
 _CSV = b"sku,name,quantity\nTA-1,Probe ring,1\n"
 

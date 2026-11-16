@@ -631,7 +631,7 @@ async def test_forbidden_renders_clean(ui_client):
 # ---------------------------------------------------------------------------
 
 _NEW_KEYS = [
-    "acct.tab_journal", "acct.tab_general_ledger", "acct.tab_soa",
+    "acct.tab_journal", "acct.tab_general_ledger",
     "th.opening", "th.closing", "th.source",
     "btn.new_entry", "btn.post",
     "acct.source_manual", "acct.source_transfer", "acct.source_reconciliation",

@@ -190,22 +190,6 @@
       "en": "idempotency_token is required.",
       "params": []
     },
-    "acct.err_transfer_amount_must_positive": {
-      "en": "Transfer amount must be positive",
-      "params": []
-    },
-    "acct.err_source_bank_account_not_found": {
-      "en": "Source bank account not found",
-      "params": []
-    },
-    "acct.err_destination_bank_account_not_found": {
-      "en": "Destination bank account not found",
-      "params": []
-    },
-    "acct.err_line_already_matched_unmatch_before_creating": {
-      "en": "This line is already matched. Unmatch it before creating a split journal entry.",
-      "params": []
-    },
     "acct.err_record_not_held_by_archived_account": {
       "en": "This record is not held by an archived account.",
       "params": []
