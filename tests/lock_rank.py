@@ -513,6 +513,14 @@ class Recorder:
         under that company."""
         self._put(self.flow(conn_key), _ROWS, (table, str(row)), str(company))
 
+    def name_child_row(self, conn_key: int, table: str, row: str, parent_table: str, parent: str) -> None:
+        """The ORM is about to write ``table``'s row ``row``, which belongs to its parent
+        ``parent``: the row is judged under the company this transaction named the parent
+        under, and stays unknown when it named none."""
+        company = self.rows[self.flow(conn_key)].get((parent_table, str(parent)))
+        if company:
+            self.name_row(conn_key, table, row, company)
+
     def _own(self, conn_key: int, lock: Lock) -> bool:
         """R1: a row of a company this transaction inserted and has not committed. Nobody else
         sees the company, so nobody holds, waits on or inserts a row naming it: its locks are
@@ -1689,10 +1697,15 @@ def install() -> None:
         state = inspect(target)
         if not state.identity or len(state.identity) != 1:
             return
-        column = _company_column(table)
-        company = state.committed_state.get(column, getattr(target, column, None))
-        if company is not None:
-            RECORDER.name_row(id(connection.connection.dbapi_connection), table, state.identity[0], company)
+        conn_key = id(connection.connection.dbapi_connection)
+        column, parent_table = _company_link(table) or (_company_column(table), "companies")
+        value = state.committed_state.get(column, getattr(target, column, None))
+        if value is None:
+            return
+        if parent_table == "companies":
+            RECORDER.name_row(conn_key, table, state.identity[0], value)
+        else:
+            RECORDER.name_child_row(conn_key, table, state.identity[0], parent_table, value)
 
     @event.listens_for(Session, "after_transaction_end")
     def _session_end(session, transaction):
