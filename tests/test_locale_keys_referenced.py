@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Every string in the company copy, accountant access, firm view, account sync, migration,
-accountant notice, accounting, bank, fixed asset, assistant and field label sections of the
+accountant notice, accounting, bank, reconcile, fixed asset, assistant and field label sections of the
 English catalog is used by the code, so none is translated twelve times and never shown."""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from shipped_sources import APP_ROOTS
 ROOT = Path(__file__).resolve().parents[1]
 SECTIONS = ("company_backup.", "accountant_access.", "firm_view.", "sync_accounts.", "migration.",
             "notice.peer_", "notice.online_fee", "notice.xero_",
-            "acct.", "bank.", "reconciliation.", "fixed_assets.", "ai.", "field.")
+            "acct.", "bank.", "recon.", "reconciliation.", "fixed_assets.", "ai.", "field.")
 
 
 def _shipped_source() -> str:
