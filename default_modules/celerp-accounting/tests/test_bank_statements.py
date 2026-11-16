@@ -545,6 +545,74 @@ async def test_pay_doc_needs_record_payments(client, session):
     assert await _open_balance(client, co["h"], inv) == Decimal("100")
 
 
+def _account_total(projections: dict, account: str) -> Decimal:
+    """Debits less credits on ``account`` over the posted entries."""
+    return sum((Decimal(str(e.get("debit") or 0)) - Decimal(str(e.get("credit") or 0))
+                for s in projections.values() if s.get("entries") and s.get("status") == "posted"
+                for e in s["entries"] if e.get("account") == account), Decimal(0))
+
+
+async def test_undo_of_a_document_payment_line_restores_everything(client, session):
+    """A line that paid an invoice (with a fee taken out) is undone: the payment is deleted
+    with its index, its entry and the fee entry are voided together, and the invoice, the
+    ledger, the bank account and the line are as before; repeating the first request then
+    answers its first result and a new payment works."""
+    co, bk = await _co_bank(client)
+    inv = await _invoice(client, co["h"], 100.0)
+    await _one_month(client, co, bk, [("2026-01-05", "ACME LTD", "97.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    bank_code = bk["chart_account_code"]
+    before = await _projections(session, co)
+    pay = {"line_ids": [line["id"]], "kind": "pay_doc", "docs": [{"doc_id": inv, "amount": 100.0}],
+           "parts": [{"account_code": "5100", "amount": -3.0}]}
+    idem = B.key()
+    first = await B.resolve(client, co, bk["id"], decisions=[pay], idem=idem)
+    assert first.json()["results"][0]["ok"], first.text
+    paid = await _projections(session, co)
+    assert _account_total(paid, bank_code) == Decimal("97")
+    r = await client.post(f"{B.API}/bank/{bk['id']}/unmatch", json={"line_ids": [line["id"]],
+                                                                     "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    after = await _projections(session, co)
+    assert await _open_balance(client, co["h"], inv) == Decimal("100")
+    payments = after[inv].get("payments") or []
+    assert [(p.get("index"), p.get("status")) for p in payments] == [(1, "deleted")] or \
+        all(p.get("status") != "active" for p in payments), payments
+    assert {e for e, s in after.items() if s.get("status") == "void"} >= {
+        e for e in paid if e not in before and e.startswith("je:")}
+    for account in {e.get("account") for s in paid.values() for e in s.get("entries") or []}:
+        assert _account_total(after, account) == _account_total(before, account), account
+    assert B.all_lines(await B.groups(client, co, bk["id"]))[0]["status"] == "unmatched"
+    assert await _held(session, co, bk["id"]) == (set(), set())
+    again = await B.resolve(client, co, bk["id"], decisions=[pay], idem=idem)
+    assert again.json() == first.json()
+    assert await _open_balance(client, co["h"], inv) == Decimal("100")
+    fresh = await B.resolve(client, co, bk["id"], decisions=[pay])
+    assert fresh.json()["results"][0]["ok"], fresh.text
+    assert await _open_balance(client, co["h"], inv) == Decimal("0")
+    assert _account_total(await _projections(session, co), bank_code) == Decimal("97")
+
+
+async def test_undo_of_a_document_payment_line_needs_record_payments(client, session):
+    """Undoing a payment is held to the permission that records one: a member who keeps the
+    books but may not record payments is refused, and nothing changes."""
+    co, bk = await _co_bank(client)
+    inv = await _invoice(client, co["h"], 100.0)
+    await _one_month(client, co, bk, [("2026-01-05", "ACME LTD", "100.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "pay_doc",
+                                                          "docs": [{"doc_id": inv, "amount": 100.0}]}])
+    assert r.json()["results"][0]["ok"], r.text
+    from test_helpers import grant_permission
+    await grant_permission(client, co["h"], "record_payments", "admin")
+    mgr = await B.member(client, session, co, "manager")
+    r = await client.post(f"{B.API}/bank/{bk['id']}/unmatch", json={"line_ids": [line["id"]],
+                                                                     "idempotency_key": B.key()}, headers=mgr)
+    assert r.status_code == 403, r.text
+    assert await _open_balance(client, co["h"], inv) == Decimal("0")
+    assert B.all_lines(await B.groups(client, co, bk["id"], view="all"))[0]["status"] == "posted"
+
+
 # ── Unmatch, complete, delete ───────────────────────────────────────────────
 
 async def test_bulk_unmatch_list_of_one_equals_old_unmatch(client, session):

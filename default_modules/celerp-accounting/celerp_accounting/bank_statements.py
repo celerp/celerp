@@ -28,6 +28,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, request_fingerprint
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.payments import lock_recorded_unmatched
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
@@ -906,7 +907,7 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
              **({"conversion_rate": d.rate} if d.rate else {})},
             source="reconciliation", actor_id=actor_id, idempotency_key=f"{key}:{line.id}:pay:{x.doc_id}",
             commit=False)
-        je_ids.append(f"je:auto:{x.doc_id}:pay:{event.data['index']}")
+        je_ids.append(SL.payment_entry_id(x.doc_id, event.data["index"]))
     if d.parts:
         je_ids.append(await SL.post_parts(
             db, company_id=company_id, actor_id=actor_id, bank=bank, line=line,
@@ -1275,17 +1276,21 @@ class Unmatch(BaseModel):
 @router.post(f"{API}/bank/{{bank_id}}/unmatch", summary="Undo settled statement lines: void what they posted and "
              "release what they matched.", openapi_extra=_agent("line_ids"))
 async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.UUID = Depends(get_current_company_id),
-                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
-                        db: AsyncSession = Depends(get_session)) -> dict:
-    """All the lines or none: the entries the lines posted are voided and the lines are open again."""
+                        _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
+                        user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:
+    """All the lines or none: the entries the lines posted are voided, the document payments
+    they recorded deleted, and the lines are open again."""
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:
         return first
+    # A document payment a line recorded is deleted the way any payment is, which locks the
+    # payments recorded from unmatched ones first (after the company, before the lines).
+    await lock_recorded_unmatched(db, company_id)
     bank = await _bank(db, company_id, bank_id)
     lines = await _locked_lines(db, company_id, bank, payload.line_ids, state=("matched", "posted", "skipped"))
     for line in lines:
-        await SL.unmatch_line(db, company_id=company_id, actor_id=actor_id, line=line)
+        await SL.unmatch_line(db, company_id=company_id, actor_id=actor_id, role=role, line=line)
     result = await _recorded(db, company_id, actor_id, key, request, "unmatch", bank.id,
                              {"unmatched": [str(l.id) for l in lines]})
     await db.commit()

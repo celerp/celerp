@@ -403,9 +403,28 @@ async def skip_line(db: AsyncSession, line: BankStatementLine) -> None:
     line.matched_je_ids = []
 
 
-async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine) -> None:
+def payment_entry_id(doc_id: str, index: int) -> str:
+    """The id of the entry a document's payment ``index`` posts."""
+    return f"je:auto:{doc_id}:pay:{index}"
+
+
+async def _doc_payment(db: AsyncSession, company_id: uuid.UUID, je_id: str, state: dict) -> tuple[str, int] | None:
+    """The document and payment index whose payment posted the entry ``je_id``, else None:
+    the entry names its document, and the payment is the one whose entry it is."""
+    doc_id = state.get("record_id")
+    doc = await db.get(Projection, {"company_id": company_id, "entity_id": doc_id}) if doc_id else None
+    if doc is None or doc.entity_type != "doc":
+        return None
+    return next(((doc_id, p["index"]) for p in (doc.state or {}).get("payments") or []
+                 if p.get("index") is not None and payment_entry_id(doc_id, p["index"]) == je_id), None)
+
+
+async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, role: str,
+                       line: BankStatementLine) -> None:
     """Let ``line`` go: its statement releases the entries first, so the completed-history
-    check sees none held, then an entry the line posted itself is voided."""
+    check sees none held, then an entry the line posted itself is voided and a document
+    payment it recorded is deleted the way any payment recorded by mistake is, all in the
+    caller's transaction."""
     from celerp.services.je_keys import je_void_data
 
     recon = await _session(db, line)
@@ -420,6 +439,9 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, lin
             state = row.state or {}
             if state.get("status") == "void":
                 continue
+            if (paid := await _doc_payment(db, company_id, je_id, state)) is not None:
+                await _delete_payment(db, company_id, actor_id, role, line, *paid)
+                continue
             if state.get("je_type") not in _OWN_ENTRY_TYPES:
                 raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
             if state.get("je_type") == "recon_transfer":
@@ -431,6 +453,20 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, lin
                              idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={})
     line.status = "unmatched"
     line.matched_je_ids = []
+
+
+async def _delete_payment(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, line: BankStatementLine,
+                          doc_id: str, index: int) -> None:
+    """Delete the payment ``line`` recorded on ``doc_id``, under the same permission that recorded it.
+    The caller (unmatch_lines) locked the company's recorded payments before the lines."""
+    from celerp.services.permissions import admit_permission
+    from celerp_docs.routes import delete_doc_payment
+
+    await admit_permission(db, company_id, role, "record_payments")
+    key = f"{payment_entry_id(doc_id, index)}:reconciliation-unmatch"
+    await delete_doc_payment(db, str(company_id), doc_id, index, actor_id=actor_id,
+                             reason="Reconciliation line unmatched", key=key, digest=f"reconciliation-unmatch:{line.id}",
+                             source="reconciliation", recorded_locked=True)
 
 
 async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, je_id: str) -> None:

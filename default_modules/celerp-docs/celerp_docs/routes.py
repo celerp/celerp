@@ -5081,11 +5081,26 @@ async def delete_payment(
     A bank reconciliation that counts the payment's entry refuses the void, and with it
     the whole deletion, until the entry is unmatched there.
     """
+    key, digest = _operation("delete-payment", f"{entity_id}:{payment_index}", payload)
+    result = await delete_doc_payment(session, company_id, entity_id, payment_index, actor_id=user.id,
+                                      reason=payload.delete_reason, key=key, digest=digest, source="api")
+    await session.commit()
+    return result
+
+
+async def delete_doc_payment(session: AsyncSession, company_id, entity_id: str, payment_index: int, *, actor_id,
+                             reason: str | None, key: str, digest: str, source: str,
+                             recorded_locked: bool = False) -> dict:
+    """Tombstone the payment ``payment_index`` on ``entity_id`` and void its entry, in the
+    caller's transaction: the one correction for a payment that was never real, used by
+    the delete route and by a bank reconciliation undoing the payment it recorded.
+    ``recorded_locked``: the caller already holds lock_recorded_unmatched for the company,
+    taken before its own rows."""
     from celerp.services import auto_je
 
-    await lock_recorded_unmatched(session, company_id, entity_id)  # a deleted one goes back to them
+    if not recorded_locked:
+        await lock_recorded_unmatched(session, company_id, entity_id)  # a deleted one goes back to them
     row = await _get_doc(session, company_id, entity_id, for_update=True)
-    key, digest = _operation("delete-payment", f"{entity_id}:{payment_index}", payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.deleted",
                                    entity_id=entity_id, digest=digest)) is not None:
         return done
@@ -5163,10 +5178,10 @@ async def delete_payment(
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.deleted",
-        data={"payment_index": payment_index, "delete_reason": payload.delete_reason,
+        data={"payment_index": payment_index, "delete_reason": reason,
               "amount": payment.get("amount"), "method": payment.get("method"),
               "tombstone": True, "ts": payment.get("payment_date")},
-        actor_id=user.id, location_id=None, source="api",
+        actor_id=actor_id, location_id=None, source=source,
         idempotency_key=key, metadata_={"request": digest},
     )
 
@@ -5178,9 +5193,9 @@ async def delete_payment(
         await emit_event(
             session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
             event_type="acc.journal_entry.voided",
-            data=_je_void(f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip(),
+            data=_je_void(f"Deleted: payment {payment_index} on {entity_id}. {reason or ''}".strip(),
                           je_row.state),
-            actor_id=user.id, location_id=None, source="auto_je",
+            actor_id=actor_id, location_id=None, source="auto_je",
             # Keyed on the resolved JE id: the old doc-scoped positional shape
             # could collide with a compaction-era deletion's key and silently
             # swallow this void.
@@ -5189,17 +5204,16 @@ async def delete_payment(
         )
     if imported_books is not None:
         await auto_je.void_for_doc_payment(
-            session, company_id=company_id, user_id=user.id, doc_id=entity_id, payment_index=payment_index,
+            session, company_id=company_id, user_id=actor_id, doc_id=entity_id, payment_index=payment_index,
             amount=to_stored_float(_refundable(payment, str(row.state.get("currency") or "USD").upper())),
             bank_account_code=imported_books.bank_account, doc_type=row.state.get("doc_type", "invoice"),
             refund_date=payment.get("payment_date"), base_currency=imported_books.base_currency,
             doc_rate=imported_books.doc_rate, settlement_rate=imported_books.settlement_rate)
     if row.state.get("doc_type") == "credit_note":
-        await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=user.id,
+        await auto_je.void_credit_note_payment_rate(session, company_id=company_id, user_id=actor_id,
                                                     doc_id=entity_id, payment_index=payment_index)
 
     await return_unmatched(session, company_id, entity_id, payment.get("reference"))
-    await session.commit()
     return {"event_id": entry.id}
 
 
