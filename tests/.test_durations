@@ -31059,5 +31059,9 @@
     "tests/test_ai_card_names.py::test_a_namer_of_a_module_the_company_does_not_use_is_never_asked": 0.04086631489917636,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_bank_complete_race_pg.py]": 0.005642164032906294,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_bank_order.py]": 0.006602067034691572,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_units.py]": 0.006222639000043273
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_units.py]": 0.006222639000043273,
+    "default_modules/celerp-ai/tests/test_routes_coverage.py::test_expired_proposals_another_request_refreshed_first_are_returned_not_refreshed_twice": 4.928452368942089,
+    "default_modules/celerp-ai/tests/test_routes_coverage.py::test_expired_proposals_are_proposed_again_under_new_ids": 0.16881107492372394,
+    "default_modules/celerp-ai/tests/test_routes_coverage.py::test_proposals_another_request_recorded_first_are_returned_not_built_twice": 0.1645566939841956,
+    "tests/test_ai_usage.py::test_question_answered_after_its_send_read_the_thread_returns_that_answer": 0.2591958058765158
 }
