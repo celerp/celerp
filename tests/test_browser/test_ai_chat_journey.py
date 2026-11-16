@@ -25,6 +25,7 @@ from playwright.sync_api import Page, expect
 
 import celerp.ai.service as ai_service
 from celerp.ai.llm import ModelResult
+from celerp_ai.ui_routes import QUESTION_POLL_S
 
 pytestmark = [pytest.mark.browser, pytest.mark.usefixtures("tools_open_when_called")]
 
@@ -93,6 +94,14 @@ def item_create_cap(agent_caps) -> str:
     return agent_caps[("POST", "/items")]["name"]
 
 
+# A reply lands in the thread at the question bubble's next poll. The first question a
+# server answers also builds its API schema, so on a slow runner the answer can land just
+# after the first poll and show at the second: every wait here covers two polls more
+# than Playwright's default.
+_PLAYWRIGHT_WAIT_MS = 5000  # Playwright's default for expect()
+_REPLY_WAIT_MS = _PLAYWRIGHT_WAIT_MS + 2 * QUESTION_POLL_S * 1000
+
+
 @pytest.fixture(autouse=True)
 def agent_env():
     """Report an active cloud subscription and swap in the fake model.
@@ -107,6 +116,8 @@ def agent_env():
         stack.enter_context(patch("celerp.ai.quota.get_quota_status",
                                   new=AsyncMock(return_value=_FAKE_STATUS)))
         stack.enter_context(patch.object(ai_service, "complete", _fake_complete))
+        stack.callback(expect.set_options, timeout=_PLAYWRIGHT_WAIT_MS)
+        expect.set_options(timeout=_REPLY_WAIT_MS)
         yield
     _SCRIPT.clear()
     set_session_token("")

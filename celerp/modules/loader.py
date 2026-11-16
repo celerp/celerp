@@ -1201,7 +1201,11 @@ def module_label(pkg_name: str) -> str:
     no manifest, so its package name is shown as words ("celerp-accounting" ->
     "Accounting") rather than as an identifier."""
     path = resolve_runtime_module_path(pkg_name, module_search_path())
-    meta = read_manifest_metadata(path) if path is not None else {}
+    return manifest_label(pkg_name, read_manifest_metadata(path) if path is not None else {})
+
+
+def manifest_label(pkg_name: str, meta: dict) -> str:
+    """The display name ``meta`` (the module's manifest) gives, else its package name as words."""
     return (meta.get("display_name") or meta.get("label")
             or pkg_name.removeprefix("celerp-").replace("-", " ").replace("_", " ").title())
 

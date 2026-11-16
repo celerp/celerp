@@ -487,7 +487,10 @@ def compile_agent_capabilities(
     settings = company_settings or {}
     openapi = app.openapi()
     schemas = ((openapi.get("components") or {}).get("schemas") or {})
-    routes = _api_routes(app)
+    routes: dict[tuple[str, str], list[APIRoute]] = {}
+    for route_path, methods, route in _api_routes(app):
+        for method in methods:
+            routes.setdefault((route_path, method), []).append(route)
     compiled: dict[str, dict[str, Any]] = {}
     bulk_targets: dict[str, str] = {}
 
@@ -508,10 +511,7 @@ def compile_agent_capabilities(
             if not requires_confirmation and download is None and not _json_response(operation):
                 continue
 
-            matching = [
-                route for route_path, methods, route in routes
-                if route_path == path and method in methods
-            ]
+            matching = routes.get((path, method), [])
             if len(matching) != 1:
                 continue
             route = matching[0]

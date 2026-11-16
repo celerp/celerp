@@ -44,7 +44,7 @@ from celerp.ai.tools import (
 )
 from celerp.help.registry import get_index
 from celerp.help.search import module_enabled
-from celerp.modules.loader import CORE_FOLDED, loaded_modules, module_label
+from celerp.modules.loader import CORE_FOLDED, loaded_modules, manifest_label, module_label
 from celerp.modules.registry import uses_module
 from celerp.services.field_schema import field_visibility
 from celerp.services.permissions import read_authority, role_has_permission
@@ -295,11 +295,18 @@ def agent_area(capability: dict) -> str:
 
 def agent_areas(company_settings: dict) -> dict[str, str]:
     """Every area the company runs, with its label: core, the modules folded into
-    core, and each first-party module the company uses."""
-    names = set(CORE_FOLDED) | {
-        str(m.get("name")) for m in loaded_modules()
+    core, and each first-party module the company uses. Labels come from the loaded
+    manifests, never from disk: this runs for every question."""
+    labels = {name: _folded_label(name) for name in CORE_FOLDED} | {
+        str(m["name"]): manifest_label(str(m["name"]), m) for m in loaded_modules()
         if m.get("first_party") is True and m.get("name") and uses_module(company_settings, m.get("name"))}
-    return {CORE_AREA: "Celerp", **{name: module_label(name) for name in sorted(names)}}
+    return {CORE_AREA: "Celerp", **dict(sorted(labels.items()))}
+
+
+@functools.cache
+def _folded_label(name: str) -> str:
+    """A folded module's label: it ships inside core, so it cannot change while the process runs."""
+    return module_label(name)
 
 
 def _help_modules(company_settings: dict) -> list[str]:
