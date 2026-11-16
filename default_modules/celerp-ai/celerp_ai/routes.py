@@ -46,7 +46,6 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
-from celerp.ai.card import card_arguments
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.agent_markers import agent_excluded
@@ -1440,6 +1439,8 @@ def _same_text(a, b: str) -> bool:
 
 def _proposal_record(capability: dict, arguments: dict, *, title: str, warnings: list[str],
                      file_id: str, now: datetime, bindings: list[dict] | None = None) -> dict:
+    from celerp.ai.card import card_arguments
+
     record = {
         "id": f"prop_{secrets.token_hex(12)}",
         "name": capability["name"],

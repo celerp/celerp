@@ -10,7 +10,6 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from celerp.ai.names import is_id_value
 from celerp.error_body import keyed
 from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
@@ -1258,6 +1257,8 @@ def _fmt_scalar(key: str, value, currency: str | None, names: dict | None = None
     proposal names it (an id no one names never shows: the card says its name is not
     available), yes or no, quantities without float noise, amounts at currency
     precision, a choice by its label, everything else as text."""
+    from celerp.ai.names import is_id_value
+
     if value is None or value == "":
         return "--"
     if names and isinstance(value, str) and value in names:
