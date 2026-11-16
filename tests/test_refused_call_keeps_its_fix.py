@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import ast
 import json
-import pathlib
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -22,11 +21,11 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from celerp.accounting_roles import refusal
+from shipped_sources import REPO, shipped_sources, ui_sources
 from test_helpers import make_test_token
 from ui.api_client import APIError
 from ui.i18n import refusal_text
 
-_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _SHOWN_BY = ("error_flash", "refusal_line")
 _REFUSAL = refusal("reconciliation.no_client_user", "")  # as the API answers it, with its fix
 _FIX = 'href="/settings/general?tab=users"'
@@ -56,10 +55,8 @@ def _refused(*_a, **_k):
 def _sites() -> set[tuple[str, int]]:
     """(file, line) of every call that renders a refused call, outside tests and the helpers."""
     found = set()
-    for path in [*(_ROOT / "ui").rglob("*.py"), *(_ROOT / "default_modules").rglob("*.py")]:
-        if "tests" in path.parts:
-            continue
-        rel = str(path.relative_to(_ROOT))
+    for path in sorted({path for _rel, path in shipped_sources()} | {p for p in ui_sources() if "tests" not in p.parts}):
+        rel = path.relative_to(REPO).as_posix()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _SHOWN_BY
                     and rel != "ui/components/shell.py"):
@@ -113,18 +110,15 @@ async def ui_client():
         yield c
 
 
-_HIT: set[tuple[str, int]] = set()
-
-
-def _recording(real, module_file: str):
+def _recording(real, module_file: str, hit: set):
     def shown(error, *a, **k):
-        _HIT.add((module_file, sys._getframe(1).f_lineno))
+        hit.add((module_file, sys._getframe(1).f_lineno))
         return real(error, *a, **k)
     return shown
 
 
-def _recorders() -> list:
-    """Every module that renders a refused call records the line it renders from."""
+def _recorders(hit: set) -> list:
+    """Every module that renders a refused call records the line it renders from into *hit*."""
     out = []
     for rel in sorted({f for f, _ in _sites()}):
         mod_name = rel[:-3].replace("/", ".")
@@ -133,13 +127,11 @@ def _recorders() -> list:
         mod = sys.modules.get(mod_name) or __import__(mod_name, fromlist=["_"])
         for name in _SHOWN_BY:
             if hasattr(mod, name):
-                out.append(patch.object(mod, name, _recording(getattr(mod, name), rel)))
+                out.append(patch.object(mod, name, _recording(getattr(mod, name), rel, hit)))
     return out
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", _CASES, ids=[c[0] for c in _CASES])
-async def test_a_refused_call_keeps_the_link_to_its_fix(ui_client, case):
+async def _drive(ui_client, case, hit: set):
     _name, method, url, form, api, cookies = case
     patches = [patch(f"ui.api_client.{fn}", AsyncMock(side_effect=v) if v is _refused else AsyncMock(return_value=v))
                for fn, v in api.items()]
@@ -148,20 +140,28 @@ async def test_a_refused_call_keeps_the_link_to_its_fix(ui_client, case):
         patches.append(patch("ui.routes.settings_payments._documents_off", AsyncMock(return_value=None)))
     if url.startswith("/setup/new-company/migrate"):
         patches.append(patch("ui.routes.migrations.gate", AsyncMock(return_value=None)))
-    patches += _recorders()
+    patches += _recorders(hit)
     for p in patches:
         p.start()
     try:
         ui_client.cookies.set("celerp_token", make_test_token(role="owner"))
         for k, v in cookies.items():
             ui_client.cookies.set(k, v)
-        r = await (ui_client.get(url) if method == "get" else ui_client.post(url, data=form or {}))
+        return await (ui_client.get(url) if method == "get" else ui_client.post(url, data=form or {}))
     finally:
         for p in reversed(patches):
             p.stop()
-    assert _FIX in r.text, (r.status_code, r.text[:600])
 
 
-def test_every_place_that_shows_a_refused_call_is_driven():
-    """Runs after the cases above (same file, collected in order)."""
-    assert _sites() - _HIT == set()
+@pytest.mark.asyncio
+async def test_every_place_that_shows_a_refused_call_keeps_the_link_to_its_fix(ui_client):
+    """Each case keeps the link, and the cases together reach every place that shows a
+    refused call, in one test so no split of the suite can run the check without its cases."""
+    hit: set[tuple[str, int]] = set()
+    lost = {}
+    for case in _CASES:
+        r = await _drive(ui_client, case, hit)
+        if _FIX not in r.text:
+            lost[case[0]] = (r.status_code, r.text[:300])
+    assert lost == {}
+    assert _sites() - hit == set()
