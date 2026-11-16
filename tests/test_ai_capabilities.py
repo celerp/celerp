@@ -3,6 +3,7 @@
 """Generic OpenAPI capability compiler/executor tests."""
 from __future__ import annotations
 
+import asyncio
 import ast
 import functools
 import hashlib
@@ -435,10 +436,15 @@ def _imported(name: str):
 @functools.cache
 def _calls(fn) -> tuple[tuple[ast.Call, object], ...]:
     """Each call in ``fn``'s source with what it resolves to, read once per function:
-    the walk below meets the same functions under every capability."""
+    the walk below meets the same functions under every capability. A coroutine handed
+    to ``asyncio.create_task`` runs after the response is sent, so what it consults is
+    not part of the result and its calls are left out."""
     tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     namespace = _namespace(fn, tree)
-    return tuple((node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call))
+    calls = [(node, _resolve(node.func, namespace)) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    later = {id(inner) for node, target in calls if target is asyncio.create_task
+             for arg in node.args for inner in ast.walk(arg)}
+    return tuple((node, target) for node, target in calls if id(node) not in later)
 
 
 def _consulted(fn, seen: set | None = None, granted: bool = False) -> tuple[set[str], bool, set[str]]:
@@ -629,7 +635,16 @@ def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls()
         from celerp_accounting.funds import post_fund_movement
         return await post_fund_movement(None, None, ts=None, reason="", actor=None)
 
-    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared, emits, moves):
+    async def _checks_later():
+        return _costs_helper({}, "owner")
+
+    @app.get("/starts", operation_id="starts", openapi_extra={"x-celerp-agent": True})
+    async def starts():
+        asyncio.create_task(_checks_later())
+        return {"ok": _costs_helper({}, "owner")}
+
+    for fn in (_costs_helper, _visibility_helper, direct, helper, by_data, declared, emits, moves, starts,
+               _checks_later):
         fn.__module__ = "celerp.routers.agent_test"
     app.openapi_schema = None
     found = "\n".join(_undeclared(app))
@@ -641,6 +656,8 @@ def test_the_declaration_guard_finds_a_check_in_a_handler_or_a_helper_it_calls()
     assert "helper: field visibility applied True, declared False" in found
     assert "by_data: declared [], consults [], by data" in found
     assert "declared:" not in found
+    # A task the handler starts runs after the response; the handler's own check still counts.
+    assert "starts: declared [], consults ['view_inventory_costs'], by data []" in found
 
 
 def test_a_declared_result_permission_must_be_a_permission_key():
