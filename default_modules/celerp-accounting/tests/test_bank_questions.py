@@ -218,7 +218,7 @@ async def test_ask_notice_rolls_back_with_question(client, session, monkeypatch)
 
 
 @pytest.mark.parametrize("result,words", [
-    (EmailResult(False, "relay down", reason="email.relay_unavailable"), "could not be sent"),
+    (EmailResult(False, "no transport", reason="email.err_no_transport"), "could not be sent"),
     (EmailResult(False, "timeout", unconfirmed=True), "may have gone out"),
 ], ids=["failed", "unconfirmed"])
 async def test_ask_client_email_failure_keeps_question(client, session, monkeypatch, result, words):
@@ -228,6 +228,7 @@ async def test_ask_client_email_failure_keeps_question(client, session, monkeypa
     assert r.status_code == 200, r.text
     out = r.json()
     assert words in out["outcome"] and "Viewer" in out["outcome"]
+    assert out["outcome"].startswith("Asked about 1 line. ") and ".." not in out["outcome"], out["outcome"]
     assert out["email"]["state"] == ("unconfirmed" if result.unconfirmed else "failed")
     assert await _notices(session, co["company_id"]) == 1
     got = (await client.get(Q, headers=client_h)).json()
@@ -283,3 +284,15 @@ async def test_answer_receipt_store_failure_keeps_form(client, session, monkeypa
         assert r.status_code == 200, r.text
     line = B.line_by_text(await B.groups(client, co, bk["id"]), "WITHDRAWAL")
     assert len(line["attachments"]) == 1
+
+
+async def test_asking_about_several_lines_counts_them_and_says_each_reason_once(client, session, monkeypatch):
+    """Two lines read as lines, and the send failure reads as its own sentence, never with a doubled full stop."""
+    from ui.i18n import t
+
+    _sent(monkeypatch, EmailResult(False, "no transport", reason="email.err_no_transport"))
+    co, bk, client_h, lines = await _setup(client, session)
+    r = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"], lines["TRANSFER"]["id"]])
+    out = r.json()["outcome"]
+    assert out.startswith("Asked about 2 lines. ") and ".." not in out, out
+    assert f" {t('email.err_no_transport', 'en')} They see" in out, out

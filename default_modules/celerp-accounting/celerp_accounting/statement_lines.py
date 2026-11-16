@@ -598,13 +598,22 @@ async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines:
             failed.append((member.name, state, str(t(result.reason)) if result.reason else result.detail))
         worst = min(worst, state, key=_EMAIL_STATES.index)
     asked_ids = [str(l.id) for l in lines]
+    one = len(lines) == 1
     if not failed:
-        outcome = t("acct.recon_asked", count=len(lines), names=", ".join(m.name for m in members))
+        outcome = t("acct.recon_asked_one" if one else "acct.recon_asked", count=len(lines),
+                    names=", ".join(m.name for m in members))
     else:
         state, reason = failed[0][1], failed[0][2]
-        outcome = t("acct.recon_asked_email_failed" if state == "failed" else "acct.recon_asked_email_unconfirmed",
-                    count=len(lines), name=", ".join(n for n, _s, _r in failed), reason=reason)
+        key = _ASKED_NOT_SENT[state][one]
+        outcome = t(key, count=len(lines), name=", ".join(n for n, _s, _r in failed), reason=reason)
     return {"asked": asked_ids, "outcome": str(outcome), "email": {"state": worst}}
+
+
+# The outcome of asking when an email did not go out, by send state, then by whether one line was asked.
+_ASKED_NOT_SENT = {
+    "failed": {False: "acct.recon_asked_email_failed", True: "acct.recon_asked_email_failed_one"},
+    "unconfirmed": {False: "acct.recon_asked_email_unconfirmed", True: "acct.recon_asked_email_unconfirmed_one"},
+}
 
 
 def _html(text: str) -> str:
