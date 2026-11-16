@@ -144,7 +144,7 @@ async def test_changing_a_completed_reconciliation_says_it_can_be_reopened_and_w
     if change == "resolve":
         r = await B.decide(client, h, sid, line, "no_entry")
         assert r.status_code == 200 and r.json()["refused"] == 1, r.text
-        detail = r.json()["results"][0]["reason"]
+        detail = refusal_text(r.json()["results"][0]["reason"])
     elif change == "unmatch":
         r = await B.undo(client, h, sid, [line])
     else:

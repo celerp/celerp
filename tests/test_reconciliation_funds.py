@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 import bank_statement_helpers as B
 from celerp.models.projections import Projection
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -106,7 +106,7 @@ async def test_without_funds_the_statement_line_forms_have_no_fund_choice(owner_
     assert html.escape(t("recon.fund_hint"), quote=False) not in split
     result = await _posted(api, bank["id"], lines["Library gift"]["id"], account_code="4100",
                            fund_id=str(uuid.uuid4()))
-    assert not result["ok"] and "fund" in result["reason"].lower(), result
+    assert not result["ok"] and "fund" in refusal_text(result["reason"]).lower(), result
 
 
 async def _je(api, ts: str, *lines: tuple[str, float, float, str | None]) -> None:
@@ -133,7 +133,7 @@ async def test_a_statement_line_moving_a_pooled_balance_takes_each_funds_share(o
     payout, accrual = lines["Library gift"]["id"], lines["Supplies"]["id"]
 
     result = await _posted(api, bank["id"], payout, account_code="1140", fund_id=library)
-    assert not result["ok"] and "Library" in result["reason"], result
+    assert not result["ok"] and "Library" in refusal_text(result["reason"]), result
     result = await _posted(api, bank["id"], payout, account_code="1140")
     assert result["ok"], result
     # 300 leaves clearing: Library's 60, the unrestricted 40 and the 200 beyond what the funds hold.

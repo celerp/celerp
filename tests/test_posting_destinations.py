@@ -34,7 +34,8 @@ def _refused(r, why: str, code: str) -> None:
     key, english = _REFUSALS[why]
     if r.status_code == 200 and "results" in r.json():  # a bank resolve answers line by line
         [result] = r.json()["results"]
-        assert result["ok"] is False and result["reason"] == english.format(code=code), r.text
+        assert result["ok"] is False and result["reason"]["message_key"] == key, r.text
+        assert refusal_text(result["reason"]) == english.format(code=code), r.text
         return
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
