@@ -105,6 +105,18 @@ def test_a_card_shows_a_named_id_by_its_name_and_never_shows_an_unnamed_one():
     assert "Bank fee" in html
 
 
+@pytest.mark.parametrize("number", [float("inf"), float("-inf"), float("nan"), 10**30, 1e30, -0.0, 1e-30, 80])
+def test_a_card_shows_any_number_the_model_sends(number):
+    """A quantity or amount past what the formatters keep exactly still reads on the card."""
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_card
+
+    action = {"id": "c1", "name": "adjust", "title": "Adjust",
+              "shown": {"body": {"quantity": number, "amount": number, "unit_price": number}}}
+    html = to_xml(_action_card("conv", "msg", action))
+    assert html.count("ai-action__line-val") == 3
+
+
 @pytest.mark.asyncio
 async def test_a_card_names_an_assistant_upload_and_a_reading_by_their_file_names(auth, ids, session, tmp_path, monkeypatch):
     """A statement read names the files it reads, and its import names the reading by those files."""

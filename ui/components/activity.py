@@ -203,8 +203,7 @@ def fmt_qty(value) -> str:
         d = Decimal(str(value)).normalize()
     except (InvalidOperation, ValueError, TypeError):
         return str(value)
-    if d == d.to_integral_value():
-        d = d.quantize(Decimal(1))
+    # "f" writes a normalized whole number (8E+1) in full (80), at any size.
     return format(d, "f")
 
 
