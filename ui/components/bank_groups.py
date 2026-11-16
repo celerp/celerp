@@ -404,7 +404,7 @@ def drop_zone(bank_id: str) -> FT:
     return Div(
         H2(t("bank.drop_title")),
         P(t("bank.drop_hint"), cls="text-muted"),
-        Form(Input(type="file", name="files", multiple=True, accept=".pdf,.csv,.ofx,.qfx,.xlsx,.xls",
+        Form(Input(type="file", name="files", multiple=True, accept=".pdf,.csv,.ofx,.qfx,.xlsx",
                    cls="form-input", data_drop="1", aria_label=t("bank.drop_title")),
              _key_input(),
              action=bank_url(bank_id, "drop"), method="post", enctype="multipart/form-data", cls="bank-drop__form"),
