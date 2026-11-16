@@ -338,3 +338,39 @@ async def test_a_rule_without_a_pattern_or_account_is_refused_naming_both(ui_cli
         r = await ui_client.post("/settings/accounting/rules", data={"bank_account_id": "", "match_pattern": "",
                                                                      "target_account_code": "5100"})
     assert t("acct.rule_pattern_and_account_code_are_required") in r.text and not create.await_count
+
+
+async def _post_ticked(ui_client, data, answer):
+    action = AsyncMock(return_value=answer)
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", action):
+            r = await ui_client.post("/accounting/reconcile/bank/b1/post-ticked", data=data)
+    finally:
+        for p in patches:
+            p.stop()
+    return r, action
+
+
+async def test_post_ticked_sends_each_line_with_the_suggestion_it_showed_and_says_which_were_matched(ui_client):
+    from ui.i18n import t
+    r, action = await _post_ticked(ui_client, {"group_key": ["SPARSE:WITHDRAWAL:out"], "line_id": ["l1", "l2"],
+                                               "version": ["v1", "v2"], "idempotency_key": "k1"},
+                                   {"results": [{"line_id": "l1", "ok": True},
+                                                {"line_id": "l2", "ok": True, "matched_instead": True}]})
+    assert r.status_code == 200, r.text
+    assert action.await_args.args[1:] == ("b1", "resolve", {
+        "accept": {"group_keys": ["SPARSE:WITHDRAWAL:out"], "line_ids": ["l1", "l2"],
+                   "versions": {"l1": "v1", "l2": "v2"}}, "idempotency_key": "k1"})
+    assert t("bank.posted_outcome", n=2) in r.text and t("bank.matched_instead", n=1) in r.text
+
+
+@pytest.mark.parametrize("data", [{"group_key": ["g"]}, {"line_id": ["l1"], "version": ["v1"]}, {}])
+async def test_post_ticked_with_nothing_ticked_sends_nothing_and_says_so(ui_client, data):
+    from ui.i18n import t
+    r, action = await _post_ticked(ui_client, {**data, "idempotency_key": "k1"}, {"results": []})
+    assert r.status_code == 200, r.text
+    assert not action.await_count and t("bank.nothing_ticked") in r.text

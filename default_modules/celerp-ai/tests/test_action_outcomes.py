@@ -433,3 +433,13 @@ async def test_run_again_on_a_keyed_record_never_runs_a_second_copy(client, sess
     assert retry.status_code == 200 and retry.json()["action_status"] == "completed", retry.text
     assert identities == [identities[0]] * 2
     assert await _fund_count(client, admin) == before + 1
+
+
+@pytest.mark.asyncio
+async def test_outcomes_of_a_message_deleted_mid_run_are_dropped(session):
+    """The conversation was deleted while its card ran: the outcomes have nowhere to go and
+    the run goes on to its own result, never failing on the missing message."""
+    import uuid
+
+    await ai_conversations.note_outcomes(session, message_id=uuid.uuid4(), tool_call_id="t1",
+                                         outcomes=[{"status": "executing"}])
