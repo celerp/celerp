@@ -155,26 +155,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
-  "route": "ui POST /accounting/reconcile/start",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/auto-match",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/complete",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/skip",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
   "route": "ui POST /accounting/sync-accounts/added/{item_id}",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
