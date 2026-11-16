@@ -8302,7 +8302,7 @@
   "company_backup.err_attachment_type_unstored": "تحتوي هذه الشركة على ملف مرفق من نوع لا يخزنه برنامج Celerp: {url}. لم يتم إنشاء نسخة منه.",
   "company_backup.err_attachment_unreadable": "تحتوي هذه الشركة على ملف مرفق لا يستطيع برنامج Celerp قراءته: {url}. لم يتم إنشاء نسخة منه.",
   "company_backup.err_updating_restore": "يقوم برنامج Celerp بتحديث قاعدة بياناته. لم يتم استعادة أي شيء. حاول مرة أخرى بعد قليل.",
-  "company_backup.err_updating_copy": "يقوم برنامج Celerp بتحديث قاعدة بياناته. لم يتم إنشاء نسخة احتياطية. حاول مرة أخرى بعد قليل.",
+  "company_backup.err_updating_copy": "يقوم برنامج Celerp بتحديث قاعدة بياناته. لم يتم إنشاء أي نسخة. حاول مرة أخرى بعد قليل.",
   "company_backup.err_module_no_version": "لا تُصرّح وحدة {owner} بإصدار صالح، لذا لا يمكن لنسخة الشركة من بياناتها أن تحدد الإصدار الذي يستعيدها. لم يتم إنشاء أي نسخة.",
   "company_backup.err_module_form_restore": "تحتفظ وحدة {owner} بالبيانات في {label} بشكل لا يستطيع Celerp استعادته حتى الآن. لم تتم استعادة أي شيء.",
   "company_backup.err_module_form_copy": "تحتفظ وحدة {owner} بالبيانات في {label} بشكل لا يستطيع Celerp نسخه بعد. لم يتم إنشاء أي نسخة.",
