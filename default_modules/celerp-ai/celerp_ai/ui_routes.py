@@ -1250,11 +1250,14 @@ def _fmt_scalar(key: str, value, currency: str | None) -> str:
 
 
 def _fmt_value(key: str, value, currency: str | None = None) -> FT | str:
-    """A field value as a person reads it; nested records become short lines."""
+    """A field value as a person reads it; a nested record is one short line, or its own
+    list of labelled lines when its fields hold records or lists, at any depth."""
     if isinstance(value, dict):
-        parts = [f"{_label(k)}: {_fmt_scalar(k, v, currency)}"
-                 for k, v in value.items() if v not in (None, "")]
-        return ", ".join(parts) or "--"
+        shown = [(k, v) for k, v in value.items() if v not in (None, "")]
+        if any(isinstance(v, (dict, list)) for _k, v in shown):
+            return Ul(*[Li(f"{_label(k)}: ", _fmt_value(str(k), v, currency)) for k, v in shown],
+                      cls="ai-action__sublist")
+        return ", ".join(f"{_label(k)}: {_fmt_scalar(k, v, currency)}" for k, v in shown) or "--"
     if isinstance(value, list):
         if not value:
             return "--"

@@ -416,6 +416,17 @@ def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
     assert "Notes" in html and "--" in html
 
 
+def test_action_card_reads_records_nested_at_any_depth():
+    """A record inside a list inside a record reads as labelled lines, never as raw data."""
+    action = {"id": "prop_1", "name": "import_statement", "title": "Import", "arguments": {"body": {
+        "statements": [{"header": {"period_start": "2026-03-01", "currency": "USD"},
+                        "lines": [{"line_date": "2026-03-02", "raw_csv_row": {"memo": "BANK FEE"},
+                                   "tags": ["a", "b"], "ticked": True}]}]}}}
+    html = _card_html(action)
+    assert "{" not in html.split("ai-action__lines", 1)[1] and "[" not in html.split("ai-action__lines", 1)[1]
+    assert "Period start: 2026-03-01" in html and "Memo: BANK FEE" in html and "a, b" in html
+
+
 def test_action_card_lists_warnings_before_the_buttons():
     action = {**_ACTION, "title": "Create bill",
               "warnings": ["The tax does not match the line totals."]}
