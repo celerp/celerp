@@ -2614,6 +2614,7 @@ _CALLABLE_SLOTS = {
     "fixed_asset_rules": ("handler", False),
     "label_source": ("handler", True),
     "import_target": ("handler", True),
+    "record_names": ("handler", True),
     "turn_off_preflight": ("handler", True),
 }
 # Callable slots core calls with keyword arguments only, and those arguments. The
@@ -2631,6 +2632,7 @@ _HANDLER_KEYWORDS = {
     "doc_posting_dependents": ("session", "company_id", "user_id", "doc_id", "relabel"),
     "label_source": ("session", "company_id", "ids"),
     "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
+    "record_names": ("session", "company_id", "settings", "role", "ids"),
     "turn_off_preflight": ("session", "company_id"),
 }
 # Entry keys naming a permission. Gating surfaces index the permission registry,
@@ -2803,6 +2805,7 @@ _SLOT_ENTRY_KEYS: dict[str, dict[str, tuple[tuple[type, ...], bool]]] = {
     "label_source": {"entity_type": (_TEXT, True), "label_key": (_TEXT, True), "keys": ((list,), True),
                      "preset": ((dict,), True)},
     "import_target": {"kind": (_TEXT, True)},
+    "record_names": {},
     "turn_off_preflight": {},
 }
 _TYPE_NAMES = {str: "text", int: "a number", float: "a number", bool: "true or false",

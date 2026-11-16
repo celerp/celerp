@@ -106,6 +106,40 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
     return rows
 
 
+def _uuids(ids: set[str]) -> list[uuid.UUID]:
+    out = []
+    for value in ids:
+        try:
+            out.append(uuid.UUID(value))
+        except ValueError:
+            continue
+    return out
+
+
+async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings: dict, role: str,
+                       ids: set[str]) -> dict[str, str]:
+    """The names a confirm card shows for the company's bank accounts (any member reads
+    the list of them) and statement lines (date, description and amount, for a role that
+    works the bank page)."""
+    from celerp.services.permissions import role_has_permission
+
+    keys = _uuids(ids)
+    if not keys:
+        return {}
+    names = {str(bank_id): f"{bank_name} ({number})" if number else bank_name
+             for bank_id, bank_name, number in (await session.execute(
+                 select(BankAccount.id, BankAccount.bank_name, BankAccount.account_number).where(
+                     BankAccount.company_id == company_id, BankAccount.id.in_(keys)))).all()}
+    if role_has_permission(settings, role, "manage_accounting"):
+        rows = (await session.execute(
+            select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.description,
+                   BankStatementLine.amount).where(
+                BankStatementLine.company_id == company_id, BankStatementLine.id.in_(keys)))).all()
+        names.update({str(line_id): f"{line_date}, {description}, {Decimal(amount):.2f}"
+                      for line_id, line_date, description, amount in rows})
+    return names
+
+
 async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> None:
     """Refuse ``code`` unless it is an active account in the company's chart."""
     from celerp_accounting.models import Account

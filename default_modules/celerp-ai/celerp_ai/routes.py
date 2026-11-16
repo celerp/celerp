@@ -1729,6 +1729,7 @@ async def propose_from_job(
     """
     from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
+    from celerp.ai.names import name_proposals
     from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
@@ -1790,6 +1791,7 @@ async def propose_from_job(
 
     if (other := await _proposals_locked(session, job, existing_id)) is not None:
         return _proposals_out(other)
+    records = await name_proposals(session, company_id, user.id, records)
     msg = await add_message(session, conversation_id, "assistant", "\n".join(lines), tools_called=records)
     job.results = {**(job.results or {}), "proposal_message_id": str(msg.id)}
     await session.commit()

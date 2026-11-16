@@ -10,6 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+from celerp.ai.names import is_id_key
 from celerp.error_body import keyed
 from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
@@ -1232,11 +1233,14 @@ def _label(key: str) -> str:
     return t_or(_LABEL_KEYS.get(key, f"field.{key}"), str(key).replace("_", " ").strip().capitalize())
 
 
-def _fmt_scalar(key: str, value, currency: str | None) -> str:
-    """One field value as a person reads it: quantities without float noise,
-    amounts at currency precision, everything else as text."""
+def _fmt_scalar(key: str, value, currency: str | None, names: dict | None = None) -> str:
+    """One field value as a person reads it: a record id by the record's name when the
+    proposal names it, quantities without float noise, amounts at currency precision,
+    everything else as text."""
     if value is None or value == "":
         return "--"
+    if names and isinstance(value, str) and value in names and is_id_key(key):
+        return names[value]
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if key in QTY_FIELD_KEYS:
             return fmt_qty(value)
@@ -1249,29 +1253,30 @@ def _fmt_scalar(key: str, value, currency: str | None) -> str:
     return str(value)
 
 
-def _fmt_value(key: str, value, currency: str | None = None) -> FT | str:
+def _fmt_value(key: str, value, currency: str | None = None, names: dict | None = None) -> FT | str:
     """A field value as a person reads it; a nested record is one short line, or its own
     list of labelled lines when its fields hold records or lists, at any depth."""
     if isinstance(value, dict):
         shown = [(k, v) for k, v in value.items() if v not in (None, "")]
         if any(isinstance(v, (dict, list)) for _k, v in shown):
-            return Ul(*[Li(f"{_label(k)}: ", _fmt_value(str(k), v, currency)) for k, v in shown],
+            return Ul(*[Li(f"{_label(k)}: ", _fmt_value(str(k), v, currency, names)) for k, v in shown],
                       cls="ai-action__sublist")
-        return ", ".join(f"{_label(k)}: {_fmt_scalar(k, v, currency)}" for k, v in shown) or "--"
+        return ", ".join(f"{_label(k)}: {_fmt_scalar(k, v, currency, names)}" for k, v in shown) or "--"
     if isinstance(value, list):
         if not value:
             return "--"
         if all(not isinstance(v, (dict, list)) for v in value):
-            return ", ".join(_fmt_scalar(key, v, currency) for v in value)
-        return Ol(*[Li(_fmt_value(key, v, currency)) for v in value], cls="ai-action__sublist")
-    return _fmt_scalar(key, value, currency)
+            return ", ".join(_fmt_scalar(key, v, currency, names) for v in value)
+        return Ol(*[Li(_fmt_value(key, v, currency, names)) for v in value], cls="ai-action__sublist")
+    return _fmt_scalar(key, value, currency, names)
 
 
-def _arg_lines(section: dict) -> FT:
+def _arg_lines(section: dict, names: dict | None = None) -> FT:
     """A definition-style list of one argument group (body, path, or query).
 
     A record id is hidden when the same section names the record (contact_id
-    next to contact_name): the name is what the person checks.
+    next to contact_name), and shown by the name the proposal keeps for it
+    otherwise: the name is what the person checks.
     """
     currency = section.get("currency") if isinstance(section.get("currency"), str) else None
     lines = []
@@ -1280,7 +1285,7 @@ def _arg_lines(section: dict) -> FT:
             continue
         lines.append(Div(
             Span(_label(key), cls="ai-action__line-key"),
-            Span(_fmt_value(str(key), value, currency), cls="ai-action__line-val"),
+            Span(_fmt_value(str(key), value, currency, names), cls="ai-action__line-val"),
             cls="ai-action__line",
         ))
     return Div(*lines, cls="ai-action__lines")
@@ -1302,7 +1307,7 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     and the table's detail row."""
     args = action.get("arguments") or {}
     groups = [
-        _arg_lines(args[part])
+        _arg_lines(args[part], action.get("names") or {})
         for part in ("body", "path", "query")
         if isinstance(args.get(part), dict) and args[part]
     ]

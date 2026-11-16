@@ -78,6 +78,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, or_, select, update
 
 from celerp.ai import deadlines
+from celerp.ai.names import name_proposals
 from celerp.db import SessionLocal
 from celerp.services.company_lock import lock_company, noted
 from ui.i18n import current_lang, set_lang, t
@@ -1389,7 +1390,9 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
                 if result.error:
                     tools_called = [*result.tools_called, failure_record(result.error_code)]
                 else:
-                    tools_called = [*result.tools_called, *[asdict(p) for p in result.pending_actions],
+                    proposals = await name_proposals(session, job.company_id, job.user_id,
+                                                     [asdict(p) for p in result.pending_actions])
+                    tools_called = [*result.tools_called, *proposals,
                                     *answer_links(result.help_pages, result.downloads)]
                 msg = await add_message(session, job.conversation_id, "assistant", result.error or result.answer,
                                         model_used=result.model_used, tools_called=tools_called)
