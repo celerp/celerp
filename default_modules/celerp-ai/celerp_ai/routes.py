@@ -473,14 +473,21 @@ def _failure_next(code: str | None) -> dict:
     return {"retryable": code in RETRYABLE_ERRORS, "new_question": code in NEW_QUESTION_ERRORS}
 
 
-def _message_out(m) -> MessageOut:
-    from celerp.ai.conversations import (downloads, help_pages, is_continuation, message_failure,
-                                         pending_actions, tool_names)
+async def _open_actions(session: AsyncSession, company_id, user_id, msg) -> list[dict]:
+    """The message's open proposals, each naming its records for this reader as they stand now."""
+    from celerp.ai.conversations import pending_actions
+    from celerp.ai.names import named_for_reader
+    return await named_for_reader(session, company_id, user_id,
+                                  [{**r, "message_id": str(msg.id)} for r in pending_actions(msg.tools_called)])
+
+
+async def _message_out(session: AsyncSession, company_id, user_id, m) -> MessageOut:
+    from celerp.ai.conversations import downloads, help_pages, is_continuation, message_failure, tool_names
     failure = message_failure(m.tools_called) or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content,
         model_used=m.model_used, tools_called=tool_names(m.tools_called),
-        pending_actions=[{**r, "message_id": str(m.id)} for r in pending_actions(m.tools_called)],
+        pending_actions=await _open_actions(session, company_id, user_id, m),
         file_ids=m.file_ids, credits_used=m.credits_used,
         error=bool(failure), error_code=failure.get("code"), **_failure_next(failure.get("code")),
         refusal=failure.get("refusal"), refusal_status=failure.get("status"),
@@ -490,9 +497,10 @@ def _message_out(m) -> MessageOut:
     )
 
 
-def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> QueryResponse:
+async def _answer_response(session: AsyncSession, company_id, user_id, msg, *, question_id: uuid.UUID,
+                           asked_again: bool) -> QueryResponse:
     """The response for a stored assistant message: an answer, or the failure it records."""
-    from celerp.ai.conversations import downloads, help_pages, message_failure, pending_actions, tool_names
+    from celerp.ai.conversations import downloads, help_pages, message_failure, tool_names
     failure = message_failure(msg.tools_called)
     common = dict(
         model_used=msg.model_used or "", tools_called=tool_names(msg.tools_called),
@@ -505,7 +513,7 @@ def _answer_response(msg, *, question_id: uuid.UUID, asked_again: bool) -> Query
         )
     return QueryResponse(
         answer=msg.content,
-        pending_actions=[{**p, "message_id": str(msg.id)} for p in pending_actions(msg.tools_called)],
+        pending_actions=await _open_actions(session, company_id, user_id, msg),
         help_pages=help_pages(msg.tools_called), downloads=downloads(msg.tools_called), **common,
     )
 
@@ -618,7 +626,7 @@ async def get_conv(
     return ConversationDetail(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
-        messages=[_message_out(m) for m in msgs],
+        messages=[await _message_out(session, company_id, user.id, m) for m in msgs],
         jobs=await _jobs_out(session, rows),
     )
 
@@ -743,7 +751,7 @@ async def query_in_conversation(
         )
 
     if answered is not None:
-        return _answer_response(answered, question_id=question_id, asked_again=True)
+        return await _answer_response(session, company_id, user.id, answered, question_id=question_id, asked_again=True)
     try:
         if asked is None:
             await add_message(session, conversation_id, "user", body.query,
@@ -768,7 +776,7 @@ async def query_in_conversation(
         answer = await jobs.answer_message(session, job)
         if answer is None:
             raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
-        return _answer_response(answer, question_id=question_id, asked_again=True)
+        return await _answer_response(session, company_id, user.id, answer, question_id=question_id, asked_again=True)
     jobs.start_job(question_id)
     return JSONResponse(
         status_code=202,
@@ -805,9 +813,10 @@ async def question_state(
         notice = t("ai.question_promoted")
     message = stored["message"]
     return {
-        "asked": _message_out(stored["asked"]).model_dump(mode="json"),
+        "asked": (await _message_out(session, company_id, user.id, stored["asked"])).model_dump(mode="json"),
         "state": "running" if held else stored["state"], "promoted": stored["promoted"], "waiting": waiting,
-        "notice": notice, "message": None if held or message is None else _message_out(message).model_dump(mode="json"),
+        "notice": notice, "message": None if held or message is None else (
+            await _message_out(session, company_id, user.id, message)).model_dump(mode="json"),
     }
 
 
@@ -1719,8 +1728,9 @@ async def _proposals_locked(session: AsyncSession, job, seen_id: str | None):
     return await get_message(session, uuid.UUID(current), job.conversation_id)
 
 
-def _proposals_out(msg) -> dict:
-    return {"message_id": str(msg.id), "answer": msg.content, "pending_actions": _message_out(msg).pending_actions}
+async def _proposals_out(session: AsyncSession, company_id, user_id, msg) -> dict:
+    return {"message_id": str(msg.id), "answer": msg.content,
+            "pending_actions": await _open_actions(session, company_id, user_id, msg)}
 
 
 @router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals", openapi_extra=agent_excluded("assistant"))
@@ -1745,7 +1755,6 @@ async def propose_from_job(
     """
     from celerp.ai import jobs
     from celerp.ai.conversations import add_message, get_conversation, get_message, pending_actions
-    from celerp.ai.names import name_proposals
     from celerp.ai.tools import compile_agent_capabilities, gates_of_caller
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
@@ -1768,18 +1777,18 @@ async def propose_from_job(
         if msg is not None:
             open_actions = pending_actions(msg.tools_called)
             if open_actions:
-                return _proposals_out(msg)
+                return await _proposals_out(session, company_id, user.id, msg)
             now = datetime.now(timezone.utc)
             refreshed = _refresh_expired_proposals(msg.tools_called or [], now)
             if refreshed:
                 if (other := await _proposals_locked(session, job, existing_id)) is not None:
-                    return _proposals_out(other)
+                    return await _proposals_out(session, company_id, user.id, other)
                 refreshed_msg = await add_message(
                     session, conversation_id, "assistant", msg.content, tools_called=refreshed,
                 )
                 job.results = {**(job.results or {}), "proposal_message_id": str(refreshed_msg.id)}
                 await session.commit()
-                return _proposals_out(refreshed_msg)
+                return await _proposals_out(session, company_id, user.id, refreshed_msg)
             return {
                 "message_id": str(msg.id), "answer": msg.content,
                 "pending_actions": [],
@@ -1806,12 +1815,11 @@ async def propose_from_job(
             lines.append(t("ai.receipt_file_many_bills", filename=entry["filename"], count=entry["bill_count"]))
 
     if (other := await _proposals_locked(session, job, existing_id)) is not None:
-        return _proposals_out(other)
-    records = await name_proposals(session, company_id, user.id, records)
+        return await _proposals_out(session, company_id, user.id, other)
     msg = await add_message(session, conversation_id, "assistant", "\n".join(lines), tools_called=records)
     job.results = {**(job.results or {}), "proposal_message_id": str(msg.id)}
     await session.commit()
-    return _proposals_out(msg)
+    return await _proposals_out(session, company_id, user.id, msg)
 
 
 @settings_router.get("/usage-stats", openapi_extra={"x-celerp-agent": True}, summary="Show how many questions each person asked the assistant this month or in all, and the credits used.")

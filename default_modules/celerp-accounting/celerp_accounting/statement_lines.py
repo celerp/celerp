@@ -116,25 +116,24 @@ def _uuids(ids: set[str]) -> list[uuid.UUID]:
 
 async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings: dict, role: str,
                        ids: set[str]) -> dict[str, str]:
-    """The names a confirm card shows for the company's bank accounts (any member reads
-    the list of them) and statement lines (date, description and amount, for a role that
-    works the bank page)."""
+    """The names a confirm card shows for the company's bank accounts and statement lines
+    (date, description and amount), for a role that may open the bank pages: the bank
+    routes need manage_accounting, and so does a bank's name on a card."""
     from celerp.services.permissions import role_has_permission
 
     keys = _uuids(ids)
-    if not keys:
+    if not keys or not role_has_permission(settings, role, "manage_accounting"):
         return {}
     names = {str(bank_id): f"{bank_name} ({number})" if number else bank_name
              for bank_id, bank_name, number in (await session.execute(
                  select(BankAccount.id, BankAccount.bank_name, BankAccount.account_number).where(
                      BankAccount.company_id == company_id, BankAccount.id.in_(keys)))).all()}
-    if role_has_permission(settings, role, "manage_accounting"):
-        rows = (await session.execute(
-            select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.description,
-                   BankStatementLine.amount).where(
-                BankStatementLine.company_id == company_id, BankStatementLine.id.in_(keys)))).all()
-        names.update({str(line_id): f"{line_date}, {description}, {Decimal(amount):.2f}"
-                      for line_id, line_date, description, amount in rows})
+    rows = (await session.execute(
+        select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.description,
+               BankStatementLine.amount).where(
+            BankStatementLine.company_id == company_id, BankStatementLine.id.in_(keys)))).all()
+    names.update({str(line_id): f"{line_date}, {description}, {Decimal(amount):.2f}"
+                  for line_id, line_date, description, amount in rows})
     return names
 
 

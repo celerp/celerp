@@ -189,7 +189,7 @@ def test_citation_record_ignored_by_action_helpers():
     assert help_pages(None) is None
 
 
-def test_message_out_carries_help_pages():
+async def test_message_out_carries_help_pages():
     import celerp.main  # noqa: F401  (puts bundled module packages on the import path)
     from celerp_ai.routes import _message_out
 
@@ -198,8 +198,10 @@ def test_message_out_carries_help_pages():
                                tools_called=tools_called, file_ids=None, credits_used=0,
                                created_at=datetime.now(timezone.utc))
 
-    assert _message_out(_msg(["help_read", {"help_pages": ["core.settings"]}])).help_pages == ["core.settings"]
-    assert _message_out(_msg(["list_items"])).help_pages is None
+    # No open proposal here, so nothing is named and no session is read.
+    out = await _message_out(None, None, None, _msg(["help_read", {"help_pages": ["core.settings"]}]))
+    assert out.help_pages == ["core.settings"]
+    assert (await _message_out(None, None, None, _msg(["list_items"]))).help_pages is None
 
 
 def test_refreshing_expired_proposals_keeps_citation_record():

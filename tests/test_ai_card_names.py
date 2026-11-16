@@ -35,15 +35,10 @@ async def _line(client, h) -> tuple[dict, str]:
     return bank, got["lines"][0]["id"]
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("tools_open_when_called")
-async def test_a_bank_resolve_card_names_the_bank_and_the_line_never_their_ids(client, auth, monkeypatch, drained_jobs):
+async def _proposed_resolve(client, h, monkeypatch) -> tuple[str, dict, str]:
+    """A question whose answer proposes posting a bank line: (conversation, bank, line id)."""
     from ai_fake_cloud import FakeCloud, answer, install, tool_turn
-    from fasthtml.common import to_xml
-    from celerp_ai.ui_routes import _action_card
-    from test_helpers import settled_question
 
-    h = auth["headers"]
     bank, line_id = await _line(client, h)
     tool = _resolve_tool(monkeypatch)
 
@@ -58,12 +53,51 @@ async def test_a_bank_resolve_card_names_the_bank_and_the_line_never_their_ids(c
     r = await client.post(f"/ai/conversations/{conv}/query", headers=h,
                           json={"query": "Post the fee to bank charges", "operation_id": _QUESTION})
     assert r.status_code == 202, r.text
+    return conv, bank, line_id
+
+
+async def _card_lines(client, h, conv) -> str:
+    """The argument lines of the conversation's one open card, as its reader sees it now."""
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_card
+    from test_helpers import settled_question
+
     state = await settled_question(client, h, conv, _QUESTION)
     (card,) = state["message"]["pending_actions"]
     html = to_xml(_action_card(conv, state["message"]["id"], card))
-    shown = html.split("ai-action__lines", 1)[1].split("<a ", 1)[0]
+    return html.split("ai-action__lines", 1)[1].split("<a ", 1)[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tools_open_when_called")
+async def test_a_bank_resolve_card_names_the_bank_and_the_line_never_their_ids(client, auth, monkeypatch, drained_jobs):
+    h = auth["headers"]
+    conv, bank, line_id = await _proposed_resolve(client, h, monkeypatch)
+    shown = await _card_lines(client, h, conv)
     assert bank["bank_name"] in shown and "Monthly fee" in shown and "-50.00" in shown
     assert bank["id"] not in shown and line_id not in shown
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tools_open_when_called")
+async def test_a_card_names_its_records_for_the_role_its_reader_holds_now(client, auth, session, monkeypatch,
+                                                                          drained_jobs):
+    """A reader whose role loses the bank pages after the proposal no longer sees the
+    bank's or the line's name on the card, only that the name is not available."""
+    from sqlalchemy import update
+    from celerp.models.accounting import UserCompany
+    from ui.i18n import t
+
+    h = auth["headers"]
+    conv, bank, _line_id = await _proposed_resolve(client, h, monkeypatch)
+    assert bank["bank_name"] in await _card_lines(client, h, conv)
+
+    await session.execute(update(UserCompany).where(UserCompany.company_id == auth["company_id"])
+                          .values(role="operator"))
+    await session.commit()
+    shown = await _card_lines(client, h, conv)
+    assert bank["bank_name"] not in shown and "Monthly fee" not in shown
+    assert t("ai.card_name_unavailable") in shown
 
 
 @pytest.mark.asyncio
@@ -84,7 +118,7 @@ async def test_a_name_is_kept_only_for_a_record_the_asker_may_read(client, auth,
     assert "Monthly fee" in owner[line_id] and "not-a-record" not in owner
 
     viewer = await record_names(session, company_id, {}, "viewer", args)
-    assert viewer[contact_id] == "Harbour Supplies" and line_id not in viewer and bank["id"] in viewer
+    assert viewer[contact_id] == "Harbour Supplies" and line_id not in viewer and bank["id"] not in viewer
 
     assert await record_names(session, company_id, {}, "no-such-role", {"body": {"contact_id": contact_id}}) == {}
     assert await record_names(session, uuid.uuid4(), {}, "owner", args) == {}
@@ -180,3 +214,26 @@ async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_
 
     assert await record_names(session, auth["company_id"], {}, "owner", {"body": {"contact_id": record}}) == {
         record: "Named record"}
+
+
+async def test_a_namer_of_a_module_the_company_does_not_use_is_never_asked(auth, session, monkeypatch):
+    """Only the namers of modules the company uses name its records; a record no namer
+    names (its module has no namer, or the company does not use it) keeps no name."""
+    from celerp.ai.names import record_names
+    from celerp.modules import slots
+
+    async def namer(ids, **_):
+        return {i: "Named record" for i in ids}
+
+    monkeypatch.setattr(slots, "get", lambda slot: [{"handler": "namer", "_module": "celerp-extra"}]
+                        if slot == "record_names" else [])
+    monkeypatch.setattr(slots, "resolve_handler", {"namer": namer}.__getitem__)
+    record = str(uuid.uuid4())
+    args = {"body": {"contact_id": record}}
+
+    assert await record_names(session, auth["company_id"], {"enabled_modules": ["celerp-extra"]}, "owner",
+                              args) == {record: "Named record"}
+    assert await record_names(session, auth["company_id"], {"enabled_modules": ["celerp-accounting"]}, "owner",
+                              args) == {}
+    monkeypatch.setattr(slots, "get", lambda slot: [])
+    assert await record_names(session, auth["company_id"], {}, "owner", args) == {}

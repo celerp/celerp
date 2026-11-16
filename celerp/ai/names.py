@@ -3,13 +3,15 @@
 """The names a proposed change's record ids are shown by on its confirm card.
 
 A card lists what a change will write; an id there means nothing to the person
-confirming. When a proposal is stored, every id it carries (a value under a key
-named ``id``, ``ids`` or ending ``_id`` / ``_ids``, at any depth) is looked up and
-the record's name kept beside the proposal. Core names the records kept as
-projections, a module names its own records through the ``record_names`` slot.
-Core also names the files a person attached for the assistant and the AI readings
-of them. An id no namer knows, or one the asker cannot read, is never shown: the card
-says its name is not available.
+confirming. Each time a proposal is shown, every id it carries (a value under a key
+named ``id``, ``ids`` or ending ``_id`` / ``_ids``, at any depth) is looked up for
+the person reading it, under the role they hold then, and the record's name shown
+beside the proposal; nothing is kept, so a name follows the record and the reader's
+permission as they stand. Core names the records kept as projections, a module the
+company uses names its own records through the ``record_names`` slot. Core also
+names the files a person attached for the assistant and the AI readings of them. An
+id no namer knows, or one the reader cannot read, is never shown: the card says its
+name is not available.
 """
 from __future__ import annotations
 
@@ -111,6 +113,7 @@ async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: d
                        arguments) -> dict[str, str]:
     """{id: name} for the ids in ``arguments`` a namer knows and this role may read."""
     from celerp.modules import slots
+    from celerp.modules.registry import uses_module
     from celerp.modules.slots import resolve_handler
 
     ids = set(sorted(record_ids(arguments))[:_MAX_IDS])
@@ -120,6 +123,8 @@ async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: d
     names.update(await _reading_names(session, company_id, ids - names.keys()))
     names.update(await _projection_names(session, company_id, settings, role, ids - names.keys()))
     for contribution in slots.get("record_names"):
+        if not uses_module(settings, contribution.get("_module")):
+            continue
         left = ids - names.keys()
         if not left:
             break
@@ -131,15 +136,14 @@ async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: d
     return names
 
 
-async def name_proposals(session: AsyncSession, company_id: uuid.UUID, user_id: uuid.UUID,
-                         records: list) -> list:
-    """``records`` with each proposal carrying the names of the ids it holds."""
+async def named_for_reader(session: AsyncSession, company_id: uuid.UUID, user_id: uuid.UUID,
+                           actions: list[dict]) -> list[dict]:
+    """``actions`` as ``user_id`` is shown them now: each proposal carries the names of
+    the ids it holds that this reader may read under the role they hold."""
     from celerp.services.permissions import read_authority
 
-    proposals = [r for r in records if isinstance(r, dict) and "arguments" in r]
-    if not proposals:
-        return records
+    if not any("arguments" in a for a in actions):
+        return actions
     role, settings = await read_authority(session, company_id, user_id)
-    for record in proposals:
-        record["names"] = await record_names(session, company_id, settings, role, record["arguments"])
-    return records
+    return [{**a, "names": await record_names(session, company_id, settings, role, a["arguments"])}
+            if "arguments" in a else a for a in actions]
