@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
@@ -21,7 +21,7 @@ REVERSAL_SUFFIX = ":reversal"
 
 async def journal_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False,
-    entry_ids: list[str] | None = None,
+    entry_ids: list[str] | None = None, account: str | None = None, days: tuple[str, str] | None = None,
 ) -> list[tuple[str, dict, str]]:
     """All journal entry projections as (entity_id, state, date) tuples.
 
@@ -29,12 +29,22 @@ async def journal_rows(
     Posted entries only by default; include_void=True adds voided entries for views
     that must show the full record (the journal). Deliberately not date-filtered:
     the general ledger buckets one scan into opening (before date_from) and period
-    ranges, so callers apply their own date filtering.
+    ranges, so callers apply their own date filtering. A caller that needs only the
+    entries with a line on one ``account``, or only the rows dated within ``days``
+    (first and last ISO date, inclusive), narrows the read in SQL with them.
     """
     query = select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
     )
+    if account is not None:
+        query = query.where(text(
+            "EXISTS (SELECT 1 FROM json_array_elements(projections.state -> 'entries') AS line "
+            "WHERE line ->> 'account' = :ledger_account)").bindparams(ledger_account=account))
+    if days is not None:
+        day = func.substr(func.coalesce(Projection.state["ts"].as_string(),
+                                        Projection.state["created_at"].as_string()), 1, 10)
+        query = query.where(or_(day.between(*days), Projection.state["reversed_on"].as_string().between(*days)))
     if entry_ids is not None:
         ids = sorted(set(entry_ids))
         if not ids:
@@ -49,7 +59,7 @@ async def journal_rows(
     out: list[tuple[str, dict, str]] = []
     for row in rows:
         out.extend(entry_rows(row.entity_id, row.state, include_void=include_void))
-    return out
+    return out if days is None else [r for r in out if days[0] <= r[2] <= days[1]]
 
 
 def entry_rows(entity_id: str, state: dict, *, include_void: bool = False) -> list[tuple[str, dict, str]]:

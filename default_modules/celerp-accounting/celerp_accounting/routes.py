@@ -3505,15 +3505,16 @@ def _bank_entries(bank: BankAccount, base: str, rate: Decimal | None, offsets: l
 
 
 async def _je_entries_for_account(
-    session: AsyncSession, company_id: uuid.UUID, bank: BankAccount
+    session: AsyncSession, company_id: uuid.UUID, bank: BankAccount, *, days: tuple[str, str] | None = None,
 ) -> list[dict]:
     """Posted JE lines on a bank account's ledger account as {je_id, ts, memo, amount,
     debit, credit}, the amounts in the bank account's currency (None when unknown, see
-    ``_bank_line_amounts``). An entry's lines moving money the same way are one row, so
-    an entry split by fund reads as the single amount the bank moved."""
+    ``_bank_line_amounts``), only those dated within ``days`` when given. An entry's lines
+    moving money the same way are one row, so an entry split by fund reads as the single
+    amount the bank moved."""
     base = await _base_currency(session, company_id)
     rows: dict[tuple, dict] = {}
-    for je_id, state, _ in await journal_rows(session, company_id):
+    for je_id, state, _ in await journal_rows(session, company_id, account=bank.chart_account_code, days=days):
         for entry in state.get("entries", []):
             if entry.get("account") == bank.chart_account_code:
                 if _line_amounts(entry) is None:

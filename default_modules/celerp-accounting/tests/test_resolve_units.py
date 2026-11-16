@@ -209,3 +209,44 @@ async def test_an_accepted_line_settled_by_someone_else_is_refused_unseen_never_
     r = await B.resolve(client, co, bk["id"], accept=kw["accept"])
     assert r.status_code == 409 and r.json()["detail"]["message_key"] == "reconciliation.line_not_open", r.text
     assert await _entries(session, co) == {}
+
+
+async def _seed_entries(session, company_id: str, bank_code: str, n: int) -> None:
+    """``n`` posted entries the resolve must not read: half on other accounts in the lines'
+    month, half on the bank's account a year before."""
+    import json
+
+    from sqlalchemy import text
+
+    rows = [{"e": f"je:seed:{i}", "c": company_id, "s": json.dumps({
+        "status": "posted", "ts": "2026-01-06" if i % 2 else "2025-01-06", "memo": f"seed {i}", "je_type": "manual",
+        "entries": [{"account": "4000" if i % 2 else bank_code, "debit": 15.99, "credit": 0},
+                    {"account": "5100", "debit": 0, "credit": 15.99}]})} for i in range(n)]
+    for start in range(0, n, 1000):
+        await session.execute(text(
+            "insert into projections (entity_id, company_id, entity_type, state, version, updated_at) "
+            "values (:e, cast(:c as uuid), 'journal_entry', cast(:s as json), 1, now())"), rows[start:start + 1000])
+    await session.commit()
+
+
+async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the_lines(client, session):
+    """However many lines a resolve posts and however large the journal, the check for money
+    already keyed reads the bank's entries once, in SQL, on the bank's account and within the
+    lines' date window: none of the seeded entries comes back."""
+    import celerp_accounting.routes as R
+
+    co, bk, kw = await mixed(client)
+    await _seed_entries(session, co["company_id"], bk["chart_account_code"], 2000)
+    real, reads = R.journal_rows, []
+
+    async def counted(*a, **k):
+        rows = await real(*a, **k)
+        reads.append((k.get("account"), k.get("days"), [r[0] for r in rows]))
+        return rows
+    with patch.object(R, "journal_rows", counted):
+        r = await B.resolve(client, co, bk["id"], **kw)
+    assert r.status_code == 200 and r.json()["refused"] == 0, r.text
+    assert len(reads) == 1, reads
+    account, days, read = reads[0]
+    assert account == bk["chart_account_code"] and days == ("2025-12-29", "2026-01-16")
+    assert not [i for i in read if i.startswith("je:seed:")]

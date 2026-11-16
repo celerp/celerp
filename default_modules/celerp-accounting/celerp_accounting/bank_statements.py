@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import date as Date
+from datetime import date as Date, timedelta
 from decimal import Decimal
 
 from typing import Annotated, Literal
@@ -890,7 +890,7 @@ async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount)
 
 
 async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, d: Decision,
-                    key: str, instead: dict) -> dict:
+                    key: str, instead: dict, book: list[dict]) -> dict:
     if len(d.line_ids) != 1:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_one_line"))
     if d.kind == "cash":
@@ -913,7 +913,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         return {str(line.id): held}
     if line.status != "unmatched":
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_state", status=line.status))
-    if (je_ids := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+    if (je_ids := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
         return {str(line.id): je_ids}
     # Under the locks the pair must still be the transfer's counterpart: a named one is refused
     # when it is not, an automatic one is left out (the other bank's line stays open).
@@ -941,14 +941,18 @@ class _Twins(HTTPException):
 
 
 async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line: BankStatementLine,
-                         instead: dict) -> list[str] | None:
+                         instead: dict, book: list[dict]) -> list[str] | None:
     """Under the line's locks, before it posts: the entry already keyed for its money (the
     suggestion rule ``suggest.twins`` over the entries no statement or line of this bank counts).
     One: the line is matched to it instead of posting a second copy, said in ``instead``. Several:
-    the line is refused with the nearest as its match suggestion. None: the line posts."""
+    the line is refused with the nearest as its match suggestion. None: the line posts. ``book`` is
+    the request's read of the bank's entries near its lines (see _near_entries); whether one of
+    them is counted already is read here, under the locks."""
     from celerp_accounting import suggest
 
-    found = suggest.twins(line.amount, line.line_date, await _free_entries(db, company_id, bank))
+    near = suggest.twins(line.amount, line.line_date, book)
+    held = await _held(db, company_id, bank, near) if near else set()
+    found = [e for e in near if e["je_id"] not in held]
     if not found:
         return None
     date = str(found[0]["ts"])[:10]
@@ -963,7 +967,7 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
 
 
 async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
-                   key: str, instead: dict) -> dict:
+                   key: str, instead: dict, book: list[dict]) -> dict:
     """Pay open documents with one line: an invoice from a deposit, a bill from a
     withdrawal, each at most its open balance (the payment service refuses more, never
     clamps), and the parts that are not the documents (a fee taken out, an overpayment
@@ -975,7 +979,7 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
 
     await admit_permission(db, company_id, role, "record_payments")
     line = _one(await _locked_lines(db, company_id, bank, d.line_ids))
-    if (keyed := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+    if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
         return {str(line.id): keyed}
     if not d.docs:
         raise _refused(422, "acct.err_recon_pay_needs_doc")
@@ -1019,14 +1023,14 @@ def _offsets(d: Decision, lines: list[BankStatementLine]) -> list[tuple[dict, De
 
 
 async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
-                  key: str, instead: dict) -> dict:
+                  key: str, instead: dict, book: list[dict]) -> dict:
     """Carry out one decision; ``{line_id: je_ids}`` for each line it settled. A line that would
     post (an entry, a transfer, a payment) whose money is already keyed in the books is matched
     to that entry instead, noted in ``instead`` (see _keyed_instead)."""
     if d.kind in ("transfer", "cash"):
-        return await _transfer(db, company_id, actor_id, bank, d, key, instead)
+        return await _transfer(db, company_id, actor_id, bank, d, key, instead, book)
     if d.kind == "pay_doc":
-        return await _pay_doc(db, company_id, actor_id, role, bank, d, key, instead)
+        return await _pay_doc(db, company_id, actor_id, role, bank, d, key, instead, book)
     lines = await _locked_lines(db, company_id, bank, d.line_ids)
     if d.kind == "match":
         await SL.match_lines(db, company_id=company_id, bank=bank, lines=lines, je_ids=d.je_ids or [])
@@ -1042,7 +1046,7 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
         offsets = _offsets(d, lines)
     out = {}
     for line, own in zip(lines, offsets):
-        if (keyed := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+        if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
             out[str(line.id)] = keyed
             continue
         out[str(line.id)] = await SL.post_line(
@@ -1154,6 +1158,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
                    for l in (await SL.scoped(db, company_id, "line", ids, bank=bank) if ids else [])}
         decisions += accepted
     _check_money(decisions, bank.currency)
+    book = await _near_entries(db, company_id, bank, [lid for d in decisions for lid in d.line_ids])
     await db.rollback()
     results: list[dict] = [r for rows in earlier.values() for r in rows]
     for d in decisions:
@@ -1161,7 +1166,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
             try:
                 bank = await _bank(db, company_id, bank_id)
                 instead: dict = {}
-                settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead)
+                settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead, book)
                 rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": instead.get(lid),
                          "matched_instead": lid in instead} for lid, ids in settled.items()]
                 if d.kind in ("transfer", "cash"):
@@ -1207,27 +1212,52 @@ def _contact(state: dict, bank_code: str | None) -> str | None:
                 None)
 
 
-async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> set[str]:
-    """Every entry a statement or a line of this bank already counts. Another bank's statement
-    counting an entry leaves it free here, as for a manual match: a transfer is reconciled on
-    both accounts."""
-    held: set[str] = set()
+async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, entries: list[dict]) -> set[str]:
+    """Those of ``entries`` (book entries of this bank) a statement or a line of this bank already
+    counts, and the opening entry. Another bank's statement counting an entry leaves it free
+    here, as for a manual match: a transfer is reconciled on both accounts. The first open
+    statement's carry-in is worked out (see _first_counted) only when an entry is dated before it."""
+    from celerp_accounting.routes import _opening_je_id
+
+    ids = {e["je_id"] for e in entries}
+    held = {_opening_je_id(bank.id)}
     for i, recon in enumerate(await _sessions(db, company_id, bank)):
-        counted = await _first_counted(db, company_id, bank, recon) if i == 0 else None
+        early = i == 0 and recon.period_start is not None and \
+            any(str(e["ts"])[:10] < str(recon.period_start)[:10] for e in entries)
+        counted = await _first_counted(db, company_id, bank, recon) if early else None
         held.update((recon.reconciled_je_ids or []) if counted is None else counted)
-    for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+    for matched in (await db.execute(select(BankStatementLine.matched_je_ids).where(
             BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars():
-        held.update(ids or [])
-    return held
+        held.update(matched or [])
+    return held & ids
 
 
 async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:
     """The bank's book entries no statement or line of the bank counts yet: what a line can match."""
-    from celerp_accounting.routes import _je_entries_for_account, _opening_je_id
+    from celerp_accounting.routes import _je_entries_for_account
 
-    held = await _held(db, company_id, bank) | {_opening_je_id(bank.id)}
-    return [e for e in await _je_entries_for_account(db, company_id, bank)
-            if e["je_id"] not in held and e["amount"] is not None]
+    entries = [e for e in await _je_entries_for_account(db, company_id, bank) if e["amount"] is not None]
+    held = await _held(db, company_id, bank, entries)
+    return [e for e in entries if e["je_id"] not in held]
+
+
+async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list) -> list[dict]:
+    """One read per request of the bank's book entries a line of ``line_ids`` could already be
+    (see _keyed_instead): dated within the exact-amount window of the lines' dates, of an amount
+    one of them carries."""
+    from celerp_accounting import matcher, suggest
+    from celerp_accounting.routes import _je_entries_for_account
+
+    lines = (await db.execute(select(BankStatementLine.line_date, BankStatementLine.amount).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
+        BankStatementLine.id.in_(line_ids)))).all() if line_ids else []
+    if not lines:
+        return []
+    window, dated = timedelta(days=matcher.EXACT_DAYS), [Date.fromisoformat(d[:10]) for d, _ in lines]
+    days = (str(min(dated) - window), str(max(dated) + window))
+    amounts = {suggest._amt(a) for _, a in lines}
+    return [e for e in await _je_entries_for_account(db, company_id, bank, days=days)
+            if e["amount"] is not None and suggest._amt(e["amount"]) in amounts]
 
 
 async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, base: str) -> list[dict]:
