@@ -535,6 +535,7 @@ def test_line_item_false_friends_absent():
 _FULFILL_EXPECTED = {
     "am": {
         "doc.fulfilled": "ተፈጽሟል",
+        "peer.err_invalid_fulfilled_items": "ልክ ያልሆኑ የተፈጸሙ እቃዎች",
         "perm.name.fulfill_documents": "በሰነዶች መሠረት ዕቃዎችን ያስረክቡ እና ይቀበሉ",
         "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "status.unfulfilled": "ያልተፈጸመ",
@@ -553,6 +554,7 @@ _FULFILL_EXPECTED = {
     },
     "ar": {
         "doc.fulfilled": "تم تنفيذه",
+        "peer.err_invalid_fulfilled_items": "عناصر تم تنفيذها غير صالحة",
         "perm.name.fulfill_documents": "تنفيذ التسليم واستلام البضائع المرتبطة بالمستندات",
         "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "status.unfulfilled": "لم يُنفَّذ",
@@ -571,6 +573,7 @@ _FULFILL_EXPECTED = {
     },
     "es": {
         "doc.fulfilled": "Procesado",
+        "peer.err_invalid_fulfilled_items": "Artículos entregados no válidos",
         "perm.name.fulfill_documents": "Despachar y recibir mercancías de documentos",
         "doc.partially_fulfilled": "Procesado parcialmente",
         "status.unfulfilled": "Sin procesar",
@@ -589,6 +592,7 @@ _FULFILL_EXPECTED = {
     },
     "id": {
         "doc.fulfilled": "Diproses",
+        "peer.err_invalid_fulfilled_items": "Barang yang diproses tidak valid",
         "perm.name.fulfill_documents": "Penuhi pesanan dan terima barang pada dokumen",
         "doc.partially_fulfilled": "Diproses sebagian",
         "status.unfulfilled": "Belum diproses",
@@ -607,6 +611,7 @@ _FULFILL_EXPECTED = {
     },
     "pt": {
         "doc.fulfilled": "Processado",
+        "peer.err_invalid_fulfilled_items": "Itens inválidos já entregues",
         "perm.name.fulfill_documents": "Expedir e receber mercadorias de documentos",
         "doc.partially_fulfilled": "Processado parcialmente",
         "status.unfulfilled": "Não processado",
