@@ -351,8 +351,11 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
-    key = "ai.files_read" if completed else "ai.files_none_read"
-    await jobs.notify(run.company_id, run.user_id, run.conversation_id, key + ("_one" if completed + failed == 1 else ""),
+    if completed + failed == 1:
+        key = "ai.files_read_one" if completed else "ai.files_none_read_one"
+    else:
+        key = "ai.files_read" if completed else "ai.files_none_read"
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, key,
                       completed=completed, failed=failed, total=completed + failed)
 
 
