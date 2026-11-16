@@ -41,7 +41,9 @@ def test_browser_session_leaves_database_empty(browser_conftest, monkeypatch):
             events.append("stopped")
 
     # The server pins the module list for its own process; this one gets its value back.
-    monkeypatch.delenv("ENABLED_MODULES", raising=False)
+    # setenv records the value to restore (none when unset), which delenv alone does not.
+    monkeypatch.setenv("ENABLED_MODULES", "")
+    monkeypatch.delenv("ENABLED_MODULES")
     monkeypatch.setattr(browser_conftest, "_require_free_port", lambda port: None)
     monkeypatch.setattr(browser_conftest, "_wait_for_port", lambda port: None)
     monkeypatch.setattr(browser_conftest, "_reset_pg_database", lambda: events.append("reset"))

@@ -883,7 +883,10 @@ def _reset_loaded_modules(request):
     The permission each module's events are read with is kept until the next load, so
     it is dropped after each test: one worked out under doctored slots or admission
     leaves nothing for later tests. Each test starts with every bundled module's
-    catalogs registered (_restore_catalogs), whatever an earlier load_all() left."""
+    catalogs registered (_restore_catalogs), whatever an earlier load_all() left.
+
+    The module pin (ENABLED_MODULES) is put back too: a pin a test leaves set makes every
+    later company in the worker use the pinned list instead of the configured one."""
     if request.node.get_closest_marker("browser"):
         yield
         return
@@ -894,7 +897,12 @@ def _reset_loaded_modules(request):
     _module_routes.clear()
     _restore_catalogs()
     _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
+    _pin = os.environ.get("ENABLED_MODULES")
     yield
+    if _pin is None:
+        os.environ.pop("ENABLED_MODULES", None)
+    else:
+        os.environ["ENABLED_MODULES"] = _pin
     _event_permissions.clear()
     _loaded.clear()
     _module_routes.clear()
