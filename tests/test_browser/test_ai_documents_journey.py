@@ -292,7 +292,11 @@ def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
     _SCRIPT.append(_call(read_cap, body={"file_ids": [file_id], "bank_id": bank_id},
                          content="I'll read march.csv for Journey Bank once you confirm."))
     _send(page, "Reconcile this statement against our books")
-    _confirm_card(page, file_id)
+    # The card names the file by its name, never by its upload id.
+    card = page.locator(".ai-action__card", has_text="march.csv")
+    expect(card).to_be_visible()
+    expect(card).not_to_contain_text(file_id)
+    _confirm_card(page, "march.csv")
     job_id = _reading_job(api, bank_id)
     preview = _preview(api, job_id)
     found = preview["statements"][0]
@@ -311,7 +315,11 @@ def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
                                            "statements": [{"header": header, "lines": found["lines"]}]},
                          content="I'll import the March statement onto Journey Bank once you confirm."))
     _send(page, "Opening 100,000, closing 99,500")
-    _confirm_card(page, job_id)
+    # The card names the statement reading by its file and shows the balances, never the job id.
+    card = page.locator(".ai-action__card", has_text="Closing balance: 99500.00")
+    expect(card).to_contain_text("march.csv")
+    expect(card).not_to_contain_text(job_id)
+    _confirm_card(page, "Closing balance: 99500.00")
 
     lines = [l for g in api.get(f"{api_root}/bank/{bank_id}/groups").json()["groups"] for l in g["lines"]]
     assert [(l["description"], float(l["amount"])) for l in lines] == [("Bank fee", -500.0)]
