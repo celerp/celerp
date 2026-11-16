@@ -84,7 +84,11 @@ def _money(value, currency: str) -> Decimal | None:
         return None
     from celerp_accounting.statement_lines import MONEY_LIMIT
     try:
-        amount = round_money(Decimal(str(value)), currency)
+        amount = Decimal(str(value))
+        # NaN and infinity parse as Decimals but are no amount: unread, never compared or rounded.
+        if not amount.is_finite():
+            return None
+        amount = round_money(amount, currency)
     except (InvalidOperation, ValueError):
         return None
     return amount if abs(amount) < MONEY_LIMIT else None

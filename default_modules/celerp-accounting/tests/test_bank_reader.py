@@ -214,3 +214,20 @@ _KEYS = [
 @pytest.mark.parametrize("desc,ref,amount,expected", _KEYS, ids=[k[0][:24] for k in _KEYS])
 def test_counterparty_key_table(desc, ref, amount, expected):
     assert counterparty_key(desc, ref, Decimal(amount)) == expected
+
+
+@pytest.mark.parametrize("bad", ["NaN", "-NaN", "sNaN", "Infinity", "-Infinity", "1e309"])
+def test_a_balance_or_amount_that_is_no_number_is_unread_and_blocks(bad):
+    """NaN and infinity parse as decimals; they are no amount, so the review reads them as
+    missing and blocks the import, never compares them (a 500 before). A closing balance read
+    as missing falls back to the last running balance, so that case carries none."""
+    lines = [_line("2026-01-02", "-10.00", balance="90.00")]
+    for header, body in (({**_HEADER, "opening_balance": bad, "closing_balance": "90.00"}, lines),
+                         ({**_HEADER, "closing_balance": bad}, [_line("2026-01-02", "-10.00")]),
+                         ({**_HEADER, "closing_balance": "90.00"}, [_line("2026-01-02", bad)])):
+        out = _review(header, body)
+        assert out["blocking"] and out["tie"]["ok"] is not True, (header, body)
+        assert all(l["amount"] is None or Decimal(l["amount"]).is_finite() for l in out["lines"])
+    # A running balance is optional: one that is no number reads as none.
+    out = _review({**_HEADER, "closing_balance": "90.00"}, [_line("2026-01-02", "-10.00", balance=bad)])
+    assert out["lines"][0]["raw_balance"] is None
