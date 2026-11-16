@@ -252,12 +252,12 @@ def _db_one(sql: str, *args) -> str:
     return str(row[0])
 
 
-def _reading_job(bank_id: str) -> str:
+def _reading_job(api, bank_id: str) -> str:
     """The reading job the assistant started for ``bank_id``: its id is derived from the
     request key the tool call fills in, so the test finds it by the bank it reads for."""
-    return _db_one("SELECT entity_id FROM projections WHERE entity_id LIKE 'bankread:%%' "
+    return _db_one("SELECT entity_id FROM projections WHERE company_id = %s AND entity_id LIKE 'bankread:%%' "
                    "AND state::jsonb->>'bank_account_id' = %s ORDER BY created_at DESC LIMIT 1",
-                   bank_id).split(":", 1)[1]
+                   api.get("/companies/me").json()["id"], bank_id).split(":", 1)[1]
 
 
 def _preview(api, job_id: str) -> dict:
@@ -293,7 +293,7 @@ def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
                          content="I'll read march.csv for Journey Bank once you confirm."))
     _send(page, "Reconcile this statement against our books")
     _confirm_card(page, file_id)
-    job_id = _reading_job(bank_id)
+    job_id = _reading_job(api, bank_id)
     preview = _preview(api, job_id)
     found = preview["statements"][0]
     assert [(l["description"], float(l["amount"])) for l in found["lines"]] == [("Bank fee", -500.0)]
@@ -332,6 +332,6 @@ def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
     _SCRIPT.append(_call(complete_cap, path={"bank_id": bank_id},
                          content="Every line is settled. Confirm to complete the March statement."))
     _send(page, "Close it")
-    _confirm_card(page, bank_id)
+    _confirm_card(page, "Journey Bank")
     sid = _db_one("SELECT id FROM reconciliation_sessions WHERE bank_account_id = %s", bank_id)
     assert api.get(f"{api_root}/{sid}").json()["status"] == "completed"

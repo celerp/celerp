@@ -14,6 +14,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.json_text import dump_json
 from celerp.models.company_peer import CompanyPeerAttention
 from celerp.services.company_lock import lock_company
 
@@ -51,7 +52,7 @@ def stored(reason: dict) -> str:
 
     if not keyed(reason) or not isinstance(reason, dict):
         raise TypeError(f"an attention reason is a keyed refusal, not {reason!r}")
-    return json.dumps(reason)
+    return dump_json(reason)
 
 
 def reason_of(item: CompanyPeerAttention) -> dict:
