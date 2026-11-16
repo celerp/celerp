@@ -1726,8 +1726,11 @@
       "params": []
     },
     "reconciliation.no_client_user": {
-      "en": "No one in this company answers bank questions yet. Invite your client at /settings/users with a role that can answer questions about bank lines, then ask again.",
-      "params": []
+      "en": "No one in this company answers bank questions yet. Give the \"{permission}\" permission to a role without \"{books}\", invite your client with that role, then ask again.",
+      "params": [
+        "books",
+        "permission"
+      ]
     },
     "reconciliation.question_settled": {
       "en": "Your accountant has already settled this line, so it needs no answer now.",

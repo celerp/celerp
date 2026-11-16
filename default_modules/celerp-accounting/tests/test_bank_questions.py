@@ -13,6 +13,8 @@ from sqlalchemy import func, select
 
 import bank_statement_helpers as B
 from celerp.services.email import EmailResult
+from ui.components.shell import refusal_fix
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -154,7 +156,10 @@ async def test_ask_without_client_user_explains(client):
     r = await _ask(client, co, bk, [lid])
     assert r.status_code == 409
     detail = r.json()["detail"]
-    assert detail["message_key"] == "reconciliation.no_client_user" and "/settings/users" in detail["message"]
+    assert detail["message_key"] == "reconciliation.no_client_user"
+    assert detail["params"]["permission"]["message_key"] == "perm.name.answer_bank_questions"
+    assert detail["params"]["books"]["message_key"] == "perm.name.manage_accounting"
+    assert refusal_fix(detail) == {"href": "/settings/general?tab=users", "label": t("settings.tab_users")}
     line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
     assert line["client_query"] is None
 

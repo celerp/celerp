@@ -40,7 +40,7 @@ from celerp.importers.adapters.base import COMPANY_QUESTION
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.posting_accounts import NEW_ACCOUNT, account_picker
-from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields, toast_header
+from ui.components.shell import auth_shell, client_scripts, flash, page_title, sign_in_fields, toast_header, error_flash
 from ui.components.activity import fmt_qty
 from ui.components.files import fmt_size
 from ui.components.table import EMPTY, display_enum, fmt_money, format_value, searchable_select
@@ -300,7 +300,7 @@ async def _current_scan(request: Request, mode: WizardMode):
     except APIError as e:
         if e.status == 410:
             return None, _expired(request, mode, str(e.detail))
-        return None, wizard_page(request, auth_header(t("migration.title")), flash(str(e.detail)), back_link(mode.back),
+        return None, wizard_page(request, auth_header(t("migration.title")), error_flash(e), back_link(mode.back),
                            status_code=e.status if e.status >= 400 else 502)
     if "run_id" in entry:
         # The start went through but its response was lost: continue with that run.

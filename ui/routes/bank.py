@@ -20,7 +20,7 @@ from ui.components import bank_groups as BG
 from ui.components.bank_groups import bank_url
 from ui.components.encode import safe_url
 from ui.components.funds import chosen_fund, funds_in_use
-from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title
+from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title, error_flash
 from ui.components.table import EMPTY
 from ui.config import get_token as _token
 from ui.i18n import t
@@ -34,7 +34,7 @@ def _login() -> Response:
 
 
 def _fragment_error(e: APIError) -> FT:
-    return flash(str(e.detail))
+    return error_flash(e)
 
 
 async def _no_access(request: Request, e: APIError, title: str) -> FT:
@@ -327,7 +327,7 @@ def setup_routes(app):
             if whole:
                 return await _body(token, bank, _view(str(form.get("view"))), str(form.get("q", "")),
                                    bulk_outcome=str(e.detail))
-            return _line_response(await _fresh_line(token, bank, ids[0], flash(str(e.detail))), ids[0])
+            return _line_response(await _fresh_line(token, bank, ids[0], error_flash(e)), ids[0])
         if whole:
             return await _body(token, bank, _view(str(form.get("view"))), str(form.get("q", "")),
                                bulk_outcome=t("bank.undone", n=len(ids)))
@@ -448,7 +448,7 @@ def setup_routes(app):
                 "idempotency_key": str(form.get("idempotency_key"))})
             notice = flash(out["outcome"], "success")
         except APIError as e:
-            notice = flash(str(e.detail))
+            notice = error_flash(e)
         return _line_response(await _fresh_line(token, bank, line_id, notice), line_id)
 
     # ── The client's page ───────────────────────────────────────────────────
@@ -522,7 +522,7 @@ def setup_routes(app):
                 "file_ids": ids, "idempotency_key": str(form.get("idempotency_key"))})
             notice = flash(t("bank.answer_saved"), "success")
         except APIError as e:
-            notice = flash(str(e.detail))
+            notice = error_flash(e)
         found = await api.bank_questions(token, "all")
         q = next((i for i in found["items"] if i["line_id"] == line_id), None)
         return _question_card(q, notice) if q else notice

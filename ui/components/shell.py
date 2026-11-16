@@ -3234,6 +3234,13 @@ def flash(msg: str | tuple, kind: str = "error") -> FT:
     return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
+def error_flash(error) -> FT:
+    """A refused API call (an APIError) on the page: its text, and a link to the page that
+    resolves it when there is one (refusal_fix)."""
+    fix = refusal_fix(error.data)
+    return flash((str(error.detail), " ", A(fix["label"], href=fix["href"])) if fix else str(error.detail))
+
+
 def no_access_text(error=None, *, permission: str | None = None) -> str:
     """Why the reader's role may not do this: the API's keyed refusal on *error* (an APIError),
     or *permission* when the page checks it itself, naming what is missing. An unkeyed 403
@@ -3270,6 +3277,7 @@ _REFUSAL_FIXES = {
     "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
     "error.recon_entry_held": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed"),
     "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed"),
+    "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users"),
 }
 
 

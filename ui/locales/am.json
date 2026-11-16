@@ -8430,7 +8430,7 @@
   "acct.recon_opening_adjusted": "Opening balance changed for {bank}",
   "acct.err_recon_not_suspense": "Only a line sitting in Suspense can be moved to another account.",
   "perm.name.answer_bank_questions": "Answer questions about bank lines",
-  "reconciliation.no_client_user": "No one in this company answers bank questions yet. Invite your client at /settings/users with a role that can answer questions about bank lines, then ask again.",
+  "reconciliation.no_client_user": "No one in this company answers bank questions yet. Give the \"{permission}\" permission to a role without \"{books}\", invite your client with that role, then ask again.",
   "reconciliation.line_not_asked": "ይህ መስመር የሚመለስ ክፍት ጥያቄ የለውም። ያለበትን ሁኔታ ለማየት እንደገና ሞክር ይምረጡ።",
   "reconciliation.question_settled": "Your accountant has already settled this line, so it needs no answer now.",
   "reconciliation.receipt_not_saved": "The receipt could not be saved. Your answer was not saved; try again.",

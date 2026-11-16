@@ -29,7 +29,7 @@ from ui.api_client import APIError, error_message
 from ui.components.cloud_gate import upgrade_banner
 from ui.components.encode import as_js
 from ui.components.module_off import module_off_page
-from ui.components.shell import base_shell, page_header, page_title, flash
+from ui.components.shell import base_shell, page_header, page_title, flash, error_flash
 from ui.components.table import (
     EMPTY, add_new_option, bank_account_options, display_cell, editable_cell, fmt_money,
 )
@@ -318,7 +318,7 @@ def setup_routes(app):
                 return off
             relay_ok, enabled, deposit, banks, state, unmatched = await _load(token)
         except APIError as e:
-            return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
+            return await base_shell(error_flash(e), title=page_title("nav.payments"),
                                     nav_active="web-access", request=request)
         has_team = _has_team_features(await _commercial_state(request))
         return await base_shell(

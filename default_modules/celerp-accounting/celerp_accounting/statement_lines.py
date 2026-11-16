@@ -477,7 +477,9 @@ async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines:
 
     members = await client_users(db, company_id)
     if not members:
-        raise HTTPException(status_code=409, detail=catalog_refusal("reconciliation.no_client_user"))
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "reconciliation.no_client_user", permission=catalog_refusal("perm.name.answer_bank_questions"),
+            books=catalog_refusal("perm.name.manage_accounting")))
     now = datetime.now(timezone.utc).isoformat()
     reminder = 0
     for line in lines:
