@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 
 import bank_statement_helpers as B
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,6 +71,18 @@ async def test_second_statement_balances_without_rematching_first(client):
     r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
     assert r.status_code == 200, r.text
     assert r.json()["completed"] and not r.json().get("stopped_at")
+
+
+async def test_complete_from_the_bank_page_completes_the_statement(client):
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "SUPPLIER ONE", "-40.00")], opening="0.00")
+    await _post(client, co, bk, B.all_lines(await B.groups(client, co, bk["id"]))[0])
+    async with B.browser(co["h"]) as ui:
+        r = await ui.post(f"/accounting/reconcile/bank/{bk['id']}/complete", data={"idempotency_key": B.key()})
+    assert r.status_code == 200, r.text[:500]
+    assert t("bank.completed", n=1) in r.text
+    r = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200 and not r.json()["completed"], r.text
 
 
 async def test_first_session_seeds_only_when_opening_ties(client):

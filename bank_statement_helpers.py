@@ -8,8 +8,10 @@ from __future__ import annotations
 import json
 import uuid as _uuid
 import weakref
+from contextlib import asynccontextmanager
+from unittest.mock import patch
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from celerp.ai.files import upload_dir
 from test_helpers import until
@@ -270,3 +272,21 @@ async def complete(client, h, sid):
     got = (await client.get(f"{API}/{sid}", headers=h)).json()
     assert got["status"] == "completed", got
     return got
+
+
+@asynccontextmanager
+async def browser(h: dict):
+    """The real UI app signed in as the bearer token in ``h``, its API client routed to the
+    in-process API, so a form posted here writes what the page would."""
+    from celerp.main import app as api_app
+    from ui.app import app as ui_app
+
+    def bridged(tok=None, *, timeout=10.0, follow_redirects=True, bulk=False, headers=None):
+        merged = {**(headers or {}), **({"Authorization": f"Bearer {tok}"} if tok is not None else {})}
+        return AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test",
+                           headers=merged, timeout=timeout, follow_redirects=follow_redirects)
+
+    with patch("ui.api_client._local_client", bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               cookies={"celerp_token": h["Authorization"].split(" ", 1)[1]}) as ui:
+            yield ui

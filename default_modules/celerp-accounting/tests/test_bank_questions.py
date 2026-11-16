@@ -87,6 +87,32 @@ async def test_client_sees_only_asked_lines(client, session, monkeypatch):
     assert other.status_code == 404
 
 
+async def test_withdrawn_question_leaves_the_clients_list(client, session, monkeypatch):
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    lid = lines["WITHDRAWAL"]["id"]
+    await _ask(client, co, bk, [lid])
+    r = await client.post(f"{B.API}/bank/{bk['id']}/withdraw-question",
+                          json={"line_ids": [lid], "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200 and r.json()["withdrawn"] == [lid], r.text
+    assert (await client.get(Q, headers=client_h)).json()["items"] == []
+    r = await client.post(f"{Q}/{lid}/answer", json={"answer": "rent", "idempotency_key": B.key()}, headers=client_h)
+    assert r.status_code == 404
+
+
+async def test_client_answers_through_the_questions_page(client, session, monkeypatch):
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    lid = lines["WITHDRAWAL"]["id"]
+    await _ask(client, co, bk, [lid])
+    async with B.browser(client_h) as ui:
+        r = await ui.post(f"/accounting/questions/{lid}/answer", data={
+            "answer": "paid the plumber", "idempotency_key": B.key()})
+    assert r.status_code == 200 and t("bank.answer_saved") in r.text, r.text[:500]
+    got = (await client.get(Q, params={"status": "all"}, headers=client_h)).json()["items"]
+    assert [q["line_id"] for q in got] == [lid] and got[0]["answered"], got
+
+
 async def test_answer_after_post_is_refused(client, session, monkeypatch):
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)
