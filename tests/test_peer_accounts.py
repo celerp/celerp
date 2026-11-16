@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from company_backup_support import company, owner, token
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from peer_attention_support import attention_keys
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _company_of, _iid, _route_to_app, seed_demo
@@ -186,6 +187,7 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
     assert not [s for s in books.values() if (s.get("peer_source") or {}).get("journal") == first]
     waiting = [a for a in results["journals_out"].attention if a["id"] == first]
     assert waiting and refusal_text(waiting[0]["reason"]) == "Waiting for Second Trading books to review accounts."
+    assert await attention_keys(real_engine, _company_of(second_books))  # the held record, keyed
 
     review = (await real_client.get("/accounting/peer/review", headers=auth(second_books))).json()
     [pending] = review["companies"]
@@ -201,6 +203,7 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
     [held] = (await real_client.get("/accounting/peer/holds", headers=auth(second_books))).json()["items"]
     assert held["label"] == "Courier run" and held["fix"]["fixed"]
     assert refusal_text(held["reason"]) == "Accounts reviewed. It posts on the next sync."
+    assert await attention_keys(real_engine, _company_of(second_books)) == ["peer.attention_accounts_reviewed"]
     view = (await real_client.get("/auth/firm-view", headers=auth(firm_tok))).json()["items"]
     [item] = [i for row in view if row["company_name"] == "Second Trading books" for i in row["attention"]
               if i["label"] == "Courier run"]
@@ -269,6 +272,8 @@ async def test_a_missing_account_is_added_with_the_record_both_ways(real_client,
     assert len(client_told) == 1 and "Firm Practice" in client_told[0][1], client_told
     [link] = [l for l in await _links(real_engine, firm_company) if l.code == "6150"]
     assert (link.how, link.added_from) == ("added", "Demo Trading")
+    for company_id in (firm_company, client_company):  # each side's added account, keyed
+        assert await attention_keys(real_engine, company_id) == ["peer.attention_account_added"]
 
     await _two_way(client_company, credential)
     assert await _chart(real_client, firm_tok) == firm_chart
@@ -309,11 +314,14 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
     assert holds["Deposit"]["fix"]["kind"] == "type"
     deposit_why = refusal_text(holds["Deposit"]["reason"])
     assert "asset" in deposit_why and "expense" in deposit_why
+    held_keys = sorted(h["reason"]["message_key"] for h in holds.values())
+    assert sorted(await attention_keys(real_engine, firm_company)) == held_keys
 
     await _fix(real_client, firm_tok, holds["Courier"], action="use", account="6150")
     # Until the next sync the held record says it is fixed, as a confirmed review's do.
     courier = {h["label"]: h for h in await _holds(real_client, firm_tok)}["Courier"]
     assert courier["fix"]["fixed"] and refusal_text(courier["reason"]) == "Fixed. It posts on the next sync."
+    assert "sync_accounts.fixed" in await attention_keys(real_engine, firm_company)
     await _fix(real_client, firm_tok, holds["Fuel"], action="add", code="6171")
     r = await real_client.post(f"/accounting/peer/holds/{holds['Deposit']['id']}/fix",
                                json={"action": "use", "account": "6500"}, headers=auth(firm_tok))
