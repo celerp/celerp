@@ -116,6 +116,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
         "label_source": ("session", "company_id", "ids"),
         "import_target": ("session", "company_id", "user_id", "rows", "as_at", "source", "body"),
         "turn_off_preflight": ("session", "company_id"),
+        "record_names": ("session", "company_id", "settings", "role", "ids"),
         "periodic_operation": ("session", "company_id", "today", "budget"),
     }
     assert set(loader._HANDLER_KEYWORDS) <= set(loader._SLOT_VALIDATORS)
