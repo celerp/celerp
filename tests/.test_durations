@@ -31083,5 +31083,15 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_units_race_pg.py]": 0.00581710715778172,
     "tests/test_unattended_start.py::test_a_loop_cancelled_before_its_first_step_leaves_no_unawaited_coroutine": 0.12486658105626702,
     "tests/test_unattended_start.py::test_an_unattended_loop_runs_marked_automatic": 0.002647832967340946,
-    "tests/test_unattended_start.py::test_the_app_starts_each_modules_background_loop_unattended": 0.0033992190146818757
+    "tests/test_unattended_start.py::test_the_app_starts_each_modules_background_loop_unattended": 0.0033992190146818757,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language[The mail server refused the message-en-.]": 1.3059592439094558,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language[The mail server refused the message-ja-\\u3002]": 0.44857634603977203,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language[The mail server refused the message.-en-.]": 0.4591064699925482,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language[The mail server refused the message.-ja-\\u3002]": 0.3761312940623611,
+    "default_modules/celerp-accounting/tests/test_reconciliation_company_lock.py::test_every_resolve_and_accept_outcome_takes_the_company_lock_before_a_line": 1.0438185420352966,
+    "default_modules/celerp-accounting/tests/test_resolve_races_pg.py::test_an_entry_keyed_after_the_read_of_the_books_is_matched_never_posted_twice": 0.880108644021675,
+    "default_modules/celerp-accounting/tests/test_resolve_races_pg.py::test_an_undo_during_a_several_twins_refusal_never_deadlocks": 0.8123940420337021,
+    "default_modules/celerp-accounting/tests/test_resolve_units.py::test_an_accept_of_a_suggested_line_on_a_completed_statement_is_refused": 0.4913061879342422,
+    "default_modules/celerp-accounting/tests/test_resolve_units.py::test_an_entry_before_the_first_statement_that_makes_up_its_opening_is_never_a_twin": 0.44958055194001645,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_races_pg.py]": 0.005397249013185501
 }
