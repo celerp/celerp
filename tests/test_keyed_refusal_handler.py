@@ -70,3 +70,16 @@ async def test_a_refusal_with_an_amount_or_a_date_is_a_json_body():
     assert body["message"].startswith("1000.50 CLP ")
     assert json.loads(json.dumps(Refused("error.period_locked", date=date(2026, 1, 31),
                                          permission="x", place="y").detail))["params"]["date"] == "2026-01-31"
+
+
+async def test_a_keyed_refusal_keeps_the_error_body_fields_beside_it():
+    """A refusal answered with a machine code and version beside it reaches the UI with
+    both: the scan bar and the company timezone notice branch on the code."""
+    from celerp.accounting_roles import catalog_refusal
+    from ui.api_client import _api_error
+
+    detail = catalog_refusal("documents.err_scan_conflict")
+    err = _api_error(409, {"detail": detail, "code": "scan_run_conflict", "version": 7}, "")
+    assert err.data["code"] == "scan_run_conflict" and err.data["version"] == 7
+    assert err.data["message_key"] == detail["message_key"]
+    assert err.detail == detail["message"]

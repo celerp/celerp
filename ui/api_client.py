@@ -404,12 +404,14 @@ def _api_error(status: int, body, text: str) -> APIError:
     A refusal (``message``) or a list of them (``errors``) renders through refusal_text.
     A body that is not JSON (a proxy's error page) reads as a plain generic sentence.
     Any other dict detail (a field-by-field map) passes through for its page to lay out;
-    an error body carrying fields beyond ``detail`` (a machine ``code``) rides on data."""
+    an error body carrying fields beyond ``detail`` (a machine ``code``) rides on data,
+    beside a refusal's own fields."""
     if not isinstance(body, dict):
         return APIError(status, t("error.unexpected_error_body"))
     detail = body.get("detail", text)
     if isinstance(detail, dict) and ("message" in detail or "errors" in detail):
-        return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data=detail)
+        extra = {k: v for k, v in body.items() if k != "detail"}
+        return APIError(status, refusal_text(detail) or t("error.unexpected_error_body"), data={**extra, **detail})
     if isinstance(detail, list):
         # A request validation error: name the rejected fields in a sentence and
         # carry the original list on data.
