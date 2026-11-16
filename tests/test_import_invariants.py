@@ -655,7 +655,9 @@ class TestPreviewCommitInvariant:
         h = perm[who]
         if seed:
             await _seed_items(client, perm["admin_h"], seed, key=f"seed-{_id}")
-        preview = await _rows_preview(client, h, rows, upsert=upsert, key=f"op-{_id}")
+        # The preview and its import each carry their own operation key, as the
+        # assistant's preview tool and its confirmed import do.
+        preview = await _rows_preview(client, h, rows, upsert=upsert, key=f"preview-{_id}")
         assert _codes(preview["errors"]) == sorted(expected)
 
         before = await _item_count(session, perm["company_id"])
@@ -712,7 +714,7 @@ class TestPreviewCommitInvariant:
         writer.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("change", ["row_edited", "upsert", "operation_key"])
+    @pytest.mark.parametrize("change", ["row_edited", "upsert"])
     async def test_commit_does_not_call_writer_when_preview_hash_is_stale(self, client, perm, monkeypatch, change):
         import celerp_inventory.routes as routes
         rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
@@ -722,10 +724,8 @@ class TestPreviewCommitInvariant:
         kwargs = {"upsert": False, "key": "op-1"}
         if change == "row_edited":
             rows = [dict(rows[0], quantity="2")]
-        elif change == "upsert":
-            kwargs["upsert"] = True
         else:
-            kwargs["key"] = "op-2"
+            kwargs["upsert"] = True
         r = await _rows_commit(client, perm["admin_h"], rows, preview_hash=ph, **kwargs)
         assert r.status_code == 409
         assert r.json()["detail"]["code"] == "preview_stale"
@@ -767,21 +767,18 @@ class TestPreviewCommitInvariant:
     # INV-PREVIEW-03 --------------------------------------------------------
 
     @staticmethod
-    def _hash(rows, upsert=False, key="k", fingerprint="f", decisions=None):
+    def _hash(rows, upsert=False, fingerprint="f", decisions=None):
         from types import SimpleNamespace
 
         from celerp_inventory.routes import _rows_preview_hash
         plan = SimpleNamespace(decisions=decisions or {"exclude": []}, semantic_fingerprint=fingerprint)
-        return _rows_preview_hash(rows, upsert, key, plan)
+        return _rows_preview_hash(rows, upsert, plan)
 
     def test_preview_hash_changes_when_row_changes(self):
         assert self._hash([{"name": "A"}]) != self._hash([{"name": "B"}])
 
     def test_preview_hash_changes_when_upsert_changes(self):
         assert self._hash([{"name": "A"}]) != self._hash([{"name": "A"}], upsert=True)
-
-    def test_preview_hash_changes_when_operation_key_changes(self):
-        assert self._hash([{"name": "A"}], key="k1") != self._hash([{"name": "A"}], key="k2")
 
     def test_preview_hash_is_stable_for_equivalent_dict_key_order(self):
         assert self._hash([{"name": "A", "sku": "1"}]) == self._hash([{"sku": "1", "name": "A"}])

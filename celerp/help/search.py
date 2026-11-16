@@ -32,7 +32,7 @@ class Hit:
     permitted: bool
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=None)
 def _route_pattern(route: str) -> re.Pattern:
     """A help page route's path as a full-path match; each {name} stands for one path segment."""
     parts = _SEGMENT.split(route)

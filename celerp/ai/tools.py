@@ -16,6 +16,7 @@ import secrets
 import textwrap
 import types
 from collections.abc import Callable
+from functools import cache
 from urllib.parse import quote
 from typing import Any
 
@@ -242,6 +243,7 @@ _EMIT = re.compile(r"\bemit_event\(")
 _OTHER_WRITE = re.compile(r"session\.(add|delete)\(|\.execute\(\s*(insert|update|delete)\(")
 
 
+@cache
 def _source(fn: Any) -> str:
     try:
         return textwrap.dedent(inspect.getsource(fn))
@@ -249,16 +251,18 @@ def _source(fn: Any) -> str:
         return ""
 
 
-def _callees(fn: Any) -> list[Any]:
+@cache
+def _callees(fn: Any) -> tuple[Any, ...]:
     """Functions of this codebase ``fn`` calls by name, through a closure, a local import or
-    an attribute of an imported module or class."""
+    an attribute of an imported module or class. Read once per function: the code does not
+    change while the process runs."""
     tree = None
     try:
         tree = ast.parse(_source(fn))
     except SyntaxError:
         pass
     if tree is None:
-        return []
+        return ()
     names = dict(getattr(fn, "__globals__", {}) or {})
     try:
         names.update(inspect.getclosurevars(fn).nonlocals)
@@ -291,7 +295,7 @@ def _callees(fn: Any) -> list[Any]:
         module = str(target.__module__ or "")
         if module == own or module.startswith(("celerp", "ui.")):
             found.append(target)
-    return found
+    return tuple(found)
 
 
 def _reached(fn: Any, depth: int, skip: Callable[[Any], bool] = lambda _fn: False) -> list[Any]:
