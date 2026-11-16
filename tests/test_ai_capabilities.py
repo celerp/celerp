@@ -304,15 +304,35 @@ async def test_a_change_the_screen_reviews_first_compiles_a_preview_read_whose_t
     assert "after_previous" not in review["tool"]["function"]["parameters"]["properties"]
     assert "operate_ops_post_preview" in change["tool"]["function"]["description"]
 
-    seen = await ai_tools.execute_agent_capability(
-        app, "Bearer t", review, {"body": {"name": "a", "preview": False}}, "call-review")
+    asked = {"body": {"name": "a", "preview": False}}
+    seen = await ai_tools.execute_agent_capability(app, "Bearer t", review, asked, "call-review")
     assert seen == {"ok": True, "status": 200, "data": {"fingerprint": "fp-a"}} and applied == []
-    done = await ai_tools.execute_agent_capability(
-        app, "Bearer t", change, {"body": {"name": "a", "preview": True, "fingerprint": seen["data"]["fingerprint"]}},
-        "call-change")
+    confirmed = {"body": {"name": "a", "preview": True, "fingerprint": seen["data"]["fingerprint"]}}
+    done = await ai_tools.execute_agent_capability(app, "Bearer t", change, confirmed, "call-change")
     assert done["data"] == {"done": "a"} and applied == [ai_tools.tool_call_key("call-change")]
+    # What the model sent stays as it sent it: the flag and the key go only into the request.
+    assert asked == {"body": {"name": "a", "preview": False}}
+    assert confirmed == {"body": {"name": "a", "preview": True, "fingerprint": "fp-a"}}
     unreviewed = await ai_tools.execute_agent_capability(app, "Bearer t", change, {"body": {"name": "b"}}, "call-b")
     assert unreviewed["ok"] is False and unreviewed["status"] == 409 and len(applied) == 1
+
+
+def test_a_preview_read_named_like_another_tool_does_not_compile():
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-key": "op_key",
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        return {}
+
+    @app.get("/ops/look", operation_id="operate_ops_post_preview", openapi_extra={"x-celerp-agent": True})
+    async def look():
+        return {}
+
+    operate.__module__ = look.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="duplicate agent operationId: 'operate_ops_post_preview'"):
+        ai_tools.compile_agent_capabilities(app, {})
 
 
 @pytest.mark.parametrize("marker", [

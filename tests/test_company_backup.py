@@ -707,6 +707,25 @@ def test_older_bank_line_whose_statement_is_missing_is_refused_as_damaged():
     assert e.value.detail == cb.t(cb.DAMAGED)
 
 
+def test_each_older_bank_line_gets_the_fingerprint_of_its_own_text():
+    """Two lines of one statement each keep the identity a statement read again finds for
+    that line, and two identical lines are numbered apart."""
+    from celerp.services import company_backup as cb
+    from celerp.services.field_fingerprints import statement_line
+
+    def line(i, description):
+        return {"id": f"l{i}", "reconciliation_id": "s1", "created_at": f"t{i}", "status": "unmatched",
+                "matched_je_id": None, "line_date": "2026-01-15", "amount": 100 + i, "description": description,
+                "reference": None, "raw_balance": None}
+    rows = [line(1, "rent"), line(2, "fee"), {**line(3, "fee"), "amount": 102}]
+    tables = {"reconciliation_sessions": [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-01-31"}],
+              "bank_statement_lines": rows}
+    got = {r["id"]: r["fingerprint"] for r in cb._bank_lines(lambda name: iter(tables[name]))}
+    assert got == {"l1": statement_line("2026-01-15", 101, "rent", None, None, 0),
+                   "l2": statement_line("2026-01-15", 102, "fee", None, None, 0),
+                   "l3": statement_line("2026-01-15", 102, "fee", None, None, 1)}
+
+
 async def test_excluded_installation_state(real_engine, real_client, tmp_path, monkeypatch):
     """Users, passwords, emails and memberships never leave with a backup, and a restore
     brings in no user of the source installation."""
