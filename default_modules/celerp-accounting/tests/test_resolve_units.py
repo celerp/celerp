@@ -260,6 +260,7 @@ async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the
     assert not [i for i in read if i.startswith("je:seed:")]
     since = [i for x in reads if x[2] is not None for i in x[2]]
     assert since and all(i.startswith("je:recon:") for i in since), reads
+    assert len(since) == len(set(since)), since  # an entry read since the window is never read again
     assert not [i for i in loaded if i.startswith("je:seed:")], len(loaded)
 
 
