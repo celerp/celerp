@@ -13,7 +13,6 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
-from celerp.ai.files import upload_content_type
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components import bank_groups as BG
@@ -157,6 +156,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return _login()
+        from celerp.ai.files import upload_content_type
+
         form = await request.form()
         files = []
         for f in form.getlist("files"):
