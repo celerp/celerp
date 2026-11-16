@@ -40,6 +40,16 @@ def _english(texts) -> list[str]:
     return [text for text in texts if not text.startswith(_MARK)]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _app_capabilities():
+    """The app's compiled capabilities, built before the stand-in language replaces the
+    catalogs, so proposals build their cards from the real tool schemas."""
+    from celerp.ai.tools import compile_agent_capabilities
+    from test_helpers import real_agent_app
+
+    _Lookups._capabilities = compile_agent_capabilities(real_agent_app(), {})
+
+
 class _Lookups(routes._Lookups):
     """The real contact matching over canned contact rows: a count of contacts
     named as the vendor, or the error text of a failed lookup."""
@@ -64,8 +74,8 @@ async def _proposal_texts(rows, extraction) -> list[str]:
     records, summary = await routes._bill_proposals(_Lookups(rows), entry, extraction, datetime.now(timezone.utc))
     texts = [summary]
     for record in records:
-        texts.append(record["title"])
-        texts.extend(record["warnings"])
+        texts.append(i18n.read_kept(record["title"]))
+        texts.extend(i18n.read_kept(w) for w in record["warnings"])
         notes = record["arguments"]["body"].get("notes")
         if notes:
             texts.append(notes)

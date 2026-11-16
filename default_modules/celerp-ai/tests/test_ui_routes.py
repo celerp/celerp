@@ -38,7 +38,7 @@ _CLOUD_STATUS = {"tier": "ai", "remaining": 50, "used": 10, "base_limit": 200}
 _ACTION = {
     "id": "call-1",
     "name": "create_item_items_post",
-    "arguments": {"body": {"sku": "AGENT-1", "name": "Agent Widget"}},
+    "shown": {"body": {"sku": "AGENT-1", "name": "Agent Widget"}},
 }
 
 
@@ -401,7 +401,7 @@ def test_action_card_falls_back_to_readable_name_without_title():
 def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
     action = {
         "id": "prop_1", "name": "create_bill_bills_post", "title": "Create bill from receipt.jpg",
-        "arguments": {"body": {
+        "shown": {"body": {
             "contact_id": "c-1", "contact_name": "Supplier Co", "total": 842.0,
             "lines": [{"item_name": "Widget", "quantity": 2, "amount": 10.5}],
             "notes": None,
@@ -418,7 +418,7 @@ def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
 
 def test_action_card_reads_records_nested_at_any_depth():
     """A record inside a list inside a record reads as labelled lines, never as raw data."""
-    action = {"id": "prop_1", "name": "import_statement", "title": "Import", "arguments": {"body": {
+    action = {"id": "prop_1", "name": "import_statement", "title": "Import", "shown": {"body": {
         "statements": [{"header": {"period_start": "2026-03-01", "currency": "USD"},
                         "lines": [{"line_date": "2026-03-02", "raw_csv_row": {"memo": "BANK FEE"},
                                    "tags": ["a", "b"], "ticked": True}]}]}}}
@@ -452,7 +452,7 @@ def test_failed_record_card_has_no_buttons_and_says_why():
 def test_action_card_formats_amounts_and_quantities():
     action = {
         "id": "prop_1", "name": "create_doc_docs_post", "title": "Create bill from Quick Parts Ltd",
-        "arguments": {"body": {
+        "shown": {"body": {
             "currency": "THB", "subtotal": 15.0, "tax": 1.5, "total": 20.0,
             "line_items": [{"name": "Bolt M6", "quantity": 1.0, "unit_price": 10.0, "line_total": 10.0}],
         }},
@@ -482,7 +482,7 @@ def test_action_group_offers_confirm_all_only_for_several_open_cards():
 def _bills(n: int, *, flagged: set[int] = frozenset()) -> list[dict]:
     return [{
         "id": f"p{i}", "name": "create_bill_docs_post", "title": f"Create bill from r{i}.jpg",
-        "arguments": {"body": {"contact_name": f"Vendor {i}", "issue_date": f"2026-09-0{i}",
+        "shown": {"body": {"contact_name": f"Vendor {i}", "issue_date": f"2026-09-0{i}",
                                "currency": "THB", "total": 10 * i}},
         "warnings": ["No date was found."] if i in flagged else [],
     } for i in range(1, n + 1)]

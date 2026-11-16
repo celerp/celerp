@@ -26,7 +26,7 @@ from celerp.ai.conversations import build_history_context
 from celerp.models.ai import AIMessage
 from celerp.models.company import User
 from test_helpers import asked_in_thread, grant_permission, perm_setup, settled_question
-from ui.i18n import t
+from ui.i18n import read_kept, t
 
 from _fixtures import tool_call, tool_result
 from test_action_outcomes import (
@@ -334,7 +334,7 @@ async def test_twenty_record_ask_is_one_bulk_card(client, session, agent_caps, a
         _call("propose_for_each", {"tool": op, "records": records}, "bulk1")))
     card = await _record(session, message_id, call_id)
     assert len(card["arguments"]["records"]) == 20
-    assert "This changes 20 records." in " ".join(card["warnings"])
+    assert "This changes 20 records." in " ".join(read_kept(w) for w in card["warnings"])
 
     model = ScriptedModel(
         lambda _m: tool_result(calls=[
@@ -359,7 +359,7 @@ async def test_bulk_tool_card_states_the_selection_size(client, session, agent_c
     conv_id, message_id, call_id = await _propose(client, ctx["admin_h"], ScriptedModel(
         _call(op, {"body": {field: ids}}, "bx1")))
     card = await _record(session, message_id, call_id)
-    assert "This changes 3 records." in " ".join(card["warnings"])
+    assert "This changes 3 records." in " ".join(read_kept(w) for w in card["warnings"])
 
 
 @pytest.mark.asyncio

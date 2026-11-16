@@ -20,6 +20,8 @@ Covers uncovered route lines:
 
 from __future__ import annotations
 
+import functools
+
 import json
 import os
 import uuid
@@ -32,7 +34,7 @@ import pytest
 from celerp.config import settings
 from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
-from ui.i18n import refusal_text, t
+from ui.i18n import read_kept, refusal_text, t
 from test_helpers import answered_continuation, asked_in_thread
 
 
@@ -572,7 +574,16 @@ async def _finished_job(session, c, h, conv_id, files):
 
 
 def _capabilities(*names):
-    return {n: {"name": n} for n in names}
+    """The app's own compiled capabilities named ``names``."""
+    return {n: _compiled()[n] for n in names}
+
+
+@functools.cache
+def _compiled() -> dict:
+    from celerp.ai.tools import compile_agent_capabilities
+    from test_helpers import real_agent_app
+
+    return compile_agent_capabilities(real_agent_app(), {})
 
 
 def _executor(contacts=(), items=()):
@@ -635,7 +646,7 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
     assert actions[0]["file_id"] == "ai_up_1"
     assert "ai_up_1" not in str(bill)
     assert actions[0]["warnings"] == []
-    assert actions[0]["title"] == "Create bill from Acme Supplies"
+    assert read_kept(actions[0]["title"]) == "Create bill from Acme Supplies"
     assert actions[0]["message_id"] == first["message_id"]
     assert "r2.jpg: could not be read." in first["answer"]
     # No write ran while proposing: every capability call was a list lookup.
@@ -729,7 +740,7 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
         "target_path": ["body", "contact_id"],
     }]
     assert "issue_date" not in bill
-    warnings = bill_action["warnings"]
+    warnings = [read_kept(w) for w in bill_action["warnings"]]
     assert any("27.50" in w and "30.00" in w for w in warnings)
     assert any("No date" in w for w in warnings)
     assert "photo.jpg: read as a document that is not a receipt or invoice" in r.json()["answer"]

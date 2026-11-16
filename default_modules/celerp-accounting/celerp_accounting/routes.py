@@ -4400,7 +4400,7 @@ class PlacementCorrectionIn(BaseModel):
     kind: str = ""
 
 
-@router.get("/older-stock", openapi_extra={"x-celerp-agent": True}, summary="List the older stock lots placed on inventory accounts automatically, with their moves and corrections.")
+@router.get("/older-stock", openapi_extra={"x-celerp-agent": True}, summary="List the opening inventory lots placed on inventory accounts automatically, with their moves and corrections.")
 async def get_older_stock(
     account: str | None = None,
     q: str | None = None,
@@ -4422,7 +4422,7 @@ async def get_older_stock(
     return await older_stock_view(session, company_id, account, q, offsets, limit)
 
 
-@router.post("/older-stock/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move chosen older stock lots onto another inventory account, with their value.")
+@router.post("/older-stock/move", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move chosen opening inventory lots onto another inventory account, with their value.")
 @rerun_after_placing
 async def move_older_stock(
     payload: OlderStockMoveIn,
@@ -4439,7 +4439,7 @@ async def move_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/move-all", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move every older stock lot that matches the filters onto another inventory account.")
+@router.post("/older-stock/move-all", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Move every opening inventory lot that matches the filters onto another inventory account.")
 async def move_all_older_stock(
     payload: OlderStockMoveAllIn,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4458,7 +4458,7 @@ async def move_all_older_stock(
     return {**await older_stock_view(session, company_id), "result": result}
 
 
-@router.post("/older-stock/moves/{move_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Undo an older stock move, putting its lots back on the accounts they came from.")
+@router.post("/older-stock/moves/{move_id}/undo", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Undo an opening inventory move, putting its lots back on the accounts they came from.")
 async def undo_older_stock_move(
     move_id: str,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -4474,7 +4474,7 @@ async def undo_older_stock_move(
     return await older_stock_view(session, company_id)
 
 
-@router.post("/older-stock/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Try again to place the older stock still waiting for an account.")
+@router.post("/older-stock/retry", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Try again to place the opening inventory still waiting for an account.")
 async def retry_older_stock(
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
@@ -4488,7 +4488,7 @@ async def retry_older_stock(
     return {**await older_stock_view(session, company_id), "result": {"placed": placed}}
 
 
-@router.post("/older-stock/corrections", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Correct how older stock placements booked their difference.")
+@router.post("/older-stock/corrections", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/accounting"}, summary="Correct how opening inventory placements booked their difference.")
 async def correct_older_stock(
     payload: PlacementCorrectionIn,
     company_id: uuid.UUID = Depends(get_current_company_id),

@@ -1238,8 +1238,8 @@ _LABEL_KEYS = {
 
 def label_key(key: str) -> str | None:
     """The catalog key a proposal field reads by: the app's own label for it, else
-    ``field.<key>``; None when no catalog has one."""
-    for candidate in (_LABEL_KEYS.get(key), f"field.{key}"):
+    ``field.<key>``, ``label.<key>`` or ``th.<key>``; None when no catalog has one."""
+    for candidate in (_LABEL_KEYS.get(key), f"field.{key}", f"label.{key}", f"th.{key}"):
         if candidate and t_or(candidate, "") != "":
             return candidate
     return None

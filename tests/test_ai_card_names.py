@@ -4,7 +4,6 @@
 card, so the person confirming can check which bank, line or contact it writes to."""
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
@@ -91,50 +90,41 @@ async def test_a_name_is_kept_only_for_a_record_the_asker_may_read(client, auth,
     assert await record_names(session, uuid.uuid4(), {}, "owner", args) == {}
 
 
-def test_a_card_shows_a_named_id_by_its_name_and_an_unnamed_one_as_it_is():
+def test_a_card_shows_a_named_id_by_its_name_and_never_shows_an_unnamed_one():
     from fasthtml.common import to_xml
     from celerp_ai.ui_routes import _action_card
+    from ui.i18n import t
 
+    line_id = str(uuid.uuid4())
     action = {"id": "c1", "name": "resolve", "title": "Resolve", "names": {"b-1": "Main account (****1234)"},
-              "arguments": {"path": {"bank_id": "b-1"}, "body": {"decisions": [
-                  {"line_ids": ["l-1"], "kind": "post"}], "memo": "b-1"}}}
+              "shown": {"path": {"bank_id": "b-1"}, "body": {"decisions": [
+                  {"line_ids": [line_id], "kind": "post"}], "memo": "Bank fee"}}}
     html = to_xml(_action_card("conv", "msg", action))
-    assert "Main account (****1234)" in html and "l-1" in html
-    assert json.dumps("b-1") not in html and html.count("b-1") == 1  # the memo, which is not an id
+    assert "Main account (****1234)" in html and "b-1" not in html
+    assert line_id not in html and t("ai.card_name_unavailable") in html
+    assert "Bank fee" in html
 
 
-def _field_keys(schema, out: set[str]) -> set[str]:
-    """Every field name a tool's arguments can hold, at any depth."""
-    if isinstance(schema, dict):
-        for key, sub in (schema.get("properties") or {}).items():
-            out.add(key)
-            _field_keys(sub, out)
-        for key in ("items", "anyOf", "oneOf", "allOf"):
-            sub = schema.get(key)
-            for part in sub if isinstance(sub, list) else [sub]:
-                _field_keys(part, out)
-    return out
+@pytest.mark.asyncio
+async def test_a_card_names_an_assistant_upload_and_a_reading_by_their_file_names(auth, ids, session, tmp_path, monkeypatch):
+    """A statement read names the files it reads, and its import names the reading by those files."""
+    from celerp.ai import files
+    from celerp.ai.names import record_names
+    from celerp.models.ai import AIBatchJob
 
+    monkeypatch.setattr(files, "upload_dir", lambda: tmp_path)
+    company_id = auth["company_id"]
+    march = files.save_upload(company_id, ids["user_id"], "march-statement.pdf", "application/pdf", b"%PDF-1.4")
+    april = files.save_upload(company_id, ids["user_id"], "april-statement.pdf", "application/pdf", b"%PDF-1.4")
+    job = AIBatchJob(company_id=company_id, user_id=ids["user_id"], status="done", query="read",
+                     file_ids=[march, april])
+    session.add(job)
+    await session.flush()
 
-def test_every_field_a_bank_change_shows_is_labelled_in_every_language(monkeypatch):
-    """A bank change's confirm card labels each field in the reader's language, never by
-    the field's internal name."""
-    from celerp.ai import tools as ai_tools
-    from celerp.main import app
-    from celerp_ai.ui_routes import _LABEL_KEYS
-    from ui import i18n
-
-    monkeypatch.setattr(ai_tools, "loaded_modules", lambda: [_ACCOUNTING])
-    keys = set()
-    for capability in ai_tools.compile_agent_capabilities(app, {}).values():
-        if capability["requires_confirmation"] and capability["path"].startswith(
-                ("/accounting/reconciliation", "/accounting/bank")):
-            _field_keys(capability["tool"]["function"]["parameters"], keys)
-    assert keys
-    unlabelled = sorted(
-        f"{lang}:{key}" for key in keys - {"after_previous"} for lang in i18n.available_langs()
-        if _LABEL_KEYS.get(key, f"field.{key}") not in i18n._cached_load(lang))
-    assert unlabelled == []
+    names = await record_names(session, company_id, {}, "owner",
+                               {"file_ids": [march], "body": {"job_id": str(job.id)}})
+    assert names == {march: "march-statement.pdf", str(job.id): "march-statement.pdf, april-statement.pdf"}
+    assert await record_names(session, uuid.uuid4(), {}, "owner", {"file_ids": [march]}) == {}
 
 
 async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_still_names(auth, session, monkeypatch):

@@ -2077,7 +2077,7 @@ async def get_doc_pdf(
     )
 
 
-@router.post("", summary="Create a new sales or purchasing document, such as a quotation, invoice, credit note, purchase order or bill.", openapi_extra=_DOC_WRITE_AGENT)
+@router.post("", summary="Create a new sales or purchasing document, such as a quotation, invoice, credit memo, purchase order or bill.", openapi_extra=_DOC_WRITE_AGENT)
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -5373,7 +5373,7 @@ async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: 
     return entry
 
 
-@router.post("/{entity_id}/apply-to-invoice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a customer credit note to an invoice of the same customer.")
+@router.post("/{entity_id}/apply-to-invoice", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a customer credit memo to an invoice of the same customer.")
 async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     key, digest = _operation("apply-credit-note", entity_id, payload)
     entry = await apply_credit_note(
@@ -5384,7 +5384,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/apply-to-bill", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a supplier credit note to a bill or purchase order of the same supplier.")
+@router.post("/{entity_id}/apply-to-bill", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Apply a supplier credit memo to a bill or purchase order of the same supplier.")
 async def apply_supplier_credit_to_bill(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Apply a supplier credit note to a bill or purchase order of the same supplier."""
     key, digest = _operation("apply-supplier-credit", entity_id, payload)
@@ -5412,7 +5412,7 @@ class CnRefundBody(BaseModel):
     _real_date = field_validator("date")(_calendar_date)
 
 
-@router.post("/{entity_id}/cn-refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Refund a credit note to the customer in money.")
+@router.post("/{entity_id}/cn-refund", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Refund a credit memo to the customer in money.")
 async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Lock the credit note row FOR UPDATE and validate against that fresh read: the
     # doc-row lock is the single serializer, so a concurrent application/refund on this
@@ -13025,7 +13025,7 @@ async def _return_parts(session, company_id, invoice_id: str, items: list[Return
     return parts
 
 
-@router.post("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Receive goods a customer returned on a credit note back into stock.")
+@router.post("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True, "x-celerp-agent-key": "idempotency_key"}, summary="Receive goods a customer returned on a credit memo back into stock.")
 async def receive_return(
     entity_id: str,
     payload: ReceiveReturnPayload,
@@ -13326,7 +13326,7 @@ def _undo_blocked(key: str, lead: str, reasons: list[dict]) -> HTTPException:
         key, f"{lead}: {'; '.join(r['message'] for r in reasons)}", reasons=reasons))
 
 
-@router.delete("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Undo receiving returned goods on a credit note.")
+@router.delete("/{entity_id}/receive-return", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/docs"}, summary="Undo receiving returned goods on a credit memo.")
 async def undo_receive_return(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
