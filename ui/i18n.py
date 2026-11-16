@@ -617,11 +617,6 @@ def _signed_in_role(connection) -> str | None:
     return get_role(connection) if get_claims(connection) else None
 
 
-def reader_role() -> str | None:
-    """The signed-in reader's role for this request (I18nMiddleware), None without one."""
-    return _reader_role.get()
-
-
 def may_take(fix: dict) -> bool:
     """Whether the reader may take a refusal's way out (celerp.accounting_roles.refusal_fix):
     their role is among the roles its page allows, or there is no signed-in reader to judge."""

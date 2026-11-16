@@ -88,3 +88,32 @@ async def test_a_manager_asking_the_client_is_told_who_can_add_one(client, sessi
     assert r.json()["detail"]["fix"]["roles"] == ["owner"]
     with _reader("admin"):
         assert refusal_fix(r.json()["detail"]) is None
+
+
+def _cookie(role: str) -> str:
+    import base64
+    payload = base64.urlsafe_b64encode(json.dumps({"role": role}).encode()).decode().rstrip("=")
+    return f"celerp_token=e30.{payload}.sig"
+
+
+@pytest.mark.parametrize(("cookie", "links"), [(None, True), ("owner", True), ("manager", False), ("viewer", False)])
+def test_the_ui_judges_the_way_out_by_the_signed_in_reader(cookie, links):
+    """The UI reads the reader's role from their session, so a manager who may not add a
+    user reads who can, while an owner, or a page with no one signed in, gets the link."""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+
+    from ui.i18n import I18nMiddleware
+
+    detail = refusal("reconciliation.no_client_user", "")
+
+    async def page(request):
+        return JSONResponse({"link": refusal_fix(detail), "text": refusal_text(detail)})
+
+    app = I18nMiddleware(Starlette(routes=[Route("/", page)]))
+    headers = {"cookie": _cookie(cookie)} if cookie else {}
+    body = TestClient(app).get("/", headers=headers).json()
+    assert (body["link"] is not None) is links
+    assert (t("settings.owner") in body["text"]) is not links

@@ -117,6 +117,30 @@ def test_a_card_shows_any_number_the_model_sends(number):
     assert html.count("ai-action__line-val") == 3
 
 
+def test_a_card_reads_a_yes_or_no_choice_and_its_title_in_the_reader_language():
+    """A true or false field reads as yes or no, and the title the card kept reads in the
+    reader's language, with its params, or as written when no catalog has its key."""
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_card
+    from ui import i18n
+    from ui.i18n import read_kept, t
+
+    action = {"id": "c1", "name": "adjust", "title": {"key": "tool.no_such_tool", "params": {}, "text": "Adjust stock"},
+              "shown": {"body": {"is_active": True, "taxable": False}}}
+    kept = {"key": "error.fix_ask_roles", "params": {"place": "P", "roles": "R"}, "text": "as written"}
+    i18n.set_lang("de")
+    try:
+        html = to_xml(_action_card("conv", "msg", action, "de"))
+        assert read_kept(kept) == read_kept(kept, "de")
+    finally:
+        i18n.set_lang("en")
+    assert t("settings.yes", "de") in html and t("settings.no", "de") in html and "Adjust stock" in html
+    assert read_kept(kept, "de") == t("error.fix_ask_roles", "de", place="P", roles="R") != "as written"
+    assert read_kept({**kept, "params": {}}, "de") == "as written"
+    assert read_kept({**kept, "key": None}, "de") == "as written"
+    assert read_kept("plain", "de") == "plain" and read_kept(None) == ""
+
+
 @pytest.mark.asyncio
 async def test_a_card_names_an_assistant_upload_and_a_reading_by_their_file_names(auth, ids, session, tmp_path, monkeypatch):
     """A statement read names the files it reads, and its import names the reading by those files."""
