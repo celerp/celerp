@@ -101,7 +101,7 @@ async def system_health() -> dict:
     return await asyncio.to_thread(get_system_health)
 
 
-@settings_router.get("/cloud-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether this installation is connected to Celerp Cloud and which paid plans it holds.")
+@settings_router.get("/cloud-status", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="Show whether this installation is connected to Celerp Connect and which paid plans it holds.")
 async def cloud_status() -> dict:
     """Return transport and entitlement independently.
 
@@ -231,7 +231,7 @@ async def cloud_status() -> dict:
         "cloud_disconnected": False,
     }
 
-@settings_router.get("/billing-catalog", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the Celerp Cloud plans and add-ons on offer, with their prices.")
+@settings_router.get("/billing-catalog", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the Celerp Connect plans and add-ons on offer, with their prices.")
 async def billing_catalog_api() -> dict:
     """Non-secret display catalog. Failure omits prices rather than fabricating them."""
     from celerp.gateway.state import relay_http_url, with_relay_client
@@ -247,7 +247,7 @@ async def billing_catalog_api() -> dict:
         return {"plans": {}}
 
 
-@settings_router.post("/cloud/billing-portal", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Open a billing portal link where the owner can manage the Celerp Cloud subscription and payment card.")
+@settings_router.post("/cloud/billing-portal", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Open a billing portal link where the owner can manage the Celerp Connect subscription and payment card.")
 async def cloud_billing_portal() -> dict:
     """Create a Stripe Billing Portal session via the relay so the merchant can
     manage their subscription (cancel, change card, download invoices)."""
@@ -293,7 +293,7 @@ async def backup_status() -> dict:
     }
 
 
-@settings_router.post("/cloud-disconnect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Disconnect this installation from Celerp Cloud, stopping cloud backups, the relay and connected apps.")
+@settings_router.post("/cloud-disconnect", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Disconnect this installation from Celerp Connect, stopping cloud backups, the relay and connected apps.")
 async def cloud_disconnect() -> dict:
     """Persist sticky disconnect first, then stop all live cloud activity."""
     from celerp.config import settings as _s, set_cloud_disconnected
@@ -340,7 +340,7 @@ async def _apply_gateway_token_api(
         acknowledged_copy_id=acknowledged_copy_id,
     )
 
-@settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Connect this installation to Celerp Cloud with the signed-in account.")
+@settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Connect this installation to Celerp Connect with the signed-in account.")
 async def cloud_activate_api(payload: dict | None = None) -> dict:
     """Synchronise Connect using explicit authority and activation intent."""
     import httpx
@@ -666,7 +666,7 @@ async def partner_claim_accept(payload: dict) -> dict:
     }
 
 
-@settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Accept the Celerp Cloud terms of service so cloud features can start.")
+@settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/cloud"}, summary="Accept the Celerp Connect terms of service so cloud features can start.")
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, then restart through the gateway lifecycle."""
     from celerp.config import settings as _s, persist_cloud_settings

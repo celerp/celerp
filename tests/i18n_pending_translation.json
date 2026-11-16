@@ -14,19 +14,19 @@
   ],
   "keys": {
     "tool.cloud_billing_portal_settings_cloud_billing_portal_post": {
-      "en": "Open a billing portal link where the owner can manage the Celerp Cloud subscription and payment card.",
+      "en": "Open a billing portal link where the owner can manage the Celerp Connect subscription and payment card.",
       "params": []
     },
     "tool.cloud_disconnect_settings_cloud_disconnect_post": {
-      "en": "Disconnect this installation from Celerp Cloud, stopping cloud backups, the relay and connected apps.",
+      "en": "Disconnect this installation from Celerp Connect, stopping cloud backups, the relay and connected apps.",
       "params": []
     },
     "tool.cloud_activate_api_settings_cloud_activate_post": {
-      "en": "Connect this installation to Celerp Cloud with the signed-in account.",
+      "en": "Connect this installation to Celerp Connect with the signed-in account.",
       "params": []
     },
     "tool.cloud_accept_tos_api_settings_cloud_accept_tos_post": {
-      "en": "Accept the Celerp Cloud terms of service so cloud features can start.",
+      "en": "Accept the Celerp Connect terms of service so cloud features can start.",
       "params": []
     },
     "tool.connector_authorize_url_settings_connectors__platform__authorize_url_post": {
