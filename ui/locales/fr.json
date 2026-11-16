@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Ce compte est tenu en {currency}, tandis que votre comptabilité est tenue en {base}. Indiquez le taux de change de {currency} vers {base}, puis réessayez.",
   "acct.err_bank_rate_invalid": "Le taux de change {raw} n'est pas valide. Saisissez un nombre supérieur à zéro, puis réessayez.",
   "acct.err_transfer_to_amount": "Le compte destinataire est tenu en {currency}. Saisissez le montant qu'il reçoit en {currency}, puis réessayez.",
-  "acct.err_split_total": "Le total des montants ventilés est de {total}, alors que la ligne du relevé est de {amount}. Ajustez les montants de la ventilation pour que leur somme corresponde à cette ligne.",
+  "acct.err_split_total": "Les montants totalisent {total}, mais ils doivent totaliser {amount}. Saisissez chaque montant sans signe moins, même pour l'argent sorti, et modifiez-les pour qu'ils totalisent {amount}.",
   "acct.err_recon_amount_unknown": "Certaines écritures prises en compte dans ce rapprochement ont été comptabilisées sans montant en {currency}. Le rapprochement ne peut donc pas être équilibré. Leurs montants s'affichent sous la forme \"--\". Cliquez sur Annuler pour chacune d'elles, puis terminez le rapprochement.",
   "acct.err_recon_amount_unknown_relabel": "Ce compte est paramétré en {currency}, mais ses écritures ont été comptabilisées uniquement en {base}. Ce rapprochement ne peut donc pas être équilibré. Utilisez le bouton en haut de cette page pour définir la devise du compte sur {base}, puis terminez le rapprochement.",
   "acct.err_recon_entry_exists": "Cette écriture a déjà été créée, peut-être par un double clic. Sélectionnez « Réessayer » pour voir le résultat.",

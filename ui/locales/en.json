@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "This account is kept in {currency} and your books in {base}. Enter the exchange rate from {currency} to {base}, then try again.",
   "acct.err_bank_rate_invalid": "The exchange rate {raw} isn't usable. Enter a number greater than zero, then try again.",
   "acct.err_transfer_to_amount": "The destination account is kept in {currency}. Enter the amount it receives in {currency}, then try again.",
-  "acct.err_split_total": "The splits add up to {total}, but the statement line is {amount}. Change the split amounts so they add up to the line.",
+  "acct.err_split_total": "The amounts add up to {total}, but they need to add up to {amount}. Enter every amount without a minus sign, even for money that went out, and change them so they add up to {amount}.",
   "acct.err_recon_amount_unknown": "Some entries this reconciliation counts were posted without an amount in {currency}, so it can't be balanced. Their amounts show as \"--\". Press Undo on each of them, then complete it.",
   "acct.err_recon_amount_unknown_relabel": "This account is set to {currency}, but its entries were posted in {base} only, so this reconciliation can't be balanced. Set the account to {base} with the button at the top of this page, then complete it.",
   "acct.err_recon_entry_exists": "This entry was already created, possibly by a double click. Select Try again to see it.",

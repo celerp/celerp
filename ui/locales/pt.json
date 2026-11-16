@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Esta conta é mantida em {currency}, mas a sua contabilidade está em {base}. Introduza a taxa de câmbio de {currency} para {base} e tente novamente.",
   "acct.err_bank_rate_invalid": "A taxa de câmbio {raw} não é válida. Introduza um número superior a zero e tente novamente.",
   "acct.err_transfer_to_amount": "A conta de destino é mantida em {currency}. Introduza o montante que recebe em {currency} e tente novamente.",
-  "acct.err_split_total": "A soma dos montantes repartidos é {total}, mas a linha do extrato é de {amount}. Ajuste os montantes da repartição para que a soma corresponda ao valor da linha.",
+  "acct.err_split_total": "Os valores somam {total}, mas precisam somar {amount}. Digite cada valor sem sinal de menos, mesmo para dinheiro que saiu, e altere-os para que somem {amount}.",
   "acct.err_recon_amount_unknown": "Alguns lançamentos incluídos nesta reconciliação foram contabilizados sem montante em {currency}, pelo que não é possível conciliá-la. Os respetivos montantes aparecem como \"--\". Prima Desfazer em cada um deles e, depois, conclua a reconciliação.",
   "acct.err_recon_amount_unknown_relabel": "Esta conta está configurada em {currency}, mas os seus movimentos foram contabilizados apenas em {base}, pelo que não é possível conciliá-la. Use o botão no topo desta página para definir a moeda da conta como {base} e, em seguida, conclua a reconciliação.",
   "acct.err_recon_entry_exists": "Este lançamento já foi criado, talvez por um clique duplo. Selecione Tentar novamente para ver o resultado.",

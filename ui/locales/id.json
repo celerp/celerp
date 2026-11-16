@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Rekening ini dicatat dalam {currency}, sedangkan pembukuan Anda menggunakan {base}. Masukkan kurs dari {currency} ke {base}, lalu coba lagi.",
   "acct.err_bank_rate_invalid": "Kurs {raw} tidak valid. Masukkan angka lebih besar dari nol, lalu coba lagi.",
   "acct.err_transfer_to_amount": "Rekening tujuan dicatat dalam {currency}. Masukkan jumlah yang diterima rekening tersebut dalam {currency}, lalu coba lagi.",
-  "acct.err_split_total": "Total hasil pembagian adalah {total}, tetapi nominal baris rekening koran adalah {amount}. Sesuaikan nominal setiap bagian agar jumlahnya sama dengan nominal baris tersebut.",
+  "acct.err_split_total": "Jumlah semua nominal adalah {total}, tetapi harus berjumlah {amount}. Masukkan setiap nominal tanpa tanda minus, juga untuk uang keluar, lalu ubah agar berjumlah {amount}.",
   "acct.err_recon_amount_unknown": "Beberapa jurnal yang disertakan dalam rekonsiliasi ini dibukukan tanpa nominal dalam {currency}, sehingga rekonsiliasi tidak dapat diseimbangkan. Nominalnya ditampilkan sebagai \"--\". Tekan Urungkan pada masing-masing jurnal tersebut, lalu selesaikan rekonsiliasi.",
   "acct.err_recon_amount_unknown_relabel": "Rekening ini diatur menggunakan {currency}, tetapi transaksinya hanya dibukukan dalam {base}, sehingga rekonsiliasi tidak dapat diseimbangkan. Gunakan tombol di bagian atas halaman ini untuk mengubah mata uang rekening menjadi {base}, lalu selesaikan rekonsiliasi.",
   "acct.err_recon_entry_exists": "Jurnal ini sudah dibuat, mungkin karena klik dua kali. Pilih Coba lagi untuk melihatnya.",

@@ -188,6 +188,23 @@ async def test_split_decision_through_resolve_equals_old_split(client, session):
     assert debits == [("5100", 60.0), ("5200", 40.0)] and je["je_type"] == "recon_split"
 
 
+async def test_signed_split_amounts_are_refused_saying_to_drop_the_sign(client):
+    from celerp_accounting.routes import _money_text
+    from ui.i18n import t
+
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "MIXED PURCHASE", "-100.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "post", "splits": [
+        {"account_code": "5100", "amount": -60.0}, {"account_code": "5200", "amount": -40.0}]}])
+    res = r.json()["results"][0]
+    cur = bk.get("currency")
+    assert res["ok"] is False and res["reason"] == t(
+        "acct.err_split_total", "en", total=_money_text(Decimal("-100"), cur), amount=_money_text(Decimal("100"), cur))
+    assert "minus sign" in res["reason"]
+    assert B.all_lines(await B.groups(client, co, bk["id"]))[0]["status"] == "unmatched"
+
+
 async def test_resolve_replay_after_undo_does_not_post(client):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00")])

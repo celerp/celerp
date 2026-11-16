@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Questo conto è tenuto in {currency}, mentre la contabilità è in {base}. Inserisci il tasso di cambio da {currency} a {base}, quindi riprova.",
   "acct.err_bank_rate_invalid": "Il tasso di cambio {raw} non è valido. Inserisci un numero maggiore di zero, quindi riprova.",
   "acct.err_transfer_to_amount": "Il conto di destinazione è tenuto in {currency}. Inserisci l'importo che riceve in {currency}, quindi riprova.",
-  "acct.err_split_total": "La somma degli importi ripartiti è {total}, ma la riga dell'estratto conto riporta {amount}. Modifica gli importi della ripartizione affinché la somma corrisponda a quella riga.",
+  "acct.err_split_total": "Gli importi sommano {total}, ma devono sommare {amount}. Inserisci ogni importo senza segno meno, anche per il denaro uscito, e modificali finché sommano {amount}.",
   "acct.err_recon_amount_unknown": "Alcune registrazioni incluse in questa riconciliazione sono state contabilizzate senza un importo in {currency}, quindi la riconciliazione non può quadrare. I relativi importi sono visualizzati come \"--\". Premi Annulla su ciascuna di esse, poi completa la riconciliazione.",
   "acct.err_recon_amount_unknown_relabel": "Questo conto è impostato in {currency}, ma le relative registrazioni sono state contabilizzate solo in {base}, quindi questa riconciliazione non può quadrare. Usa il pulsante in alto nella pagina per impostare la valuta del conto su {base}, poi completa la riconciliazione.",
   "acct.err_recon_entry_exists": "Questa registrazione è già stata creata, forse con un doppio clic. Seleziona Riprova per vedere il risultato.",

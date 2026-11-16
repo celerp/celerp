@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "この口座は{currency}建てですが、帳簿の基準通貨は{base}です。{currency}から{base}への為替レートを入力して、もう一度お試しください。",
   "acct.err_bank_rate_invalid": "為替レート{raw}は使用できません。0より大きい数値を入力して、もう一度お試しください。",
   "acct.err_transfer_to_amount": "振替先の口座は{currency}建てです。振替先が受け取る金額を{currency}で入力して、もう一度お試しください。",
-  "acct.err_split_total": "分割した金額の合計は{total}ですが、明細行の金額は{amount}です。分割額の合計が明細行の金額と一致するよう修正してください。",
+  "acct.err_split_total": "金額の合計は {total} ですが、{amount} になる必要があります。出金の場合もマイナス記号を付けずに各金額を入力し、合計が {amount} になるように変更してください。",
   "acct.err_recon_amount_unknown": "この照合に含まれる一部の仕訳には{currency}建ての金額が記録されていないため、照合の残高を一致させることができません。該当する金額は\"--\"と表示されます。それぞれで［元に戻す］を押してから、照合を完了してください。",
   "acct.err_recon_amount_unknown_relabel": "この口座の通貨は{currency}に設定されていますが、取引は{base}でのみ記帳されているため、照合の残高を一致させることができません。このページ上部のボタンで口座通貨を{base}に変更してから、照合を完了してください。",
   "acct.err_recon_entry_exists": "この仕訳はすでに作成されています(ダブルクリックによる可能性があります)。「再試行」を選ぶと確認できます。",

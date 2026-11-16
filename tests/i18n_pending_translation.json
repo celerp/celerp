@@ -1627,10 +1627,6 @@
         "total"
       ]
     },
-    "acct.err_transfer_same_bank": {
-      "en": "A transfer needs two different bank accounts. Pick another account to move the money to.",
-      "params": []
-    },
     "acct.err_recon_one_line": {
       "en": "This answer works on one statement line at a time. Select a single line and try again.",
       "params": []

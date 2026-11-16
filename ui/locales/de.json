@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Dieses Konto wird in {currency} geführt, Ihre Buchhaltung jedoch in {base}. Geben Sie den Wechselkurs von {currency} zu {base} ein und versuchen Sie es erneut.",
   "acct.err_bank_rate_invalid": "Der Wechselkurs {raw} ist ungültig. Geben Sie eine Zahl größer als null ein und versuchen Sie es erneut.",
   "acct.err_transfer_to_amount": "Das Zielkonto wird in {currency} geführt. Geben Sie den Betrag ein, der dort in {currency} eingeht, und versuchen Sie es erneut.",
-  "acct.err_split_total": "Die Aufteilungen ergeben zusammen {total}, die Kontoauszugszeile hat jedoch den Betrag {amount}. Passen Sie die Teilbeträge so an, dass ihre Summe dem Zeilenbetrag entspricht.",
+  "acct.err_split_total": "Die Beträge ergeben zusammen {total}, müssen aber {amount} ergeben. Geben Sie jeden Betrag ohne Minuszeichen ein, auch bei ausgegangenem Geld, und ändern Sie die Beträge, bis sie {amount} ergeben.",
   "acct.err_recon_amount_unknown": "Einige in dieser Abstimmung berücksichtigte Buchungen wurden ohne Betrag in {currency} gebucht. Deshalb lässt sich die Abstimmung nicht ausgleichen. Diese Beträge werden als \"--\" angezeigt. Klicken Sie bei jeder dieser Buchungen auf Rückgängig und schließen Sie die Abstimmung anschließend ab.",
   "acct.err_recon_amount_unknown_relabel": "Dieses Konto ist auf {currency} eingestellt, die zugehörigen Buchungen wurden jedoch ausschließlich in {base} erfasst. Deshalb lässt sich diese Abstimmung nicht ausgleichen. Stellen Sie das Konto über die Schaltfläche oben auf dieser Seite auf {base} um und schließen Sie die Abstimmung ab.",
   "acct.err_recon_entry_exists": "Diese Buchung wurde bereits erstellt, vielleicht durch einen Doppelklick. Wählen Sie „Erneut versuchen“, um sie zu sehen.",

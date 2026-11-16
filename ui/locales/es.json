@@ -228,7 +228,7 @@
   "acct.err_bank_rate_required": "Esta cuenta está denominada en {currency}, pero su contabilidad se lleva en {base}. Introduzca el tipo de cambio de {currency} a {base} e inténtelo de nuevo.",
   "acct.err_bank_rate_invalid": "El tipo de cambio {raw} no es válido. Introduzca un número mayor que cero e inténtelo de nuevo.",
   "acct.err_transfer_to_amount": "La cuenta de destino está denominada en {currency}. Introduzca el importe que recibe en {currency} e inténtelo de nuevo.",
-  "acct.err_split_total": "La suma de los importes desglosados es {total}, pero el movimiento del extracto es de {amount}. Ajuste los importes del desglose para que sumen lo mismo que el movimiento.",
+  "acct.err_split_total": "Los importes suman {total}, pero deben sumar {amount}. Introduzca cada importe sin signo menos, incluso para el dinero que salió, y cámbielos para que sumen {amount}.",
   "acct.err_recon_amount_unknown": "Algunos asientos incluidos en esta conciliación se contabilizaron sin un importe en {currency}, por lo que no es posible cuadrarla. Sus importes aparecen como \"--\". Pulse Deshacer en cada uno de ellos y después complete la conciliación.",
   "acct.err_recon_amount_unknown_relabel": "Esta cuenta está configurada en {currency}, pero sus movimientos solo se contabilizaron en {base}, por lo que no es posible cuadrar esta conciliación. Cambie la moneda de la cuenta a {base} mediante el botón situado en la parte superior de esta página y después complete la conciliación.",
   "acct.err_recon_entry_exists": "Este asiento ya se creó, quizá por un doble clic. Seleccione Reintentar para verlo.",
