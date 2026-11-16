@@ -46,7 +46,7 @@ def _cap(name: str, module: str, *, confirm: bool = False, params: dict | None =
         "path_names": path_names, "query_names": (), "expects_body": confirm,
         "key_field": None, "keyed": False, "requires_confirmation": confirm,
         "result_permissions": (), "field_visibility": False, "download": download,
-        "tool": {"type": "function", "function": {
+        "summary": name.replace("_", " ").capitalize(), "tool": {"type": "function", "function": {
             "name": name, "description": f"Do {name.replace('_', ' ')}.", "parameters": params or {}}},
     }
 
@@ -478,10 +478,10 @@ async def test_outside_message_card_warns(monkeypatch, real_app):
     ], caps=caps)
     result = await _run()
     [card] = result.pending_actions
-    assert t("ai.warn_outside_message") in card.warnings
+    assert t("ai.warn_outside_message") in [w["text"] for w in card.warnings]
 
     from celerp_ai.ui_routes import _action_body
-    html = "".join(str(part) for part in _action_body({"name": send, "arguments": args,
+    html = "".join(str(part) for part in _action_body({"name": send, "shown": card.shown,
                                                        "warnings": card.warnings}, "en"))
     assert t("ai.warn_outside_message", "en") in html
     assert "buyer@example.com" in html

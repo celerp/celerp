@@ -63,7 +63,7 @@ CAPS = {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",
         "path_names": (), "query_names": (), "expects_body": True,
         "key_field": "idempotency_key", "keyed": True, "requires_confirmation": True,
-        "tool": _tool("create_contact"),
+        "summary": "Create a contact", "tool": _tool("create_contact"),
     },
 }
 

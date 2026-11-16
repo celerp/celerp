@@ -252,7 +252,7 @@ async def test_read_statement_card_states_credits():
     cap = _cap(_caps(), "POST", "/accounting/reconciliation/read-statement")
     assert cap["credits"] is True and cap["keyed"]
     warnings = _card_warnings(cap, None, {"body": {"file_ids": ["a", "b", "c"]}})
-    assert "This reads 3 files with AI credits." in warnings
+    assert "This reads 3 files with AI credits." in [w["text"] for w in warnings]
 
 
 async def test_resolve_proposed_as_one_card():
@@ -262,18 +262,19 @@ async def test_resolve_proposed_as_one_card():
     assert cap["selection"] == "decisions" and cap["requires_confirmation"]
     assert "manage_accounting" in cap["required_permissions"]
     decisions = [{"line_ids": [f"l{i}"], "kind": "no_entry"} for i in range(240)]
-    assert any("240" in w for w in _card_warnings(cap, 240, {"body": {"decisions": decisions}}))
+    assert any("240" in w["text"] for w in _card_warnings(cap, 240, {"body": {"decisions": decisions}}))
     for role in ("viewer", "operator"):
         assert not [c for c in _caps(role).values() if c["path"].endswith("/resolve") and "reconciliation" in c["path"]]
     # The card lists the accepted groups read only and links to the bank page, where a
     # changed selection is made by ticking.
+    from celerp.ai.card import card_arguments
     from celerp.ai.tools import screen_of
     from celerp_ai.ui_routes import _action_body
     from fasthtml.common import Div, to_xml
     arguments = {"path": {"bank_id": "b1"}, "body": {"accept": {"group_keys": ["NETFLIX", "GRAB TRIP"]}}}
     link = screen_of(cap, arguments, "card_screen")
     assert link == "/accounting/reconcile/bank/b1"
-    html = to_xml(Div(*_action_body({"arguments": arguments, "card_screen": link})))
+    html = to_xml(Div(*_action_body({"shown": card_arguments(cap, arguments), "card_screen": link})))
     assert "NETFLIX" in html and "GRAB TRIP" in html and f'href="{link}"' in html
     assert "<input" not in html and "<select" not in html
 
