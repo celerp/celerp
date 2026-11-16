@@ -646,6 +646,28 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
 
 
 @pytest.mark.asyncio
+async def test_a_proposed_bill_card_shows_its_supplier_by_name(auth_client, session):
+    c, h = auth_client
+    r = await c.post("/crm/contacts", headers=h, json={"name": "acme supplies", "contact_type": "vendor"})
+    assert r.status_code in (200, 201), r.text
+    contact_id = r.json()["id"]
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "extraction": _RECEIPT, "credits": 1},
+    ])
+    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get",
+                         "create_contact_crm_contacts_post", "list_items_items_get")
+    executor = _executor(contacts=[{"id": contact_id, "name": "acme supplies", "contact_type": "vendor"}], items=[])
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", executor):
+        r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
+    assert r.status_code == 200, r.text
+    [bill] = r.json()["pending_actions"]
+    assert bill["arguments"]["body"]["contact_id"] == contact_id
+    assert bill["names"] == {contact_id: "acme supplies"}
+
+
+@pytest.mark.asyncio
 async def test_a_file_holding_several_bills_says_so_beside_its_proposal(auth_client, session):
     """A file the reader counted several bills in gets a line saying only one was read,
     right after its own summary; a file of one bill, or with no count, gets none."""
