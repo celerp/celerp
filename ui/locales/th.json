@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "ไม่มีชื่อให้แสดง"
+  "ai.card_name_unavailable": "ไม่มีชื่อให้แสดง",
+  "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}"
 }

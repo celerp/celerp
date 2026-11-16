@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import pytest
 from fasthtml.common import to_xml
 
-from celerp.accounting_roles import period_locked_refusal
+from celerp.accounting_roles import period_locked_refusal, refusal
 from celerp.services.permissions import PERMISSIONS, missing_permission_refusal
 from ui.components.shell import refusal_fix, toast_header
 from ui.i18n import refusal_text, set_lang, t
@@ -59,7 +59,7 @@ def test_the_period_lock_refusal_toast_links_to_the_lock_page():
 
 def test_every_period_lock_refusal_links_to_the_lock_page():
     for key in ("error.period_locked", "mfg.period_locked"):
-        assert refusal_fix({"message_key": key})["href"] == "/settings/accounting?tab=period-lock"
+        assert refusal_fix(refusal(key, ""))["href"] == "/settings/accounting?tab=period-lock"
 
 
 # A catalog string that only looks like an app path, and why it is not one.
@@ -78,10 +78,10 @@ def _ui_page(path: str) -> bool:
 def test_every_page_a_refusal_or_catalog_text_names_is_a_page():
     """A way out names a page the reader can open: every refusal link, and every app path
     written in the English catalog."""
-    from ui.components.shell import _REFUSAL_FIXES
+    from celerp.accounting_roles import REFUSAL_FIXES
 
     catalog = json.loads(Path("ui/locales/en.json").read_text(encoding="utf-8"))
-    named = {f"fix {key}": href for key, (href, _label) in _REFUSAL_FIXES.items()}
+    named = {f"fix {key}": href for key, (href, _label, _permission) in REFUSAL_FIXES.items()}
     named |= {f"text {key}": path for key, text in catalog.items() if key not in _NOT_A_PAGE
               for path in _PATH.findall(text if isinstance(text, str) else "")}
     assert [f"{where} -> {path}" for where, path in named.items() if not _ui_page(path)] == []

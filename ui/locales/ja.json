@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "名前を表示できません"
+  "ai.card_name_unavailable": "名前を表示できません",
+  "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。"
 }

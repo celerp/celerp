@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "Không có tên"
+  "ai.card_name_unavailable": "Không có tên",
+  "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}."
 }

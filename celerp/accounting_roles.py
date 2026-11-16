@@ -20,6 +20,7 @@ may share one control. It is not collapsed into AccountRole.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from datetime import date
 from decimal import Decimal
 
@@ -371,15 +372,48 @@ def account_label(account: Mapping | None) -> str:
     return code or name or ""
 
 
+# A refusal resolved on one page: its key -> (that page, formatted with the refusal's params;
+# the catalog key naming the page; the permission the page needs to take the step).
+REFUSAL_FIXES = {
+    "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock", "manage_accounting"),
+    "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock", "manage_accounting"),
+    "error.recon_entry_held": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
+                               "manage_accounting"),
+    "error.recon_period_changed": ("/accounting/reconcile/bank/{bank_id}?view=posted", "recon.view_completed",
+                                   "manage_accounting"),
+    "reconciliation.no_client_user": ("/settings/general?tab=users", "settings.tab_users", "manage_company_settings"),
+}
+# The settings of the company the current request acts in (get_auth_context): who holds a
+# fix page's permission there. Outside a request the registry's default grants answer.
+REQUEST_COMPANY_SETTINGS: ContextVar[dict | None] = ContextVar("request_company_settings", default=None)
+
+
+def refusal_fix(key: str, params: dict) -> dict | None:
+    """The way out of the refusal ``key``: the page that resolves it and the roles that may
+    take the step there in the request's company, so each reader sees the link when their
+    role may use it and who to ask when it may not (ui.components.shell.refusal_fix)."""
+    fix = REFUSAL_FIXES.get(key)
+    if fix is None:
+        return None
+    from celerp.services.permissions import ROLES, resolved_grant_roles
+
+    granted = resolved_grant_roles(REQUEST_COMPANY_SETTINGS.get(), fix[2])
+    return {"href": fix[0].format(**params), "label_key": fix[1],
+            "roles": [r.key for r in reversed(ROLES) if r.key in granted]}
+
+
 def refusal(key: str, message: str, /, **params) -> dict:
     """A message the UI can show in the user's language: ``message`` is the English text,
     ``message_key`` and ``params`` let a translation say the same thing (ui.i18n.refusal_text).
     A ``role`` param is shown as that posting role's label, ``type`` and ``types`` as
     account types; a date travels as its ISO day and is shown as a date in the reader's language;
-    an amount travels as its exact digits, so the refusal is always a JSON body."""
+    an amount travels as its exact digits, so the refusal is always a JSON body. A refusal one
+    page resolves carries its ``fix`` (refusal_fix)."""
     params = {name: value.isoformat() if isinstance(value, date) else str(value) if isinstance(value, Decimal)
               else value for name, value in params.items()}
-    return {"message": message, "message_key": key, "params": params}
+    out = {"message": message, "message_key": key, "params": params}
+    fix = refusal_fix(key, params)
+    return {**out, "fix": fix} if fix else out
 
 
 def catalog_refusal(key: str, /, **params) -> dict:

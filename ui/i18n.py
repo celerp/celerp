@@ -30,6 +30,9 @@ _registry: dict[str, dict] = {}
 
 # Context variable holds the active language for the current request
 _current_lang: ContextVar[str] = ContextVar("celerp_lang", default="en")
+# The signed-in reader's role (their session cookie's claim), or None when the request has no
+# signed-in reader (the API answering a client): which way out of a refusal they may take.
+_reader_role: ContextVar[str | None] = ContextVar("celerp_reader_role", default=None)
 
 # RTL languages (central set; a module may additionally declare its own RTL)
 RTL_LANGS = frozenset({"ar", "he", "fa", "ur"})
@@ -409,7 +412,11 @@ def refusal_text(detail) -> str:
     if key:
         params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
         message = _without_ids(t_or(str(key), message, **params))
-    return " ".join(text for text in (message, refusal_text(detail.get("also") or [])) if text)
+    fix = detail.get("fix")
+    ask = (t("error.fix_ask_roles", place=t(fix["label_key"]),
+             roles=", ".join(t(f"settings.{r}") for r in fix.get("roles") or []))
+           if isinstance(fix, dict) and not may_take(fix) else "")
+    return " ".join(text for text in (message, ask, refusal_text(detail.get("also") or [])) if text)
 
 
 # A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>. A UUID
@@ -593,11 +600,33 @@ class I18nMiddleware:
         from starlette.requests import HTTPConnection
         # Restored afterwards, so an app called in-process by another (the API
         # under the UI) never leaves its language behind in the caller's context.
-        token = _current_lang.set(get_lang(HTTPConnection(scope)))
+        connection = HTTPConnection(scope)
+        token = _current_lang.set(get_lang(connection))
+        reader = _reader_role.set(_signed_in_role(connection))
         try:
             await self._app(scope, receive, send)
         finally:
+            _reader_role.reset(reader)
             _current_lang.reset(token)
+
+
+def _signed_in_role(connection) -> str | None:
+    """The role the request's session cookie names, or None without a signed-in reader."""
+    from ui.config import get_claims, get_role
+
+    return get_role(connection) if get_claims(connection) else None
+
+
+def reader_role() -> str | None:
+    """The signed-in reader's role for this request (I18nMiddleware), None without one."""
+    return _reader_role.get()
+
+
+def may_take(fix: dict) -> bool:
+    """Whether the reader may take a refusal's way out (celerp.accounting_roles.refusal_fix):
+    their role is among the roles its page allows, or there is no signed-in reader to judge."""
+    role = _reader_role.get()
+    return role is None or role in (fix.get("roles") or [])
 
 
 def is_rtl(lang: str | None = None) -> bool:

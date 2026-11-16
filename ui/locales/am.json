@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "ስሙ አይገኝም"
+  "ai.card_name_unavailable": "ስሙ አይገኝም",
+  "error.fix_ask_roles": "የእርስዎ ሚና ይህን እርምጃ በ{place} ገጽ ላይ መውሰድ አይችልም። ከእነዚህ ሚናዎች አንዱ ያለውን ሰው ይጠይቁ፦ {roles}።"
 }

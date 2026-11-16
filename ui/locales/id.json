@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "Nama tidak tersedia"
+  "ai.card_name_unavailable": "Nama tidak tersedia",
+  "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}."
 }

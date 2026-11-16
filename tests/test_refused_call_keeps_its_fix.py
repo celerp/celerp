@@ -21,13 +21,14 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from celerp.accounting_roles import refusal
 from test_helpers import make_test_token
 from ui.api_client import APIError
 from ui.i18n import refusal_text
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _SHOWN_BY = ("error_flash", "refusal_line")
-_REFUSAL = {"message_key": "reconciliation.no_client_user", "params": {}}
+_REFUSAL = refusal("reconciliation.no_client_user", "")  # as the API answers it, with its fix
 _FIX = 'href="/settings/general?tab=users"'
 
 _BANK = {"id": "b1", "bank_name": "Main Bank", "account_number": "****1234", "currency": "USD",

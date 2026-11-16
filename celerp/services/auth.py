@@ -19,7 +19,7 @@ from passlib.context import CryptContext
 from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import REQUEST_COMPANY_SETTINGS, catalog_refusal
 from celerp.agent_markers import agent_gate
 from celerp.config import settings
 from celerp.db import get_session
@@ -403,9 +403,11 @@ async def get_auth_context(
     if token is not None:
         session.info[SIGNED_TOKEN] = token
     request.state.company_id = ctx.company_id  # the company a refused request places stock for (OlderStockMiddleware)
+    settings_token = REQUEST_COMPANY_SETTINGS.set(ctx.company.settings or {})
     try:
         yield ctx
     finally:
+        REQUEST_COMPANY_SETTINGS.reset(settings_token)
         end_request(session, authority)
         if token is not None and session.info.get(SIGNED_TOKEN) is token:
             session.info.pop(SIGNED_TOKEN, None)

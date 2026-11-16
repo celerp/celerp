@@ -9301,5 +9301,6 @@
   "enum.scopes.inventory": "Inventory",
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
-  "ai.card_name_unavailable": "Name nicht verfügbar"
+  "ai.card_name_unavailable": "Name nicht verfügbar",
+  "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}."
 }
