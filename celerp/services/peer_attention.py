@@ -1,9 +1,12 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Records a connected company sent that the receiving company did not apply. One row per
-record stays open, with its latest reason, until the record is applied."""
+record stays open, with its latest reason, until the record is applied. The reason is
+stored as its keyed refusal (celerp.accounting_roles.refusal) in JSON, so each reader
+reads it in their own language."""
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -25,11 +28,12 @@ ADDED = "added"
 
 
 async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
-                 entity_type: str, source_entity_id: str, label: str, reason: str,
+                 entity_type: str, source_entity_id: str, label: str, reason: dict,
                  kind: str = REFUSED, fix: dict | None = None) -> None:
-    """Open the record's item, or replace its label, reason and fix when it is already
-    open. ``fix`` is what a held record needs to post (peer_accounts.AccountHold). Every
-    writer of an item takes the company's lock before it."""
+    """Open the record's item, or replace its label, reason (a keyed refusal) and fix when
+    it is already open. ``fix`` is what a held record needs to post
+    (peer_accounts.AccountHold). Every writer of an item takes the company's lock before it."""
+    reason = stored(reason)
     await lock_company(session, company_id)
     values = dict(company_id=company_id, source_company_id=source_company_id, kind=kind,
                   entity_type=entity_type, source_entity_id=source_entity_id,
@@ -39,6 +43,30 @@ async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company
         .on_conflict_do_update(constraint="uq_company_peer_attention_record",
                                set_={"label": label, "reason": reason, "fix": fix,
                                      "created_at": values["created_at"]}))
+
+
+def stored(reason: dict) -> str:
+    """An item's reason as its column holds it: a keyed refusal, never English alone."""
+    from celerp.error_body import keyed
+
+    if not keyed(reason) or not isinstance(reason, dict):
+        raise TypeError(f"an attention reason is a keyed refusal, not {reason!r}")
+    return json.dumps(reason)
+
+
+def reason_of(item: CompanyPeerAttention) -> dict:
+    """An item's reason as the keyed refusal its writer stored. A reason an older release
+    wrote as English text is shown as written."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.error_body import keyed
+
+    try:
+        reason = json.loads(item.reason)
+    except ValueError:
+        reason = None
+    if isinstance(reason, dict) and keyed(reason):
+        return reason
+    return catalog_refusal("error.refusal_as_written", text=item.reason)
 
 
 async def clear(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,

@@ -151,7 +151,7 @@ def _holds(items: list[dict], chart: list[dict], lang: str, funds: list[dict] | 
             Thead(Tr(Th(t("th.date", lang)), Th(t("sync_accounts.record", lang)),
                      Th(t("sync_accounts.why", lang)), Th(t("th.actions", lang)))),
             Tbody(*[Tr(Td((item.get("at") or "")[:10] or EMPTY), Td(item.get("label") or EMPTY),
-                       Td(item.get("reason") or EMPTY),
+                       Td(refusal_text(item.get("reason")) or EMPTY),
                        Td(_fund_hold(item, chart, funds or [], lang, (kept or {}).get(item["id"]))
                           if waits_for_funds(item.get("fix")) else _hold_fix(item, chart, lang)), cls="data-row")
                     for item in items]),
@@ -189,7 +189,7 @@ def _added(items: list[dict], lang: str) -> FT | str:
             Thead(Tr(Th(t("th.date", lang)), Th(t("sync_accounts.account", lang)),
                      Th(t("sync_accounts.why", lang)), Th(t("th.actions", lang)))),
             Tbody(*[Tr(Td((item.get("at") or "")[:10] or EMPTY), Td(item.get("label") or EMPTY),
-                       Td(item.get("reason") or EMPTY), Td(_added_actions(item, lang)), cls="data-row")
+                       Td(refusal_text(item.get("reason")) or EMPTY), Td(_added_actions(item, lang)), cls="data-row")
                     for item in items]),
             cls="data-table",
         ),

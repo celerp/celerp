@@ -170,7 +170,7 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
 
     assert _from_firm(await _journals(real_engine, client_company)) == {}
     notices = [n for n in await _notices(real_engine, client_company) if "Year-end accrual" in n[1]]
-    assert len(notices) == 1 and "2026-06-30" in notices[0][1], notices
+    assert len(notices) == 1 and date_text(date(2026, 6, 30)) in notices[0][1], notices
     assert notices[0][2].startswith(PERIOD_LOCK)  # the notice opens where the lock date moves
     [entry] = results["journals"].attention
     held = to_xml(_attention_list("celerp", [entry], "en"))
@@ -178,7 +178,7 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
     assert f'href="{PERIOD_LOCK}"' in held
     declined = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "declined"]
     assert len(declined) == 1 and declined[0]["label"] == "Year-end accrual"
-    assert "2026-06-30" in declined[0]["reason"]
+    assert date_text(date(2026, 6, 30)) in refusal_text(declined[0]["reason"])
 
     again = await _two_way(client_company, credential)  # told once
     assert len([n for n in await _notices(real_engine, client_company)
@@ -251,7 +251,8 @@ async def test_client_reversal_reaches_the_firm_view(real_client, real_engine, m
     await _two_way(client_company, credential)
 
     [item] = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "reversal"]
-    assert item["reason"] == f"Demo Trading reversed Reclass fees dated {ADJUSTED}; posted {ADJUSTED}"
+    adjusted = date_text(date.fromisoformat(ADJUSTED))
+    assert refusal_text(item["reason"]) == f"Demo Trading reversed Reclass fees dated {adjusted}; posted {adjusted}"
     assert item["post_again"] == f"/accounting/journal/new?from={firm_je}"
     firm_books = await _journals(real_engine, firm_company)
     assert firm_books[firm_je]["status"] == "posted"  # never voided

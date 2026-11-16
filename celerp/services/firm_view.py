@@ -34,7 +34,7 @@ def _instant(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _item(kind: str, label: str, reason: str, href: str | None = None,
+def _item(kind: str, label: str, reason: str | dict, href: str | None = None,
           when: datetime | None = None, post_again: str | None = None) -> dict:
     return {"kind": kind, "label": label, "reason": reason, "href": href,
             "at": when.isoformat() if when else None, "post_again": post_again}
@@ -46,7 +46,7 @@ def _attention_item(a) -> dict:
     again = (f"/accounting/journal/new?from={a.source_entity_id}"
              if a.kind == peer_attention.REVERSAL else None)
     fixed_there = (a.kind == peer_attention.ADDED or a.fix) and not (a.fix or {}).get("fixed")
-    return _item(a.kind, a.label, a.reason, ACCOUNTS_PAGE if fixed_there else None,
+    return _item(a.kind, a.label, peer_attention.reason_of(a), ACCOUNTS_PAGE if fixed_there else None,
                  _instant(a.created_at), again)
 
 

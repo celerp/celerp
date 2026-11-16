@@ -31,7 +31,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, is_role
+from celerp.accounting_roles import POSTABLE_ROLES, ROLE_LABELS, AccountRole, catalog_refusal, is_role
 from celerp.importers.results import failure_reason
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -436,7 +436,7 @@ async def _write(session: AsyncSession, company_id: uuid.UUID, source_company_id
         await peer_attention.record(
             session, company_id=company_id, source_company_id=source_company_id,
             kind=peer_attention.ADDED, entity_type=ACCOUNT, source_entity_id=other["id"],
-            label=label(made), reason=f"Added by sync from {sender} with {record}.",
+            label=label(made), reason=catalog_refusal("peer.attention_account_added", company=sender, record=record),
             fix={"kind": "added", "code": made["code"]})
         params = dict(account=label(made), record=record, company=sender)
         if why is None:
@@ -564,14 +564,14 @@ async def holds(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every record of a connected company held here for an account, newest first."""
     rows = await peer_attention.open_items(session, [company_id])
     return [{"id": str(r.id), "source_company_id": str(r.source_company_id), "label": r.label,
-             "reason": r.reason, "fix": r.fix, "at": r.created_at.isoformat()}
+             "reason": peer_attention.reason_of(r), "fix": r.fix, "at": r.created_at.isoformat()}
             for r in rows if r.kind == peer_attention.REFUSED and r.fix]
 
 
 async def added(session: AsyncSession, company_id: uuid.UUID) -> list[dict]:
     """Every account sync added here that is not yet kept, archived or removed."""
     rows = await peer_attention.open_items(session, [company_id])
-    return [{"id": str(r.id), "label": r.label, "reason": r.reason, "code": (r.fix or {}).get("code"),
+    return [{"id": str(r.id), "label": r.label, "reason": peer_attention.reason_of(r), "code": (r.fix or {}).get("code"),
              "at": r.created_at.isoformat()} for r in rows if r.kind == peer_attention.ADDED]
 
 
@@ -707,4 +707,5 @@ async def answer_review(session: AsyncSession, company_id: uuid.UUID, source_com
         settings[REVIEWED_KEY] = sorted(set(settings.get(REVIEWED_KEY) or []) | {str(source_company_id)})
         company.settings = settings
         for item in waited:
-            item.fix, item.reason = {**item.fix, "fixed": True}, "Accounts reviewed. It posts on the next sync."
+            item.fix = {**item.fix, "fixed": True}
+            item.reason = peer_attention.stored(catalog_refusal("peer.attention_accounts_reviewed"))
