@@ -1064,10 +1064,6 @@
       "en": "Sign in to a free Celerp account to send a company copy link.",
       "params": []
     },
-    "handoff.activity_unavailable": {
-      "en": "Company copy activity is unavailable.",
-      "params": []
-    },
     "handoff.key_missing": {
       "en": "This computer no longer holds this copy's key, so a new link would not open it. Use Resend to send a new copy.",
       "params": []

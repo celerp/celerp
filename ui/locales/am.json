@@ -8290,7 +8290,7 @@
   "handoff.copy_not_found": "Company copy not found.",
   "handoff.key_not_kept": "Could not keep the copy's key on this computer. Nothing was sent. Retry the same operation.",
   "handoff.account_needed": "Sign in to a free Celerp account to send a company copy link.",
-  "handoff.activity_unavailable": "Company copy activity is unavailable.",
+  "handoff.activity_unavailable": "የኩባንያ ቅጂ እንቅስቃሴ አይገኝም።",
   "handoff.key_missing": "This computer no longer holds this copy's key, so a new link would not open it. Use Resend to send a new copy.",
   "error.cloud_said": "Celerp Cloud answered: {reason}",
   "migration.move_account_needed": "Sign in to a free Celerp account to ask us to move a client.",
