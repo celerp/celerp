@@ -1086,6 +1086,30 @@ def test_the_gate_scan_finds_a_refusal_in_a_helper_the_handler_calls():
     assert ai_tools.refusing_checks(route) != []
 
 
+# A helper whose source alone does not parse: a lambda written on a continuation line.
+_PAIR = ("first",
+         lambda: None)
+_unreadable = _PAIR[1]
+
+
+def test_the_gate_scan_passes_over_a_helper_whose_source_does_not_parse():
+    """A helper the scan cannot read is passed over; the handler's own refusal is still found."""
+    from fastapi import HTTPException
+
+    app = FastAPI()
+
+    @app.post("/guarded", openapi_extra={"x-celerp-agent": True})
+    def guarded(role: str = Query("x")) -> dict:
+        _unreadable()
+        if role != "owner":
+            raise HTTPException(status_code=403, detail="no")
+        return {}
+
+    route = _route_index(app)[("POST", "/guarded")]
+    assert [c.split(": ", 1)[1] for c in ai_tools.refusing_checks(route)] == [
+        'if role != "owner":', 'raise HTTPException(status_code=403, detail="no")']
+
+
 def test_price_tool_hidden_without_price_permission():
     """The price tool is shown to a role that may set prices, and to a role that may edit
     items (a draft's creator authors its cost); a role with neither never sees it."""
