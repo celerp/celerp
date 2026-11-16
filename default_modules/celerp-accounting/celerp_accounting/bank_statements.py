@@ -1125,16 +1125,28 @@ def _contact(state: dict, bank_code: str | None) -> str | None:
                 None)
 
 
-async def _held(db: AsyncSession, company_id: uuid.UUID) -> set[str]:
-    """Every entry a statement or a line of the company already counts."""
+async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> set[str]:
+    """Every entry a statement or a line of this bank already counts. Another bank's statement
+    counting an entry leaves it free here, as for a manual match: a transfer is reconciled on
+    both accounts."""
     held: set[str] = set()
     for ids in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
-            ReconciliationSession.company_id == company_id))).scalars():
+            ReconciliationSession.company_id == company_id,
+            ReconciliationSession.bank_account_id == bank.id))).scalars():
         held.update(ids or [])
     for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
-            BankStatementLine.company_id == company_id))).scalars():
+            BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars():
         held.update(ids or [])
     return held
+
+
+async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:
+    """The bank's book entries no statement or line of the bank counts yet: what a line can match."""
+    from celerp_accounting.routes import _je_entries_for_account, _opening_je_id
+
+    held = await _held(db, company_id, bank) | {_opening_je_id(bank.id)}
+    return [e for e in await _je_entries_for_account(db, company_id, bank)
+            if e["je_id"] not in held and e["amount"] is not None]
 
 
 async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, base: str) -> list[dict]:
@@ -1205,11 +1217,9 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
     from celerp.services.account_roles import resolve as resolve_role
     from celerp_accounting import suggest
     from celerp_accounting.models import ReconciliationRule
-    from celerp_accounting.routes import _base_currency, _je_entries_for_account, _opening_je_id, _rule_to_dict
+    from celerp_accounting.routes import _base_currency, _rule_to_dict
 
-    held = await _held(db, company_id) | {_opening_je_id(bank.id)}
-    book = [e for e in await _je_entries_for_account(db, company_id, bank)
-            if e["je_id"] not in held and e["amount"] is not None]
+    book = await _free_entries(db, company_id, bank)
     states = await _states(db, company_id, [e["je_id"] for e in book])
     entries = [{"je_id": e["je_id"], "amount": str(e["amount"]), "date": str(e["ts"])[:10], "memo": e["memo"],
                 "contact": _contact(states.get(e["je_id"]) or {}, bank.chart_account_code)} for e in book]
