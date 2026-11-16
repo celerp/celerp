@@ -154,8 +154,14 @@ def hold(recon: ReconciliationSession, je_ids: list[str]) -> None:
     recon.reconciled_je_ids = held + [j for j in je_ids if j not in held]
 
 
-def _release(recon: ReconciliationSession, je_ids: list[str]) -> None:
-    recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in je_ids]
+async def _release(db: AsyncSession, recon: ReconciliationSession, line: BankStatementLine) -> None:
+    """``line`` lets go of its entries: the statement keeps any another of its lines still
+    holds (several lines matched to one entry), so the two never disagree."""
+    others = {je for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == recon.id, BankStatementLine.id != line.id))).scalars()
+        for je in ids or []}
+    drop = set(line.matched_je_ids or []) - others
+    recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j not in drop]
 
 
 async def next_je_id(db: AsyncSession, company_id: uuid.UUID, base_id: str) -> str:
@@ -362,7 +368,7 @@ async def unmatch_line(db: AsyncSession, *, company_id: uuid.UUID, actor_id, lin
 
     recon = await _session(db, line)
     je_ids = list(line.matched_je_ids or [])
-    _release(recon, je_ids)
+    await _release(db, recon, line)
     await db.flush()
     if line.status == "posted":
         for je_id in je_ids:
@@ -393,7 +399,7 @@ async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStat
         BankStatementLine.bank_account_id != line.bank_account_id))).all()
     ids = [i for i, held in rows if je_id in (held or [])]
     for paired in (await scoped(db, company_id, "line", ids, state=("matched",)) if ids else []):
-        _release(await _session(db, paired), [je_id])
+        await _release(db, await _session(db, paired), paired)
         paired.status = "unmatched"
         paired.matched_je_ids = []
 

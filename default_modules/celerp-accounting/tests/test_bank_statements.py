@@ -659,3 +659,86 @@ async def test_match_validates_the_book_entry(client):
                           json={"line_ids": [first["id"]], "idempotency_key": B.key()})
     assert r.status_code == 200, r.text
     assert (await match(second))["ok"] is True
+
+
+async def _held(session, co, bank_id) -> tuple[set, set]:
+    """What the statement holds and what its lines hold, as stored."""
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from celerp_accounting.models import BankStatementLine, ReconciliationSession
+    session.expire_all()
+    cid, bid = _uuid.UUID(co["company_id"]), _uuid.UUID(bank_id)
+    recon = (await session.execute(select(ReconciliationSession).where(
+        ReconciliationSession.company_id == cid, ReconciliationSession.bank_account_id == bid))).scalar_one()
+    on_lines = {je for ids in (await session.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == recon.id))).scalars() for je in ids or []}
+    return set(recon.reconciled_je_ids or []), on_lines
+
+
+async def _projections(session, co) -> dict:
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    session.expire_all()
+    rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == _uuid.UUID(co["company_id"])))).all()
+    return {e: s for e, s in rows}
+
+
+@pytest.mark.parametrize("seed", range(6))
+async def test_match_and_undo_sequences_keep_the_statement_equal_to_its_lines(client, session, seed):
+    """Any order of matching lines (alone or several to one entry), posting them and undoing
+    some of them leaves the statement holding exactly the entries its lines hold, and the
+    records equal a replay of the ledger."""
+    import random
+
+    from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
+
+    rng = random.Random(seed)
+    co, bk = await _co_bank(client)
+    amounts = ["-3.00", "-2.00", "-4.00", "-1.50"]
+    await _one_month(client, co, bk, [(f"2026-01-0{n + 2}", f"LINE {n}", a) for n, a in enumerate(amounts)])
+    lines = B.all_lines(await B.groups(client, co, bk["id"]))
+    amount = {l["id"]: Decimal(str(l["amount"])) for l in lines}
+    _opening, start = await _held(session, co, bk["id"])
+    assert start == set()
+    base = _opening
+    for step in range(10):
+        status = {l["id"]: l["status"] for l in B.all_lines(await B.groups(client, co, bk["id"], view="all"))}
+        free = [i for i, s in status.items() if s == "unmatched"]
+        done = [i for i, s in status.items() if s in ("matched", "posted")]
+        action = rng.choice(["match", "post", "undo"] if free and done else ["match", "post"] if free else ["undo"])
+        if action == "undo":
+            picked = rng.sample(done, rng.randint(1, len(done)))
+            r = await client.post(f"{B.API}/bank/{bk['id']}/unmatch",
+                                  json={"line_ids": picked, "idempotency_key": B.key()}, headers=co["h"])
+            assert r.status_code == 200, r.text
+        elif action == "post":
+            r = await B.resolve(client, co, bk["id"], decisions=[
+                {"line_ids": [rng.choice(free)], "kind": "post", "account_code": "5100"}])
+            assert r.json()["results"][0]["ok"] is True, r.text
+        else:
+            picked = rng.sample(free, rng.randint(1, len(free)))
+            total = -sum(amount[i] for i in picked)
+            r = await client.post("/accounting/journal-entries", json={
+                "memo": f"spend {step}", "ts": "2026-01-02", "idempotency_token": B.key(), "entries": [
+                    {"account": bk["chart_account_code"], "debit": 0, "credit": float(total)},
+                    {"account": "5300", "debit": float(total), "credit": 0}]}, headers=co["h"])
+            assert r.status_code == 200, r.text
+            r = await B.resolve(client, co, bk["id"], decisions=[
+                {"line_ids": picked, "kind": "match", "je_ids": [r.json()["je_id"]]}])
+            assert all(x["ok"] for x in r.json()["results"]), r.text
+        held, on_lines = await _held(session, co, bk["id"])
+        assert held - base == on_lines, (seed, step, action)
+
+    stored = await _projections(session, co)
+    import uuid as _uuid
+    await lock_company(session, _uuid.UUID(co["company_id"]))
+    await ProjectionEngine.rebuild(session, _uuid.UUID(co["company_id"]))
+    await session.commit()
+    assert await _projections(session, co) == stored
