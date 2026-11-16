@@ -172,6 +172,7 @@ def test_every_write_tool_card_reads_in_the_reader_language_and_never_shows_an_i
 
 
 _STRAY = "zz_not_read"
+_EXTRA = "zz_custom_price"
 
 
 def _free(shapes: list[dict]) -> bool:
@@ -179,9 +180,9 @@ def _free(shapes: list[dict]) -> bool:
                or (s.get("type") == "object" and "properties" not in s) for s in shapes)
 
 
-def _with_strays(schema, value):
-    """``value`` with a field its schema does not declare added to every record whose
-    shape is closed: the route never reads it, so the card must not show it."""
+def _with_field(schema, value, key: str, *, free: bool):
+    """``value`` with ``key`` added to every record whose shape takes undeclared fields
+    (``free``) or does not (not ``free``), at every depth and through every alternative."""
     if not isinstance(schema, dict):
         return value
     shapes = _shapes(schema)
@@ -189,29 +190,32 @@ def _with_strays(schema, value):
     for shape in shapes:
         props.update(shape.get("properties") or {})
     if isinstance(value, dict) and props:
-        out = {k: _with_strays(props.get(k), v) for k, v in value.items()}
-        return out if _free(shapes) else {**out, _STRAY: "Ignored"}
+        out = {k: _with_field(props.get(k), v, key, free=free) for k, v in value.items()}
+        return {**out, key: "12"} if _free(shapes) == free else out
     items = next((s["items"] for s in shapes if isinstance(s.get("items"), dict)), None)
     if isinstance(value, list) and items is not None:
-        return [_with_strays(items, v) for v in value]
+        return [_with_field(items, v, key, free=free) for v in value]
     return value
 
 
 def test_every_write_tool_card_shows_exactly_the_fields_its_route_reads(write_tools):
     """Each declared field the model fills shows, at every depth and through every
-    alternative shape; a field the route does not declare and the preview fingerprint do not."""
+    alternative shape, and so does a field of the user's own on a record that takes them (an
+    item's custom price column); a field the route does not declare (the route never reads
+    it) and the preview fingerprint do not."""
     from celerp.ai.card import card_arguments
 
     problems: list[str] = []
-    strays = 0
+    strays = extras = 0
     for name, cap in sorted(write_tools.items()):
         params = cap["tool"]["function"]["parameters"]
         parts = params.get("properties") or {}
-        arguments = _value(params, "")
+        arguments = _with_field(params, _value(params, ""), _EXTRA, free=True)
+        extras += json.dumps(arguments).count(_EXTRA)
         token = (cap.get("preview") or {}).get("token")
         expected = {p: {k: v for k, v in arguments[p].items() if not (p == "body" and k == token)}
                     for p in ("body", "path", "query") if isinstance(arguments.get(p), dict) and p in parts}
-        sent = _with_strays(params, arguments)
+        sent = _with_field(params, arguments, _STRAY, free=False)
         strays += json.dumps(sent).count(_STRAY)
         if token:
             sent.setdefault("body", {})[token] = "ffffffffffffffff"
@@ -219,4 +223,5 @@ def test_every_write_tool_card_shows_exactly_the_fields_its_route_reads(write_to
         if shown != expected:
             problems.append(f"{name}: shows {json.dumps(shown)[:200]} instead of {json.dumps(expected)[:200]}")
     assert strays > len(write_tools), "the oracle must send undeclared fields to most tools"
+    assert extras, "the oracle must send a field of the user's own to a record that takes them (new item)"
     assert problems == [], f"{len(problems)} problems, first: " + "\n".join(problems[:20])

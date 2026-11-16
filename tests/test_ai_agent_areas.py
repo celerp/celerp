@@ -421,6 +421,15 @@ def test_operator_prompt_names_every_area(real_app):
         assert f"{area} ({areas[area]})" in prompt, area
 
 
+def test_every_area_folded_into_core_carries_its_module_label():
+    from celerp.modules.loader import CORE_FOLDED, module_label
+
+    areas = service.agent_areas({})
+    assert CORE_FOLDED
+    for name in CORE_FOLDED:
+        assert areas[name] and areas[name] == module_label(name), name
+
+
 def test_operator_prompt_names_the_ask_groups():
     prompt = agent_system_prompt("en", CAPS, {})
     assert agent_markers.USER_ACTION_EXCLUSIONS
