@@ -21,6 +21,7 @@ from migration_support import auth as bearer
 from test_helpers import in_language, doc_version
 from test_posting_roles_race_pg_draft import _company, _race, race  # noqa: F401  (race is a fixture)
 from ui.i18n import refusal_text
+from celerp_ai.routes import _action_error
 
 HEADER = "6000"  # the seeded chart's expenses header
 _REFUSALS = {
@@ -189,6 +190,14 @@ async def test_a_split_with_no_account_chosen_is_refused(client, auth, splits):
     r = await B.decide(client, headers, sid, line, "post", splits=splits)
 
     assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # The refusal names the split whose account is missing, and the assistant that sent it
+    # says so in the reader's language.
+    assert [e["loc"][-1] for e in detail] == ["account_code"], detail
+    assert "splits" in detail[0]["loc"], detail
+    said = _action_error({"ok": False, "status": 422, "data": r.json()})
+    assert said["message_key"] == "ai.err_invalid_arguments", said
+    assert in_language("de", said) != in_language("en", said) != "", said
     [stmt] = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=headers)).json()["items"]
     assert stmt["status"] == "unmatched"
 
