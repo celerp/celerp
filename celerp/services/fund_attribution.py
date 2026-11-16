@@ -279,6 +279,7 @@ FUND_COPIES: dict[str, str] = {
     "celerp_accounting.routes:batch_import_accounting": OWN_CHOICE,
     "celerp_accounting.routes:close_fiscal_year": JOURNAL_LINE,
     "celerp_accounting.statement_lines:<module>": JOURNAL_LINE,
+    "celerp_ai.ui_routes:<module>": READ,
     "celerp_docs.routes:apply_doc_payment": SETTLED,
     "celerp_docs.routes:batch_import_docs": OWN_CHOICE,
     "celerp_fixed_assets.additions:add.apply": _ASSETS,
