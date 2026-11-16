@@ -852,9 +852,16 @@ async def delete_location(
 
 
 
-@router.get("/me/users", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's members with their roles and whether they are active.")
-async def list_users(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    from celerp.models.accounting import UserCompany
+@router.get("/me/users", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True, "x-celerp-agent-result-permissions": ["manage_users"]}, summary="List the company's members with their roles and whether they are active.")
+async def list_users(
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Every role sees who the members are; their email addresses go only to a role that
+    can manage users (``email`` is None otherwise, so the shape stays the same)."""
+    emails = role_has_permission(settings, role, "manage_users")
     rows = (
         await session.execute(
             select(User, UserCompany.role, UserCompany.is_active).join(UserCompany, UserCompany.user_id == User.id).where(
@@ -863,7 +870,7 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
         )
     ).all()
     items = [
-        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
+        {"id": str(u.id), "email": u.email if emails else None, "name": u.name, "role": normalize_role(role), "is_active": uc_active,
          "is_install_owner": bool(u.is_install_owner)}
         for u, role, uc_active in rows
     ]
