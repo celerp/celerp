@@ -777,7 +777,7 @@ async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount)
         BankAccount.id != bank.id).order_by(BankAccount.created_at, BankAccount.id))).scalars().first()
     if row is None:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_no_cash_account"))
-    return (await SL.scoped(db, company_id, "bank", [row], bank=bank))[0]
+    return (await SL.scoped(db, company_id, "bank", [row]))[0]
 
 
 async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, d: Decision,
@@ -789,7 +789,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     else:
         if d.target_bank_id is None:
             raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_transfer_needs_bank"))
-        target = (await SL.scoped(db, company_id, "bank", [d.target_bank_id], bank=bank))[0]
+        target = (await SL.scoped(db, company_id, "bank", [d.target_bank_id]))[0]
     line_id = d.line_ids[0]
     probe = await db.get(BankStatementLine, line_id)
     pair_id = None if probe is None or probe.status != "unmatched" else await _pair(db, company_id, probe, target,
