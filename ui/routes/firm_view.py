@@ -42,7 +42,7 @@ def _attention_link(row: dict, item: dict, lang: str) -> FT | str:
 def _attention(row: dict, lang: str) -> FT:
     """What needs attention, opened in place; each item names its record and the reason."""
     items = row.get("attention") or []
-    hints = [P(reason, cls="settings-hint") for reason in row.get("unavailable") or []]
+    hints = [P(refusal_text(reason), cls="settings-hint") for reason in row.get("unavailable") or []]
     if not items:
         return Div(Span("--"), *hints)
     return Div(
