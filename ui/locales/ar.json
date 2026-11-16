@@ -8535,5 +8535,7 @@
   "bank.statement_removed": "The statement and its lines are removed.",
   "bank.written_off": "The difference is written off.",
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
-  "bank.entry_undone": "The entry no longer counts on this statement."
+  "bank.entry_undone": "The entry no longer counts on this statement.",
+  "acct.err_amount_too_large": "هذا المبلغ أكبر من أن يُسجَّل. تحقق من الرقم وأدخله مرة أخرى.",
+  "acct.err_statement_no_lines": "لا يحتوي {filename} على معاملات بنكية يمكن قراءتها. تأكد من أنه ملف الكشف الذي صدّره البنك."
 }

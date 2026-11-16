@@ -82,10 +82,12 @@ def counterparty_key(description: str, reference: str | None, amount: Decimal,
 def _money(value, currency: str) -> Decimal | None:
     if value is None or value == "":
         return None
+    from celerp_accounting.statement_lines import MONEY_LIMIT
     try:
-        return round_money(Decimal(str(value)), currency)
+        amount = round_money(Decimal(str(value)), currency)
     except (InvalidOperation, ValueError):
         return None
+    return amount if abs(amount) < MONEY_LIMIT else None
 
 
 def block_refusal(code: str, /, **params) -> dict:
@@ -157,7 +159,10 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
     for line in out:
         amount = line["amount"] or Decimal(0)
         if line.get("fitid") or (line.get("source") == "ofx" and line.get("reference")):
-            fp = statement_line_fitid(line.get("fitid") or line["reference"])
+            fitid = str(line.get("fitid") or line["reference"]).strip()
+            n = seen.get(("FITID", fitid), 0)
+            seen[("FITID", fitid)] = n + 1
+            fp = statement_line_fitid(fitid, n)
         else:
             ident = statement_line_ident(line.get("line_date"), amount, line.get("description"),
                                          line.get("reference"), line["raw_balance"])

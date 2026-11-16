@@ -15,10 +15,10 @@ import uuid
 from datetime import date as Date
 from decimal import Decimal
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -192,12 +192,17 @@ def _parse_structured(content: bytes, meta: dict, column_map: dict | None) -> di
     """A CSV, spreadsheet or OFX statement read without the model."""
     from celerp_accounting.csv_parser import parse_bank_csv, parse_ofx
     name = meta.get("filename") or ""
+    empty = HTTPException(status_code=422, detail=catalog_refusal("acct.err_statement_no_lines", filename=name))
     if name.lower().endswith((".ofx", ".qfx")):
         parsed = parse_ofx(content)
+        if not parsed["lines"]:
+            raise empty
         return {"header": {k: parsed.get(k) for k in ("period_start", "period_end", "closing_balance", "currency")},
                 "lines": parsed["lines"], "needs_mapping": False, "headers": []}
     parsed = parse_bank_csv(_statement_csv_bytes(content, name, meta.get("content_type")), column_map)
     lines = parsed.get("lines") or []
+    if not lines and not (parsed.get("needs_mapping") and parsed.get("headers")):
+        raise empty
     dates = sorted(l["line_date"] for l in lines if l.get("line_date"))
     return {"header": {"period_start": dates[0] if dates else None, "period_end": dates[-1] if dates else None,
                        "opening_balance": None, "closing_balance": None},
@@ -600,8 +605,13 @@ _KINDS = Literal["post", "match", "no_entry", "transfer", "cash", "pay_doc", "su
 _PAIR_DAYS = 3
 
 
+# An account code as typed, pasted or proposed: surrounding spaces of any kind are not part of it.
+AccountCode = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v),
+                        Field(min_length=1, max_length=32)]
+
+
 class SplitIn(BaseModel):
-    account_code: str = Field(min_length=1, max_length=32)
+    account_code: AccountCode
     amount: FiniteFloat
     contact: str | None = Field(None, max_length=128)
     fund_id: str | None = Field(None, max_length=128)
@@ -613,7 +623,7 @@ class DocIn(BaseModel):
 
 
 class PartIn(BaseModel):
-    account_code: str = Field(min_length=1, max_length=32)
+    account_code: AccountCode
     amount: FiniteFloat
 
 
@@ -623,7 +633,7 @@ class Decision(BaseModel):
     withdrawal, a document payment, or Suspense."""
     line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
     kind: _KINDS
-    account_code: str | None = Field(None, max_length=32)
+    account_code: AccountCode | None = None
     splits: list[SplitIn] | None = Field(None, max_length=50)
     contact: str | None = Field(None, max_length=128)
     fund_id: str | None = Field(None, max_length=128)
@@ -1317,7 +1327,7 @@ async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUI
 
 
 class Reclassify(BaseModel):
-    account_code: str = Field(min_length=1, max_length=32)
+    account_code: AccountCode
     contact: str | None = Field(None, max_length=200)
     idempotency_key: str = Field(min_length=1, max_length=200)
 

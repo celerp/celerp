@@ -350,12 +350,14 @@ async def test_a_tabular_file_that_would_lose_values_says_why_and_reads_nothing(
     assert step["reason"] == t("import.err_header_duplicate", first="C", column="D", header=repr("Amount"))
 
 
-async def test_a_file_with_a_header_and_no_rows_previews_an_empty_statement(client):
-    """Nothing is imported unseen: the preview shows the statement with no lines before Import."""
+async def test_a_file_with_a_header_and_no_rows_is_named_as_holding_no_transactions(client):
+    """A file with nothing to import is reported as that file, never shown as an empty statement."""
+    from ui.i18n import t
     co, bk = await _co_bank(client)
     preview = await B.read(client, co, [(b"Date,Description,Amount\n", "e.csv", "text/csv")], bank_id=bk["id"])
-    (st,) = preview["statements"]
-    assert st["lines"] == [] and preview["needs_mapping"] is False
+    assert preview["statements"] == []
+    (failed,) = preview["failed_steps"]
+    assert failed["reason"] == t("acct.err_statement_no_lines", filename="e.csv") and failed["retry"] is False
 
 
 async def test_import_refuses_a_column_map_naming_a_column_not_in_the_file(client):

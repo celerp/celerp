@@ -65,6 +65,8 @@ def statement_line(line_date: str, amount, text: str, reference, balance, n: int
     return fingerprint([*statement_line_ident(line_date, amount, text, reference, balance), n])
 
 
-def statement_line_fitid(fitid: str) -> str:
-    """The identity of a line its bank numbered itself (OFX FITID)."""
-    return fingerprint(["FITID", fitid.strip()])
+def statement_line_fitid(fitid: str, n: int) -> str:
+    """The identity of a line its bank numbered itself (OFX FITID). ``n`` is the line's place
+    among lines of the same statement that share the FITID (some banks repeat one); the first
+    keeps the plain FITID identity."""
+    return fingerprint(["FITID", fitid.strip()] + ([n] if n else []))

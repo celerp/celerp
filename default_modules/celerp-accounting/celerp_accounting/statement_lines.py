@@ -45,12 +45,19 @@ _ENTRY_BASE = {"recon_create": "je:recon:", "recon_split": "je:recon:split:", "r
 _MOVED_FIELDS = ("account", "debit", "credit", "fx_debit", "fx_credit", "fx_currency", "fx_rate", "fund_id")
 
 
+# What a stored statement or entry amount can hold (Numeric(20, 4)).
+MONEY_LIMIT = Decimal(10) ** 16
+
+
 def money_value(value, currency: str, *, zero_ok: bool = False) -> Decimal:
-    """``value`` as money in ``currency``: refused when it is zero (unless ``zero_ok``) or
-    finer than the currency's minor unit, never rounded into another figure."""
+    """``value`` as money in ``currency``: refused when it is zero (unless ``zero_ok``),
+    larger than the books can hold, or finer than the currency's minor unit, never rounded
+    into another figure."""
     from celerp.services.money import round_money, to_decimal
 
     amount = to_decimal(value)
+    if not amount.is_finite() or abs(amount) >= MONEY_LIMIT:
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_too_large"))
     if amount == 0 and not zero_ok:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_amount_zero"))
     if round_money(amount, currency) != amount:

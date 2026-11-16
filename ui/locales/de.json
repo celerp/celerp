@@ -8535,5 +8535,7 @@
   "bank.statement_removed": "The statement and its lines are removed.",
   "bank.written_off": "The difference is written off.",
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
-  "bank.entry_undone": "The entry no longer counts on this statement."
+  "bank.entry_undone": "The entry no longer counts on this statement.",
+  "acct.err_amount_too_large": "Dieser Betrag ist zu groß, um ihn zu buchen. Prüfen Sie die Zahl und geben Sie sie erneut ein.",
+  "acct.err_statement_no_lines": "{filename} enthält keine lesbaren Bankumsätze. Prüfen Sie, ob es die Kontoauszugsdatei ist, die Ihre Bank exportiert hat."
 }

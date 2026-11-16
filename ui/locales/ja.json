@@ -8535,5 +8535,7 @@
   "bank.statement_removed": "The statement and its lines are removed.",
   "bank.written_off": "The difference is written off.",
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
-  "bank.entry_undone": "The entry no longer counts on this statement."
+  "bank.entry_undone": "The entry no longer counts on this statement.",
+  "acct.err_amount_too_large": "この金額は大きすぎるため記録できません。数値を確認して、もう一度入力してください。",
+  "acct.err_statement_no_lines": "{filename} には読み取れる銀行取引がありません。銀行がエクスポートした明細書ファイルであることを確認してください。"
 }
