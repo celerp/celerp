@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Chọn ít nhất một hóa đơn hoặc hóa đơn nhà cung cấp chưa thanh toán mà dòng này thanh toán.",
   "acct.err_recon_doc_direction": "Khoản tiền gửi chỉ có thể thanh toán hóa đơn, và khoản rút tiền chỉ có thể thanh toán hóa đơn nhà cung cấp. Hãy chọn tài liệu phù hợp với dòng này.",
   "acct.err_recon_needs_account": "Chọn tài khoản mà dòng này được ghi sổ vào.",
-  "reconciliation.group_closed": "Nhóm này không còn dòng nào đang mở. Có thể ai đó đã trả lời rồi. Hãy chọn Thử lại để xem những gì vẫn còn mở.",
   "reconciliation.line_not_open": "Dòng này không còn mở kèm gợi ý. Hãy chọn Thử lại để xem tình trạng hiện tại.",
   "enum.bank_type.cash": "Tiền mặt",
   "acct.err_rule_sparse_amount": "Một quy tắc dựa trên mô tả chung như thế này cũng cần có số tiền, nếu không nó sẽ bắt tất cả các dòng có mô tả đó. Hãy thêm số tiền.",

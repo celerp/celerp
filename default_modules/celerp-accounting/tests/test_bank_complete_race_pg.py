@@ -17,8 +17,7 @@ import pytest
 import pytest_asyncio
 
 import bank_statement_helpers as B
-from migration_support import maker
-from test_posting_roles_race_pg import _until_blocked
+from race_support import _until_waiting_or_done
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,19 +31,23 @@ async def own_client(committed_engine, monkeypatch):
     from celerp.db import get_session
     from celerp.main import app
 
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    maker = async_sessionmaker(bind=committed_engine, expire_on_commit=False)
+
     async def _session():
-        async with maker(committed_engine)() as s:
+        async with maker() as s:
             yield s
 
     @asynccontextmanager
     async def _session_ctx():
-        async with maker(committed_engine)() as s:
+        async with maker() as s:
             yield s
 
     from celerp.ai import jobs
 
     monkeypatch.setattr(celerp.db, "engine", committed_engine)
-    monkeypatch.setattr(jobs, "SessionLocal", maker(committed_engine))  # the statement reading job
+    monkeypatch.setattr(jobs, "SessionLocal", maker)  # the statement reading job
     app.dependency_overrides[get_session] = _session
     try:
         with patch("celerp.gateway.client._client", MagicMock()), \
@@ -120,7 +123,8 @@ async def test_complete_waits_for_a_line_writer_and_judges_its_result(committed_
     await asyncio.wait_for(entered.wait(), timeout=10)
     complete = asyncio.create_task(own_client.post(f"{B.API}/bank/{bk['id']}/complete", headers=co["h"],
                                                    json={"idempotency_key": B.key()}))
-    await _until_blocked(committed_engine, complete)
+    await _until_waiting_or_done(committed_engine, complete)
+    assert not complete.done(), "completion did not wait for the writer"
     go.set()
     w, c = await asyncio.wait_for(asyncio.gather(write, complete), timeout=30)
     assert w.status_code == 200, w.text

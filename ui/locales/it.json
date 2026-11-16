@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Seleziona almeno una fattura o una fattura fornitore aperta che questa riga paga.",
   "acct.err_recon_doc_direction": "Un deposito può pagare solo una fattura e un prelievo può pagare solo una fattura fornitore. Seleziona il documento corrispondente alla riga.",
   "acct.err_recon_needs_account": "Seleziona il conto su cui viene registrata questa riga.",
-  "reconciliation.group_closed": "Questo gruppo non ha più righe aperte. Forse qualcuno ha già risposto. Seleziona Riprova per vedere cosa è ancora aperto.",
   "reconciliation.line_not_open": "Questa riga non è più aperta con un suggerimento. Seleziona Riprova per vedere a che punto è.",
   "enum.bank_type.cash": "Contanti",
   "acct.err_rule_sparse_amount": "Una regola su una descrizione generale come questa necessita anche di un importo, altrimenti includerebbe ogni riga con quella descrizione. Aggiungi l'importo.",

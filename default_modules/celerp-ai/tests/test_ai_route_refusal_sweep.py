@@ -129,7 +129,7 @@ async def _named_cases(client, h) -> tuple[list[tuple[str, str, str, dict]], dic
         "statement_import_no_job": {"body": {"job_id": preview["job_id"], "bank_id": bank["id"],
                                              "statements": [{"header": st["header"], "lines": st["lines"]}
                                                             for st in preview["statements"]]}},
-        "bank_resolve_no_group": {"path": on_bank, "body": {"decisions": [
+        "bank_resolve_no_line": {"path": on_bank, "body": {"decisions": [
             {"line_ids": [l2["id"]], "kind": "post", "account_code": "6100"}]}},
         "bank_suggest_no_bank": {"path": on_bank, "body": {}},
         "bank_unmatch_no_line": {"path": on_bank, "body": {"line_ids": [l1["id"]]}},
@@ -161,8 +161,8 @@ async def _named_cases(client, h) -> tuple[list[tuple[str, str, str, dict]], dic
         ("bank_questions_bad_status", "GET", "/accounting/bank-questions", {"query": {"status": "sideways"}}),
         ("transfer_same_bank", "POST", "/accounting/transfers", {"body": {
             "from_bank_id": bank["id"], "to_bank_id": bank["id"], "amount": 5.0, "date": "2026-09-10"}}),
-        ("bank_resolve_no_group", "POST", bank_rec + "/resolve",
-         {"path": on_bank, "body": {"accept": {"group_keys": ["NO SUCH GROUP"], "line_ids": nope, "versions": {nope[0]: "0"}}}}),
+        ("bank_resolve_no_line", "POST", bank_rec + "/resolve",
+         {"path": on_bank, "body": {"accept": {"group_keys": ["A GROUP"], "line_ids": nope, "versions": {nope[0]: "0"}}}}),
         ("bank_suggest_no_bank", "POST", bank_rec + "/suggest", {"path": {"bank_id": _NOPE}, "body": {}}),
         ("bank_unmatch_no_line", "POST", bank_rec + "/unmatch", {"path": on_bank, "body": {"line_ids": nope}}),
         ("bank_complete_no_bank", "POST", bank_rec + "/complete", {"path": {"bank_id": _NOPE}, "body": {}}),

@@ -766,7 +766,8 @@ def suggestion_version(suggestion: dict | None) -> str | None:
 
 
 class Accept(BaseModel):
-    """The ticked lines of the named groups, each with the suggestion version it was shown."""
+    """The ticked lines, each with the suggestion version it was shown, and the groups they
+    were ticked in (the confirm card's labels)."""
     group_keys: list[str] = Field(min_length=1, max_length=500)
     line_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
     versions: dict[uuid.UUID, Annotated[str, Field(max_length=64)]] = Field(
@@ -1060,26 +1061,29 @@ async def _suggest_twin(db: AsyncSession, company_id: uuid.UUID, exc: _Twins) ->
         SL.write_suggestion(line, exc.suggestion)
 
 
-async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, accept: Accept) -> list[Decision]:
-    """The decisions the named lines' suggestions make. A group key with no open line, or a
-    named line that is not open in a named group with the suggestion version it was shown, is
-    refused."""
+async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, accept: Accept, key: str,
+                    request: dict) -> tuple[list[Decision], dict]:
+    """The accept's line list, fixed when it was confirmed, one unit per line: a line already
+    done under ``key`` answers from its recorded outcome (returned by line id); an open line
+    whose suggestion still has the version it was shown becomes the decision that suggestion
+    makes; any other line refuses the request. The group keys only label the confirm card and
+    are never read here. Each line's state is read before its recorded outcome, so a line
+    another run under ``key`` finished in between is answered as done, never refused."""
     from celerp.accounting_roles import AccountRole
     from celerp.services import account_roles
 
     open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
-    rows = [l for l in await _statement_lines(db, company_id, bank)
-            if l.reconciliation_id in open_ids and l.status == "unmatched"]
-    keys = set(accept.group_keys)
-    in_groups = {l.id: l for l in rows if _group_key(_line_dict(l, bank.currency)) in keys}
-    found = {_group_key(_line_dict(l, bank.currency)) for l in in_groups.values()}
-    if keys - found:
-        raise _refused(409, "reconciliation.group_closed")
     named = await SL.scoped(db, company_id, "line", accept.line_ids, bank=bank)
-    if any(l.id not in in_groups or not l.suggestion or suggestion_version(l.suggestion) != accept.versions[l.id]
-           for l in named):
-        raise _refused(409, "reconciliation.line_not_open")
-    chosen = [in_groups[l.id] for l in named]
+    earlier: dict = {}
+    chosen = []
+    for line in named:
+        if (rows := await _unit_done(db, company_id, key, request, [line.id])) is not None:
+            earlier[str(line.id)] = rows
+        elif line.reconciliation_id in open_ids and line.status == "unmatched" and line.suggestion \
+                and suggestion_version(line.suggestion) == accept.versions[line.id]:
+            chosen.append(line)
+        else:
+            raise _refused(409, "reconciliation.line_not_open")
     tax_account = None
     out = []
     for line in sorted(chosen, key=lambda l: (l.line_date, str(l.id))):
@@ -1101,7 +1105,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
         if s.get("kind") not in _KINDS.__args__:
             raise _refused(409, "reconciliation.line_not_open")
         out.append(Decision(**base))
-    return out
+    return out, earlier
 
 
 async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, done: dict, by_line: dict) -> None:
@@ -1144,12 +1148,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
     by_line: dict = {}
     earlier: dict = {}
     if payload.accept is not None:
-        accept = payload.accept
-        for lid in accept.line_ids:
-            if (row := await _unit_done(db, company_id, key, request, [lid])) is not None:
-                earlier[str(lid)] = row
-        accept = accept.model_copy(update={"line_ids": [l for l in accept.line_ids if str(l) not in earlier]})
-        accepted = await _accepted(db, company_id, bank, accept) if accept.line_ids != [] else []
+        accepted, earlier = await _accepted(db, company_id, bank, payload.accept, key, request)
         ids = [x for d in accepted for x in d.line_ids] + [uuid.UUID(x) for x in earlier]
         by_line = {str(l.id): (l.suggestion or {}).get("rule_id")
                    for l in (await SL.scoped(db, company_id, "line", ids, bank=bank) if ids else [])}

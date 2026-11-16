@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Sélectionnez au moins une facture ou une facture fournisseur ouverte que cette ligne règle.",
   "acct.err_recon_doc_direction": "Un dépôt ne peut servir qu'à régler une facture, et un retrait ne peut servir qu'à régler une facture fournisseur. Choisissez le document correspondant à la ligne.",
   "acct.err_recon_needs_account": "Choisissez le compte sur lequel cette ligne sera comptabilisée.",
-  "reconciliation.group_closed": "Ce groupe n'a plus de lignes ouvertes. Quelqu'un y a peut-être déjà répondu. Sélectionnez « Réessayer » pour voir ce qui reste ouvert.",
   "reconciliation.line_not_open": "Cette ligne n'est plus ouverte avec une suggestion. Sélectionnez « Réessayer » pour voir où elle en est.",
   "enum.bank_type.cash": "Espèces",
   "acct.err_rule_sparse_amount": "Une règle portant sur une description générale comme celle-ci doit également inclure un montant, sinon elle s'appliquerait à toutes les lignes contenant cette description. Ajoutez le montant.",

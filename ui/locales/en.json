@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Pick at least one open invoice or bill this line pays.",
   "acct.err_recon_doc_direction": "A deposit can only pay an invoice, and a withdrawal can only pay a bill. Pick a document that matches the line.",
   "acct.err_recon_needs_account": "Pick the account this line posts to.",
-  "reconciliation.group_closed": "This group has no open lines left. Someone may have answered them already. Select Try again to see what is still open.",
   "reconciliation.line_not_open": "This line is no longer open with a suggestion. Select Try again to see where it stands.",
   "enum.bank_type.cash": "Cash",
   "acct.err_rule_sparse_amount": "A rule on a general description like this one needs an amount too, or it would catch every line with that description. Add the amount.",

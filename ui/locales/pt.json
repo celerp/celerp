@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Selecione pelo menos uma fatura ou fatura de fornecedor em aberto que esta linha paga.",
   "acct.err_recon_doc_direction": "Um depósito só pode pagar uma fatura, e um saque só pode pagar uma fatura de fornecedor. Selecione o documento que corresponde à linha.",
   "acct.err_recon_needs_account": "Selecione a conta na qual esta linha será lançada.",
-  "reconciliation.group_closed": "Este grupo não tem mais linhas em aberto. Talvez alguém já as tenha respondido. Selecione Tentar novamente para ver o que ainda está em aberto.",
   "reconciliation.line_not_open": "Esta linha não está mais em aberto com uma sugestão. Selecione Tentar novamente para ver em que situação está.",
   "enum.bank_type.cash": "Dinheiro",
   "acct.err_rule_sparse_amount": "Uma regra para uma descrição geral como esta também precisa de um valor, ou ela abrangeria todas as linhas com essa descrição. Adicione o valor.",

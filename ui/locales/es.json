@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Seleccione al menos una factura o factura de proveedor pendiente que pague esta línea.",
   "acct.err_recon_doc_direction": "Un depósito solo puede pagar una factura y un retiro solo puede pagar una factura de proveedor. Seleccione el documento que coincida con la línea.",
   "acct.err_recon_needs_account": "Seleccione la cuenta en la que se contabilizará esta línea.",
-  "reconciliation.group_closed": "Este grupo ya no tiene líneas abiertas. Puede que alguien ya las haya respondido. Seleccione Reintentar para ver lo que sigue abierto.",
   "reconciliation.line_not_open": "Esta línea ya no está abierta con una sugerencia. Seleccione Reintentar para ver en qué estado está.",
   "enum.bank_type.cash": "Dinero",
   "acct.err_rule_sparse_amount": "Una regla para una descripción general como esta también necesita un importe; de lo contrario, abarcaría todas las líneas con esa descripción. Añada el importe.",

@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Wählen Sie mindestens eine offene Rechnung oder Lieferantenrechnung aus, die diese Zeile begleicht.",
   "acct.err_recon_doc_direction": "Eine Einzahlung kann nur eine Rechnung begleichen, und eine Auszahlung kann nur eine Lieferantenrechnung begleichen. Wählen Sie ein Dokument aus, das zur Zeile passt.",
   "acct.err_recon_needs_account": "Wählen Sie das Konto aus, auf das diese Zeile gebucht wird.",
-  "reconciliation.group_closed": "Diese Gruppe hat keine offenen Zeilen mehr. Vielleicht hat sie schon jemand beantwortet. Wählen Sie „Erneut versuchen“, um zu sehen, was noch offen ist.",
   "reconciliation.line_not_open": "Diese Zeile ist nicht mehr mit einem Vorschlag offen. Wählen Sie „Erneut versuchen“, um ihren Stand zu sehen.",
   "enum.bank_type.cash": "Bargeld",
   "acct.err_rule_sparse_amount": "Eine Regel für eine allgemeine Beschreibung wie diese benötigt auch einen Betrag, sonst würde sie jede Zeile mit dieser Beschreibung erfassen. Fügen Sie den Betrag hinzu.",

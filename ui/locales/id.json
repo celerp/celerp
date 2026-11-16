@@ -8396,7 +8396,6 @@
   "acct.err_recon_pay_needs_doc": "Pilih setidaknya satu faktur atau tagihan pemasok terbuka yang dibayar oleh baris ini.",
   "acct.err_recon_doc_direction": "Setoran hanya dapat digunakan untuk membayar faktur, dan penarikan hanya dapat digunakan untuk membayar tagihan pemasok. Pilih dokumen yang sesuai dengan baris tersebut.",
   "acct.err_recon_needs_account": "Pilih akun tempat baris ini diposting.",
-  "reconciliation.group_closed": "Grup ini tidak punya baris terbuka lagi. Mungkin seseorang sudah menjawabnya. Pilih Coba lagi untuk melihat yang masih terbuka.",
   "reconciliation.line_not_open": "Baris ini tidak lagi terbuka dengan saran. Pilih Coba lagi untuk melihat statusnya.",
   "enum.bank_type.cash": "Uang tunai",
   "acct.err_rule_sparse_amount": "Aturan pada deskripsi umum seperti ini juga membutuhkan jumlah, atau aturan tersebut akan mencakup setiap baris dengan deskripsi tersebut. Tambahkan jumlahnya.",
