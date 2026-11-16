@@ -6951,6 +6951,10 @@
   "ai.file_lost": "No se pudo terminar de leer este archivo. Vuelva a intentarlo para leerlo de nuevo, lo que contará como una pregunta adicional.",
   "ai.files_none_read.title": "No se pudieron leer {failed} archivos",
   "ai.files_none_read.body": "No se pudo leer ninguno de los archivos adjuntos. Abra la conversación para ver los detalles.",
+  "ai.files_none_read_one.title": "No se pudo leer 1 archivo",
+  "ai.files_none_read_one.body": "No se pudo leer el archivo adjunto. Abra la conversación para ver los detalles.",
+  "ai.files_read_one.title": "Se leyó 1 archivo",
+  "ai.files_read_one.body": "Abra la conversación para revisar los asientos propuestos.",
   "ai.files_read.title": "Se leyeron {completed} de {total} archivos",
   "ai.files_read.body": "Archivos leídos: {completed}; no se pudieron leer: {failed}. Abra la conversación para revisar los asientos propuestos.",
   "ai.upload_no_files": "Sin archivos",
@@ -9302,5 +9306,5 @@
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
   "ai.card_name_unavailable": "Nombre no disponible",
-  "error.fix_ask_roles": "Tu rol no puede realizar este paso en la página {place}. Pídeselo a alguien con uno de estos roles: {roles}."
+  "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}."
 }
