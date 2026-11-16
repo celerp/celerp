@@ -607,7 +607,9 @@ async def list_convs(
     ]
 
 
-@router.get("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True}, summary="Show one assistant conversation with its messages.")
+# Confirm card names are read per reader by role (celerp.ai.names), so a kept read
+# depends on every permission of the asker.
+@router.get("/conversations/{conversation_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show one assistant conversation with its messages.")
 async def get_conv(
     conversation_id: uuid.UUID,
     company_id=Depends(get_current_company_id),

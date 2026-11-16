@@ -1419,7 +1419,7 @@ class Unmatch(BaseModel):
 
 
 @router.post(f"{API}/bank/{{bank_id}}/unmatch", summary="Undo settled statement lines: void what they posted and "
-             "release what they matched.", openapi_extra=_agent("line_ids"))
+             "release what they matched.", openapi_extra=_agent("line_ids", result_permissions=["record_payments"]))
 async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.UUID = Depends(get_current_company_id),
                         _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
                         user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:
