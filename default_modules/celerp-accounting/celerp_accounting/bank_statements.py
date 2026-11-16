@@ -1420,6 +1420,7 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
                         db: AsyncSession = Depends(get_session)) -> dict:
     """Each balanced statement is completed and hands the entries it counts to the next
     one, so the next statement's balance starts where this one ended."""
+    from celerp.services.journal_accounts import hold_fund_ledger
     from celerp_accounting.routes import _je_entries_for_account, _lock_recon, _money_text as money_text, \
         _settled_difference
 
@@ -1427,6 +1428,9 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
     request = _request(payload, bank_id=bank_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:
         return first
+    # The lock every posting takes first, before the entries that decide the balance are read:
+    # a posting in flight is waited for and then counted, never judged on the books before it.
+    await hold_fund_ledger(db, company_id)
     bank = await _bank(db, company_id, bank_id)
     entries = await _je_entries_for_account(db, company_id, bank)
     pending = [s.id for s in await _sessions(db, company_id, bank) if s.status == "open"]
