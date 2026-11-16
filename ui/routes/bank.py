@@ -20,7 +20,7 @@ from ui.components import bank_groups as BG
 from ui.components.bank_groups import bank_url
 from ui.components.encode import safe_url
 from ui.components.funds import chosen_fund, funds_in_use
-from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title, error_flash
+from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title, error_flash, refusal_line
 from ui.components.table import EMPTY
 from ui.config import get_token as _token
 from ui.i18n import t
@@ -31,10 +31,6 @@ _QUESTION_STATUSES = ("open", "answered", "all")
 
 def _login() -> Response:
     return RedirectResponse("/login", status_code=302)
-
-
-def _fragment_error(e: APIError) -> FT:
-    return error_flash(e)
 
 
 async def _no_access(request: Request, e: APIError, title: str) -> FT:
@@ -55,7 +51,7 @@ async def _choices(token: str, bank_id: str) -> tuple[list[tuple[str, str]], lis
     return BG.answer_options(chart, banks, bank_id), funds
 
 
-async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "", bulk_outcome: str | None = None,
+async def _body(token: str, bank: dict, view: str, q: str, *, outcome: str = "", bulk_outcome: FT | str | None = None,
                 undo_ids: list[str] | None = None, table: dict | None = None) -> FT:
     """The page under its header: actions, counts, statements, views, search, the bulk
     toolbar, the groups, the panel templates and the drop for the next statement."""
@@ -192,7 +188,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 409:
                 return BG.preview_loading(bank_id, job_id)
-            return _fragment_error(e)
+            return error_flash(e)
 
     @app.get("/accounting/reconcile/bank/{bank_id}/preview/{job_id}/cell")
     async def preview_cell(request: Request, bank_id: str, job_id: str):
@@ -236,7 +232,7 @@ def setup_routes(app):
         try:
             found = await api.statement_preview(token, job_id, [{"header": h} for h in headers], column_map)
         except APIError as e:
-            return _fragment_error(e)
+            return error_flash(e)
         return BG.statement_preview(bank_id, job_id, found)
 
     @app.post("/accounting/reconcile/bank/{bank_id}/preview/{job_id}/import")
@@ -254,7 +250,7 @@ def setup_routes(app):
                                                "column_map": column_map,
                                                "idempotency_key": str(form.get("idempotency_key"))})
         except APIError as e:
-            return Div(_fragment_error(e), BG.statement_preview(
+            return Div(error_flash(e), BG.statement_preview(
                 bank_id, job_id, await api.statement_preview(token, job_id, statements, column_map)))
         return Response(status_code=204, headers={"HX-Redirect": bank_url(bank_id) + "?view=all"})
 
@@ -303,7 +299,7 @@ def setup_routes(app):
                 "accept": {"group_keys": keys, "line_ids": line_ids or None},
                 "idempotency_key": str(form.get("idempotency_key"))})
         except APIError as e:
-            return await _body(token, bank, view, q, bulk_outcome=str(e.detail))
+            return await _body(token, bank, view, q, bulk_outcome=refusal_line(e))
         done = [r["line_id"] for r in out["results"] if r["ok"]]
         refused = [r for r in out["results"] if not r["ok"]]
         text = " ".join([t("bank.posted_outcome", n=len(done)),
@@ -326,7 +322,7 @@ def setup_routes(app):
         except APIError as e:
             if whole:
                 return await _body(token, bank, _view(str(form.get("view"))), str(form.get("q", "")),
-                                   bulk_outcome=str(e.detail))
+                                   bulk_outcome=refusal_line(e))
             return _line_response(await _fresh_line(token, bank, ids[0], error_flash(e)), ids[0])
         if whole:
             return await _body(token, bank, _view(str(form.get("view"))), str(form.get("q", "")),

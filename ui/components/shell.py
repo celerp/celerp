@@ -3234,11 +3234,16 @@ def flash(msg: str | tuple, kind: str = "error") -> FT:
     return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
-def error_flash(error) -> FT:
-    """A refused API call (an APIError) on the page: its text, and a link to the page that
-    resolves it when there is one (refusal_fix)."""
+def refusal_line(error) -> str | tuple:
+    """A refused API call (an APIError) as it reads on a page: its text, and a link to the
+    page that resolves it when there is one (refusal_fix)."""
     fix = refusal_fix(error.data)
-    return flash((str(error.detail), " ", A(fix["label"], href=fix["href"])) if fix else str(error.detail))
+    return (str(error.detail), " ", A(fix["label"], href=fix["href"])) if fix else str(error.detail)
+
+
+def error_flash(error) -> FT:
+    """refusal_line in the page's flash."""
+    return flash(refusal_line(error))
 
 
 def no_access_text(error=None, *, permission: str | None = None) -> str:
