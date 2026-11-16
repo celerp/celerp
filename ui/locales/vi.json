@@ -8382,7 +8382,7 @@
   "acct.err_amount_zero": "The amount can't be zero. Enter the amount that moved.",
   "acct.err_amount_minor_unit": "This amount has more decimal places than {currency} allows. Round it to the smallest unit of {currency}.",
   "acct.err_recon_match_total": "The entries you picked add up to {total}, but the statement lines add up to {amount}. Pick entries that add up to the lines.",
-  "acct.err_transfer_same_bank": "A transfer needs two different bank accounts. Pick another account to move the money to.",
+  "acct.err_transfer_same_bank": "Không thể chuyển tiền từ một tài khoản ngân hàng sang chính nó. Hãy chọn tài khoản ngân hàng kia mà khoản tiền này chuyển đến hoặc chuyển từ đó.",
   "acct.err_recon_one_line": "This answer works on one statement line at a time. Select a single line and try again.",
   "acct.err_suspense_unmapped": "Celerp can't add a Suspense account to this chart on its own. Choose the account for the {role} role in Posting accounts, then try again.",
   "acct.err_recon_remember_kind": "Only an answer that posts to an account can be remembered. Untick Remember, or post the line to an account.",

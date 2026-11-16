@@ -393,6 +393,19 @@ async def test_transfer_pair_posts_once_from_either_side(client):
     assert len([e for e in journal if e.get("je_type") == "recon_transfer"]) == 1
 
 
+async def test_transfer_to_its_own_bank_says_to_pick_another(client):
+    from ui.i18n import t
+
+    co, a = await _co_bank(client, name="A")
+    await _one_month(client, co, a, [("2026-01-05", "TRANSFER", "-100.00")])
+    line = B.all_lines(await B.groups(client, co, a["id"]))[0]
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [line["id"]], "kind": "transfer",
+                                                          "target_bank_id": a["id"]}])
+    res = r.json()["results"][0]
+    assert res["ok"] is False and res["reason"] == t("acct.err_transfer_same_bank", "en")
+    assert B.all_lines(await B.groups(client, co, a["id"]))[0]["status"] == "unmatched"
+
+
 async def test_transfer_to_foreign_bank_holds_its_currency(client, session):
     co, a = await _co_bank(client, name="A")
     eur = await B.bank(client, co["h"], name="EUR", currency="EUR")

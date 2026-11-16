@@ -75,7 +75,8 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
                  state: tuple[str, ...] | None = None) -> list:
     """The records ``ids`` name, each the caller company's (and, for a line or statement, the
     path bank's), lines read under their row lock in id order. A foreign id gets the same 404
-    as an unknown one; a line outside ``state`` is refused with its status."""
+    as an unknown one; a line outside ``state`` is refused with its status. A bank named
+    beside the path bank (a transfer's other side) is refused when it is that same bank."""
     want = sorted({uuid.UUID(str(i)) for i in ids}, key=str)
     if kind == "line":
         q = select(BankStatementLine).where(BankStatementLine.id.in_(want), BankStatementLine.company_id == company_id)
@@ -93,7 +94,7 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
                                       BankAccount.is_active.is_(True))
         rows = list((await db.execute(q)).scalars())
         if bank is not None and any(r.id == bank.id for r in rows):
-            raise _not_found("bank")
+            raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_transfer_same_bank"))
     else:
         raise ValueError(kind)
     if len(rows) != len(want):
