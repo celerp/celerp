@@ -26,6 +26,7 @@ import pytest
 from celerp.main import app
 from celerp.services import import_stage
 
+from peer_attention_support import stored_keys
 from test_import_stage_invariants import _IMPORTERS, _REPO, _calls, _confirm, _route_path
 from ui.routes import csv_import as ci
 from ui.i18n import t
@@ -305,7 +306,7 @@ async def test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason(
 
     assert len(errors) == 1 and _keyed(errors[0]), errors
     assert errors[0]["params"]["entity_id"] == "C-1"
-    assert _keyed(await _attention_reason(session, ids["company_id"])), "the attention row keeps the reason keyed"
+    assert await stored_keys(session, ids["company_id"]), "the attention row keeps the reason keyed"
 
 
 async def _attention_reason(session, company_id) -> dict:
@@ -322,41 +323,19 @@ async def _attention_reason(session, company_id) -> dict:
         return {"text": row.reason}
 
 
-def _attention_writes(tree: ast.AST) -> list[tuple[int, str]]:
-    """Every write of a peer attention reason in a module: a peer_attention.record call, an
-    assignment to a ``reason`` of anything but the object's own (an exception's
-    ``self.reason``), and a row built or inserted outside peer_attention."""
-    found = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            name = ast.unparse(node.func)
-            if name == "peer_attention.record":
-                found.append((node.lineno, "record"))
-            elif name in ("CompanyPeerAttention", "pg_insert", "insert") and any(
-                    "CompanyPeerAttention" in ast.unparse(arg) for arg in node.args) or name == "CompanyPeerAttention":
-                found.append((node.lineno, "row"))
-        targets = node.targets if isinstance(node, ast.Assign) else []
-        for target in targets:
-            for each in (target.elts if isinstance(target, ast.Tuple) else [target]):
-                if isinstance(each, ast.Attribute) and each.attr == "reason" and ast.unparse(each.value) != "self":
-                    keyed = isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "peer_attention.stored"
-                    found.append((node.lineno, "stored" if keyed else "assigned"))
-    return found
+def test_a_peer_attention_reason_is_stored_only_as_a_keyed_refusal():
+    """The boundary every attention writer passes its reason through (record, or stored for
+    an item changed in place): English alone is refused and a keyed refusal reads back by its
+    key. Each writer's end-to-end scenario reads its stored row back through
+    peer_attention_support, so a writer that stores English fails the scenario driving it."""
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.services import peer_attention
+    from peer_attention_support import stored_key
 
-
-def test_every_writer_of_a_peer_attention_reason_stores_a_keyed_refusal():
-    """A peer attention reason reads in each reader's language: every writer passes a keyed
-    refusal through peer_attention (record, or stored for an item it changes in place), which
-    refuses anything else, so a new writer cannot store English alone."""
-    offenders = []
-    for path in sorted([*(_REPO / "celerp").rglob("*.py"), *(_REPO / "default_modules").rglob("*.py")]):
-        if "/tests/" in str(path) or path.name == "peer_attention.py" or "/migrations/" in str(path):
-            continue
-        source = path.read_text(encoding="utf-8")
-        for line, how in _attention_writes(ast.parse(source)):
-            if how == "row" and "CompanyPeerAttention" in source or how == "assigned":
-                offenders.append(f"{path.relative_to(_REPO)}:{line} {how}")
-    assert not offenders, offenders
+    for english in ("Fixed. It posts on the next sync.", {"message": "Fixed."}):
+        with pytest.raises(TypeError):
+            peer_attention.stored(english)
+    assert stored_key(peer_attention.stored(catalog_refusal("sync_accounts.fixed"))) == "sync_accounts.fixed"
 
 
 @pytest.mark.asyncio

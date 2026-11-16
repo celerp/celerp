@@ -14,6 +14,7 @@ from fasthtml.common import to_xml
 from sqlalchemy import select
 
 from migration_support import auth, maker, real_client, real_engine  # noqa: F401
+from peer_attention_support import attention_keys
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_firm_view import _locked_invoice, _today
@@ -179,6 +180,7 @@ async def test_firm_journal_in_client_locked_period_is_declined(real_client, rea
     declined = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "declined"]
     assert len(declined) == 1 and declined[0]["label"] == "Year-end accrual"
     assert date_text(date(2026, 6, 30)) in refusal_text(declined[0]["reason"])
+    assert await attention_keys(real_engine, _company_of(firm_tok)) == ["peer.attention_declined"]
 
     again = await _two_way(client_company, credential)  # told once
     assert len([n for n in await _notices(real_engine, client_company)
@@ -254,6 +256,7 @@ async def test_client_reversal_reaches_the_firm_view(real_client, real_engine, m
     adjusted = date_text(date.fromisoformat(ADJUSTED))
     assert refusal_text(item["reason"]) == f"Demo Trading reversed Reclass fees dated {adjusted}; posted {adjusted}"
     assert item["post_again"] == f"/accounting/journal/new?from={firm_je}"
+    assert await attention_keys(real_engine, firm_company) == ["peer.attention_reversed"]
     firm_books = await _journals(real_engine, firm_company)
     assert firm_books[firm_je]["status"] == "posted"  # never voided
     mirrored = [s for s in firm_books.values() if s.get("reverses") == firm_je]

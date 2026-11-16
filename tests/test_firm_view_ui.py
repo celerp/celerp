@@ -27,14 +27,15 @@ def _rows():
          "last_sync": recent, "unavailable": [], "attention": [
              {"kind": "refused", "label": "INV-0005", "reason": catalog_refusal("peer.journal_books_locked", date="2026-10-16"),
               "href": None, "at": recent},
-             {"kind": "key_expiring", "label": "Demo Trading", "reason": "The key expires on 2026-10-21.",
+             {"kind": "key_expiring", "label": "Demo Trading", "reason": catalog_refusal("firm_view.reason_key_expiring", date="2026-10-21"),
               "href": "/settings/accountant-access", "at": None}]},
         {"company_id": PRACTICE, "company_name": "Firm Practice", "role": "operator", "sync": None,
          "last_sync": None, "attention": [],
-         "unavailable": ["Only the company's owner sees its sync and what needs attention."]},
+         "unavailable": [catalog_refusal("firm_view.reason_owner_only")]},
         {"company_id": str(uuid.uuid4()), "company_name": "Fake Co", "role": None, "sync": None,
          "last_sync": None, "unavailable": [], "attention": [
-             {"kind": "migration", "label": "fake", "reason": "The move from fake is ready and has not finished.",
+             {"kind": "migration", "label": "fake", "reason": catalog_refusal(
+                 "firm_view.reason_migration", source="fake", state=catalog_refusal("migration.status.ready")),
               "href": f"/migrations/{RUN}", "at": recent}]},
     ]
 
@@ -74,10 +75,12 @@ async def test_rows_show_sync_last_sync_and_attention_in_place(monkeypatch):
     assert f'href="/switch-company/{COPY}?next=/settings/users/new"' in html
     assert f'href="/switch-company/{COPY}"' in html
     # Another role sees why sync is hidden, and empty cells read --.
-    assert "owner sees its sync and what needs attention." in html
+    assert "owner sees its sync and what needs attention.</p>" in html  # as text, not an attribute
     assert "<td>--</td>" in html
     # A move that has not finished opens from its own page, without switching.
     assert html.count(f'href="/migrations/{RUN}"') == 2 and "Continue the move" in html
+    assert "The move from fake has not finished. Status: Ready to start." in html
+    assert f"The key expires on {date_text(date(2026, 10, 21))}." in html
 
 
 async def test_sync_says_owner_only_where_the_user_cannot_see_it(monkeypatch):

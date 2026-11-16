@@ -6,6 +6,7 @@ last sync and what needs attention, built on the existing users and roles."""
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -16,7 +17,8 @@ from migration_support import auth, maker, migration_env, real_client, real_engi
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _paired, _route_to_app, _sync, seed_demo
-from ui.i18n import date_text, refusal_text
+from ui import i18n
+from ui.i18n import date_text, refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,6 +27,20 @@ async def _firm_view(client, tok: str, **params) -> dict:
     r = await client.get("/auth/firm-view", params=params or None, headers=auth(tok))
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def _keyed_as(reason, key: str) -> bool:
+    """A firm view reason is a keyed refusal, so it reads in each viewer's language."""
+    return isinstance(reason, dict) and reason.get("message_key") == key and bool(reason.get("message"))
+
+
+@contextmanager
+def _in(lang: str):
+    token = i18n._current_lang.set(lang)
+    try:
+        yield
+    finally:
+        i18n._current_lang.reset(token)
 
 
 def _row(view: dict, name: str) -> dict:
@@ -125,7 +141,11 @@ async def test_firm_view_key_expiring_and_expired(real_client, real_engine):
     copy = _row(await _firm_view(real_client, firm_tok), "Demo Trading")
     assert copy["sync"] == "expiring"
     expiring = [i for i in copy["attention"] if i["kind"] == "key_expiring"]
-    assert len(expiring) == 1 and soon.date().isoformat() in expiring[0]["reason"]
+    assert len(expiring) == 1 and _keyed_as(expiring[0]["reason"], "firm_view.reason_key_expiring")
+    assert date_text(soon.date()) in refusal_text(expiring[0]["reason"])
+    with _in("th"):
+        assert refusal_text(expiring[0]["reason"]) == t(
+            "firm_view.reason_key_expiring", "th", date=date_text(soon.date(), "th"))
     assert expiring[0]["href"] == "/settings/accountant-access"
 
     async with maker(real_engine)() as s:
@@ -134,7 +154,8 @@ async def test_firm_view_key_expiring_and_expired(real_client, real_engine):
         await s.commit()
     copy = _row(await _firm_view(real_client, firm_tok), "Demo Trading")
     assert copy["sync"] == "failing"
-    assert any(i["kind"] == "key_expired" for i in copy["attention"])
+    [expired] = [i for i in copy["attention"] if i["kind"] == "key_expired"]
+    assert _keyed_as(expired["reason"], "firm_view.reason_key_expired")
 
 
 async def test_firm_view_copies_not_opened_and_unreadable(real_client, real_engine, monkeypatch):
@@ -161,9 +182,14 @@ async def test_firm_view_copies_not_opened_and_unreadable(real_client, real_engi
     view = await _firm_view(real_client, firm_tok)
     items = [(i["kind"], i["label"]) for i in _row(view, "Demo Trading")["attention"]]
     assert items == [("copy_not_opened", "owner@client.example"), ("copy_expired", "--")], items
+    not_opened, expired = _row(view, "Demo Trading")["attention"]
+    assert _keyed_as(not_opened["reason"], "firm_view.reason_copy_not_opened")
+    assert _keyed_as(expired["reason"], "firm_view.reason_copy_expired")
+    assert date_text(date(2026, 10, 24)) in refusal_text(not_opened["reason"])
     practice = _row(view, "Firm Practice")
     assert practice["attention"] == []
-    assert practice["unavailable"] == ["Company copy activity is unavailable."]
+    [unavailable] = practice["unavailable"]
+    assert _keyed_as(unavailable, "handoff.activity_unavailable")
     assert copy_id != practice_id
 
 
@@ -177,6 +203,9 @@ async def test_firm_view_lists_migrations_not_finished(real_client, real_engine,
     assert staged[0]["sync"] is None
     [item] = staged[0]["attention"]
     assert item["kind"] == "migration" and item["href"] == f"/migrations/{run_id}"
+    assert _keyed_as(item["reason"], "firm_view.reason_migration")
+    assert refusal_text(item["reason"]) == t("firm_view.reason_migration", source=item["label"],
+                                             state=t("migration.status.running"))
 
 
 async def test_firm_view_hides_sync_from_other_roles(real_client, real_engine):
@@ -192,4 +221,5 @@ async def test_firm_view_hides_sync_from_other_roles(real_client, real_engine):
     [row] = view["items"]
     assert row["company_name"] == "Demo Trading"
     assert row["sync"] is None and row["last_sync"] is None and row["attention"] == []
-    assert row["unavailable"] == ["Only the company's owner sees its sync and what needs attention."]
+    [unavailable] = row["unavailable"]
+    assert _keyed_as(unavailable, "firm_view.reason_owner_only")
