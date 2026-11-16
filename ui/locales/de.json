@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "Dieser Betrag ist zu groß, um ihn zu buchen. Prüfen Sie die Zahl und geben Sie sie erneut ein.",
-  "acct.err_statement_no_lines": "{filename} enthält keine lesbaren Bankumsätze. Prüfen Sie, ob es die Kontoauszugsdatei ist, die Ihre Bank exportiert hat."
+  "acct.err_statement_no_lines": "{filename} enthält keine lesbaren Bankumsätze. Prüfen Sie, ob es die Kontoauszugsdatei ist, die Ihre Bank exportiert hat.",
+  "field.bank_id": "Bankkonto",
+  "field.line_ids": "Kontoauszugszeilen",
+  "field.statements": "Kontoauszüge",
+  "field.decisions": "Entscheidungen",
+  "field.job_id": "Auslesen des Kontoauszugs",
+  "field.column_map": "Spaltenzuordnung",
+  "field.group_keys": "Gruppen",
+  "field.header": "Kontoauszugsdetails",
+  "field.new_bank": "Neues Bankkonto",
+  "field.parts": "Weitere Beträge",
+  "field.remember": "Für das nächste Mal merken",
+  "field.target_bank_id": "Überweisen an",
+  "field.to_amount": "Erhaltener Betrag",
+  "field.att_id": "Anhang",
+  "field.je_ids": "Buchungen"
 }

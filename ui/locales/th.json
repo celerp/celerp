@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "จำนวนเงินนี้มากเกินกว่าจะบันทึกได้ ตรวจสอบตัวเลขแล้วป้อนใหม่อีกครั้ง",
-  "acct.err_statement_no_lines": "{filename} ไม่มีรายการธนาคารที่อ่านได้ ตรวจสอบว่าเป็นไฟล์รายการเดินบัญชีที่ธนาคารของคุณส่งออกมา"
+  "acct.err_statement_no_lines": "{filename} ไม่มีรายการธนาคารที่อ่านได้ ตรวจสอบว่าเป็นไฟล์รายการเดินบัญชีที่ธนาคารของคุณส่งออกมา",
+  "field.bank_id": "บัญชีธนาคาร",
+  "field.line_ids": "รายการในใบแจ้งยอด",
+  "field.statements": "ใบแจ้งยอด",
+  "field.decisions": "การตัดสินใจ",
+  "field.job_id": "การอ่านใบแจ้งยอด",
+  "field.column_map": "การจับคู่คอลัมน์",
+  "field.group_keys": "กลุ่ม",
+  "field.header": "รายละเอียดใบแจ้งยอด",
+  "field.new_bank": "บัญชีธนาคารใหม่",
+  "field.parts": "จำนวนเงินอื่น",
+  "field.remember": "จำไว้ใช้ครั้งต่อไป",
+  "field.target_bank_id": "โอนไปยัง",
+  "field.to_amount": "จำนวนเงินที่ได้รับ",
+  "field.att_id": "ไฟล์แนบ",
+  "field.je_ids": "รายการบันทึกบัญชี"
 }

@@ -1223,7 +1223,16 @@ def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
 _LABEL_KEYS = {
     "doc_type": "label.document_type", "contact_type": "label.contact_type", "line_items": "th.items",
     "unit_price": "th.unit_price", "line_total": "th.total", "subtotal": "label.subtotal",
-    "tax": "label.tax", "notes": "label.notes",
+    "tax": "label.tax", "notes": "label.notes", "note": "label.notes", "file_ids": "label.files",
+    "account_code": "label.account", "kind": "th.type", "amount": "label.amount", "date": "th.date",
+    "memo": "th.memo", "rate": "th.rate", "contact": "label.contact", "contact_text": "label.contact",
+    "statement_date": "label.statement_date", "statement_balance": "bank.field_closing",
+    "opening_balance": "bank.field_opening", "opening_date": "funds.opening_date", "accept": "btn.accept",
+    "account_number": "acct.account_number", "bank_type": "acct.account_type", "bank_name": "documents.bank",
+    "bank_account_id": "field.bank_id", "answer": "bank.answer_label", "body": "label.message",
+    "doc_id": "th.document", "docs": "page.documents", "fund_id": "th.fund", "is_active": "label.is_active",
+    "line_id": "th.line", "lines": "bank.th_count", "path": "th.file", "session_id": "acct.source_reconciliation",
+    "splits": "bank.split",
 }
 
 

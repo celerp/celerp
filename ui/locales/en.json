@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "This amount is too large to record. Check the figure and enter it again.",
-  "acct.err_statement_no_lines": "{filename} holds no bank transactions that can be read. Check that it is the statement file your bank exported."
+  "acct.err_statement_no_lines": "{filename} holds no bank transactions that can be read. Check that it is the statement file your bank exported.",
+  "field.bank_id": "Bank account",
+  "field.line_ids": "Statement lines",
+  "field.statements": "Statements",
+  "field.decisions": "Decisions",
+  "field.job_id": "Statement reading",
+  "field.column_map": "Column mapping",
+  "field.group_keys": "Groups",
+  "field.header": "Statement details",
+  "field.new_bank": "New bank account",
+  "field.parts": "Other amounts",
+  "field.remember": "Remember for next time",
+  "field.target_bank_id": "Transfer to",
+  "field.to_amount": "Amount received",
+  "field.att_id": "Attachment",
+  "field.je_ids": "Journal entries"
 }

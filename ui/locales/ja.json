@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "この金額は大きすぎるため記録できません。数値を確認して、もう一度入力してください。",
-  "acct.err_statement_no_lines": "{filename} には読み取れる銀行取引がありません。銀行がエクスポートした明細書ファイルであることを確認してください。"
+  "acct.err_statement_no_lines": "{filename} には読み取れる銀行取引がありません。銀行がエクスポートした明細書ファイルであることを確認してください。",
+  "field.bank_id": "銀行口座",
+  "field.line_ids": "明細の行",
+  "field.statements": "明細書",
+  "field.decisions": "判断",
+  "field.job_id": "明細書の読み取り",
+  "field.column_map": "列の対応付け",
+  "field.group_keys": "グループ",
+  "field.header": "明細書の詳細",
+  "field.new_bank": "新しい銀行口座",
+  "field.parts": "その他の金額",
+  "field.remember": "次回のために記憶する",
+  "field.target_bank_id": "振替先",
+  "field.to_amount": "受取金額",
+  "field.att_id": "添付ファイル",
+  "field.je_ids": "仕訳"
 }

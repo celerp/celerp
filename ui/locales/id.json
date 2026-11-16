@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "Jumlah ini terlalu besar untuk dicatat. Periksa angkanya lalu masukkan lagi.",
-  "acct.err_statement_no_lines": "{filename} tidak berisi transaksi bank yang dapat dibaca. Pastikan itu file rekening koran yang diekspor bank Anda."
+  "acct.err_statement_no_lines": "{filename} tidak berisi transaksi bank yang dapat dibaca. Pastikan itu file rekening koran yang diekspor bank Anda.",
+  "field.bank_id": "Rekening bank",
+  "field.line_ids": "Baris rekening koran",
+  "field.statements": "Rekening koran",
+  "field.decisions": "Keputusan",
+  "field.job_id": "Pembacaan rekening koran",
+  "field.column_map": "Pemetaan kolom",
+  "field.group_keys": "Grup",
+  "field.header": "Rincian rekening koran",
+  "field.new_bank": "Rekening bank baru",
+  "field.parts": "Jumlah lain",
+  "field.remember": "Ingat untuk lain kali",
+  "field.target_bank_id": "Transfer ke",
+  "field.to_amount": "Jumlah diterima",
+  "field.att_id": "Lampiran",
+  "field.je_ids": "Entri jurnal"
 }

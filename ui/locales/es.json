@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "Este importe es demasiado grande para registrarlo. Revise la cifra e introdúzcala de nuevo.",
-  "acct.err_statement_no_lines": "{filename} no contiene movimientos bancarios que se puedan leer. Compruebe que sea el archivo de extracto que exportó su banco."
+  "acct.err_statement_no_lines": "{filename} no contiene movimientos bancarios que se puedan leer. Compruebe que sea el archivo de extracto que exportó su banco.",
+  "field.bank_id": "Cuenta bancaria",
+  "field.line_ids": "Líneas del extracto",
+  "field.statements": "Extractos",
+  "field.decisions": "Decisiones",
+  "field.job_id": "Lectura del extracto",
+  "field.column_map": "Asignación de columnas",
+  "field.group_keys": "Grupos",
+  "field.header": "Datos del extracto",
+  "field.new_bank": "Nueva cuenta bancaria",
+  "field.parts": "Otros importes",
+  "field.remember": "Recordar para la próxima vez",
+  "field.target_bank_id": "Transferir a",
+  "field.to_amount": "Importe recibido",
+  "field.att_id": "Adjunto",
+  "field.je_ids": "Asientos contables"
 }

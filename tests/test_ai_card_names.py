@@ -101,3 +101,37 @@ def test_a_card_shows_a_named_id_by_its_name_and_an_unnamed_one_as_it_is():
     html = to_xml(_action_card("conv", "msg", action))
     assert "Main account (****1234)" in html and "l-1" in html
     assert json.dumps("b-1") not in html and html.count("b-1") == 1  # the memo, which is not an id
+
+
+def _field_keys(schema, out: set[str]) -> set[str]:
+    """Every field name a tool's arguments can hold, at any depth."""
+    if isinstance(schema, dict):
+        for key, sub in (schema.get("properties") or {}).items():
+            out.add(key)
+            _field_keys(sub, out)
+        for key in ("items", "anyOf", "oneOf", "allOf"):
+            sub = schema.get(key)
+            for part in sub if isinstance(sub, list) else [sub]:
+                _field_keys(part, out)
+    return out
+
+
+def test_every_field_a_bank_change_shows_is_labelled_in_every_language(monkeypatch):
+    """A bank change's confirm card labels each field in the reader's language, never by
+    the field's internal name."""
+    from celerp.ai import tools as ai_tools
+    from celerp.main import app
+    from celerp_ai.ui_routes import _LABEL_KEYS
+    from ui import i18n
+
+    monkeypatch.setattr(ai_tools, "loaded_modules", lambda: [_ACCOUNTING])
+    keys = set()
+    for capability in ai_tools.compile_agent_capabilities(app, {}).values():
+        if capability["requires_confirmation"] and capability["path"].startswith(
+                ("/accounting/reconciliation", "/accounting/bank")):
+            _field_keys(capability["tool"]["function"]["parameters"], keys)
+    assert keys
+    unlabelled = sorted(
+        f"{lang}:{key}" for key in keys - {"after_previous"} for lang in i18n.available_langs()
+        if _LABEL_KEYS.get(key, f"field.{key}") not in i18n._cached_load(lang))
+    assert unlabelled == []

@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "Ce montant est trop élevé pour être enregistré. Vérifiez le chiffre et saisissez-le à nouveau.",
-  "acct.err_statement_no_lines": "{filename} ne contient aucune opération bancaire lisible. Vérifiez qu'il s'agit du relevé exporté par votre banque."
+  "acct.err_statement_no_lines": "{filename} ne contient aucune opération bancaire lisible. Vérifiez qu'il s'agit du relevé exporté par votre banque.",
+  "field.bank_id": "Compte bancaire",
+  "field.line_ids": "Lignes du relevé",
+  "field.statements": "Relevés",
+  "field.decisions": "Décisions",
+  "field.job_id": "Lecture du relevé",
+  "field.column_map": "Correspondance des colonnes",
+  "field.group_keys": "Groupes",
+  "field.header": "Détails du relevé",
+  "field.new_bank": "Nouveau compte bancaire",
+  "field.parts": "Autres montants",
+  "field.remember": "Retenir pour la prochaine fois",
+  "field.target_bank_id": "Virer vers",
+  "field.to_amount": "Montant reçu",
+  "field.att_id": "Pièce jointe",
+  "field.je_ids": "Écritures comptables"
 }

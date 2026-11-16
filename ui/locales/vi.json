@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "Số tiền này quá lớn để ghi nhận. Hãy kiểm tra con số và nhập lại.",
-  "acct.err_statement_no_lines": "{filename} không có giao dịch ngân hàng nào đọc được. Hãy kiểm tra đó có phải tệp sao kê do ngân hàng của bạn xuất ra không."
+  "acct.err_statement_no_lines": "{filename} không có giao dịch ngân hàng nào đọc được. Hãy kiểm tra đó có phải tệp sao kê do ngân hàng của bạn xuất ra không.",
+  "field.bank_id": "Tài khoản ngân hàng",
+  "field.line_ids": "Các dòng sao kê",
+  "field.statements": "Sao kê",
+  "field.decisions": "Quyết định",
+  "field.job_id": "Đọc sao kê",
+  "field.column_map": "Ánh xạ cột",
+  "field.group_keys": "Nhóm",
+  "field.header": "Chi tiết sao kê",
+  "field.new_bank": "Tài khoản ngân hàng mới",
+  "field.parts": "Các khoản khác",
+  "field.remember": "Ghi nhớ cho lần sau",
+  "field.target_bank_id": "Chuyển đến",
+  "field.to_amount": "Số tiền nhận được",
+  "field.att_id": "Tệp đính kèm",
+  "field.je_ids": "Bút toán"
 }

@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "ይህ መጠን ለመመዝገብ በጣም ትልቅ ነው። አሃዙን ያረጋግጡና እንደገና ያስገቡ።",
-  "acct.err_statement_no_lines": "{filename} ሊነበብ የሚችል የባንክ ግብይት የለውም። ባንክዎ የላከው የሂሳብ መግለጫ ፋይል መሆኑን ያረጋግጡ።"
+  "acct.err_statement_no_lines": "{filename} ሊነበብ የሚችል የባንክ ግብይት የለውም። ባንክዎ የላከው የሂሳብ መግለጫ ፋይል መሆኑን ያረጋግጡ።",
+  "field.bank_id": "የባንክ ሂሳብ",
+  "field.line_ids": "የመግለጫ መስመሮች",
+  "field.statements": "መግለጫዎች",
+  "field.decisions": "ውሳኔዎች",
+  "field.job_id": "የመግለጫ ንባብ",
+  "field.column_map": "የአምድ ማዛመጃ",
+  "field.group_keys": "ቡድኖች",
+  "field.header": "የመግለጫ ዝርዝሮች",
+  "field.new_bank": "አዲስ የባንክ ሂሳብ",
+  "field.parts": "ሌሎች መጠኖች",
+  "field.remember": "ለሚቀጥለው ጊዜ አስታውስ",
+  "field.target_bank_id": "ዝውውር ወደ",
+  "field.to_amount": "የተቀበለው መጠን",
+  "field.att_id": "አባሪ",
+  "field.je_ids": "የጆርናል ግቤቶች"
 }

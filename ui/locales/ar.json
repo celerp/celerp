@@ -8537,5 +8537,20 @@
   "bank.counted_entries": "Book entries this statement counts without a statement line. Press Undo on any that should not count.",
   "bank.entry_undone": "The entry no longer counts on this statement.",
   "acct.err_amount_too_large": "هذا المبلغ أكبر من أن يُسجَّل. تحقق من الرقم وأدخله مرة أخرى.",
-  "acct.err_statement_no_lines": "لا يحتوي {filename} على معاملات بنكية يمكن قراءتها. تأكد من أنه ملف الكشف الذي صدّره البنك."
+  "acct.err_statement_no_lines": "لا يحتوي {filename} على معاملات بنكية يمكن قراءتها. تأكد من أنه ملف الكشف الذي صدّره البنك.",
+  "field.bank_id": "الحساب البنكي",
+  "field.line_ids": "بنود الكشف",
+  "field.statements": "الكشوف",
+  "field.decisions": "القرارات",
+  "field.job_id": "قراءة الكشف",
+  "field.column_map": "مطابقة الأعمدة",
+  "field.group_keys": "المجموعات",
+  "field.header": "تفاصيل الكشف",
+  "field.new_bank": "حساب بنكي جديد",
+  "field.parts": "مبالغ أخرى",
+  "field.remember": "التذكر للمرة القادمة",
+  "field.target_bank_id": "التحويل إلى",
+  "field.to_amount": "المبلغ المستلم",
+  "field.att_id": "المرفق",
+  "field.je_ids": "قيود اليومية"
 }
