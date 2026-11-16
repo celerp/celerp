@@ -636,7 +636,7 @@ async def _serve(_app: FastAPI, held):
         # Their work is nobody's by hand, so each runs unattended (its events read "Automatically").
         from celerp.events.engine import unattended
         from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
-        background += [asyncio.create_task(unattended(_resolve(c["handler"])())) for c in _get_slot("background_loop")]
+        background += [asyncio.create_task(unattended(_resolve(c["handler"]))) for c in _get_slot("background_loop")]
 
     # Company key expiry: an hourly check that keeps one notice standing while a key
     # this company issued to a client company expires within a week.

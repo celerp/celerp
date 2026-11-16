@@ -667,13 +667,14 @@ async def _doc_applied(session, entry: LedgerEntry, transition) -> None:
 _UNATTENDED: ContextVar[bool] = ContextVar("unattended", default=False)
 
 
-async def unattended(work):
-    """Await ``work`` as work nobody started by hand: each event it writes carries
+async def unattended(start):
+    """Run ``start()`` as work nobody started by hand: each event it writes carries
     ``metadata.automatic``, so it reads as done automatically whichever member's authority it
-    ran under. The app starts every module background loop through this."""
+    ran under. The app starts every module background loop through this. The work is created
+    here, at the task's first step, so a task cancelled before then leaves nothing unawaited."""
     token = _UNATTENDED.set(True)
     try:
-        return await work
+        return await start()
     finally:
         _UNATTENDED.reset(token)
 
