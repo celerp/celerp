@@ -6,7 +6,7 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 1,
-  "checked": "6b593d1c2f8ec97cf9935fea298dbfdd342f89568fa05759f07a417e070d113e",
+  "checked": "7fa816fcab25c4c9b8c1a3beba88811f3c3be2a1d28fe4c6b1fb67094d93127d",
   "steps": [
     {
       "text": "Open {ai} from the sidebar. Without a Celerp account it shows example conversations and a {create} button; eligible free accounts with a verified email address receive AI questions at no cost.",
@@ -15,7 +15,7 @@
       "capture": {"route": "/ai", "selector": "main", "actions": []}
     },
     {
-      "text": "With an account, type a question in your own language in the box at the bottom and send it; you can also drop a receipt, PDF or spreadsheet onto the box for the assistant to read.",
+      "text": "With an account, type a question in your own language in the box at the bottom and send it; you can also drop a receipt, PDF, spreadsheet or bank statement file (OFX or QFX) onto the box for the assistant to read. When an answer offers a file, it ends with a link to download it.",
       "labels": {},
       "image": null,
       "capture": {"route": "/ai", "selector": "main", "actions": []}
