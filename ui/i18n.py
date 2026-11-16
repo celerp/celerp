@@ -442,6 +442,17 @@ _ICON = re.compile(r"^\W+")
 # The marks that end a sentence in the site languages; a list of reasons that all end with
 # one reads as sentences, never as "Sold.; ...".
 _SENTENCE_END = (".", "!", "?", "\u3002", "\uff01", "\uff1f", "\u1362", "\u061f")
+# The full stop a language closes a sentence with; Thai closes one with the space after it.
+_FULL_STOP = {"ja": "\u3002", "am": "\u1362", "th": ""}
+
+
+def as_sentence(text: str, lang: str | None = None) -> str:
+    """``text`` read as a whole sentence: kept as it is when it ends with a sentence mark,
+    else closed by the reader's full stop, so a reason set before the next sentence never
+    runs into it and never reads with two stops."""
+    if not text or text.endswith(_SENTENCE_END):
+        return text
+    return text + _FULL_STOP.get(lang or _current_lang.get(), ".")
 
 
 def _refusal_param(name: str, value):
@@ -467,7 +478,8 @@ def _refusal_param(name: str, value):
             return " ".join(texts)
         # Reasons that are not whole sentences read as one, closed by a full stop, so the
         # sentence after them ("And 3 more.") starts a new one; a step list sits mid-sentence.
-        return "; ".join(texts) + ("." if name == "reasons" and not texts[-1].endswith(_SENTENCE_END) else "")
+        joined = "; ".join(texts)
+        return as_sentence(joined) if name == "reasons" else joined
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):

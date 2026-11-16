@@ -553,7 +553,7 @@ async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines:
     from celerp.models.company import Company
     from celerp.notifications.service import notify_once
     from celerp.services import email as email_service
-    from ui.i18n import t
+    from ui.i18n import as_sentence, t
 
     members = await client_users(db, company_id)
     if not members:
@@ -595,7 +595,7 @@ async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines:
             fail_closed_on_uncertain=True)
         state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
         if state != "sent":
-            failed.append((member.name, state, str(t(result.reason)) if result.reason else result.detail))
+            failed.append((member.name, state, as_sentence(str(t(result.reason)) if result.reason else result.detail or "")))
         worst = min(worst, state, key=_EMAIL_STATES.index)
     asked_ids = [str(l.id) for l in lines]
     one = len(lines) == 1

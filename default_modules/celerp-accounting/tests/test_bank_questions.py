@@ -235,6 +235,25 @@ async def test_ask_client_email_failure_keeps_question(client, session, monkeypa
     assert len(got["items"]) == 1
 
 
+@pytest.mark.parametrize("lang,stop", [("en", "."), ("ja", "。")])
+@pytest.mark.parametrize("detail", ["The mail server refused the message", "The mail server refused the message."])
+async def test_a_failed_send_reason_reads_as_one_sentence_in_the_readers_language(client, session, monkeypatch,
+                                                                                    lang, stop, detail):
+    """A reason the mail service gave in its own words is closed by the reader's full stop when it has none,
+    and is never given a second one when it has."""
+    _sent(monkeypatch, EmailResult(False, detail))
+    co, bk, client_h, lines = await _setup(client, session)
+    r = await client.post(f"{B.API}/bank/{bk['id']}/ask", json={
+        "line_ids": [lines["WITHDRAWAL"]["id"]], "note": "What was this for?", "idempotency_key": B.key()},
+        headers={**co["h"], "Accept-Language": lang})
+    assert r.status_code == 200, r.text
+    outcome = r.json()["outcome"]
+    closed = detail if detail.endswith(".") else detail + stop
+    after = str(t("acct.recon_asked_email_failed_one", lang)).split("{reason}", 1)[1]
+    assert closed + after in outcome, outcome
+    assert ".." not in outcome and ".。" not in outcome and "。。" not in outcome, outcome
+
+
 async def test_ask_client_email_replay_sends_once(client, session, monkeypatch):
     calls = _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)
