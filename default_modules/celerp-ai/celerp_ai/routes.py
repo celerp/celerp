@@ -1006,15 +1006,13 @@ async def _run_confirmed_action(
         }
 
     identity = _confirmed_action_identity(message_id, record["id"])
-    if record.get("runs"):
-        # Run again is the second run the user chose, not a replay: a fresh key.
-        identity = f"{identity}:run{record['runs']}"
     keyed = record.get("keyed") is True
     outcomes = None
     if record.get("for_each"):
         result, outcomes = await _run_for_each(
-            request, capability, resolved_arguments or {}, identity, record.get("outcomes"),
-            keyed=keyed, company_id=company_id, user_id=user_id)
+            request, session, capability, resolved_arguments or {}, identity, record.get("outcomes"),
+            keyed=keyed, company_id=company_id, user_id=user_id, message_id=message_id,
+            tool_call_id=tool_call_id)
         action_status = result["action_status"]
     else:
         result = await _execute(request, capability, resolved_arguments or {}, identity,
@@ -1071,22 +1069,33 @@ async def _execute(request: Request, capability: dict, arguments: dict, identity
     )
 
 
-async def _run_for_each(request: Request, capability: dict, arguments: dict, identity: str,
-                        earlier: list | None, *, keyed: bool, company_id, user_id) -> tuple[dict, list[dict]]:
+async def _run_for_each(request: Request, session: AsyncSession, capability: dict, arguments: dict, identity: str,
+                        earlier: list | None, *, keyed: bool, company_id, user_id, message_id,
+                        tool_call_id: str) -> tuple[dict, list[dict]]:
     """Run one propose_for_each card: the tool once per record, each under its own key.
-    Records are independent, so one refusal never stops the others. A record that
-    already completed or failed is never run again; only the open ones are."""
+    Records are independent, so one refusal never stops the others. Each record's outcome
+    is stored before and after it runs, so a run that stops leaves only the record in
+    flight open: a record that completed or failed is never run again."""
+    from celerp.ai.conversations import note_outcomes
+
+    async def note() -> None:
+        await note_outcomes(session, message_id=message_id, tool_call_id=tool_call_id, outcomes=outcomes)
+        await session.commit()
+
     records = arguments.get("records") or []
     outcomes = [dict(o) for o in (earlier or [])] + [{} for _ in range(len(records) - len(earlier or []))]
     for index, one in enumerate(records):
         if outcomes[index].get("status") in {"completed", "failed"}:
             continue
+        outcomes[index] = {"status": "executing"}
+        await note()
         result = await _execute(request, capability, one if isinstance(one, dict) else {},
                                 f"{identity}:{index}", company_id=company_id, user_id=user_id)
         status = _action_status(result, keyed)
         outcomes[index] = {"status": status, "http_status": result.get("status")}
         if status == "failed":
             outcomes[index]["error"] = _action_error(result)
+        await note()
     statuses = {o.get("status") for o in outcomes}
     action_status = next((s for s in ("unknown", "retryable", "failed") if s in statuses), "completed")
     done = action_status == "completed"
@@ -1191,7 +1200,8 @@ async def confirm_action(
     ``run_again`` repeats a change whose outcome is unknown, after the card's warning.
     When it was the message's last open action, the request carries on as a job
     (``continued_job_id``). An action that is no longer pending, whose outcome is
-    unknown (without ``run_again``), or whose module is not enabled, is 409.
+    unknown (without ``run_again``), whose outcome is known (with ``run_again``), or whose
+    module is not enabled, is 409.
     """
     # The action run may roll the session back, which expires the user row: read its id once.
     user_id = user.id

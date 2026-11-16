@@ -660,7 +660,9 @@ async def claim_tool_call(
     in place: a new list is assigned so SQLAlchemy persists the change.
 
     A record whose outcome is unknown raises ``ActionOutcomeUnknown`` unless
-    ``run_again``; a run again counts itself in ``runs``, so its identity is new.
+    ``run_again``. ``run_again`` claims only a record whose outcome is unknown (an unkeyed
+    tool, after the user chose to repeat it); on any other record it claims nothing. Every
+    run keeps the record's own identity, so a keyed retry always carries the first key.
     """
     await _lock_conversation(session, conversation_id)
     q = (
@@ -683,14 +685,13 @@ async def claim_tool_call(
     new_list: list = []
     for item in msg.tools_called:
         if claimed is None and isinstance(item, dict) and item.get("id") == tool_call_id:
-            if _outcome_unknown(item, now) and not run_again:
+            unknown = _outcome_unknown(item, now)
+            if unknown and not run_again:
                 raise ActionOutcomeUnknown(item)
-            if not _claimable(item, now, allow_unknown=run_again):
+            if run_again != unknown or not _claimable(item, now, allow_unknown=unknown):
                 new_list.append(item)
                 continue
             running = {**item, "status": "executing", "executing_since": now.isoformat()}
-            if run_again:
-                running["runs"] = int(item.get("runs") or 0) + 1
             running.pop("error", None)
             claimed = dict(running)
             new_list.append(running)
@@ -778,6 +779,24 @@ async def note_pending(
     await _lock_conversation(session, msg.conversation_id)
     msg.tools_called = [{**item, "error": error} if isinstance(item, dict) and item.get("id") == tool_call_id
                         else item for item in msg.tools_called]
+    session.add(msg)
+    await session.flush()
+
+
+async def note_outcomes(
+    session: AsyncSession, *, message_id: uuid.UUID, tool_call_id: str, outcomes: list[dict],
+) -> None:
+    """Store each record's outcome of a propose_for_each card while it runs, the claim
+    still held and its time renewed, so a stopped run leaves only the record in flight
+    unknown."""
+    msg = await session.get(AIMessage, message_id)
+    if msg is None or not msg.tools_called:
+        return
+    await _lock_conversation(session, msg.conversation_id)
+    now = datetime.now(timezone.utc).isoformat()
+    msg.tools_called = [{**item, "outcomes": outcomes, "executing_since": now}
+                        if isinstance(item, dict) and item.get("id") == tool_call_id
+                        and item.get("status") == "executing" else item for item in msg.tools_called]
     session.add(msg)
     await session.flush()
 

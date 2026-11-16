@@ -228,7 +228,7 @@ async def test_unkeyed_ambiguous_claim_shows_outcome_unknown(client, session, ag
 
 @pytest.mark.asyncio
 async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai_session):
-    """Run again on an unknown record runs exactly once more, under a new identity, and
+    """Run again on an unknown record runs exactly once more, under its own identity, and
     the card takes the route's own answer: the first run did add the location, so the
     route refuses the same name again. The ended record then refuses a second Run again."""
     ctx = await perm_setup(client, session)
@@ -251,7 +251,7 @@ async def test_run_again_after_warning_runs_once(client, session, agent_caps, ai
     assert twice.status_code == 409
     assert twice.json()["detail"]["code"] == "action_not_pending"
     assert len(identities) == 2
-    assert identities[1] != identities[0] and identities[1].startswith(identities[0])
+    assert identities[1] == identities[0]
     assert (await _record(session, message_id, call_id))["status"] == "failed"
     assert await _location_count(client, admin) == before + 1
 
@@ -348,3 +348,88 @@ async def test_ambiguous_outcome_never_reruns_without_run_again(
     assert len(calls) == 1
     assert _name_taken(r.json()), r.text
     assert await _location_count(client, admin) == ran
+
+
+class _Stopped(Exception):
+    """The process stopping in the middle of a confirmed run."""
+
+
+def _stop_at(calls: list, k: int):
+    """execute_agent_capability that runs ``k`` records, then stops before the next one."""
+    real = ai_tools.execute_agent_capability
+
+    async def run(app, auth, capability, arguments, identity, *a, **kw):
+        if len(calls) == k:
+            raise _Stopped
+        calls.append(identity)
+        return await real(app, auth, capability, arguments, identity, *a, **kw)
+    return run
+
+
+async def _backdate(session, message_id, tool_call_id) -> None:
+    """Age a claim left ``executing`` past the stale limit."""
+    session.expire_all()
+    msg = (await session.execute(select(AIMessage).where(AIMessage.id == message_id))).scalar_one()
+    since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 60)).isoformat()
+    msg.tools_called = [{**r, "executing_since": since} if r.get("id") == tool_call_id else r
+                        for r in msg.tools_called]
+    await session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("k", [0, 1, 2])
+async def test_for_each_stopped_after_k_records_runs_only_the_rest(client, session, agent_caps, ai_session, k):
+    """Each record keeps its outcome as it runs: after a stop only the record in flight is
+    unknown, and Run again runs only the records that did not finish."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    before = await _location_count(client, admin)
+    conv_id, message_id, call_id = await _propose_locations_for_each(client, admin, agent_caps)
+    first: list = []
+
+    async def no_finalize(*_a, **_kw):
+        return None
+    with patch.object(ai_tools, "execute_agent_capability", _stop_at(first, k)), \
+            patch.object(ai_conversations, "finalize_tool_call", no_finalize):
+        if k < 2:
+            with pytest.raises(_Stopped):
+                await _confirm(client, admin, conv_id, message_id, call_id)
+        else:
+            await _confirm(client, admin, conv_id, message_id, call_id)
+    record = await _record(session, message_id, call_id)
+    assert [o.get("status") for o in record["outcomes"]] == {0: ["executing", None], 1: ["completed", "executing"],
+                                                             2: ["completed", "completed"]}[k]
+    await _backdate(session, message_id, call_id)
+    refused = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert refused.status_code == 409, refused.text
+
+    again_ids: list = []
+    with patch.object(ai_tools, "execute_agent_capability", _counting(again_ids)):
+        again = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
+    assert again.status_code == 200 and again.json()["action_status"] == "completed", again.text
+    assert [i.rsplit(":", 1)[1] for i in again_ids] == [str(i) for i in range(k, 2)]
+    assert len({i.rsplit(":", 1)[0] for i in first + again_ids}) == 1
+    assert await _location_count(client, admin) == before + 2
+
+
+@pytest.mark.asyncio
+async def test_run_again_on_a_keyed_record_never_runs_a_second_copy(client, session, agent_caps, ai_session):
+    """Run again is refused on a keyed record; its plain retry carries the first key."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    assert (await client.put("/accounting/funds/setting", headers=admin, json={"enabled": True})).status_code == 200
+    before = await _fund_count(client, admin)
+    op = _op(agent_caps, "POST", "/accounting/funds")
+    conv_id, message_id, call_id = await _propose(client, admin, ScriptedModel(
+        _call(op, {"body": {"name": "Building fund"}}, "fund1")))
+    identities: list = []
+    with patch.object(ai_tools, "execute_agent_capability", _lost_after_sending(identities)):
+        await _confirm(client, admin, conv_id, message_id, call_id)
+    assert (await _record(session, message_id, call_id))["status"] == "retryable"
+    with patch.object(ai_tools, "execute_agent_capability", _counting(identities)):
+        refused = await _confirm(client, admin, conv_id, message_id, call_id, run_again=True)
+        assert refused.status_code == 409, refused.text
+        retry = await _confirm(client, admin, conv_id, message_id, call_id)
+    assert retry.status_code == 200 and retry.json()["action_status"] == "completed", retry.text
+    assert identities == [identities[0]] * 2
+    assert await _fund_count(client, admin) == before + 1

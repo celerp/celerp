@@ -74,15 +74,38 @@ async def _replayed(db: AsyncSession, company_id: uuid.UUID, key: str, request: 
 
 async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
                     bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> dict:
-    """Store ``result`` as the answer to ``key``; the caller commits."""
+    """Store ``result`` as the answer to ``key``; the caller commits. When another run
+    stored an answer under ``key`` first, that answer is the one returned."""
     entity_id = entity_id or f"bankop:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
-    await emit_event(db, company_id=company_id, entity_id=entity_id,
+    entry = await emit_event(db, company_id=company_id, entity_id=entity_id,
                      entity_type="bank_operation", event_type="acc.bank_statement.done",
                      data={"operation": operation, "bank_account_id": None if bank_id is None else str(bank_id),
                            **(data or {})},
                      actor_id=actor_id, location_id=None, source="reconciliation", idempotency_key=key,
                      metadata_={"request": request_fingerprint(request), "result": result})
-    return result
+    return (entry.metadata_ or {}).get("result") if getattr(entry, "was_deduped", False) else result
+
+
+def _unit(key: str, request: dict, line_ids) -> tuple[str, dict]:
+    """The key and request one decision of a resolve stores its outcome under: the request
+    key and the lines it decides, so the same lines under the same key are the same unit."""
+    ids = sorted(str(l) for l in line_ids)
+    return f"{key}:u:{uuid.uuid5(uuid.NAMESPACE_URL, ','.join(ids))}", {"request": request, "lines": ids}
+
+
+async def _unit_done(db: AsyncSession, company_id: uuid.UUID, key: str, request: dict, line_ids) -> list | None:
+    """The stored outcome rows of one decision of ``key``; None while it has not run."""
+    unit_key, unit_request = _unit(key, request, line_ids)
+    done = await _replayed(db, company_id, unit_key, unit_request)
+    return None if done is None else done["results"]
+
+
+async def _unit_recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, bank_id,
+                         line_ids, rows: list) -> list:
+    """Store one decision's outcome rows in the transaction of its effect; the caller commits."""
+    unit_key, unit_request = _unit(key, request, line_ids)
+    return (await _recorded(db, company_id, actor_id, unit_key, unit_request, "resolve_unit", bank_id,
+                            {"results": rows}))["results"]
 
 
 async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id) -> BankAccount:
@@ -981,8 +1004,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
     return out
 
 
-async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[Decision], done: dict,
-                      by_line: dict) -> None:
+async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, done: dict, by_line: dict) -> None:
     """Count each rule whose suggestion a posted line followed."""
     from celerp.services.company_lock import lock_company
     from celerp_accounting.models import ReconciliationRule
@@ -990,11 +1012,9 @@ async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, decisions: list[D
     await lock_company(db, company_id)
 
     counts: dict = {}
-    for d in decisions:
-        for lid in d.line_ids:
-            rule_id = by_line.get(lid)
-            if rule_id and done.get(str(lid)):
-                counts[rule_id] = counts.get(rule_id, 0) + 1
+    for lid in done:
+        if rule_id := by_line.get(lid):
+            counts[rule_id] = counts.get(rule_id, 0) + 1
     for rule_id, n in counts.items():
         rule = (await db.execute(select(ReconciliationRule).where(
             ReconciliationRule.id == uuid.UUID(rule_id), ReconciliationRule.company_id == company_id)
@@ -1012,7 +1032,9 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
                   user=Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> dict:
     """Each decision commits on its own: a refused one (a line another user settled, a
     locked period, a document over its open balance) is reported with its reason while
-    the rest go through. A replay of the same key answers the first result."""
+    the rest go through. Each decision stores its own outcome under the request key in the
+    same commit as its effect, so a repeat of the key answers the decisions already
+    carried out from those outcomes and runs only the rest."""
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:
@@ -1020,29 +1042,37 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
     bank = await _bank(db, company_id, bank_id)
     decisions = list(payload.decisions or [])
     by_line: dict = {}
+    earlier: dict = {}
     if payload.accept is not None:
-        accepted = await _accepted(db, company_id, bank, payload.accept)
-        lines = {l.id: l for l in await SL.scoped(db, company_id, "line", [x for d in accepted for x in d.line_ids],
-                                                  bank=bank)} if accepted else {}
-        by_line = {lid: (l.suggestion or {}).get("rule_id") for lid, l in lines.items()}
+        accept = payload.accept
+        if accept.line_ids is not None:
+            for lid in accept.line_ids:
+                if (row := await _unit_done(db, company_id, key, request, [lid])) is not None:
+                    earlier[str(lid)] = row
+            accept = accept.model_copy(update={"line_ids": [l for l in accept.line_ids if str(l) not in earlier]})
+        accepted = await _accepted(db, company_id, bank, accept) if accept.line_ids != [] else []
+        ids = [x for d in accepted for x in d.line_ids] + [uuid.UUID(x) for x in earlier]
+        by_line = {str(l.id): (l.suggestion or {}).get("rule_id")
+                   for l in (await SL.scoped(db, company_id, "line", ids, bank=bank) if ids else [])}
         decisions += accepted
     _check_money(decisions, bank.currency)
     await db.rollback()
-    results: list[dict] = []
-    done: dict = {}
+    results: list[dict] = [r for rows in earlier.values() for r in rows]
     for d in decisions:
-        try:
-            bank = await _bank(db, company_id, bank_id)
-            settled = await _decide(db, company_id, actor_id, role, bank, d, key)
+        if (rows := await _unit_done(db, company_id, key, request, d.line_ids)) is None:
+            try:
+                bank = await _bank(db, company_id, bank_id)
+                settled = await _decide(db, company_id, actor_id, role, bank, d, key)
+                rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
+            except (HTTPException, KeyedRefusal) as exc:
+                await db.rollback()
+                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc)} for lid in d.line_ids]
+            rows = await _unit_recorded(db, company_id, actor_id, key, request, bank_id, d.line_ids, rows)
             await db.commit()
-        except (HTTPException, KeyedRefusal) as exc:
-            await db.rollback()
-            results += [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc)} for lid in d.line_ids]
-            continue
-        done.update(settled)
-        results += [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
+        results += rows
+    done = {r["line_id"]: r["je_ids"] for r in results if r["ok"]}
     if by_line:
-        await _bump_rules(db, company_id, decisions, done, by_line)
+        await _bump_rules(db, company_id, done, by_line)
     result = await _recorded(db, company_id, actor_id, key, request, "resolve", bank_id, {"results": results, "refused": sum(1 for r in results if not r["ok"])})
     await db.commit()
     return result

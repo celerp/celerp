@@ -222,14 +222,17 @@ async def next_je_id(db: AsyncSession, company_id: uuid.UUID, base_id: str) -> s
 
 async def post_entry(db: AsyncSession, *, company_id: uuid.UUID, actor_id, line: BankStatementLine, je_id: str,
                      je_type: str, entries: list[dict], memo: str, entry_date: str, key: str) -> None:
-    """Create and post one entry for ``line``; the event keys derive from the request key,
-    so a replay answers the first result even after an undo voided it."""
+    """Create and post one entry for ``line``; the event keys derive from the request key.
+    A key already used for another entry (one an undo voided) is refused, so a line is
+    never settled to an entry that was not written."""
     meta = {"recon_session_id": str(line.reconciliation_id), "statement_line_id": str(line.id)}
-    await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+    created = await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                      event_type="acc.journal_entry.created",
                      data={"memo": memo, "ts": entry_date, "entries": entries, "je_type": je_type},
                      actor_id=actor_id, location_id=None, source="reconciliation",
                      idempotency_key=f"{key}:{line.id}:c", metadata_=meta)
+    if getattr(created, "was_deduped", False) and created.entity_id != je_id:
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_entry_exists"))
     await emit_event(db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
                      event_type="acc.journal_entry.posted", data={"ts": entry_date}, actor_id=actor_id,
                      location_id=None, source="reconciliation", idempotency_key=f"{key}:{line.id}:p", metadata_={})
