@@ -237,16 +237,23 @@ async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the
 
     co, bk, kw = await mixed(client)
     await _seed_entries(session, co["company_id"], bk["chart_account_code"], 2000)
-    real, reads = R.journal_rows, []
+    from celerp.services import ledger_rows
+
+    real, reads, loaded, real_rows = R.journal_rows, [], [], ledger_rows.entry_rows
 
     async def counted(*a, **k):
         rows = await real(*a, **k)
         reads.append((k.get("account"), k.get("days"), [r[0] for r in rows]))
         return rows
-    with patch.object(R, "journal_rows", counted):
+
+    def unpacked(entity_id, *a, **k):  # every entry the read loaded from the database
+        loaded.append(entity_id)
+        return real_rows(entity_id, *a, **k)
+    with patch.object(R, "journal_rows", counted), patch.object(ledger_rows, "entry_rows", unpacked):
         r = await B.resolve(client, co, bk["id"], **kw)
     assert r.status_code == 200 and r.json()["refused"] == 0, r.text
     assert len(reads) == 1, reads
     account, days, read = reads[0]
     assert account == bk["chart_account_code"] and days == ("2025-12-29", "2026-01-16")
     assert not [i for i in read if i.startswith("je:seed:")]
+    assert not [i for i in loaded if i.startswith("je:seed:")], len(loaded)

@@ -962,3 +962,12 @@ async def test_match_and_undo_sequences_keep_the_statement_equal_to_its_lines(cl
     await ProjectionEngine.rebuild(session, _uuid.UUID(co["company_id"]))
     await session.commit()
     assert await _projections(session, co) == stored
+
+
+async def test_resolve_naming_only_another_banks_line_posts_nothing_and_says_why(client):
+    co, a, b, la, (lb,) = await _transfer_banks(client, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [lb["id"]], "kind": "no_entry"}])
+    row = r.json()["results"][0]
+    assert r.status_code == 200 and row["ok"] is False, r.text
+    assert row["reason"]["message_key"] == "acct.err_statement_line_not_found", r.text
+    assert B.all_lines(await B.groups(client, co, b["id"]))[0]["status"] == "unmatched"

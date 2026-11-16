@@ -374,3 +374,24 @@ async def test_post_ticked_with_nothing_ticked_sends_nothing_and_says_so(ui_clie
     r, action = await _post_ticked(ui_client, {**data, "idempotency_key": "k1"}, {"results": []})
     assert r.status_code == 200, r.text
     assert not action.await_count and t("bank.nothing_ticked") in r.text
+
+
+async def test_a_refused_line_answer_shows_its_reason_on_the_form(ui_client):
+    from celerp.accounting_roles import catalog_refusal
+    from ui.i18n import refusal_text
+
+    reason = catalog_refusal("acct.err_transfer_same_bank")
+    answer = {"results": [{"line_id": "l1", "ok": False, "je_ids": [], "reason": reason, "matched_instead": False}]}
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", AsyncMock(return_value=answer)):
+            r = await ui_client.post("/accounting/reconcile/bank/b1/resolve-line", data={
+                "line_id": "l1", "form": "answer", "answer": "post:5100", "idempotency_key": "k1"})
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 200 and "form-error" in r.text, r.text[:400]
+    assert refusal_text(reason).split("'")[-1] in r.text, r.text[:600]  # the text after the apostrophe HTML escapes

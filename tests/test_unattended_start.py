@@ -38,3 +38,23 @@ def test_an_unattended_loop_runs_marked_automatic():
 
     assert asyncio.run(unattended(loop)) is True
     assert engine._UNATTENDED.get() is False
+
+
+def test_the_app_starts_each_modules_background_loop_unattended():
+    from unittest.mock import patch
+
+    from celerp import main
+    from celerp.events import engine
+
+    seen = []
+
+    async def loop():
+        seen.append(engine._UNATTENDED.get())
+
+    async def start():
+        with patch("celerp.modules.slots.get", return_value=[{"handler": "mod.loop"}]), \
+                patch("celerp.modules.slots.resolve_handler", return_value=loop):
+            await asyncio.gather(*main.module_loops())
+
+    asyncio.run(start())
+    assert seen == [True]

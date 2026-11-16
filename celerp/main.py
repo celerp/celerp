@@ -399,6 +399,14 @@ async def lifespan(_app: FastAPI):
         await asyncio.to_thread(held.release)
 
 
+def module_loops() -> list[asyncio.Task]:
+    """Start every module's own background loop (the background_loop slot). Their work is
+    nobody's by hand, so each runs unattended (its events read "Automatically")."""
+    from celerp.events.engine import unattended
+    from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
+    return [asyncio.create_task(unattended(_resolve(c["handler"]))) for c in _get_slot("background_loop")]
+
+
 @asynccontextmanager
 async def _serve(_app: FastAPI, held):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
@@ -633,10 +641,7 @@ async def _serve(_app: FastAPI, held):
             asyncio.create_task(reorder_alert_loop()),
         ]
         # Modules' own background loops (the background_loop slot), on the same rule.
-        # Their work is nobody's by hand, so each runs unattended (its events read "Automatically").
-        from celerp.events.engine import unattended
-        from celerp.modules.slots import get as _get_slot, resolve_handler as _resolve
-        background += [asyncio.create_task(unattended(_resolve(c["handler"]))) for c in _get_slot("background_loop")]
+        background += module_loops()
 
     # Company key expiry: an hourly check that keeps one notice standing while a key
     # this company issued to a client company expires within a week.
