@@ -12,7 +12,7 @@ from decimal import Decimal
 import pytest
 
 import bank_statement_helpers as B
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -226,9 +226,9 @@ async def test_signed_split_amounts_are_refused_saying_to_drop_the_sign(client):
         {"account_code": "5100", "amount": -60.0}, {"account_code": "5200", "amount": -40.0}]}])
     res = r.json()["results"][0]
     cur = bk.get("currency")
-    assert res["ok"] is False and res["reason"] == t(
+    assert res["ok"] is False and refusal_text(res["reason"]) == t(
         "acct.err_split_total", "en", total=_money_text(Decimal("-100"), cur), amount=_money_text(Decimal("100"), cur))
-    assert "minus sign" in res["reason"]
+    assert "minus sign" in refusal_text(res["reason"])
     assert B.all_lines(await B.groups(client, co, bk["id"]))[0]["status"] == "unmatched"
 
 
@@ -284,8 +284,7 @@ async def test_locked_line_reports_engine_refusal(client):
     r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [line["id"]], "kind": "post", "account_code": "5100"}])
     res = r.json()["results"][0]
     from celerp.events.engine import period_locked_refusal
-    from ui.i18n import refusal_text
-    assert res["ok"] is False and res["reason"] == refusal_text(period_locked_refusal("2026-01-31"))
+    assert res["ok"] is False and refusal_text(res["reason"]) == refusal_text(period_locked_refusal("2026-01-31"))
 
 
 async def test_resolve_across_statements_respects_each_session_guard(client):
@@ -405,7 +404,6 @@ async def test_a_file_with_a_header_and_no_rows_is_named_as_holding_no_transacti
 
 
 async def test_import_refuses_a_column_map_naming_a_column_not_in_the_file(client):
-    from ui.i18n import refusal_text, t
     co, bk = await _co_bank(client)
     preview = await B.read(client, co, [(b"Posted,Narrative,Value\n2026-01-05,FEE,-5.00\n", "a.csv", "text/csv")],
                            bank_id=bk["id"])
@@ -446,7 +444,7 @@ async def test_transfer_to_its_own_bank_says_to_pick_another(client):
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [line["id"]], "kind": "transfer",
                                                           "target_bank_id": a["id"]}])
     res = r.json()["results"][0]
-    assert res["ok"] is False and res["reason"] == t("acct.err_transfer_same_bank", "en")
+    assert res["ok"] is False and refusal_text(res["reason"]) == t("acct.err_transfer_same_bank", "en")
     assert B.all_lines(await B.groups(client, co, a["id"]))[0]["status"] == "unmatched"
 
 
@@ -536,7 +534,7 @@ async def test_transfer_whose_named_counterpart_was_settled_meanwhile_posts_noth
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
                                                           "target_bank_id": b["id"], "paired_line_id": lb["id"]}])
     row = r.json()["results"][0]
-    assert row["ok"] is False and row["reason"] == t("reconciliation.line_not_open", "en"), r.text
+    assert row["ok"] is False and refusal_text(row["reason"]) == t("reconciliation.line_not_open", "en"), r.text
     assert B.all_lines(await B.groups(client, co, a["id"]))[0]["status"] == "unmatched"
     assert await _transfer_entries(client, co) == 0
 
@@ -626,7 +624,7 @@ async def test_pay_doc_needs_record_payments(client, session):
                                                                       "docs": [{"doc_id": inv, "amount": 100.0}]}])
     assert r.status_code == 200, r.text
     res = r.json()["results"][0]
-    assert res["ok"] is False and "Record payments" in res["reason"]
+    assert res["ok"] is False and "Record payments" in refusal_text(res["reason"])
     assert await _open_balance(client, co["h"], inv) == Decimal("100")
 
 
@@ -872,7 +870,7 @@ async def test_match_validates_the_book_entry(client):
     assert r.json()["results"][0]["ok"] is False and r.json()["results"][0]["reason"]
     assert (await match(first))["ok"] is True
     held = await match(second)
-    assert held["ok"] is False and held["reason"] == t("acct.err_recon_book_entry_matched", "en")
+    assert held["ok"] is False and refusal_text(held["reason"]) == t("acct.err_recon_book_entry_matched", "en")
     assert (await match(first))["ok"] is False
     line = B.line_by_text(await B.groups(client, co, bk["id"], view="all"), "WIRE A")
     assert line["matched_je_ids"] == [je]

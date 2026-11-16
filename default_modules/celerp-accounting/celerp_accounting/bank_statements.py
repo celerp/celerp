@@ -29,6 +29,7 @@ from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.agent_markers import agent_excluded
 from celerp.db import get_session
 from celerp.events.engine import emit_event, keyed_event, request_fingerprint
+from celerp.importers.results import keyed_reason
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.payments import lock_recorded_unmatched
@@ -787,8 +788,6 @@ class Resolve(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-def _reason(exc: Exception) -> str:
-    return refusal_text(exc.detail) if isinstance(exc, (HTTPException, KeyedRefusal)) else str(exc)
 
 
 def _check_money(decisions: list[Decision], currency: str) -> None:
@@ -962,7 +961,7 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
                                "confidence": "low", "reason": str(reason)}, count=len(found), date=date)
     je_ids = [found[0]["je_id"]]
     await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
-    instead[str(line.id)] = str(t("acct.recon_reason_match", date=date))
+    instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=date)
     return je_ids
 
 
@@ -1175,7 +1174,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
                         row["paired_line_id"] = pair[0] if pair else None
             except (HTTPException, KeyedRefusal) as exc:
                 await db.rollback()
-                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc),
+                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": keyed_reason(exc),
                          "matched_instead": False} for lid in d.line_ids]
                 if isinstance(exc, _Twins):
                     await _suggest_twin(db, company_id, exc)
@@ -1475,7 +1474,7 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
                 raise HTTPException(status_code=422, detail=catalog_refusal(
                     "acct.err_recon_unbalanced", difference=money_text(difference, bank.currency)))
         except HTTPException as exc:
-            stopped_at = {"statement_date": recon.statement_date, "reason": _reason(exc)}
+            stopped_at = {"statement_date": recon.statement_date, "reason": keyed_reason(exc)}
             break
         SL.complete(recon)
         completed.append(recon.statement_date)

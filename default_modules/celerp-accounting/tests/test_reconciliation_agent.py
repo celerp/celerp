@@ -292,7 +292,7 @@ async def test_line_post_rejects_unknown_account_and_repeats_cleanly(client, ses
     r = await post("Fee", "9999")
     assert r.status_code == 200, r.text
     assert r.json()["results"][0]["ok"] is False
-    assert "9999" in r.json()["results"][0]["reason"]
+    assert "9999" in refusal_text(r.json()["results"][0]["reason"])
 
     idem = B.key()
     r = await post("Fee", idem=idem)

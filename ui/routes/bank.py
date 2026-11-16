@@ -22,7 +22,7 @@ from ui.components.funds import chosen_fund, funds_in_use
 from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title, error_flash, refusal_line
 from ui.components.table import EMPTY
 from ui.config import get_token as _token
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 _QUESTION_STATUSES = ("open", "answered", "all")
 
@@ -268,7 +268,7 @@ def setup_routes(app):
         else:
             stopped = out.get("stopped_at") or {}
             outcome = " ".join(filter(None, [t("bank.completed", n=len(out.get("completed") or [])),
-                                             stopped.get("reason")]))
+                                             refusal_text(stopped.get("reason"))]))
         return await _body(token, bank, view, q, outcome=outcome)
 
     @app.post("/accounting/reconcile/bank/{bank_id}/suggest")
@@ -304,7 +304,7 @@ def setup_routes(app):
         instead = sum(1 for r in out["results"] if r.get("matched_instead"))
         text = " ".join([t("bank.posted_outcome", n=len(done)),
                          *([t("bank.matched_instead", n=instead)] if instead else []),
-                         *([t("bank.posted_refused", n=len(refused), reason=refused[0]["reason"])] if refused else [])])
+                         *([t("bank.posted_refused", n=len(refused), reason=refusal_text(refused[0]["reason"]))] if refused else [])])
         return await _body(token, bank, view, q, bulk_outcome=text, undo_ids=done)
 
     @app.post("/accounting/reconcile/bank/{bank_id}/unmatch")
@@ -428,7 +428,7 @@ def setup_routes(app):
             return again(str(e.detail))
         result = out["results"][0]
         if not result["ok"]:
-            return again(result["reason"])
+            return again(refusal_text(result["reason"]))
         return _line_response(await _fresh_line(token, bank, line_id), line_id)
 
     @app.post("/accounting/reconcile/bank/{bank_id}/ask")

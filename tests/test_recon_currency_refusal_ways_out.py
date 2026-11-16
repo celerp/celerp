@@ -83,7 +83,7 @@ async def _rate_required(client, h, session, tok):
     got = await B.import_into(client, h, sid, b"Date,Description,Amount\n2026-09-20,Interest,25\n")
     sid, line = got["session_id"], got["lines"][0]
     result = (await B.decide_on(client, h, b["id"], line["id"], "post", account_code="4100")).json()["results"][0]
-    assert not result["ok"] and result["reason"] == t("acct.err_bank_rate_required", currency="EUR", base="USD"), result
+    assert not result["ok"] and refusal_text(result["reason"]) == t("acct.err_bank_rate_required", currency="EUR", base="USD"), result
     async with _ui_as(tok) as ui:
         page = (await ui.get(f"/accounting/reconcile/bank/{b['id']}")).text
         assert 'name="rate"' in page.split('id="bank-tpl-answer"', 1)[1].split("</template>", 1)[0]

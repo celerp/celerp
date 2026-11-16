@@ -271,8 +271,11 @@ async def bank_complete(client, h, sid) -> dict:
 
 
 def stopped_reason(body: dict) -> str:
+    """The reason completion stopped, as the reader sees it."""
+    from ui.i18n import refusal_text
+
     assert body["stopped_at"], body
-    return body["stopped_at"]["reason"]
+    return refusal_text(body["stopped_at"]["reason"])
 
 
 async def complete(client, h, sid):
