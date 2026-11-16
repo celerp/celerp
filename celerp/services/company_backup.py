@@ -79,7 +79,8 @@ from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.permissions import act_for
 from celerp.services.provisioning import create_install_owner, hold_owner, provision_restored_company
-from celerp.services.statement_line_upgrade import backfill_fingerprints, migrated_line
+from celerp.services import statement_line_upgrade as line_upgrade
+from celerp.services.field_fingerprints import fingerprint
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -1145,13 +1146,21 @@ def _bank_lines(read):
         if r.get("reconciliation_id") not in statements:
             raise BackupError(422, t(DAMAGED))
         bank, date = statements[r["reconciliation_id"]]
+        line = {"bank_account_id": bank, **{k: _plain(r.get(k)) for k in line_upgrade.BASE}}
+        # The first read keeps a line's order and a digest of what it shares with identical
+        # lines, not its text; the second read makes its fingerprint.
         keys.append({"id": r.get("id"), "bank_account_id": bank, "statement_date": date, "created_at": r.get("created_at"),
-                     **{k: _plain(r.get(k)) for k in ("line_date", "amount", "description", "reference", "raw_balance")}})
-    fps = backfill_fingerprints(keys)
+                     "line_date": line["line_date"], "amount": line["amount"],
+                     "same": fingerprint(list(line_upgrade.ident(line)))})
+    keys.sort(key=line_upgrade.order)
+    place = {k["id"]: n for k, n in line_upgrade.places(keys, ident_of=lambda k: k["same"])}
+    del keys
     for r in read("bank_statement_lines"):
-        moved = migrated_line(r)
+        moved = line_upgrade.migrated_line(r)
         row = {k: v for k, v in r.items() if k != "matched_je_id"}
-        yield {**row, "bank_account_id": statements[r["reconciliation_id"]][0], "fingerprint": fps[r.get("id")], **moved}
+        line = {k: _plain(r.get(k)) for k in line_upgrade.BASE}
+        yield {**row, "bank_account_id": statements[r["reconciliation_id"]][0],
+               "fingerprint": line_upgrade.fingerprint_of(line, place[r.get("id")]), **moved}
 
 
 def _drop(table: str, column: str) -> _Upgrade:

@@ -22,13 +22,16 @@ column layout its statements were last read with.
 
 from __future__ import annotations
 
+import itertools
+
 import sqlalchemy as sa
 from alembic import op
 
 from celerp.json_text import dump_json
-from celerp.migrations._json_compat import decode_json_value
+from celerp.migrations import _json_compat
+from celerp.migrations._json_compat import decode_json_value, stream
 from celerp.migrations._locks import lock_tables
-from celerp.services.statement_line_upgrade import backfill_fingerprints, migrated_line
+from celerp.services.statement_line_upgrade import fingerprint_of, migrated_line, places
 
 revision = "w6x7b8s9l0n1"
 down_revision = "v5w6x7y8z9a0"
@@ -36,26 +39,28 @@ branch_labels = None
 depends_on = None
 
 _LINES = "bank_statement_lines"
-_BATCH = 1000
-
 
 def _backfill_lines(bind) -> None:
-    rows = [dict(r) for r in bind.execute(sa.text(
+    """Lines stream in the numbering's order (statement_line_upgrade.order) and each batch is
+    written before the next is read, so memory stays flat however many lines there are."""
+    lines = stream(bind, (
         f"SELECT l.id, l.status, l.matched_je_id, l.line_date, l.amount, l.description, l.reference, l.raw_balance, "
         f"l.created_at, s.bank_account_id, s.statement_date FROM {_LINES} l "
-        "JOIN reconciliation_sessions s ON s.id = l.reconciliation_id")).mappings()]
-    fps = backfill_fingerprints(rows)
+        "JOIN reconciliation_sessions s ON s.id = l.reconciliation_id "
+        "ORDER BY s.bank_account_id::text, l.line_date, l.amount IS NULL, abs(l.amount), "
+        "s.statement_date COLLATE \"C\", l.created_at, l.id"))
     write = sa.text(
         f"UPDATE {_LINES} SET bank_account_id = :bank, fingerprint = :fp, status = :status, "
         "matched_je_ids = CAST(:je_ids AS json), suggestion = CAST(:suggestion AS json) WHERE id = :id")
-    params = []
-    for r in rows:
-        m = migrated_line(r)
-        params.append({"id": r["id"], "bank": r["bank_account_id"], "fp": fps[r["id"]], "status": m["status"],
-                       "je_ids": dump_json(m["matched_je_ids"]),
-                       "suggestion": dump_json(m["suggestion"]) if m["suggestion"] else None})
-    for i in range(0, len(params), _BATCH):
-        bind.execute(write, params[i:i + _BATCH])
+    numbered = places(r for batch in lines for r in batch)
+    while batch := list(itertools.islice(numbered, _json_compat.BATCH)):
+        params = []
+        for r, n in batch:
+            m = migrated_line(r)
+            params.append({"id": r["id"], "bank": r["bank_account_id"], "fp": fingerprint_of(r, n), "status": m["status"],
+                           "je_ids": dump_json(m["matched_je_ids"]),
+                           "suggestion": dump_json(m["suggestion"]) if m["suggestion"] else None})
+        bind.execute(write, params)
 
 
 def upgrade() -> None:
@@ -93,20 +98,19 @@ def upgrade() -> None:
 
 def _restore_lines(bind) -> None:
     """The single entry, and the suggested and created statuses, as the earlier build reads them."""
-    rows = bind.execute(sa.text(f"SELECT id, status, matched_je_ids, suggestion FROM {_LINES}")).mappings().all()
     write = sa.text(f"UPDATE {_LINES} SET status = :status, matched_je_id = :je WHERE id = :id")
-    params = []
-    for r in rows:
-        je_ids = decode_json_value(r["matched_je_ids"]) or []
-        suggestion = decode_json_value(r["suggestion"]) or {}
-        status, je = r["status"], (je_ids[0] if je_ids else None)
-        if status == "posted":
-            status = "created"
-        elif status == "unmatched" and suggestion.get("kind") == "match" and suggestion.get("je_ids"):
-            status, je = "suggested", suggestion["je_ids"][0]
-        params.append({"id": r["id"], "status": status, "je": je})
-    for i in range(0, len(params), _BATCH):
-        bind.execute(write, params[i:i + _BATCH])
+    for rows in stream(bind, f"SELECT id, status, matched_je_ids, suggestion FROM {_LINES}"):
+        params = []
+        for r in rows:
+            je_ids = decode_json_value(r["matched_je_ids"]) or []
+            suggestion = decode_json_value(r["suggestion"]) or {}
+            status, je = r["status"], (je_ids[0] if je_ids else None)
+            if status == "posted":
+                status = "created"
+            elif status == "unmatched" and suggestion.get("kind") == "match" and suggestion.get("je_ids"):
+                status, je = "suggested", suggestion["je_ids"][0]
+            params.append({"id": r["id"], "status": status, "je": je})
+        bind.execute(write, params)
 
 
 def downgrade_refusal(bind) -> str | None:

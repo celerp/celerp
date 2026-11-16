@@ -607,16 +607,26 @@ async def test_sparse_rule_requires_amount(client):
 # ── Migration data steps ────────────────────────────────────────────────────
 
 async def test_fingerprint_backfill_never_collides():
-    from celerp.services import statement_line_upgrade as m
-    rows = [{"id": f"id{i}", "bank_account_id": "b1", "statement_date": "2026-01-31", "created_at": "t", "line_date": "2026-01-02",
-             "amount": Decimal("-3.0000"), "description": "ATM FEE", "reference": None, "raw_balance": None} for i in range(4)]
-    rows.append({**rows[0], "id": "x", "bank_account_id": "b2"})
-    fps = m.backfill_fingerprints(rows)
-    per_bank = {}
-    for r in rows:
-        per_bank.setdefault(r["bank_account_id"], []).append(fps[r["id"]])
-    assert all(len(v) == len(set(v)) for v in per_bank.values())
-    assert all(len(fp) == 16 for fp in fps.values())
+    """A restored older backup numbers identical lines of a bank by statement date, creation
+    time and id, whatever order the backup holds them in, so no two lines of a bank collide and
+    each gets the fingerprint the schema upgrade gives it."""
+    from celerp.services import company_backup as cb
+    from celerp.services.field_fingerprints import statement_line
+
+    statements = [{"id": "s1", "bank_account_id": "b1", "statement_date": "2026-02-28"},
+                  {"id": "s2", "bank_account_id": "b1", "statement_date": "2026-01-31"},
+                  {"id": "s3", "bank_account_id": "b2", "statement_date": "2026-01-31"}]
+    lines = [{"id": f"id{i}", "reconciliation_id": s, "created_at": f"t{9 - i}", "line_date": "2026-01-02",
+              "amount": "\x00-3.0000\x00" if i % 2 else "\x003.0000\x00", "description": "ATM FEE" if i % 3 else " atm fee",
+              "reference": None, "raw_balance": None, "status": "unmatched", "matched_je_id": None}
+             for i, s in enumerate(("s1", "s2", "s1", "s3", "s2", "s1", "s3"))]
+    tables = {"reconciliation_sessions": statements, "bank_statement_lines": lines}
+    got = {r["id"]: (r["bank_account_id"], r["fingerprint"]) for r in cb._bank_lines(lambda t: iter(tables[t]))}
+    base = ("2026-01-02", "3.0000", "ATM FEE", None, None)
+    # b1: s2 (Jan) lines id4, id1 by creation time, then s1 (Feb) lines id5, id2, id0.
+    assert got == {i: (b, statement_line(*base, n)) for b, order in (("b1", ("id4", "id1", "id5", "id2", "id0")),
+                                                                      ("b2", ("id6", "id3")))
+                   for n, i in enumerate(order)}
 
 
 async def test_suggested_rows_migrate_to_suggestion():
