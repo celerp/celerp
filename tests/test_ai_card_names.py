@@ -135,3 +135,22 @@ def test_every_field_a_bank_change_shows_is_labelled_in_every_language(monkeypat
         f"{lang}:{key}" for key in keys - {"after_previous"} for lang in i18n.available_langs()
         if _LABEL_KEYS.get(key, f"field.{key}") not in i18n._cached_load(lang))
     assert unlabelled == []
+
+
+async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_still_names(auth, session, monkeypatch):
+    from celerp.ai.names import record_names
+    from celerp.modules import slots
+
+    async def broken(**_):
+        raise RuntimeError("namer down")
+
+    async def working(ids, **_):
+        return {i: "Named record" for i in ids}
+
+    monkeypatch.setattr(slots, "get", lambda slot: [{"handler": "broken"}, {"handler": "working"}]
+                        if slot == "record_names" else [])
+    monkeypatch.setattr(slots, "resolve_handler", {"broken": broken, "working": working}.__getitem__)
+    record = str(uuid.uuid4())
+
+    assert await record_names(session, auth["company_id"], {}, "owner", {"body": {"contact_id": record}}) == {
+        record: "Named record"}
