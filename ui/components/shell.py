@@ -3237,7 +3237,7 @@ def refusal_line(error) -> str | tuple:
     """A refused API call (an APIError) as it reads on a page: its text, and a link to the
     page that resolves it when there is one (refusal_fix)."""
     fix = refusal_fix(error.data)
-    return (str(error.detail), " ", A(fix["label"], href=fix["href"])) if fix else str(error.detail)
+    return (str(error.detail), " ", A(fix["label"], href=safe_url(fix["href"]))) if fix else str(error.detail)
 
 
 def error_flash(error) -> FT:
