@@ -7,7 +7,9 @@ confirming. When a proposal is stored, every id it carries (a value under a key
 named ``id``, ``ids`` or ending ``_id`` / ``_ids``, at any depth) is looked up and
 the record's name kept beside the proposal. Core names the records kept as
 projections, a module names its own records through the ``record_names`` slot.
-An id no namer knows, or one the asker cannot read, stays shown as the id.
+Core also names the files a person attached for the assistant and the AI readings
+of them. An id no namer knows, or one the asker cannot read, is never shown: the card
+says its name is not available.
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 _ID_KEY = re.compile(r"(^|_)ids?$")
+# A value shaped like a record id whatever field holds it: a uuid or an assistant upload.
+_ID_VALUE = re.compile(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}|ai_up_[0-9a-f]{32}")
 # The state fields a record is named by, first present wins.
 _NAME_FIELDS = ("doc_number", "name", "sku", "title", "description")
 _MAX_IDS = 500
@@ -31,13 +35,18 @@ def is_id_key(key: str) -> bool:
     return bool(_ID_KEY.search(str(key)))
 
 
+def is_id_value(value) -> bool:
+    """Whether a value is shaped like a record id, which means nothing to a person."""
+    return isinstance(value, str) and bool(_ID_VALUE.fullmatch(value.strip()))
+
+
 def record_ids(value, key: str = "") -> set[str]:
-    """Every id held under an id key in ``value``, at any depth."""
+    """Every id in ``value``, at any depth: held under an id key or shaped like one."""
     if isinstance(value, dict):
         return set().union(*(record_ids(v, str(k)) for k, v in value.items()))
     if isinstance(value, list):
         return set().union(*(record_ids(v, key) for v in value))
-    if isinstance(value, str) and value and is_id_key(key):
+    if isinstance(value, str) and value and (is_id_key(key) or is_id_value(value)):
         return {value}
     return set()
 
@@ -64,6 +73,40 @@ async def _projection_names(session: AsyncSession, company_id: uuid.UUID, settin
     return {entity_id: name for entity_id, state in rows if (name := state_name(state or {}))}
 
 
+def _upload_names(company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
+    """The file names of the company's assistant uploads among ``ids``."""
+    from celerp.ai.files import upload_meta
+
+    names = {}
+    for file_id in ids:
+        meta = upload_meta(file_id, company_id)
+        if meta and meta.get("filename"):
+            names[file_id] = str(meta["filename"])
+    return names
+
+
+async def _reading_names(session: AsyncSession, company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
+    """The company's AI readings among ``ids``, each named by the files it reads."""
+    from celerp.models.ai import AIBatchJob as AIJob
+
+    keys = set()
+    for value in ids:
+        try:
+            keys.add(uuid.UUID(value))
+        except ValueError:
+            continue
+    if not keys:
+        return {}
+    rows = (await session.execute(select(AIJob.id, AIJob.file_ids).where(
+        AIJob.company_id == company_id, AIJob.id.in_(keys)))).all()
+    names = {}
+    for job_id, file_ids in rows:
+        files = _upload_names(company_id, {str(f) for f in file_ids or []})
+        if files:
+            names[str(job_id)] = ", ".join(files[str(f)] for f in file_ids if str(f) in files)
+    return names
+
+
 async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: dict, role: str,
                        arguments) -> dict[str, str]:
     """{id: name} for the ids in ``arguments`` a namer knows and this role may read."""
@@ -73,7 +116,9 @@ async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: d
     ids = set(sorted(record_ids(arguments))[:_MAX_IDS])
     if not ids:
         return {}
-    names = await _projection_names(session, company_id, settings, role, ids)
+    names = _upload_names(company_id, {i for i in ids if i.startswith("ai_up_")})
+    names.update(await _reading_names(session, company_id, ids - names.keys()))
+    names.update(await _projection_names(session, company_id, settings, role, ids - names.keys()))
     for contribution in slots.get("record_names"):
         left = ids - names.keys()
         if not left:

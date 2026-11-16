@@ -678,6 +678,7 @@ def compile_agent_capabilities(
                 "required_permissions": required_permissions,
                 "result_permissions": _result_permissions(operation, required_permissions),
                 "field_visibility": operation.get("x-celerp-agent-field-visibility") is True,
+                "summary": str(route.summary or ""),
                 "tool": {
                     "type": "function",
                     "function": {
@@ -721,8 +722,7 @@ def _preview_tool(change: dict[str, Any]) -> dict[str, Any]:
     name = change["name"] + _PREVIEW_SUFFIX
     params = copy.deepcopy(change["tool"]["function"]["parameters"])
     params["properties"].pop("after_previous", None)
-    summary = change["tool"]["function"]["description"].removesuffix(
-        _preview_note(change["name"], change["preview"]["token"]))
+    summary = change["summary"]
     return {
         **change,
         "name": name,

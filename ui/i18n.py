@@ -297,6 +297,28 @@ def field_label_key(label: str) -> str | None:
     return _field_label_keys().get(label)
 
 
+def kept(text: str) -> dict:
+    """A text kept to be read later by someone else: the catalog key and params t() read it
+    from, and the text as written for a reader whose catalogs lack the key."""
+    return {"key": getattr(text, "key", None), "params": dict(getattr(text, "params", {}) or {}), "text": str(text)}
+
+
+def read_kept(value, lang: str | None = None) -> str:
+    """A text ``kept`` wrote, in ``lang`` (the reader's language by default); plain text as written."""
+    if not isinstance(value, dict):
+        return str(value or "")
+    key, text = value.get("key"), str(value.get("text") or "")
+    if lang is None:
+        lang = _current_lang.get()
+    found = isinstance(key, str) and (_cached_load(lang).get(key) or _cached_load("en").get(key))
+    if not found:
+        return text
+    try:
+        return found.format(**(value.get("params") or {}))
+    except (KeyError, IndexError, ValueError):
+        return text
+
+
 def t_or(key: str, fallback: str, /, **kwargs) -> str:
     """Translate *key* when a catalog has it, else return *fallback* (text the server
     already wrote in English). A translation missing one of *kwargs* falls back too."""

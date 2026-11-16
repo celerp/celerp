@@ -328,9 +328,42 @@ async def statement_preview(job_id: uuid.UUID,
     return await _preview(db, company_id, user.id, job_id)
 
 
+_Figure = str | int | float | None
+
+
+class StatementHeaderIn(BaseModel):
+    """The header figures a statement imports with; a figure left out keeps the one read."""
+    period_start: str | None = None
+    period_end: str | None = None
+    opening_balance: _Figure = None
+    closing_balance: _Figure = None
+    currency: str | None = None
+
+
+class StatementLineIn(BaseModel):
+    """One statement line as the reader takes it; what the review works out from it
+    (fingerprint, counterparty, duplicate) is worked out again, never taken."""
+    line_date: str | None = None
+    description: str | None = None
+    amount: _Figure = None
+    reference: str | None = None
+    raw_balance: _Figure = None
+    fitid: str | None = None
+    source: str | None = None
+    counterparty_account: str | None = None
+    raw_csv_row: dict | None = None
+    flags: list[str] | None = None
+    ticked: bool | None = None
+
+
 class StatementIn(BaseModel):
-    header: dict
-    lines: list[dict] | None = None
+    header: StatementHeaderIn
+    lines: list[StatementLineIn] | None = None
+
+    def edit(self) -> dict:
+        """The edit as the review reads it: only what was sent."""
+        return {"header": self.header.model_dump(exclude_unset=True),
+                "lines": None if self.lines is None else [l.model_dump(exclude_unset=True) for l in self.lines]}
 
 
 class PreviewEdit(BaseModel):
@@ -346,7 +379,7 @@ async def statement_preview_edited(job_id: uuid.UUID, payload: PreviewEdit,
                                    _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
                                    db: AsyncSession = Depends(get_session)) -> dict:
     """Nothing is written: the same review Import runs, on the figures given."""
-    return await _preview(db, company_id, user.id, job_id, [s.model_dump() for s in payload.statements],
+    return await _preview(db, company_id, user.id, job_id, [s.edit() for s in payload.statements],
                           payload.column_map)
 
 
@@ -423,8 +456,9 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     out = []
     for given, found in zip(payload.statements, read["statements"]):
         existing, held = await _known(db, company_id, bank)
-        lines = given.lines if given.lines is not None else found["lines"]
-        reviewed = _review({"header": {**found["header"], **given.header}, "lines": lines}, bank, base, existing, held)
+        edit = given.edit()
+        lines = edit["lines"] if edit["lines"] is not None else found["lines"]
+        reviewed = _review({"header": {**found["header"], **edit["header"]}, "lines": lines}, bank, base, existing, held)
         if reviewed["blocking"]:
             refusals = []
             for block in reviewed["blocking"]:

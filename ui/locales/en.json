@@ -8525,5 +8525,6 @@
   "field.to_amount": "Amount received",
   "field.att_id": "Attachment",
   "field.je_ids": "Journal entries",
-  "bank.posted_to": "Posted to {accounts}"
+  "bank.posted_to": "Posted to {accounts}",
+  "ai.card_name_unavailable": "Name not available"
 }

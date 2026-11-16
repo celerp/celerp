@@ -116,6 +116,14 @@ def _file_paths_and_meta(
     return bin_path, meta
 
 
+def upload_meta(file_id: str, company_id: uuid.UUID) -> dict | None:
+    """The metadata of the company's upload ``file_id``, or None when it has no such upload."""
+    try:
+        return _file_paths_and_meta(file_id, company_id)[1]
+    except (FileNotFoundError, PermissionError, ValueError):
+        return None
+
+
 def load_file(file_id: str, company_id: uuid.UUID, user_id: uuid.UUID | None = None) -> tuple[bytes, dict]:
     """Load file bytes + metadata after company/user ownership validation."""
     bin_path, meta = _file_paths_and_meta(file_id, company_id, user_id)

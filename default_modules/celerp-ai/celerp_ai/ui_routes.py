@@ -10,7 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-from celerp.ai.names import is_id_key
+from celerp.ai.names import is_id_value
 from celerp.error_body import keyed
 from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
@@ -24,7 +24,7 @@ from ui.components.cloud_gate import (
 from ui.components.icons import icon
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
-from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
+from ui.i18n import doc_type_label, read_kept, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
 from ui.components.encode import call, html_response, js_value, safe_url
 
@@ -1236,21 +1236,37 @@ _LABEL_KEYS = {
 }
 
 
+def label_key(key: str) -> str | None:
+    """The catalog key a proposal field reads by: the app's own label for it, else
+    ``field.<key>``; None when no catalog has one."""
+    for candidate in (_LABEL_KEYS.get(key), f"field.{key}"):
+        if candidate and t_or(candidate, "") != "":
+            return candidate
+    return None
+
+
 def _label(key: str) -> str:
-    """A field name as a person reads it: the app's own label for the field, else the
-    key itself, so an unnamed ship_via becomes Ship via."""
-    return t_or(_LABEL_KEYS.get(key, f"field.{key}"), str(key).replace("_", " ").strip().capitalize())
+    """A field name as a person reads it, in their language (label_key). A field no
+    catalog names (a key of the user's own, such as an attribute they made) reads as
+    written, so an unnamed ship_via becomes Ship via."""
+    found = label_key(key)
+    return t(found) if found else str(key).replace("_", " ").strip().capitalize()
 
 
 def _fmt_scalar(key: str, value, currency: str | None, names: dict | None = None) -> str:
     """One field value as a person reads it: a record id by the record's name when the
-    proposal names it, quantities without float noise, amounts at currency precision,
-    everything else as text."""
+    proposal names it (an id no one names never shows: the card says its name is not
+    available), yes or no, quantities without float noise, amounts at currency
+    precision, a choice by its label, everything else as text."""
     if value is None or value == "":
         return "--"
-    if names and isinstance(value, str) and value in names and is_id_key(key):
+    if names and isinstance(value, str) and value in names:
         return names[value]
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if is_id_value(value):
+        return t("ai.card_name_unavailable")
+    if isinstance(value, bool):
+        return t("settings.yes") if value else t("settings.no")
+    if isinstance(value, (int, float)):
         if key in QTY_FIELD_KEYS:
             return fmt_qty(value)
         if is_money_field(key):
@@ -1300,8 +1316,8 @@ def _arg_lines(section: dict, names: dict | None = None) -> FT:
     return Div(*lines, cls="ai-action__lines")
 
 
-def _action_title(action: dict) -> str:
-    return action.get("title") or _label(action.get("name", ""))
+def _action_title(action: dict, lang: str | None = None) -> str:
+    return read_kept(action.get("title"), lang) or _label(action.get("name", ""))
 
 
 def _action_dom_id(message_id: str, tool_call_id: str) -> str:
@@ -1314,7 +1330,7 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     """What a proposal will write and what to check first: the argument groups, the link
     to the page where it is seen and changed, and the warnings block, shared by the card
     and the table's detail row."""
-    args = action.get("arguments") or {}
+    args = action.get("shown") or {}
     groups = [
         _arg_lines(args[part], action.get("names") or {})
         for part in ("body", "path", "query")
@@ -1323,7 +1339,7 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     out: list[FT] = [Div(*groups, cls="ai-action__list")]
     if action.get("card_screen"):
         out.append(A(t("ai.card_open_page", lang), href=safe_url(action["card_screen"]), cls="ai-action__page-link"))
-    warnings = _action_warnings(action)
+    warnings = _action_warnings(action, lang)
     if warnings:
         out.append(Div(
             P(t("ai.action_check", lang), cls="ai-action__warnings-title"),
@@ -1333,8 +1349,8 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     return out
 
 
-def _action_warnings(action: dict) -> list[str]:
-    return [w for w in (action.get("warnings") or []) if w]
+def _action_warnings(action: dict, lang: str | None = None) -> list[str]:
+    return [text for w in (action.get("warnings") or []) if (text := read_kept(w, lang))]
 
 
 def _action_ids(conversation_id: str, message_id: str, tool_call_id: str) -> list[FT]:
@@ -1394,7 +1410,7 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     tool_call_id = action.get("id", "")
     status = action.get("status", "pending")
     failed = status == "failed"
-    header: list = [P(_action_title(action), cls="ai-action__title")]
+    header: list = [P(_action_title(action, lang), cls="ai-action__title")]
     if failed:
         header.append(Span(t("ai.action_failed_badge", lang), cls="badge badge--error"))
         footer = Div(_action_error_text(action, "ai.action_failed", lang), cls="ai-action__error")
@@ -1487,9 +1503,9 @@ def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT
     """
     tool_call_id = action.get("id", "")
     dom_id = _action_dom_id(message_id, tool_call_id)
-    body = (action.get("arguments") or {}).get("body")
+    body = (action.get("shown") or {}).get("body")
     body = body if isinstance(body, dict) else {}
-    warnings = _action_warnings(action)
+    warnings = _action_warnings(action, lang)
     status = action.get("status", "pending")
     open_action = status in _OPEN_STATUSES
     pick = []
@@ -1500,7 +1516,7 @@ def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT
         pick = [Input(**box)]
     row = Tr(
         Td(*pick, id=f"{dom_id}-pick"),
-        Td(Button(_action_title(action), type="button", cls="ai-action-table__toggle",
+        Td(Button(_action_title(action, lang), type="button", cls="ai-action-table__toggle",
                   title=t("th.details", lang),
                   onclick="this.closest('tr').nextElementSibling.classList.toggle('is-open')")),
         Td(_summary_field(body, _SUMMARY_NAME_KEYS)),
@@ -1596,7 +1612,7 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
     """The line that replaces a confirmed card: the action by name, what happened,
     and a link to the record when one was created."""
     ok, text = _outcome_text(outcome, lang)
-    title = outcome.get("title") or ""
+    title = read_kept(outcome.get("title"), lang)
     link = _record_link(outcome)
     parts = [f"{title}: {text}" if title else text]
     if link:

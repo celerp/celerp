@@ -31,6 +31,7 @@ from celerp import error_body
 from celerp.accounting_roles import refusal
 from celerp.agent_markers import USER_ACTION_EXCLUSIONS
 from celerp.ai import jobs
+from celerp.ai.card import action_title, card_arguments
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
 from celerp.ai.tools import (
@@ -47,7 +48,7 @@ from celerp.modules.loader import CORE_FOLDED, loaded_modules, module_label
 from celerp.modules.registry import uses_module
 from celerp.services.field_schema import field_visibility
 from celerp.services.permissions import read_authority, role_has_permission
-from ui.i18n import current_lang, lang_label, refusal_text, t
+from ui.i18n import current_lang, kept, lang_label, refusal_text, t
 
 log = logging.getLogger(__name__)
 
@@ -87,9 +88,10 @@ class PendingAction:
     arguments: dict    # nested path/query/body
     created_at: str    # ISO 8601 UTC
     expires_at: str
-    title: str         # human label from the route summary, shown on the card
+    title: dict        # the action as a person reads it (ui.i18n.kept): catalog tool.<name>, else the route summary
+    shown: dict = field(default_factory=dict)  # what the card lists: the arguments as the route reads them
     keyed: bool = False  # its route looks up the card's key, so a lost answer is safe to retry
-    warnings: list[str] = field(default_factory=list)  # shown on the card above its buttons
+    warnings: list[dict] = field(default_factory=list)  # kept texts shown on the card above its buttons
     for_each: bool = False  # arguments are {"records": [...]}, one run of the tool per record
     check_screen: str | None = None  # where to look when the outcome is unknown (unkeyed tools)
     card_screen: str | None = None  # the page the card links to, where its proposal is seen and changed
@@ -453,10 +455,10 @@ def _selection_size(capability: dict, arguments: dict) -> int | None:
     return len(chosen) if isinstance(chosen, list) else 0
 
 
-def _card_warnings(capability: dict, count: int | None, arguments: dict | None) -> list[str]:
+def _card_warnings(capability: dict, count: int | None, arguments: dict | None) -> list[dict]:
     """What the card says before the user confirms: how many records it changes, how
     many files it reads with AI credits, and whether a message leaves the company."""
-    warnings: list[str] = []
+    warnings = []
     if count is not None:
         warnings.append(t("ai.warn_selection_size", count=count))
     files = ((arguments or {}).get("body") or {}).get("file_ids")
@@ -464,7 +466,7 @@ def _card_warnings(capability: dict, count: int | None, arguments: dict | None) 
         warnings.append(t("ai.warn_credits_one") if len(files) == 1 else t("ai.warn_credits", count=len(files)))
     if capability.get("outside"):
         warnings.append(t("ai.warn_outside_message"))
-    return warnings
+    return [kept(w) for w in warnings]
 
 
 def _unopened(name: str) -> dict:
@@ -836,7 +838,8 @@ async def _agent_loop(
                 PendingAction(
                     id=call_id, name=capability["name"], arguments=arguments,
                     created_at=now.isoformat(), expires_at=expires.isoformat(),
-                    title=capability["tool"]["function"]["description"],
+                    title=action_title(capability),
+                    shown={} if name == PROPOSE_FOR_EACH else card_arguments(capability, arguments),
                     keyed=capability.get("keyed") is True,
                     warnings=_card_warnings(capability, len(arguments["records"]) if name == PROPOSE_FOR_EACH
                                             else _selection_size(capability, arguments),

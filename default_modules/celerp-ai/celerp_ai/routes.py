@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
+from celerp.ai.card import card_arguments
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.agent_markers import agent_excluded
@@ -57,7 +58,7 @@ from celerp.services.auth import (
     AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user,
 )
 from celerp.services.permissions import get_current_company_settings, require_permission
-from ui.i18n import refusal_text, t
+from ui.i18n import kept, read_kept, refusal_text, t
 from ui.components.encode import inert_media_type
 from celerp.accounting_roles import Refused
 
@@ -1384,7 +1385,7 @@ async def confirm_all(
         )
         results.append(outcome)
         if not outcome["ok"] and group is not None:
-            stopped[group] = outcome.get("title") or outcome.get("name") or tool_call_id
+            stopped[group] = read_kept(outcome.get("title")) or outcome.get("name") or tool_call_id
     completed = sum(1 for r in results if r["ok"])
     attention = sum(
         1 for r in results
@@ -1437,16 +1438,17 @@ def _same_text(a, b: str) -> bool:
     return str(a or "").strip().casefold() == b.strip().casefold()
 
 
-def _proposal_record(name: str, arguments: dict, *, title: str, warnings: list[str],
+def _proposal_record(capability: dict, arguments: dict, *, title: str, warnings: list[str],
                      file_id: str, now: datetime, bindings: list[dict] | None = None) -> dict:
     record = {
         "id": f"prop_{secrets.token_hex(12)}",
-        "name": name,
+        "name": capability["name"],
         "arguments": arguments,
+        "shown": card_arguments(capability, arguments),
         "created_at": now.isoformat(),
         "expires_at": (now + timedelta(seconds=PROPOSAL_TTL_S)).isoformat(),
-        "title": title,
-        "warnings": warnings,
+        "title": kept(title),
+        "warnings": [kept(w) for w in warnings],
         "file_id": file_id,
     }
     if bindings:
@@ -1466,6 +1468,9 @@ class _Lookups:
 
     def has(self, name: str) -> bool:
         return name in self._capabilities
+
+    def capability(self, name: str) -> dict:
+        return self._capabilities[name]
 
     async def rows(self, name: str, query: dict) -> list[dict] | dict:
         """Result rows of a list capability, or why it failed (``_action_error``)."""
@@ -1514,9 +1519,9 @@ class _Lookups:
 
 
 async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now: datetime) -> tuple[list[dict], str]:
-    """Proposal records for one read receipt plus a one-line summary, written in the
-    asker's language and kept as written: a proposal reads in the language it was
-    proposed in, whatever language its reader later switches to."""
+    """Proposal records for one read receipt plus a one-line summary in the asker's
+    language; each proposal's title and warnings are kept (ui.i18n.kept), so its card
+    reads in the language of whoever opens it."""
     file_id = str(entry.get("file_id"))
     filename = entry.get("filename") or file_id
     warnings: list[str] = []
@@ -1531,7 +1536,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         if found is False:
             if lookups.has(_CONTACTS_CREATE):
                 vendor_create = _proposal_record(
-                    _CONTACTS_CREATE,
+                    lookups.capability(_CONTACTS_CREATE),
                     {"body": {"name": vendor, "contact_type": "vendor"}},
                     title=t("ai.receipt_create_vendor", vendor=vendor), warnings=[], file_id=file_id, now=now,
                 )
@@ -1613,7 +1618,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
             "target_path": ["body", "contact_id"],
         }]
     records.append(_proposal_record(
-        _DOCS_CREATE, {"body": body},
+        lookups.capability(_DOCS_CREATE), {"body": body},
         title=t("ai.receipt_create_bill", label=label), warnings=warnings, file_id=file_id, now=now,
         bindings=bindings,
     ))
