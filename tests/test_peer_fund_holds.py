@@ -22,6 +22,7 @@ from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _company_of, _route_to_app
 from test_peer_two_way_sync import _attention, _from_firm, _journals, _notices, _pair_journals, _two_way
 from test_helpers import refused_records
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -115,12 +116,12 @@ async def test_firm_journal_in_fund_company_held_for_fund_assignment(real_client
     assert fix["memo"] == "Reclass program costs" and fix["ts"] == DAY and fix["revision"] >= 1
     assert [(e["account"], e["debit"], e["credit"], e["origin"]) for e in fix["entries"]] == [
         (BANK, 100.0, 0.0, "accountant"), (EXPENSE, 0.0, 100.0, "accountant")]
-    assert item["reason"] == WAITING
+    assert refusal_text(item["reason"]) == WAITING
     notices = [n for n in await _notices(real_engine, client_company) if "Reclass program costs" in n[1]]
     assert len(notices) == 1 and notices[0][2] == "/settings/connectors/celerp#from-accountant", notices
     declined = [i for i in await _attention(real_client, firm_tok) if i["kind"] == "declined"]
     assert [i["label"] for i in declined] == ["Reclass program costs"]
-    assert declined[0]["reason"].endswith(f"did not post it: {WAITING}"), declined
+    assert refusal_text(declined[0]["reason"]).endswith(f"did not post it: {WAITING}"), declined
 
     await _two_way(client_company, credential)  # held again, told once
     assert len(await _held(real_client, tok)) == 1
@@ -695,7 +696,7 @@ async def test_lineless_outside_document_needs_document_choice(real_client, real
         return
     if item is not None:
         assert (item["fix"]["document"], item["fix"]["lines"]) == (True, []), item
-        assert item["reason"].endswith("choose the fund for this document."), item
+        assert refusal_text(item["reason"]).endswith("choose the fund for this document."), item
         r = await _post_held(real_client, tok, item, every=fund)
         assert r.status_code == 422 and r.json()["detail"]["message_key"] == "documents.err_finalize_no_lines", r.text
         assert len(await _held(real_client, tok, "doc_funds")) == 1

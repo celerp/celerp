@@ -56,7 +56,7 @@ from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.business_time import company_today
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
-from celerp.services import peer_accounts, peer_journals
+from celerp.services import peer_accounts, peer_attention, peer_journals
 from celerp.services.peer_lines import UNRESTRICTED, held_accounts, waits_for_funds
 from celerp.services.attachments import (
     company_file_name, delete_stored_file, stored_file_name, stored_file_type, storing, upload_mime,
@@ -5384,7 +5384,8 @@ async def fix_peer_hold(
     else:
         await peer_accounts.fix_hold(session, company_id, item, action=body.action,
                                      account=body.account, code=body.code)
-    item.fix, item.reason = {**item.fix, "fixed": True}, "Fixed. It posts on the next sync."
+    item.fix = {**item.fix, "fixed": True}
+    item.reason = peer_attention.stored(catalog_refusal("sync_accounts.fixed"))
     await session.commit()
     return {"ok": True}
 

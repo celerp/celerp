@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import one_unit
 from celerp.accounting_roles import catalog_refusal
-from celerp.importers.results import keyed_reason, message_text, row_refusal
+from celerp.importers.results import keyed_reason, row_refusal
 from celerp.services import peer_access, peer_attention
 from celerp.services.company_lock import lock_company
 from ui.i18n import t
@@ -192,7 +192,7 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             # before the note is written, and a key that stopped working stops the batch.
             await _grant(session, peer)
             await peer_attention.record(session, **where, source_entity_id=record.entity_id,
-                                        label=_label(record), reason=message_text(reason),
+                                        label=_label(record), reason=reason,
                                         fix=getattr(exc, "fix", None))
             await session.commit()
             continue

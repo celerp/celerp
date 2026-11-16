@@ -185,7 +185,7 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
     assert _sent_journal(books, plain)  # same code, type, name and currency: posts
     assert not [s for s in books.values() if (s.get("peer_source") or {}).get("journal") == first]
     waiting = [a for a in results["journals_out"].attention if a["id"] == first]
-    assert waiting and waiting[0]["reason"] == "Waiting for Second Trading books to review accounts."
+    assert waiting and refusal_text(waiting[0]["reason"]) == "Waiting for Second Trading books to review accounts."
 
     review = (await real_client.get("/accounting/peer/review", headers=auth(second_books))).json()
     [pending] = review["companies"]
@@ -200,7 +200,7 @@ async def test_first_pairing_without_a_copy_waits_for_the_review(real_client, re
     # Until the next sync the held record says it is fixed, here and on Client companies.
     [held] = (await real_client.get("/accounting/peer/holds", headers=auth(second_books))).json()["items"]
     assert held["label"] == "Courier run" and held["fix"]["fixed"]
-    assert held["reason"] == "Accounts reviewed. It posts on the next sync."
+    assert refusal_text(held["reason"]) == "Accounts reviewed. It posts on the next sync."
     view = (await real_client.get("/auth/firm-view", headers=auth(firm_tok))).json()["items"]
     [item] = [i for row in view if row["company_name"] == "Second Trading books" for i in row["attention"]
               if i["label"] == "Courier run"]
@@ -303,15 +303,17 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
 
     holds = {h["label"]: h for h in await _holds(real_client, firm_tok)}
     assert holds["Courier"]["fix"]["kind"] == "collision"
-    assert "6150 Courier" in holds["Courier"]["reason"] and "6150 Subscriptions" in holds["Courier"]["reason"]
+    courier_why = refusal_text(holds["Courier"]["reason"])
+    assert "6150 Courier" in courier_why and "6150 Subscriptions" in courier_why
     assert holds["Fuel"]["fix"]["suggested"] == "6171"
     assert holds["Deposit"]["fix"]["kind"] == "type"
-    assert "asset" in holds["Deposit"]["reason"] and "expense" in holds["Deposit"]["reason"]
+    deposit_why = refusal_text(holds["Deposit"]["reason"])
+    assert "asset" in deposit_why and "expense" in deposit_why
 
     await _fix(real_client, firm_tok, holds["Courier"], action="use", account="6150")
     # Until the next sync the held record says it is fixed, as a confirmed review's do.
     courier = {h["label"]: h for h in await _holds(real_client, firm_tok)}["Courier"]
-    assert courier["fix"]["fixed"] and courier["reason"] == "Fixed. It posts on the next sync."
+    assert courier["fix"]["fixed"] and refusal_text(courier["reason"]) == "Fixed. It posts on the next sync."
     await _fix(real_client, firm_tok, holds["Fuel"], action="add", code="6171")
     r = await real_client.post(f"/accounting/peer/holds/{holds['Deposit']['id']}/fix",
                                json={"action": "use", "account": "6500"}, headers=auth(firm_tok))
@@ -338,7 +340,7 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
     euro = r.json()["je_id"]
     await _two_way(client_company, credential)
     [held] = [h for h in await _holds(real_client, firm_tok) if h["label"] == "Euro deposit"]
-    assert held["fix"]["kind"] == "currency" and "EUR" in held["reason"]
+    assert held["fix"]["kind"] == "currency" and "EUR" in refusal_text(held["reason"])
     assert held["fix"]["add"] is False  # a currency lives on a bank account record
     r = await real_client.post(f"/accounting/peer/holds/{held['id']}/fix",
                                json={"action": "use", "account": "1140"}, headers=auth(firm_tok))
@@ -396,7 +398,7 @@ async def test_an_account_archived_on_the_receiver_holds_the_record(real_client,
                                            "receive_as": "expense"}], "archived-bill")
     await _two_way(client_company, credential)
     [held] = [h for h in await _holds(real_client, firm_tok) if h["fix"]["kind"] == "archived"]
-    assert "6300 Utilities" in held["reason"]
+    assert "6300 Utilities" in refusal_text(held["reason"])
     await _fix(real_client, firm_tok, held, action="unarchive")
     await _two_way(client_company, credential)
     assert await _holds(real_client, firm_tok) == []
@@ -444,7 +446,7 @@ async def test_a_posting_role_line_crosses_as_the_role(real_client, real_engine,
     await _two_way(client_company, other_key)
     assert await _chart(real_client, books_tok) == chart
     [held] = [h for h in await _holds(real_client, books_tok) if h["label"] == "Debtor reclass"]
-    assert held["fix"]["kind"] == "role" and "Accounts receivable" in held["reason"]
+    assert held["fix"]["kind"] == "role" and "Accounts receivable" in refusal_text(held["reason"])
     assert held["fix"]["href"] == "/settings/accounting#posting-accounts"
     assert not [s for s in (await _journals(real_engine, str(books))).values()
                 if (s.get("peer_source") or {}).get("journal") == receivable]

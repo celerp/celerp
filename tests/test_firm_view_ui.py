@@ -5,13 +5,15 @@ opened in place, with filters carried in the URL and a way into each company."""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fasthtml.common import to_xml
 from fastapi import FastAPI
 
+from celerp.accounting_roles import catalog_refusal
 from ui import api_client
+from ui.i18n import date_text
 from ui.routes import firm_view as routes
 
 pytestmark = pytest.mark.asyncio
@@ -23,7 +25,7 @@ def _rows():
     return [
         {"company_id": COPY, "company_name": "Demo Trading", "role": "owner", "sync": "failing",
          "last_sync": recent, "unavailable": [], "attention": [
-             {"kind": "refused", "label": "INV-0005", "reason": "The period is locked through 2026-10-16.",
+             {"kind": "refused", "label": "INV-0005", "reason": catalog_refusal("peer.journal_books_locked", date="2026-10-16"),
               "href": None, "at": recent},
              {"kind": "key_expiring", "label": "Demo Trading", "reason": "The key expires on 2026-10-21.",
               "href": "/settings/accountant-access", "at": None}]},
@@ -66,7 +68,7 @@ async def test_rows_show_sync_last_sync_and_attention_in_place(monkeypatch):
     assert html.index("Demo Trading") < html.index("Firm Practice") < html.index("Fake Co")
     assert "<td>Failing</td>" in html and "<td>5m ago</td>" in html
     assert "<details>" in html and "2 to look at" in html
-    assert "Not applied" in html and "INV-0005" in html and "locked through 2026-10-16" in html
+    assert "Not applied" in html and "INV-0005" in html and f"locked through {date_text(date(2026, 10, 16))}" in html
     assert f'href="/switch-company/{COPY}?next=/settings/accountant-access"' in html
     assert f'href="/switch-company/{COPY}?next=/settings/company-handoff"' in html
     assert f'href="/switch-company/{COPY}?next=/settings/users/new"' in html

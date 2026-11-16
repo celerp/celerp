@@ -305,3 +305,107 @@ async def test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason(
 
     assert len(errors) == 1 and _keyed(errors[0]), errors
     assert errors[0]["params"]["entity_id"] == "C-1"
+    assert _keyed(await _attention_reason(session, ids["company_id"])), "the attention row keeps the reason keyed"
+
+
+async def _attention_reason(session, company_id) -> dict:
+    """The one open attention item's reason as its column stores it."""
+    import json
+    from sqlalchemy import select
+    from celerp.models.company_peer import CompanyPeerAttention
+
+    row = (await session.scalars(select(CompanyPeerAttention).where(
+        CompanyPeerAttention.company_id == company_id))).one()
+    try:
+        return json.loads(row.reason)
+    except ValueError:
+        return {"text": row.reason}
+
+
+def _attention_writes(tree: ast.AST) -> list[tuple[int, str]]:
+    """Every write of a peer attention reason in a module: a peer_attention.record call, an
+    assignment to a ``reason`` of anything but the object's own (an exception's
+    ``self.reason``), and a row built or inserted outside peer_attention."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = ast.unparse(node.func)
+            if name == "peer_attention.record":
+                found.append((node.lineno, "record"))
+            elif name in ("CompanyPeerAttention", "pg_insert", "insert") and any(
+                    "CompanyPeerAttention" in ast.unparse(arg) for arg in node.args) or name == "CompanyPeerAttention":
+                found.append((node.lineno, "row"))
+        targets = node.targets if isinstance(node, ast.Assign) else []
+        for target in targets:
+            for each in (target.elts if isinstance(target, ast.Tuple) else [target]):
+                if isinstance(each, ast.Attribute) and each.attr == "reason" and ast.unparse(each.value) != "self":
+                    keyed = isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "peer_attention.stored"
+                    found.append((node.lineno, "stored" if keyed else "assigned"))
+    return found
+
+
+def test_every_writer_of_a_peer_attention_reason_stores_a_keyed_refusal():
+    """A peer attention reason reads in each reader's language: every writer passes a keyed
+    refusal through peer_attention (record, or stored for an item it changes in place), which
+    refuses anything else, so a new writer cannot store English alone."""
+    offenders = []
+    for path in sorted([*(_REPO / "celerp").rglob("*.py"), *(_REPO / "default_modules").rglob("*.py")]):
+        if "/tests/" in str(path) or path.name == "peer_attention.py" or "/migrations/" in str(path):
+            continue
+        source = path.read_text(encoding="utf-8")
+        for line, how in _attention_writes(ast.parse(source)):
+            if how == "row" and "CompanyPeerAttention" in source or how == "assigned":
+                offenders.append(f"{path.relative_to(_REPO)}:{line} {how}")
+    assert not offenders, offenders
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["Accounts reviewed.", {"message": "Accounts reviewed."},
+                                    {"message": "x", "message_key": "error.refusal_as_written", "params": {"text": "x"}}])
+async def test_a_peer_attention_reason_that_is_not_a_keyed_refusal_is_refused(session, auth, ids, reason):
+    import uuid
+    from celerp.services import peer_attention
+
+    attempt = peer_attention.record(session, company_id=ids["company_id"], source_company_id=uuid.uuid4(),
+                                    entity_type="contacts", source_entity_id="C-1", label="C", reason=reason)
+    if isinstance(reason, dict) and reason.get("message_key"):
+        await attempt  # the generic key carrying a text as written is keyed
+        assert _keyed(await _attention_reason(session, ids["company_id"]))
+        return
+    with pytest.raises(TypeError):
+        await attempt
+
+
+@pytest.mark.asyncio
+async def test_a_journal_the_connected_company_declined_keeps_a_keyed_reason(session, auth, ids, monkeypatch):
+    import uuid
+    from types import SimpleNamespace
+    from celerp.services import peer_journals
+
+    async def _firm_journal(session, company_id, je_id):
+        return {"memo": "Adjust"}
+
+    monkeypatch.setattr(peer_journals, "_firm_journal", _firm_journal)
+    grant = SimpleNamespace(company_id=ids["company_id"], source_company_id=uuid.uuid4(), label="Demo Trading")
+    await peer_journals._answer(session, grant, peer_journals._Answer(journal="J-1", declined="Wrong period"))
+
+    reason = await _attention_reason(session, ids["company_id"])
+    assert _keyed(reason) and reason["message_key"] == "peer.attention_declined", reason
+    assert reason["params"] == {"client": "Demo Trading", "why": "Wrong period"}
+
+
+def test_a_peer_attention_reason_reads_in_the_readers_language_and_an_older_one_as_written():
+    import json
+    from types import SimpleNamespace
+    from celerp.accounting_roles import catalog_refusal
+    from celerp.services import peer_attention
+    from ui import i18n
+
+    keyed = SimpleNamespace(reason=json.dumps(catalog_refusal("peer.attention_accounts_reviewed")))
+    older = SimpleNamespace(reason="Accounts reviewed. It posts on the next sync.")
+    token = i18n._current_lang.set("th")
+    try:
+        assert i18n.refusal_text(peer_attention.reason_of(keyed)) == t("peer.attention_accounts_reviewed", "th")
+        assert i18n.refusal_text(peer_attention.reason_of(older)) == older.reason
+    finally:
+        i18n._current_lang.reset(token)

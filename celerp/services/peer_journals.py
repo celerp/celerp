@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import PERIOD_LOCK_PATH, catalog_refusal, period_locked_refusal
 from celerp.events.engine import emit_event, write_period_lock
-from celerp.importers.results import failure_reason
+from celerp.importers.results import keyed_reason, message_text
 from celerp.models.company import Company
 from celerp.models.company_peer import CompanyPeerDelivery, CompanyPeerIdentity
 from celerp.models.projections import Projection
@@ -50,7 +50,6 @@ INBOUND = "journals_in"
 # why it waits there when those books use funds.
 ORIGIN = "accountant"
 CLIENT_ORIGIN = "client"
-WAITING_FOR_FUNDS = "Waiting for a fund on each line"
 
 
 # ---- shared ----------------------------------------------------------------------------
@@ -314,7 +313,7 @@ async def _answer(session: AsyncSession, grant, answer: _Answer) -> str:
         await peer_attention.record(session, **{k: v for k, v in where.items() if k != "kind"},
                                     kind=peer_attention.DECLINED,
                                     label=journal.get("memo") or answer.journal,
-                                    reason=f"{grant.label} did not post it: {answer.declined}")
+                                    reason=catalog_refusal("peer.attention_declined", client=grant.label, why=answer.declined))
     return "updated"
 
 
@@ -464,7 +463,8 @@ async def receive_journal(session: AsyncSession, *, grant, source_entity_id: str
         memo = origin.get("memo") or reverses
         await peer_attention.record(
             session, **where, source_entity_id=reverses, label=memo,
-            reason=f"{grant.label} reversed {memo} dated {str(origin.get('ts'))[:10]}; posted {journal.ts[:10]}")
+            reason=catalog_refusal("peer.attention_reversed", client=grant.label, memo=memo,
+                                   date=str(origin.get("ts"))[:10], posted=journal.ts[:10]))
     elif reverses is not None:
         undone = await _firm_journal(session, company_id, reverses) or {}
         firm_own = undone.get("reverses")
@@ -526,11 +526,12 @@ def _firm_lock_of(settings: dict) -> date | None:
 
 @dataclass
 class _Placed:
-    """A journal of the firm's as the client's books would post it, or why they cannot:
+    """A journal of the firm's as the client's books would post it, or why they cannot
+    (a keyed refusal):
     ``fix`` says how to fix a hold on one of its accounts (peer_accounts.AccountHold);
     ``locked`` that the lock date holds it."""
     entries: list[dict]
-    reason: str | None = None
+    reason: dict | None = None
     fix: dict | None = None
     locked: bool = False
 
@@ -541,20 +542,20 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
 
     entries = [{k: v for k, v in line.items() if k != LEGACY_LINE_KEY} for line in item.get("entries") or []]
     if item.get("held"):
-        return _Placed(entries, str(item["held"]))
+        return _Placed(entries, keyed_reason(str(item["held"])))
     extra = next((key for line in entries for key in line if key not in LINE_FIELDS), None)
     if extra is not None:
-        return _Placed(entries, catalog_refusal("posting.fund.key_not_taken", field=str(extra))["message"])
+        return _Placed(entries, catalog_refusal("posting.fund.key_not_taken", field=str(extra)))
     lock = _lock_of(company.settings or {})
     day = _day(item.get("ts"))
     if day is None:
-        return _Placed(entries, "Its date could not be read.")
+        return _Placed(entries, catalog_refusal("peer.journal_date_unreadable"))
     if lock is not None and day <= lock:
-        return _Placed(entries, f"The books are locked through {lock.isoformat()}.", locked=True)
+        return _Placed(entries, catalog_refusal("peer.journal_books_locked", date=lock), locked=True)
     for line in entries:
         contact = line.get("contact")
         if contact and await session.get(Projection, (company.id, contact)) is None:
-            return _Placed(entries, "A line names a contact these books do not hold.")
+            return _Placed(entries, catalog_refusal("peer.journal_contact_not_held"))
     try:
         placed = await peer_accounts.place(
             session, company_id=company.id, source_company_id=firm_company,
@@ -565,7 +566,7 @@ async def _place_firm_journal(session: AsyncSession, company: Company, firm: str
             line["account"] = placed[line.get("account")]
         await require_destinations(session, company.id, {line.get("account") for line in entries})
     except HTTPException as exc:
-        return _Placed(entries, failure_reason(exc), getattr(exc, "fix", None))
+        return _Placed(entries, keyed_reason(exc), getattr(exc, "fix", None))
     return _Placed(entries)
 
 
@@ -664,22 +665,24 @@ async def apply_firm_journal(company_id: uuid.UUID, grant_id: uuid.UUID, firm: s
                 await _post(session, company_id, je_id, data, actor_id=actor, grant=fund_grant)
             except FundChoiceNeeded as exc:
                 # The lines wait in the hold, as placed, for a local user's choice.
-                reason, notice = WAITING_FOR_FUNDS, "notice.peer_journal_needs_funds"
+                reason, notice = catalog_refusal("peer.journal_waiting_for_funds"), "notice.peer_journal_needs_funds"
                 fix = {**exc.fix, "revision": revision, "ts": item["ts"], "memo": item.get("memo") or "",
                        "firm": firm, "entries": [{**line, "origin": ORIGIN} for line in sent]}
         if reason is not None:
+            # The firm and the notice are told the reason's English, as the delivery mark holds it.
+            text = message_text(reason)
             # Read before the rollback, which expires every row the session holds.
-            told = held is not None and held.refused == reason
+            told = held is not None and held.refused == text
             await session.rollback()
             await _notify(session, company_id, notice, memo=memo,
-                          date=str(item.get("ts"))[:10], firm=firm, reason=reason,
+                          date=str(item.get("ts"))[:10], firm=firm, reason=text,
                           action_url=LOCK_DATE if placed.locked else FROM_ACCOUNTANT)
             if fix is not None:
                 await peer_attention.record(session, **hold, label=memo, reason=reason, fix=fix)
             else:
                 await peer_attention.clear(session, **hold)
             await session.commit()
-            return Fetched("skipped", None if told else _answer_record(item, reason), reason, placed.locked)
+            return Fetched("skipped", None if told else _answer_record(item, text), text, placed.locked)
         await peer_attention.clear(session, **hold)
         lines = _lines_text(entries, await _names(session, company_id, entries))
         await _notify(session, company_id, "notice.peer_journal_posted", memo=memo,
