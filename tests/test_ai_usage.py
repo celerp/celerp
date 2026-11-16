@@ -311,6 +311,29 @@ async def test_answered_question_returns_its_answer_without_asking(client, owner
     assert _counts((await _usage(client, token)).json()["users"]) == [(1, 1)]
 
 
+async def test_question_answered_after_its_send_read_the_thread_returns_that_answer(client, owner, monkeypatch):
+    """The send read the thread before the first run's answer landed: it returns that answer
+    and never runs the question a second time."""
+    from celerp_ai import routes
+    token, _, _ = owner
+    sent = _relay(monkeypatch, [_answer()])
+    conv = await _conversation(client, token)
+    question = uuid.uuid4()
+    _, reply = await _asked(client, token, conv, question)
+    find = routes._find_question
+
+    async def read_before_the_answer(*a, **kw):
+        job, asked, _ = await find(*a, **kw)
+        return job, asked, None
+
+    monkeypatch.setattr(routes, "_find_question", read_before_the_answer)
+    again = await _ask(client, token, conv, question)
+    assert again.status_code == 200, again.text
+    assert (again.json()["answer"], again.json()["asked_again"]) == (reply["content"], True)
+    assert sent == [question]
+    assert len(await _messages(client, token, conv)) == 2
+
+
 def _refused_as_operation_conflict(r) -> None:
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "operation_conflict"

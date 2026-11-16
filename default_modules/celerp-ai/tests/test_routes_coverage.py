@@ -656,6 +656,102 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
     assert status["proposal_message_id"] == first["message_id"]
 
 
+async def _proposals_setup(session, c, h):
+    """A finished one-receipt job, and a proposals call that builds its proposals (patched in)."""
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "extraction": _RECEIPT, "credits": 1},
+    ])
+    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get",
+                         "create_contact_crm_contacts_post", "list_items_items_get")
+
+    async def propose():
+        with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+             patch("celerp.ai.tools.execute_agent_capability", _executor()):
+            r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
+        assert r.status_code == 200, r.text
+        return r.json()
+    return conv_id, job_id, propose
+
+
+async def _set_proposal_message(session, job_id, message_id) -> None:
+    from celerp.models.ai import AIBatchJob
+    job = await session.get(AIBatchJob, uuid.UUID(job_id))
+    await session.refresh(job)
+    job.results = {**(job.results or {}), "proposal_message_id": message_id}
+    await session.commit()
+
+
+async def _expire(session, message_id) -> None:
+    from celerp.models.ai import AIMessage
+    msg = await session.get(AIMessage, uuid.UUID(message_id))
+    await session.refresh(msg)
+    msg.tools_called = [{**r, "expires_at": "2000-01-01T00:00:00+00:00"} if r.get("name") else r
+                        for r in msg.tools_called]
+    await session.commit()
+
+
+async def _message_count(session, conv_id) -> int:
+    from sqlalchemy import func, select
+    from celerp.models.ai import AIMessage
+    return await session.scalar(select(func.count()).select_from(AIMessage)
+                                .where(AIMessage.conversation_id == uuid.UUID(conv_id)))
+
+
+def _recorded_meanwhile(monkeypatch, message_id):
+    """Another request records ``message_id`` as the job's proposals while this one builds its own."""
+    from celerp_ai import routes
+    real = routes._proposals_locked
+
+    async def other_first(session, job, seen_id):
+        await jobs.lock_for_ai(session, job.company_id)  # the other request writes under the same lock
+        job.results = {**(job.results or {}), "proposal_message_id": message_id}
+        await session.flush()
+        return await real(session, job, seen_id)
+    monkeypatch.setattr(routes, "_proposals_locked", other_first)
+
+
+@pytest.mark.asyncio
+async def test_expired_proposals_are_proposed_again_under_new_ids(auth_client, session):
+    c, h = auth_client
+    _, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    await _expire(session, first["message_id"])
+    again = await propose()
+    assert again["message_id"] != first["message_id"]
+    assert [a["name"] for a in again["pending_actions"]] == [a["name"] for a in first["pending_actions"]]
+    assert not {a["id"] for a in again["pending_actions"]} & {a["id"] for a in first["pending_actions"]}
+    assert (await c.get(f"/ai/batch/{job_id}", headers=h)).json()["proposal_message_id"] == again["message_id"]
+
+
+@pytest.mark.asyncio
+async def test_proposals_another_request_recorded_first_are_returned_not_built_twice(
+        auth_client, session, monkeypatch):
+    c, h = auth_client
+    conv_id, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    count = await _message_count(session, conv_id)
+    await _set_proposal_message(session, job_id, None)  # this request read the job before the first one wrote it
+    _recorded_meanwhile(monkeypatch, first["message_id"])
+    assert await propose() == first
+    assert await _message_count(session, conv_id) == count
+
+
+@pytest.mark.asyncio
+async def test_expired_proposals_another_request_refreshed_first_are_returned_not_refreshed_twice(
+        auth_client, session, monkeypatch):
+    c, h = auth_client
+    conv_id, job_id, propose = await _proposals_setup(session, c, h)
+    first = await propose()
+    await _expire(session, first["message_id"])
+    refreshed = await propose()
+    count = await _message_count(session, conv_id)
+    await _set_proposal_message(session, job_id, first["message_id"])  # read before the refresh was recorded
+    _recorded_meanwhile(monkeypatch, refreshed["message_id"])
+    assert await propose() == refreshed
+    assert await _message_count(session, conv_id) == count
+
+
 @pytest.mark.asyncio
 async def test_a_proposed_bill_card_shows_its_supplier_by_name(auth_client, session):
     c, h = auth_client
