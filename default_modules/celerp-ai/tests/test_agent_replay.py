@@ -76,6 +76,16 @@ def _one_row(dotted: str) -> dict:
     return {head.removesuffix("[]"): [inner] if head.endswith("[]") else inner}
 
 
+def _selected(dotted: str) -> dict:
+    """A body naming one record on the selection path ``dotted`` (``decisions[].line_ids``
+    gives ``{"decisions": [{"line_ids": ["1"]}]}``)."""
+    head, _, rest = dotted.partition(".")
+    if not rest:
+        return {head.removesuffix("[]"): ["1"]}
+    inner = _selected(rest)
+    return {head.removesuffix("[]"): [inner] if head.endswith("[]") else inner}
+
+
 def _arguments(capability: dict) -> dict:
     """Arguments the executor accepts: every path value, one selected record, one row on
     the list a per-row key sits in, one file."""
@@ -84,7 +94,7 @@ def _arguments(capability: dict) -> dict:
         arguments["path"] = {name: "1" for name in capability["path_names"]}
     key_rows = _one_row(str(capability.get("key_field") or ""))
     if capability.get("selection") and capability["selection"] not in key_rows:
-        arguments["body"] = {capability["selection"]: ["1"]}
+        arguments["body"] = _selected(capability["selection"].split()[0])
     elif capability.get("expects_body"):
         arguments["body"] = key_rows
     if capability.get("uploads"):

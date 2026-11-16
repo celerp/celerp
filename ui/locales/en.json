@@ -8525,6 +8525,7 @@
   "field.new_bank": "New bank account",
   "field.parts": "Other amounts",
   "field.remember": "Remember for next time",
+  "field.paired_line_id": "Matching line on the other account",
   "field.target_bank_id": "Transfer to",
   "field.to_amount": "Amount received",
   "field.att_id": "Attachment",

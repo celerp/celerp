@@ -8525,6 +8525,7 @@
   "field.new_bank": "Nouveau compte bancaire",
   "field.parts": "Autres montants",
   "field.remember": "Retenir pour la prochaine fois",
+  "field.paired_line_id": "Ligne correspondante sur l'autre compte",
   "field.target_bank_id": "Virer vers",
   "field.to_amount": "Montant reçu",
   "field.att_id": "Pièce jointe",

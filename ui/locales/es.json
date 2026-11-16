@@ -8525,6 +8525,7 @@
   "field.new_bank": "Nueva cuenta bancaria",
   "field.parts": "Otros importes",
   "field.remember": "Recordar para la próxima vez",
+  "field.paired_line_id": "Línea correspondiente en la otra cuenta",
   "field.target_bank_id": "Transferir a",
   "field.to_amount": "Importe recibido",
   "field.att_id": "Adjunto",

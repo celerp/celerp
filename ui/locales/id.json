@@ -8525,6 +8525,7 @@
   "field.new_bank": "Rekening bank baru",
   "field.parts": "Jumlah lain",
   "field.remember": "Ingat untuk lain kali",
+  "field.paired_line_id": "Baris pasangan di rekening lain",
   "field.target_bank_id": "Transfer ke",
   "field.to_amount": "Jumlah diterima",
   "field.att_id": "Lampiran",

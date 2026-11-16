@@ -8525,6 +8525,7 @@
   "field.new_bank": "አዲስ የባንክ ሂሳብ",
   "field.parts": "ሌሎች መጠኖች",
   "field.remember": "ለሚቀጥለው ጊዜ አስታውስ",
+  "field.paired_line_id": "በሌላው ሂሳብ ላይ ያለው ተዛማጅ መስመር",
   "field.target_bank_id": "ዝውውር ወደ",
   "field.to_amount": "የተቀበለው መጠን",
   "field.att_id": "አባሪ",

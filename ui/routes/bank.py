@@ -289,11 +289,12 @@ def setup_routes(app):
         view, q = _view(str(form.get("view", ""))), str(form.get("q", "")).strip()
         bank = await api.get_bank_account(token, bank_id)
         keys, line_ids = [str(k) for k in form.getlist("group_key")], [str(i) for i in form.getlist("line_id")]
-        if not keys:
+        versions = dict(zip(line_ids, [str(v) for v in form.getlist("version")]))
+        if not keys or not line_ids:
             return await _body(token, bank, view, q, bulk_outcome=t("bank.nothing_ticked"))
         try:
             out = await api.bank_action(token, bank_id, "resolve", {
-                "accept": {"group_keys": keys, "line_ids": line_ids or None},
+                "accept": {"group_keys": keys, "line_ids": line_ids, "versions": versions},
                 "idempotency_key": str(form.get("idempotency_key"))})
         except APIError as e:
             return await _body(token, bank, view, q, bulk_outcome=refusal_line(e))

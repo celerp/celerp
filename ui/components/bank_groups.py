@@ -271,7 +271,7 @@ def line_row(line: dict, bank_id: str, currency: str, *, group_key: str = "", ti
                           hx_post=bank_url(bank_id, "unmatch"), hx_vals=hx_vals({"line_id": lid, "idempotency_key": new_key()}),
                           hx_target="closest [data-line]", hx_swap="outerHTML", hx_confirm=t("bank.undo_confirm"))]
     tick = Input(type="checkbox", data_role="line", data_group=group_key, data_amount=str(line["amount"]),
-                 value=lid, checked=ticked, aria_label=line.get("description") or lid) if is_open else Span()
+                 data_version=line.get("suggestion_version") or "", value=lid, checked=ticked, aria_label=line.get("description") or lid) if is_open else Span()
     return Div(
         _row(tick,
             Span(line["line_date"], cls="bank-cell bank-cell--date"),

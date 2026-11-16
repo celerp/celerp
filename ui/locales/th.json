@@ -8525,6 +8525,7 @@
   "field.new_bank": "บัญชีธนาคารใหม่",
   "field.parts": "จำนวนเงินอื่น",
   "field.remember": "จำไว้ใช้ครั้งต่อไป",
+  "field.paired_line_id": "รายการที่ตรงกันในบัญชีอีกบัญชี",
   "field.target_bank_id": "โอนไปยัง",
   "field.to_amount": "จำนวนเงินที่ได้รับ",
   "field.att_id": "ไฟล์แนบ",

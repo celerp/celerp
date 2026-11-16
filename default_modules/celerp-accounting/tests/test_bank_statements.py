@@ -166,7 +166,7 @@ async def test_accept_posts_only_ticked_groups_and_lines(client):
     table = await B.groups(client, co, bk["id"])
     netflix = next(g for g in table["groups"] if g["key"].startswith("NETFLIX"))
     keep = [l["id"] for l in netflix["lines"][:2]]
-    r = await B.resolve(client, co, bk["id"], accept={"group_keys": [netflix["key"]], "line_ids": keep})
+    r = await B.resolve(client, co, bk["id"], accept=B.accept(table, [netflix["key"]], keep))
     assert r.status_code == 200, r.text
     after = {l["id"]: l["status"] for l in B.all_lines(await B.groups(client, co, bk["id"], view="all"))}
     assert [after[i] for i in keep] == ["posted", "posted"]
@@ -476,6 +476,91 @@ async def test_undo_transfer_unmatches_paired_line(client):
     assert r.status_code == 200, r.text
     assert B.all_lines(await B.groups(client, co, b["id"], view="all"))[0]["status"] == "unmatched"
     assert lb["id"]
+
+
+async def _transfer_banks(client, b_rows):
+    co, a = await _co_bank(client, name="A")
+    b = await B.bank(client, co["h"], name="B")
+    await _one_month(client, co, a, [("2026-01-05", "TRANSFER TO SAVINGS", "-100.00")])
+    await _one_month(client, co, b, b_rows)
+    return co, a, b, B.all_lines(await B.groups(client, co, a["id"]))[0], \
+        B.all_lines(await B.groups(client, co, b["id"]))
+
+
+async def _transfer_entries(client, co) -> int:
+    journal = (await client.get("/accounting/journal", headers=co["h"])).json()["entries"]
+    return len([e for e in journal if e.get("je_type") == "recon_transfer" and e.get("status") != "void"])
+
+
+async def test_transfer_with_one_counterpart_settles_it_and_says_which(client):
+    co, a, b, la, (lb,) = await _transfer_banks(client, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
+    await client.post(f"{B.API}/bank/{a['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    shown = B.all_lines(await B.groups(client, co, a["id"]))[0]["suggestion"]
+    assert shown["paired_line_id"] == lb["id"]
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
+                                                          "target_bank_id": b["id"]}])
+    assert r.json()["results"][0]["paired_line_id"] == lb["id"], r.text
+    assert B.all_lines(await B.groups(client, co, b["id"], view="all"))[0]["status"] == "matched"
+
+
+async def test_transfer_with_two_counterparts_settles_neither(client):
+    """Two lines on the other bank could be the counterpart: the transfer posts, neither is
+    settled, the result names no pair and the suggestion names none either."""
+    co, a, b, la, lbs = await _transfer_banks(client, [("2026-01-04", "TRANSFER FROM CURRENT", "100.00"),
+                                                        ("2026-01-06", "REFUND ACME", "100.00")])
+    await client.post(f"{B.API}/bank/{a['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    shown = B.all_lines(await B.groups(client, co, a["id"]))[0]["suggestion"]
+    assert shown["kind"] == "transfer" and "paired_line_id" not in shown
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
+                                                          "target_bank_id": b["id"]}])
+    row = r.json()["results"][0]
+    assert row["ok"] and row["paired_line_id"] is None, r.text
+    assert {l["status"] for l in B.all_lines(await B.groups(client, co, b["id"], view="all"))} == {"unmatched"}
+
+
+async def test_transfer_names_the_counterpart_it_settles(client):
+    co, a, b, la, lbs = await _transfer_banks(client, [("2026-01-04", "TRANSFER FROM CURRENT", "100.00"),
+                                                        ("2026-01-06", "REFUND ACME", "100.00")])
+    want = next(l for l in lbs if l["description"] == "REFUND ACME")
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
+                                                          "target_bank_id": b["id"], "paired_line_id": want["id"]}])
+    assert r.json()["results"][0]["paired_line_id"] == want["id"], r.text
+    after = {l["id"]: l["status"] for l in B.all_lines(await B.groups(client, co, b["id"], view="all"))}
+    assert after == {l["id"]: "matched" if l["id"] == want["id"] else "unmatched" for l in lbs}
+
+
+async def test_transfer_whose_named_counterpart_was_settled_meanwhile_posts_nothing(client):
+    co, a, b, la, (lb,) = await _transfer_banks(client, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
+    r = await B.resolve(client, co, b["id"], decisions=[{"line_ids": [lb["id"]], "kind": "no_entry"}])
+    assert r.json()["results"][0]["ok"], r.text
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
+                                                          "target_bank_id": b["id"], "paired_line_id": lb["id"]}])
+    row = r.json()["results"][0]
+    assert row["ok"] is False and row["reason"] == t("reconciliation.line_not_open", "en"), r.text
+    assert B.all_lines(await B.groups(client, co, a["id"]))[0]["status"] == "unmatched"
+    assert await _transfer_entries(client, co) == 0
+
+
+async def test_accept_refuses_a_line_whose_suggestion_changed_since_it_was_shown(client):
+    """The accept names each line's suggestion version; a line whose suggestion changed
+    since is refused and nothing posts. A line without its version is not accepted at all."""
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "NETFLIX.COM", "-15.00")])
+    r = await client.post("/accounting/rules", json={"match_pattern": "NETFLIX", "target_account_code": "5100",
+                                                     "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    table = await B.groups(client, co, bk["id"])
+    accept = B.accept(table, [table["groups"][0]["key"]])
+    stale = {**accept, "versions": {i: "0" * 16 for i in accept["line_ids"]}}
+    r = await B.resolve(client, co, bk["id"], accept=stale)
+    row = r.json()["results"][0] if r.status_code == 200 else None
+    assert r.status_code == 409 or (row and not row["ok"]), r.text
+    r = await B.resolve(client, co, bk["id"], accept={**accept, "versions": {}})
+    assert r.status_code == 422, r.text
+    assert {l["status"] for l in B.all_lines(await B.groups(client, co, bk["id"], view="all"))} == {"unmatched"}
+    r = await B.resolve(client, co, bk["id"], accept=accept)
+    assert r.json()["refused"] == 0, r.text
 
 
 async def test_transfer_retry_posts_once(client):

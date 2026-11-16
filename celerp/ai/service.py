@@ -453,13 +453,26 @@ def _for_each_target(capabilities: dict, opened: set[str], arguments: dict) -> t
     return name, None
 
 
+def _picked(value, path: list[str]) -> int:
+    """How many items the list at ``path`` under ``value`` holds; ``name[]`` steps into each
+    item of a list."""
+    if not path:
+        return len(value) if isinstance(value, list) else 0
+    head, rest = path[0], path[1:]
+    value = value.get(head.removesuffix("[]")) if isinstance(value, dict) else None
+    if head.endswith("[]"):
+        return sum(_picked(v, rest) for v in value) if isinstance(value, list) else 0
+    return _picked(value, rest)
+
+
 def _selection_size(capability: dict, arguments: dict) -> int | None:
-    """How many records a bulk change names, from its ``selection`` body field."""
-    field_name = capability.get("selection")
-    if not field_name:
+    """How many records a bulk change names, from its ``selection`` body paths (space
+    separated, dotted, ``name[]`` for each item of a list)."""
+    selection = capability.get("selection")
+    if not selection:
         return None
-    chosen = (arguments.get("body") or {}).get(field_name)
-    return len(chosen) if isinstance(chosen, list) else 0
+    body = arguments.get("body") or {}
+    return sum(_picked(body, path.split(".")) for path in selection.split())
 
 
 def _card_warnings(capability: dict, count: int | None, arguments: dict | None) -> list[dict]:

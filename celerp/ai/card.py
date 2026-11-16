@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: BUSL-1.1
 """What a proposed change's confirm card shows: the arguments as the route reads them.
 
-The model may send fields a route does not declare (the route ignores them) and the
-preview token a change sends back (it means nothing to a person). The card lists only
-the fields the tool's own parameter schema declares, at any depth; a field that is a
-free map (attributes keyed by the user's own names) keeps every key.
+The model may send fields a route does not declare (the route ignores them), the
+preview token a change sends back and a field the route marks ``x-celerp-unshown`` (a
+version fingerprint it checks): neither means anything to a person. The card lists only
+the other fields the tool's own parameter schema declares, at any depth; a field that is
+a free map (attributes keyed by the user's own names) keeps every key.
 """
 from __future__ import annotations
 
@@ -24,6 +25,11 @@ def _alternatives(schema: dict) -> list[dict]:
     return out
 
 
+def unshown(schema: Any) -> bool:
+    """Whether a declared field is a check value the card leaves out."""
+    return isinstance(schema, dict) and schema.get("x-celerp-unshown") is True
+
+
 def declared(schema: Any, value: Any) -> Any:
     """``value`` with every field ``schema`` does not declare left out, at any depth."""
     if not isinstance(schema, dict):
@@ -40,7 +46,8 @@ def declared(schema: Any, value: Any) -> Any:
                 free = True
         if not properties:
             return value
-        return {k: declared(properties.get(k), v) for k, v in value.items() if k in properties or free}
+        return {k: declared(properties.get(k), v) for k, v in value.items()
+                if not unshown(properties.get(k)) and (k in properties or free)}
     if isinstance(value, list):
         items = next((s["items"] for s in shapes if isinstance(s.get("items"), dict)), None)
         return [declared(items, v) for v in value]

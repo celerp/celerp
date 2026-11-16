@@ -21,6 +21,7 @@ from ui import i18n
 from ui.i18n import refusal_text
 
 _MARK = "QX:"
+_NO_LINE = str(uuid.uuid4())
 _EN = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text(encoding="utf-8"))
 
 
@@ -442,7 +443,7 @@ async def _route_refusals(client) -> list[dict]:
     import bank_statement_helpers as B
     co = await B.co_of(client, h)
     bank = await B.bank(client, h, name="Harbor Bank", opening=1000.0)
-    answers.append(await B.resolve(client, co, bank["id"], accept={"group_keys": ["NO SUCH GROUP"]}))
+    answers.append(await B.resolve(client, co, bank["id"], accept={"group_keys": ["NO SUCH GROUP"], "line_ids": [_NO_LINE], "versions": {_NO_LINE: "0"}}))
     assert [r.status_code for r in answers] == [422, 409, 409], [r.text for r in answers]
     return [{"ok": False, "status": r.status_code, "data": r.json()} for r in answers]
 

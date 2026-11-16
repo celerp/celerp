@@ -11,6 +11,8 @@ Every keyed write answers a replay of the same request with its first answer
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import date as Date
 from decimal import Decimal
@@ -18,7 +20,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -535,7 +537,7 @@ def _line_dict(line: BankStatementLine, currency: str) -> dict:
             "counterparty_account": line.counterparty_account,
             "raw_balance": None if line.raw_balance is None else _money_text(line.raw_balance, currency),
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,
-            "client_query": line.client_query, "attachments": _attachments(line)}
+            "suggestion_version": suggestion_version(line.suggestion), "client_query": line.client_query, "attachments": _attachments(line)}
 
 
 async def _posted_to(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount,
@@ -678,7 +680,6 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
 # ── Resolve ─────────────────────────────────────────────────────────────────
 
 _KINDS = Literal["post", "match", "no_entry", "transfer", "cash", "pay_doc", "suspense"]
-_PAIR_DAYS = 3
 
 
 # An account code as typed, pasted or proposed: surrounding spaces of any kind are not part of it.
@@ -719,14 +720,33 @@ class Decision(BaseModel):
     remember: bool = False
     je_ids: list[str] | None = Field(None, max_length=200)
     target_bank_id: uuid.UUID | None = None
+    paired_line_id: uuid.UUID | None = None
     to_amount: PositiveFloat | None = None
     docs: list[DocIn] | None = Field(None, max_length=50)
     parts: list[PartIn] | None = Field(None, max_length=20)
 
 
+def suggestion_version(suggestion: dict | None) -> str | None:
+    """A short fingerprint of a line's suggestion: an accept names the version it saw, so a
+    suggestion that changed before the accept ran is refused, never posted unseen."""
+    if not suggestion:
+        return None
+    return hashlib.sha256(json.dumps(suggestion, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 class Accept(BaseModel):
+    """The ticked lines of the named groups, each with the suggestion version it was shown."""
     group_keys: list[str] = Field(min_length=1, max_length=500)
-    line_ids: list[uuid.UUID] | None = Field(None, max_length=5000)
+    line_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    versions: dict[uuid.UUID, Annotated[str, Field(max_length=64)]] = Field(
+        max_length=5000, description="Each line's suggestion_version as the bank's groups showed it.",
+        json_schema_extra={"x-celerp-unshown": True})
+
+    @model_validator(mode="after")
+    def _every_line_versioned(self) -> "Accept":
+        if set(self.line_ids) - set(self.versions):
+            raise ValueError("every line needs the suggestion version it was shown")
+        return self
 
 
 class Resolve(BaseModel):
@@ -814,19 +834,18 @@ async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatement
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_remember_kind"))
 
 
-async def _pair(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
-                to_amount: float | None) -> uuid.UUID | None:
-    """The target bank's open line for the same money within three days, if one is there."""
-    from datetime import date as _date
+async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
+                 to_amount: float | None) -> list[uuid.UUID]:
+    """The target bank's open lines the transfer ``line`` could be, by the one pairing rule."""
+    from celerp_accounting.suggest import transfer_pairs
     want = -Decimal(str(line.amount)) if to_amount is None else Decimal(str(to_amount)) * (1 if line.amount < 0 else -1)
-    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date).join(
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.amount).join(
         ReconciliationSession, ReconciliationSession.id == BankStatementLine.reconciliation_id).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == target.id,
         BankStatementLine.status == "unmatched", BankStatementLine.amount == want,
         ReconciliationSession.status == "open"))).all()
-    day = _date.fromisoformat(str(line.line_date)[:10])
-    near = sorted((abs((_date.fromisoformat(str(d)[:10]) - day).days), str(i), i) for i, d in rows)
-    return near[0][2] if near and near[0][0] <= _PAIR_DAYS else None
+    return [c["id"] for c in transfer_pairs(want, line.line_date,
+                                            [{"id": i, "line_date": d, "amount": a} for i, d, a in rows])]
 
 
 async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> BankAccount:
@@ -850,8 +869,8 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         target = (await SL.scoped(db, company_id, "bank", [d.target_bank_id]))[0]
     line_id = d.line_ids[0]
     probe = await db.get(BankStatementLine, line_id)
-    pair_id = None if probe is None or probe.status != "unmatched" else await _pair(db, company_id, probe, target,
-                                                                                   d.to_amount)
+    pairs = await _pairs(db, company_id, probe, target, d.to_amount) if probe and probe.status == "unmatched" else []
+    pair_id = d.paired_line_id or (pairs[0] if len(pairs) == 1 else None)
     lines = await _locked_lines(db, company_id, None, [line_id] + ([pair_id] if pair_id else []), state=None)
     by_id = {l.id: l for l in lines}
     line = by_id[line_id]
@@ -862,11 +881,15 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         return {str(line.id): held}
     if line.status != "unmatched":
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_state", status=line.status))
-    paired = by_id.get(pair_id) if pair_id else None
-    if paired is not None and paired.status != "unmatched":
-        paired = None
+    # Under the locks the pair must still be the transfer's counterpart: a named one is refused
+    # when it is not, an automatic one is left out (the other bank's line stays open).
+    if pair_id is not None and pair_id not in await _pairs(db, company_id, line, target, d.to_amount):
+        if d.paired_line_id is not None:
+            raise _refused(409, "reconciliation.line_not_open")
+        pair_id = None
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
-                                    paired=paired, rate=d.rate, to_amount=d.to_amount, key=key)
+                                    paired=by_id.get(pair_id) if pair_id else None, rate=d.rate,
+                                    to_amount=d.to_amount, key=key)
     return {str(line.id): je_ids}
 
 
@@ -960,9 +983,9 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
 
 
 async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, accept: Accept) -> list[Decision]:
-    """The decisions the selected groups' suggestions make: each open line of a named group
-    (narrowed to ``line_ids`` when given) that carries a suggestion. A key with no open
-    line, or a named line that is not open with a suggestion, is refused."""
+    """The decisions the named lines' suggestions make. A group key with no open line, or a
+    named line that is not open in a named group with the suggestion version it was shown, is
+    refused."""
     from celerp.accounting_roles import AccountRole
     from celerp.services import account_roles
 
@@ -974,13 +997,11 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
     found = {_group_key(_line_dict(l, bank.currency)) for l in in_groups.values()}
     if keys - found:
         raise _refused(409, "reconciliation.group_closed")
-    if accept.line_ids is not None:
-        named = await SL.scoped(db, company_id, "line", accept.line_ids, bank=bank)
-        if any(l.id not in in_groups or not l.suggestion for l in named):
-            raise _refused(409, "reconciliation.line_not_open")
-        chosen = [in_groups[l.id] for l in named]
-    else:
-        chosen = [l for l in in_groups.values() if l.suggestion and l.suggestion.get("kind")]
+    named = await SL.scoped(db, company_id, "line", accept.line_ids, bank=bank)
+    if any(l.id not in in_groups or not l.suggestion or suggestion_version(l.suggestion) != accept.versions[l.id]
+           for l in named):
+        raise _refused(409, "reconciliation.line_not_open")
+    chosen = [in_groups[l.id] for l in named]
     tax_account = None
     out = []
     for line in sorted(chosen, key=lambda l: (l.line_date, str(l.id))):
@@ -996,7 +1017,7 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
         elif s.get("kind") == "match":
             base["je_ids"] = s.get("je_ids")
         elif s.get("kind") == "transfer":
-            base["target_bank_id"] = s.get("target_bank_id")
+            base.update(target_bank_id=s.get("target_bank_id"), paired_line_id=s.get("paired_line_id"))
         elif s.get("kind") == "pay_doc":
             base["docs"] = s.get("docs")
         if s.get("kind") not in _KINDS.__args__:
@@ -1026,7 +1047,7 @@ async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, done: dict, by_li
 
 @router.post(f"{API}/bank/{{bank_id}}/resolve", summary="Resolve a bank's statement lines: post, match, no entry, "
              "transfer, cash, pay documents or Suspense.", openapi_extra={
-                 **_agent("decisions", result_permissions=["record_payments"]),
+                 **_agent("decisions[].line_ids accept.line_ids", result_permissions=["record_payments"]),
                  "x-celerp-agent-card": "/accounting/reconcile/bank/{bank_id}"})
 async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = Depends(get_current_company_id),
                   _: None = require_permission("manage_accounting"), role: str = Depends(get_current_role),
@@ -1046,11 +1067,10 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
     earlier: dict = {}
     if payload.accept is not None:
         accept = payload.accept
-        if accept.line_ids is not None:
-            for lid in accept.line_ids:
-                if (row := await _unit_done(db, company_id, key, request, [lid])) is not None:
-                    earlier[str(lid)] = row
-            accept = accept.model_copy(update={"line_ids": [l for l in accept.line_ids if str(l) not in earlier]})
+        for lid in accept.line_ids:
+            if (row := await _unit_done(db, company_id, key, request, [lid])) is not None:
+                earlier[str(lid)] = row
+        accept = accept.model_copy(update={"line_ids": [l for l in accept.line_ids if str(l) not in earlier]})
         accepted = await _accepted(db, company_id, bank, accept) if accept.line_ids != [] else []
         ids = [x for d in accepted for x in d.line_ids] + [uuid.UUID(x) for x in earlier]
         by_line = {str(l.id): (l.suggestion or {}).get("rule_id")
@@ -1065,6 +1085,10 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
                 bank = await _bank(db, company_id, bank_id)
                 settled = await _decide(db, company_id, actor_id, role, bank, d, key)
                 rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
+                if d.kind in ("transfer", "cash"):
+                    for row in rows:
+                        pair = [str(i) for j in row["je_ids"] for i in await SL.paired_lines(db, company_id, bank.id, j)]
+                        row["paired_line_id"] = pair[0] if pair else None
             except (HTTPException, KeyedRefusal) as exc:
                 await db.rollback()
                 rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc)} for lid in d.line_ids]

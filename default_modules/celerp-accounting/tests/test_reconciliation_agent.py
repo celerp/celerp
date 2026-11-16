@@ -42,7 +42,7 @@ _AGENT_RECON_ROUTES = {
 _AGENT_BANK_ROUTES = {
     ("POST", "/accounting/reconciliation/read-statement"): None,
     ("POST", "/accounting/reconciliation/import-statement"): "statements",
-    ("POST", "/accounting/reconciliation/bank/{bank_id}/resolve"): "decisions",
+    ("POST", "/accounting/reconciliation/bank/{bank_id}/resolve"): "decisions[].line_ids accept.line_ids",
     ("POST", "/accounting/reconciliation/bank/{bank_id}/suggest"): None,
     ("POST", "/accounting/reconciliation/bank/{bank_id}/unmatch"): "line_ids",
     ("POST", "/accounting/reconciliation/bank/{bank_id}/complete"): None,

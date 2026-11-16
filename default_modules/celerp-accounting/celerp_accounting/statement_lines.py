@@ -469,13 +469,18 @@ async def _delete_payment(db: AsyncSession, company_id: uuid.UUID, actor_id, rol
                              source="reconciliation", recorded_locked=True)
 
 
+async def paired_lines(db: AsyncSession, company_id: uuid.UUID, bank_id, je_id: str) -> list[uuid.UUID]:
+    """The other banks' lines matched to the transfer entry ``je_id`` a line of ``bank_id`` posted."""
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.matched_je_ids).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.status == "matched",
+        BankStatementLine.bank_account_id != bank_id))).all()
+    return [i for i, held in rows if je_id in (held or [])]
+
+
 async def _release_pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, je_id: str) -> None:
     """Unmatch the other bank's line matched to the transfer ``line`` posted, before that
     entry is voided."""
-    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.matched_je_ids).where(
-        BankStatementLine.company_id == company_id, BankStatementLine.status == "matched",
-        BankStatementLine.bank_account_id != line.bank_account_id))).all()
-    ids = [i for i, held in rows if je_id in (held or [])]
+    ids = await paired_lines(db, company_id, line.bank_account_id, je_id)
     for paired in (await scoped(db, company_id, "line", ids, state=("matched",)) if ids else []):
         await _release(db, await _session(db, paired), paired)
         paired.status = "unmatched"

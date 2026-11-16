@@ -174,14 +174,22 @@ def _rule(line: dict, ctx: LadderContext) -> dict | None:
     return {**s, "kind": "post", "account_code": rule["target_account_code"]}
 
 
+def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dict]:
+    """The other banks' open lines a transfer of ``want`` dated ``line_date`` could be: exactly that
+    money within the pairing window, nearest first. A transfer pairs itself only when this is one line."""
+    near = [c for c in candidates if _amt(c["amount"]) == want and _days(c["line_date"], line_date) <= _PAIR_DAYS]
+    return sorted(near, key=lambda c: (_days(c["line_date"], line_date), str(c["id"])))
+
+
 def _transfer(line: dict, ctx: LadderContext) -> dict | None:
-    for pair in ctx.pair_lines:
-        if str(pair.get("bank_id")) != str(ctx.bank_id) and _amt(pair["amount"]) == -_amt(line["amount"]) and \
-                _days(pair["line_date"], line["line_date"]) <= _PAIR_DAYS:
-            return {"kind": "transfer", "source": "transfer", "target_bank_id": str(pair["bank_id"]),
-                    "paired_line_id": str(pair["id"]),
-                    "reason": t("acct.recon_reason_transfer", date=str(pair["line_date"])[:10])}
-    return None
+    pairs = transfer_pairs(-_amt(line["amount"]), line["line_date"],
+                           [p for p in ctx.pair_lines if str(p.get("bank_id")) != str(ctx.bank_id)])
+    banks = {str(p["bank_id"]) for p in pairs}
+    if len(banks) != 1:
+        return None
+    s = {"kind": "transfer", "source": "transfer", "target_bank_id": banks.pop(),
+         "reason": t("acct.recon_reason_transfer", date=str(pairs[0]["line_date"])[:10])}
+    return {**s, "paired_line_id": str(pairs[0]["id"])} if len(pairs) == 1 else s
 
 
 def _slip(line: dict, ctx: LadderContext) -> dict | None:

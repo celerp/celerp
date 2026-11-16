@@ -156,6 +156,15 @@ def line_by_text(table: dict, text: str) -> dict:
     return next(line for line in all_lines(table) if text in line["description"])
 
 
+def accept(table: dict, keys: list[str], line_ids: list[str] | None = None) -> dict:
+    """An accept as the bank page sends one: the lines ticked in the groups ``keys`` (each
+    one with a suggestion, or exactly ``line_ids``) with the suggestion version each was shown."""
+    lines = [l for g in table["groups"] if g["key"] in keys for l in g["lines"]
+             if (l["id"] in line_ids if line_ids is not None else bool(l["suggestion"]))]
+    return {"group_keys": keys, "line_ids": [l["id"] for l in lines],
+            "versions": {l["id"]: l["suggestion_version"] or "" for l in lines}}
+
+
 async def resolve(client: AsyncClient, co: dict, bank_id: str, *, decisions: list | None = None,
                   accept: dict | None = None, idem: str | None = None, headers: dict | None = None):
     body = {"idempotency_key": idem or key()}

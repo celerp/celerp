@@ -162,7 +162,7 @@ async def _named_cases(client, h) -> tuple[list[tuple[str, str, str, dict]], dic
         ("transfer_same_bank", "POST", "/accounting/transfers", {"body": {
             "from_bank_id": bank["id"], "to_bank_id": bank["id"], "amount": 5.0, "date": "2026-09-10"}}),
         ("bank_resolve_no_group", "POST", bank_rec + "/resolve",
-         {"path": on_bank, "body": {"accept": {"group_keys": ["NO SUCH GROUP"]}}}),
+         {"path": on_bank, "body": {"accept": {"group_keys": ["NO SUCH GROUP"], "line_ids": nope, "versions": {nope[0]: "0"}}}}),
         ("bank_suggest_no_bank", "POST", bank_rec + "/suggest", {"path": {"bank_id": _NOPE}, "body": {}}),
         ("bank_unmatch_no_line", "POST", bank_rec + "/unmatch", {"path": on_bank, "body": {"line_ids": nope}}),
         ("bank_complete_no_bank", "POST", bank_rec + "/complete", {"path": {"bank_id": _NOPE}, "body": {}}),

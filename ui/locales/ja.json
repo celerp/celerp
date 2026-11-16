@@ -8525,6 +8525,7 @@
   "field.new_bank": "新しい銀行口座",
   "field.parts": "その他の金額",
   "field.remember": "次回のために記憶する",
+  "field.paired_line_id": "もう一方の口座の対応する行",
   "field.target_bank_id": "振替先",
   "field.to_amount": "受取金額",
   "field.att_id": "添付ファイル",

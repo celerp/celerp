@@ -8525,6 +8525,7 @@
   "field.new_bank": "Nuovo conto bancario",
   "field.parts": "Altri importi",
   "field.remember": "Ricorda per la prossima volta",
+  "field.paired_line_id": "Riga corrispondente sull'altro conto",
   "field.target_bank_id": "Trasferisci a",
   "field.to_amount": "Importo ricevuto",
   "field.att_id": "Allegato",

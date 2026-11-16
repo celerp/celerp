@@ -66,7 +66,7 @@
       holder.appendChild(i);
     }
     groups.forEach(function (g) { hidden('group_key', g); });
-    ticked.forEach(function (l) { hidden('line_id', l.value); });
+    ticked.forEach(function (l) { hidden('line_id', l.value); hidden('version', l.dataset.version || ''); });
     var total = ticked.reduce(function (s, l) { return s + cents(l.dataset.amount, dp); }, 0) / Math.pow(10, dp);
     var shown = total.toLocaleString('en-US', {minimumFractionDigits: dp, maximumFractionDigits: dp});
     var label = ticked.length === 1 ? button.dataset.labelOne : button.dataset.label;

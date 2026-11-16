@@ -8525,6 +8525,7 @@
   "field.new_bank": "حساب بنكي جديد",
   "field.parts": "مبالغ أخرى",
   "field.remember": "التذكر للمرة القادمة",
+  "field.paired_line_id": "البند المقابل في الحساب الآخر",
   "field.target_bank_id": "التحويل إلى",
   "field.to_amount": "المبلغ المستلم",
   "field.att_id": "المرفق",

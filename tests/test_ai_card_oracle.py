@@ -198,23 +198,43 @@ def _with_field(schema, value, key: str, *, free: bool):
     return value
 
 
+def _without_unshown(schema, value):
+    """``value`` without the fields its schema marks ``x-celerp-unshown`` (a version the route
+    checks), at any depth: they mean nothing to a person, so the card leaves them out."""
+    if not isinstance(schema, dict):
+        return value
+    shapes = _shapes(schema)
+    props: dict = {}
+    for shape in shapes:
+        props.update(shape.get("properties") or {})
+    if isinstance(value, dict) and props:
+        return {k: _without_unshown(props.get(k), v) for k, v in value.items()
+                if (props.get(k) or {}).get("x-celerp-unshown") is not True}
+    items = next((s["items"] for s in shapes if isinstance(s.get("items"), dict)), None)
+    if isinstance(value, list) and items is not None:
+        return [_without_unshown(items, v) for v in value]
+    return value
+
+
 def test_every_write_tool_card_shows_exactly_the_fields_its_route_reads(write_tools):
     """Each declared field the model fills shows, at every depth and through every
     alternative shape, and so does a field of the user's own on a record that takes them (an
     item's custom price column); a field the route does not declare (the route never reads
-    it) and the preview fingerprint do not."""
+    it), a version the route marks unshown and the preview fingerprint do not."""
     from celerp.ai.card import card_arguments
 
     problems: list[str] = []
-    strays = extras = 0
+    strays = extras = unshown = 0
     for name, cap in sorted(write_tools.items()):
         params = cap["tool"]["function"]["parameters"]
         parts = params.get("properties") or {}
         arguments = _with_field(params, _value(params, ""), _EXTRA, free=True)
         extras += json.dumps(arguments).count(_EXTRA)
         token = (cap.get("preview") or {}).get("token")
-        expected = {p: {k: v for k, v in arguments[p].items() if not (p == "body" and k == token)}
-                    for p in ("body", "path", "query") if isinstance(arguments.get(p), dict) and p in parts}
+        kept = {p: _without_unshown(parts.get(p), v) for p, v in arguments.items()}
+        unshown += kept != arguments
+        expected = {p: {k: v for k, v in kept[p].items() if not (p == "body" and k == token)}
+                    for p in ("body", "path", "query") if isinstance(kept.get(p), dict) and p in parts}
         sent = _with_field(params, arguments, _STRAY, free=False)
         strays += json.dumps(sent).count(_STRAY)
         if token:
@@ -224,4 +244,5 @@ def test_every_write_tool_card_shows_exactly_the_fields_its_route_reads(write_to
             problems.append(f"{name}: shows {json.dumps(shown)[:200]} instead of {json.dumps(expected)[:200]}")
     assert strays > len(write_tools), "the oracle must send undeclared fields to most tools"
     assert extras, "the oracle must send a field of the user's own to a record that takes them (new item)"
+    assert unshown, "the oracle must send a version the route marks unshown (bank resolve accept)"
     assert problems == [], f"{len(problems)} problems, first: " + "\n".join(problems[:20])

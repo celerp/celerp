@@ -76,7 +76,7 @@ _CASES = [
     ("statement import", "post", "/accounting/reconcile/bank/b1/preview/j1/import",
      {"state": _STATE, "idempotency_key": "k1"}, {"import_statement": _refused, "statement_preview": _PREVIEW}, {}),
     ("post ticked", "post", "/accounting/reconcile/bank/b1/post-ticked",
-     {"group_key": "SPARSE:WITHDRAWAL:out", "idempotency_key": "k1"}, {**_BANK_API, "bank_action": _refused}, {}),
+     {"group_key": "SPARSE:WITHDRAWAL:out", "line_id": "l1", "version": "v1", "idempotency_key": "k1"}, {**_BANK_API, "bank_action": _refused}, {}),
     ("undo ticked", "post", "/accounting/reconcile/bank/b1/unmatch",
      {"line_id": "l1", "view": "all", "idempotency_key": "k1"}, {**_BANK_API, "bank_action": _refused}, {}),
     ("undo one line", "post", "/accounting/reconcile/bank/b1/unmatch",

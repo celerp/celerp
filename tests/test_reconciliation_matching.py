@@ -165,10 +165,12 @@ async def test_post_ticked_counts_the_lines_it_could_not_post_and_says_why(clien
                               {"s": f'{{"kind": "post", "account_code": "{code}", "source": "rule", "reason": "r"}}',
                                "l": line["id"]})
     await session.commit()
-    keys = [g["key"] for g in (await B.groups(client, await B.co_of(client, h), b["id"]))["groups"]]
+    table = await B.groups(client, await B.co_of(client, h), b["id"])
+    ticked = B.accept(table, [g["key"] for g in table["groups"]])
     async with _ui_as(tok) as ui:
-        page = (await ui.post(f"/accounting/reconcile/bank/{b['id']}/post-ticked",
-                              data={"group_key": keys, "idempotency_key": B.key()})).text
+        page = (await ui.post(f"/accounting/reconcile/bank/{b['id']}/post-ticked", data={
+            "group_key": ticked["group_keys"], "line_id": ticked["line_ids"],
+            "version": [ticked["versions"][i] for i in ticked["line_ids"]], "idempotency_key": B.key()})).text
     assert "Posted 1 lines." in page
     assert "1 lines were not posted:" in page
 

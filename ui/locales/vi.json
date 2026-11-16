@@ -8525,6 +8525,7 @@
   "field.new_bank": "Tài khoản ngân hàng mới",
   "field.parts": "Các khoản khác",
   "field.remember": "Ghi nhớ cho lần sau",
+  "field.paired_line_id": "Dòng tương ứng ở tài khoản kia",
   "field.target_bank_id": "Chuyển đến",
   "field.to_amount": "Số tiền nhận được",
   "field.att_id": "Tệp đính kèm",

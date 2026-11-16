@@ -213,7 +213,7 @@ async def test_bank_statements_year_end_to_end(client, session, monkeypatch):
     slip_lines = [l for l in B.all_lines(table) if l["description"] == "POS STATIONERY SHOP"]
     assert all(l["suggestion"]["source"] == "slip" for l in slip_lines)
     ticked = [g["key"] for g in table["groups"] if g["ticked"]]
-    r = await B.resolve(client, co, bank_id, accept={"group_keys": ticked})
+    r = await B.resolve(client, co, bank_id, accept=B.accept(table, ticked))
     assert r.status_code == 200 and r.json()["refused"] == 0
     # A free-text answer on TRANSFER, the client answers WITHDRAWAL, then WITHDRAWAL goes to Suspense first.
     table = await B.groups(client, co, bank_id)

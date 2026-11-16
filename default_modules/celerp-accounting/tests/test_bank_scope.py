@@ -259,9 +259,14 @@ async def test_resolve_proposed_as_one_card():
     from celerp.ai.service import _card_warnings
     caps = _caps()
     cap = _cap(caps, "POST", "/accounting/reconciliation/bank/{bank_id}/resolve")
-    assert cap["selection"] == "decisions" and cap["requires_confirmation"]
+    from celerp.ai.service import _selection_size
+    assert cap["selection"] == "decisions[].line_ids accept.line_ids" and cap["requires_confirmation"]
     assert "manage_accounting" in cap["required_permissions"]
-    decisions = [{"line_ids": [f"l{i}"], "kind": "no_entry"} for i in range(240)]
+    decisions = [{"line_ids": [f"l{i}", f"m{i}"], "kind": "no_entry"} for i in range(120)]
+    accept = {"group_keys": ["g"], "line_ids": ["a", "b", "c"], "versions": {}}
+    body = {"decisions": decisions, "accept": accept}
+    assert _selection_size(cap, {"body": body}) == 243
+    assert _selection_size(cap, {"body": {"accept": accept}}) == 3
     assert any("240" in w["text"] for w in _card_warnings(cap, 240, {"body": {"decisions": decisions}}))
     for role in ("viewer", "operator"):
         assert not [c for c in _caps(role).values() if c["path"].endswith("/resolve") and "reconciliation" in c["path"]]
@@ -271,11 +276,13 @@ async def test_resolve_proposed_as_one_card():
     from celerp.ai.tools import screen_of
     from celerp_ai.ui_routes import _action_body
     from fasthtml.common import Div, to_xml
-    arguments = {"path": {"bank_id": "b1"}, "body": {"accept": {"group_keys": ["NETFLIX", "GRAB TRIP"]}}}
+    arguments = {"path": {"bank_id": "b1"}, "body": {"accept": {
+        "group_keys": ["NETFLIX", "GRAB TRIP"], "line_ids": ["l1"], "versions": {"l1": "abcdef0123456789"}}}}
     link = screen_of(cap, arguments, "card_screen")
     assert link == "/accounting/reconcile/bank/b1"
     html = to_xml(Div(*_action_body({"shown": card_arguments(cap, arguments), "card_screen": link})))
     assert "NETFLIX" in html and "GRAB TRIP" in html and f'href="{link}"' in html
+    assert "abcdef0123456789" not in html, "the card leaves out the version fingerprint"
     assert "<input" not in html and "<select" not in html
 
 

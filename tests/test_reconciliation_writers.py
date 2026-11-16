@@ -75,7 +75,7 @@ async def test_suggest_then_accept_reconcile_both_book_entries(client):
     assert by_text["Rent"]["suggestion"]["je_ids"] == [rent]
     assert {l["status"] for l in (await _lines(client, h, sid)).values()} == {"unmatched"}, "a suggestion posts nothing"
 
-    r = await B.resolve(client, co, bank_id, accept={"group_keys": [g["key"] for g in table["groups"]]})
+    r = await B.resolve(client, co, bank_id, accept=B.accept(table, [g["key"] for g in table["groups"]]))
     assert r.status_code == 200 and r.json()["refused"] == 0, r.text
     lines = await _lines(client, h, sid)
     assert (lines["Deposit"]["status"], lines["Deposit"]["matched_je_ids"]) == ("matched", [deposit])

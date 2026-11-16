@@ -8525,6 +8525,7 @@
   "field.new_bank": "Neues Bankkonto",
   "field.parts": "Weitere Beträge",
   "field.remember": "Für das nächste Mal merken",
+  "field.paired_line_id": "Passende Zeile auf dem anderen Konto",
   "field.target_bank_id": "Überweisen an",
   "field.to_amount": "Erhaltener Betrag",
   "field.att_id": "Anhang",
