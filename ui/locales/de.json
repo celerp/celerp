@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Deren Konto",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Überweisen an",
   "field.to_amount": "Erhaltener Betrag",
   "field.att_id": "Anhang",
-  "field.je_ids": "Buchungen"
+  "field.je_ids": "Buchungen",
+  "bank.posted_to": "Gebucht auf {accounts}"
 }

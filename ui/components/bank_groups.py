@@ -223,6 +223,36 @@ def _thumbs(line: dict) -> list:
               rel="noopener") for a in line.get("attachments") or [] if a.get("url")]
 
 
+# Each grid's columns: the heading key (None for a column with no heading) and its alignment.
+# The heading row and, on a phone where the cells stack, each cell's own label read from it.
+_GROUP_HEAD = ((None, ""), ("bank.th_group", ""), ("bank.th_count", "bank-cell--num"), ("th.total", "bank-cell--money"),
+               ("bank.th_suggestion", ""), (None, ""))
+_LINE_HEAD = ((None, ""), ("th.date", ""), ("th.description", ""), ("bank.th_counterparty", ""),
+              ("th.balance", "bank-cell--money"), ("label.amount", "bank-cell--money"), (None, ""),
+              ("bank.th_suggestion", ""), ("th.status", ""), ("bank.th_answer", ""), (None, ""))
+_PREVIEW_HEAD = (("th.date", ""), ("th.description", ""), ("label.amount", "bank-cell--money"),
+                 ("th.balance", "bank-cell--money"), (None, ""))
+
+
+def _head(heads: tuple, grid: str) -> FT:
+    return Div(*[Span(t(k) if k else "", cls=c) for k, c in heads], cls=f"bank-row {grid} bank-row--head",
+               aria_hidden="true")
+
+
+def _row(*cells: FT, heads: tuple, cls: str) -> FT:
+    """A grid row whose cells carry their column's heading, shown beside the value when the row stacks."""
+    for cell, (key, _) in zip(cells, heads):
+        if key:
+            cell.set(data_label=t(key))
+    return Div(*cells, cls=cls)
+
+
+def _posted_to(line: dict) -> str:
+    """Where an answered line's money went, by account; ``--`` when its answer made no entry."""
+    accounts = [a["code"] if a["name"] == a["code"] else f'{a["code"]} {a["name"]}' for a in line.get("posted_to") or []]
+    return t("bank.posted_to", accounts=", ".join(accounts)) if accounts else EMPTY
+
+
 def line_row(line: dict, bank_id: str, currency: str, *, group_key: str = "", ticked: bool = False,
              notice: FT | None = None) -> FT:
     """One statement line in full, its buttons, and the slot its panels open in."""
@@ -243,18 +273,19 @@ def line_row(line: dict, bank_id: str, currency: str, *, group_key: str = "", ti
     tick = Input(type="checkbox", data_role="line", data_group=group_key, data_amount=str(line["amount"]),
                  value=lid, checked=ticked, aria_label=line.get("description") or lid) if is_open else Span()
     return Div(
-        Div(tick,
+        _row(tick,
             Span(line["line_date"], cls="bank-cell bank-cell--date"),
             Span(line.get("description") or EMPTY, cls="bank-cell bank-cell--text"),
             Span(line.get("counterparty_account") or EMPTY, cls="bank-cell"),
             Span(money(line.get("raw_balance"), currency), cls="bank-cell bank-cell--money"),
             Span(money(line["amount"], currency), cls="bank-cell bank-cell--money"),
             Span(*_thumbs(line), cls="bank-cell bank-cell--thumbs"),
-            Span(_reason(line.get("suggestion")) if is_open else EMPTY, cls="bank-cell bank-cell--text"),
-            Span(t(_STATUS_KEYS.get(status, "bank.status_open")), cls=f"badge badge--recon-{status}"),
+            Span(_reason(line.get("suggestion")) if is_open else _posted_to(line), cls="bank-cell bank-cell--text"),
+            Span(Span(t(_STATUS_KEYS.get(status, "bank.status_open")), cls=f"badge badge--recon-{status}"),
+                 cls="bank-cell"),
             Span(q.get("answer") or EMPTY, cls="bank-cell bank-cell--text"),
             Span(*actions, cls="bank-cell bank-actions screen-only"),
-            cls="bank-row bank-row--line"),
+            cls="bank-row bank-row--line", heads=_LINE_HEAD),
         Div(notice, cls="bank-panel-slot"),
         cls="bank-line", id=f"bank-line-{lid}", data_line=lid, data_amount=str(line["amount"]))
 
@@ -267,7 +298,7 @@ def group_block(group: dict, bank_id: str, currency: str) -> FT:
     folded = group["count"] > 1 and all_open
     key = group["key"]
     name = key.split(":", 2)[-1] if key.startswith("SPARSE:") else key
-    head = Div(
+    head = _row(
         Input(type="checkbox", data_role="group", data_group=key, checked=ticked, aria_label=name) if any_open
         else Span(),
         Span(name, cls="bank-cell bank-cell--text bank-group__name"),
@@ -276,7 +307,7 @@ def group_block(group: dict, bank_id: str, currency: str) -> FT:
         Span(_reason(group.get("suggestion")), cls="bank-cell bank-cell--text"),
         Span(Button(t("bank.show_lines"), type="button", cls="btn btn--ghost btn--sm", data_show_lines="1")
              if folded else None, cls="bank-cell screen-only"),
-        cls="bank-row bank-row--group")
+        cls="bank-row bank-row--group", heads=_GROUP_HEAD)
     return Div(head,
                Div(*[line_row(l, bank_id, currency, group_key=key, ticked=ticked) for l in lines],
                    cls="bank-lines", hidden=folded),
@@ -286,14 +317,7 @@ def group_block(group: dict, bank_id: str, currency: str) -> FT:
 def group_table(table: dict, bank_id: str, currency: str) -> FT:
     if not table["groups"]:
         return P(t("bank.view_empty"), cls="empty-state")
-    header = Div(Span(), Span(t("bank.th_group")), Span(t("bank.th_count"), cls="bank-cell--num"),
-                 Span(t("th.total"), cls="bank-cell--money"), Span(t("bank.th_suggestion")), Span(),
-                 cls="bank-row bank-row--head", aria_hidden="true")
-    line_head = Div(Span(), Span(t("th.date")), Span(t("th.description")), Span(t("bank.th_counterparty")),
-                    Span(t("th.balance"), cls="bank-cell--money"), Span(t("label.amount"), cls="bank-cell--money"),
-                    Span(), Span(t("bank.th_suggestion")), Span(t("th.status")), Span(t("bank.th_answer")), Span(),
-                    cls="bank-row bank-row--line bank-row--head", aria_hidden="true")
-    return Div(header, line_head, *[group_block(g, bank_id, currency) for g in table["groups"]],
+    return Div(_head(_GROUP_HEAD, "bank-row--group"), _head(_LINE_HEAD, "bank-row--line"), *[group_block(g, bank_id, currency) for g in table["groups"]],
                cls="bank-groups", data_currency=currency)
 
 
@@ -482,11 +506,13 @@ def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
               cls="flash flash--success" if tie.get("ok") else "flash flash--warning"),
             *[P(b["text"], cls="flash flash--error") for b in st.get("blocking") or []],
             *[P(n, cls="text-muted") for n in st.get("notices") or []],
-            Div(*[Div(Span(l.get("line_date") or EMPTY), Span(l.get("description") or EMPTY, cls="bank-cell--text"),
-                      Span(money(l.get("amount"), cur), cls="bank-cell--money"),
-                      Span(money(l.get("raw_balance"), cur), cls="bank-cell--money"),
-                      Span(t("bank.preview_duplicate") if l.get("duplicate") else ""),
-                      cls="bank-row bank-row--preview") for l in st["lines"]], cls="bank-preview__lines"),
+            Div(_head(_PREVIEW_HEAD, "bank-row--preview"),
+                *[_row(Span(l.get("line_date") or EMPTY), Span(l.get("description") or EMPTY, cls="bank-cell--text"),
+                       Span(money(l.get("amount"), cur), cls="bank-cell--money"),
+                       Span(money(l.get("raw_balance"), cur), cls="bank-cell--money"),
+                       Span(t("bank.preview_duplicate") if l.get("duplicate") else ""),
+                       cls="bank-row bank-row--preview", heads=_PREVIEW_HEAD) for l in st["lines"]],
+                cls="bank-preview__lines"),
             cls="bank-preview__statement"))
     failed = preview.get("failed_steps") or []
     importable = preview["statements"] and not any(st.get("blocking") for st in preview["statements"])

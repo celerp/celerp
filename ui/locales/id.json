@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Rekening mereka",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Transfer ke",
   "field.to_amount": "Jumlah diterima",
   "field.att_id": "Lampiran",
-  "field.je_ids": "Entri jurnal"
+  "field.je_ids": "Entri jurnal",
+  "bank.posted_to": "Dicatat ke {accounts}"
 }

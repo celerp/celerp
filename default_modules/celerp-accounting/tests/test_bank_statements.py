@@ -188,6 +188,20 @@ async def test_split_decision_through_resolve_equals_old_split(client, session):
     assert debits == [("5100", 60.0), ("5200", 40.0)] and je["je_type"] == "recon_split"
 
 
+async def test_an_answered_line_names_the_accounts_its_entries_went_to(client):
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "MIXED PURCHASE", "-100.00"), ("2026-01-06", "FEE", "-5.00")])
+    lines = {l["description"]: l for l in B.all_lines(await B.groups(client, co, bk["id"]))}
+    r = await B.resolve(client, co, bk["id"], decisions=[{"line_ids": [lines["MIXED PURCHASE"]["id"]], "kind": "post",
+                                                          "splits": [{"account_code": "5200", "amount": 60.0},
+                                                                     {"account_code": "5100", "amount": 40.0}]}])
+    assert r.status_code == 200, r.text
+    after = {l["description"]: l for l in B.all_lines(await B.groups(client, co, bk["id"], view="all"))}
+    assert [a["code"] for a in after["MIXED PURCHASE"]["posted_to"]] == ["5100", "5200"]
+    assert all(a["name"] and a["name"] != a["code"] for a in after["MIXED PURCHASE"]["posted_to"])
+    assert after["FEE"]["posted_to"] == []
+
+
 async def test_signed_split_amounts_are_refused_saying_to_drop_the_sign(client):
     from celerp_accounting.routes import _money_text
     from ui.i18n import t

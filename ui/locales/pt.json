@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Conta deles",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Transferir para",
   "field.to_amount": "Valor recebido",
   "field.att_id": "Anexo",
-  "field.je_ids": "Lançamentos contábeis"
+  "field.je_ids": "Lançamentos contábeis",
+  "bank.posted_to": "Lançado em {accounts}"
 }

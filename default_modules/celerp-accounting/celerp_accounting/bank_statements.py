@@ -480,6 +480,23 @@ def _line_dict(line: BankStatementLine, currency: str) -> dict:
             "client_query": line.client_query, "attachments": _attachments(line)}
 
 
+async def _posted_to(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount,
+                     lines: list[BankStatementLine]) -> dict[uuid.UUID, list[dict]]:
+    """The accounts each answered line's entries moved its money to, besides the bank's own."""
+    from celerp.services.ledger_rows import journal_rows
+    from celerp.services.posting_readiness import account_names
+
+    held = {l.id: list(l.matched_je_ids or []) for l in lines if l.status != "unmatched" and l.matched_je_ids}
+    if not held:
+        return {}
+    accounts = {je_id: {e.get("account") for e in state.get("entries", [])} - {bank.chart_account_code, None}
+                for je_id, state, _ in await journal_rows(db, company_id, entry_ids=sorted(
+                    {j for ids in held.values() for j in ids}))}
+    codes = {lid: sorted(set().union(*(accounts.get(j, set()) for j in ids))) for lid, ids in held.items()}
+    names = await account_names(db, company_id, {c for cs in codes.values() for c in cs})
+    return {lid: [{"code": c, "name": names[c]} for c in cs] for lid, cs in codes.items()}
+
+
 def _attachments(line: BankStatementLine) -> list[dict]:
     from celerp_accounting.routes import _line_attachment
     return [_line_attachment(line.company_id, u) for u in line.attachment_ids or []]
@@ -564,9 +581,10 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     open_ids = {s.id for s in sessions if s.status == "open"}
     rows = sorted(await _statement_lines(db, company_id, bank), key=lambda l: (l.line_date, str(l.id)), reverse=True)
     shown = [l for l in rows if _in_view(l, view, open_ids) and (not q or _searched(l, q))]
+    posted_to = await _posted_to(db, company_id, bank, shown)
     groups: dict = {}
     for row in shown:
-        line = _line_dict(row, bank.currency)
+        line = {**_line_dict(row, bank.currency), "posted_to": posted_to.get(row.id, [])}
         direction = "in" if row.amount > 0 else "out"
         g = groups.setdefault((_group_key(line), direction), {"key": _group_key(line), "direction": direction,
                                                               "count": 0, "total": Decimal(0), "lines": []})

@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Tài khoản của họ",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Chuyển đến",
   "field.to_amount": "Số tiền nhận được",
   "field.att_id": "Tệp đính kèm",
-  "field.je_ids": "Bút toán"
+  "field.je_ids": "Bút toán",
+  "bank.posted_to": "Đã ghi sổ vào {accounts}"
 }

@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "حسابهم",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "التحويل إلى",
   "field.to_amount": "المبلغ المستلم",
   "field.att_id": "المرفق",
-  "field.je_ids": "قيود اليومية"
+  "field.je_ids": "قيود اليومية",
+  "bank.posted_to": "رُحّل إلى {accounts}"
 }

@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "የእነርሱ ሂሳብ",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "ዝውውር ወደ",
   "field.to_amount": "የተቀበለው መጠን",
   "field.att_id": "አባሪ",
-  "field.je_ids": "የጆርናል ግቤቶች"
+  "field.je_ids": "የጆርናል ግቤቶች",
+  "bank.posted_to": "ወደ {accounts} ተመዝግቧል"
 }

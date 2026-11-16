@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Il loro conto",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Trasferisci a",
   "field.to_amount": "Importo ricevuto",
   "field.att_id": "Allegato",
-  "field.je_ids": "Registrazioni contabili"
+  "field.je_ids": "Registrazioni contabili",
+  "bank.posted_to": "Registrato su {accounts}"
 }

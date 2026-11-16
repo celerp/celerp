@@ -1919,10 +1919,6 @@
       "en": "Suggestion",
       "params": []
     },
-    "bank.th_counterparty": {
-      "en": "Account",
-      "params": []
-    },
     "bank.th_answer": {
       "en": "Client answer",
       "params": []

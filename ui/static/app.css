@@ -3824,6 +3824,7 @@ svg[aria-hidden="true"] { vertical-align: -0.125em; flex-shrink: 0; }
 .bank-row--group { grid-template-columns: 24px minmax(160px, 2fr) 60px 120px minmax(160px, 2fr) 110px; font-weight: 600; }
 .bank-row--line { grid-template-columns: 24px 96px minmax(140px, 2fr) 80px 100px 100px 60px minmax(120px, 1.5fr) 90px minmax(80px, 1fr) minmax(200px, auto); }
 .bank-row--head { color: var(--c-text2); font-size: 0.85em; text-align: center; }
+.bank-views { display: flex; flex-wrap: wrap; }
 .bank-row--preview { grid-template-columns: 96px minmax(160px, 2fr) 110px 110px 120px; }
 .bank-row--question { grid-template-columns: 96px 140px minmax(160px, 2fr) 140px auto; }
 .bank-lines .bank-row--line { font-weight: normal; background: var(--c-bg2, transparent); }
@@ -3843,6 +3844,8 @@ img.receipt-thumb { height: 48px; width: auto; border-radius: 4px; }
   .bank-list__row, .bank-preview__header { display: block; }
   .bank-row > * { display: block; margin: 2px 0; }
   .bank-row--head { display: none; }
+  .bank-row > [data-label]::before { content: attr(data-label) ": "; color: var(--c-text2); font-size: 0.85em; }
+  .bank-views .tab { padding: 0.5rem 0.75rem; }
   .bank-panel { margin-left: 0; }
 }
 @media print {

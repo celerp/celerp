@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "相手の口座",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "振替先",
   "field.to_amount": "受取金額",
   "field.att_id": "添付ファイル",
-  "field.je_ids": "仕訳"
+  "field.je_ids": "仕訳",
+  "bank.posted_to": "{accounts} に転記済み"
 }

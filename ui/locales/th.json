@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "บัญชีของคู่ค้า",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "โอนไปยัง",
   "field.to_amount": "จำนวนเงินที่ได้รับ",
   "field.att_id": "ไฟล์แนบ",
-  "field.je_ids": "รายการบันทึกบัญชี"
+  "field.je_ids": "รายการบันทึกบัญชี",
+  "bank.posted_to": "บันทึกไปที่ {accounts}"
 }

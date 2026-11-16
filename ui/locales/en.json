@@ -8445,7 +8445,7 @@
   "bank.th_group": "Paid to or from",
   "bank.th_count": "Lines",
   "bank.th_suggestion": "Suggestion",
-  "bank.th_counterparty": "Account",
+  "bank.th_counterparty": "Their account",
   "bank.th_answer": "Client answer",
   "bank.show_lines": "Show lines",
   "bank.status_open": "Open",
@@ -8524,5 +8524,6 @@
   "field.target_bank_id": "Transfer to",
   "field.to_amount": "Amount received",
   "field.att_id": "Attachment",
-  "field.je_ids": "Journal entries"
+  "field.je_ids": "Journal entries",
+  "bank.posted_to": "Posted to {accounts}"
 }
