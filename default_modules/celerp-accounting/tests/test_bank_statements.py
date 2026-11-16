@@ -358,7 +358,7 @@ async def test_fingerprint_refuses_overlapping_lines(client):
     first = preview["statements"][0]["lines"][0]
     assert first["duplicate"] and first["ticked"] is False
     out = await B.import_statement(client, co, preview, bank_id=bk["id"], header={
-        "opening_balance": "45.00", "closing_balance": "40.00", "period_start": "2026-01-20", "period_end": "2026-02-28"})
+        "opening_balance": "-5.00", "closing_balance": "40.00", "period_start": "2026-01-20", "period_end": "2026-02-28"})
     assert out["sessions"][0]["skipped_duplicates"] == 1
     lines = B.all_lines(await B.groups(client, co, bk["id"], view="all"))
     assert sum(1 for l in lines if l["description"] == "WIRE") == 1

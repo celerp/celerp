@@ -181,11 +181,12 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
         line.update(fingerprint=fp, counterparty_key=key, counterparty_account=account,
                     duplicate=duplicate, probable=probable, ticked=not (duplicate or probable))
 
-    counted = [i for i, l in enumerate(out) if not l["duplicate"]]
-    ties, first_break = _tie(opening, closing, [amounts[i] for i in counted], [balances[i] for i in counted])
+    # The statement ties out as read, every line in it, those already imported too: its opening,
+    # closing and running balances count them. Only then are the duplicates left out of the import.
+    ties, first_break = _tie(opening, closing, amounts, balances)
     flipped = False
     if ties is False and first_break is None:
-        reversed_ties, _ = _tie(opening, closing, [-amounts[i] for i in counted], [None for _ in counted])
+        reversed_ties, _ = _tie(opening, closing, [-a for a in amounts], [None for _ in amounts])
         if reversed_ties:
             flipped, ties = True, True
             for line in out:
@@ -194,7 +195,6 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
             notices.append("The amounts on this statement were reversed to match its balances "
                            "(card statements print spending as positive).")
     if first_break is not None:
-        first_break = counted[first_break]
         blocking.append(_block("tie_break", first_break, n=first_break + 1))
     elif ties is False:
         blocking.append(_block("tie_out"))

@@ -78,6 +78,56 @@ def test_existing_fingerprint_listed_and_unticked():
     assert line["duplicate"] == "Statement 2026-01-31" and line["ticked"] is False
 
 
+def _again(header, lines, imported: list[int]):
+    """``lines`` reviewed again once the lines at ``imported`` were imported by an earlier statement."""
+    first = _review(header, lines)
+    return _review(header, lines, existing={first["lines"][i]["fingerprint"]: "Statement 2025-12-31"
+                                            for i in imported})
+
+
+def test_overlap_ties_out_with_the_lines_already_imported():
+    header = {**_HEADER, "closing_balance": "130.00"}
+    out = _again(header, [_line("2026-01-05", "10.00", "DEPOSIT A", "110.00"),
+                          _line("2026-01-06", "20.00", "DEPOSIT B", "130.00")], [0])
+    assert out["lines"][0]["duplicate"] and out["lines"][0]["ticked"] is False
+    assert out["lines"][1]["ticked"] is True
+    assert out["tie"]["ok"] is True and out["blocking"] == []
+
+
+def test_overlap_never_flips_the_sign_of_a_new_line():
+    out = _again({**_HEADER, "closing_balance": "115.00"}, [_line("2026-01-05", "30.00", "DEPOSIT A"),
+                                                            _line("2026-01-06", "-15.00", "CARD FEE")], [0])
+    assert out["flipped"] is False and out["blocking"] == []
+    assert [l["amount"] for l in out["lines"]] == ["30.00", "-15.00"]
+
+
+def test_a_statement_that_ties_only_without_its_imported_lines_is_blocked():
+    # 100 + 10 + 20 is 130, not 120: the header leaves out the line imported before.
+    out = _again({**_HEADER, "closing_balance": "120.00"}, [_line("2026-01-05", "10.00", "DEPOSIT A"),
+                                                            _line("2026-01-06", "20.00", "DEPOSIT B")], [0])
+    assert out["flipped"] is False
+    assert [b["code"] for b in out["blocking"]] == ["tie_out"]
+
+
+def test_overlap_with_repeated_identical_lines_skips_each_once():
+    lines = [_line("2026-01-02", "-3.00", "ATM FEE"), _line("2026-01-02", "-3.00", "ATM FEE"),
+             _line("2026-01-03", "-3.00", "ATM FEE")]
+    out = _again({**_HEADER, "closing_balance": "91.00"}, lines, [0, 1])
+    assert [bool(l["duplicate"]) for l in out["lines"]] == [True, True, False]
+    assert out["tie"]["ok"] is True and out["blocking"] == []
+
+
+def test_card_statement_overlap_reverses_every_line_and_keeps_its_fingerprints():
+    header = {**_HEADER, "opening_balance": "0.00", "closing_balance": "-100.00"}
+    lines = [_line("2026-01-02", "25.00", "COFFEE"), _line("2026-01-05", "75.00", "HOTEL")]
+    first = _review(header, lines)
+    out = _again(header, lines, [0])
+    assert out["flipped"] is True and out["blocking"] == []
+    assert [l["amount"] for l in out["lines"]] == ["-25.00", "-75.00"]
+    assert [l["fingerprint"] for l in out["lines"]] == [l["fingerprint"] for l in first["lines"]]
+    assert out["lines"][0]["duplicate"] and not out["lines"][1]["duplicate"]
+
+
 def test_pdf_and_csv_overlap_flagged_probable_duplicate():
     lines = [_line("2026-01-02", "-10.00", "Fee charged Jan"), _line("2026-01-04", "-7.00", "Other")]
     out = _review({**_HEADER, "closing_balance": "83.00"}, lines, held_counts={("2026-01-02", "-10.00"): 1})
