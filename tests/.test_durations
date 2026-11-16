@@ -30840,5 +30840,18 @@
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-fixed-assets.tax-books]": 0.7309386798879132,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-fixed-assets.year-end]": 1.303870523814112,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.catch-up]": 0.7306655700085685,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.summary]": 1.1821262128651142
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.summary]": 1.1821262128651142,
+    "tests/test_import_result_errors.py::test_a_journal_the_connected_company_declined_keeps_a_keyed_reason": 0.2152198040857911,
+    "tests/test_import_result_errors.py::test_a_migration_sink_names_every_refused_record_with_a_catalog_key": 0.037495127064175904,
+    "tests/test_import_result_errors.py::test_a_peer_attention_reason_is_stored_only_as_a_keyed_refusal": 0.0022817400749772787,
+    "tests/test_import_result_errors.py::test_a_peer_attention_reason_reads_in_the_readers_language_and_an_older_one_as_written": 0.005910731968469918,
+    "tests/test_import_result_errors.py::test_a_peer_attention_reason_that_is_not_a_keyed_refusal_is_refused[Accounts reviewed.]": 0.036499169073067605,
+    "tests/test_import_result_errors.py::test_a_peer_attention_reason_that_is_not_a_keyed_refusal_is_refused[reason1]": 0.049664893886074424,
+    "tests/test_import_result_errors.py::test_a_peer_attention_reason_that_is_not_a_keyed_refusal_is_refused[reason2]": 0.07116987789049745,
+    "tests/test_import_result_errors.py::test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason[_keyed_http-1]": 0.0643234298331663,
+    "tests/test_import_result_errors.py::test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason[_keyed_http-None]": 0.0428182459436357,
+    "tests/test_import_result_errors.py::test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason[_plain_value-1]": 0.07362693001050502,
+    "tests/test_import_result_errors.py::test_a_record_a_connected_company_sent_is_refused_with_a_keyed_reason[_unexpected-1]": 0.06005093001294881,
+    "tests/test_keyed_refusal_handler.py::test_a_keyed_refusal_keeps_the_error_body_fields_beside_it": 0.0031391860684379935,
+    "tests/test_migration_batch_contract.py::test_a_refused_batch_reads_its_reasons_as_sentences_and_closes_the_count_of_the_rest": 0.0027360038366168737
 }
