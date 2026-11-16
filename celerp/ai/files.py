@@ -18,6 +18,19 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 # Files whose owning module parses them: the model is told the file id, never sent the bytes.
 TABULAR_UPLOAD_TYPES = frozenset({"text/csv", XLSX_CONTENT_TYPE, "application/x-ofx", "application/vnd.intu.qfx"})
 AGENT_UPLOAD_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "application/pdf"}) | TABULAR_UPLOAD_TYPES
+# The type each accepted kind of file is kept as, by its extension: a browser without an entry
+# for a kind (OFX and QFX often) sends a generic type, which would be refused.
+UPLOAD_TYPE_BY_SUFFIX = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+                         ".pdf": "application/pdf", ".csv": "text/csv", ".xlsx": XLSX_CONTENT_TYPE,
+                         ".ofx": "application/x-ofx", ".qfx": "application/vnd.intu.qfx"}
+# The file picker's accept list for every kind the assistant takes.
+UPLOAD_ACCEPT = ",".join(UPLOAD_TYPE_BY_SUFFIX)
+
+
+def upload_content_type(filename: str | None, sent: str | None) -> str:
+    """The type to keep an uploaded file as: its extension's when it is a kind the
+    assistant takes, else the type the browser sent."""
+    return UPLOAD_TYPE_BY_SUFFIX.get(Path(filename or "").suffix.lower()) or sent or "application/octet-stream"
 _UPLOAD_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
 
 

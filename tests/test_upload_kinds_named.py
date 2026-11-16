@@ -7,13 +7,12 @@ told the full list of what it could be instead."""
 
 from __future__ import annotations
 
-import mimetypes
 import re
 
 import pytest
 from fasthtml.common import to_xml
 
-from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
+from celerp.ai.files import AGENT_UPLOAD_TYPES, UPLOAD_TYPE_BY_SUFFIX, XLSX_CONTENT_TYPE, upload_content_type
 from ui.components.bank_groups import drop_zone
 from ui.i18n import t
 
@@ -35,10 +34,26 @@ def test_a_file_type_refusal_names_every_kind_the_assistant_takes(key):
     assert [kind for kind in sorted(set(_NAMED.values())) if kind not in text] == []
 
 
-def test_the_bank_page_offers_only_files_the_assistant_takes():
-    from ui.routes.bank import _CONTENT_TYPES
+def _accepted(html: str) -> list[str]:
+    return re.search(r'accept="([^"]+)"', html).group(1).split(",")
 
-    accept = re.search(r'accept="([^"]+)"', to_xml(drop_zone("b1"))).group(1).split(",")
-    refused = [ext for ext in accept
-               if (_CONTENT_TYPES.get(ext) or mimetypes.guess_type(f"f{ext}")[0]) not in AGENT_UPLOAD_TYPES]
+
+def test_every_kind_the_assistant_takes_has_an_extension():
+    assert set(UPLOAD_TYPE_BY_SUFFIX.values()) == set(AGENT_UPLOAD_TYPES)
+
+
+def test_the_bank_page_offers_only_files_the_assistant_takes():
+    refused = [ext for ext in _accepted(to_xml(drop_zone("b1"))) if upload_content_type(f"f{ext}", None) not in AGENT_UPLOAD_TYPES]
     assert refused == []
+
+
+def test_the_chat_offers_every_kind_the_assistant_takes():
+    from celerp_ai.ui_routes import _chat_view
+
+    offered = {upload_content_type(f"f{ext}", None) for ext in _accepted(to_xml(_chat_view()))}
+    assert offered == set(AGENT_UPLOAD_TYPES)
+
+
+@pytest.mark.parametrize("name", ["march.ofx", "march.QFX", "march.csv"])
+def test_a_statement_file_sent_with_a_generic_type_is_kept_as_its_kind(name):
+    assert upload_content_type(name, "application/octet-stream") in AGENT_UPLOAD_TYPES

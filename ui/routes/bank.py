@@ -7,13 +7,13 @@ re-renders what it changed: one line, the preview, or the page body."""
 from __future__ import annotations
 
 import json
-from pathlib import PurePath
 from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from celerp.ai.files import upload_content_type
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components import bank_groups as BG
@@ -25,7 +25,6 @@ from ui.components.table import EMPTY
 from ui.config import get_token as _token
 from ui.i18n import t
 
-_CONTENT_TYPES = {".ofx": "application/x-ofx", ".qfx": "application/vnd.intu.qfx", ".csv": "text/csv"}
 _QUESTION_STATUSES = ("open", "answered", "all")
 
 
@@ -162,9 +161,7 @@ def setup_routes(app):
         files = []
         for f in form.getlist("files"):
             if getattr(f, "filename", ""):
-                suffix = PurePath(f.filename).suffix.lower()
-                files.append((f.filename, await f.read(),
-                              _CONTENT_TYPES.get(suffix) or f.content_type or "application/octet-stream"))
+                files.append((f.filename, await f.read(), upload_content_type(f.filename, f.content_type)))
         back = bank_url(bank_id)
         if not files:
             return RedirectResponse(back + "?msg=" + quote(t("bank.err_no_file"), safe=""), status_code=303)

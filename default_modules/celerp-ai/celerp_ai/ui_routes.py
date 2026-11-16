@@ -923,11 +923,12 @@ def setup_ui_routes(app) -> None:
 
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
+        from celerp.ai.files import upload_content_type
 
         files = []
         for f in files_raw:
             content = await f.read()
-            files.append((f.filename, content, f.content_type or "application/octet-stream"))
+            files.append((f.filename, content, upload_content_type(f.filename, f.content_type)))
 
         try:
             result = await api.ai_upload(token, session_token, files)
@@ -2067,6 +2068,7 @@ def _chat_view(
     """The chat. A paid ``tier`` offers the top-up link, and the tier decides the bills
     tip under the drop zone; a free account's ``badge`` (its questions left) is rendered
     here, a paid plan's credits are read by the page script."""
+    from celerp.ai.files import UPLOAD_ACCEPT
     paid = tier in PAID_TIERS
     if failed is not None:
         message_children = [failed]
@@ -2149,7 +2151,7 @@ def _chat_view(
                     id="ai-file-input",
                     multiple=True,
                     style="display: none;",
-                    accept="image/jpeg,image/png,image/webp,application/pdf,.csv,.xlsx",
+                    accept=UPLOAD_ACCEPT,
                     onchange="celerpAiHandleFiles(this)",
                 ),
                 Input(
