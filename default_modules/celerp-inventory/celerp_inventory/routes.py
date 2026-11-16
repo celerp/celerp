@@ -1833,11 +1833,12 @@ def _bounded_rows(rows: list[dict]) -> list[dict]:
     return rows
 
 
-def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None, plan: ImportPlan) -> str:
-    """Binds the rows, the update-existing choice, the operation key, the row
-    decisions, and what the rows meant when previewed."""
+def _rows_preview_hash(rows: list[dict], upsert: bool, plan: ImportPlan) -> str:
+    """Binds the rows, the update-existing choice, the row decisions, and what the
+    rows meant when previewed. Never the operation key: a preview and its import each
+    carry their own."""
     return import_preview_hash({
-        "rows": rows, "upsert": upsert, "idempotency_key": idempotency_key,
+        "rows": rows, "upsert": upsert,
         "decisions": plan.decisions, "semantic_fingerprint": plan.semantic_fingerprint,
     })
 
@@ -1941,9 +1942,8 @@ async def import_rows_preview(
 ) -> InventoryImportRowsPreview:
     """Semantic preview of mapped browser rows; nothing is written.
 
-    The returned hash binds the rows, the update-existing choice, the operation
-    key, and what the rows mean now, and /import/rows refuses a commit whose
-    hash no longer matches.
+    The returned hash binds the rows, the update-existing choice and what the
+    rows mean now, and /import/rows refuses a commit whose hash no longer matches.
     """
     plan = await _rows_plan(session, company_id, role, settings, body)
     return InventoryImportRowsPreview(
@@ -1951,7 +1951,7 @@ async def import_rows_preview(
         locations_to_create=plan.locations_to_create,
         counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
         cost_changes=plan.cost_changes, decisions=plan.decisions,
-        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, plan),
     )
 
 
@@ -1973,8 +1973,7 @@ async def import_rows(
 
     Rows arrive mapped and fixed by the UI. The shared committer owns location
     resolution and creation, unit and quantity derivation, monetary conversion,
-    idempotency, and the category-schema follow-up. Unmarked: this is the browser
-    transport, not an agent capability (the agent commits through /import/commit).
+    idempotency, and the category-schema follow-up.
 
     Every commit runs the semantic preflight once, and any row error is refused
     with 422 before anything is written. With ``preview_hash`` the commit is also
@@ -1987,7 +1986,7 @@ async def import_rows(
     plan = None
     if body.preview_hash is not None:
         plan = await _rows_plan(session, company_id, role, settings, body)
-        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan) != body.preview_hash:
+        if _rows_preview_hash(body.rows, body.upsert, plan) != body.preview_hash:
             raise _preview_stale()
         if plan.errors:
             raise _validation_failed(plan.errors)

@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "لا تُحفظ سجلات صيانة للأصل {number}.",
   "fixed_assets.err_op_key": "يحمل كل تعديل مفتاح عملية مصدره النموذج الخاص به.",
   "fixed_assets.err_line_released": "تم تسجيل هذا البند وإخلاؤه بعد فتحك للنموذج. اضغط «مراجعة» مرة أخرى.",
+  "fixed_assets.err_review_first": "راجع هذا التغيير أولاً، ثم أكّد ما تعرضه المراجعة.",
   "fixed_assets.err_review_stale.one": "تغيّر {assets} منذ مراجعته. اضغط «مراجعة» مجدداً للاطلاع على حالته الحالية.",
   "fixed_assets.err_review_stale.many": "تغيّرت {assets} منذ مراجعتها. اضغط «مراجعة» مجدداً للاطلاع على حالتها الحالية.",
   "fixed_assets.err_ended.sold": "بِيع {number} بموجب الفاتورة {invoice}. ألغِ الفاتورة والبيع من صفحة {number}، ثم استخدم «تصحيح» هناك.",

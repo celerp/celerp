@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Aucun entretien n'est suivi pour {number}.",
   "fixed_assets.err_op_key": "Chaque modification porte une clé d'opération provenant de son formulaire.",
   "fixed_assets.err_line_released": "Cette ligne a été enregistrée et libérée depuis l'ouverture du formulaire. Cliquez de nouveau sur Vérifier.",
+  "fixed_assets.err_review_first": "Vérifiez d'abord cette modification, puis confirmez ce que la vérification affiche.",
   "fixed_assets.err_review_stale.one": "{assets} a changé depuis votre vérification. Cliquez de nouveau sur Vérifier pour voir son état actuel.",
   "fixed_assets.err_review_stale.many": "{assets} ont changé depuis votre vérification. Cliquez de nouveau sur Vérifier pour voir leur état actuel.",
   "fixed_assets.err_ended.sold": "{number} a été vendu sur la facture {invoice}. Annulez cette facture et la vente sur la page de {number}, puis utilisez Corriger sur cette page.",

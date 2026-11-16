@@ -268,6 +268,83 @@ async def test_a_revision_read_by_one_tool_is_sent_back_by_the_write():
     assert smuggled["ok"] is False and smuggled["error"]["code"] == "invalid_arguments"
 
 
+async def test_a_change_the_screen_reviews_first_compiles_a_preview_read_whose_token_the_change_sends_back():
+    """A change confirmed with what its review returned (``x-celerp-agent-preview``)
+    gets a read that reviews it: same route and arguments, the flag forced on, no card.
+    The change forces the flag off, so the model can review, then confirm with the token,
+    and a change sent without a fresh review is refused by the route."""
+    app = FastAPI()
+    applied: list[str] = []
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-key": "op_key",
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        token = f"fp-{body.get('name')}"
+        if body.get("preview"):
+            return {"fingerprint": token}
+        if body.get("fingerprint") != token:
+            from ui.i18n import t
+            raise HTTPException(status_code=409, detail=t("settings_menu.err_changed"))
+        applied.append(body["op_key"])
+        return {"done": body["name"]}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def answer_as_the_app_does(request, exc):
+        from celerp.error_body import error_response
+        return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+    operate.__module__ = "celerp.routers.agent_test"
+    caps = ai_tools.compile_agent_capabilities(app, {})
+    change = caps["operate_ops_post"]
+    review = caps["operate_ops_post_preview"]
+    assert change["requires_confirmation"] is True and review["requires_confirmation"] is False
+    assert review["card_screen"] is None and review["check_screen"] is None
+    assert "after_previous" not in review["tool"]["function"]["parameters"]["properties"]
+    assert "operate_ops_post_preview" in change["tool"]["function"]["description"]
+
+    seen = await ai_tools.execute_agent_capability(
+        app, "Bearer t", review, {"body": {"name": "a", "preview": False}}, "call-review")
+    assert seen == {"ok": True, "status": 200, "data": {"fingerprint": "fp-a"}} and applied == []
+    done = await ai_tools.execute_agent_capability(
+        app, "Bearer t", change, {"body": {"name": "a", "preview": True, "fingerprint": seen["data"]["fingerprint"]}},
+        "call-change")
+    assert done["data"] == {"done": "a"} and applied == [ai_tools.tool_call_key("call-change")]
+    unreviewed = await ai_tools.execute_agent_capability(app, "Bearer t", change, {"body": {"name": "b"}}, "call-b")
+    assert unreviewed["ok"] is False and unreviewed["status"] == 409 and len(applied) == 1
+
+
+@pytest.mark.parametrize("marker", [
+    {"flag": "preview"}, {"flag": "preview", "token": ""}, ["preview", "fingerprint"],
+    {"flag": "preview", "token": "fingerprint", "extra": "x"},
+])
+def test_a_preview_marker_without_a_flag_and_a_token_does_not_compile(marker):
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-check": "/ops", "x-celerp-agent-preview": marker})
+    async def operate(body: dict):
+        return {}
+
+    operate.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="x-celerp-agent-preview"):
+        ai_tools.compile_agent_capabilities(app, {})
+
+
+def test_a_preview_marker_on_a_change_that_is_not_confirmed_first_does_not_compile():
+    app = FastAPI()
+
+    @app.post("/ops", openapi_extra={
+        "x-celerp-agent": True, "x-celerp-agent-confirm": False,
+        "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}})
+    async def operate(body: dict):
+        return {}
+
+    operate.__module__ = "celerp.routers.agent_test"
+    with pytest.raises(ValueError, match="x-celerp-agent-preview"):
+        ai_tools.compile_agent_capabilities(app, {})
+
+
 async def test_executor_rejects_request_infrastructure_and_path_escape():
     app = _app()
     cap = next(
@@ -447,13 +524,20 @@ def _undescribed(app) -> list[str]:
     under 300 characters, and never the title FastAPI makes from the function name."""
     endpoints = {(path, method): route for path, methods, route in ai_tools._api_routes(app) for method in methods}
     found = []
-    for name, capability in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
+    capabilities = ai_tools.compile_agent_capabilities(app, {})
+    for name, capability in sorted(capabilities.items()):
         route = endpoints[(capability["path"], capability["method"])]
         summary = (route.summary or "").strip()
         generated = route.name.replace("_", " ").title()
+        # A change reviewed first says which read reviews it; that read is the compiler's own.
+        told = summary
+        if capability["preview"]:
+            told += ai_tools._preview_note(name, capability["preview"]["token"])
+        if capability["preview_flag"]:
+            told = ai_tools._preview_tool(capabilities[name.removesuffix("_preview")])["tool"]["function"]["description"]
         real = (
             summary
-            and summary == capability["tool"]["function"]["description"]
+            and told == capability["tool"]["function"]["description"]
             and summary.endswith(".")
             and summary.count(". ") == 0
             and len(summary.split()) >= 4
@@ -754,13 +838,17 @@ def test_user_facing_fields_stay_visible_to_the_model():
 
 def test_every_change_tool_is_confirm_first():
     """Every change the assistant makes waits for the user's confirmation. Only a preview
-    that writes nothing opts out, on its own route."""
+    that writes nothing opts out: on its own route, or as the review read of a change
+    whose route takes a preview flag."""
     app = real_agent_app()
     routes = _route_index(app)
     unconfirmed = []
     for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
         if cap["method"] in _CHANGE_METHODS and not cap["requires_confirmation"]:
             extra = routes[(cap["method"], cap["path"])].openapi_extra or {}
+            if cap["preview_flag"] and cap["preview_flag"] == (extra.get("x-celerp-agent-preview") or {}).get("flag"):
+                continue  # the review of a change: execute always sends the route's preview flag
+
             if extra.get("x-celerp-agent-confirm") is not False or cap["method"] == "DELETE":
                 unconfirmed.append(name)
     assert unconfirmed == []

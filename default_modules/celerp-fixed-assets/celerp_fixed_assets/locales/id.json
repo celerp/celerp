@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Tidak ada catatan pemeliharaan untuk {number}.",
   "fixed_assets.err_op_key": "Setiap perubahan memiliki kunci operasi dari formulirnya.",
   "fixed_assets.err_line_released": "Baris ini telah didaftarkan dan dilepas sejak formulir dibuka. Tekan Tinjau lagi.",
+  "fixed_assets.err_review_first": "Tinjau perubahan ini terlebih dahulu, lalu konfirmasi apa yang ditampilkan tinjauan.",
   "fixed_assets.err_review_stale.one": "{assets} telah berubah sejak ditinjau. Tekan Tinjau lagi untuk melihat kondisi terkini.",
   "fixed_assets.err_review_stale.many": "{assets} telah berubah sejak ditinjau. Tekan Tinjau lagi untuk melihat kondisi terkini.",
   "fixed_assets.err_ended.sold": "{number} dijual melalui faktur {invoice}. Batalkan faktur tersebut dan penjualannya di halaman {number}, lalu gunakan Koreksi di sana.",

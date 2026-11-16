@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
@@ -393,6 +394,8 @@ def _drop_field(schema: dict[str, Any], dotted: str) -> dict[str, Any]:
     head, _, rest = dotted.partition(".")
     name = head.removesuffix("[]")
     props = schema.get("properties")
+    if props is None and schema.get("type") == "object" and schema.get("additionalProperties") is True:
+        return schema  # an open body names no fields to hide; execute still fills the field
     if not isinstance(props, dict) or name not in props:
         raise ValueError(f"agent marker names a field the body does not have: {dotted!r}")
     out = dict(schema)
@@ -466,6 +469,10 @@ def compile_agent_capabilities(
     links to, where the user sees and changes what it proposes, its placeholders filled
     from the call's path arguments. ``x-celerp-agent-key`` names the route's key
     field: compile hides it and execute fills it from the tool call identity.
+    ``x-celerp-agent-preview`` ``{flag, token}`` names a change the screen reviews
+    first: compile adds a ``<name>_preview`` read that sends the route with ``flag``
+    true and returns ``token``, which the change sends back (execute sends ``flag``
+    false on the change).
 
     When ``role`` is supplied, tools whose FastAPI permission dependencies (or
     ``x-celerp-agent-any-permission``) deny that role are omitted before the model
@@ -593,7 +600,12 @@ def compile_agent_capabilities(
 
             key_field = operation.get("x-celerp-agent-key")
             generated_secret = operation.get("x-celerp-agent-generated-secret") if requires_confirmation else None
-            for field in (key_field, generated_secret):
+            preview = operation.get("x-celerp-agent-preview")
+            if preview is not None and not (
+                    requires_confirmation and encoding == "json" and isinstance(preview, dict)
+                    and set(preview) == {"flag", "token"} and all(isinstance(v, str) and v for v in preview.values())):
+                raise ValueError(f"x-celerp-agent-preview needs a confirm-first JSON change and a flag and token: {path}")
+            for field in (key_field, generated_secret, (preview or {}).get("flag")):
                 if field:
                     if body_schema is None:
                         raise ValueError(f"agent marker names a body field on a route with no body: {path}")
@@ -654,6 +666,8 @@ def compile_agent_capabilities(
                 "check_screen": check or None,
                 "card_screen": operation.get("x-celerp-agent-card") or None,
                 "generated_secret": generated_secret or None,
+                "preview": dict(preview) if preview else None,
+                "preview_flag": None,
                 "download": download,
                 "selection": operation.get("x-celerp-agent-selection"),
                 "outside": operation.get("x-celerp-agent-outside") is True,
@@ -669,11 +683,18 @@ def compile_agent_capabilities(
                         "name": operation_id,
                         # The route's own one-sentence summary: a docstring carries internal
                         # notes and costs context on every turn.
-                        "description": str(route.summary or ""),
+                        "description": str(route.summary or "") + (
+                            _preview_note(operation_id, preview["token"]) if preview else ""),
                         "parameters": params,
                     },
                 },
             }
+
+    for change in [cap for cap in compiled.values() if cap["preview"]]:
+        preview = _preview_tool(change)
+        if preview["name"] in compiled:
+            raise ValueError(f"duplicate agent operationId: {preview['name']!r}")
+        compiled[preview["name"]] = preview
 
     # A bulk route names the single-record change it does for many records at once
     # ("METHOD path"); the tool for that change, when this caller has it.
@@ -681,6 +702,43 @@ def compile_agent_capabilities(
     for name, target in bulk_targets.items():
         compiled[name]["bulk_of"] = by_route.get(target)
     return compiled
+
+
+_PREVIEW_SUFFIX = "_preview"
+
+
+def _preview_note(name: str, token: str) -> str:
+    """What a change with a preview tells the model, after its summary."""
+    return (f" Call {name}{_PREVIEW_SUFFIX} first with the same arguments, then send back "
+            f"the {token} it returned in the body.")
+
+
+def _preview_tool(change: dict[str, Any]) -> dict[str, Any]:
+    """The read that previews a confirm-first ``change`` (``x-celerp-agent-preview``): the
+    same route and arguments with the route's preview flag set, so it saves nothing, needs
+    no card, refuses what the change would and returns the token the change sends back."""
+    name = change["name"] + _PREVIEW_SUFFIX
+    params = copy.deepcopy(change["tool"]["function"]["parameters"])
+    params["properties"].pop("after_previous", None)
+    summary = change["tool"]["function"]["description"].removesuffix(
+        _preview_note(change["name"], change["preview"]["token"]))
+    return {
+        **change,
+        "name": name,
+        "requires_confirmation": False,
+        "keyed": False,
+        "check_screen": None,
+        "card_screen": None,
+        "bulk_of": None,
+        "preview": None,
+        "preview_flag": change["preview"]["flag"],
+        "tool": {"type": "function", "function": {
+            "name": name,
+            "description": f"Preview, saving nothing: {summary} Returns the {change['preview']['token']} "
+                           f"{change['name']} needs.",
+            "parameters": params,
+        }},
+    }
 
 
 def agent_tool_specs(capabilities: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -795,8 +853,12 @@ async def execute_agent_capability(
             if item is not None:
                 params.append((name, str(item)))
 
-    if capability.get("key_field") or capability.get("generated_secret"):
+    flag = capability.get("preview_flag") or (capability.get("preview") or {}).get("flag")
+    if capability.get("key_field") or capability.get("generated_secret") or flag:
         body = dict(body or {})
+    if flag:
+        # The preview tool always previews; the change it previews never does.
+        body[flag] = bool(capability.get("preview_flag"))
     if capability.get("key_field"):
         body = _fill_field(body, capability["key_field"], tool_call_key(tool_call_id))
     secret = None

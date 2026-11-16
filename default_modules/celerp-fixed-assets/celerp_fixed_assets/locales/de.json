@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Für {number} werden keine Wartungsdaten geführt.",
   "fixed_assets.err_op_key": "Jede Änderung enthält einen Vorgangsschlüssel aus dem zugehörigen Formular.",
   "fixed_assets.err_line_released": "Diese Position wurde seit dem Öffnen des Formulars erfasst und freigegeben. Klicken Sie erneut auf Prüfen.",
+  "fixed_assets.err_review_first": "Prüfen Sie diese Änderung zuerst und bestätigen Sie dann, was die Prüfung zeigt.",
   "fixed_assets.err_review_stale.one": "{assets} wurde seit Ihrer Prüfung geändert. Klicken Sie erneut auf Prüfen, um den aktuellen Stand zu sehen.",
   "fixed_assets.err_review_stale.many": "{assets} wurden seit Ihrer Prüfung geändert. Klicken Sie erneut auf Prüfen, um den aktuellen Stand zu sehen.",
   "fixed_assets.err_ended.sold": "{number} wurde mit Rechnung {invoice} verkauft. Stornieren Sie die Rechnung und machen Sie den Verkauf auf der Seite von {number} rückgängig. Verwenden Sie dort anschließend Korrigieren.",

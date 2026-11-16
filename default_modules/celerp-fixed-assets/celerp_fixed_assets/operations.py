@@ -42,7 +42,7 @@ REGISTER_MODES = ("separate", "quantity", "expense", "maintenance")
 DESCRIPTIVE_FIELDS = ("name", "tag", "description", "serial", "make", "model", "notes")
 # The member who hears about problems a custodian reports on the asset.
 RESPONSIBLE = "responsible_user_id"
-_OP_KEY = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_OP_KEY = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 _NOT_INTENT = ("preview", "fingerprint", "op_key")
 
 
@@ -310,7 +310,9 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
         finally:
             await savepoint.rollback()
         return result
-    previewed = str(body.get("fingerprint") or "").split(".")
+    if not body.get("fingerprint"):
+        raise refuse("fixed_assets.err_review_first")
+    previewed = str(body.get("fingerprint")).split(".")
     if previewed[:2] != fingerprint.split("."):
         if previewed[0] != str(generation):
             raise refuse("fixed_assets.err_line_released")

@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Không theo dõi hoạt động bảo dưỡng của {number}.",
   "fixed_assets.err_op_key": "Mỗi thay đổi đều có khóa thao tác từ biểu mẫu tương ứng.",
   "fixed_assets.err_line_released": "Dòng này đã được ghi nhận và giải phóng sau khi bạn mở biểu mẫu. Hãy nhấn Rà soát một lần nữa.",
+  "fixed_assets.err_review_first": "Hãy xem lại thay đổi này trước, rồi xác nhận những gì phần xem lại hiển thị.",
   "fixed_assets.err_review_stale.one": "{assets} đã thay đổi kể từ lần bạn rà soát. Nhấn Rà soát một lần nữa để xem trạng thái hiện tại.",
   "fixed_assets.err_review_stale.many": "{assets} đã thay đổi kể từ lần bạn rà soát. Nhấn Rà soát một lần nữa để xem trạng thái hiện tại.",
   "fixed_assets.err_ended.sold": "{number} đã được bán theo hóa đơn {invoice}. Hãy hủy hóa đơn, hủy giao dịch bán trên trang của {number}, rồi dùng chức năng Điều chỉnh tại đó.",

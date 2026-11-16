@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "No upkeep is kept for {number}.",
   "fixed_assets.err_op_key": "Every change carries an operation key from its form.",
   "fixed_assets.err_line_released": "This line was registered and released since you opened this form. Press Review again.",
+  "fixed_assets.err_review_first": "Review this change first, then confirm what the review shows.",
   "fixed_assets.err_review_stale.one": "{assets} changed since you reviewed it. Press Review again to see it as it stands now.",
   "fixed_assets.err_review_stale.many": "{assets} changed since you reviewed them. Press Review again to see them as they stand now.",
   "fixed_assets.err_ended.sold": "{number} was sold on invoice {invoice}. Void that invoice and cancel the sale on {number}'s page, then use Correct there.",

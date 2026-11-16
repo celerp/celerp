@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "ለ{number} የጥገና መዝገብ አይያዝም።",
   "fixed_assets.err_op_key": "እያንዳንዱ ለውጥ ከቅጹ የመነጨ የኦፕሬሽን ቁልፍ ይይዛል።",
   "fixed_assets.err_line_released": "ቅጹን ከከፈቱ በኋላ ይህ መስመር ተመዝግቦ ተለቋል። እንደገና «ገምግም» ይጫኑ።",
+  "fixed_assets.err_review_first": "መጀመሪያ ይህን ለውጥ ይገምግሙ፣ ከዚያ ግምገማው የሚያሳየውን ያረጋግጡ።",
   "fixed_assets.err_review_stale.one": "{assets} ከገመገሙት በኋላ ተለውጧል። የአሁኑን ሁኔታ ለማየት እንደገና «ገምግም» ይጫኑ።",
   "fixed_assets.err_review_stale.many": "{assets} ከገመገሟቸው በኋላ ተለውጠዋል። የአሁኑን ሁኔታ ለማየት እንደገና «ገምግም» ይጫኑ።",
   "fixed_assets.err_ended.sold": "{number} በደረሰኝ {invoice} ተሽጧል። ደረሰኙን ይሰርዙ፣ በ{number} ገጽ ሽያጩን ይሰርዙ እና ከዚያ «አስተካክል» ይጠቀሙ።",

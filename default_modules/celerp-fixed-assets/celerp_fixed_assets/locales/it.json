@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Per {number} non sono registrati interventi di manutenzione.",
   "fixed_assets.err_op_key": "Ogni modifica contiene una chiave operazione proveniente dal relativo modulo di inserimento.",
   "fixed_assets.err_line_released": "Questa riga è stata registrata e rilasciata da quando hai aperto il modulo. Premi nuovamente Verifica.",
+  "fixed_assets.err_review_first": "Rivedi prima questa modifica, poi conferma ciò che mostra la revisione.",
   "fixed_assets.err_review_stale.one": "{assets} è cambiato dopo la tua verifica. Premi nuovamente Verifica per vedere la situazione attuale.",
   "fixed_assets.err_review_stale.many": "{assets} sono cambiati dopo la tua verifica. Premi nuovamente Verifica per vedere la situazione attuale.",
   "fixed_assets.err_ended.sold": "{number} è stato venduto con la fattura {invoice}. Annulla la fattura e la vendita dalla pagina di {number}, poi usa Correggi sulla stessa pagina.",

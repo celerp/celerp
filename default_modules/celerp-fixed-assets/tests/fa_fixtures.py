@@ -3,6 +3,8 @@
 """Test support for the fixed assets module: a started demo company and the calls tests make."""
 from __future__ import annotations
 
+import functools
+import re
 import sys
 import uuid
 from datetime import date
@@ -32,6 +34,34 @@ def admit_zz(monkeypatch):
         slots.register("fixed_asset_rules", {**item, **_runtime_keys(ZZ.name, False)})
     yield ZZ
     slots.unregister_module(ZZ.name)
+
+
+@functools.cache
+def _agent_tools() -> dict[str, dict]:
+    """The assistant's tools for this module's routes, compiled as the live assistant compiles
+    them (the test app wires the routes without loading the module)."""
+    from unittest.mock import patch
+
+    from celerp.ai import tools as ai_tools
+    from celerp.main import app
+
+    manifest = {"name": "celerp-fixed-assets", "api_routes": "celerp_fixed_assets.routes", "first_party": True}
+    with patch.object(ai_tools, "loaded_modules", lambda: [manifest]):
+        return ai_tools.compile_agent_capabilities(app, {})
+
+
+def _agent_change(path: str) -> tuple[dict, dict]:
+    """The change tool that answers a POST to ``path`` and the path values it fills."""
+    answers = []
+    for cap in _agent_tools().values():
+        if cap["method"] != "POST" or not cap["requires_confirmation"]:
+            continue
+        pattern = re.sub(r"\\\{(\w+)\\\}", r"(?P<\1>[^/]+)", re.escape(cap["path"]))
+        found = re.fullmatch(pattern, f"{API}{path}")
+        if found:
+            answers.append((cap, found.groupdict()))
+    assert len(answers) == 1, f"POST {path} is answered by {len(answers)} assistant changes"
+    return answers[0]
 
 
 class FA:
@@ -96,10 +126,24 @@ class FA:
         return {c["name"]: c for c in (await self.ok(await self.get("/classes")))["items"]}
 
     async def operate(self, path: str, body: dict, *, key: str, headers=None) -> dict:
-        """Preview, then confirm what the preview showed."""
-        preview = await self.ok(await self.post(path, {**body, "preview": True, "op_key": key}, headers))
-        return await self.ok(await self.post(
-            path, {**body, "preview": False, "op_key": key, "fingerprint": preview["fingerprint"]}, headers))
+        """Review, then confirm what the review showed, as the assistant does it: the change's
+        review tool, then the change with the fingerprint the review returned. ``key`` is the
+        change's tool call, so one key is one change and a repeat answers the first."""
+        from celerp.ai import tools as ai_tools
+        from celerp.main import app
+
+        change, path_values = _agent_change(path)
+        review = _agent_tools()[change["name"] + "_preview"]
+        auth = (headers or self.h)["Authorization"]
+
+        async def call(cap: dict, body: dict, call_id: str) -> dict:
+            args = {"path": path_values, "body": body} if path_values else {"body": body}
+            done = await ai_tools.execute_agent_capability(app, auth, cap, args, call_id)
+            assert done["ok"], done
+            return done["data"]
+
+        seen = await call(review, body, f"{key}:review")
+        return await call(change, {**body, "fingerprint": seen["fingerprint"]}, key)
 
     async def register(self, source: str, *, key: str = "reg-1", class_name: str = "Vehicles", **body) -> dict:
         cls = (await self.classes())[class_name]

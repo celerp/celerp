@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "Não há registros de manutenção para {number}.",
   "fixed_assets.err_op_key": "Cada alteração contém uma chave de operação gerada pelo formulário correspondente.",
   "fixed_assets.err_line_released": "Esta linha foi registrada e liberada depois que você abriu o formulário. Clique novamente em Revisar.",
+  "fixed_assets.err_review_first": "Revise esta alteração primeiro e depois confirme o que a revisão mostra.",
   "fixed_assets.err_review_stale.one": "{assets} foi alterado desde a revisão. Clique novamente em Revisar para ver o estado atual.",
   "fixed_assets.err_review_stale.many": "{assets} foram alterados desde a revisão. Clique novamente em Revisar para ver o estado atual.",
   "fixed_assets.err_ended.sold": "{number} foi vendido pela fatura {invoice}. Anule a fatura e cancele a venda na página de {number}. Depois, use Corrigir nessa página.",

@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "No se mantiene un historial de mantenimiento de {number}.",
   "fixed_assets.err_op_key": "Cada modificación lleva una clave de operación generada por su formulario.",
   "fixed_assets.err_line_released": "Esta línea se registró y se liberó después de que abriera el formulario. Pulse Revisar otra vez.",
+  "fixed_assets.err_review_first": "Revise primero este cambio y luego confirme lo que muestra la revisión.",
   "fixed_assets.err_review_stale.one": "{assets} ha cambiado desde que lo revisó. Pulse Revisar de nuevo para ver su estado actual.",
   "fixed_assets.err_review_stale.many": "{assets} han cambiado desde que los revisó. Pulse Revisar de nuevo para ver su estado actual.",
   "fixed_assets.err_ended.sold": "{number} se vendió mediante la factura {invoice}. Anule esa factura, cancele la venta en la página de {number} y utilice allí Corregir.",

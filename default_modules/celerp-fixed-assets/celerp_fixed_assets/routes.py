@@ -45,6 +45,11 @@ _ACCOUNTING = [require_permission("manage_accounting")]
 _MANAGE = [require_permission("manage_fixed_assets")]
 _REPORTS = [require_permission("view_financial_reports")]
 _SELL = [require_permission("edit_documents"), require_permission("manage_fixed_assets")]
+# A change recorded under its operation key, which the system supplies to the assistant.
+_KEYED = {"x-celerp-agent-key": "op_key"}
+# The same, for a change that is previewed first and confirmed with the preview's fingerprint
+# (operations._run): the assistant gets a preview tool that sends the preview flag.
+_OPERATION = {**_KEYED, "x-celerp-agent-preview": {"flag": "preview", "token": "fingerprint"}}
 
 
 def asset_out(asset_id: str, state: dict, *, money: bool = True) -> dict:
@@ -140,31 +145,31 @@ async def _write(session, call, *args) -> dict:
     return result
 
 
-@router.post("/register", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Register a fixed asset from a bill or journal line posted to an asset account.")
+@router.post("/register", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Register a fixed asset from a bill or journal line posted to an asset account.")
 async def register(body: dict = Body(...), company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                    session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.register, company_id, user.id, body)
 
 
-@router.post("/not-acquisition", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Mark a line posted to an asset account as not an asset purchase.")
+@router.post("/not-acquisition", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Mark a line posted to an asset account as not an asset purchase.")
 async def not_acquisition(body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.disposition, company_id, user.id, body, "not_acquisition")
 
 
-@router.post("/keep-line", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Keep a line posted to an asset account waiting in the intake list.")
+@router.post("/keep-line", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Keep a line posted to an asset account waiting in the intake list.")
 async def keep_line(body: dict = Body(...), company_id=Depends(get_current_company_id),
                     user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.disposition, company_id, user.id, body, "keep")
 
 
-@router.post("/link-depreciation", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Link a depreciation journal line to the asset it belongs to.")
+@router.post("/link-depreciation", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Link a depreciation journal line to the asset it belongs to.")
 async def link_depreciation(body: dict = Body(...), company_id=Depends(get_current_company_id),
                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.link_depreciation, company_id, user.id, body)
 
 
-@router.post("/sources/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Undo what was done with a line from the intake list so it waits again.")
+@router.post("/sources/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Undo what was done with a line from the intake list so it waits again.")
 async def undo_source(body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.undo_source, company_id, user.id, body)
@@ -184,7 +189,7 @@ async def finish_opening(body: dict = Body(...), company_id=Depends(get_current_
     return await _write(session, opening.finish, company_id, user.id, body)
 
 
-@router.post("/imports", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Upload an asset register file to import.")
+@router.post("/imports", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Upload an asset register file to import.")
 async def import_register(body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     options = {k: v for k, v in body.items() if k not in ("rows", "as_at", "source")}
@@ -209,13 +214,13 @@ async def get_import(batch_id: str, status: str | None = None, limit: int = 100,
     return await imports.batch_view(session, company_id, batch_id, status=status, limit=limit, offset=offset)
 
 
-@router.post("/imports/{batch_id}/rows", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/imports/{batch_id}"}, summary="Import the checked rows of an asset register file.")
+@router.post("/imports/{batch_id}/rows", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/imports/{batch_id}"}, summary="Import the checked rows of an asset register file.")
 async def import_rows(batch_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, imports.import_rows, company_id, user.id, batch_id, body)
 
 
-@router.post("/imports/{batch_id}/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/imports/{batch_id}"}, summary="Undo an asset register import, removing the assets it created.")
+@router.post("/imports/{batch_id}/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/imports/{batch_id}"}, summary="Undo an asset register import, removing the assets it created.")
 async def undo_import(batch_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, imports.undo_import, company_id, user.id, batch_id, body)
@@ -249,7 +254,7 @@ async def list_assets(class_id: str | None = None, q: str | None = None, limit: 
             "total": len(found), "limit": limit, "offset": offset}
 
 
-@router.post("/assets", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new", "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="Add a fixed asset with its class, cost and date in service.")
+@router.post("/assets", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new", "x-celerp-agent-result-permissions": ["manage_accounting"]}, summary="Add a fixed asset with its class, cost and date in service.")
 async def create_asset(body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), role: str = Depends(get_current_role),
                        company_settings: dict = Depends(get_current_company_settings),
@@ -288,7 +293,7 @@ async def get_asset(asset_id: str, company_id=Depends(get_current_company_id), m
             "next_charge": views.readable(await runs.next_charge(session, company_id, asset_id, state), money)}
 
 
-@router.patch("/assets/{asset_id}", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new", "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="Change a fixed asset's details, such as its name, serial number or notes.")
+@router.patch("/assets/{asset_id}", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={**_KEYED, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new", "x-celerp-agent-result-permissions": ["view_financial_reports"]}, summary="Change a fixed asset's details, such as its name, serial number or notes.")
 async def update_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), money: bool = _MONEY,
                        session: AsyncSession = Depends(get_session)) -> dict:
@@ -296,13 +301,13 @@ async def update_asset(asset_id: str, body: dict = Body(...), company_id=Depends
     return asset_out(asset_id, state, money=money)
 
 
-@router.post("/assets/{asset_id}/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo adding a fixed asset that has posted nothing yet.")
+@router.post("/assets/{asset_id}/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo adding a fixed asset that has posted nothing yet.")
 async def undo_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.undo_asset, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/financial-details", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Set a fixed asset's cost, useful life and depreciation details.")
+@router.post("/assets/{asset_id}/financial-details", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Set a fixed asset's cost, useful life and depreciation details.")
 async def financial_details(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, operations.add_financial_details, company_id, user.id, asset_id, body)
@@ -329,13 +334,13 @@ async def list_runs(company_id=Depends(get_current_company_id), money: bool = _M
     return {"items": views.readable(await runs.records(session, company_id), money)}
 
 
-@router.post("/runs", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/runs"}, summary="Post the depreciation of a month to the books.")
+@router.post("/runs", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/runs"}, summary="Post the depreciation of a month to the books.")
 async def run(body: dict = Body(...), company_id=Depends(get_current_company_id), user=Depends(get_current_user),
               session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, runs.run, company_id, user.id, body)
 
 
-@router.post("/runs/{month}/reverse", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/runs"}, summary="Reverse the depreciation posted for one month.")
+@router.post("/runs/{month}/reverse", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/runs"}, summary="Reverse the depreciation posted for one month.")
 async def reverse_run(month: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, runs.reverse, company_id, user.id, month, body)
@@ -374,19 +379,19 @@ async def correct_fields(asset_id: str, company_id=Depends(get_current_company_i
     return views.readable(await corrections.fields(session, company_id, asset_id), money)
 
 
-@router.post("/assets/{asset_id}/dispose", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/dispose"}, summary="Dispose of a fixed asset, such as when it is scrapped or lost.")
+@router.post("/assets/{asset_id}/dispose", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/dispose"}, summary="Dispose of a fixed asset, such as when it is scrapped or lost.")
 async def dispose_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, disposal.dispose, company_id, user.id, body, [asset_id])
 
 
-@router.post("/dispose", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/dispose"}, summary="Dispose of several fixed assets at once.")
+@router.post("/dispose", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/dispose"}, summary="Dispose of several fixed assets at once.")
 async def dispose_assets(body: dict = Body(...), company_id=Depends(get_current_company_id),
                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, disposal.dispose, company_id, user.id, body)
 
 
-@router.post("/assets/{asset_id}/sell", dependencies=_SELL, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/sell"}, summary="Record the sale of a fixed asset with its price and buyer.")
+@router.post("/assets/{asset_id}/sell", dependencies=_SELL, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/sell"}, summary="Record the sale of a fixed asset with its price and buyer.")
 async def sell_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, sales.sell, company_id, user.id, asset_id, body)
@@ -398,7 +403,7 @@ async def get_sale(asset_id: str, company_id=Depends(get_current_company_id), mo
     return views.readable(await sales.view(session, company_id, asset_id), money)
 
 
-@router.post("/assets/{asset_id}/sale/{action}", dependencies=_SELL, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Change the sale of a fixed asset, such as invoicing or cancelling it.")
+@router.post("/assets/{asset_id}/sale/{action}", dependencies=_SELL, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Change the sale of a fixed asset, such as invoicing or cancelling it.")
 async def change_sale(asset_id: str, action: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     call = {"credit": sales.credit, "reissue": sales.reissue, "cancel": sales.cancel}.get(action)
@@ -407,19 +412,19 @@ async def change_sale(asset_id: str, action: str, body: dict = Body(...), compan
     return await _write(session, call, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/undo-disposal", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the disposal of a fixed asset.")
+@router.post("/assets/{asset_id}/undo-disposal", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the disposal of a fixed asset.")
 async def undo_disposal(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, disposal.undo, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/correct", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/correct"}, summary="Correct a field of a fixed asset, reposting depreciation where it changes.")
+@router.post("/assets/{asset_id}/correct", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/correct"}, summary="Correct a field of a fixed asset, reposting depreciation where it changes.")
 async def correct(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                   user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.correct, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/corrections", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Ask for a correction of a fixed asset that needs approval.")
+@router.post("/assets/{asset_id}/corrections", dependencies=[require_permission("manage_fixed_assets")], openapi_extra={**_KEYED, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Ask for a correction of a fixed asset that needs approval.")
 async def request_correction(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                              user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.request, company_id, user.id, asset_id, body)
@@ -438,7 +443,7 @@ async def get_correction(correction_id: str, company_id=Depends(get_current_comp
             **views.readable(await corrections.record(session, company_id, correction_id), money)}
 
 
-@router.post("/corrections/{correction_id}/apply", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/corrections"}, summary="Apply a fixed asset correction.")
+@router.post("/corrections/{correction_id}/apply", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/corrections"}, summary="Apply a fixed asset correction.")
 async def apply_correction(correction_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.apply_request, company_id, user.id, correction_id, body)
@@ -450,7 +455,7 @@ async def withdraw_correction(correction_id: str, company_id=Depends(get_current
     return await _write(session, corrections.withdraw, company_id, user.id, correction_id)
 
 
-@router.post("/corrections/{correction_id}/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/corrections"}, summary="Undo an applied fixed asset correction.")
+@router.post("/corrections/{correction_id}/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/corrections"}, summary="Undo an applied fixed asset correction.")
 async def undo_correction(correction_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.undo, company_id, user.id, correction_id, body)
@@ -459,25 +464,25 @@ async def undo_correction(correction_id: str, body: dict = Body(...), company_id
 # ── Remeasurement and the annual review ──────────────────────────────────────
 
 
-@router.post("/assets/{asset_id}/revalue", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Revalue a fixed asset to a new fair value.")
+@router.post("/assets/{asset_id}/revalue", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Revalue a fixed asset to a new fair value.")
 async def revalue(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                   user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "revaluation")
 
 
-@router.post("/assets/{asset_id}/impair", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Record an impairment loss on a fixed asset.")
+@router.post("/assets/{asset_id}/impair", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Record an impairment loss on a fixed asset.")
 async def impair(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                  user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "impairment")
 
 
-@router.post("/assets/{asset_id}/reverse-impairment", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Reverse an impairment loss on a fixed asset.")
+@router.post("/assets/{asset_id}/reverse-impairment", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Reverse an impairment loss on a fixed asset.")
 async def reverse_impairment(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                              user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, remeasure.remeasure, company_id, user.id, asset_id, body, "impairment_reversal")
 
 
-@router.post("/classes/{class_id}/revalue", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/revalue"}, summary="Revalue every fixed asset in a class.")
+@router.post("/classes/{class_id}/revalue", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/revalue"}, summary="Revalue every fixed asset in a class.")
 async def revalue_class(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                         user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, remeasure.revalue_class, company_id, user.id, class_id, body)
@@ -513,7 +518,7 @@ async def withdraw_review(asset_id: str, review_id: str, company_id=Depends(get_
 # ── Additions and construction ───────────────────────────────────────────────
 
 
-@router.post("/assets/{asset_id}/add", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/add"}, summary="Add a component or improvement to a fixed asset.")
+@router.post("/assets/{asset_id}/add", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/add"}, summary="Add a component or improvement to a fixed asset.")
 async def add_to_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                        user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, additions.add, company_id, user.id, asset_id, body)
@@ -527,13 +532,13 @@ async def list_components(asset_id: str, company_id=Depends(get_current_company_
                       for c in await additions.components(session, company_id, asset_id)]}
 
 
-@router.post("/assets/{asset_id}/place-in-service", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/place-in-service"}, summary="Place a fixed asset in service so it starts depreciating.")
+@router.post("/assets/{asset_id}/place-in-service", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/place-in-service"}, summary="Place a fixed asset in service so it starts depreciating.")
 async def place_in_service(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, additions.place_in_service, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/undo-latest", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the latest change made to a fixed asset.")
+@router.post("/assets/{asset_id}/undo-latest", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the latest change made to a fixed asset.")
 async def undo_latest(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, additions.undo_latest, company_id, user.id, asset_id, body)
@@ -542,25 +547,25 @@ async def undo_latest(asset_id: str, body: dict = Body(...), company_id=Depends(
 # ── Move, reclassify and transfer ────────────────────────────────────────────
 
 
-@router.post("/assets/{asset_id}/move", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/move"}, summary="Move a fixed asset to another location or custodian.")
+@router.post("/assets/{asset_id}/move", dependencies=_MANAGE, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/move"}, summary="Move a fixed asset to another location or custodian.")
 async def move_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                      user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, moves.move, company_id, user.id, body, [asset_id])
 
 
-@router.post("/move", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/move"}, summary="Move several fixed assets to another location or custodian at once.")
+@router.post("/move", dependencies=_MANAGE, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/move"}, summary="Move several fixed assets to another location or custodian at once.")
 async def move_assets(body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, moves.move, company_id, user.id, body)
 
 
-@router.post("/assets/{asset_id}/undo-move", dependencies=_MANAGE, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the latest move of a fixed asset.")
+@router.post("/assets/{asset_id}/undo-move", dependencies=_MANAGE, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/new"}, summary="Undo the latest move of a fixed asset.")
 async def undo_move(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                     user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, moves.undo_move, company_id, user.id, asset_id, body)
 
 
-@router.post("/assets/{asset_id}/reclassify", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/reclassify"}, summary="Move a fixed asset to another asset class.")
+@router.post("/assets/{asset_id}/reclassify", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/reclassify"}, summary="Move a fixed asset to another asset class.")
 async def reclassify_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, reclassify.reclassify, company_id, user.id, asset_id, body)
@@ -572,25 +577,25 @@ async def transfer_targets(company_id=Depends(get_current_company_id), user=Depe
     return await transfer.targets(session, company_id, user.id)
 
 
-@router.post("/assets/{asset_id}/transfer", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/transfer"}, summary="Transfer a fixed asset to another company.")
+@router.post("/assets/{asset_id}/transfer", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/assets/{asset_id}/transfer"}, summary="Transfer a fixed asset to another company.")
 async def transfer_asset(asset_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, transfer.transfer, company_id, user.id, asset_id, body)
 
 
-@router.post("/classes/{class_id}/apply-to-assets", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"}, summary="Apply an asset class's settings to the assets already in it.")
+@router.post("/classes/{class_id}/apply-to-assets", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/apply"}, summary="Apply an asset class's settings to the assets already in it.")
 async def apply_to_assets(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                           user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, corrections.apply_to_assets, company_id, user.id, class_id, body)
 
 
-@router.post("/classes/{class_id}/fix-account", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/fix-account"}, summary="Fix the account an asset class posts to, moving its balances.")
+@router.post("/classes/{class_id}/fix-account", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/fix-account"}, summary="Fix the account an asset class posts to, moving its balances.")
 async def fix_account(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, fixaccount.fix_account, company_id, user.id, class_id, body)
 
 
-@router.post("/classes/{class_id}/fix-account/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/fix-account"}, summary="Undo fixing the account of an asset class.")
+@router.post("/classes/{class_id}/fix-account/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets/classes/{class_id}/fix-account"}, summary="Undo fixing the account of an asset class.")
 async def undo_fix_account(class_id: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, fixaccount.undo_fix, company_id, user.id, class_id, body)
@@ -620,13 +625,13 @@ async def disposals_report(date_from: str, date_to: str, company_id=Depends(get_
     return await reports.disposals(session, company_id, date_from, date_to)
 
 
-@router.post("/class-table", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Apply a table of asset classes, such as a country's tax depreciation rates.")
+@router.post("/class-table", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Apply a table of asset classes, such as a country's tax depreciation rates.")
 async def apply_class_table(body: dict = Body(...), company_id=Depends(get_current_company_id),
                             user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, classtable.apply_table, company_id, user.id, body)
 
 
-@router.post("/class-table/{op_key}/undo", dependencies=_ACCOUNTING, openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Undo applying a table of asset classes.")
+@router.post("/class-table/{op_key}/undo", dependencies=_ACCOUNTING, openapi_extra={**_OPERATION, "x-celerp-agent": True, "x-celerp-agent-check": "/fixed-assets"}, summary="Undo applying a table of asset classes.")
 async def undo_class_table(op_key: str, body: dict = Body(...), company_id=Depends(get_current_company_id),
                            user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     return await _write(session, classtable.undo_table, company_id, user.id, op_key, body)

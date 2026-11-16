@@ -1039,6 +1039,7 @@
   "fixed_assets.err_cannot.upkeep": "{number} の保守記録は管理されていません。",
   "fixed_assets.err_op_key": "各変更にはフォームで発行された操作キーが必要です。",
   "fixed_assets.err_line_released": "フォームを開いた後にこの明細が登録・解除されました。もう一度［確認］を押してください。",
+  "fixed_assets.err_review_first": "まずこの変更を確認し、確認画面に表示された内容を確定してください。",
   "fixed_assets.err_review_stale.one": "{assets} は確認後に変更されました。最新の状態を表示するには、もう一度［確認］を押してください。",
   "fixed_assets.err_review_stale.many": "{assets} は確認後に変更されました。最新の状態を表示するには、もう一度［確認］を押してください。",
   "fixed_assets.err_ended.sold": "{number} は請求書 {invoice} で売却されました。その請求書を無効にし、{number} のページで売却を取り消してから、そこで［修正］を使用してください。",
