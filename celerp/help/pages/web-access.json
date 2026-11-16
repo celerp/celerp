@@ -6,7 +6,7 @@
   "routes": ["/settings/cloud", "/setup/cloud", "/commercial/checkout", "/settings/billing-portal"],
   "permission": "manage_integrations",
   "order": 2,
-  "checked": "b4477ba5265a0b2cc0213b2f09e21592c9354532db5f02bf57ac24b9554e4f02",
+  "checked": "8e2835035496b7a8af351f8bea596af24f076c3cdf0f014d7d4f762fce5479dc",
   "steps": [
     {
       "text": "{get} opens the Celerp Connect page, which lists what the subscription adds, such as {backup} and {web}, and takes you to checkout.",

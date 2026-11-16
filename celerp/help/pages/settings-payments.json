@@ -6,7 +6,7 @@
   "routes": ["/settings/payments"],
   "permission": "manage_integrations",
   "order": 11,
-  "checked": "8a4b4df24ac809f3a851b9b286fefde9922b6f99b9a2c09fabf37ddf5c3e9431",
+  "checked": "4f2d5548a65691cb826f8591300dab70538a60ec68b41c22b4d79bf618fe526f",
   "steps": [
     {
       "text": "{title} lets customers pay your invoices online. {how}",

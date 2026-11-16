@@ -6,7 +6,7 @@
   "routes": ["/settings/general?tab=password", "/settings/menu"],
   "permission": null,
   "order": 1,
-  "checked": "df55d8a8e8b4134df91afc33b55cf4c92fe4d3e8c900d79d370369eab16b080f",
+  "checked": "d5461e69ede667c9fff459a4fd3a270a658f5a57f814728db673d4c947375547",
   "steps": [
     {
       "text": "Open {settings} from the sidebar footer. Every signed-in role can use this page's Password tab to set a new one, entering it twice as {confirm}; admins also see Company, Users and Backup tabs here, and the owner also sees {menu}, where they choose what the sidebar offers.",
