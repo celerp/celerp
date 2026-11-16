@@ -198,9 +198,14 @@ async def _unknown_never_resent(client, session, headers, conversation_id, capab
     return problems
 
 
+# Each module's tools replay in this many slices (every SLICES-th tool, in name order), so a
+# test's time stays well under the per-test timeout however many tools a module has.
+SLICES = 4
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("module", _MODULES)
-async def test_agent_replay(client, session, agent_caps, ai_session, module):
+@pytest.mark.parametrize("module,part", [(m, k) for m in _MODULES for k in range(SLICES)])
+async def test_agent_replay(client, session, agent_caps, ai_session, module, part):
     """Each write route of ``module`` is a tool whose retry follows its key store."""
     from celerp.main import app
     by_module = _write_routes(app)
@@ -215,7 +220,7 @@ async def test_agent_replay(client, session, agent_caps, ai_session, module):
     headers = (await perm_setup(client, session))["admin_h"]
     conversation_id = await _new_conversation(client, headers)
     async with answered_continuation():
-        for key in sorted(owned):
+        for key in sorted(owned)[part::SLICES]:
             capability = tools[key]
             run = _keyed_retry if capability["keyed"] else _unknown_never_resent
             problems += await run(client, session, headers, conversation_id, capability)
