@@ -188,6 +188,11 @@ def complete(recon: ReconciliationSession) -> None:
     recon.completed_at = datetime.now(timezone.utc)
 
 
+def carry_in(recon: ReconciliationSession, je_ids: list[str]) -> None:
+    """The bank's first statement's list with its carry-in as the books stand (bank_statements._first_counted)."""
+    recon.reconciled_je_ids = list(je_ids)
+
+
 def hold(recon: ReconciliationSession, je_ids: list[str]) -> None:
     held = list(recon.reconciled_je_ids or [])
     recon.reconciled_je_ids = held + [j for j in je_ids if j not in held]

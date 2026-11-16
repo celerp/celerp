@@ -181,6 +181,15 @@ def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dic
     return sorted(near, key=lambda c: (_days(c["line_date"], line_date), str(c["id"])))
 
 
+def twins(amount, line_date, entries: list[dict]) -> list[dict]:
+    """The book entries that already are a line's money: exactly its amount, the same way, dated
+    within the matcher's exact-amount window, nearest first. One is the line's entry; several are
+    the user's choice."""
+    near = [e for e in entries if _amt(e["amount"]) == _amt(amount)
+            and _days(e.get("date") or e.get("ts"), line_date) <= matcher.EXACT_DAYS]
+    return sorted(near, key=lambda e: (_days(e.get("date") or e.get("ts"), line_date), e["je_id"]))
+
+
 def _transfer(line: dict, ctx: LadderContext) -> dict | None:
     pairs = transfer_pairs(-_amt(line["amount"]), line["line_date"],
                            [p for p in ctx.pair_lines if str(p.get("bank_id")) != str(ctx.bank_id)])

@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.agent_markers import agent_excluded
@@ -420,17 +421,43 @@ class ImportStatement(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
-async def _book_before(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, start: str) -> tuple[Decimal, list[str]]:
-    """The bank's book balance before ``start`` and the entries that make it, the opening
-    entry counted in the balance but never listed (every statement counts it already)."""
+async def _carried_in(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, start: str, opening,
+                     matched: set[str]) -> tuple[Decimal, list[str], bool]:
+    """The first statement's carry-in as the books stand now: the book balance before ``start``
+    less the entries the statement's own lines match (those clear in it), the other entries
+    before ``start`` (the opening entry counted in the balance but never listed: every statement
+    counts it already), and whether that balance is the statement's opening, when those
+    entries cleared before it."""
     from celerp_accounting.routes import _je_entries_for_account, _opening_je_id
     total, ids = Decimal(0), []
     for e in await _je_entries_for_account(db, company_id, bank):
-        if str(e["ts"])[:10] < start and e["amount"] is not None:
+        if str(e["ts"])[:10] < start and e["amount"] is not None and e["je_id"] not in matched:
             total += to_decimal(e["amount"])
             if e["je_id"] != _opening_je_id(bank.id):
                 ids.append(e["je_id"])
-    return round_money(total, bank.currency), ids
+    book = round_money(total, bank.currency)
+    return book, ids, opening is not None and book == round_money(to_decimal(opening), bank.currency)
+
+
+async def _first_counted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount,
+                         recon: ReconciliationSession) -> list[str] | None:
+    """What the bank's first statement counts while it is open, its carry-in worked out from the
+    books as they stand (see _carried_in), so an entry keyed after the import counts as it would
+    have before: None for any other statement or a completed one, whose list is final."""
+    sessions = await _sessions(db, company_id, bank)
+    if sessions[0].id != recon.id or SL.completed(recon) or recon.period_start is None:
+        return None
+    matched = {j for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == recon.id))).scalars() for j in ids or []}
+    _book, before, tied = await _carried_in(db, company_id, bank, recon.period_start, recon.opening_balance, matched)
+    return [j for j in recon.reconciled_je_ids or [] if j not in before] + (before if tied else [])
+
+
+async def read_counted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, recon: ReconciliationSession) -> None:
+    """For a read: ``recon`` shows what it counts as the books stand (see _first_counted), and
+    nothing is written; completion stores it under the statement's lock."""
+    if (counted := await _first_counted(db, company_id, bank, recon)) is not None:
+        set_committed_value(recon, "reconciled_je_ids", counted)
 
 
 async def _sessions(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[ReconciliationSession]:
@@ -449,8 +476,8 @@ async def _seed(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, star
         return list(done[-1].reconciled_je_ids or [])
     if earlier:
         return []
-    book, ids = await _book_before(db, company_id, bank, start)
-    return ids if opening is not None and book == round_money(to_decimal(opening), bank.currency) else []
+    _book, ids, tied = await _carried_in(db, company_id, bank, start, opening, set())
+    return ids if tied else []
 
 
 @router.post(f"{API}/import-statement", summary="Import the reviewed statements onto a bank account.",
@@ -587,10 +614,12 @@ async def _difference_notes(db: AsyncSession, company_id: uuid.UUID, bank: BankA
     if not sessions or sessions[0].period_start is None or sessions[0].opening_balance is None:
         return []
     first = sessions[0]
-    book, _ids = await _book_before(db, company_id, bank, first.period_start)
-    opening = round_money(to_decimal(first.opening_balance), bank.currency)
-    if book == opening:
+    matched = {j for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.reconciliation_id == first.id))).scalars() for j in ids or []}
+    book, _ids, tied = await _carried_in(db, company_id, bank, first.period_start, first.opening_balance, matched)
+    if tied:
         return []
+    opening = round_money(to_decimal(first.opening_balance), bank.currency)
     return [t("acct.recon_book_before", date=first.period_start, book=str(book), opening=str(opening))]
 
 
@@ -658,6 +687,8 @@ async def bank_groups(bank_id: uuid.UUID, view: str = Query("open", pattern=f"^(
     for g in ordered:
         g["total"] = _money_text(g["total"], bank.currency)
     first_open = next((s for s in sessions if s.status == "open"), None)
+    if first_open is not None:
+        await read_counted(db, company_id, bank, first_open)
     balance = None if first_open is None else _recon_balance(first_open, bank, entries)
     waiting = [l for l in rows if _in_view(l, "open", open_ids)]
     return {"bank_id": str(bank.id), "view": view, "q": q, "groups": ordered,
@@ -858,7 +889,7 @@ async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount)
 
 
 async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: BankAccount, d: Decision,
-                    key: str) -> dict:
+                    key: str, instead: dict) -> dict:
     if len(d.line_ids) != 1:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_one_line"))
     if d.kind == "cash":
@@ -881,6 +912,8 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         return {str(line.id): held}
     if line.status != "unmatched":
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_state", status=line.status))
+    if (je_ids := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+        return {str(line.id): je_ids}
     # Under the locks the pair must still be the transfer's counterpart: a named one is refused
     # when it is not, an automatic one is left out (the other bank's line stays open).
     if pair_id is not None and pair_id not in await _pairs(db, company_id, line, target, d.to_amount):
@@ -897,8 +930,39 @@ def _refused(status: int, key: str, /, **params) -> HTTPException:
     return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
+class _Twins(HTTPException):
+    """A line whose money several book entries already are: it posts nothing and the nearest
+    entry becomes its match suggestion, for the user to confirm or change."""
+
+    def __init__(self, line_id: uuid.UUID, suggestion: dict, **params):
+        super().__init__(status_code=409, detail=catalog_refusal("acct.recon_reason_twins", **params))
+        self.line_id, self.suggestion = line_id, suggestion
+
+
+async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line: BankStatementLine,
+                         instead: dict) -> list[str] | None:
+    """Under the line's locks, before it posts: the entry already keyed for its money (the
+    suggestion rule ``suggest.twins`` over the entries no statement or line of this bank counts).
+    One: the line is matched to it instead of posting a second copy, said in ``instead``. Several:
+    the line is refused with the nearest as its match suggestion. None: the line posts."""
+    from celerp_accounting import suggest
+
+    found = suggest.twins(line.amount, line.line_date, await _free_entries(db, company_id, bank))
+    if not found:
+        return None
+    date = str(found[0]["ts"])[:10]
+    if len(found) > 1:
+        reason = t("acct.recon_reason_twins", count=len(found), date=date)
+        raise _Twins(line.id, {"kind": "match", "source": "twins", "je_ids": [found[0]["je_id"]],
+                               "confidence": "low", "reason": str(reason)}, count=len(found), date=date)
+    je_ids = [found[0]["je_id"]]
+    await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
+    instead[str(line.id)] = str(t("acct.recon_reason_match", date=date))
+    return je_ids
+
+
 async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
-                   key: str) -> dict:
+                   key: str, instead: dict) -> dict:
     """Pay open documents with one line: an invoice from a deposit, a bill from a
     withdrawal, each at most its open balance (the payment service refuses more, never
     clamps), and the parts that are not the documents (a fee taken out, an overpayment
@@ -910,6 +974,8 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
 
     await admit_permission(db, company_id, role, "record_payments")
     line = _one(await _locked_lines(db, company_id, bank, d.line_ids))
+    if (keyed := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+        return {str(line.id): keyed}
     if not d.docs:
         raise _refused(422, "acct.err_recon_pay_needs_doc")
     amount = abs(Decimal(str(line.amount)))
@@ -952,12 +1018,14 @@ def _offsets(d: Decision, lines: list[BankStatementLine]) -> list[tuple[dict, De
 
 
 async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank: BankAccount, d: Decision,
-                  key: str) -> dict:
-    """Carry out one decision; ``{line_id: je_ids}`` for each line it settled."""
+                  key: str, instead: dict) -> dict:
+    """Carry out one decision; ``{line_id: je_ids}`` for each line it settled. A line that would
+    post (an entry, a transfer, a payment) whose money is already keyed in the books is matched
+    to that entry instead, noted in ``instead`` (see _keyed_instead)."""
     if d.kind in ("transfer", "cash"):
-        return await _transfer(db, company_id, actor_id, bank, d, key)
+        return await _transfer(db, company_id, actor_id, bank, d, key, instead)
     if d.kind == "pay_doc":
-        return await _pay_doc(db, company_id, actor_id, role, bank, d, key)
+        return await _pay_doc(db, company_id, actor_id, role, bank, d, key, instead)
     lines = await _locked_lines(db, company_id, bank, d.line_ids)
     if d.kind == "match":
         await SL.match_lines(db, company_id=company_id, bank=bank, lines=lines, je_ids=d.je_ids or [])
@@ -973,6 +1041,9 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
         offsets = _offsets(d, lines)
     out = {}
     for line, own in zip(lines, offsets):
+        if (keyed := await _keyed_instead(db, company_id, bank, line, instead)) is not None:
+            out[str(line.id)] = keyed
+            continue
         out[str(line.id)] = await SL.post_line(
             db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, offsets=own, rate=d.rate,
             memo=d.memo, entry_date=d.date.isoformat() if d.date else None, key=key,
@@ -980,6 +1051,13 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
         if d.remember:
             await _remember(db, company_id, line, d)
     return out
+
+
+async def _suggest_twin(db: AsyncSession, company_id: uuid.UUID, exc: _Twins) -> None:
+    """The match suggestion a refused line with several keyed entries is left with, while it is open."""
+    line = (await SL.scoped(db, company_id, "line", [exc.line_id]))[0]
+    if line.status == "unmatched":
+        SL.write_suggestion(line, exc.suggestion)
 
 
 async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, accept: Accept) -> list[Decision]:
@@ -1083,15 +1161,20 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
         if (rows := await _unit_done(db, company_id, key, request, d.line_ids)) is None:
             try:
                 bank = await _bank(db, company_id, bank_id)
-                settled = await _decide(db, company_id, actor_id, role, bank, d, key)
-                rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": None} for lid, ids in settled.items()]
+                instead: dict = {}
+                settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead)
+                rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": instead.get(lid),
+                         "matched_instead": lid in instead} for lid, ids in settled.items()]
                 if d.kind in ("transfer", "cash"):
                     for row in rows:
                         pair = [str(i) for j in row["je_ids"] for i in await SL.paired_lines(db, company_id, bank.id, j)]
                         row["paired_line_id"] = pair[0] if pair else None
             except (HTTPException, KeyedRefusal) as exc:
                 await db.rollback()
-                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc)} for lid in d.line_ids]
+                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": _reason(exc),
+                         "matched_instead": False} for lid in d.line_ids]
+                if isinstance(exc, _Twins):
+                    await _suggest_twin(db, company_id, exc)
             rows = await _unit_recorded(db, company_id, actor_id, key, request, bank_id, d.line_ids, rows)
             await db.commit()
         results += rows
@@ -1130,10 +1213,9 @@ async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> s
     counting an entry leaves it free here, as for a manual match: a transfer is reconciled on
     both accounts."""
     held: set[str] = set()
-    for ids in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
-            ReconciliationSession.company_id == company_id,
-            ReconciliationSession.bank_account_id == bank.id))).scalars():
-        held.update(ids or [])
+    for i, recon in enumerate(await _sessions(db, company_id, bank)):
+        counted = await _first_counted(db, company_id, bank, recon) if i == 0 else None
+        held.update((recon.reconciled_je_ids or []) if counted is None else counted)
     for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
             BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars():
         held.update(ids or [])
@@ -1352,6 +1434,8 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
     stopped_at = None
     for i, sid in enumerate(pending):
         recon, bank = await _lock_recon(db, sid, company_id, editable=True)
+        if (counted := await _first_counted(db, company_id, bank, recon)) is not None:
+            SL.carry_in(recon, counted)
         try:
             difference = await _settled_difference(db, recon, bank, entries)
             if difference != 0:

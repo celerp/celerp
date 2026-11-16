@@ -300,7 +300,9 @@ def setup_routes(app):
             return await _body(token, bank, view, q, bulk_outcome=refusal_line(e))
         done = [r["line_id"] for r in out["results"] if r["ok"]]
         refused = [r for r in out["results"] if not r["ok"]]
+        instead = sum(1 for r in out["results"] if r.get("matched_instead"))
         text = " ".join([t("bank.posted_outcome", n=len(done)),
+                         *([t("bank.matched_instead", n=instead)] if instead else []),
                          *([t("bank.posted_refused", n=len(refused), reason=refused[0]["reason"])] if refused else [])])
         return await _body(token, bank, view, q, bulk_outcome=text, undo_ids=done)
 

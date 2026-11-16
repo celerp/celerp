@@ -59,11 +59,15 @@ def _reference_tokens(text: str) -> list[str]:
     return re.findall(r"[A-Z]{2,}-\d+|\d{8,}", (text or "").upper())
 
 
+# How far apart a line and a book entry of exactly its amount may be dated and still be one payment.
+EXACT_DAYS = 7
+
+
 def auto_match(
     statement_lines: list[dict],
     book_entries: list[dict],
     tolerance_pct: float = 0.02,
-    date_window_days: int = 7,
+    date_window_days: int = EXACT_DAYS,
 ) -> list[tuple[str, str, str]]:
     """Auto-match bank statement lines to book entries.
 

@@ -3644,9 +3644,12 @@ async def get_reconciliation(
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
+    from celerp_accounting.bank_statements import read_counted
+
     recon = await _get_recon(db, session_id, company_id)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    await read_counted(db, company_id, bank, recon)
     cleared = _cleared_je_ids(recon, bank)
     unreconciled = [e for e in all_entries if e["je_id"] not in cleared]
     reconciled = [e for e in all_entries if e["je_id"] in cleared]
