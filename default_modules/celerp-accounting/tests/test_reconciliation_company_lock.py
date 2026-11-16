@@ -61,3 +61,53 @@ async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
     r = await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)
     assert r.status_code in (200, 409), r.text
     assert _ungated() - before == set()
+
+
+async def _keyed(client, co, bk, amount: float, day: str) -> str:
+    r = await client.post("/accounting/journal-entries", headers=co["h"], json={
+        "ts": day, "memo": "keyed", "idempotency_token": B.key(),
+        "entries": [{"account": "5100", "debit": amount, "credit": 0.0},
+                    {"account": bk["chart_account_code"], "debit": 0.0, "credit": amount}]})
+    assert r.status_code == 200, r.text
+    return r.json()["je_id"]
+
+
+async def test_every_resolve_and_accept_outcome_takes_the_company_lock_before_a_line(client):
+    """A resolve's decisions (a match, a post, a post matched to the one entry already keyed, a
+    post refused for several keyed entries with its suggestion written) and a group accept (a
+    post and a match suggestion) take the company's lock before any statement line's."""
+    before = _ungated()
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    rows = [("2026-01-05", "MATCH", "-10.00"), ("2026-01-06", "POST", "-11.00"),
+            ("2026-01-07", "ONE TWIN", "-12.00"), ("2026-01-20", "TWO TWINS", "-13.00"),
+            ("2026-01-22", "NETFLIX", "-14.00"), ("2026-01-24", "PAIRED", "-16.00")]
+    await B.statement(client, co, bk["id"], rows, opening="0.00", closing="-76.00", start="2026-01-01",
+                      end="2026-01-31")
+    match = await _keyed(client, co, bk, 10.0, "2026-01-05")
+    one = await _keyed(client, co, bk, 12.0, "2026-01-07")
+    for day in ("2026-01-19", "2026-01-21"):
+        await _keyed(client, co, bk, 13.0, day)
+    await _keyed(client, co, bk, 16.0, "2026-01-24")
+    table = await B.groups(client, co, bk["id"])
+    ids = {line["description"]: line["id"] for line in B.all_lines(table)}
+    r = await B.resolve(client, co, bk["id"], decisions=[
+        {"line_ids": [ids["MATCH"]], "kind": "match", "je_ids": [match]},
+        *({"line_ids": [ids[t]], "kind": "post", "account_code": "5100"} for t in ("POST", "ONE TWIN", "TWO TWINS"))])
+    assert r.status_code == 200, r.text
+    by_id = {row["line_id"]: row for row in r.json()["results"]}
+    got = {t: ("instead" if by_id[i]["matched_instead"] else "done" if by_id[i]["ok"] else "refused")
+           for t, i in ids.items() if i in by_id}
+    assert got == {"MATCH": "done", "POST": "done", "ONE TWIN": "instead", "TWO TWINS": "refused"}, by_id
+    assert by_id[ids["ONE TWIN"]]["je_ids"] == [one]
+    r = await client.post("/accounting/rules", json={"match_pattern": "NETFLIX", "target_account_code": "5100",
+                                                     "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    r = await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    table = await B.groups(client, co, bk["id"])
+    accept = B.accept(table, [g["key"] for g in table["groups"]], [ids["NETFLIX"], ids["PAIRED"]])
+    assert len(accept["line_ids"]) == 2, table
+    r = await B.resolve(client, co, bk["id"], accept=accept)
+    assert r.status_code == 200 and r.json()["refused"] == 0, r.text
+    assert _ungated() - before == set()

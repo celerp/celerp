@@ -232,7 +232,8 @@ async def _seed_entries(session, company_id: str, bank_code: str, n: int) -> Non
 async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the_lines(client, session):
     """However many lines a resolve posts and however large the journal, the check for money
     already keyed reads the bank's entries once, in SQL, on the bank's account and within the
-    lines' date window: none of the seeded entries comes back."""
+    lines' date window: none of the seeded entries comes back. Each later read is narrowed to
+    the entries written since (here only those the request posted itself)."""
     import celerp_accounting.routes as R
 
     co, bk, kw = await mixed(client)
@@ -243,7 +244,7 @@ async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the
 
     async def counted(*a, **k):
         rows = await real(*a, **k)
-        reads.append((k.get("account"), k.get("days"), [r[0] for r in rows]))
+        reads.append((k.get("account"), k.get("days"), k.get("entry_ids"), [r[0] for r in rows]))
         return rows
 
     def unpacked(entity_id, *a, **k):  # every entry the read loaded from the database
@@ -252,8 +253,11 @@ async def test_the_keyed_entry_check_reads_the_journal_once_per_request_near_the
     with patch.object(R, "journal_rows", counted), patch.object(ledger_rows, "entry_rows", unpacked):
         r = await B.resolve(client, co, bk["id"], **kw)
     assert r.status_code == 200 and r.json()["refused"] == 0, r.text
-    assert len(reads) == 1, reads
-    account, days, read = reads[0]
+    window = [x for x in reads if x[2] is None]
+    assert len(window) == 1, reads
+    account, days, _, read = window[0]
     assert account == bk["chart_account_code"] and days == ("2025-12-29", "2026-01-16")
     assert not [i for i in read if i.startswith("je:seed:")]
+    since = [i for x in reads if x[2] is not None for i in x[2]]
+    assert since and all(i.startswith("je:recon:") for i in since), reads
     assert not [i for i in loaded if i.startswith("je:seed:")], len(loaded)

@@ -49,16 +49,16 @@ async def test_the_same_key_sent_while_the_first_run_is_part_way(committed_engin
     finds its remaining units recorded and answers the same."""
     import celerp_accounting.bank_statements as BS
     co, bk, kw = await mixed(own_client)
-    real, calls = BS._decide, []
+    real, calls = BS._resolve_unit, []
     between, go = asyncio.Event(), asyncio.Event()
 
-    async def held(*a, **kw):
+    async def held(*a, **kw):  # between two units, holding no lock
         calls.append(1)
         if len(calls) == k + 1:
             between.set()
             await go.wait()
         return await real(*a, **kw)
-    monkeypatch.setattr(BS, "_decide", held)
+    monkeypatch.setattr(BS, "_resolve_unit", held)
     idem = B.key()
     first = asyncio.create_task(B.resolve(own_client, co, bk["id"], idem=idem, **kw))
     await asyncio.wait_for(between.wait(), timeout=20)

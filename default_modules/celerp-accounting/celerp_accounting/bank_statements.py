@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import date as Date, timedelta
 from decimal import Decimal
 
@@ -21,7 +22,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -945,8 +946,8 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     suggestion rule ``suggest.twins`` over the entries no statement or line of this bank counts).
     One: the line is matched to it instead of posting a second copy, said in ``instead``. Several:
     the line is refused with the nearest as its match suggestion. None: the line posts. ``book`` is
-    the request's read of the bank's entries near its lines (see _near_entries); whether one of
-    them is counted already is read here, under the locks."""
+    the request's read of the bank's entries near its lines, caught up under the company lock
+    (see _Book); whether one of them is counted already is read here, under the locks."""
     from celerp_accounting import suggest
 
     near = suggest.twins(line.amount, line.line_date, book)
@@ -1130,6 +1131,41 @@ async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, done: dict, by_li
             rule.times_applied = (rule.times_applied or 0) + n
 
 
+async def _resolve_unit(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, bank_id, key: str,
+                        request: dict, d: Decision, book: _Book) -> list:
+    """One decision of a resolve in a transaction of its own, under the company lock taken
+    before any statement line: the outcome rows recorded when a run under ``key`` carried it out
+    already, otherwise its effect (on the books as they stand now, see _caught_up) and its
+    outcome, committed together."""
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(db, company_id)
+    if (rows := await _unit_done(db, company_id, key, request, d.line_ids)) is not None:
+        await db.rollback()
+        return rows
+    try:
+        bank = await _bank(db, company_id, bank_id)
+        await _caught_up(db, company_id, bank, book)
+        instead: dict = {}
+        settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead, book.entries)
+        rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": instead.get(lid),
+                 "matched_instead": lid in instead} for lid, ids in settled.items()]
+        if d.kind in ("transfer", "cash"):
+            for row in rows:
+                pair = [str(i) for j in row["je_ids"] for i in await SL.paired_lines(db, company_id, bank.id, j)]
+                row["paired_line_id"] = pair[0] if pair else None
+    except (HTTPException, KeyedRefusal) as exc:
+        await db.rollback()
+        rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": keyed_reason(exc),
+                 "matched_instead": False} for lid in d.line_ids]
+        if isinstance(exc, _Twins):
+            await lock_company(db, company_id)
+            await _suggest_twin(db, company_id, exc)
+    rows = await _unit_recorded(db, company_id, actor_id, key, request, bank_id, d.line_ids, rows)
+    await db.commit()
+    return rows
+
+
 @router.post(f"{API}/bank/{{bank_id}}/resolve", summary="Resolve a bank's statement lines: post, match, no entry, "
              "transfer, cash, pay documents or Suspense.", openapi_extra={
                  **_agent("decisions[].line_ids accept.line_ids", result_permissions=["record_payments"]),
@@ -1141,11 +1177,15 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
     locked period, a document over its open balance) is reported with its reason while
     the rest go through. Each decision stores its own outcome under the request key in the
     same commit as its effect, so a repeat of the key answers the decisions already
-    carried out from those outcomes and runs only the rest."""
+    carried out from those outcomes and runs only the rest. Each of its transactions takes the
+    company lock before any statement line, as every other writer does."""
+    from celerp.services.company_lock import lock_company
+
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:
         return first
+    await lock_company(db, company_id)
     bank = await _bank(db, company_id, bank_id)
     decisions = list(payload.decisions or [])
     by_line: dict = {}
@@ -1161,26 +1201,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
     await db.rollback()
     results: list[dict] = [r for rows in earlier.values() for r in rows]
     for d in decisions:
-        if (rows := await _unit_done(db, company_id, key, request, d.line_ids)) is None:
-            try:
-                bank = await _bank(db, company_id, bank_id)
-                instead: dict = {}
-                settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead, book)
-                rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": instead.get(lid),
-                         "matched_instead": lid in instead} for lid, ids in settled.items()]
-                if d.kind in ("transfer", "cash"):
-                    for row in rows:
-                        pair = [str(i) for j in row["je_ids"] for i in await SL.paired_lines(db, company_id, bank.id, j)]
-                        row["paired_line_id"] = pair[0] if pair else None
-            except (HTTPException, KeyedRefusal) as exc:
-                await db.rollback()
-                rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": keyed_reason(exc),
-                         "matched_instead": False} for lid in d.line_ids]
-                if isinstance(exc, _Twins):
-                    await _suggest_twin(db, company_id, exc)
-            rows = await _unit_recorded(db, company_id, actor_id, key, request, bank_id, d.line_ids, rows)
-            await db.commit()
-        results += rows
+        results += await _resolve_unit(db, company_id, actor_id, role, bank_id, key, request, d, book)
     done = {r["line_id"]: r["je_ids"] for r in results if r["ok"]}
     if by_line:
         await _bump_rules(db, company_id, done, by_line)
@@ -1240,23 +1261,67 @@ async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     return [e for e in entries if e["je_id"] not in held]
 
 
-async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list) -> list[dict]:
-    """One read per request of the bank's book entries a line of ``line_ids`` could already be
-    (see _keyed_instead): dated within the exact-amount window of the lines' dates, of an amount
-    one of them carries."""
-    from celerp_accounting import matcher, suggest
+@dataclass
+class _Book:
+    """A request's read of the bank's book entries a line of it could already be (see
+    _keyed_instead): dated within ``days`` (the exact-amount window of the lines' dates), of an
+    amount in ``amounts`` (those the lines carry), as the books stood at ledger row ``mark``."""
+    days: tuple[str, str] | None
+    amounts: set
+    entries: list[dict]
+    mark: int
+
+
+async def _ledger_mark(db: AsyncSession, company_id: uuid.UUID) -> int:
+    from celerp.models.ledger import LedgerEntry
+
+    return (await db.execute(select(func.coalesce(func.max(LedgerEntry.id), 0)).where(
+        LedgerEntry.company_id == company_id))).scalar_one()
+
+
+async def _book_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, book: _Book,
+                        entry_ids: list[str] | None = None) -> list[dict]:
+    from celerp_accounting import suggest
     from celerp_accounting.routes import _je_entries_for_account
+
+    return [e for e in await _je_entries_for_account(db, company_id, bank, days=book.days, entry_ids=entry_ids)
+            if e["amount"] is not None and suggest._amt(e["amount"]) in book.amounts]
+
+
+async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list) -> _Book:
+    """One read per request, under the company lock, of the bank's book entries a line of
+    ``line_ids`` could already be."""
+    from celerp_accounting import matcher, suggest
 
     lines = (await db.execute(select(BankStatementLine.line_date, BankStatementLine.amount).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
         BankStatementLine.id.in_(line_ids)))).all() if line_ids else []
-    if not lines:
-        return []
-    window, dated = timedelta(days=matcher.EXACT_DAYS), [Date.fromisoformat(d[:10]) for d, _ in lines]
-    days = (str(min(dated) - window), str(max(dated) + window))
-    amounts = {suggest._amt(a) for _, a in lines}
-    return [e for e in await _je_entries_for_account(db, company_id, bank, days=days)
-            if e["amount"] is not None and suggest._amt(e["amount"]) in amounts]
+    book = _Book(None, set(), [], await _ledger_mark(db, company_id))
+    if lines:
+        window, dated = timedelta(days=matcher.EXACT_DAYS), [Date.fromisoformat(d[:10]) for d, _ in lines]
+        book.days = (str(min(dated) - window), str(max(dated) + window))
+        book.amounts = {suggest._amt(a) for _, a in lines}
+        book.entries = await _book_entries(db, company_id, bank, book)
+    return book
+
+
+async def _caught_up(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, book: _Book) -> None:
+    """Under the company lock, bring ``book`` up to the books as they stand: the entries written
+    since its mark are read again (an entry keyed by someone else, or changed or voided). Every
+    ledger row is written under that lock, so none is in flight and none is missed."""
+    from celerp.models.ledger import LedgerEntry
+
+    if book.days is None:
+        return
+    rows = (await db.execute(select(LedgerEntry.id, LedgerEntry.entity_type, LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.id > book.mark))).all()
+    if not rows:
+        return
+    book.mark = max(r.id for r in rows)
+    changed = sorted({r.entity_id for r in rows if r.entity_type == "journal_entry"})
+    if changed:
+        book.entries = [e for e in book.entries if e["je_id"] not in changed] + \
+            await _book_entries(db, company_id, bank, book, changed)
 
 
 async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, base: str) -> list[dict]:
