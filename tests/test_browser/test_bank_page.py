@@ -181,11 +181,15 @@ def test_bank_page_match_and_undo(page: Page, api, tmp_path):
     page.get_by_role("button", name="Confirm").click()
     expect(page.locator("[data-group]").filter(has_text="Wire ACME")).to_be_visible()
 
-    # Suggest finds the book entry; Post ticked matches the line to it.
+    # Suggest finds the book entry by amount and date, which is no proof the two are one
+    # payment, so it is offered unticked; ticking it and Post ticked matches the line to it.
     page.goto(f"/accounting/reconcile/bank/{bank['id']}?view=all")
     page.get_by_role("button", name="Suggest").click()
     group = page.locator("[data-group]").filter(has_text="Wire ACME")
-    expect(group.locator("input[type=checkbox][data-role=group]")).to_be_checked()
+    tick = group.locator("input[type=checkbox][data-role=group]")
+    expect(group).to_contain_text("A book entry of the same amount on 2026-03-01")
+    expect(tick).not_to_be_checked()
+    tick.check()
     page.get_by_role("button", name="Post ticked").click()
     page.get_by_role("button", name="Confirm").click()
     expect(page.locator(".bulk-toolbar, [data-testid=outcome]")).to_contain_text("Posted 1")
@@ -201,5 +205,4 @@ def test_bank_page_match_and_undo(page: Page, api, tmp_path):
     expect(line).to_contain_text("Open")
     page.goto(f"/accounting/reconcile/bank/{bank['id']}?view=all")
     page.get_by_role("button", name="Suggest").click()
-    expect(page.locator("[data-group]").filter(has_text="Wire ACME")
-           .locator("input[type=checkbox][data-role=group]")).to_be_checked()
+    expect(page.locator("[data-group]").filter(has_text="Wire ACME")).to_contain_text("A book entry of the same amount on 2026-03-01")
