@@ -16,7 +16,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence, TypeVar
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,8 @@ from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.tools import keyed_error
 from celerp.ai.usage import record_usage
 from celerp.services.company_lock import holds_company_lock
+
+T = TypeVar("T")
 
 log = logging.getLogger(__name__)
 
@@ -643,6 +645,57 @@ async def pending_action_counts(
     return counts
 
 
+async def change_tools_called(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    change: Callable[[list], tuple[list | None, T]],
+    *,
+    conversation_id: uuid.UUID | None = None,
+    company_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+) -> T | None:
+    """The one transition of a message's action records; nothing else assigns
+    ``tools_called``.
+
+    Takes the conversation lock first, then reads the message row FOR UPDATE afresh
+    from the database (``populate_existing``), so a copy this session loaded earlier can
+    never be written back over another transaction's change. ``change`` gets that fresh
+    list and returns ``(new_list, outcome)``; a ``new_list`` of None writes nothing.
+    Returns the outcome, or None when the message is gone or has no records. With
+    ``company_id`` and ``user_id`` the message must belong to that user's conversation."""
+    if conversation_id is None:
+        conversation_id = await session.scalar(select(AIMessage.conversation_id).where(AIMessage.id == message_id))
+        if conversation_id is None:
+            return None
+    await _lock_conversation(session, conversation_id)
+    q = select(AIMessage).where(AIMessage.id == message_id, AIMessage.conversation_id == conversation_id)
+    if company_id is not None:
+        q = q.join(AIConversation, AIMessage.conversation_id == AIConversation.id).where(
+            AIConversation.company_id == company_id, AIConversation.user_id == user_id)
+    q = q.with_for_update(of=AIMessage).execution_options(populate_existing=True)
+    msg = (await session.execute(q)).scalars().first()
+    if msg is None or not msg.tools_called:
+        return None
+    new_list, outcome = change(list(msg.tools_called))
+    if new_list is not None:
+        msg.tools_called = new_list
+        session.add(msg)
+        await session.flush()
+    return outcome
+
+
+def _replace(items: list, tool_call_id: str, update) -> tuple[list | None, dict | None]:
+    """``items`` with the record ``tool_call_id`` replaced by ``update(record)``; (None,
+    None) when no record matches or ``update`` returns None (nothing to write)."""
+    for i, item in enumerate(items):
+        if isinstance(item, dict) and item.get("id") == tool_call_id:
+            updated = update(item)
+            if updated is None:
+                return None, None
+            return [*items[:i], updated, *items[i + 1:]], updated
+    return None, None
+
+
 async def claim_tool_call(
     session: AsyncSession,
     *,
@@ -655,56 +708,30 @@ async def claim_tool_call(
 ) -> dict | None:
     """Atomically move a pending action to ``executing``; return its copy or None.
 
-    Locks the conversation, then the owning message row (FOR UPDATE), so two
-    confirmations of the same action cannot both claim it. Never mutates the JSON
-    in place: a new list is assigned so SQLAlchemy persists the change.
+    Runs inside ``change_tools_called``, so two confirmations of the same action cannot
+    both claim it.
 
     A record whose outcome is unknown raises ``ActionOutcomeUnknown`` unless
     ``run_again``. ``run_again`` claims only a record whose outcome is unknown (an unkeyed
     tool, after the user chose to repeat it); on any other record it claims nothing. Every
     run keeps the record's own identity, so a keyed retry always carries the first key.
     """
-    await _lock_conversation(session, conversation_id)
-    q = (
-        select(AIMessage)
-        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
-        .where(
-            AIMessage.id == message_id,
-            AIMessage.conversation_id == conversation_id,
-            AIConversation.company_id == company_id,
-            AIConversation.user_id == user_id,
-        )
-        .with_for_update(of=AIMessage)
-    )
-    msg = (await session.execute(q)).scalars().first()
-    if msg is None or not msg.tools_called:
-        return None
-
     now = datetime.now(timezone.utc)
-    claimed: dict | None = None
-    new_list: list = []
-    for item in msg.tools_called:
-        if claimed is None and isinstance(item, dict) and item.get("id") == tool_call_id:
-            unknown = _outcome_unknown(item, now)
-            if unknown and not run_again:
-                raise ActionOutcomeUnknown(item)
-            if run_again != unknown or not _claimable(item, now, allow_unknown=unknown):
-                new_list.append(item)
-                continue
-            running = {**item, "status": "executing", "executing_since": now.isoformat()}
-            running.pop("error", None)
-            claimed = dict(running)
-            new_list.append(running)
-        else:
-            new_list.append(item)
 
-    if claimed is None:
-        return None
+    def claim(item: dict) -> dict | None:
+        unknown = _outcome_unknown(item, now)
+        if unknown and not run_again:
+            raise ActionOutcomeUnknown(item)
+        if run_again != unknown or not _claimable(item, now, allow_unknown=unknown):
+            return None
+        running = {**item, "status": "executing", "executing_since": now.isoformat()}
+        running.pop("error", None)
+        return running
 
-    msg.tools_called = new_list
-    session.add(msg)
-    await session.flush()
-    return claimed
+    claimed = await change_tools_called(
+        session, message_id, lambda items: _replace(items, tool_call_id, claim),
+        conversation_id=conversation_id, company_id=company_id, user_id=user_id)
+    return dict(claimed) if claimed is not None else None
 
 
 async def finalize_tool_call(
@@ -725,11 +752,6 @@ async def finalize_tool_call(
     each record's own outcome of a propose_for_each card, so Run again runs only the
     records still open. ``kept`` is what the record stores as its result when the
     route's answer must not be stored (a generated password reads as SHOWN_ONCE)."""
-    msg = await session.get(AIMessage, message_id)
-    if msg is None or not msg.tools_called:
-        return
-    await _lock_conversation(session, msg.conversation_id)
-
     summary: dict = {}
     data = (result or {}).get("data")
     if isinstance(data, dict):
@@ -740,32 +762,26 @@ async def finalize_tool_call(
     result_status = (result or {}).get("status")
     if result_status is not None:
         summary["http_status"] = result_status
-
     now = datetime.now(timezone.utc).isoformat()
-    new_list: list = []
-    for item in msg.tools_called:
-        if isinstance(item, dict) and item.get("id") == tool_call_id:
-            updated = {**item, "status": status, "finished_at": now}
-            updated.pop("executing_since", None)
-            if summary:
-                updated["result_summary"] = summary
-            else:
-                updated.pop("result_summary", None)
-            if error:
-                updated["error"] = error
-            else:
-                updated.pop("error", None)
-            if outcomes is not None:
-                updated["outcomes"] = outcomes
-            if kept is not None:
-                updated["result"] = kept
-            new_list.append(updated)
-        else:
-            new_list.append(item)
 
-    msg.tools_called = new_list
-    session.add(msg)
-    await session.flush()
+    def finish(item: dict) -> dict:
+        updated = {**item, "status": status, "finished_at": now}
+        updated.pop("executing_since", None)
+        if summary:
+            updated["result_summary"] = summary
+        else:
+            updated.pop("result_summary", None)
+        if error:
+            updated["error"] = error
+        else:
+            updated.pop("error", None)
+        if outcomes is not None:
+            updated["outcomes"] = outcomes
+        if kept is not None:
+            updated["result"] = kept
+        return updated
+
+    await change_tools_called(session, message_id, lambda items: _replace(items, tool_call_id, finish))
 
 
 async def note_pending(
@@ -773,14 +789,8 @@ async def note_pending(
 ) -> None:
     """Say why a pending action was not run (an earlier change to its record failed); it
     stays pending, and its next claim clears the note."""
-    msg = await session.get(AIMessage, message_id)
-    if msg is None or not msg.tools_called:
-        return
-    await _lock_conversation(session, msg.conversation_id)
-    msg.tools_called = [{**item, "error": error} if isinstance(item, dict) and item.get("id") == tool_call_id
-                        else item for item in msg.tools_called]
-    session.add(msg)
-    await session.flush()
+    await change_tools_called(
+        session, message_id, lambda items: _replace(items, tool_call_id, lambda item: {**item, "error": error}))
 
 
 async def note_outcomes(
@@ -789,16 +799,10 @@ async def note_outcomes(
     """Store each record's outcome of a propose_for_each card while it runs, the claim
     still held and its time renewed, so a stopped run leaves only the record in flight
     unknown."""
-    msg = await session.get(AIMessage, message_id)
-    if msg is None or not msg.tools_called:
-        return
-    await _lock_conversation(session, msg.conversation_id)
     now = datetime.now(timezone.utc).isoformat()
-    msg.tools_called = [{**item, "outcomes": outcomes, "executing_since": now}
-                        if isinstance(item, dict) and item.get("id") == tool_call_id
-                        and item.get("status") == "executing" else item for item in msg.tools_called]
-    session.add(msg)
-    await session.flush()
+    await change_tools_called(session, message_id, lambda items: _replace(
+        items, tool_call_id, lambda item: {**item, "outcomes": outcomes, "executing_since": now}
+        if item.get("status") == "executing" else None))
 
 
 async def dismiss_tool_calls(
@@ -812,49 +816,33 @@ async def dismiss_tool_calls(
 ) -> list[str]:
     """Atomically dismiss claimable proposals owned by this user.
 
-    The owning message is locked once for the whole selection so bulk dismissal
+    One ``change_tools_called`` transition covers the whole selection, so bulk dismissal
     cannot race individual confirmations into partially overwritten JSON state.
     Unknown or already-terminal ids are harmless and simply omitted.
     """
     wanted = set(tool_call_ids)
     if not wanted:
         return []
-    await _lock_conversation(session, conversation_id)
-    q = (
-        select(AIMessage)
-        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
-        .where(
-            AIMessage.id == message_id,
-            AIMessage.conversation_id == conversation_id,
-            AIConversation.company_id == company_id,
-            AIConversation.user_id == user_id,
-        )
-        .with_for_update(of=AIMessage)
-    )
-    msg = (await session.execute(q)).scalars().first()
-    if msg is None or not msg.tools_called:
-        return []
-
     now = datetime.now(timezone.utc)
-    dismissed_ids: list[str] = []
-    updated_items: list = []
-    for item in msg.tools_called:
-        item_id = item.get("id") if isinstance(item, dict) else None
-        if item_id in wanted and _claimable(item, now, allow_unknown=True):
-            dismissed = {**item, "status": "dismissed", "finished_at": now.isoformat()}
-            dismissed.pop("executing_since", None)
-            dismissed.pop("error", None)
-            updated_items.append(dismissed)
-            dismissed_ids.append(item_id)
-        else:
-            updated_items.append(item)
-    if not dismissed_ids:
-        return []
 
-    msg.tools_called = updated_items
-    session.add(msg)
-    await session.flush()
-    return dismissed_ids
+    def dismiss(items: list) -> tuple[list | None, list[str]]:
+        dismissed_ids: list[str] = []
+        updated_items: list = []
+        for item in items:
+            item_id = item.get("id") if isinstance(item, dict) else None
+            if item_id in wanted and _claimable(item, now, allow_unknown=True):
+                dismissed = {**item, "status": "dismissed", "finished_at": now.isoformat()}
+                dismissed.pop("executing_since", None)
+                dismissed.pop("error", None)
+                updated_items.append(dismissed)
+                dismissed_ids.append(item_id)
+            else:
+                updated_items.append(item)
+        return (updated_items if dismissed_ids else None), dismissed_ids
+
+    return await change_tools_called(
+        session, message_id, dismiss,
+        conversation_id=conversation_id, company_id=company_id, user_id=user_id) or []
 
 
 async def dismiss_tool_call(
