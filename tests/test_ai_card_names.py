@@ -113,15 +113,15 @@ async def test_a_name_is_kept_only_for_a_record_the_asker_may_read(client, auth,
     args = {"path": {"bank_id": bank["id"]}, "body": {"contact_id": contact_id, "decisions": [
         {"line_ids": [line_id, "not-a-record"]}], "memo": line_id}}
 
-    owner = await record_names(session, company_id, {}, "owner", args)
+    owner = await record_names(session, company_id, uuid.uuid4(), {}, "owner", args)
     assert owner[contact_id] == "Harbour Supplies" and bank["bank_name"] in owner[bank["id"]]
     assert "Monthly fee" in owner[line_id] and "not-a-record" not in owner
 
-    viewer = await record_names(session, company_id, {}, "viewer", args)
+    viewer = await record_names(session, company_id, uuid.uuid4(), {}, "viewer", args)
     assert viewer[contact_id] == "Harbour Supplies" and line_id not in viewer and bank["id"] not in viewer
 
-    assert await record_names(session, company_id, {}, "no-such-role", {"body": {"contact_id": contact_id}}) == {}
-    assert await record_names(session, uuid.uuid4(), {}, "owner", args) == {}
+    assert await record_names(session, company_id, uuid.uuid4(), {}, "no-such-role", {"body": {"contact_id": contact_id}}) == {}
+    assert await record_names(session, uuid.uuid4(), uuid.uuid4(), {}, "owner", args) == {}
 
 
 def test_a_card_shows_a_named_id_by_its_name_and_never_shows_an_unnamed_one():
@@ -191,10 +191,39 @@ async def test_a_card_names_an_assistant_upload_and_a_reading_by_their_file_name
     session.add(job)
     await session.flush()
 
-    names = await record_names(session, company_id, {}, "owner",
+    names = await record_names(session, company_id, ids["user_id"], {}, "owner",
                                {"file_ids": [march], "body": {"job_id": str(job.id)}})
     assert names == {march: "march-statement.pdf", str(job.id): "march-statement.pdf, april-statement.pdf"}
-    assert await record_names(session, uuid.uuid4(), {}, "owner", {"file_ids": [march]}) == {}
+    assert await record_names(session, uuid.uuid4(), uuid.uuid4(), {}, "owner", {"file_ids": [march]}) == {}
+
+
+async def test_another_user_of_the_same_company_never_reads_a_file_or_reading_name(
+        auth, ids, session, tmp_path, monkeypatch):
+    """Another person in the company, with the same role, sees neither the file name of an
+    upload made for someone else's assistant nor that of a reading of it: the card says the
+    name is not available, as the file and reading routes refuse that person the records."""
+    from celerp.ai import files
+    from celerp.ai.names import named_for_reader
+    from celerp.models.ai import AIBatchJob
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import User
+
+    monkeypatch.setattr(files, "upload_dir", lambda: tmp_path)
+    company_id = auth["company_id"]
+    other = uuid.uuid4()
+    session.add(User(id=other, email=f"other-{other.hex[:8]}@test.example", name="Other", auth_hash="x",
+                     is_active=True))
+    await session.flush()
+    session.add(UserCompany(user_id=other, company_id=company_id, role="owner", is_active=True))
+    upload = files.save_upload(company_id, ids["user_id"], "payroll-march.pdf", "application/pdf", b"%PDF-1.4")
+    job = AIBatchJob(company_id=company_id, user_id=ids["user_id"], status="done", query="read", file_ids=[upload])
+    session.add(job)
+    await session.flush()
+    actions = [{"id": "c1", "arguments": {"file_ids": [upload], "body": {"job_id": str(job.id)}}}]
+
+    mine = (await named_for_reader(session, company_id, ids["user_id"], actions))[0]["names"]
+    assert mine == {upload: "payroll-march.pdf", str(job.id): "payroll-march.pdf"}
+    assert (await named_for_reader(session, company_id, other, actions))[0]["names"] == {}
 
 
 async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_still_names(auth, session, monkeypatch):
@@ -212,7 +241,7 @@ async def test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_
     monkeypatch.setattr(slots, "resolve_handler", {"broken": broken, "working": working}.__getitem__)
     record = str(uuid.uuid4())
 
-    assert await record_names(session, auth["company_id"], {}, "owner", {"body": {"contact_id": record}}) == {
+    assert await record_names(session, auth["company_id"], uuid.uuid4(), {}, "owner", {"body": {"contact_id": record}}) == {
         record: "Named record"}
 
 
@@ -231,9 +260,9 @@ async def test_a_namer_of_a_module_the_company_does_not_use_is_never_asked(auth,
     record = str(uuid.uuid4())
     args = {"body": {"contact_id": record}}
 
-    assert await record_names(session, auth["company_id"], {"enabled_modules": ["celerp-extra"]}, "owner",
+    assert await record_names(session, auth["company_id"], uuid.uuid4(), {"enabled_modules": ["celerp-extra"]}, "owner",
                               args) == {record: "Named record"}
-    assert await record_names(session, auth["company_id"], {"enabled_modules": ["celerp-accounting"]}, "owner",
+    assert await record_names(session, auth["company_id"], uuid.uuid4(), {"enabled_modules": ["celerp-accounting"]}, "owner",
                               args) == {}
     monkeypatch.setattr(slots, "get", lambda slot: [])
-    assert await record_names(session, auth["company_id"], {}, "owner", args) == {}
+    assert await record_names(session, auth["company_id"], uuid.uuid4(), {}, "owner", args) == {}

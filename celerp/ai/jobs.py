@@ -237,6 +237,11 @@ def job_shape(job) -> str:
     return "one_off" if job.question_id is None else "conversation"
 
 
+def owns(job, *, company_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    """Whether ``job`` is this company's and this user's: the one rule a job is read by."""
+    return (job.company_id, job.user_id) == (company_id, user_id)
+
+
 async def owned_job(session, job_id: uuid.UUID, *, company_id: uuid.UUID, user_id: uuid.UUID,
                     shape: str | None = None, conversation_id: uuid.UUID | None = None):
     """The one way a caller reads a job by its id: the row when it is this company's
@@ -245,7 +250,7 @@ async def owned_job(session, job_id: uuid.UUID, *, company_id: uuid.UUID, user_i
     tells one user whether another's job exists."""
     from celerp.models.ai import AIBatchJob
     job = await session.get(AIBatchJob, job_id)
-    if job is None or (job.company_id, job.user_id) != (company_id, user_id):
+    if job is None or not owns(job, company_id=company_id, user_id=user_id):
         return None
     if (shape is not None and job_shape(job) != shape) or (
             conversation_id is not None and job.conversation_id != conversation_id):

@@ -9,7 +9,9 @@ the person reading it, under the role they hold then, and the record's name show
 beside the proposal; nothing is kept, so a name follows the record and the reader's
 permission as they stand. Core names the records kept as projections, a module the
 company uses names its own records through the ``record_names`` slot. Core also
-names the files a person attached for the assistant and the AI readings of them. An
+names the files the reader attached for their assistant and the AI readings of them,
+under the same ownership check the file and reading routes apply, so another person's
+file or reading is never named. An
 id no namer knows, or one the reader cannot read, is never shown: the card says its
 name is not available.
 """
@@ -75,20 +77,22 @@ async def _projection_names(session: AsyncSession, company_id: uuid.UUID, settin
     return {entity_id: name for entity_id, state in rows if (name := state_name(state or {}))}
 
 
-def _upload_names(company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
-    """The file names of the company's assistant uploads among ``ids``."""
+def _upload_names(company_id: uuid.UUID, user_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
+    """The file names of this user's assistant uploads in the company among ``ids``."""
     from celerp.ai.files import upload_meta
 
     names = {}
     for file_id in ids:
-        meta = upload_meta(file_id, company_id)
+        meta = upload_meta(file_id, company_id, user_id)
         if meta and meta.get("filename"):
             names[file_id] = str(meta["filename"])
     return names
 
 
-async def _reading_names(session: AsyncSession, company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
-    """The company's AI readings among ``ids``, each named by the files it reads."""
+async def _reading_names(session: AsyncSession, company_id: uuid.UUID, user_id: uuid.UUID,
+                         ids: set[str]) -> dict[str, str]:
+    """This user's AI readings in the company among ``ids``, each named by the files it reads."""
+    from celerp.ai.jobs import owns
     from celerp.models.ai import AIBatchJob as AIJob
 
     keys = set()
@@ -99,19 +103,21 @@ async def _reading_names(session: AsyncSession, company_id: uuid.UUID, ids: set[
             continue
     if not keys:
         return {}
-    rows = (await session.execute(select(AIJob.id, AIJob.file_ids).where(
-        AIJob.company_id == company_id, AIJob.id.in_(keys)))).all()
+    jobs = (await session.execute(select(AIJob).where(AIJob.company_id == company_id, AIJob.id.in_(keys)))).scalars()
     names = {}
-    for job_id, file_ids in rows:
-        files = _upload_names(company_id, {str(f) for f in file_ids or []})
+    for job in jobs:
+        if not owns(job, company_id=company_id, user_id=user_id):
+            continue
+        files = _upload_names(company_id, user_id, {str(f) for f in job.file_ids or []})
         if files:
-            names[str(job_id)] = ", ".join(files[str(f)] for f in file_ids if str(f) in files)
+            names[str(job.id)] = ", ".join(files[str(f)] for f in job.file_ids if str(f) in files)
     return names
 
 
-async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: dict, role: str,
-                       arguments) -> dict[str, str]:
-    """{id: name} for the ids in ``arguments`` a namer knows and this role may read."""
+async def record_names(session: AsyncSession, company_id: uuid.UUID, user_id: uuid.UUID, settings: dict,
+                       role: str, arguments) -> dict[str, str]:
+    """{id: name} for the ids in ``arguments`` a namer knows and this reader, under this
+    role, may read."""
     from celerp.modules import slots
     from celerp.modules.registry import uses_module
     from celerp.modules.slots import resolve_handler
@@ -119,8 +125,8 @@ async def record_names(session: AsyncSession, company_id: uuid.UUID, settings: d
     ids = set(sorted(record_ids(arguments))[:_MAX_IDS])
     if not ids:
         return {}
-    names = _upload_names(company_id, {i for i in ids if i.startswith("ai_up_")})
-    names.update(await _reading_names(session, company_id, ids - names.keys()))
+    names = _upload_names(company_id, user_id, {i for i in ids if i.startswith("ai_up_")})
+    names.update(await _reading_names(session, company_id, user_id, ids - names.keys()))
     names.update(await _projection_names(session, company_id, settings, role, ids - names.keys()))
     for contribution in slots.get("record_names"):
         if not uses_module(settings, contribution.get("_module")):
@@ -145,5 +151,5 @@ async def named_for_reader(session: AsyncSession, company_id: uuid.UUID, user_id
     if not any("arguments" in a for a in actions):
         return actions
     role, settings = await read_authority(session, company_id, user_id)
-    return [{**a, "names": await record_names(session, company_id, settings, role, a["arguments"])}
+    return [{**a, "names": await record_names(session, company_id, user_id, settings, role, a["arguments"])}
             if "arguments" in a else a for a in actions]

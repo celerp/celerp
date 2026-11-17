@@ -129,10 +129,11 @@ def _file_paths_and_meta(
     return bin_path, meta
 
 
-def upload_meta(file_id: str, company_id: uuid.UUID) -> dict | None:
-    """The metadata of the company's upload ``file_id``, or None when it has no such upload."""
+def upload_meta(file_id: str, company_id: uuid.UUID, user_id: uuid.UUID) -> dict | None:
+    """The metadata of the upload ``file_id`` this user made in this company, or None when
+    there is no such upload (another person's upload reads as none)."""
     try:
-        return _file_paths_and_meta(file_id, company_id)[1]
+        return _file_paths_and_meta(file_id, company_id, user_id)[1]
     except (FileNotFoundError, PermissionError, ValueError):
         return None
 
