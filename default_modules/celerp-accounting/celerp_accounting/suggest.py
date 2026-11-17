@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextvars
 import json
-import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -103,7 +102,7 @@ def _reversals(lines: list[dict], ctx: LadderContext) -> dict:
                     out[x["id"]] = {"kind": "no_entry", "source": "reversal", "paired_line_id": y["id"],
                                     "reason": t("acct.recon_reason_reversal")}
                     if identified(x.get("reference"), [y.get("reference")], ctx.references.elsewhere(
-                            x["line_date"], {str(x["id"]), str(y["id"])})) is not None:
+                            {str(x["id"]), str(y["id"])})) is not None:
                         out[x["id"]]["evidence"] = {"identifier": True}
                 break
     return out
@@ -121,8 +120,8 @@ def _matches(lines: list[dict], ctx: LadderContext) -> dict:
         out[line_id] = {"kind": "match", "source": "match", "je_ids": [je_id], "confidence": confidence,
                         "reason": t("acct.recon_reason_match", date=str(e.get("date") or e.get("ts") or "")[:10])}
         near = twins(line["amount"], line["line_date"], ctx.entries)
-        pick = identified(line.get("reference"), [x.get("memo") for x in near],
-                          ctx.references.elsewhere(line["line_date"], {str(line_id)}))
+        pick = identified(line.get("reference"), [x.get("identifier") for x in near],
+                          ctx.references.elsewhere({str(line_id)}))
         if pick is not None and near[pick]["je_id"] == je_id:
             out[line_id]["evidence"] = {"identifier": True}
     # One line paid by up to three entries of one counterparty (or three lines of one
@@ -194,57 +193,46 @@ def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dic
     return sorted(near, key=lambda c: (_days(c["line_date"], line_date), str(c["id"])))
 
 
-# References a bank prints on many unrelated lines: they name a kind of money, never one transaction.
-_GENERIC_WORDS = frozenset({
-    "payment", "payments", "pmt", "transfer", "transfers", "trf", "xfer", "salary", "salaries", "wage", "wages",
-    "payroll", "invoice", "invoices", "inv", "bill", "bills", "deposit", "deposits", "withdrawal", "refund",
-    "fee", "fees", "charge", "charges", "interest", "cash", "cheque", "check", "atm", "pos", "debit", "credit",
-    "online", "purchase", "rent", "bank", "standing", "order", "direct", "monthly", "to", "from", "for", "and"})
 _DIGITS_MIN = 6
 
 
 def identifier(reference: str | None) -> str | None:
-    """``reference`` as a transaction identifier (casefolded), or None when it cannot be one: under
-    ``_REFERENCE_MIN`` characters, digits only under ``_DIGITS_MIN``, or only generic words."""
-    ref = (reference or "").strip().casefold()
+    """``reference`` as a transaction identifier: its whole text, spaces collapsed and casefolded,
+    or None when it is too short to name one transaction (under ``_REFERENCE_MIN`` characters, or
+    digits only under ``_DIGITS_MIN``). A word inside a longer text is never one."""
+    ref = " ".join((reference or "").split()).casefold()
     if len(ref) < _REFERENCE_MIN or (ref.isdigit() and len(ref) < _DIGITS_MIN):
         return None
-    return None if set(re.findall(r"\w+", ref)) <= _GENERIC_WORDS else ref
-
-
-def carries(ident: str, text: str | None) -> bool:
-    """Whether ``text`` names identifier ``ident`` as a whole word."""
-    return re.search(rf"(?<!\w){re.escape(ident)}(?!\w)", (text or "").casefold()) is not None
+    return ref
 
 
 def identified(reference: str | None, candidates: list, elsewhere: Callable[[str], bool]) -> int | None:
-    """The one rule for transaction identity: the index of the one of ``candidates`` (the texts of
-    the book entries, or other banks' lines, a line could be) that is the very transaction a line
-    with ``reference`` is, or None. It is one only when the line's reference is an ``identifier``
-    that exactly one candidate carries and no other statement line of the company in the window
-    does (``elsewhere``, see ``References.elsewhere``): a reference two lines carry names no one
-    transaction. Equal money, a near date, a shared account or a shared contact never prove it (one
-    supplier is paid many times); they only rank the candidates the user is shown."""
+    """The one rule for transaction identity: the index of the one of ``candidates`` that is the
+    very transaction a line with ``reference`` is, or None. ``candidates`` are the identifiers the
+    records the line could be carry: a book entry's is the number of the one document it pays
+    (see bank_statements._entry_identifiers), another bank's line's is its reference. It is one
+    only when the line's whole reference equals exactly one candidate's and no other statement
+    line of the company, at any date, carries it (``elsewhere``, see ``References.elsewhere``).
+    Equal money, a near date, a shared account, a shared contact or a word a memo shares never
+    prove it (one supplier is paid many times); they only rank the candidates the user is shown."""
     ident = identifier(reference)
     if ident is None:
         return None
-    hits = [i for i, c in enumerate(candidates) if carries(ident, c)]
+    hits = [i for i, c in enumerate(candidates) if identifier(c) == ident]
     return hits[0] if len(hits) == 1 and not elsewhere(ident) else None
 
 
 class References:
-    """The company's statement lines that carry a reference (``{id, line_date, reference}``),
-    indexed by word so a check reads only the lines sharing a word with the identifier."""
+    """The company's statement lines that carry a reference (``{id, bank_account_id, line_date,
+    reference, matched_je_ids}``), indexed by identifier and by the entries they are matched to."""
 
     def __init__(self, lines: list[dict]):
         self.lines = lines
-        self._by_word: dict[str, list[dict]] = {}
+        self._by_ident: dict[str, list[dict]] = {}
         self._by_je: dict[str, list[dict]] = {}
-        self._words: dict[int, set[str]] = {}
         for line in lines:
-            self._words[id(line)] = words = set(re.findall(r"\w+", (line.get("reference") or "").casefold()))
-            for word in words:
-                self._by_word.setdefault(word, []).append(line)
+            if (ident := identifier(line.get("reference"))) is not None:
+                self._by_ident.setdefault(ident, []).append(line)
             for je_id in line.get("matched_je_ids") or ():
                 self._by_je.setdefault(je_id, []).append(line)
 
@@ -252,22 +240,14 @@ class References:
         """The lines matched to any of ``je_ids``."""
         return list({id(l): l for j in je_ids for l in self._by_je.get(j, ())}.values())
 
-    def named_in(self, texts: list) -> list[dict]:
-        """The lines whose reference one of ``texts`` could carry (each of its words is a word of
-        the texts): the only lines ``identified`` can find in them."""
-        words = {w for t in texts for w in re.findall(r"\w+", (t or "").casefold())}
-        pool = {id(l): l for w in words for l in self._by_word.get(w, ())}
-        return [l for k, l in pool.items() if self._words[k] <= words]
+    def carrying(self, idents) -> list[dict]:
+        """The lines whose reference is one of ``idents``."""
+        return [l for i in set(idents) - {None} for l in self._by_ident.get(i, ())]
 
-    def elsewhere(self, line_date, skip: set) -> Callable[[str], bool]:
-        """Whether a line not in ``skip`` (ids), dated within the exact-amount window of
-        ``line_date``, carries an identifier: the ``elsewhere`` of ``identified``."""
-        def check(ident: str) -> bool:
-            words = re.findall(r"\w+", ident)
-            pool = min((self._by_word.get(w, []) for w in words), key=len) if words else self.lines
-            return any(str(l["id"]) not in skip and _days(l["line_date"], line_date) <= matcher.EXACT_DAYS
-                       and carries(ident, l.get("reference")) for l in pool)
-        return check
+    def elsewhere(self, skip: set) -> Callable[[str], bool]:
+        """Whether a line not in ``skip`` (ids) carries an identifier: the ``elsewhere`` of
+        ``identified``."""
+        return lambda ident: any(str(l["id"]) not in skip for l in self._by_ident.get(ident, ()))
 
 
 def rank(want: dict, entries: list[dict]) -> list[dict]:
@@ -299,7 +279,7 @@ def _transfer(line: dict, ctx: LadderContext) -> dict | None:
          "reason": t("acct.recon_reason_transfer", date=str(pairs[0]["line_date"])[:10])}
     skip = {str(line["id"])} | {str(p["id"]) for p in pairs}
     pick = identified(line.get("reference"), [p.get("reference") for p in pairs],
-                      ctx.references.elsewhere(line["line_date"], skip))
+                      ctx.references.elsewhere(skip))
     return s if pick is None else {**s, "paired_line_id": str(pairs[pick]["id"]), "evidence": {"identifier": True}}
 
 

@@ -22,7 +22,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -906,9 +906,8 @@ async def _paired(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLi
     from celerp_accounting import suggest
 
     skip = {str(line.id)} | {str(c["id"]) for c in candidates}
-    references = await _references(db, company_id, book.days)
-    pick = suggest.identified(line.reference, [c["reference"] for c in candidates],
-                              references.elsewhere(line.line_date, skip))
+    references = await _references(db, company_id, {suggest.identifier(line.reference)})
+    pick = suggest.identified(line.reference, [c["reference"] for c in candidates], references.elsewhere(skip))
     return None if pick is None else candidates[pick]["id"]
 
 
@@ -992,8 +991,8 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     line is refused with them shown, ranked by ``want``'s contacts and accounts (``suggest.rank``),
     and the first as its match suggestion: the user matches one or posts anyway. No candidate: the
     line posts. ``book`` is the request's read of the bank's entries near its lines, caught up
-    under the company lock (see _Book); whether one of them is counted already, and the statement
-    lines carrying a reference the identifier is checked against, are read here."""
+    under the company lock (see _Book); whether one of them is counted already, the identifier each
+    carries (_entry_identifiers) and the statement lines carrying it are read here."""
     from celerp_accounting import suggest
 
     near = [e for e in suggest.twins(line.amount, line.line_date, book.entries)
@@ -1003,21 +1002,22 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     if not found:
         return None
     ids = {e["je_id"] for e in found}
-    texts = [e["evidence"]["text"] for e in found]
-    references = await _references(db, company_id, book.days)
+    carried = await _entry_identifiers(db, company_id, ids)
+    idents = [carried.get(e["je_id"]) for e in found]
+    references = await _references(db, company_id, set(idents) | {suggest.identifier(line.reference)})
     owners = {str(l["id"]) for l in references.matched_to(ids)}
 
-    def pick(reference: str | None, line_id: str, line_date) -> int | None:
-        return suggest.identified(reference, texts, references.elsewhere(line_date, {line_id} | owners))
+    def pick(reference: str | None, line_id: str) -> int | None:
+        return suggest.identified(reference, idents, references.elsewhere({line_id} | owners))
 
-    if (mine := pick(line.reference, str(line.id), line.line_date)) is not None:
+    if (mine := pick(line.reference, str(line.id))) is not None:
         je_ids = [found[mine]["je_id"]]
         await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
         instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=str(found[mine]["ts"])[:10])
         return je_ids
-    claims = {l["id"]: i for l in references.named_in(texts)
+    claims = {l["id"]: i for l in references.carrying(idents)
               if l["bank_account_id"] == bank.id and l["id"] != line.id
-              and (i := pick(l["reference"], str(l["id"]), l["line_date"])) is not None}
+              and (i := pick(l["reference"], str(l["id"]))) is not None}
     if claims:
         still_open = (await db.execute(select(BankStatementLine.id).where(
             BankStatementLine.company_id == company_id, BankStatementLine.status == "unmatched",
@@ -1365,7 +1365,7 @@ async def _book_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     states = await _states(db, company_id, [e["je_id"] for e in entries])
     for e in entries:
         others = [x for x in (states.get(e["je_id"]) or {}).get("entries", []) if x.get("account") != bank.chart_account_code]
-        e["evidence"] = {"text": e["memo"], "accounts": {x.get("account") for x in others} - {None},
+        e["evidence"] = {"accounts": {x.get("account") for x in others} - {None},
                          "contacts": {x.get("contact") for x in others} - {None, ""}}
     return entries
 
@@ -1387,20 +1387,54 @@ async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     return book
 
 
-async def _references(db: AsyncSession, company_id: uuid.UUID, days: tuple[str, str] | None) -> "object":
-    """The company's statement lines (every bank, every state) that carry a reference, dated within
-    ``days`` (all of them when None), as a ``suggest.References``: a reference is a transaction's
-    identifier only while no other line carries it."""
+async def _references(db: AsyncSession, company_id: uuid.UUID, idents: set | None) -> "object":
+    """The company's statement lines (every bank, every state, any date) that carry a reference, as
+    a ``suggest.References``: those whose reference is one of ``idents`` (every one when None). A
+    reference is a transaction's identifier only while no other line carries it."""
     from celerp_accounting import suggest
 
     q = select(BankStatementLine.id, BankStatementLine.bank_account_id, BankStatementLine.line_date,
                BankStatementLine.reference, BankStatementLine.matched_je_ids).where(
         BankStatementLine.company_id == company_id, BankStatementLine.reference.is_not(None),
         BankStatementLine.reference != "")
-    if days is not None:
-        q = q.where(BankStatementLine.line_date >= days[0], BankStatementLine.line_date <= days[1] + "~")
-    return suggest.References([{"id": i, "bank_account_id": b, "line_date": d, "reference": r, "matched_je_ids": m}
-                               for i, b, d, r, m in (await db.execute(q)).all()])
+    if idents is not None:
+        idents = set(idents) - {None}
+        if not idents:
+            return suggest.References([])
+        # Narrowed by each identifier's longest word; References keeps the exact equals.
+        q = q.where(or_(*(func.lower(BankStatementLine.reference).contains(max(i.split(), key=len), autoescape=True)
+                          for i in idents)))
+    rows = [{"id": i, "bank_account_id": b, "line_date": d, "reference": r, "matched_je_ids": m}
+            for i, b, d, r, m in (await db.execute(q)).all()]
+    return suggest.References([r for r in rows if idents is None or suggest.identifier(r["reference"]) in idents])
+
+
+async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) -> dict[str, str]:
+    """The identifier each of ``je_ids`` carries, as the books stand: the number of the document a
+    payment entry pays, while that payment is the document's only one (none refunded) and no other
+    document of the company has that number. A memo, a contact or an account is never one, and an
+    entry keyed by hand carries none: it is a candidate the user confirms."""
+    from celerp.models.projections import Projection
+    from celerp_accounting import suggest
+    from celerp_accounting.routes import _je_doc_refs
+
+    out = {}
+    for je_id, ref in (await _je_doc_refs(db, company_id, sorted(je_ids))).items():
+        payments = ref["doc"].get("payments") or []
+        only = payments[0] if len(payments) == 1 else {}
+        ident = suggest.identifier(ref["numbers"].get(ref["doc_id"]))
+        if ref["trigger"] == "doc.payment.received" and ident and only.get("status", "active") == "active" \
+                and not only.get("refunded") and not only.get("refund_count"):
+            out[je_id] = ident
+    if not out:
+        return out
+    numbers = [func.lower(func.trim(Projection.state[k].as_string())) for k in ("ref_id", "doc_number")]
+    holders: dict[str, set] = {}
+    for entity_id, *found in (await db.execute(select(Projection.entity_id, *numbers).where(
+            Projection.company_id == company_id, or_(*(n.in_(set(out.values())) for n in numbers))))).all():
+        for number in set(found) & set(out.values()):
+            holders.setdefault(number, set()).add(entity_id)
+    return {je_id: ident for je_id, ident in out.items() if len(holders.get(ident, ())) == 1}
 
 
 async def _caught_up(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, book: _Book) -> None:
@@ -1494,7 +1528,9 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
 
     book = await _free_entries(db, company_id, bank)
     states = await _states(db, company_id, [e["je_id"] for e in book])
+    carried = await _entry_identifiers(db, company_id, [e["je_id"] for e in book])
     entries = [{"je_id": e["je_id"], "amount": str(e["amount"]), "date": str(e["ts"])[:10], "memo": e["memo"],
+                "identifier": carried.get(e["je_id"]),
                 "contact": _contact(states.get(e["je_id"]) or {}, bank.chart_account_code)} for e in book]
     rules = [_rule_to_dict(r) for r in (await db.execute(select(ReconciliationRule).where(
         ReconciliationRule.company_id == company_id, ReconciliationRule.is_active.is_(True)))).scalars()]

@@ -100,12 +100,12 @@ async def test_an_undo_during_a_several_twins_refusal_never_deadlocks(committed_
     assert after["status"] == "unmatched" and (after["suggestion"] or {}).get("source") == "twins", after
 
 
-async def test_an_entry_keyed_after_the_read_of_the_books_is_matched_never_posted_twice(
+async def test_an_entry_keyed_after_the_read_of_the_books_is_shown_never_posted_twice(
         committed_engine, own_client, monkeypatch):
     """A group accept reads the books near its lines once; an entry keyed by someone else after
-    that read and before the line's decision, carrying the line's reference, is matched to the
-    line instead of the line posting a second entry for the same money, and the books equal their
-    rebuild from the ledger."""
+    that read and before the line's decision, carrying the line's reference in its memo, stops the
+    line with that entry shown instead of the line posting a second entry for the same money, and
+    the books equal their rebuild from the ledger."""
     import celerp_accounting.routes as R
 
     c = own_client
@@ -135,6 +135,6 @@ async def test_an_entry_keyed_after_the_read_of_the_books_is_matched_never_poste
     je = await asyncio.wait_for(keyed[0], timeout=30)
     assert out.status_code == 200, out.text
     row = out.json()["results"][0]
-    assert row["ok"] and row["matched_instead"] and row["je_ids"] == [je], row
+    assert not row["ok"] and not row["matched_instead"] and row["candidates"] == [je], row
     assert await _bank_entries(committed_engine, co, bk) == [je]
     await _rebuilt_equals_stored(committed_engine, co)

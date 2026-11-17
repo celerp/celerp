@@ -178,6 +178,25 @@ async def resolve(client: AsyncClient, co: dict, bank_id: str, *, decisions: lis
     return await client.post(f"{API}/bank/{bank_id}/resolve", json=body, headers=headers or co["h"])
 
 
+async def paid_invoice(client: AsyncClient, co: dict, bk: dict, total: float, day: str, *,
+                       payments: int = 1, paid: int | None = None) -> tuple[str, str]:
+    """A customer invoice of ``total`` due in ``payments`` equal parts, ``paid`` of them (all when
+    None) paid into ``bk`` on ``day``: its id and its number."""
+    r = await client.post("/docs", headers=co["h"], json={
+        "doc_type": "invoice", "contact_id": "contact:1", "issue_date": "2026-01-02",
+        "line_items": [{"name": "Work", "quantity": 1, "unit_price": total, "line_total": total}],
+        "subtotal": total, "tax": 0.0, "total": total})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", json={}, headers=co["h"])).status_code == 200
+    for _ in range(payments if paid is None else paid):
+        r = await client.post(f"/docs/{doc}/payment", headers=co["h"], json={
+            "amount": total / payments, "payment_date": day, "bank_account": bk["chart_account_code"]})
+        assert r.status_code == 200, r.text
+    state = (await client.get(f"/docs/{doc}", headers=co["h"])).json()
+    return doc, state.get("ref_id") or state["doc_number"]
+
+
 async def journal(session, co: dict, je_id: str) -> dict:
     """The stored state of one journal entry of ``co``."""
     from sqlalchemy import select

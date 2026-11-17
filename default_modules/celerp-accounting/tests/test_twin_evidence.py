@@ -179,19 +179,21 @@ async def test_two_unrelated_payments_to_one_expense_account_stay_two(client, se
 @pytest.mark.parametrize("order", [("INV-7001", "INV-7002"), ("INV-7002", "INV-7001")])
 async def test_two_invoices_of_one_supplier_reach_the_same_books_in_either_order(client, session, order):
     """INV-7001 is keyed before the statement (5300, Supplier A, its reference in the memo). The
-    statement pays INV-7001 and INV-7002, 100 each, references on the lines. INV-7001 is matched
-    to its entry by its identifier; INV-7002 is never taken for it (the entry is INV-7001's line's)
-    and posts to 6100. Either order: 5300 100 and 6100 100."""
+    statement pays INV-7001 and INV-7002, 100 each, references on the lines. A memo is no identifier,
+    so the line the user posts first while the entry is open stops with it shown: INV-7001's line is
+    matched to it by the user, INV-7002's posts past it to 6100. Either order: 5300 100 and 6100 100."""
     co = await B.company(client)
     bk = await B.bank(client, co["h"])
     a = await _contact(client, co, "Supplier A")
     keyed = await _keyed(client, co, bk, 100.0, "2026-01-08", account="5300", contact=a, memo="Paid INV-7001")
     l1, l2 = await _lines(client, co, bk, [("2026-01-09", "INV 7001 PAYMENT", "-100.00", "INV-7001"),
                                            ("2026-01-10", "INV 7002 PAYMENT", "-100.00", "INV-7002")])
-    lines, accounts = {"INV-7001": l1, "INV-7002": l2}, {"INV-7001": "5300", "INV-7002": "6100"}
-    rows = {ref: await _post(client, co, bk, lines[ref], account_code=accounts[ref], contact=a) for ref in order}
-    assert rows["INV-7001"]["ok"] and rows["INV-7001"]["matched_instead"] and rows["INV-7001"]["je_ids"] == [keyed], rows
-    assert rows["INV-7002"]["ok"] and not rows["INV-7002"]["matched_instead"], rows
+    for ref in order:
+        if ref == "INV-7001":
+            assert (await _match_it(client, co, bk, l1))["je_ids"] == [keyed]
+        else:
+            row = await _settle(client, co, bk, l2, stop=order[0] == ref, account_code="6100", contact=a)
+            assert keyed not in row["je_ids"] and not row["matched_instead"], row
     ledger = (await _books(client, session, co))["ledger"]
     assert ledger["5300"] == (100.0, 0.0) and ledger["6100"] == (100.0, 0.0), ledger
 
@@ -213,20 +215,6 @@ async def test_a_reference_that_names_no_one_transaction_never_matches(client, s
 
 
 @pytest.mark.asyncio
-async def test_a_unique_reference_matches_the_keyed_entry_on_its_own(client, session):
-    """The automation that stays: a reference only this line and one keyed entry carry is the
-    transaction's identifier, so the posting is matched to that entry and says so."""
-    co = await B.company(client)
-    bk = await B.bank(client, co["h"])
-    keyed = await _keyed(client, co, bk, 80.0, "2026-01-08", account="5300", memo="Paid PO-55120")
-    other = await _keyed(client, co, bk, 80.0, "2026-01-09", account="5300", memo="Paid PO-55121")
-    line = await _one_line(client, co, bk, [("2026-01-10", "PO 55120", "-80.00")], reference="PO-55120")
-    row = await _post(client, co, bk, line, account_code="5300")
-    assert row["ok"] and row["matched_instead"] and row["je_ids"] == [keyed] and other not in row["je_ids"], row
-    assert (await _books(client, session, co))["ledger"]["5300"] == (160.0, 0.0)
-
-
-@pytest.mark.asyncio
 async def test_a_line_matched_instead_says_why_in_each_readers_language(client):
     """The reason a line matched an entry keyed after import is kept as its catalog key, so the
     answer a repeat replays reads in the language of whoever reads it, not the first request's."""
@@ -234,9 +222,9 @@ async def test_a_line_matched_instead_says_why_in_each_readers_language(client):
 
     co = await B.company(client)
     bk = await B.bank(client, co["h"])
-    line = await _one_line(client, co, bk, [("2026-01-05", "ACME LTD", "-40.00")], reference="ACME-88412")
-    await _keyed(client, co, bk, 40.0, "2026-01-05", memo="ACME LTD ACME-88412")
-    decisions, idem = [{"line_ids": [line["id"]], "kind": "post", "account_code": "5100"}], B.key()
+    _doc, number = await B.paid_invoice(client, co, bk, 40.0, "2026-01-05")
+    line = await _one_line(client, co, bk, [("2026-01-05", "RECEIVED", "40.00")], reference=number)
+    decisions, idem = [{"line_ids": [line["id"]], "kind": "post", "account_code": "4100"}], B.key()
     rows = [(await B.resolve(client, co, bk["id"], decisions=decisions, idem=idem,
                              headers={**co["h"], "Accept-Language": lang})).json()["results"][0]
             for lang in ("th", "en")]
@@ -258,16 +246,6 @@ async def test_another_account_and_no_contact_is_no_proof(client):
     other = await _keyed(client, co, bk, 25.0, "2026-01-10", account="5300")
     row = await _post(client, co, bk, line, account_code="5100")
     assert not row["ok"] and row["candidates"] == [other], row
-
-
-@pytest.mark.asyncio
-async def test_the_lines_reference_on_the_entry_is_proof(client):
-    co = await B.company(client)
-    bk = await B.bank(client, co["h"])
-    line = await _one_line(client, co, bk, [("2026-01-10", "CHEQUE", "-60.00")], reference="CHQ4471")
-    keyed = await _keyed(client, co, bk, 60.0, "2026-01-08", account="5300", memo="Paid by cheque CHQ4471")
-    row = await _post(client, co, bk, line, account_code="5100")
-    assert row["ok"] and row["matched_instead"] and row["je_ids"] == [keyed], row
 
 
 @pytest.mark.asyncio
@@ -340,27 +318,29 @@ async def test_two_transfers_of_one_amount_never_pair_on_a_shared_reference(clie
 def test_a_reference_is_an_identifier_only_when_it_names_one_transaction():
     from celerp_accounting import suggest
 
-    assert [suggest.identifier(r) for r in ("PAYMENT", "Salary payment", "12345", "abc", None, "")] == [None] * 6
-    assert [suggest.identifier(r) for r in ("INV-7001", "123456", "CHQ4471")] == ["inv-7001", "123456", "chq4471"]
-    refs = suggest.References([{"id": "x", "line_date": "2026-01-09", "reference": "INV-7001"}])
-    assert suggest.identified("INV-7001", ["Paid INV-7001", "Paid INV-70012"], refs.elsewhere("2026-01-20", set())) == 0
-    assert suggest.identified("INV-7001", ["Paid INV-7001"], refs.elsewhere("2026-01-10", set())) is None
-    assert suggest.identified("INV-7001", ["Paid INV-7001"], refs.elsewhere("2026-01-10", {"x"})) == 0
-    assert suggest.identified("INV-7001", ["INV-7001", "re INV-7001"], refs.elsewhere("2026-01-10", {"x"})) is None
+    assert [suggest.identifier(r) for r in ("12345", "abc", None, "")] == [None] * 4
+    assert [suggest.identifier(r) for r in ("INV-7001", "123456", " Salary   payment ")] == [
+        "inv-7001", "123456", "salary payment"]
+    refs = suggest.References([{"id": "x", "line_date": "2025-06-01", "reference": "inv-7001 "}])
+    assert suggest.identified("INV-7001", ["INV-7001", "INV-70012", None], refs.elsewhere({"x"})) == 0
+    assert suggest.identified("INV-7001", ["INV-7001"], refs.elsewhere(set())) is None  # another line, any date
+    assert suggest.identified("INV-7001", ["Paid INV-7001"], refs.elsewhere({"x"})) is None  # a word of a text
+    assert suggest.identified("INV-7001", ["INV-7001", "inv-7001"], refs.elsewhere({"x"})) is None
+    assert suggest.identified("ACME", [None, None], refs.elsewhere(set())) is None
 
 
-def test_the_index_reads_only_the_lines_an_entry_could_name_or_is_matched_to():
-    """``References.named_in`` and ``matched_to`` give the same lines a scan of every line would,
-    read through the word and entry indexes so a check never walks the whole company."""
+def test_the_index_reads_only_the_lines_carrying_an_identifier_or_matched_to_an_entry():
+    """``References.carrying``, ``elsewhere`` and ``matched_to`` give the same lines a scan of every
+    line would, read through the identifier and entry indexes so a check never walks the company."""
     from celerp_accounting import suggest
 
     lines = [{"id": "a", "line_date": "2026-01-09", "reference": "INV-7001", "matched_je_ids": ["je:1"]},
              {"id": "b", "line_date": "2026-01-09", "reference": "INV-7002 ACME", "matched_je_ids": []},
              {"id": "c", "line_date": "2026-01-09", "reference": "ACME", "matched_je_ids": ["je:1", "je:2"]}]
     refs = suggest.References(lines)
-    assert sorted(l["id"] for l in refs.named_in(["Paid inv-7001 to Acme"])) == ["a", "c"]
-    assert sorted(l["id"] for l in refs.named_in(["Acme INV-7002", None])) == ["b", "c"]
-    assert refs.named_in(["7001"]) == [] and refs.named_in([]) == []
+    assert sorted(l["id"] for l in refs.carrying(["inv-7001", "acme", None])) == ["a", "c"]
+    assert [l["id"] for l in refs.carrying(["inv-7002 acme"])] == ["b"] and refs.carrying(["inv-7002"]) == []
+    assert refs.elsewhere({"c"})("acme") is False and refs.elsewhere({"a"})("acme") is True
     assert sorted(l["id"] for l in refs.matched_to({"je:1"})) == ["a", "c"]
     assert [l["id"] for l in refs.matched_to({"je:2", "je:9"})] == ["c"] and refs.matched_to(set()) == []
 
@@ -383,3 +363,76 @@ def test_the_ladder_names_a_counterpart_only_on_evidence():
     got = suggest._transfer({**line, "reference": "TRF1234"}, suggest.LadderContext(
         bank_id="b1", pair_lines=[{**pair, "reference": "TRF1234"}], references=crowded))
     assert "paired_line_id" not in got, got
+
+
+# ── Identity is a field naming one transaction on both sides, never a word free text shares ──
+
+_SHARED_WORDS = {  # reference, keyed memo, account the line posts to
+    "payee name": ("ACME", "Paid ACME", "6100"),
+    "unlisted category word": ("UTILITIES", "UTILITIES office", "6200"),
+    "period": ("2026-03", "Rent 2026-03", "6100"),
+    "uncleared cheque": ("ACME", "Cheque to ACME", "6100"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keyed_first", [True, False])
+@pytest.mark.parametrize("case", sorted(_SHARED_WORDS))
+async def test_a_reference_a_memo_shares_is_a_candidate_never_a_match(client, session, case, keyed_first):
+    """The line's reference is a word of the keyed entry's memo (a payee name, a category word, a
+    period, an uncleared cheque's payee): the posting stops with the entry shown and posts past it.
+    Keyed before or after the import, the books are the same."""
+    reference, memo, account = _SHARED_WORDS[case]
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    keyed = await _keyed(client, co, bk, 100.0, "2026-01-05", account="5300", memo=memo) if keyed_first else None
+    line = await _one_line(client, co, bk, [("2026-01-06", "DEBIT", "-100.00")], reference=reference)
+    keyed = keyed or await _keyed(client, co, bk, 100.0, "2026-01-05", account="5300", memo=memo)
+    row = await _settle(client, co, bk, line, stop=True, account_code=account)
+    assert keyed not in row["je_ids"] and not row["matched_instead"], row
+    ledger = (await _books(client, session, co))["ledger"]
+    assert ledger["5300"] == (100.0, 0.0) and ledger[account] == (100.0, 0.0), ledger
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [0, 1])
+async def test_one_reference_on_lines_weeks_apart_names_neither(client, session, first):
+    """Two payments of 100 to one supplier, each printed ACME, eight days apart, and one keyed in
+    between: whichever line is posted first stops with the entry shown, so the books do not depend
+    on the order and neither requested posting is lost."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    keyed = await _keyed(client, co, bk, 100.0, "2026-01-06", account="5300", memo="Paid ACME")
+    lines = await _lines(client, co, bk, [("2026-01-02", "ACME A", "-100.00", "ACME"),
+                                          ("2026-01-10", "ACME B", "-100.00", "ACME")])
+    for line in (lines[first], lines[1 - first]):
+        row = await _settle(client, co, bk, line, stop=True, account_code="6100")
+        assert keyed not in row["je_ids"], row
+    ledger = (await _books(client, session, co))["ledger"]
+    assert ledger["5300"] == (100.0, 0.0) and ledger["6100"] == (200.0, 0.0), ledger
+
+
+@pytest.mark.asyncio
+async def test_the_number_of_the_one_document_a_payment_pays_is_its_identifier(client, session):
+    """The automation that stays: a deposit whose reference is the number of an invoice paid once
+    into this bank is that payment, so posting it is matched to the payment's entry and says so."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    _doc, number = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08")
+    line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "120.00")], reference=number)
+    row = await _post(client, co, bk, line, account_code="4100")
+    assert row["ok"] and row["matched_instead"] and len(row["je_ids"]) == 1, row
+    ledger = (await _books(client, session, co))["ledger"]
+    assert ledger["4100"] == (0.0, 120.0), ledger  # the invoice's sale only: the deposit is not posted again
+
+
+@pytest.mark.asyncio
+async def test_a_document_paid_twice_names_neither_payment(client, session):
+    """An invoice paid in two parts of 60 on one day: its number is on both payments, so a line
+    carrying it stops with both shown."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    _doc, number = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08", payments=2)
+    line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "60.00")], reference=number)
+    row = await _post(client, co, bk, line, account_code="4100")
+    assert not row["ok"] and not row["matched_instead"] and len(row["candidates"]) == 2, row
