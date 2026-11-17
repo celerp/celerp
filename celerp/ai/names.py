@@ -27,8 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 _ID_KEY = re.compile(r"(^|_)ids?$")
-# A value shaped like a record id whatever field holds it: a uuid or an assistant upload.
-_ID_VALUE = re.compile(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}|ai_up_[0-9a-f]{32}")
+# A value shaped like a record id whatever field holds it: a uuid, an assistant upload or a
+# journal entry.
+_ID_VALUE = re.compile(r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}"
+                       r"|ai_up_[0-9a-f]{32}|je:[\w:.\-]+")
 # The state fields a record is named by, first present wins.
 _NAME_FIELDS = ("doc_number", "name", "sku", "title", "description")
 _MAX_IDS = 500

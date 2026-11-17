@@ -116,16 +116,21 @@ def _uuids(ids: set[str]) -> list[uuid.UUID]:
 
 async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings: dict, role: str,
                        ids: set[str]) -> dict[str, str]:
-    """The names a confirm card shows for the company's bank accounts and statement lines
-    (date, description and amount), for a role that may open the bank pages: the bank
-    routes need manage_accounting, and so does a bank's name on a card."""
+    """The names a confirm card shows for the company's bank accounts, statement lines and
+    journal entries (date, description or memo, and amount), for a role that may open the bank
+    pages: the bank routes need manage_accounting, and so does a record's name on a card."""
     from celerp.services.permissions import role_has_permission
 
-    keys = _uuids(ids)
-    if not keys or not role_has_permission(settings, role, "manage_accounting"):
+    keys, entries = _uuids(ids), [i for i in ids if i.startswith("je:")]
+    if not (keys or entries) or not role_has_permission(settings, role, "manage_accounting"):
         return {}
-    names = {str(bank_id): f"{bank_name} ({number})" if number else bank_name
-             for bank_id, bank_name, number in (await session.execute(
+    names = _entry_names((await session.execute(select(Projection.entity_id, Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+        Projection.entity_id.in_(entries)))).all()) if entries else {}
+    if not keys:
+        return names
+    names |= {str(bank_id): f"{bank_name} ({number})" if number else bank_name
+              for bank_id, bank_name, number in (await session.execute(
                  select(BankAccount.id, BankAccount.bank_name, BankAccount.account_number).where(
                      BankAccount.company_id == company_id, BankAccount.id.in_(keys)))).all()}
     rows = (await session.execute(
@@ -135,6 +140,17 @@ async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings
     names.update({str(line_id): f"{line_date}, {description}, {Decimal(amount):.2f}"
                   for line_id, line_date, description, amount in rows})
     return names
+
+
+def _entry_names(rows) -> dict[str, str]:
+    """Each journal entry of ``rows`` (id, state) by its date, memo and amount (its debits)."""
+    out = {}
+    for je_id, state in rows:
+        state = state or {}
+        total = sum((Decimal(str(x.get("debit") or 0)) for x in state.get("entries") or []), Decimal(0))
+        parts = [str(state.get("ts") or "")[:10], str(state.get("memo") or "").strip(), f"{total:.2f}"]
+        out[je_id] = ", ".join(p for p in parts if p)
+    return out
 
 
 async def chart_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> None:
