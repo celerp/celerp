@@ -31135,5 +31135,11 @@
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_index_reads_only_the_lines_carrying_an_identifier_or_matched_to_an_entry": 0.0025462500052526593,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_number_of_the_one_document_a_payment_pays_is_its_identifier": 0.4000999830896035,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_reference_race_pg.py]": 0.025198328075930476,
-    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_number_two_documents_carry_names_neither_payment": 1.4125999440439045
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_number_two_documents_carry_names_neither_payment": 1.4125999440439045,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_label_is_never_an_identifier_and_a_reference_always_is": 0.10004734387621284,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted[PAYMENT]": 1.3770554339280352,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted[TRANSFER]": 0.7807534049497917,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_transfer_reference_on_both_sides_still_pairs_on_its_own": 0.9730748800793663,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms[PAYMENT]": 1.145756648038514,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms[TRANSFER]": 1.1685627681436017
 }
