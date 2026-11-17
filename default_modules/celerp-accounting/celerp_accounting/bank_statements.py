@@ -607,13 +607,13 @@ def _starts_ticked(line: dict) -> bool:
     """Whether a line's suggestion is evidence enough to start ticked: a source that names
     its evidence, a key that is not a sparse one, and an account or entry to post to. A
     suggestion that takes the line to be the same transaction as an entry or another line (a
-    match, a reversal pair) starts ticked only when ``suggest.identified`` proved it; otherwise
-    the user ticks it."""
+    match, a reversal pair, a transfer from another bank's line of the same money) starts ticked
+    only when ``suggest.identified`` proved it; otherwise the user ticks it."""
     from celerp_accounting.suggest import TICKED_SOURCES
     s = line["suggestion"] or {}
     if s.get("source") not in TICKED_SOURCES or _group_key(line).startswith("SPARSE:"):
         return False
-    if s.get("kind") == "match" or s.get("source") == "reversal":
+    if s.get("kind") == "match" or s.get("source") in ("reversal", "transfer"):
         return bool((s.get("evidence") or {}).get("identifier"))
     return s.get("kind") != "post" or bool(s.get("account_code"))
 

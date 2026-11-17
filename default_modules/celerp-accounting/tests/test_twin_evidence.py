@@ -318,9 +318,9 @@ async def test_two_transfers_of_one_amount_never_pair_on_a_shared_reference(clie
 def test_a_reference_is_an_identifier_only_when_it_names_one_transaction():
     from celerp_accounting import suggest
 
-    assert [suggest.identifier(r) for r in ("12345", "abc", None, "")] == [None] * 4
-    assert [suggest.identifier(r) for r in ("INV-7001", "123456", " Salary   payment ")] == [
-        "inv-7001", "123456", "salary payment"]
+    assert [suggest.identifier(r) for r in ("12345", "abc", None, "", " Salary   payment ")] == [None] * 5
+    assert [suggest.identifier(r) for r in ("INV-7001", "123456", " TRF   448812 ")] == [
+        "inv-7001", "123456", "trf 448812"]
     refs = suggest.References([{"id": "x", "line_date": "2025-06-01", "reference": "inv-7001 "}])
     assert suggest.identified("INV-7001", ["INV-7001", "INV-70012", None], refs.elsewhere({"x"})) == 0
     assert suggest.identified("INV-7001", ["INV-7001"], refs.elsewhere(set())) is None  # another line, any date
@@ -329,18 +329,71 @@ def test_a_reference_is_an_identifier_only_when_it_names_one_transaction():
     assert suggest.identified("ACME", [None, None], refs.elsewhere(set())) is None
 
 
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+           "October", "November", "December"]
+
+
+def _period(rng) -> str:
+    """A date or period in one of the forms statements print, in any case."""
+    y, m, d = rng.choice([rng.randint(1990, 2039), rng.randint(2540, 2582)]), rng.randint(1, 12), rng.randint(1, 28)
+    name = rng.choice([_MONTHS[m - 1], _MONTHS[m - 1][:3], _MONTHS[m - 1][:3] + "."])
+    z = rng.choice(["{:02d}", "{}"])
+    mm, dd = z.format(m), z.format(d)
+    sep = rng.choice("-/.")
+    return rng.choice([f"{y}{sep}{mm}", f"{y}{sep}{mm}{sep}{dd}", f"{dd}{sep}{mm}{sep}{y}", f"{mm}{sep}{y}",
+                       f"{name} {y}", f"{name}-{y}", f"{dd} {name} {y}", f"{name} {dd}, {y}", f"{y} {name}",
+                       f"{y}", f"{dd} {name}"])
+
+
+def _label(rng) -> str:
+    """Words, a period and small numbers, none of which names one transaction."""
+    words = ["TRANSFER", "PAYMENT", "SALARY", "Rent", "fees", "Online Banking", "XFER-OPS", "DEPOSIT"]
+    parts = [rng.choice([rng.choice(words), "".join(rng.choices("abcdefghijklmnopqrstuvwxyz", k=rng.randint(1, 12))),
+                         _period(rng), str(rng.randint(0, 99))]) for _ in range(rng.randint(1, 4))]
+    return " ".join(p.upper() if rng.random() < .5 else p for p in parts)
+
+
+def _reference(rng) -> str:
+    """A transaction reference: a prefix and a run of at least three digits that is no year,
+    with a label around it or not."""
+    digits = rng.choice([3, 5, 6, 7, 8, 4])
+    while True:
+        run = "".join(rng.choices("0123456789", k=digits))
+        if not (digits == 4 and run[:2] in ("19", "20", "25")):
+            break
+    ref = rng.choice(["INV", "TRF", "CHQ", "REF", "PO", "TXN", "FT", "BILL"]) + rng.choice(["", " ", "-", "/", "#"]) + run
+    return " ".join([*([_label(rng)] if rng.random() < .3 else []), ref, *([_period(rng)] if rng.random() < .3 else [])])
+
+
+def test_a_label_is_never_an_identifier_and_a_reference_always_is():
+    """Seeded generative oracle over ``suggest.identifier``: labels, generic words and dates or
+    periods in every printed form name no transaction; a reference carrying a run of three or
+    more digits beyond its dates does, and so do digits alone from six long."""
+    import random
+
+    from celerp_accounting import suggest
+
+    rng = random.Random(9)
+    for _ in range(3000):
+        label, ref = _label(rng), _reference(rng)
+        assert suggest.identifier(label) is None, label
+        assert suggest.identifier(ref) == " ".join(ref.split()).casefold(), ref
+        digits = "".join(rng.choices("0123456789", k=rng.randint(1, 9)))
+        assert (suggest.identifier(digits) is not None) == (len(digits) >= 6), digits
+
+
 def test_the_index_reads_only_the_lines_carrying_an_identifier_or_matched_to_an_entry():
     """``References.carrying``, ``elsewhere`` and ``matched_to`` give the same lines a scan of every
     line would, read through the identifier and entry indexes so a check never walks the company."""
     from celerp_accounting import suggest
 
     lines = [{"id": "a", "line_date": "2026-01-09", "reference": "INV-7001", "matched_je_ids": ["je:1"]},
-             {"id": "b", "line_date": "2026-01-09", "reference": "INV-7002 ACME", "matched_je_ids": []},
-             {"id": "c", "line_date": "2026-01-09", "reference": "ACME", "matched_je_ids": ["je:1", "je:2"]}]
+             {"id": "b", "line_date": "2026-01-09", "reference": "INV-7002 CHQ 4471", "matched_je_ids": []},
+             {"id": "c", "line_date": "2026-01-09", "reference": "CHQ 4471", "matched_je_ids": ["je:1", "je:2"]}]
     refs = suggest.References(lines)
-    assert sorted(l["id"] for l in refs.carrying(["inv-7001", "acme", None])) == ["a", "c"]
-    assert [l["id"] for l in refs.carrying(["inv-7002 acme"])] == ["b"] and refs.carrying(["inv-7002"]) == []
-    assert refs.elsewhere({"c"})("acme") is False and refs.elsewhere({"a"})("acme") is True
+    assert sorted(l["id"] for l in refs.carrying(["inv-7001", "chq 4471", None])) == ["a", "c"]
+    assert [l["id"] for l in refs.carrying(["inv-7002 chq 4471"])] == ["b"] and refs.carrying(["inv-7002"]) == []
+    assert refs.elsewhere({"c"})("chq 4471") is False and refs.elsewhere({"a"})("chq 4471") is True
     assert sorted(l["id"] for l in refs.matched_to({"je:1"})) == ["a", "c"]
     assert [l["id"] for l in refs.matched_to({"je:2", "je:9"})] == ["c"] and refs.matched_to(set()) == []
 
@@ -454,3 +507,122 @@ async def test_a_document_paid_twice_names_neither_payment(client, session):
     line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "60.00")], reference=number)
     row = await _post(client, co, bk, line, account_code="4100")
     assert not row["ok"] and not row["matched_instead"] and len(row["candidates"]) == 2, row
+
+
+# ── A generic label is no identifier: a candidate to confirm, never a pair on its own ──
+
+async def _suggested(client, co, bk) -> list[tuple[dict, bool]]:
+    """Run the suggestion ladder on ``bk``; each line with whether its group starts ticked."""
+    r = await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 200, r.text
+    return [(l, g["ticked"]) for g in (await B.groups(client, co, bk["id"]))["groups"] for l in g["lines"]]
+
+
+async def _statuses(client, co, *banks) -> list[str]:
+    tables = [await B.groups(client, co, bk["id"], view="all") for bk in banks]
+    return sorted(l["status"] for table in tables for l in B.all_lines(table))
+
+
+async def _moved(client, session, co, before: dict) -> list:
+    """The postings the reconciliation made since ``before`` (the company's books before it),
+    after checking the books equal their rebuild."""
+    left = list(before["postings"])
+    out = []
+    for p in (await _books(client, session, co))["postings"]:
+        if p in left:
+            left.remove(p)
+        else:
+            out.append(p)
+    assert not left, left
+    return out
+
+
+async def _two_banks(client, reference: str, first: int) -> tuple:
+    """Banks A and B, each with one line of 100 a day apart, out of A and into B, both carrying
+    ``reference``; statement ``first`` (0 is A's) imported first."""
+    co = await B.company(client)
+    a = await B.bank(client, co["h"], name="A")
+    b = await B.bank(client, co["h"], name="B")
+    rows = [(a, ("2026-01-08", "OUT", "-100.00")), (b, ("2026-01-09", "IN", "100.00"))]
+    for bk, row in (rows[first], rows[1 - first]):
+        await _one_line(client, co, bk, [row], reference=reference)
+    return co, a, b
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["TRANSFER", "PAYMENT"])
+async def test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms(
+        client, session, reference):
+    """Two unrelated lines on two banks, equal and opposite money on near dates, both referenced
+    only with a generic label: the transfer is offered but nothing starts ticked, a transfer the
+    user posts from A leaves B's line open with it as the suggestion, and the two are one
+    transaction only once the user confirms it. Either import order reaches the same books."""
+    books = []
+    for first in (0, 1):
+        co, a, b = await _two_banks(client, reference, first)
+        before = await _books(client, session, co)
+        for bk in (a, b):
+            for line, ticked in await _suggested(client, co, bk):
+                assert line["suggestion"]["kind"] == "transfer", line
+                assert not line["suggestion"].get("paired_line_id") and not ticked, line
+        la = B.all_lines(await B.groups(client, co, a["id"]))[0]
+        r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
+                                                             "target_bank_id": b["id"]}])
+        row = r.json()["results"][0]
+        assert row["ok"] and row["paired_line_id"] is None, row
+        table = await B.groups(client, co, b["id"])
+        lb = B.line_by_text(table, "IN")
+        assert lb["status"] == "unmatched" and lb["suggestion"]["je_ids"] == row["je_ids"], lb
+        assert not any(g["ticked"] for g in table["groups"]), table
+        r = await B.resolve(client, co, b["id"], accept=B.accept(table, [g["key"] for g in table["groups"]],
+                                                                  [lb["id"]]))
+        assert r.json()["results"][0]["ok"], r.text
+        assert await _statuses(client, co, a, b) == ["matched", "posted"]  # A posts the transfer, B is its other side
+        books.append(await _moved(client, session, co, before))
+    assert books[0] == books[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference", ["PAYMENT", "TRANSFER"])
+async def test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted(client, session, reference):
+    """A payment out and the same money back in on one bank two days later, both referenced
+    with a generic label: the reversal is offered, its group does not start ticked, and the
+    lines settle only when the user ticks them. Either row order reaches the same books."""
+    books = []
+    for first in (0, 1):
+        co = await B.company(client)
+        bk = await B.bank(client, co["h"])
+        rows = [("2026-01-05", "ACME LTD", "-100.00", reference), ("2026-01-07", "ACME LTD", "100.00", reference)]
+        await _lines(client, co, bk, [rows[first], rows[1 - first]])
+        before = await _books(client, session, co)
+        suggested = await _suggested(client, co, bk)
+        assert [l["suggestion"]["source"] for l, _ in suggested] == ["reversal", "reversal"], suggested
+        assert not any(ticked or l["suggestion"].get("evidence") for l, ticked in suggested), suggested
+        table = await B.groups(client, co, bk["id"])
+        assert await _statuses(client, co, bk) == ["unmatched", "unmatched"]
+        r = await B.resolve(client, co, bk["id"], accept=B.accept(
+            table, [g["key"] for g in table["groups"]], [l["id"] for l, _ in suggested]))
+        assert all(x["ok"] for x in r.json()["results"]), r.text
+        assert "unmatched" not in await _statuses(client, co, bk)
+        books.append(await _moved(client, session, co, before))
+    assert books[0] == books[1]
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_reference_on_both_sides_still_pairs_on_its_own(client, session):
+    """The same transaction reference on both lines ("TRF 448812") is identity: the transfer
+    starts ticked with its counterpart, and accepting it settles both banks. Either import order
+    reaches the same books."""
+    books = []
+    for first in (0, 1):
+        co, a, b = await _two_banks(client, "TRF 448812", first)
+        before = await _books(client, session, co)
+        lb = B.all_lines(await B.groups(client, co, b["id"]))[0]
+        [(la, ticked)] = await _suggested(client, co, a)
+        assert la["suggestion"]["paired_line_id"] == lb["id"] and ticked, la
+        table = await B.groups(client, co, a["id"])
+        r = await B.resolve(client, co, a["id"], accept=B.accept(table, [g["key"] for g in table["groups"]]))
+        assert r.json()["results"][0]["ok"], r.text
+        assert await _statuses(client, co, a, b) == ["matched", "posted"]
+        books.append(await _moved(client, session, co, before))
+    assert books[0] == books[1]

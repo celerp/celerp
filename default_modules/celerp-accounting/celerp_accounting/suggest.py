@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -38,7 +39,6 @@ MODEL_BATCH = 100
 _PAIR_DAYS = 3
 _COMBO_DAYS = 7
 _HISTORY_MIN = 2
-_REFERENCE_MIN = 4
 
 
 @dataclass
@@ -194,16 +194,30 @@ def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dic
 
 
 _DIGITS_MIN = 6
+# A date or period a label carries (2026-03, 2026-03-15, 15/03/2026, 03/2026, MAR 2026, March 2026,
+# 15 March 2026, March 15, 2026, a year on its own): no transaction is named by when it fell.
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+          r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])\.?")
+_YEAR = r"(?:19|20|25)\d\d"  # 25xx: a Buddhist-era year
+_PERIOD = re.compile("|".join([
+    rf"(?<!\d){_YEAR}[-/.](?:0?[1-9]|1[0-2])(?:[-/.](?:0?[1-9]|[12]\d|3[01]))?(?!\d)",
+    rf"(?<!\d)(?:(?:0?[1-9]|[12]\d|3[01])[-/.])?(?:0?[1-9]|1[0-2])[-/.]{_YEAR}(?!\d)",
+    rf"(?<![a-z\d])(?:\d{{1,2}}[\s\-/.]*)?{_MONTH}[\s\-/.,]*(?:\d{{1,2}}[\s,]+)?{_YEAR}(?!\d)",
+    rf"(?<!\d){_YEAR}[\s\-/.]*{_MONTH}",
+    rf"(?<!\S){_YEAR}(?!\S)",
+]))
+_DIGIT_RUN = re.compile(r"\d{3}")
 
 
 def identifier(reference: str | None) -> str | None:
     """``reference`` as a transaction identifier: its whole text, spaces collapsed and casefolded,
-    or None when it is too short to name one transaction (under ``_REFERENCE_MIN`` characters, or
-    digits only under ``_DIGITS_MIN``). A word inside a longer text is never one."""
+    or None when it is a label rather than the name of one transaction. A label carries no run of
+    three digits once its dates and periods are set aside (TRANSFER, PAYMENT, Salary March 2026);
+    digits alone name one only from ``_DIGITS_MIN`` long. A word inside a longer text is never one."""
     ref = " ".join((reference or "").split()).casefold()
-    if len(ref) < _REFERENCE_MIN or (ref.isdigit() and len(ref) < _DIGITS_MIN):
-        return None
-    return ref
+    if ref.isdigit():
+        return ref if len(ref) >= _DIGITS_MIN else None
+    return ref if _DIGIT_RUN.search(_PERIOD.sub(" ", ref)) else None
 
 
 def identified(reference: str | None, candidates: list, elsewhere: Callable[[str], bool]) -> int | None:
