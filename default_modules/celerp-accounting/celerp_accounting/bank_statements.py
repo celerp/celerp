@@ -898,14 +898,17 @@ async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLin
                           [{"id": i, "line_date": d, "amount": a, "reference": r} for i, d, a, r in rows])
 
 
-def _paired(line: BankStatementLine, candidates: list[dict], book: "_Book") -> uuid.UUID | None:
+async def _paired(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, candidates: list[dict],
+                  book: "_Book") -> uuid.UUID | None:
     """The one candidate counterpart ``suggest.identified`` proves to be this transfer's other
-    side (an identifier only the two lines carry); equal money alone is none."""
+    side (an identifier only the two lines carry, on the statement lines as they stand under the
+    company lock); equal money alone is none."""
     from celerp_accounting import suggest
 
     skip = {str(line.id)} | {str(c["id"]) for c in candidates}
+    references = await _references(db, company_id, book.days)
     pick = suggest.identified(line.reference, [c["reference"] for c in candidates],
-                              book.references.elsewhere(line.line_date, skip))
+                              references.elsewhere(line.line_date, skip))
     return None if pick is None else candidates[pick]["id"]
 
 
@@ -931,7 +934,7 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     line_id = d.line_ids[0]
     probe = await db.get(BankStatementLine, line_id)
     pairs = await _pairs(db, company_id, probe, target, d.to_amount) if probe and probe.status == "unmatched" else []
-    pair_id = d.paired_line_id or (_paired(probe, pairs, book) if pairs else None)
+    pair_id = d.paired_line_id or (await _paired(db, company_id, probe, pairs, book) if pairs else None)
     # One candidate the evidence does not prove stays open, with this transfer as its suggestion.
     hint_id = pairs[0]["id"] if pair_id is None and len(pairs) == 1 else None
     other_id = pair_id or hint_id
@@ -989,7 +992,8 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     line is refused with them shown, ranked by ``want``'s contacts and accounts (``suggest.rank``),
     and the first as its match suggestion: the user matches one or posts anyway. No candidate: the
     line posts. ``book`` is the request's read of the bank's entries near its lines, caught up
-    under the company lock (see _Book); whether one of them is counted already is read here."""
+    under the company lock (see _Book); whether one of them is counted already, and the statement
+    lines carrying a reference the identifier is checked against, are read here."""
     from celerp_accounting import suggest
 
     near = [e for e in suggest.twins(line.amount, line.line_date, book.entries)
@@ -1000,17 +1004,18 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
         return None
     ids = {e["je_id"] for e in found}
     texts = [e["evidence"]["text"] for e in found]
-    owners = {str(l["id"]) for l in book.references.matched_to(ids)}
+    references = await _references(db, company_id, book.days)
+    owners = {str(l["id"]) for l in references.matched_to(ids)}
 
     def pick(reference: str | None, line_id: str, line_date) -> int | None:
-        return suggest.identified(reference, texts, book.references.elsewhere(line_date, {line_id} | owners))
+        return suggest.identified(reference, texts, references.elsewhere(line_date, {line_id} | owners))
 
     if (mine := pick(line.reference, str(line.id), line.line_date)) is not None:
         je_ids = [found[mine]["je_id"]]
         await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
         instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=str(found[mine]["ts"])[:10])
         return je_ids
-    claims = {l["id"]: i for l in book.references.named_in(texts)
+    claims = {l["id"]: i for l in references.named_in(texts)
               if l["bank_account_id"] == bank.id and l["id"] != line.id
               and (i := pick(l["reference"], str(l["id"]), l["line_date"])) is not None}
     if claims:
@@ -1334,14 +1339,13 @@ async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
 class _Book:
     """A request's read of the bank's book entries a line of it could already be (see
     _keyed_instead): dated within ``days`` (the exact-amount window of the lines' dates), of an
-    amount in ``amounts`` (those the lines carry), as the books stood at ledger row ``mark``, and
-    the company's statement lines dated in that window that carry a reference (``references``,
-    a ``suggest.References``, what ``suggest.identified`` checks against)."""
+    amount in ``amounts`` (those the lines carry), as the books stood at ledger row ``mark``.
+    Statement lines are not kept here: a decision reads what it checks of them under its own
+    lock, since another request can import, match or release one between two decisions."""
     days: tuple[str, str] | None
     amounts: set
     entries: list[dict]
     mark: int
-    references: "object" = None
 
 
 async def _ledger_mark(db: AsyncSession, company_id: uuid.UUID) -> int:
@@ -1374,13 +1378,12 @@ async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     lines = (await db.execute(select(BankStatementLine.line_date, BankStatementLine.amount).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
         BankStatementLine.id.in_(line_ids)))).all() if line_ids else []
-    book = _Book(None, set(), [], await _ledger_mark(db, company_id), suggest.References([]))
+    book = _Book(None, set(), [], await _ledger_mark(db, company_id))
     if lines:
         window, dated = timedelta(days=matcher.EXACT_DAYS), [Date.fromisoformat(d[:10]) for d, _ in lines]
         book.days = (str(min(dated) - window), str(max(dated) + window))
         book.amounts = {suggest._amt(a) for _, a in lines}
         book.entries = await _book_entries(db, company_id, bank, book)
-        book.references = await _references(db, company_id, book.days)
     return book
 
 
