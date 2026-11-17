@@ -34,10 +34,10 @@
   "labels.err_your_role_cannot_see_these_records": "Sua função não tem acesso a esses registros, portanto não pode imprimir suas etiquetas.",
   "labels.err_choose_records_print_labels": "Selecione os registros para os quais deseja imprimir etiquetas.",
   "labels.err_print_at_most_max_source_ids": "Imprima no máximo {max_source_ids} etiquetas por vez.",
-  "tool.create_template_api_labels_templates_post": "Add a label template with its size and fields.",
-  "tool.update_template_api_labels_templates__template_id__put": "Change a label template.",
-  "tool.delete_template_api_labels_templates__template_id__delete": "Delete a label template.",
-  "tool.print_single_api_labels_print__entity_id__post": "Make a PDF label for one inventory item.",
-  "tool.bulk_print_api_labels_bulk_print_post": "Make a PDF sheet of labels for several inventory items.",
-  "tool.print_source_api_labels_print_source_post": "Make a PDF sheet of labels for chosen records of one kind on a chosen template."
+  "tool.create_template_api_labels_templates_post": "Adicione um modelo de etiqueta com tamanho e campos.",
+  "tool.update_template_api_labels_templates__template_id__put": "Altere um modelo de etiqueta.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Exclua um modelo de etiqueta.",
+  "tool.print_single_api_labels_print__entity_id__post": "Crie uma etiqueta PDF para um item de estoque.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Crie uma folha PDF de etiquetas para vários itens de estoque.",
+  "tool.print_source_api_labels_print_source_post": "Crie uma folha PDF de etiquetas para registros selecionados de um tipo usando o modelo escolhido."
 }

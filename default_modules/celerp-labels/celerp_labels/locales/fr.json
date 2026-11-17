@@ -34,10 +34,10 @@
   "labels.err_your_role_cannot_see_these_records": "Votre rôle ne vous permet pas de voir ces données, vous ne pouvez donc pas imprimer leurs étiquettes.",
   "labels.err_choose_records_print_labels": "Sélectionnez les données pour lesquelles imprimer des étiquettes.",
   "labels.err_print_at_most_max_source_ids": "Imprimez au maximum {max_source_ids} étiquettes à la fois.",
-  "tool.create_template_api_labels_templates_post": "Add a label template with its size and fields.",
-  "tool.update_template_api_labels_templates__template_id__put": "Change a label template.",
-  "tool.delete_template_api_labels_templates__template_id__delete": "Delete a label template.",
-  "tool.print_single_api_labels_print__entity_id__post": "Make a PDF label for one inventory item.",
-  "tool.bulk_print_api_labels_bulk_print_post": "Make a PDF sheet of labels for several inventory items.",
-  "tool.print_source_api_labels_print_source_post": "Make a PDF sheet of labels for chosen records of one kind on a chosen template."
+  "tool.create_template_api_labels_templates_post": "Ajouter un modèle d'étiquette avec ses dimensions et ses champs.",
+  "tool.update_template_api_labels_templates__template_id__put": "Modifier un modèle d'étiquette.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Supprimer un modèle d'étiquette.",
+  "tool.print_single_api_labels_print__entity_id__post": "Créer une étiquette PDF pour un article de stock.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Créer une planche PDF d'étiquettes pour plusieurs articles de stock.",
+  "tool.print_source_api_labels_print_source_post": "Créer une planche PDF d'étiquettes pour des enregistrements sélectionnés d'un même type à partir d'un modèle choisi."
 }

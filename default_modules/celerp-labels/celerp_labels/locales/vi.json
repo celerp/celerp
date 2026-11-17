@@ -34,10 +34,10 @@
   "labels.err_your_role_cannot_see_these_records": "Vai trò của bạn không thể xem các bản ghi này, vì vậy không thể in nhãn của chúng.",
   "labels.err_choose_records_print_labels": "Chọn các bản ghi cần in nhãn.",
   "labels.err_print_at_most_max_source_ids": "In tối đa {max_source_ids} nhãn mỗi lần.",
-  "tool.create_template_api_labels_templates_post": "Add a label template with its size and fields.",
-  "tool.update_template_api_labels_templates__template_id__put": "Change a label template.",
-  "tool.delete_template_api_labels_templates__template_id__delete": "Delete a label template.",
-  "tool.print_single_api_labels_print__entity_id__post": "Make a PDF label for one inventory item.",
-  "tool.bulk_print_api_labels_bulk_print_post": "Make a PDF sheet of labels for several inventory items.",
-  "tool.print_source_api_labels_print_source_post": "Make a PDF sheet of labels for chosen records of one kind on a chosen template."
+  "tool.create_template_api_labels_templates_post": "Thêm mẫu nhãn với kích thước và các trường dữ liệu.",
+  "tool.update_template_api_labels_templates__template_id__put": "Thay đổi mẫu nhãn.",
+  "tool.delete_template_api_labels_templates__template_id__delete": "Xóa mẫu nhãn.",
+  "tool.print_single_api_labels_print__entity_id__post": "Tạo nhãn PDF cho một mặt hàng tồn kho.",
+  "tool.bulk_print_api_labels_bulk_print_post": "Tạo trang PDF chứa nhãn cho nhiều mặt hàng tồn kho.",
+  "tool.print_source_api_labels_print_source_post": "Tạo trang PDF chứa nhãn cho những bản ghi được chọn cùng loại theo mẫu đã chọn."
 }
