@@ -124,9 +124,7 @@ async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings
     keys, entries = _uuids(ids), [i for i in ids if i.startswith("je:")]
     if not (keys or entries) or not role_has_permission(settings, role, "manage_accounting"):
         return {}
-    names = _entry_names((await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "journal_entry",
-        Projection.entity_id.in_(entries)))).all()) if entries else {}
+    names = await _entry_names(session, company_id, settings, entries) if entries else {}
     if not keys:
         return names
     names |= {str(bank_id): f"{bank_name} ({number})" if number else bank_name
@@ -142,13 +140,26 @@ async def record_names(*, session: AsyncSession, company_id: uuid.UUID, settings
     return names
 
 
-def _entry_names(rows) -> dict[str, str]:
-    """Each journal entry of ``rows`` (id, state) by its date, memo and amount (its debits)."""
+async def _entry_names(session: AsyncSession, company_id: uuid.UUID, settings: dict,
+                       entries: list[str]) -> dict[str, str]:
+    """Each journal entry by its date, memo and the amount its bank line moves the bank, in the
+    bank's currency and signed as the statement shows it, so it reads like the line it is set
+    against. An entry with no bank line, or one in a currency the bank cannot read, shows no amount."""
+    from celerp.services.money import books_currency
+    from celerp_accounting.routes import _bank_line_amounts
+
+    base = books_currency(settings)
+    banks = {b.chart_account_code: b for b in (await session.execute(
+        select(BankAccount).where(BankAccount.company_id == company_id))).scalars()}
     out = {}
-    for je_id, state in rows:
+    for je_id, state in (await session.execute(select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry",
+            Projection.entity_id.in_(entries)))).all():
         state = state or {}
-        total = sum((Decimal(str(x.get("debit") or 0)) for x in state.get("entries") or []), Decimal(0))
-        parts = [str(state.get("ts") or "")[:10], str(state.get("memo") or "").strip(), f"{total:.2f}"]
+        moved = next((amounts for line in state.get("entries") or [] if (bank := banks.get(line.get("account")))
+                      and (amounts := _bank_line_amounts(bank, base, je_id, line)) is not None), None)
+        parts = [str(state.get("ts") or "")[:10], str(state.get("memo") or "").strip(),
+                 f"{moved[0] - moved[1]:.2f}" if moved else ""]
         out[je_id] = ", ".join(p for p in parts if p)
     return out
 

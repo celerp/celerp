@@ -298,3 +298,27 @@ async def test_a_namer_of_a_module_the_company_does_not_use_is_never_asked(auth,
                               args) == {}
     monkeypatch.setattr(slots, "get", lambda slot: [])
     assert await record_names(session, auth["company_id"], uuid.uuid4(), {}, "owner", args) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_card_names_an_entry_by_its_amount_on_the_bank_in_the_bank_currency(client, auth, session):
+    """An entry on a bank kept in another currency than the books is named by the figure the
+    bank's statement shows, in the bank's currency and with its sign, not its books-currency debits."""
+    from celerp.ai.names import record_names
+
+    h = auth["headers"]
+    r = await client.post("/accounting/bank-accounts", headers=h, json={
+        "bank_name": "Euro Bank", "account_number": "0009", "bank_type": "checking", "currency": "EUR",
+        "opening_balance": 0})
+    assert r.status_code == 200, r.text
+    eur = r.json()
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": "2026-03-01", "memo": "Euro fee keyed", "idempotency_token": str(uuid.uuid4()),
+        "entries": [{"account": eur["chart_account_code"], "credit": 30.0, "currency": "EUR",
+                     "rate": 40.0},
+                    {"account": "6100", "debit": 1200.0}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+    names = await record_names(session, auth["company_id"], uuid.uuid4(), {}, "owner",
+                               {"body": {"decisions": [{"separate_from": [je_id]}]}})
+    assert names[je_id] == "2026-03-01, Euro fee keyed, -30.00", names
