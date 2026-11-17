@@ -1421,7 +1421,7 @@
   "tool.undo_latest_fixed_assets_api_assets__asset_id__undo_latest_post": "Desfaça a alteração mais recente de um ativo imobilizado.",
   "tool.move_asset_fixed_assets_api_assets__asset_id__move_post": "Transfira um ativo imobilizado para outro local ou responsável pela guarda.",
   "tool.move_assets_fixed_assets_api_move_post": "Transfira vários ativos imobilizados de uma só vez para outro local ou responsável pela guarda.",
-  "tool.undo_move_fixed_assets_api_assets__asset_id__undo_move_post": "Desfaça a última transferência de local de um ativo imobilizado.",
+  "tool.undo_move_fixed_assets_api_assets__asset_id__undo_move_post": "Desfaça a última alteração de localização ou responsável pela guarda de um ativo imobilizado.",
   "tool.reclassify_asset_fixed_assets_api_assets__asset_id__reclassify_post": "Mova um ativo imobilizado para outra classe de ativos.",
   "tool.transfer_asset_fixed_assets_api_assets__asset_id__transfer_post": "Transfira um ativo imobilizado para outra empresa.",
   "tool.apply_to_assets_fixed_assets_api_classes__class_id__apply_to_assets_post": "Aplique as configurações de uma classe de ativos aos ativos já pertencentes a ela.",

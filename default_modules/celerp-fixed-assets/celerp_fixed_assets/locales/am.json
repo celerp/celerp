@@ -1421,7 +1421,7 @@
   "tool.undo_latest_fixed_assets_api_assets__asset_id__undo_latest_post": "በቋሚ ንብረት ላይ የተደረገውን የመጨረሻ ለውጥ ይቀልብሱ።",
   "tool.move_asset_fixed_assets_api_assets__asset_id__move_post": "ቋሚ ንብረትን ወደ ሌላ ቦታ ወይም ተጠባባቂ ያዛውሩ።",
   "tool.move_assets_fixed_assets_api_move_post": "ብዙ ቋሚ ንብረቶችን በአንድ ጊዜ ወደ ሌላ ቦታ ወይም ተጠባባቂ ያዛውሩ።",
-  "tool.undo_move_fixed_assets_api_assets__asset_id__undo_move_post": "የቋሚ ንብረትን የመጨረሻ ቦታ ዝውውር ይቀልብሱ።",
+  "tool.undo_move_fixed_assets_api_assets__asset_id__undo_move_post": "የቋሚ ንብረትን የመጨረሻ ቦታ ወይም ተጠባባቂ ዝውውር ይቀልብሱ።",
   "tool.reclassify_asset_fixed_assets_api_assets__asset_id__reclassify_post": "ቋሚ ንብረትን ወደ ሌላ የንብረት ክፍል ያዛውሩ።",
   "tool.transfer_asset_fixed_assets_api_assets__asset_id__transfer_post": "ቋሚ ንብረትን ወደ ሌላ ኩባንያ ያስተላልፉ።",
   "tool.apply_to_assets_fixed_assets_api_classes__class_id__apply_to_assets_post": "የንብረት ክፍል ቅንብሮችን በክፍሉ ውስጥ በነበሩ ንብረቶች ላይ ይተግብሩ።",
