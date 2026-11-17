@@ -498,13 +498,16 @@ def _unopened(name: str) -> dict:
 
 def _call_ids_valid(calls, earlier: set[str]) -> bool:
     """Whether every tool call of one model reply carries an id the run can tell it apart
-    by: a string, not blank, at most MAX_TOOL_CALL_ID_CHARS characters, used once in the
-    reply and by no call of an earlier turn of the run (``earlier``). A card, a journaled
-    result and an action's idempotency key are each found by that id."""
+    by: printable text of 1 to MAX_TOOL_CALL_ID_CHARS characters with no space at either
+    end, used once in the reply and by no call of an earlier turn of the run (``earlier``).
+    A card, a journaled result and an action's idempotency key are each found by that id,
+    and every reader of a card trims the id it posts, so only an id already in that form
+    is unique as the user sees it."""
     if not isinstance(calls, list):
         return False
     ids = [call.get("id") if isinstance(call, dict) else None for call in calls]
-    return (all(isinstance(i, str) and i.strip() and len(i) <= MAX_TOOL_CALL_ID_CHARS for i in ids)
+    return (all(isinstance(i, str) and 0 < len(i) <= MAX_TOOL_CALL_ID_CHARS and i == i.strip()
+                and i.isprintable() for i in ids)
             and len(set(ids)) == len(ids) and not earlier & set(ids))
 
 

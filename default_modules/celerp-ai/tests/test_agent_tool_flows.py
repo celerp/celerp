@@ -424,6 +424,36 @@ async def test_two_changes_under_one_id_get_no_card_and_cannot_be_confirmed(clie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("twin", ["k ", " k"])
+async def test_ids_one_space_apart_get_no_card_and_neither_can_be_confirmed(
+        client, session, agent_caps, ai_session, twin):
+    """The screen trims the id a card posts, so "k" and "k " would confirm one card for the
+    other: the reply is refused whole, and confirming either id, one card or both ticked,
+    runs nothing."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    doomed = await _new_location(client, admin, "Doomed")
+    before = await _location_count(client, admin)
+    model = ScriptedModel(lambda _m: tool_result(calls=[
+        tool_call(_op(agent_caps, "POST", _LOCATIONS), {"body": {"name": "Twin", "type": "warehouse"}}, "k"),
+        tool_call(_op(agent_caps, "DELETE", "/companies/me/locations/{location_id}"),
+                  {"path": {"location_id": doomed}}, twin),
+    ]))
+    conv_id = await _new_conversation(client, admin)
+    with patch("celerp.ai.service.complete", model):
+        body = await asked_in_thread(client, admin, conv_id, {"query": "add one and remove one"})
+    assert not body.get("pending_actions")
+    assert body["error_code"] == "bad_tool_calls" and body["new_question"] is True
+    for call_id in ("k", twin):
+        assert (await _confirm(client, admin, conv_id, body["id"], call_id)).status_code != 200
+    for ticked in (["k", twin], ["k"]):
+        r = await client.post(f"/ai/conversations/{conv_id}/confirm-all", headers=admin,
+                              json={"message_id": body["id"], "tool_call_ids": ticked})
+        assert r.status_code != 200 or not r.json().get("completed"), r.text
+    assert await _location_count(client, admin) == before
+
+
+@pytest.mark.asyncio
 async def test_confirming_the_second_card_runs_the_second_change(client, session, agent_caps, ai_session):
     ctx = await perm_setup(client, session)
     admin = ctx["admin_h"]
