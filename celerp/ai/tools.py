@@ -747,10 +747,11 @@ def agent_tool_specs(capabilities: dict[str, dict[str, Any]]) -> list[dict[str, 
     return [capabilities[name]["tool"] for name in sorted(capabilities)]
 
 
-def tool_call_key(tool_call_id: str) -> str:
-    """The key a change's route receives, bound to the card's tool call: a retry of one
-    card reuses it and two cards never share one."""
-    return "agent:" + hashlib.sha256(str(tool_call_id).encode("utf-8")).hexdigest()[:32]
+def tool_call_key(identity: str) -> str:
+    """The key a change's route receives, made from the confirmed action's identity (the
+    proposing message's id and the card's tool-call id): a retry of one card reuses it, and
+    two cards never share one, even when a provider numbers every reply's calls alike."""
+    return "agent:" + hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:32]
 
 
 def filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dict[str, Any]:

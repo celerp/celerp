@@ -424,6 +424,34 @@ async def test_two_changes_under_one_id_get_no_card_and_cannot_be_confirmed(clie
 
 
 @pytest.mark.asyncio
+async def test_two_questions_whose_keyed_changes_share_a_call_id_each_run_their_own(
+        client, session, agent_caps, ai_session):
+    """A provider may number each reply's calls from call_0. A keyed change's idempotency key
+    is scoped by the message that proposed it, so the second question's import is never
+    answered with the first one's result (the import skips a key it has already stored)."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    op = _op(agent_caps, "POST", "/companies/import/batch")
+
+    def reply(messages):
+        last = str(messages[-1].get("content") or "")
+        if "<user_query>" not in last:
+            return text_result("Done.")
+        name = "Levy B" if "Levy B" in last else "Levy A"
+        return tool_result(calls=[tool_call(op, {"body": {"records": [{
+            "entity_id": "company", "event_type": "sys.company.created", "source": "chat",
+            "data": {"name": name, "slug": name.lower().replace(" ", "-")}}]}}, "call_0")])
+    conv_id = await _new_conversation(client, admin)
+    with patch("celerp.ai.service.complete", ScriptedModel(*[reply] * 8)):
+        for name in ("Levy A", "Levy B"):
+            body = await asked_in_thread(client, admin, conv_id, {"query": f"add {name}"})
+            assert [a["id"] for a in body["pending_actions"]] == ["call_0"], body
+            r = await _confirm(client, admin, conv_id, body["id"], "call_0")
+            assert r.status_code == 200, r.text
+            assert (r.json()["data"]["created"], r.json()["data"]["skipped"]) == (1, 0), r.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("twin", ["k ", " k"])
 async def test_ids_one_space_apart_get_no_card_and_neither_can_be_confirmed(
         client, session, agent_caps, ai_session, twin):
