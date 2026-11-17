@@ -8701,7 +8701,7 @@
   "tool.delete_payment_docs__entity_id__payments__payment_index__delete": "Xóa khoản thanh toán ghi nhầm trên chứng từ.",
   "tool.apply_cn_to_invoice_docs__entity_id__apply_to_invoice_post": "Cấn trừ phiếu ghi có của khách hàng vào hóa đơn của cùng khách hàng.",
   "tool.apply_supplier_credit_to_bill_docs__entity_id__apply_to_bill_post": "Cấn trừ phiếu ghi có của nhà cung cấp vào chứng từ phải trả hoặc đơn mua hàng của cùng nhà cung cấp.",
-  "tool.refund_cn_docs__entity_id__cn_refund_post": "Hoàn lại bằng tiền khoản ghi có cho khách hàng.",
+  "tool.refund_cn_docs__entity_id__cn_refund_post": "Hoàn lại bằng tiền phiếu ghi có cho khách hàng.",
   "tool.bulk_payment_docs_bulk_payment_post": "Ghi nhận các khoản thanh toán trên nhiều hóa đơn hoặc chứng từ phải trả cùng lúc.",
   "tool.receive_po_docs__entity_id__receive_post": "Nhập kho hàng hóa của đơn mua hàng.",
   "tool.undo_receive_docs__entity_id__receive_delete": "Hoàn tác việc nhập kho hàng hóa của đơn mua hàng.",
