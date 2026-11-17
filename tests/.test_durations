@@ -31034,7 +31034,6 @@
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_accept_refuses_a_line_whose_suggestion_changed_since_it_was_shown": 0.321300657116808,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_transfer_names_the_counterpart_it_settles": 0.3639553260290995,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_transfer_whose_named_counterpart_was_settled_meanwhile_posts_nothing": 0.38607025996316224,
-    "default_modules/celerp-accounting/tests/test_bank_statements.py::test_transfer_with_one_counterpart_settles_it_and_says_which": 0.4096344340359792,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_transfer_with_two_counterparts_settles_neither": 0.39660148485563695,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_undo_of_a_document_payment_line_needs_record_payments": 0.4524340210482478,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_undo_of_a_document_payment_line_restores_everything": 0.5643495270051062,
@@ -31093,5 +31092,18 @@
     "default_modules/celerp-accounting/tests/test_resolve_races_pg.py::test_an_undo_during_a_several_twins_refusal_never_deadlocks": 0.8123940420337021,
     "default_modules/celerp-accounting/tests/test_resolve_units.py::test_an_accept_of_a_suggested_line_on_a_completed_statement_is_refused": 0.4913061879342422,
     "default_modules/celerp-accounting/tests/test_resolve_units.py::test_an_entry_before_the_first_statement_that_makes_up_its_opening_is_never_a_twin": 0.44958055194001645,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_races_pg.py]": 0.005397249013185501
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_resolve_races_pg.py]": 0.005397249013185501,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_a_stop_on_a_lookalike_entry_offers_match_it_and_post_anyway": 0.043471027980558574,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_another_account_and_no_contact_is_no_proof": 1.1107499080244452,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_post_anyway_still_stops_on_an_entry_it_was_not_shown": 0.3258566210279241,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_ladder_names_a_counterpart_only_on_evidence": 0.002791499951854348,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_lines_reference_on_the_entry_is_proof": 0.28522661817260087,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_same_reference_on_both_lines_pairs_the_transfer": 0.3576204498531297,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_same_supplier_keyed_after_import_is_matched_and_says_so": 0.28728338493965566,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_suppliers_paid_the_same_sum_stay_two_payments": 0.3695335539523512,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_of_equal_money_on_two_banks_are_not_paired": 0.4436445489991456,
+    "tests/test_ai_card_names.py::test_another_user_of_the_same_company_never_reads_a_file_or_reading_name": 0.09207392716780305,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_twin_evidence.py]": 0.008479990996420383,
+    "tests/test_row_locks_name_company.py::test_no_row_lock_is_taken_by_primary_key_alone": 1.4239872901234776,
+    "tests/test_row_locks_name_company.py::test_the_check_finds_a_refresh_under_a_row_lock": 0.0036714699817821383
 }
