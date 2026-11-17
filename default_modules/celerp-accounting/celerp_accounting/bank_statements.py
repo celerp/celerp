@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date as Date, timedelta
@@ -22,7 +23,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, BeforeValidator, Field, model_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -605,15 +606,14 @@ def _group_key(line: dict) -> str:
 
 def _starts_ticked(line: dict) -> bool:
     """Whether a line's suggestion is evidence enough to start ticked: a source that names
-    its evidence, a key that is not a sparse one, and an account or entry to post to. A
-    suggestion that takes the line to be the same transaction as an entry or another line (a
-    match, a reversal pair, a transfer from another bank's line of the same money) starts ticked
-    only when ``suggest.identified`` proved it; otherwise the user ticks it."""
+    its evidence, a key that is not a sparse one, and an account or entry to post to. A match
+    starts ticked only when ``suggest.identified`` proved the entry is the line's own; a reversal
+    or transfer pair (two statement lines taken as one transaction) never does: the user ticks it."""
     from celerp_accounting.suggest import TICKED_SOURCES
     s = line["suggestion"] or {}
     if s.get("source") not in TICKED_SOURCES or _group_key(line).startswith("SPARSE:"):
         return False
-    if s.get("kind") == "match" or s.get("source") in ("reversal", "transfer"):
+    if s.get("kind") == "match":
         return bool((s.get("evidence") or {}).get("identifier"))
     return s.get("kind") != "post" or bool(s.get("account_code"))
 
@@ -885,7 +885,8 @@ async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatement
 async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
                  to_amount: float | None) -> list[dict]:
     """The target bank's open lines the transfer ``line`` could be by amount and date, nearest
-    first: ``{id, line_date, amount, reference}``. Which one it is, if any, is ``_paired``'s call."""
+    first: ``{id, line_date, amount, reference}``. Which one it is, if any, only the user says
+    (``Decision.paired_line_id``)."""
     from celerp_accounting.suggest import transfer_pairs
     want = -Decimal(str(line.amount)) if to_amount is None else Decimal(str(to_amount)) * (1 if line.amount < 0 else -1)
     rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.amount,
@@ -896,19 +897,6 @@ async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLin
         ReconciliationSession.status == "open"))).all()
     return transfer_pairs(want, line.line_date,
                           [{"id": i, "line_date": d, "amount": a, "reference": r} for i, d, a, r in rows])
-
-
-async def _paired(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, candidates: list[dict],
-                  book: "_Book") -> uuid.UUID | None:
-    """The one candidate counterpart ``suggest.identified`` proves to be this transfer's other
-    side (an identifier only the two lines carry, on the statement lines as they stand under the
-    company lock); equal money alone is none."""
-    from celerp_accounting import suggest
-
-    skip = {str(line.id)} | {str(c["id"]) for c in candidates}
-    references = await _references(db, company_id, {suggest.identifier(line.reference)})
-    pick = suggest.identified(line.reference, [c["reference"] for c in candidates], references.elsewhere(skip))
-    return None if pick is None else candidates[pick]["id"]
 
 
 async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> BankAccount:
@@ -933,8 +921,8 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     line_id = d.line_ids[0]
     probe = await db.get(BankStatementLine, line_id)
     pairs = await _pairs(db, company_id, probe, target, d.to_amount) if probe and probe.status == "unmatched" else []
-    pair_id = d.paired_line_id or (await _paired(db, company_id, probe, pairs, book) if pairs else None)
-    # One candidate the evidence does not prove stays open, with this transfer as its suggestion.
+    pair_id = d.paired_line_id
+    # Without one the user named, a lone candidate stays open with this transfer as its suggestion.
     hint_id = pairs[0]["id"] if pair_id is None and len(pairs) == 1 else None
     other_id = pair_id or hint_id
     lines = await _locked_lines(db, company_id, None, [line_id] + ([other_id] if other_id else []), state=None)
@@ -950,13 +938,10 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     want = {"reference": line.reference, "accounts": {target.chart_account_code}}
     if (je_ids := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
         return {str(line.id): je_ids}
-    # Under the locks the pair must still be the transfer's counterpart: a named one is refused
-    # when it is not, an automatic one is left out (the other bank's line stays open).
+    # Under the locks the named pair must still be the transfer's counterpart.
     still = [c["id"] for c in await _pairs(db, company_id, line, target, d.to_amount)] if other_id else []
     if pair_id is not None and pair_id not in still:
-        if d.paired_line_id is not None:
-            raise _refused(409, "reconciliation.line_not_open")
-        pair_id = None
+        raise _refused(409, "reconciliation.line_not_open")
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
                                     paired=by_id.get(pair_id) if pair_id else None, rate=d.rate,
                                     to_amount=d.to_amount, key=key)
@@ -1004,7 +989,7 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     ids = {e["je_id"] for e in found}
     carried = await _entry_identifiers(db, company_id, ids)
     idents = [carried.get(e["je_id"]) for e in found]
-    references = await _references(db, company_id, set(idents) | {suggest.identifier(line.reference)})
+    references = await _references(db, company_id, set(idents) | {suggest.normalised(line.reference)})
     owners = {str(l["id"]) for l in references.matched_to(ids)}
 
     def pick(reference: str | None, line_id: str) -> int | None:
@@ -1389,8 +1374,8 @@ async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
 
 async def _references(db: AsyncSession, company_id: uuid.UUID, idents: set | None) -> "object":
     """The company's statement lines (every bank, every state, any date) that carry a reference, as
-    a ``suggest.References``: those whose reference is one of ``idents`` (every one when None). A
-    reference is a transaction's identifier only while no other line carries it."""
+    a ``suggest.References``: those whose normalised reference is one of ``idents`` (every one
+    when None). A document number names a payment only while no other line carries it."""
     from celerp_accounting import suggest
 
     q = select(BankStatementLine.id, BankStatementLine.bank_account_id, BankStatementLine.line_date,
@@ -1401,12 +1386,24 @@ async def _references(db: AsyncSession, company_id: uuid.UUID, idents: set | Non
         idents = set(idents) - {None}
         if not idents:
             return suggest.References([])
-        # Narrowed by each identifier's longest word; References keeps the exact equals.
-        q = q.where(or_(*(func.lower(BankStatementLine.reference).contains(max(i.split(), key=len), autoescape=True)
-                          for i in idents)))
+        q = q.where(_narrowed(BankStatementLine.reference, idents))
     rows = [{"id": i, "bank_account_id": b, "line_date": d, "reference": r, "matched_je_ids": m}
             for i, b, d, r, m in (await db.execute(q)).all()]
-    return suggest.References([r for r in rows if idents is None or suggest.identifier(r["reference"]) in idents])
+    return suggest.References([r for r in rows if idents is None or suggest.normalised(r["reference"]) in idents])
+
+
+_DIGITS = re.compile(r"[0-9]+")
+
+
+def _narrowed(column, idents: set):
+    """A SQL filter keeping every row whose ``column`` may normalise (``suggest.normalised``) to one
+    of ``idents``; the caller compares exactly in Python, so the database never casefolds. ASCII
+    digits are the same under any casefolding, so a number is narrowed by its longest digit run;
+    one with no digits is not narrowed."""
+    runs = [max(_DIGITS.findall(i), key=len, default=None) for i in idents]
+    if None in runs:
+        return true()
+    return or_(*(column.contains(r, autoescape=True) for r in set(runs)))
 
 
 async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) -> dict[str, str]:
@@ -1422,17 +1419,17 @@ async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) ->
     for je_id, ref in (await _je_doc_refs(db, company_id, sorted(je_ids))).items():
         payments = ref["doc"].get("payments") or []
         only = payments[0] if len(payments) == 1 else {}
-        ident = suggest.identifier(ref["numbers"].get(ref["doc_id"]))
+        ident = suggest.normalised(ref["numbers"].get(ref["doc_id"]))
         if ref["trigger"] == "doc.payment.received" and ident and only.get("status", "active") == "active" \
                 and not only.get("refunded") and not only.get("refund_count"):
             out[je_id] = ident
     if not out:
         return out
-    numbers = [func.lower(func.trim(Projection.state[k].as_string())) for k in ("ref_id", "doc_number")]
+    numbers = [Projection.state[k].as_string() for k in ("ref_id", "doc_number")]
     holders: dict[str, set] = {}
     for entity_id, *found in (await db.execute(select(Projection.entity_id, *numbers).where(
-            Projection.company_id == company_id, or_(*(n.in_(set(out.values())) for n in numbers))))).all():
-        for number in set(found) & set(out.values()):
+            Projection.company_id == company_id, or_(*(_narrowed(n, set(out.values())) for n in numbers))))).all():
+        for number in {suggest.normalised(f) for f in found} & set(out.values()):
             holders.setdefault(number, set()).add(entity_id)
     return {je_id: ident for je_id, ident in out.items() if len(holders.get(ident, ())) == 1}
 

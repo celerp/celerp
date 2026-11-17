@@ -1,8 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Two records are one transaction on their own only when they share a transaction identifier:
-a reference no other line of the company carries in the window, found in exactly one candidate
-(``suggest.identified``). Equal money, a near date, a shared account and a shared contact only
+"""A statement line is a book entry's transaction on its own only when its whole reference is the
+number of the one document that entry pays, carried by no other document and no other statement
+line of the company (``suggest.identified``); two statement lines never are, whatever they share,
+until the user confirms it. Equal money, a near date, a shared account and a shared contact only
 rank the candidates: a requested posting with candidates left stops with them shown, to match one
 or post anyway, and a transfer leaves the other bank's line open with the transfer as its
 suggestion. Each case reaches the same books in either order, and they equal their rebuild."""
@@ -285,19 +286,6 @@ async def test_two_unrelated_lines_of_equal_money_on_two_banks_are_not_paired(cl
 
 
 @pytest.mark.asyncio
-async def test_the_same_reference_on_both_lines_pairs_the_transfer(client):
-    co = await B.company(client)
-    a = await B.bank(client, co["h"], name="A")
-    b = await B.bank(client, co["h"], name="B")
-    la = await _one_line(client, co, a, [("2026-01-08", "TRANSFER OUT", "-100.00")], reference="TRF88213")
-    lb = await _one_line(client, co, b, [("2026-01-09", "TRANSFER IN", "100.00")], reference="TRF88213")
-    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
-                                                         "target_bank_id": b["id"]}])
-    row = r.json()["results"][0]
-    assert row["ok"] and row["paired_line_id"] == lb["id"], row
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("reference", ["TRANSFER", "XFER-OPS"])
 async def test_two_transfers_of_one_amount_never_pair_on_a_shared_reference(client, reference):
     """Two transfers of 100 the same day, A to B and C to D, every line carrying ``reference`` (a
@@ -315,18 +303,20 @@ async def test_two_transfers_of_one_amount_never_pair_on_a_shared_reference(clie
     assert B.line_by_text(await B.groups(client, co, b["id"]), "IN")["status"] == "unmatched"
 
 
-def test_a_reference_is_an_identifier_only_when_it_names_one_transaction():
+def test_only_a_document_number_carried_once_proves_identity():
     from celerp_accounting import suggest
 
-    assert [suggest.identifier(r) for r in ("12345", "abc", None, "", " Salary   payment ")] == [None] * 5
-    assert [suggest.identifier(r) for r in ("INV-7001", "123456", " TRF   448812 ")] == [
-        "inv-7001", "123456", "trf 448812"]
+    assert [suggest.normalised(r) for r in (None, "", "  ")] == [None] * 3
+    assert [suggest.normalised(r) for r in ("INV-7001", " TRF   448812 ", "Straße")] == [
+        "inv-7001", "trf 448812", "strasse"]
     refs = suggest.References([{"id": "x", "line_date": "2025-06-01", "reference": "inv-7001 "}])
     assert suggest.identified("INV-7001", ["INV-7001", "INV-70012", None], refs.elsewhere({"x"})) == 0
     assert suggest.identified("INV-7001", ["INV-7001"], refs.elsewhere(set())) is None  # another line, any date
     assert suggest.identified("INV-7001", ["Paid INV-7001"], refs.elsewhere({"x"})) is None  # a word of a text
     assert suggest.identified("INV-7001", ["INV-7001", "inv-7001"], refs.elsewhere({"x"})) is None
     assert suggest.identified("ACME", [None, None], refs.elsewhere(set())) is None
+    assert suggest.identified("STRASSE 1", ["Straße 1"], refs.elsewhere(set())) == 0
+    assert suggest.identified("20261115", ["20261115"], refs.elsewhere(set())) == 0  # its shape is no bar
 
 
 _MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
@@ -334,57 +324,57 @@ _MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augu
 
 
 def _period(rng) -> str:
-    """A date or period in one of the forms statements print, in any case."""
+    """A date or period in one of the forms statements print, separated or compact, in any case."""
     y, m, d = rng.choice([rng.randint(1990, 2039), rng.randint(2540, 2582)]), rng.randint(1, 12), rng.randint(1, 28)
     name = rng.choice([_MONTHS[m - 1], _MONTHS[m - 1][:3], _MONTHS[m - 1][:3] + "."])
-    z = rng.choice(["{:02d}", "{}"])
-    mm, dd = z.format(m), z.format(d)
-    sep = rng.choice("-/.")
-    return rng.choice([f"{y}{sep}{mm}", f"{y}{sep}{mm}{sep}{dd}", f"{dd}{sep}{mm}{sep}{y}", f"{mm}{sep}{y}",
-                       f"{name} {y}", f"{name}-{y}", f"{dd} {name} {y}", f"{name} {dd}, {y}", f"{y} {name}",
-                       f"{y}", f"{dd} {name}"])
+    mm, dd, sep = f"{m:02d}", f"{d:02d}", rng.choice("-/.")
+    return rng.choice([f"{y}{sep}{mm}", f"{y}{sep}{mm}{sep}{dd}", f"{dd}{sep}{mm}{sep}{y}", f"{name} {y}",
+                       f"{y}{mm}{dd}", f"{dd}{mm}{y}", f"{y}{mm}", f"{mm}{y}", f"{y}", f"{dd} {name}"])
 
 
-def _label(rng) -> str:
-    """Words, a period and small numbers, none of which names one transaction."""
-    words = ["TRANSFER", "PAYMENT", "SALARY", "Rent", "fees", "Online Banking", "XFER-OPS", "DEPOSIT"]
-    parts = [rng.choice([rng.choice(words), "".join(rng.choices("abcdefghijklmnopqrstuvwxyz", k=rng.randint(1, 12))),
-                         _period(rng), str(rng.randint(0, 99))]) for _ in range(rng.randint(1, 4))]
-    return " ".join(p.upper() if rng.random() < .5 else p for p in parts)
+def _amount(rng) -> str:
+    n = rng.randint(1, 99999)
+    return rng.choice([str(n), f"{n:,}", f"{n:,}.00", f"{n}.{rng.randint(0, 99):02d}"])
 
 
 def _reference(rng) -> str:
-    """A transaction reference: a prefix and a run of at least three digits that is no year,
-    with a label around it or not."""
-    digits = rng.choice([3, 5, 6, 7, 8, 4])
-    while True:
-        run = "".join(rng.choices("0123456789", k=digits))
-        if not (digits == 4 and run[:2] in ("19", "20", "25")):
-            break
-    ref = rng.choice(["INV", "TRF", "CHQ", "REF", "PO", "TXN", "FT", "BILL"]) + rng.choice(["", " ", "-", "/", "#"]) + run
-    return " ".join([*([_label(rng)] if rng.random() < .3 else []), ref, *([_period(rng)] if rng.random() < .3 else [])])
+    """Anything a bank prints as a reference: words, dates and periods, amounts, and numbers that
+    look like a document's, alone or together."""
+    words = ["TRANSFER", "PAYMENT", "SALARY", "Rent", "fees", "Online Banking", "XFER-OPS", "DEPOSIT"]
+    number = rng.choice(["INV", "TRF", "CHQ", "PO", "BILL", ""]) + rng.choice(["", " ", "-", "/"]) + \
+        "".join(rng.choices("0123456789", k=rng.randint(1, 9)))
+    parts = [rng.choice([rng.choice(words), _period(rng), _amount(rng), number]) for _ in range(rng.randint(1, 3))]
+    return " ".join(p.upper() if rng.random() < .5 else p for p in parts)
 
 
-def test_a_label_is_never_an_identifier_and_a_reference_always_is():
-    """Seeded generative oracle over ``suggest.identifier``: labels, generic words and dates or
-    periods in every printed form name no transaction; a reference carrying a run of three or
-    more digits beyond its dates does, and so do digits alone from six long."""
+def test_a_reference_proves_identity_only_as_a_stored_document_number_carried_once():
+    """Seeded generative oracle over ``suggest.identified``: whatever a reference looks like (a
+    label, a date or period in any form, an amount, a number like a document's), it proves the
+    entry only when it equals, normalised, exactly one of the candidates' document numbers and no
+    other statement line carries it; a document number of any shape does."""
     import random
 
     from celerp_accounting import suggest
 
-    rng = random.Random(9)
+    rng = random.Random(10)
+    proved = 0
     for _ in range(3000):
-        label, ref = _label(rng), _reference(rng)
-        assert suggest.identifier(label) is None, label
-        assert suggest.identifier(ref) == " ".join(ref.split()).casefold(), ref
-        digits = "".join(rng.choices("0123456789", k=rng.randint(1, 9)))
-        assert (suggest.identifier(digits) is not None) == (len(digits) >= 6), digits
+        numbers = [_reference(rng) for _ in range(rng.randint(0, 4))]
+        ref = rng.choice(numbers) if numbers and rng.random() < .5 else _reference(rng)
+        ref = rng.choice([ref, ref.upper(), ref.lower(), f"  {ref} "])
+        other = rng.random() < .2
+        refs = suggest.References([{"id": "o", "line_date": "2026-01-01", "reference": ref}] if other else [])
+        got = suggest.identified(ref, numbers, refs.elsewhere(set()))
+        norm = " ".join(ref.split()).casefold()
+        hits = [i for i, n in enumerate(numbers) if " ".join(n.split()).casefold() == norm]
+        assert got == (hits[0] if len(hits) == 1 and not other else None), (ref, numbers, other)
+        proved += got is not None
+    assert proved > 500
 
 
-def test_the_index_reads_only_the_lines_carrying_an_identifier_or_matched_to_an_entry():
+def test_the_index_reads_only_the_lines_carrying_a_reference_or_matched_to_an_entry():
     """``References.carrying``, ``elsewhere`` and ``matched_to`` give the same lines a scan of every
-    line would, read through the identifier and entry indexes so a check never walks the company."""
+    line would, read through the reference and entry indexes so a check never walks the company."""
     from celerp_accounting import suggest
 
     lines = [{"id": "a", "line_date": "2026-01-09", "reference": "INV-7001", "matched_je_ids": ["je:1"]},
@@ -398,27 +388,18 @@ def test_the_index_reads_only_the_lines_carrying_an_identifier_or_matched_to_an_
     assert [l["id"] for l in refs.matched_to({"je:2", "je:9"})] == ["c"] and refs.matched_to(set()) == []
 
 
-def test_the_ladder_names_a_counterpart_only_on_evidence():
-    """The suggestion ladder's transfer rung carries a counterpart only when ``identified`` proves
-    it (an identifier only the two lines carry); equal money alone suggests the transfer and
-    leaves the counterpart out, and so does a reference a third line carries."""
+def test_the_ladder_never_names_a_counterpart():
+    """The suggestion ladder's transfer rung suggests the transfer but never names the other bank's
+    line, even when both carry one reference no other line carries: only the user pairs them."""
     from celerp_accounting import suggest
 
-    line = {"id": "l1", "amount": "-100.00", "line_date": "2026-01-08", "reference": None, "description": "OUT"}
-    pair = {"id": "p1", "bank_id": "b2", "amount": "100.00", "line_date": "2026-01-08", "reference": None}
-    ctx = suggest.LadderContext(bank_id="b1", pair_lines=[pair])
-    got = suggest._transfer(line, ctx)
-    assert got["kind"] == "transfer" and "paired_line_id" not in got, got
-    got = suggest._transfer({**line, "reference": "TRF1234"}, suggest.LadderContext(
-        bank_id="b1", pair_lines=[{**pair, "reference": "TRF1234"}]))
-    assert got["paired_line_id"] == "p1", got
-    crowded = suggest.References([{"id": "l3", "line_date": "2026-01-08", "reference": "TRF1234"}])
-    got = suggest._transfer({**line, "reference": "TRF1234"}, suggest.LadderContext(
-        bank_id="b1", pair_lines=[{**pair, "reference": "TRF1234"}], references=crowded))
-    assert "paired_line_id" not in got, got
+    line = {"id": "l1", "amount": "-100.00", "line_date": "2026-01-08", "reference": "TRF1234", "description": "OUT"}
+    pair = {"id": "p1", "bank_id": "b2", "amount": "100.00", "line_date": "2026-01-08", "reference": "TRF1234"}
+    got = suggest._transfer(line, suggest.LadderContext(bank_id="b1", pair_lines=[pair]))
+    assert got["kind"] == "transfer" and "paired_line_id" not in got and "evidence" not in got, got
 
 
-# ── Identity is a field naming one transaction on both sides, never a word free text shares ──
+# ── Identity is a document number on both sides, never a word free text shares ──
 
 _SHARED_WORDS = {  # reference, keyed memo, account the line posts to
     "payee name": ("ACME", "Paid ACME", "6100"),
@@ -509,7 +490,50 @@ async def test_a_document_paid_twice_names_neither_payment(client, session):
     assert not row["ok"] and not row["matched_instead"] and len(row["candidates"]) == 2, row
 
 
-# ── A generic label is no identifier: a candidate to confirm, never a pair on its own ──
+async def _renumber(session, entity_id: str, number: str) -> None:
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    proj = (await session.execute(select(Projection).where(Projection.entity_id == entity_id))).scalar_one()
+    proj.state = {**proj.state, "ref_id": number, "doc_number": number}
+    await session.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", ["20261115", "PAYMENT 500", "Salary"])
+async def test_a_document_number_names_its_payment_whatever_its_shape(client, session, number):
+    """A document really numbered like a date, an amount or a word is still that document: a
+    deposit carrying its number is matched to its one payment."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    doc, _ = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08")
+    await _renumber(session, doc, number)
+    line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "120.00")], reference=number.upper())
+    row = await _post(client, co, bk, line, account_code="4100")
+    assert row["ok"] and row["matched_instead"] and len(row["je_ids"]) == 1, row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["document", "line"])
+async def test_a_number_another_record_carries_in_another_case_names_neither(client, session, where):
+    """``STRASSE-7001`` and ``Straße-7001`` are one number (casefolded alike): when another
+    document or another statement line carries the paid document's number in that other form, a
+    line carrying it stops with the payment shown."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    doc, _ = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08")
+    await _renumber(session, doc, "STRASSE-7001")
+    if where == "document":
+        other, _ = await B.paid_invoice(client, co, bk, 90.0, "2026-01-08", paid=0)
+        await _renumber(session, other, "Straße-7001")
+        line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "120.00")], reference="STRASSE-7001")
+    else:
+        line, _ = await _lines(client, co, bk, [("2026-01-09", "RECEIVED", "120.00", "STRASSE-7001"),
+                                                ("2026-01-28", "FEE", "-5.00", "Straße-7001")])
+    row = await _post(client, co, bk, line, account_code="4100")
+    assert not row["ok"] and not row["matched_instead"] and len(row["candidates"]) == 1, row
+
+
+# ── Two statement lines are one transaction only when the user confirms it ──
 
 async def _suggested(client, co, bk) -> list[tuple[dict, bool]]:
     """Run the suggestion ladder on ``bk``; each line with whether its group starts ticked."""
@@ -549,12 +573,18 @@ async def _two_banks(client, reference: str, first: int) -> tuple:
     return co, a, b
 
 
+# A bank reference never makes two statement lines one transaction, whatever its shape: a label,
+# a date or period written compactly, an amount, or a transaction reference on both sides.
+LINE_REFERENCES = ["TRANSFER", "PAYMENT", "20261115", "15112569", "TRANSFER 20261115", "SALARY 202611",
+                   "256911", "PAYMENT 500", "TRF 448812"]
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reference", ["TRANSFER", "PAYMENT"])
-async def test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms(
+@pytest.mark.parametrize("reference", LINE_REFERENCES)
+async def test_two_lines_sharing_a_reference_pair_only_when_the_user_confirms(
         client, session, reference):
-    """Two unrelated lines on two banks, equal and opposite money on near dates, both referenced
-    only with a generic label: the transfer is offered but nothing starts ticked, a transfer the
+    """Two lines on two banks, equal and opposite money on near dates, both carrying one
+    reference: the transfer is offered but nothing starts ticked, a transfer the
     user posts from A leaves B's line open with it as the suggestion, and the two are one
     transaction only once the user confirms it. Either import order reaches the same books."""
     books = []
@@ -583,10 +613,10 @@ async def test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_us
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reference", ["PAYMENT", "TRANSFER"])
-async def test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted(client, session, reference):
+@pytest.mark.parametrize("reference", LINE_REFERENCES)
+async def test_a_reversal_pair_sharing_a_reference_is_offered_not_accepted(client, session, reference):
     """A payment out and the same money back in on one bank two days later, both referenced
-    with a generic label: the reversal is offered, its group does not start ticked, and the
+    with one reference: the reversal is offered, its group does not start ticked, and the
     lines settle only when the user ticks them. Either row order reaches the same books."""
     books = []
     for first in (0, 1):
@@ -604,25 +634,5 @@ async def test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted(c
             table, [g["key"] for g in table["groups"]], [l["id"] for l, _ in suggested]))
         assert all(x["ok"] for x in r.json()["results"]), r.text
         assert "unmatched" not in await _statuses(client, co, bk)
-        books.append(await _moved(client, session, co, before))
-    assert books[0] == books[1]
-
-
-@pytest.mark.asyncio
-async def test_a_transfer_reference_on_both_sides_still_pairs_on_its_own(client, session):
-    """The same transaction reference on both lines ("TRF 448812") is identity: the transfer
-    starts ticked with its counterpart, and accepting it settles both banks. Either import order
-    reaches the same books."""
-    books = []
-    for first in (0, 1):
-        co, a, b = await _two_banks(client, "TRF 448812", first)
-        before = await _books(client, session, co)
-        lb = B.all_lines(await B.groups(client, co, b["id"]))[0]
-        [(la, ticked)] = await _suggested(client, co, a)
-        assert la["suggestion"]["paired_line_id"] == lb["id"] and ticked, la
-        table = await B.groups(client, co, a["id"])
-        r = await B.resolve(client, co, a["id"], accept=B.accept(table, [g["key"] for g in table["groups"]]))
-        assert r.json()["results"][0]["ok"], r.text
-        assert await _statuses(client, co, a, b) == ["matched", "posted"]
         books.append(await _moved(client, session, co, before))
     assert books[0] == books[1]
