@@ -352,3 +352,28 @@ def test_sidebar_header_input_layout_intact(page: Page, ui_server):
     assert abs(header["width"] - inp["width"]) <= 2
     # The composer is stacked below the header, not overlapping it.
     assert inp["y"] >= header["y"] + header["height"] - 2
+
+
+def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, agent_caps):
+    """A propose_for_each card at its largest set shows every record and the values it
+    writes in a box that scrolls on the page, amounts right-aligned under their header."""
+    rule = agent_caps[("PATCH", "/accounting/rules/{rule_id}")]["name"]
+    records = [{"path": {"rule_id": str(uuid.uuid4())},
+                "body": {"match_pattern": f"RENT-{n:04}", "match_amount": 1000 + n}}
+               for n in range(ai_service.MAX_FOR_EACH)]
+    _SCRIPT.append(_tool_call(ai_service.PROPOSE_FOR_EACH, {"tool": rule, "records": records},
+                              "I'll change these rules once you confirm."))
+    _open_chat(page, ui_server)
+    _send(page, "update the rent rules")
+
+    box = page.locator(".ai-action__card .ai-action__records")
+    expect(box).to_be_visible()
+    rows = box.locator("tbody tr")
+    expect(rows).to_have_count(ai_service.MAX_FOR_EACH)
+    assert box.evaluate("e => e.scrollHeight > e.clientHeight")
+    amount = box.locator("th.cell--number")
+    expect(amount).to_have_count(1)
+    assert amount.evaluate("e => getComputedStyle(e).textAlign") == "right"
+    rows.last.scroll_into_view_if_needed()
+    expect(rows.last).to_be_in_viewport()
+    expect(rows.last).to_contain_text("RENT-0199")

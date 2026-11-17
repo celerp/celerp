@@ -859,7 +859,10 @@ async def _agent_loop(
                     id=call_id, name=capability["name"], arguments=arguments,
                     created_at=now.isoformat(), expires_at=expires.isoformat(),
                     title=action_title(capability),
-                    shown={} if name == PROPOSE_FOR_EACH else card_arguments(capability, arguments),
+                    # A propose_for_each card shows every record it changes, each as a single
+                    # card would; within MAX_FOR_EACH records and the argument size bound.
+                    shown={"records": [card_arguments(capability, r) for r in arguments["records"]]}
+                    if name == PROPOSE_FOR_EACH else card_arguments(capability, arguments),
                     keyed=capability.get("keyed") is True,
                     warnings=_card_warnings(capability, len(arguments["records"]) if name == PROPOSE_FOR_EACH
                                             else _selection_size(capability, arguments),

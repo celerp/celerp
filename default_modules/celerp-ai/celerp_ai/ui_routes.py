@@ -1318,6 +1318,32 @@ def _arg_lines(section: dict, names: dict | None = None) -> FT:
     return Div(*lines, cls="ai-action__lines")
 
 
+def _records_table(records: list, names: dict) -> FT:
+    """Every record a propose_for_each card changes, one row each, in a box that scrolls
+    on the page: the record by its name and each value it will write, read as a single
+    card reads them (a record id hidden where its row names the record)."""
+    rows = [{k: v for part in ("path", "query", "body") if isinstance(r.get(part), dict) for k, v in r[part].items()}
+            for r in records if isinstance(r, dict)]
+    keys = list(dict.fromkeys(str(k) for row in rows for k in row
+                              if not (str(k).endswith("_id") and f"{str(k)[:-3]}_name" in row)))
+    def is_number(key: str) -> bool:  # amounts and quantities sit right, under a right-aligned header
+        values = [row[key] for row in rows if row.get(key) not in (None, "")]
+        return is_money_field(key) or key in QTY_FIELD_KEYS or bool(values) and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
+
+    numeric = {k: {"cls": "cell--number"} if is_number(k) else {} for k in keys}
+
+    def cell(row: dict, key: str) -> FT:
+        currency = row.get("currency") if isinstance(row.get("currency"), str) else None
+        return Td(_fmt_value(key, row.get(key), currency, names), **numeric[key])
+
+    return Div(Table(
+        Thead(Tr(*[Th(_label(k), **numeric[k]) for k in keys])),
+        Tbody(*[Tr(*[cell(row, k) for k in keys]) for row in rows]),
+        cls="data-table ai-action__records-table",
+    ), cls="table-scroll-wrap ai-action__records")
+
+
 def _action_title(action: dict, lang: str | None = None) -> str:
     return read_kept(action.get("title"), lang) or _label(action.get("name", ""))
 
@@ -1333,12 +1359,15 @@ def _action_body(action: dict, lang: str = "en") -> list[FT]:
     to the page where it is seen and changed, and the warnings block, shared by the card
     and the table's detail row."""
     args = action.get("shown") or {}
-    groups = [
-        _arg_lines(args[part], action.get("names") or {})
-        for part in ("body", "path", "query")
-        if isinstance(args.get(part), dict) and args[part]
-    ]
-    out: list[FT] = [Div(*groups, cls="ai-action__list")]
+    if action.get("for_each") and isinstance(args.get("records"), list):
+        out: list[FT] = [_records_table(args["records"], action.get("names") or {})]
+    else:
+        groups = [
+            _arg_lines(args[part], action.get("names") or {})
+            for part in ("body", "path", "query")
+            if isinstance(args.get(part), dict) and args[part]
+        ]
+        out = [Div(*groups, cls="ai-action__list")]
     if action.get("card_screen"):
         out.append(A(t("ai.card_open_page", lang), href=safe_url(action["card_screen"]), cls="ai-action__page-link"))
     warnings = _action_warnings(action, lang)

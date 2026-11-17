@@ -494,3 +494,29 @@ async def test_outside_message_card_warns(monkeypatch, real_app):
                                                        "warnings": card.warnings}, "en"))
     assert t("ai.warn_outside_message", "en") in html
     assert "buyer@example.com" in html
+
+
+@pytest.mark.asyncio
+async def test_a_bulk_card_shows_every_record_it_changes_and_each_value(monkeypatch, real_app):
+    """A propose_for_each card lists every record it changes, by the record's name, with
+    each value it will write, read as a single card reads them; at the largest set."""
+    from fasthtml.common import Div, to_xml
+    from celerp_ai.ui_routes import _action_body
+
+    caps = ai_tools.compile_agent_capabilities(real_app, {}, "owner", caller_gates=frozenset())
+    change = next(n for n, c in caps.items() if (c["method"], c["path"]) == ("PATCH", "/fixed-assets/api/assets/{asset_id}"))
+    ids = [str(uuid.uuid4()) for _ in range(service.MAX_FOR_EACH)]
+    records = [{"path": {"asset_id": i}, "body": {"serial_number": f"SN-{n:04}"}}
+               for n, i in enumerate(ids)]
+    _script(monkeypatch, [
+        _turn(calls=[(LIST_TOOLS, {"area": caps[change]["module"]}, "c1")]),
+        _turn(calls=[(OPEN_TOOLS, {"names": [change]}, "c2")]),
+        _turn(calls=[(service.PROPOSE_FOR_EACH, {"tool": change, "records": records}, "c3")]),
+    ], caps=caps)
+    [card] = (await _run()).pending_actions
+    names = {i: f"Forklift {n:03}" for n, i in enumerate(ids)}
+    html = to_xml(Div(*_action_body({"name": change, "for_each": True, "shown": card.shown, "names": names,
+                                     "warnings": card.warnings}, "en")))
+    assert html.count("<tr>") == service.MAX_FOR_EACH + 1
+    for n in range(service.MAX_FOR_EACH):
+        assert f"Forklift {n:03}" in html and f"SN-{n:04}" in html
