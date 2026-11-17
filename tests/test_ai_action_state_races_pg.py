@@ -12,7 +12,6 @@ outcome must persist on PostgreSQL.
 from __future__ import annotations
 
 import asyncio
-import pathlib
 import re
 import types
 import uuid
@@ -25,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.ai import conversations
 from celerp.models.ai import AIConversation, AIMessage
 from celerp.models.company import Company, User
+from shipped_sources import REPO, shipped_sources
 
 pytestmark = pytest.mark.asyncio
 
@@ -140,15 +140,12 @@ async def test_a_note_and_a_confirmation_both_persist(committed_engine, note, no
 @pytest.mark.filterwarnings("ignore")
 def test_only_the_transition_assigns_tools_called():
     """Any other assignment of a message's action records could write a stale copy back."""
-    root = pathlib.Path(__file__).resolve().parents[1]
     assignment = re.compile(r"\.tools_called\s*=(?!=)")
     found = sorted(
-        f"{path.relative_to(root)}:{n}"
-        for top in ("celerp", "default_modules")
-        for path in (root / top).rglob("*.py") if "tests" not in path.parts
+        f"{rel}:{n}" for rel, path in shipped_sources()
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if assignment.search(line))
     assert len(found) == 1 and found[0].startswith("celerp/ai/conversations.py:"), found
-    source = (root / "celerp/ai/conversations.py").read_text(encoding="utf-8")
+    source = (REPO / "celerp/ai/conversations.py").read_text(encoding="utf-8")
     owner = source[source.index("async def change_tools_called("):source.index("def _replace(")]
     assert assignment.search(owner)
 

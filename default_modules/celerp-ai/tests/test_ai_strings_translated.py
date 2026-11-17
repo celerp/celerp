@@ -8,7 +8,7 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -343,57 +343,51 @@ def test_every_agent_error_names_a_catalog_key():
     assert [where for where, key in calls if key not in _EN] == []
 
 
-class _Store:
-    """The one message whose proposals a confirmed action finalizes, as the database
-    would hold it between a reply and a reload."""
+async def _stored_message(session, record) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """The one message whose proposals a confirmed action finalizes, as the database holds
+    it between a reply and a reload: (company, user, conversation, message) ids."""
+    from celerp.models.ai import AIConversation, AIMessage
+    from celerp.models.company import Company, User
+    company_id, user_id, conversation_id, message_id = (uuid.uuid4() for _ in range(4))
+    session.add(User(id=user_id, email=f"u-{user_id.hex[:8]}@example.test", name="Owner", auth_hash="x",
+                     is_active=True))
+    await session.flush()
+    session.add(Company(id=company_id, name="Co", slug=f"co-{company_id.hex[:8]}", settings={}))
+    await session.flush()
+    session.add(AIConversation(id=conversation_id, company_id=company_id, user_id=user_id))
+    await session.flush()
+    session.add(AIMessage(id=message_id, conversation_id=conversation_id, role="assistant", content="",
+                          tools_called=[record]))
+    await session.flush()
+    return company_id, user_id, conversation_id, message_id
 
-    def __init__(self, record):
-        self.message = type("Message", (), {"tools_called": [record], "conversation_id": uuid.uuid4()})()
 
-    async def get(self, model, message_id):
-        return self.message
-
-    def add(self, row):
-        pass
-
-    async def flush(self):
-        pass
-
-    async def commit(self):
-        pass
-
-
-async def _confirmed(monkeypatch, result) -> tuple[dict, dict]:
+async def _confirmed(session, monkeypatch, result) -> tuple[dict, dict]:
     """(live outcome, stored record) of confirming one proposal whose capability call
     returns ``result``, through the real confirm runner and store."""
     from types import SimpleNamespace
     from celerp.ai import conversations, tools
     # Keyed, so an answer that never came is retryable and keeps the route's own error.
-    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {}, "keyed": True}
-    store = _Store(record)
+    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {},
+              "keyed": True, "expires_at": expires}
+    company_id, user_id, conversation_id, message_id = await _stored_message(session, record)
 
     async def resolved(session, **kw):
         return {}, None, record
 
-    async def claim(session, **kw):
-        return record
-
     async def execute(*args, **kw):
         return result
 
-    async def unlocked(session, conversation_id):
-        pass  # one store, no other writer to wait on
-
     monkeypatch.setattr(routes, "_resolved_action_arguments", resolved)
-    monkeypatch.setattr(conversations, "_lock_conversation", unlocked)
-    monkeypatch.setattr(conversations, "claim_tool_call", claim)
     monkeypatch.setattr(tools, "execute_agent_capability", execute)
     outcome = await routes._run_confirmed_action(
-        SimpleNamespace(app=None, headers={}), store, {"create_contact": {}},
-        conversation_id=uuid.uuid4(), message_id=uuid.uuid4(), tool_call_id="call",
-        company_id=uuid.uuid4(), user_id=uuid.uuid4(),
+        SimpleNamespace(app=None, headers={}), session, {"create_contact": {}},
+        conversation_id=conversation_id, message_id=message_id, tool_call_id="call",
+        company_id=company_id, user_id=user_id,
     )
-    return outcome, store.message.tools_called[0]
+    from celerp.models.ai import AIMessage
+    return outcome, (await session.get(AIMessage, message_id)).tools_called[0]
 
 
 def _retryable_route_refusal() -> dict:
@@ -403,7 +397,7 @@ def _retryable_route_refusal() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(monkeypatch):
+async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(session, monkeypatch):
     """Class guard at the store: every executor error and a keyed route refusal that
     comes back retryable is stored whole, so the reloaded thread says what the reply
     said, in the reader's language, never the English source."""
@@ -415,7 +409,7 @@ async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(mo
     i18n._cached_load.cache_clear()
     i18n.set_lang("th")
     for result in results:
-        outcome, stored = await _confirmed(monkeypatch, result)
+        outcome, stored = await _confirmed(session, monkeypatch, result)
         live = ui_routes._outcome_text(outcome, "th")[1]
         english = (outcome["error"] or {}).get("message")
         assert stored["error"]["message_key"] == outcome["error"]["message_key"]
@@ -450,7 +444,7 @@ async def _route_refusals(client) -> list[dict]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["qx", "th"])
-async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(client, monkeypatch, lang):
+async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(client, session, monkeypatch, lang):
     """Class guard at the route boundary: a refusal the app's own route answers a
     confirmed action with is stored whole, so the card and the reloaded thread read it
     alike in the reader's language (the qx stand-in proves no English source reaches
@@ -462,7 +456,7 @@ async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(cli
     i18n.set_lang(lang)
     for result in results:
         detail = result["data"]["detail"]
-        outcome, stored = await _confirmed(monkeypatch, result)
+        outcome, stored = await _confirmed(session, monkeypatch, result)
         assert stored["error"] == outcome["error"] == {"code": detail.get("code", "route_error"), **detail}
         live = ui_routes._outcome_text(outcome, lang)[1]
         reloaded = [to_xml(ui_routes._action_card("c", "m", stored, lang)),
