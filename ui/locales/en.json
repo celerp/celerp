@@ -8507,6 +8507,7 @@
   "field.to_amount": "Amount received",
   "field.att_id": "Attachment",
   "field.je_ids": "Journal entries",
+  "field.separate_from": "Kept separate from",
   "bank.posted_to": "Posted to {accounts}",
   "ai.card_name_unavailable": "Name not available",
   "tool.cloud_billing_portal_settings_cloud_billing_portal_post": "Open a billing portal link where the owner can manage the Celerp Connect subscription and payment card.",

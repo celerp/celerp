@@ -8507,6 +8507,7 @@
   "field.to_amount": "የተቀበለው መጠን",
   "field.att_id": "አባሪ",
   "field.je_ids": "የጆርናል ግቤቶች",
+  "field.separate_from": "ተለይቶ የተያዘው ከ",
   "bank.posted_to": "ወደ {accounts} ተመዝግቧል",
   "tool.cloud_billing_portal_settings_cloud_billing_portal_post": "Open a billing portal link where the owner can manage the Celerp Connect subscription and payment card.",
   "tool.cloud_disconnect_settings_cloud_disconnect_post": "Disconnect this installation from Celerp Connect, stopping cloud backups, the relay and connected apps.",

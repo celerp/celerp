@@ -8507,6 +8507,7 @@
   "field.to_amount": "المبلغ المستلم",
   "field.att_id": "المرفق",
   "field.je_ids": "قيود اليومية",
+  "field.separate_from": "منفصل عن",
   "bank.posted_to": "رُحّل إلى {accounts}",
   "tool.cloud_billing_portal_settings_cloud_billing_portal_post": "Open a billing portal link where the owner can manage the Celerp Connect subscription and payment card.",
   "tool.cloud_disconnect_settings_cloud_disconnect_post": "Disconnect this installation from Celerp Connect, stopping cloud backups, the relay and connected apps.",

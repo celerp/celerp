@@ -116,11 +116,13 @@ async def _unit_recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key:
 
 async def _bank(db: AsyncSession, company_id: uuid.UUID, bank_id, *, lock: bool = False) -> BankAccount:
     """The company's active bank account ``bank_id``; with ``lock``, read again under its row
-    lock by a statement that names the company, so the lock is taken under the company's."""
+    lock by a statement that names the company, so the lock is taken under the company's. The
+    lock is the one an UPDATE of the row takes (FOR NO KEY UPDATE): its key stays free, so rows
+    referring to the account never wait on it."""
     bank = (await SL.scoped(db, company_id, "bank", [bank_id]))[0]
     if lock:
         await db.execute(select(BankAccount).where(BankAccount.id == bank.id, BankAccount.company_id == company_id)
-                         .with_for_update().execution_options(populate_existing=True))
+                         .with_for_update(key_share=True).execution_options(populate_existing=True))
     return bank
 
 
@@ -964,8 +966,8 @@ class _Twins(HTTPException):
     its date): it posts nothing, the nearest becomes its match suggestion and ``candidates`` are
     shown, for the user to match one or post anyway (``Decision.separate_from``)."""
 
-    def __init__(self, line_id: uuid.UUID, suggestion: dict, candidates: list[str], key: str, **params):
-        super().__init__(status_code=409, detail=catalog_refusal(key, **params))
+    def __init__(self, line_id: uuid.UUID, suggestion: dict, candidates: list[str], detail: dict):
+        super().__init__(status_code=409, detail=detail)
         self.line_id, self.suggestion, self.candidates = line_id, suggestion, candidates
 
 
@@ -991,11 +993,12 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     shown = proven or found
     date = str(shown[0]["ts"])[:10]
     if len(proven) != 1:
-        key = "acct.recon_reason_twins" if proven else "acct.recon_reason_looks_like"
-        reason = t(key, count=len(shown), date=date)
+        detail = catalog_refusal("acct.recon_reason_twins" if proven else "acct.recon_reason_looks_like",
+                                 count=len(shown), date=date)
+        reason = t(detail["message_key"], count=len(shown), date=date)
         candidates = [e["je_id"] for e in shown]
         raise _Twins(line.id, {"kind": "match", "source": "twins", "je_ids": candidates[:1], "candidates": candidates,
-                               "confidence": "low", "reason": str(reason)}, candidates, key, count=len(shown), date=date)
+                               "confidence": "low", "reason": str(reason)}, candidates, detail)
     je_ids = [proven[0]["je_id"]]
     await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
     instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=date)
