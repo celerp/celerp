@@ -31101,6 +31101,7 @@
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_suppliers_paid_the_same_sum_stay_two_payments": 0.3695335539523512,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_of_equal_money_on_two_banks_are_not_paired": 0.4436445489991456,
     "tests/test_ai_card_names.py::test_another_user_of_the_same_company_never_reads_a_file_or_reading_name": 0.09207392716780305,
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_index_reads_only_the_lines_an_entry_could_name_or_is_matched_to": 0.01,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_twin_evidence.py]": 0.008479990996420383,
     "tests/test_row_locks_name_company.py::test_no_row_lock_is_taken_by_primary_key_alone": 1.4239872901234776,
     "tests/test_row_locks_name_company.py::test_the_check_finds_a_refresh_under_a_row_lock": 0.0036714699817821383,
