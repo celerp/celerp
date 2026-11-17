@@ -78,6 +78,24 @@ def _finish(tool_call_id: str):
         s, message_id=message_id, tool_call_id=tool_call_id, status="completed", result=_DONE)
 
 
+async def test_finishing_keeps_the_error_and_outcomes_it_is_given_and_clears_a_stale_error(committed_engine):
+    factory = _factory(committed_engine)
+    *_, message_id = await _message(factory, {**_record("a", "executing"), "error": {"code": "old"}})
+    error, outcomes = {"code": "rejected", "message": "No"}, [{"record": "item:1", "status": "failed"}]
+    async with factory() as s:
+        await conversations.finalize_tool_call(s, message_id=message_id, tool_call_id="a", status="failed",
+                                               result=None, error=error, outcomes=outcomes)
+        await s.commit()
+    stored = (await _stored(factory, message_id))["a"]
+    assert (stored["error"], stored["outcomes"]) == (error, outcomes)
+    async with factory() as s:
+        await conversations.finalize_tool_call(s, message_id=message_id, tool_call_id="a", status="completed",
+                                               result=_DONE)
+        await s.commit()
+    stored = (await _stored(factory, message_id))["a"]
+    assert "error" not in stored and stored["outcomes"] == outcomes
+
+
 @pytest.mark.parametrize("first_wins", [True, False])
 async def test_two_confirmations_of_one_message_both_persist(committed_engine, first_wins):
     factory = _factory(committed_engine)

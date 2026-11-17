@@ -636,3 +636,14 @@ async def test_a_reversal_pair_sharing_a_reference_is_offered_not_accepted(clien
         assert "unmatched" not in await _statuses(client, co, bk)
         books.append(await _moved(client, session, co, before))
     assert books[0] == books[1]
+
+
+def test_a_match_starts_ticked_only_with_an_identifier_and_a_post_only_with_an_account():
+    from celerp_accounting.bank_statements import _starts_ticked
+
+    def line(**suggestion):
+        return {"counterparty_key": "ACME", "description": "ACME", "suggestion": {"source": "match", **suggestion}}
+    assert _starts_ticked(line(kind="match", evidence={"identifier": "INV-1"}))
+    assert not _starts_ticked(line(kind="match", evidence={}))
+    assert _starts_ticked(line(kind="post", account_code="6100"))
+    assert not _starts_ticked(line(kind="post"))
