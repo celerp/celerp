@@ -349,6 +349,22 @@ def test_a_reference_is_an_identifier_only_when_it_names_one_transaction():
     assert suggest.identified("INV-7001", ["INV-7001", "re INV-7001"], refs.elsewhere("2026-01-10", {"x"})) is None
 
 
+def test_the_index_reads_only_the_lines_an_entry_could_name_or_is_matched_to():
+    """``References.named_in`` and ``matched_to`` give the same lines a scan of every line would,
+    read through the word and entry indexes so a check never walks the whole company."""
+    from celerp_accounting import suggest
+
+    lines = [{"id": "a", "line_date": "2026-01-09", "reference": "INV-7001", "matched_je_ids": ["je:1"]},
+             {"id": "b", "line_date": "2026-01-09", "reference": "INV-7002 ACME", "matched_je_ids": []},
+             {"id": "c", "line_date": "2026-01-09", "reference": "ACME", "matched_je_ids": ["je:1", "je:2"]}]
+    refs = suggest.References(lines)
+    assert sorted(l["id"] for l in refs.named_in(["Paid inv-7001 to Acme"])) == ["a", "c"]
+    assert sorted(l["id"] for l in refs.named_in(["Acme INV-7002", None])) == ["b", "c"]
+    assert refs.named_in(["7001"]) == [] and refs.named_in([]) == []
+    assert sorted(l["id"] for l in refs.matched_to({"je:1"})) == ["a", "c"]
+    assert [l["id"] for l in refs.matched_to({"je:2", "je:9"})] == ["c"] and refs.matched_to(set()) == []
+
+
 def test_the_ladder_names_a_counterpart_only_on_evidence():
     """The suggestion ladder's transfer rung carries a counterpart only when ``identified`` proves
     it (an identifier only the two lines carry); equal money alone suggests the transfer and

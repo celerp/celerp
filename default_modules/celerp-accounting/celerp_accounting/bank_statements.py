@@ -1000,7 +1000,7 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
         return None
     ids = {e["je_id"] for e in found}
     texts = [e["evidence"]["text"] for e in found]
-    owners = {str(l["id"]) for l in book.references.lines if ids & set(l["matched_je_ids"] or ())}
+    owners = {str(l["id"]) for l in book.references.matched_to(ids)}
 
     def pick(reference: str | None, line_id: str, line_date) -> int | None:
         return suggest.identified(reference, texts, book.references.elsewhere(line_date, {line_id} | owners))
@@ -1010,7 +1010,7 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
         await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
         instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=str(found[mine]["ts"])[:10])
         return je_ids
-    claims = {l["id"]: i for l in book.references.lines
+    claims = {l["id"]: i for l in book.references.named_in(texts)
               if l["bank_account_id"] == bank.id and l["id"] != line.id
               and (i := pick(l["reference"], str(l["id"]), l["line_date"])) is not None}
     if claims:

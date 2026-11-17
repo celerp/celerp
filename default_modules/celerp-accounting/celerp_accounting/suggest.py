@@ -239,9 +239,25 @@ class References:
     def __init__(self, lines: list[dict]):
         self.lines = lines
         self._by_word: dict[str, list[dict]] = {}
+        self._by_je: dict[str, list[dict]] = {}
+        self._words: dict[int, set[str]] = {}
         for line in lines:
-            for word in set(re.findall(r"\w+", (line.get("reference") or "").casefold())):
+            self._words[id(line)] = words = set(re.findall(r"\w+", (line.get("reference") or "").casefold()))
+            for word in words:
                 self._by_word.setdefault(word, []).append(line)
+            for je_id in line.get("matched_je_ids") or ():
+                self._by_je.setdefault(je_id, []).append(line)
+
+    def matched_to(self, je_ids: set) -> list[dict]:
+        """The lines matched to any of ``je_ids``."""
+        return list({id(l): l for j in je_ids for l in self._by_je.get(j, ())}.values())
+
+    def named_in(self, texts: list) -> list[dict]:
+        """The lines whose reference one of ``texts`` could carry (each of its words is a word of
+        the texts): the only lines ``identified`` can find in them."""
+        words = {w for t in texts for w in re.findall(r"\w+", (t or "").casefold())}
+        pool = {id(l): l for w in words for l in self._by_word.get(w, ())}
+        return [l for k, l in pool.items() if self._words[k] <= words]
 
     def elsewhere(self, line_date, skip: set) -> Callable[[str], bool]:
         """Whether a line not in ``skip`` (ids), dated within the exact-amount window of
