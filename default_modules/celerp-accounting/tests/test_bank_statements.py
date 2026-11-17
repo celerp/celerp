@@ -467,7 +467,8 @@ async def test_undo_transfer_unmatches_paired_line(client):
     await _one_month(client, co, b, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
     la = B.all_lines(await B.groups(client, co, a["id"]))[0]
     lb = B.all_lines(await B.groups(client, co, b["id"]))[0]
-    await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer", "target_bank_id": b["id"]}])
+    await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer", "target_bank_id": b["id"],
+                                                     "paired_line_id": lb["id"]}])
     assert B.all_lines(await B.groups(client, co, b["id"], view="all"))[0]["status"] == "matched"
     r = await client.post(f"{B.API}/bank/{a['id']}/unmatch", json={"line_ids": [la["id"]], "idempotency_key": B.key()},
                           headers=co["h"])
@@ -488,17 +489,6 @@ async def _transfer_banks(client, b_rows):
 async def _transfer_entries(client, co) -> int:
     journal = (await client.get("/accounting/journal", headers=co["h"])).json()["entries"]
     return len([e for e in journal if e.get("je_type") == "recon_transfer" and e.get("status") != "void"])
-
-
-async def test_transfer_with_one_counterpart_settles_it_and_says_which(client):
-    co, a, b, la, (lb,) = await _transfer_banks(client, [("2026-01-06", "TRANSFER FROM CURRENT", "100.00")])
-    await client.post(f"{B.API}/bank/{a['id']}/suggest", json={"idempotency_key": B.key()}, headers=co["h"])
-    shown = B.all_lines(await B.groups(client, co, a["id"]))[0]["suggestion"]
-    assert shown["paired_line_id"] == lb["id"]
-    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
-                                                          "target_bank_id": b["id"]}])
-    assert r.json()["results"][0]["paired_line_id"] == lb["id"], r.text
-    assert B.all_lines(await B.groups(client, co, b["id"], view="all"))[0]["status"] == "matched"
 
 
 async def test_transfer_with_two_counterparts_settles_neither(client):
@@ -939,9 +929,12 @@ async def test_match_and_undo_sequences_keep_the_statement_equal_to_its_lines(cl
                                   json={"line_ids": picked, "idempotency_key": B.key()}, headers=co["h"])
             assert r.status_code == 200, r.text
         elif action == "post":
-            r = await B.resolve(client, co, bk["id"], decisions=[
-                {"line_ids": [rng.choice(free)], "kind": "post", "account_code": "5100"}])
-            assert r.json()["results"][0]["ok"] is True, r.text
+            decision = {"line_ids": [rng.choice(free)], "kind": "post", "account_code": "5100"}
+            row = (await B.resolve(client, co, bk["id"], decisions=[decision])).json()["results"][0]
+            if row["candidates"]:  # an undone spend of the same money on another account: post anyway
+                row = (await B.resolve(client, co, bk["id"], decisions=[
+                    {**decision, "separate_from": row["candidates"]}])).json()["results"][0]
+            assert row["ok"] is True, row
         else:
             picked = rng.sample(free, rng.randint(1, len(free)))
             total = -sum(amount[i] for i in picked)

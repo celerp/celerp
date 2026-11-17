@@ -350,8 +350,19 @@ def _fund_hint(funds: list[dict] | None) -> FT | None:
     return P(t("recon.fund_hint"), cls="form-hint") if funds is not None else None
 
 
+def _actions(candidates: list[str] | None) -> FT:
+    """A line form's buttons. After a stop on book entries that may already be the line's money,
+    those entries ride along so the next submit posts anyway, beside a button that matches the
+    nearest instead."""
+    return Div(Button(t("bank.post_anyway") if candidates else t("btn.post"), type="submit", cls="btn btn--primary"),
+               *([Button(t("bank.match_it"), type="submit", name="match", value=candidates[0], cls="btn btn--secondary"),
+                  *(Input(type="hidden", name="separate_from", value=j) for j in candidates)] if candidates else []),
+               Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
+                      onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions")
+
+
 def answer_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
-                values: dict | None = None, error: str = "") -> FT:
+                values: dict | None = None, error: str = "", candidates: list[str] | None = None) -> FT:
     values = values or {}
     bank_id = bank["id"]
     return Form(
@@ -367,15 +378,14 @@ def answer_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | 
         Label(t("th.fund"), cls="form-label") if funds is not None else None,
         _fund_pick(funds, values.get("fund", "")), _fund_hint(funds),
         rate_input(bank, value=values.get("rate", "")),
-        Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
-            Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
-                   onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
+        _actions(candidates),
         hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
         cls="bank-panel", data_form="answer", onkeydown=call("celerpRemoveClosest", THIS, "form", EVENT))
 
 
 def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | None = None, *, line_id: str = "",
-               parts: list[tuple[str, str, str, str]] | None = None, rate: str = "", error: str = "") -> FT:
+               parts: list[tuple[str, str, str, str]] | None = None, rate: str = "", error: str = "",
+               candidates: list[str] | None = None) -> FT:
     """The parts of one line, each an account, a positive amount in the bank's minor unit,
     an optional contact and, with funds turned on, its fund; blank rows are dropped."""
     bank_id, currency = bank["id"], bank.get("currency")
@@ -396,9 +406,7 @@ def split_form(bank: dict, options: list[tuple[str, str]], funds: list[dict] | N
               cls="bank-split__part") for code, amount, contact, fund in parts],
         _fund_hint(funds),
         rate_input(bank, value=rate),
-        Div(Button(t("btn.post"), type="submit", cls="btn btn--primary"),
-            Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
-                   onclick=call("celerpRemoveClosest", THIS, "form")), cls="form-actions"),
+        _actions(candidates),
         hx_post=bank_url(bank_id, "resolve-line"), hx_target="this", hx_swap="outerHTML",
         cls="bank-panel", data_form="split", onkeydown=call("celerpRemoveClosest", THIS, "form", EVENT))
 

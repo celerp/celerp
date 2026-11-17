@@ -136,7 +136,8 @@ async def _statement_first(client, w):
     await _import(client, w, "b")
     await _pre_start(client, w)  # dated before the statement, keyed after it was read
     before = await _books(client, w)
-    await _decide_a(client, w)  # the transfer settles B's one counterpart too
+    await _decide_a(client, w)
+    await _accept_all(client, w, "b")  # B's line of the same money is the transfer's only once confirmed
     return before
 
 
@@ -152,6 +153,7 @@ async def _mixed(client, w):
     await _decide(client, w, "a", "ACME", "post", account_code="5100")
     await _decide(client, w, "a", "TRANSFER", "transfer", target_bank_id=w["b"]["id"])
     await _accept_all(client, w, "a")
+    await _accept_all(client, w, "b")
     return before
 
 

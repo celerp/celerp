@@ -395,3 +395,33 @@ async def test_a_refused_line_answer_shows_its_reason_on_the_form(ui_client):
             p.stop()
     assert r.status_code == 200 and "form-error" in r.text, r.text[:400]
     assert refusal_text(reason).split("'")[-1] in r.text, r.text[:600]  # the text after the apostrophe HTML escapes
+
+
+async def test_a_stop_on_a_lookalike_entry_offers_match_it_and_post_anyway(ui_client):
+    """A line stopped on an entry that only shares its money and date re-renders with the entry
+    carried along: "Post anyway" sends it as separate_from, "Match it" matches it instead."""
+    from celerp.accounting_roles import catalog_refusal
+    from ui.i18n import t
+
+    reason = catalog_refusal("acct.recon_reason_looks_like", count=1, date="2026-01-09")
+    stopped = {"results": [{"line_id": "l1", "ok": False, "je_ids": [], "reason": reason, "matched_instead": False,
+                            "candidates": ["je:7"]}]}
+    _signed_in(ui_client)
+    patches = _api(_TABLE)
+    for p in patches:
+        p.start()
+    try:
+        with patch("ui.api_client.bank_action", AsyncMock(return_value=stopped)) as action:
+            r = await ui_client.post("/accounting/reconcile/bank/b1/resolve-line", data={
+                "line_id": "l1", "form": "answer", "answer": "post:5100", "idempotency_key": "k1"})
+            assert t("bank.post_anyway") in r.text and t("bank.match_it") in r.text, r.text[:600]
+            assert 'name="separate_from" value="je:7"' in r.text and 'name="match" value="je:7"' in r.text
+            await ui_client.post("/accounting/reconcile/bank/b1/resolve-line", data={
+                "line_id": "l1", "form": "answer", "answer": "post:5100", "separate_from": "je:7", "idempotency_key": "k2"})
+            assert action.await_args.args[3]["decisions"][0]["separate_from"] == ["je:7"]
+            await ui_client.post("/accounting/reconcile/bank/b1/resolve-line", data={
+                "line_id": "l1", "form": "answer", "answer": "post:5100", "match": "je:7", "idempotency_key": "k3"})
+            assert action.await_args.args[3]["decisions"][0] == {"line_ids": ["l1"], "kind": "match", "je_ids": ["je:7"]}
+    finally:
+        for p in patches:
+            p.stop()

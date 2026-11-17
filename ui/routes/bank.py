@@ -371,7 +371,8 @@ def setup_routes(app):
     @app.post("/accounting/reconcile/bank/{bank_id}/resolve-line")
     async def resolve_line(request: Request, bank_id: str):
         """Answer or split one line. A refusal re-renders the form with its reason and what
-        was typed; success replaces the whole line."""
+        was typed; a stop on entries that may already be the line's money also offers to match
+        the nearest or post anyway. Success replaces the whole line."""
         token = _token(request)
         if not token:
             return _login()
@@ -380,6 +381,7 @@ def setup_routes(app):
         bank = await api.get_bank_account(token, bank_id)
         options, funds = await _choices(token, bank_id)
         rate = str(form.get("rate", "")).strip()
+        separate = [str(j) for j in form.getlist("separate_from")]
         if kind == "split":
             codes, amounts = form.getlist("account_code"), form.getlist("amount")
             contacts = form.getlist("contact") or [""] * len(codes)
@@ -388,8 +390,9 @@ def setup_routes(app):
                      for c, a, p, f in zip(codes, amounts, contacts, picked)]
             parts = [part for part in parts if part[0] or part[1]]
 
-            def again(error: str) -> FT:
-                return BG.split_form(bank, options, funds, line_id=line_id, parts=parts, rate=rate, error=error)
+            def again(error: str, candidates: list[str] | None = None) -> FT:
+                return BG.split_form(bank, options, funds, line_id=line_id, parts=parts, rate=rate, error=error,
+                                     candidates=candidates)
             if not parts or not all(part[0] for part in parts):
                 return again(t("reconciliation.split.account_required"))
             decision = {"kind": "post", "splits": [
@@ -400,8 +403,8 @@ def setup_routes(app):
             answer, contact = str(form.get("answer", "")), str(form.get("contact", "")).strip()
             fund = str(form.get("fund", ""))
 
-            def again(error: str) -> FT:
-                return BG.answer_form(bank, options, funds, line_id=line_id, error=error,
+            def again(error: str, candidates: list[str] | None = None) -> FT:
+                return BG.answer_form(bank, options, funds, line_id=line_id, error=error, candidates=candidates,
                                       values={"answer": answer, "contact": contact, "fund": fund, "rate": rate})
             head, _, rest = answer.partition(":")
             if head == "post" and rest:
@@ -415,11 +418,15 @@ def setup_routes(app):
                 return again(t("bank.err_choose_answer"))
             if contact:
                 decision["contact"] = contact
+        if separate:
+            decision["separate_from"] = separate
         if rate:
             try:
                 decision["rate"] = float(rate)
             except ValueError:
                 return again(t("acct.err_bank_rate_invalid", raw=rate))
+        if form.get("match"):  # the stop's "Match it": the nearest entry it showed, instead of what was typed
+            decision = {"kind": "match", "je_ids": [str(form.get("match"))]}
         try:
             out = await api.bank_action(token, bank_id, "resolve", {
                 "decisions": [{"line_ids": [line_id], **decision}],
@@ -428,7 +435,7 @@ def setup_routes(app):
             return again(str(e.detail))
         result = out["results"][0]
         if not result["ok"]:
-            return again(refusal_text(result["reason"]))
+            return again(refusal_text(result["reason"]), result.get("candidates"))
         return _line_response(await _fresh_line(token, bank, line_id), line_id)
 
     @app.post("/accounting/reconcile/bank/{bank_id}/ask")

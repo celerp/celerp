@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import re
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -38,6 +39,7 @@ MODEL_BATCH = 100
 _PAIR_DAYS = 3
 _COMBO_DAYS = 7
 _HISTORY_MIN = 2
+_REFERENCE_MIN = 4
 
 
 @dataclass
@@ -176,15 +178,36 @@ def _rule(line: dict, ctx: LadderContext) -> dict | None:
 
 def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dict]:
     """The other banks' open lines a transfer of ``want`` dated ``line_date`` could be: exactly that
-    money within the pairing window, nearest first. A transfer pairs itself only when this is one line."""
+    money within the pairing window, nearest first. A transfer pairs itself only with the one of
+    them ``same_transaction`` proves, never on amount and date alone."""
     near = [c for c in candidates if _amt(c["amount"]) == want and _days(c["line_date"], line_date) <= _PAIR_DAYS]
     return sorted(near, key=lambda c: (_days(c["line_date"], line_date), str(c["id"])))
 
 
+def _reference_in(reference: str | None, text: str | None) -> bool:
+    ref = (reference or "").strip().casefold()
+    return len(ref) >= _REFERENCE_MIN and \
+        re.search(rf"(?<!\w){re.escape(ref)}(?!\w)", (text or "").casefold()) is not None
+
+
+def same_transaction(want: dict, have: dict) -> bool:
+    """Whether ``have`` (a book entry, or another bank's line) is the very money ``want`` (a
+    requested posting or transfer) names. Equal amount and a near date never prove it: two
+    suppliers paid the same sum the same week are two payments. The proof is ``want``'s reference
+    found in ``have``'s text; otherwise, when both name a counterparty, a shared one; otherwise a
+    shared account. Each side reads ``reference``/``text`` (str), ``contacts`` and ``accounts``."""
+    if _reference_in(want.get("reference"), have.get("text")):
+        return True
+    mine, theirs = set(want.get("contacts") or ()), set(have.get("contacts") or ())
+    if mine and theirs:
+        return bool(mine & theirs)
+    return bool(set(want.get("accounts") or ()) & set(have.get("accounts") or ()))
+
+
 def twins(amount, line_date, entries: list[dict]) -> list[dict]:
-    """The book entries that already are a line's money: exactly its amount, the same way, dated
-    within the matcher's exact-amount window, nearest first. One is the line's entry; several are
-    the user's choice."""
+    """The book entries a line's money could already be: exactly its amount, the same way, dated
+    within the matcher's exact-amount window, nearest first. Only ``same_transaction`` decides
+    which of them, if any, is the line's own entry."""
     near = [e for e in entries if _amt(e["amount"]) == _amt(amount)
             and _days(e.get("date") or e.get("ts"), line_date) <= matcher.EXACT_DAYS]
     return sorted(near, key=lambda e: (_days(e.get("date") or e.get("ts"), line_date), e["je_id"]))
@@ -198,7 +221,8 @@ def _transfer(line: dict, ctx: LadderContext) -> dict | None:
         return None
     s = {"kind": "transfer", "source": "transfer", "target_bank_id": banks.pop(),
          "reason": t("acct.recon_reason_transfer", date=str(pairs[0]["line_date"])[:10])}
-    return {**s, "paired_line_id": str(pairs[0]["id"])} if len(pairs) == 1 else s
+    proven = [p for p in pairs if same_transaction({"reference": line.get("reference")}, {"text": p.get("reference")})]
+    return {**s, "paired_line_id": str(proven[0]["id"])} if len(proven) == 1 else s
 
 
 def _slip(line: dict, ctx: LadderContext) -> dict | None:

@@ -757,6 +757,9 @@ class Decision(BaseModel):
     to_amount: PositiveFloat | None = None
     docs: list[DocIn] | None = Field(None, max_length=50)
     parts: list[PartIn] | None = Field(None, max_length=20)
+    separate_from: list[str] | None = Field(
+        None, max_length=50, description="Book entries the user confirmed are not this line's money: the "
+        "candidates a stop showed. The line posts even though they look like it; any other entry stops it again.")
 
 
 def suggestion_version(suggestion: dict | None) -> str | None:
@@ -867,17 +870,28 @@ async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatement
 
 
 async def _pairs(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, target: BankAccount,
-                 to_amount: float | None) -> list[uuid.UUID]:
-    """The target bank's open lines the transfer ``line`` could be, by the one pairing rule."""
+                 to_amount: float | None) -> list[dict]:
+    """The target bank's open lines the transfer ``line`` could be by amount and date, nearest
+    first: ``{id, line_date, amount, reference}``. Which one it is, if any, is ``_paired``'s call."""
     from celerp_accounting.suggest import transfer_pairs
     want = -Decimal(str(line.amount)) if to_amount is None else Decimal(str(to_amount)) * (1 if line.amount < 0 else -1)
-    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.amount).join(
+    rows = (await db.execute(select(BankStatementLine.id, BankStatementLine.line_date, BankStatementLine.amount,
+                                    BankStatementLine.reference).join(
         ReconciliationSession, ReconciliationSession.id == BankStatementLine.reconciliation_id).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == target.id,
         BankStatementLine.status == "unmatched", BankStatementLine.amount == want,
         ReconciliationSession.status == "open"))).all()
-    return [c["id"] for c in transfer_pairs(want, line.line_date,
-                                            [{"id": i, "line_date": d, "amount": a} for i, d, a in rows])]
+    return transfer_pairs(want, line.line_date,
+                          [{"id": i, "line_date": d, "amount": a, "reference": r} for i, d, a, r in rows])
+
+
+def _paired(line: BankStatementLine, candidates: list[dict]) -> uuid.UUID | None:
+    """The one candidate counterpart the same evidence rule as a keyed entry proves to be this
+    transfer's other side (the same reference on both lines); equal money alone is none."""
+    from celerp_accounting.suggest import same_transaction
+
+    proven = [c["id"] for c in candidates if same_transaction({"reference": line.reference}, {"text": c["reference"]})]
+    return proven[0] if len(proven) == 1 else None
 
 
 async def _cash_bank(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> BankAccount:
@@ -902,8 +916,11 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
     line_id = d.line_ids[0]
     probe = await db.get(BankStatementLine, line_id)
     pairs = await _pairs(db, company_id, probe, target, d.to_amount) if probe and probe.status == "unmatched" else []
-    pair_id = d.paired_line_id or (pairs[0] if len(pairs) == 1 else None)
-    lines = await _locked_lines(db, company_id, None, [line_id] + ([pair_id] if pair_id else []), state=None)
+    pair_id = d.paired_line_id or (_paired(probe, pairs) if pairs else None)
+    # One candidate the evidence does not prove stays open, with this transfer as its suggestion.
+    hint_id = pairs[0]["id"] if pair_id is None and len(pairs) == 1 else None
+    other_id = pair_id or hint_id
+    lines = await _locked_lines(db, company_id, None, [line_id] + ([other_id] if other_id else []), state=None)
     by_id = {l.id: l for l in lines}
     line = by_id[line_id]
     if line.bank_account_id != bank.id:
@@ -913,17 +930,22 @@ async def _transfer(db: AsyncSession, company_id: uuid.UUID, actor_id, bank: Ban
         return {str(line.id): held}
     if line.status != "unmatched":
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_line_state", status=line.status))
-    if (je_ids := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
+    want = {"reference": line.reference, "accounts": {target.chart_account_code}}
+    if (je_ids := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
         return {str(line.id): je_ids}
     # Under the locks the pair must still be the transfer's counterpart: a named one is refused
     # when it is not, an automatic one is left out (the other bank's line stays open).
-    if pair_id is not None and pair_id not in await _pairs(db, company_id, line, target, d.to_amount):
+    still = [c["id"] for c in await _pairs(db, company_id, line, target, d.to_amount)] if other_id else []
+    if pair_id is not None and pair_id not in still:
         if d.paired_line_id is not None:
             raise _refused(409, "reconciliation.line_not_open")
         pair_id = None
     je_ids = await SL.post_transfer(db, company_id=company_id, actor_id=actor_id, bank=bank, line=line, target=target,
                                     paired=by_id.get(pair_id) if pair_id else None, rate=d.rate,
                                     to_amount=d.to_amount, key=key)
+    if hint_id is not None and hint_id in still:
+        SL.write_suggestion(by_id[hint_id], {"kind": "match", "source": "transfer", "je_ids": je_ids, "confidence": "low",
+                                             "reason": str(t("acct.recon_reason_transfer", date=line.line_date[:10]))})
     return {str(line.id): je_ids}
 
 
@@ -932,35 +954,43 @@ def _refused(status: int, key: str, /, **params) -> HTTPException:
 
 
 class _Twins(HTTPException):
-    """A line whose money several book entries already are: it posts nothing and the nearest
-    entry becomes its match suggestion, for the user to confirm or change."""
+    """A line whose money book entries may already be (several proven, or only equal money near
+    its date): it posts nothing, the nearest becomes its match suggestion and ``candidates`` are
+    shown, for the user to match one or post anyway (``Decision.separate_from``)."""
 
-    def __init__(self, line_id: uuid.UUID, suggestion: dict, **params):
-        super().__init__(status_code=409, detail=catalog_refusal("acct.recon_reason_twins", **params))
-        self.line_id, self.suggestion = line_id, suggestion
+    def __init__(self, line_id: uuid.UUID, suggestion: dict, candidates: list[str], key: str, **params):
+        super().__init__(status_code=409, detail=catalog_refusal(key, **params))
+        self.line_id, self.suggestion, self.candidates = line_id, suggestion, candidates
 
 
 async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line: BankStatementLine,
-                         instead: dict, book: list[dict]) -> list[str] | None:
-    """Under the line's locks, before it posts: the entry already keyed for its money (the
-    suggestion rule ``suggest.twins`` over the entries no statement or line of this bank counts).
-    One: the line is matched to it instead of posting a second copy, said in ``instead``. Several:
-    the line is refused with the nearest as its match suggestion. None: the line posts. ``book`` is
-    the request's read of the bank's entries near its lines, caught up under the company lock
+                         instead: dict, book: list[dict], want: dict, separate_from: list[str] | None) -> list[str] | None:
+    """Under the line's locks, before it posts: the entry already keyed for its money. The
+    candidates are ``suggest.twins`` (equal money near the line's date) over the entries no
+    statement or line of this bank counts, less those the user said are another transaction
+    (``separate_from``); ``suggest.same_transaction`` decides which of them the request ``want``
+    is. One proven: the line is matched to it instead of posting a second copy, said in
+    ``instead``. Several proven, or none proven but candidates left: the line is refused with
+    them shown and the nearest as its match suggestion. No candidate: the line posts. ``book``
+    is the request's read of the bank's entries near its lines, caught up under the company lock
     (see _Book); whether one of them is counted already is read here, under the locks."""
     from celerp_accounting import suggest
 
-    near = suggest.twins(line.amount, line.line_date, book)
+    near = [e for e in suggest.twins(line.amount, line.line_date, book) if e["je_id"] not in set(separate_from or ())]
     held = await _held(db, company_id, bank, near) if near else set()
     found = [e for e in near if e["je_id"] not in held]
     if not found:
         return None
-    date = str(found[0]["ts"])[:10]
-    if len(found) > 1:
-        reason = t("acct.recon_reason_twins", count=len(found), date=date)
-        raise _Twins(line.id, {"kind": "match", "source": "twins", "je_ids": [found[0]["je_id"]],
-                               "confidence": "low", "reason": str(reason)}, count=len(found), date=date)
-    je_ids = [found[0]["je_id"]]
+    proven = [e for e in found if suggest.same_transaction(want, e["evidence"])]
+    shown = proven or found
+    date = str(shown[0]["ts"])[:10]
+    if len(proven) != 1:
+        key = "acct.recon_reason_twins" if proven else "acct.recon_reason_looks_like"
+        reason = t(key, count=len(shown), date=date)
+        candidates = [e["je_id"] for e in shown]
+        raise _Twins(line.id, {"kind": "match", "source": "twins", "je_ids": candidates[:1], "candidates": candidates,
+                               "confidence": "low", "reason": str(reason)}, candidates, key, count=len(shown), date=date)
+    je_ids = [proven[0]["je_id"]]
     await SL.match_lines(db, company_id=company_id, bank=bank, lines=[line], je_ids=je_ids)
     instead[str(line.id)] = catalog_refusal("acct.recon_reason_match", date=date)
     return je_ids
@@ -979,7 +1009,10 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
 
     await admit_permission(db, company_id, role, "record_payments")
     line = _one(await _locked_lines(db, company_id, bank, d.line_ids))
-    if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
+    rows = {x.doc_id: await db.get(Projection, {"company_id": company_id, "entity_id": x.doc_id}) for x in d.docs or ()}
+    want = {"reference": line.reference, "accounts": {p.account_code for p in d.parts or ()},
+            "contacts": {(r.state or {}).get("contact_id") for r in rows.values() if r is not None} - {None}}
+    if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
         return {str(line.id): keyed}
     if not d.docs:
         raise _refused(422, "acct.err_recon_pay_needs_doc")
@@ -992,7 +1025,7 @@ async def _pay_doc(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str,
     want = "invoice" if line.amount > 0 else "bill"
     je_ids: list[str] = []
     for x in d.docs:
-        row = await db.get(Projection, {"company_id": company_id, "entity_id": x.doc_id})
+        row = rows[x.doc_id]
         if row is not None and row.entity_type == "doc" and (row.state or {}).get("doc_type") != want:
             raise _refused(422, "acct.err_recon_doc_direction")
         event, _applied = await apply_doc_payment(
@@ -1046,7 +1079,9 @@ async def _decide(db: AsyncSession, company_id: uuid.UUID, actor_id, role: str, 
         offsets = _offsets(d, lines)
     out = {}
     for line, own in zip(lines, offsets):
-        if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book)) is not None:
+        want = {"reference": line.reference, "accounts": {o["account"] for o, _ in own},
+                "contacts": {o["contact"] for o, _ in own if o.get("contact")}}
+        if (keyed := await _keyed_instead(db, company_id, bank, line, instead, book, want, d.separate_from)) is not None:
             out[str(line.id)] = keyed
             continue
         out[str(line.id)] = await SL.post_line(
@@ -1149,15 +1184,15 @@ async def _resolve_unit(db: AsyncSession, company_id: uuid.UUID, actor_id, role:
         instead: dict = {}
         settled = await _decide(db, company_id, actor_id, role, bank, d, key, instead, book.entries)
         rows = [{"line_id": lid, "ok": True, "je_ids": ids, "reason": instead.get(lid),
-                 "matched_instead": lid in instead} for lid, ids in settled.items()]
+                 "matched_instead": lid in instead, "candidates": []} for lid, ids in settled.items()]
         if d.kind in ("transfer", "cash"):
             for row in rows:
                 pair = [str(i) for j in row["je_ids"] for i in await SL.paired_lines(db, company_id, bank.id, j)]
                 row["paired_line_id"] = pair[0] if pair else None
     except (HTTPException, KeyedRefusal) as exc:
         await db.rollback()
-        rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": keyed_reason(exc),
-                 "matched_instead": False} for lid in d.line_ids]
+        rows = [{"line_id": str(lid), "ok": False, "je_ids": [], "reason": keyed_reason(exc), "matched_instead": False,
+                 "candidates": exc.candidates if isinstance(exc, _Twins) else []} for lid in d.line_ids]
         if isinstance(exc, _Twins):
             await lock_company(db, company_id)
             await _suggest_twin(db, company_id, exc)
@@ -1284,8 +1319,14 @@ async def _book_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     from celerp_accounting import suggest
     from celerp_accounting.routes import _je_entries_for_account
 
-    return [e for e in await _je_entries_for_account(db, company_id, bank, days=book.days, entry_ids=entry_ids)
-            if e["amount"] is not None and suggest._amt(e["amount"]) in book.amounts]
+    entries = [e for e in await _je_entries_for_account(db, company_id, bank, days=book.days, entry_ids=entry_ids)
+               if e["amount"] is not None and suggest._amt(e["amount"]) in book.amounts]
+    states = await _states(db, company_id, [e["je_id"] for e in entries])
+    for e in entries:
+        others = [x for x in (states.get(e["je_id"]) or {}).get("entries", []) if x.get("account") != bank.chart_account_code]
+        e["evidence"] = {"text": e["memo"], "accounts": {x.get("account") for x in others} - {None},
+                         "contacts": {x.get("contact") for x in others} - {None, ""}}
+    return entries
 
 
 async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, line_ids: list) -> _Book:
@@ -1402,7 +1443,8 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
         ReconciliationRule.company_id == company_id, ReconciliationRule.is_active.is_(True)))).scalars()]
     open_sessions = {s.id for s in (await db.execute(select(ReconciliationSession).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.status == "open"))).scalars()}
-    pair_lines = [{"id": str(l.id), "bank_id": str(l.bank_account_id), "amount": str(l.amount), "line_date": l.line_date}
+    pair_lines = [{"id": str(l.id), "bank_id": str(l.bank_account_id), "amount": str(l.amount), "line_date": l.line_date,
+                   "reference": l.reference}
                   for l in (await db.execute(select(BankStatementLine).where(
                       BankStatementLine.company_id == company_id, BankStatementLine.status == "unmatched",
                       BankStatementLine.bank_account_id != bank.id))).scalars()
