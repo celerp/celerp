@@ -4,6 +4,7 @@
 card, so the person confirming can check which bank, line or contact it writes to."""
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -35,17 +36,19 @@ async def _line(client, h) -> tuple[dict, str]:
     return bank, got["lines"][0]["id"]
 
 
-async def _proposed_resolve(client, h, monkeypatch) -> tuple[str, dict, str]:
-    """A question whose answer proposes posting a bank line: (conversation, bank, line id)."""
+async def _proposed_resolve(client, h, monkeypatch, decisions=None) -> tuple[str, dict, str]:
+    """A question whose answer proposes resolving a bank line, by default posting it (``decisions``
+    takes the line id and gives the decisions): (conversation, bank, line id)."""
     from ai_fake_cloud import FakeCloud, answer, install, tool_turn
 
     bank, line_id = await _line(client, h)
     tool = _resolve_tool(monkeypatch)
+    proposed = (decisions or (lambda lid: [{"line_ids": [lid], "kind": "post", "account_code": "6100"}]))(line_id)
 
     def script(identity: str, body: dict) -> dict:
         if not any(m.get("role") == "tool" for m in body["messages"]):
-            return tool_turn((tool, {"path": {"bank_id": bank["id"]}, "body": {"decisions": [
-                {"line_ids": [line_id], "kind": "post", "account_code": "6100"}]}}, "call-resolve"))
+            return tool_turn((tool, {"path": {"bank_id": bank["id"]}, "body": {"decisions": proposed}},
+                              "call-resolve"))
         return answer("Done.")
 
     install(monkeypatch, FakeCloud(script))
@@ -56,15 +59,15 @@ async def _proposed_resolve(client, h, monkeypatch) -> tuple[str, dict, str]:
     return conv, bank, line_id
 
 
-async def _card_lines(client, h, conv) -> str:
-    """The argument lines of the conversation's one open card, as its reader sees it now."""
+async def _card_lines(client, h, conv, lang: str = "en") -> str:
+    """The argument lines of the conversation's one open card, as its reader (in ``lang``) sees it now."""
     from fasthtml.common import to_xml
     from celerp_ai.ui_routes import _action_card
     from test_helpers import settled_question
 
     state = await settled_question(client, h, conv, _QUESTION)
     (card,) = state["message"]["pending_actions"]
-    html = to_xml(_action_card(conv, state["message"]["id"], card))
+    html = to_xml(_action_card(conv, state["message"]["id"], card, lang))
     return html.split("ai-action__lines", 1)[1].split("<a ", 1)[0]
 
 
@@ -76,6 +79,35 @@ async def test_a_bank_resolve_card_names_the_bank_and_the_line_never_their_ids(c
     shown = await _card_lines(client, h, conv)
     assert bank["bank_name"] in shown and "Monthly fee" in shown and "-50.00" in shown
     assert bank["id"] not in shown and line_id not in shown
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tools_open_when_called")
+async def test_a_resolve_card_names_each_journal_entry_it_matches_or_posts_past_never_its_id(
+        client, auth, monkeypatch, drained_jobs):
+    """The person confirming a match, or a posting kept separate from an entry, sees each entry by
+    its date, memo and amount in their own language, never a raw journal entry id."""
+    from ui.i18n import set_lang
+
+    h = auth["headers"]
+    [bank] = (await client.get("/accounting/bank-accounts", headers=h)).json()["items"]
+    entries = []
+    for memo in ("Card fee keyed", "Wire fee keyed"):
+        r = await client.post("/accounting/journal-entries", headers=h, json={
+            "ts": "2026-03-01", "memo": memo, "idempotency_token": str(uuid.uuid4()),
+            "entries": [{"account": bank["chart_account_code"], "credit": 50.0}, {"account": "6100", "debit": 50.0}]})
+        assert r.status_code == 200, r.text
+        entries.append(r.json()["je_id"])
+    kept, matched = entries
+    conv, _, _ = await _proposed_resolve(client, h, monkeypatch, lambda lid: [
+        {"line_ids": [lid], "kind": "post", "account_code": "6100", "separate_from": [kept]},
+        {"line_ids": [lid], "kind": "match", "je_ids": [matched]}])
+    for lang in ("en", "th", "ar"):
+        set_lang(lang)
+        shown = re.sub(r"<[^>]+>", " ", await _card_lines(client, h, conv, lang))
+        assert "Card fee keyed" in shown and "Wire fee keyed" in shown, (lang, shown)
+        assert "je:" not in shown and kept not in shown and matched not in shown, (lang, shown)
+        assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", shown), (lang, shown)
 
 
 @pytest.mark.asyncio
