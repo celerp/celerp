@@ -117,10 +117,10 @@ def _recording(real, module_file: str, hit: set):
     return shown
 
 
-def _recorders(hit: set) -> list:
-    """Every module that renders a refused call records the line it renders from into *hit*."""
+def _recorders(sites: set, hit: set) -> list:
+    """Every module of *sites* that renders a refused call records the line it renders from into *hit*."""
     out = []
-    for rel in sorted({f for f, _ in _sites()}):
+    for rel in sorted({f for f, _ in sites}):
         mod_name = rel[:-3].replace("/", ".")
         if rel.startswith("default_modules/"):
             mod_name = ".".join(rel[:-3].split("/")[2:])
@@ -131,7 +131,7 @@ def _recorders(hit: set) -> list:
     return out
 
 
-async def _drive(ui_client, case, hit: set):
+async def _drive(ui_client, case, sites: set, hit: set):
     _name, method, url, form, api, cookies = case
     patches = [patch(f"ui.api_client.{fn}", AsyncMock(side_effect=v) if v is _refused else AsyncMock(return_value=v))
                for fn, v in api.items()]
@@ -140,7 +140,7 @@ async def _drive(ui_client, case, hit: set):
         patches.append(patch("ui.routes.settings_payments._documents_off", AsyncMock(return_value=None)))
     if url.startswith("/setup/new-company/migrate"):
         patches.append(patch("ui.routes.migrations.gate", AsyncMock(return_value=None)))
-    patches += _recorders(hit)
+    patches += _recorders(sites, hit)
     for p in patches:
         p.start()
     try:
@@ -156,12 +156,13 @@ async def _drive(ui_client, case, hit: set):
 @pytest.mark.asyncio
 async def test_every_place_that_shows_a_refused_call_keeps_the_link_to_its_fix(ui_client):
     """Each case keeps the link, and the cases together reach every place that shows a
-    refused call, in one test so no split of the suite can run the check without its cases."""
-    hit: set[tuple[str, int]] = set()
+    refused call, in one test so no split of the suite can run the check without its cases. The
+    source is scanned once: a scan parses every shipped file."""
+    sites, hit = _sites(), set()
     lost = {}
     for case in _CASES:
-        r = await _drive(ui_client, case, hit)
+        r = await _drive(ui_client, case, sites, hit)
         if _FIX not in r.text:
             lost[case[0]] = (r.status_code, r.text[:300])
     assert lost == {}
-    assert _sites() - hit == set()
+    assert sites - hit == set()
