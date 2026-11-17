@@ -31141,5 +31141,18 @@
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_reversal_pair_sharing_a_generic_label_is_offered_not_accepted[TRANSFER]": 0.7807534049497917,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_a_transfer_reference_on_both_sides_still_pairs_on_its_own": 0.9730748800793663,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms[PAYMENT]": 1.145756648038514,
-    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms[TRANSFER]": 1.1685627681436017
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_two_unrelated_lines_sharing_a_generic_label_pair_only_when_the_user_confirms[TRANSFER]": 1.1685627681436017,
+    "tests/test_ai_action_state_races_pg.py::test_a_note_and_a_confirmation_both_persist[outcomes-False]": 0.32626937911845744,
+    "tests/test_ai_action_state_races_pg.py::test_a_note_and_a_confirmation_both_persist[outcomes-True]": 0.15524888795334846,
+    "tests/test_ai_action_state_races_pg.py::test_a_note_and_a_confirmation_both_persist[pending-False]": 0.16580720606725663,
+    "tests/test_ai_action_state_races_pg.py::test_a_note_and_a_confirmation_both_persist[pending-True]": 0.19041057804133743,
+    "tests/test_ai_action_state_races_pg.py::test_a_waiting_confirmation_writes_over_the_committed_state": 0.7521895079407841,
+    "tests/test_ai_action_state_races_pg.py::test_concurrent_completions_start_one_continuation_and_a_retry_gets_it": 0.2577187648275867,
+    "tests/test_ai_action_state_races_pg.py::test_no_continuation_while_another_action_still_runs": 0.32540405297186226,
+    "tests/test_ai_action_state_races_pg.py::test_only_the_transition_assigns_tools_called": 0.03922527492977679,
+    "tests/test_ai_action_state_races_pg.py::test_two_confirmations_of_one_message_both_persist[False]": 0.2765972809866071,
+    "tests/test_ai_action_state_races_pg.py::test_two_confirmations_of_one_message_both_persist[True]": 0.15602069883607328,
+    "tests/test_ai_agent_areas.py::test_a_bulk_card_shows_every_record_it_changes_and_each_value": 4.7197971889982,
+    "tests/test_ai_reverse_no_record_change.py::test_every_no_record_change_route_leaves_business_tables_as_they_were": 1.3232953600818291,
+    "tests/test_browser/test_ai_chat_journey.py::test_bulk_card_lists_every_record_in_a_scrolling_box[chromium]": 10.045792366960086
 }
