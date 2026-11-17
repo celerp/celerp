@@ -1172,17 +1172,19 @@ _CONTINUE_QUESTION = "Continue the request with these results."
 
 async def _continue_request(session: AsyncSession, *, conversation_id: uuid.UUID, message_id: uuid.UUID,
                             company_id, user_id, auth: AuthContext) -> str | None:
-    """Carry the request on once its cards are answered: when the message has no open
-    action left and at least one change completed, the same question job an ask starts
-    runs with the outcomes in its history. It only reads or proposes; every change is
-    still a card. Nothing continues when every card was dismissed or failed."""
+    """Carry the request on once its cards are answered: when the message has no action
+    left open or running and at least one change completed, the same question job an ask
+    starts runs with the outcomes in its history. It only reads or proposes; every change
+    is still a card. Nothing continues when every card was dismissed or failed. The job
+    is claimed once per message, so a later completer or a retry gets the same job id."""
     from celerp.ai import jobs
-    from celerp.ai.conversations import CONTINUATION, add_message, get_message, pending_actions
-    msg = await get_message(session, message_id, conversation_id)
-    records = [r for r in (msg.tools_called or []) if isinstance(r, dict) and r.get("name")] if msg else []
-    if not records or pending_actions(records) or not any(r.get("status") == "completed" for r in records):
-        return None
+    from celerp.ai.conversations import CONTINUATION, add_message, claim_continuation
     question_id = uuid.uuid4()
+    claimed = await claim_continuation(session, conversation_id=conversation_id, message_id=message_id,
+                                       company_id=company_id, user_id=user_id, job_id=question_id)
+    if claimed is None or not claimed[1]:
+        await session.commit()  # releases the locks the claim took
+        return claimed[0] if claimed else None
     request = jobs.JobRequest.question(company_id=company_id, user_id=user_id, query=_CONTINUE_QUESTION,
                                        file_ids=None, conversation_id=conversation_id)
     await add_message(session, conversation_id, "user", _CONTINUE_QUESTION, message_id=question_id,

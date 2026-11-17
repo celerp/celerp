@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import re
+import types
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.ai import conversations
@@ -149,3 +151,54 @@ def test_only_the_transition_assigns_tools_called():
     source = (root / "celerp/ai/conversations.py").read_text(encoding="utf-8")
     owner = source[source.index("async def change_tools_called("):source.index("def _replace(")]
     assert assignment.search(owner)
+
+
+# The continuation: claimed once per proposal message, only when every action is done.
+
+async def _continue(factory, conversation, message_id):
+    from celerp_ai import routes as ai_routes
+
+    company_id, user_id, conversation_id = conversation
+    async with factory() as s:
+        return await ai_routes._continue_request(
+            s, conversation_id=conversation_id, message_id=message_id, company_id=company_id, user_id=user_id,
+            auth=types.SimpleNamespace(snonce=None))
+
+
+async def _questions(factory, conversation_id) -> int:
+    async with factory() as s:
+        return await s.scalar(select(func.count()).select_from(AIMessage).where(
+            AIMessage.conversation_id == conversation_id, AIMessage.role == "user"))
+
+
+@pytest.fixture
+def started(monkeypatch):
+    from celerp.ai import jobs
+
+    ids: list[uuid.UUID] = []
+    monkeypatch.setattr(jobs, "start_job", ids.append)
+    return ids
+
+
+async def test_no_continuation_while_another_action_still_runs(committed_engine, started):
+    factory = _factory(committed_engine)
+    *conversation, message_id = await _message(factory, _record("a", "executing"), _record("b", "executing"))
+    async with factory() as s:
+        await _finish("a")(s, message_id)
+        await s.commit()
+    assert await _continue(factory, conversation, message_id) is None
+    assert await _questions(factory, conversation[2]) == 0 and not started
+    async with factory() as s:
+        await _finish("b")(s, message_id)
+        await s.commit()
+    job_id = await _continue(factory, conversation, message_id)
+    assert job_id and started == [uuid.UUID(job_id)]
+
+
+async def test_concurrent_completions_start_one_continuation_and_a_retry_gets_it(committed_engine, started):
+    factory = _factory(committed_engine)
+    *conversation, message_id = await _message(factory, _record("a", "completed"), _record("b", "completed"))
+    first, second = await asyncio.gather(*(_continue(factory, conversation, message_id) for _ in range(2)))
+    assert first and first == second
+    assert await _continue(factory, conversation, message_id) == first
+    assert await _questions(factory, conversation[2]) == 1 and started == [uuid.UUID(first)]

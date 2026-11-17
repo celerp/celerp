@@ -734,6 +734,41 @@ async def claim_tool_call(
     return dict(claimed) if claimed is not None else None
 
 
+def _unfinished(record: dict) -> bool:
+    """A record whose change may still run: open, or being run right now."""
+    return record.get("status") == "executing" or bool(pending_actions([record]))
+
+
+async def claim_continuation(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+    job_id: uuid.UUID,
+) -> tuple[str, bool] | None:
+    """Claim, once per proposal message, the question job that carries its request on.
+
+    Decided inside ``change_tools_called``: nothing is claimed while any action is open
+    or still running, or when none completed. The claim is a ``continued_job_id`` record
+    stored on the message, so a second completer or a retry gets the same job back.
+    Returns ``(job id, newly claimed)``, or None when nothing continues."""
+    def claim(items: list) -> tuple[list | None, tuple[str, bool] | None]:
+        claimed = next((r["continued_job_id"] for r in items if isinstance(r, dict) and r.get("continued_job_id")),
+                       None)
+        if claimed:
+            return None, (claimed, False)
+        records = [r for r in items if isinstance(r, dict) and r.get("name")]
+        if (not records or any(_unfinished(r) for r in records)
+                or not any(r.get("status") == "completed" for r in records)):
+            return None, None
+        return [*items, {"continued_job_id": str(job_id)}], (str(job_id), True)
+
+    return await change_tools_called(session, message_id, claim, conversation_id=conversation_id,
+                                     company_id=company_id, user_id=user_id)
+
+
 async def finalize_tool_call(
     session: AsyncSession,
     *,
