@@ -427,6 +427,24 @@ async def test_the_number_of_the_one_document_a_payment_pays_is_its_identifier(c
 
 
 @pytest.mark.asyncio
+async def test_a_number_two_documents_carry_names_neither_payment(client, session):
+    """An invoice number that another document of the company carries too is not one transaction's
+    name: a line carrying it stops with the payment shown."""
+    from sqlalchemy import select
+    from celerp.models.projections import Projection
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    _doc, number = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08")
+    other, _ = await B.paid_invoice(client, co, bk, 90.0, "2026-01-08", paid=0)
+    proj = (await session.execute(select(Projection).where(Projection.entity_id == other))).scalar_one()
+    proj.state = {**proj.state, "ref_id": number, "doc_number": number}
+    await session.flush()
+    line = await _one_line(client, co, bk, [("2026-01-09", "RECEIVED", "120.00")], reference=number)
+    row = await _post(client, co, bk, line, account_code="4100")
+    assert not row["ok"] and not row["matched_instead"] and len(row["candidates"]) == 1, row
+
+
+@pytest.mark.asyncio
 async def test_a_document_paid_twice_names_neither_payment(client, session):
     """An invoice paid in two parts of 60 on one day: its number is on both payments, so a line
     carrying it stops with both shown."""
