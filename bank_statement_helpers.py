@@ -70,13 +70,16 @@ def upload(company_id: str, user_id: str, content: bytes, filename: str, content
     return file_id
 
 
-def csv_bytes(rows: list[tuple[str, str, str]], *, balance: bool = False) -> bytes:
-    """Date,Description,Amount rows; with ``balance`` the running balance from 0."""
-    out = ["Date,Description,Amount" + (",Balance" if balance else "")]
+def csv_bytes(rows: list[tuple[str, ...]], *, balance: bool = False) -> bytes:
+    """Date,Description,Amount rows, each with an optional fourth item, its Reference; with
+    ``balance`` the running balance from 0."""
+    refs = any(len(r) > 3 for r in rows)
+    out = ["Date,Description,Amount" + (",Balance" if balance else "") + (",Reference" if refs else "")]
     running = 0.0
-    for d, desc, amt in rows:
+    for d, desc, amt, *ref in rows:
         running += float(amt) if amt else 0.0
-        out.append(f"{d},{desc},{amt}" + (f",{running:.2f}" if balance else ""))
+        out.append(f"{d},{desc},{amt}" + (f",{running:.2f}" if balance else "")
+                   + (f",{ref[0] if ref else ''}" if refs else ""))
     return ("\n".join(out) + "\n").encode()
 
 

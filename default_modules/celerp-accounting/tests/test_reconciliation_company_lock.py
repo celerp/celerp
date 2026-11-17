@@ -63,9 +63,9 @@ async def test_every_reconciliation_writer_takes_the_company_lock_first(client):
     assert _ungated() - before == set()
 
 
-async def _keyed(client, co, bk, amount: float, day: str) -> str:
+async def _keyed(client, co, bk, amount: float, day: str, memo: str = "keyed") -> str:
     r = await client.post("/accounting/journal-entries", headers=co["h"], json={
-        "ts": day, "memo": "keyed", "idempotency_token": B.key(),
+        "ts": day, "memo": memo, "idempotency_token": B.key(),
         "entries": [{"account": "5100", "debit": amount, "credit": 0.0},
                     {"account": bk["chart_account_code"], "debit": 0.0, "credit": amount}]})
     assert r.status_code == 200, r.text
@@ -73,19 +73,19 @@ async def _keyed(client, co, bk, amount: float, day: str) -> str:
 
 
 async def test_every_resolve_and_accept_outcome_takes_the_company_lock_before_a_line(client):
-    """A resolve's decisions (a match, a post, a post matched to the one entry already keyed, a
+    """A resolve's decisions (a match, a post, a post matched to the one entry already keyed with its reference, a
     post refused for several keyed entries with its suggestion written) and a group accept (a
     post and a match suggestion) take the company's lock before any statement line's."""
     before = _ungated()
     co = await B.company(client)
     bk = await B.bank(client, co["h"])
     rows = [("2026-01-05", "MATCH", "-10.00"), ("2026-01-06", "POST", "-11.00"),
-            ("2026-01-07", "ONE TWIN", "-12.00"), ("2026-01-20", "TWO TWINS", "-13.00"),
+            ("2026-01-07", "ONE TWIN", "-12.00", "PO-55120"), ("2026-01-20", "TWO TWINS", "-13.00"),
             ("2026-01-22", "NETFLIX", "-14.00"), ("2026-01-24", "PAIRED", "-16.00")]
     await B.statement(client, co, bk["id"], rows, opening="0.00", closing="-76.00", start="2026-01-01",
                       end="2026-01-31")
     match = await _keyed(client, co, bk, 10.0, "2026-01-05")
-    one = await _keyed(client, co, bk, 12.0, "2026-01-07")
+    one = await _keyed(client, co, bk, 12.0, "2026-01-07", "Paid PO-55120")
     for day in ("2026-01-19", "2026-01-21"):
         await _keyed(client, co, bk, 13.0, day)
     await _keyed(client, co, bk, 16.0, "2026-01-24")

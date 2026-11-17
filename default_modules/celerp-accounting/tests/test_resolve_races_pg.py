@@ -23,9 +23,9 @@ from test_bank_complete_race_pg import own_client  # noqa: F401
 pytestmark = pytest.mark.asyncio
 
 
-async def _keyed(client, co, bk, amount: float, day: str) -> str:
+async def _keyed(client, co, bk, amount: float, day: str, memo: str = "keyed") -> str:
     r = await client.post("/accounting/journal-entries", headers=co["h"], json={
-        "ts": day, "memo": "keyed", "idempotency_token": B.key(),
+        "ts": day, "memo": memo, "idempotency_token": B.key(),
         "entries": [{"account": "5100", "debit": amount, "credit": 0.0},
                     {"account": bk["chart_account_code"], "debit": 0.0, "credit": amount}]})
     assert r.status_code == 200, r.text
@@ -103,14 +103,15 @@ async def test_an_undo_during_a_several_twins_refusal_never_deadlocks(committed_
 async def test_an_entry_keyed_after_the_read_of_the_books_is_matched_never_posted_twice(
         committed_engine, own_client, monkeypatch):
     """A group accept reads the books near its lines once; an entry keyed by someone else after
-    that read and before the line's decision is matched to the line instead of the line posting
-    a second entry for the same money, and the books equal their rebuild from the ledger."""
+    that read and before the line's decision, carrying the line's reference, is matched to the
+    line instead of the line posting a second entry for the same money, and the books equal their
+    rebuild from the ledger."""
     import celerp_accounting.routes as R
 
     c = own_client
     co = await B.company(c)
     bk = await B.bank(c, co["h"])
-    await B.statement(c, co, bk["id"], [("2026-01-05", "NETFLIX", "-15.00")], opening="0.00",
+    await B.statement(c, co, bk["id"], [("2026-01-05", "NETFLIX", "-15.00", "NF-449812")], opening="0.00",
                       closing="-15.00", start="2026-01-01", end="2026-01-31")
     r = await c.post("/accounting/rules", json={"match_pattern": "NETFLIX", "target_account_code": "5100",
                                                 "idempotency_key": B.key()}, headers=co["h"])
@@ -125,7 +126,7 @@ async def test_an_entry_keyed_after_the_read_of_the_books_is_matched_never_poste
     async def read_then_key(*a, **kw):
         rows = await real(*a, **kw)
         if not keyed:  # the request's read of the books; someone keys the money now
-            keyed.append(asyncio.create_task(_keyed(c, co, bk, 15.0, "2026-01-05")))
+            keyed.append(asyncio.create_task(_keyed(c, co, bk, 15.0, "2026-01-05", "Netflix NF-449812")))
             await _until_waiting_or_done(committed_engine, keyed[0])
         return rows
 
