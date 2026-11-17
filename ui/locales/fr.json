@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Choisissez au moins une entrée de livre à laquelle faire correspondre cette ligne.",
   "acct.recon_reason_reversal": "La banque a annulé cette opération en 3 jours, donc aucune des deux lignes ne nécessite d'écriture.",
   "acct.recon_reason_match": "Une entrée de livre du même montant le {date}.",
-  "acct.recon_reason_twins": "{count} écritures comptables ont déjà ce montant près de cette date ; la plus proche est du {date}. Choisissez celle qui correspond à cette ligne.",
   "acct.recon_reason_looks_like": "Cela ressemble à l'écriture du {date} pour le même montant, mais rien ne montre qu'il s'agit du même paiement. Rapprochez-la ou comptabilisez quand même.",
   "acct.recon_reason_combo": "Les entrées de livre d'une contrepartie totalisent ce montant. Vérifiez-les avant de procéder au rapprochement.",
   "acct.recon_reason_document": "{ref} est ouvert pour le même montant.",

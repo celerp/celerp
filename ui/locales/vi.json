@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Hãy chọn ít nhất một bút toán để khớp với dòng này.",
   "acct.recon_reason_reversal": "Ngân hàng đã đảo ngược giao dịch này trong vòng 3 ngày nên cả hai dòng đều không cần bút toán.",
   "acct.recon_reason_match": "Một bút toán ghi sổ với cùng số tiền vào ngày {date}.",
-  "acct.recon_reason_twins": "Đã có {count} bút toán ghi sổ với số tiền này gần ngày này; bút toán gần nhất vào ngày {date}. Hãy chọn bút toán ứng với dòng này.",
   "acct.recon_reason_looks_like": "Dòng này trông giống bút toán ngày {date} có cùng số tiền, nhưng không có gì cho thấy đó là cùng một khoản thanh toán. Hãy đối chiếu, hoặc vẫn ghi sổ.",
   "acct.recon_reason_combo": "Tổng các bút toán của cùng một đối tác bằng số tiền này. Hãy kiểm tra chúng trước khi khớp.",
   "acct.recon_reason_document": "{ref} đang mở với cùng số tiền.",

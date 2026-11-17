@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "ከዚህ መስመር ጋር የሚዛመድ ቢያንስ አንድ የመዝገብ ግቤት ይምረጡ።",
   "acct.recon_reason_reversal": "ባንኩ ይህንን በ3 ቀናት ውስጥ ቀልብሶታል፣ ስለዚህ ለሁለቱም መስመሮች ግቤት አያስፈልግም።",
   "acct.recon_reason_match": "ተመሳሳይ መጠን ያለው የመዝገብ ግቤት በ{date} ላይ።",
-  "acct.recon_reason_twins": "{count} የመዝገብ ግቤቶች በዚህ ቀን አቅራቢያ ይህ መጠን አላቸው፤ በጣም ቅርቡ በ{date} ነው። ይህ መስመር የትኛው እንደሆነ ይምረጡ።",
   "acct.recon_reason_looks_like": "ይህ በ{date} ተመሳሳይ መጠን ያለውን የሂሳብ መዝገብ ይመስላል፣ ነገር ግን አንድ አይነት ክፍያ መሆኑን የሚያሳይ ነገር የለም። ያዛምዱት፣ ወይም እንደዚያም ሆኖ ይመዝግቡ።",
   "acct.recon_reason_combo": "የአንድ ተጓዳኝ የመዝገብ ግቤቶች ድምር ይህ መጠን ነው። ከማዛመድዎ በፊት ያረጋግጧቸው።",
   "acct.recon_reason_document": "{ref} በተመሳሳይ መጠን ክፍት ነው።",

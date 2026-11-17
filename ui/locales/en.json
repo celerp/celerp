@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Pick at least one book entry to match this line to.",
   "acct.recon_reason_reversal": "The bank reversed this within 3 days, so neither line needs an entry.",
   "acct.recon_reason_match": "A book entry of the same amount on {date}.",
-  "acct.recon_reason_twins": "{count} book entries already have this amount near this date; the nearest is on {date}. Pick the one this line is.",
   "acct.recon_reason_looks_like": "This looks like the book entry of {date} for the same amount, but nothing shows it is the same payment. Match it, or post anyway.",
   "acct.recon_reason_combo": "Book entries of one counterparty add up to this amount. Check them before matching.",
   "acct.recon_reason_document": "{ref} is open for the same amount.",

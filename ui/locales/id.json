@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Pilih setidaknya satu entri buku untuk dicocokkan dengan baris ini.",
   "acct.recon_reason_reversal": "Pihak bank membatalkan transaksi ini dalam waktu 3 hari, jadi tidak ada entri yang diperlukan untuk kedua transaksi tersebut.",
   "acct.recon_reason_match": "Entri buku dengan jumlah yang sama pada {date}.",
-  "acct.recon_reason_twins": "{count} entri buku sudah memiliki jumlah ini di sekitar tanggal ini; yang terdekat pada {date}. Pilih entri yang sesuai dengan baris ini.",
   "acct.recon_reason_looks_like": "Ini tampak seperti entri buku tanggal {date} dengan jumlah yang sama, tetapi tidak ada yang menunjukkan bahwa ini pembayaran yang sama. Cocokkan, atau tetap posting.",
   "acct.recon_reason_combo": "Jumlah entri pembukuan dari satu pihak lawan adalah sebesar ini. Periksa entri tersebut sebelum melakukan pencocokan.",
   "acct.recon_reason_document": "{ref} terbuka untuk jumlah yang sama.",

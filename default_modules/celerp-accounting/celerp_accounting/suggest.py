@@ -45,13 +45,15 @@ _REFERENCE_MIN = 4
 @dataclass
 class LadderContext:
     """What the rungs read: the bank's unheld book entries, open documents, active rules,
-    open lines on the company's other banks, read receipts, history per counterparty key or
-    account, the posting accounts, and the model (or None)."""
+    open lines on the company's other banks, the company's statement lines that carry a reference
+    (``References``, what ``identified`` checks against), read receipts, history per
+    counterparty key or account, the posting accounts, and the model (or None)."""
     bank_id: str
     entries: list = field(default_factory=list)
     open_docs: list = field(default_factory=list)
     rules: list = field(default_factory=list)
     pair_lines: list = field(default_factory=list)
+    references: "References" = field(default_factory=lambda: References([]))
     slips: list = field(default_factory=list)
     history: dict = field(default_factory=dict)
     accounts: list = field(default_factory=list)
@@ -87,7 +89,7 @@ def _money(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.01'))}"
 
 
-def _reversals(lines: list[dict]) -> dict:
+def _reversals(lines: list[dict], ctx: LadderContext) -> dict:
     out: dict = {}
     for a in lines:
         if a["id"] in out:
@@ -100,6 +102,9 @@ def _reversals(lines: list[dict]) -> dict:
                 for x, y in ((a, b), (b, a)):
                     out[x["id"]] = {"kind": "no_entry", "source": "reversal", "paired_line_id": y["id"],
                                     "reason": t("acct.recon_reason_reversal")}
+                    if identified(x.get("reference"), [y.get("reference")], ctx.references.elsewhere(
+                            x["line_date"], {str(x["id"]), str(y["id"])})) is not None:
+                        out[x["id"]]["evidence"] = {"identifier": True}
                 break
     return out
 
@@ -109,11 +114,17 @@ def _matches(lines: list[dict], ctx: LadderContext) -> dict:
     found = matcher.auto_match([{**l, "amount": _amt(l["amount"])} for l in lines], ctx.entries)
     by_id = {e["je_id"]: e for e in ctx.entries}
     used = set()
+    by_line = {l["id"]: l for l in lines}
     for line_id, je_id, confidence in found:
-        e = by_id[je_id]
+        e, line = by_id[je_id], by_line[line_id]
         used.add(je_id)
         out[line_id] = {"kind": "match", "source": "match", "je_ids": [je_id], "confidence": confidence,
                         "reason": t("acct.recon_reason_match", date=str(e.get("date") or e.get("ts") or "")[:10])}
+        near = twins(line["amount"], line["line_date"], ctx.entries)
+        pick = identified(line.get("reference"), [x.get("memo") for x in near],
+                          ctx.references.elsewhere(line["line_date"], {str(line_id)}))
+        if pick is not None and near[pick]["je_id"] == je_id:
+            out[line_id]["evidence"] = {"identifier": True}
     # One line paid by up to three entries of one counterparty (or three lines of one
     # counterparty for one entry), within a week: a low suggestion, never a match.
     free = [e for e in ctx.entries if e["je_id"] not in used]
@@ -178,36 +189,85 @@ def _rule(line: dict, ctx: LadderContext) -> dict | None:
 
 def transfer_pairs(want: Decimal, line_date, candidates: list[dict]) -> list[dict]:
     """The other banks' open lines a transfer of ``want`` dated ``line_date`` could be: exactly that
-    money within the pairing window, nearest first. A transfer pairs itself only with the one of
-    them ``same_transaction`` proves, never on amount and date alone."""
+    money within the pairing window, nearest first. Only ``identified`` pairs one of them."""
     near = [c for c in candidates if _amt(c["amount"]) == want and _days(c["line_date"], line_date) <= _PAIR_DAYS]
     return sorted(near, key=lambda c: (_days(c["line_date"], line_date), str(c["id"])))
 
 
-def _reference_in(reference: str | None, text: str | None) -> bool:
+# References a bank prints on many unrelated lines: they name a kind of money, never one transaction.
+_GENERIC_WORDS = frozenset({
+    "payment", "payments", "pmt", "transfer", "transfers", "trf", "xfer", "salary", "salaries", "wage", "wages",
+    "payroll", "invoice", "invoices", "inv", "bill", "bills", "deposit", "deposits", "withdrawal", "refund",
+    "fee", "fees", "charge", "charges", "interest", "cash", "cheque", "check", "atm", "pos", "debit", "credit",
+    "online", "purchase", "rent", "bank", "standing", "order", "direct", "monthly", "to", "from", "for", "and"})
+_DIGITS_MIN = 6
+
+
+def identifier(reference: str | None) -> str | None:
+    """``reference`` as a transaction identifier (casefolded), or None when it cannot be one: under
+    ``_REFERENCE_MIN`` characters, digits only under ``_DIGITS_MIN``, or only generic words."""
     ref = (reference or "").strip().casefold()
-    return len(ref) >= _REFERENCE_MIN and \
-        re.search(rf"(?<!\w){re.escape(ref)}(?!\w)", (text or "").casefold()) is not None
+    if len(ref) < _REFERENCE_MIN or (ref.isdigit() and len(ref) < _DIGITS_MIN):
+        return None
+    return None if set(re.findall(r"\w+", ref)) <= _GENERIC_WORDS else ref
 
 
-def same_transaction(want: dict, have: dict) -> bool:
-    """Whether ``have`` (a book entry, or another bank's line) is the very money ``want`` (a
-    requested posting or transfer) names. Equal amount and a near date never prove it: two
-    suppliers paid the same sum the same week are two payments. The proof is ``want``'s reference
-    found in ``have``'s text; otherwise, when both name a counterparty, a shared one; otherwise a
-    shared account. Each side reads ``reference``/``text`` (str), ``contacts`` and ``accounts``."""
-    if _reference_in(want.get("reference"), have.get("text")):
-        return True
-    mine, theirs = set(want.get("contacts") or ()), set(have.get("contacts") or ())
-    if mine and theirs:
-        return bool(mine & theirs)
-    return bool(set(want.get("accounts") or ()) & set(have.get("accounts") or ()))
+def carries(ident: str, text: str | None) -> bool:
+    """Whether ``text`` names identifier ``ident`` as a whole word."""
+    return re.search(rf"(?<!\w){re.escape(ident)}(?!\w)", (text or "").casefold()) is not None
+
+
+def identified(reference: str | None, candidates: list, elsewhere: Callable[[str], bool]) -> int | None:
+    """The one rule for transaction identity: the index of the one of ``candidates`` (the texts of
+    the book entries, or other banks' lines, a line could be) that is the very transaction a line
+    with ``reference`` is, or None. It is one only when the line's reference is an ``identifier``
+    that exactly one candidate carries and no other statement line of the company in the window
+    does (``elsewhere``, see ``References.elsewhere``): a reference two lines carry names no one
+    transaction. Equal money, a near date, a shared account or a shared contact never prove it (one
+    supplier is paid many times); they only rank the candidates the user is shown."""
+    ident = identifier(reference)
+    if ident is None:
+        return None
+    hits = [i for i, c in enumerate(candidates) if carries(ident, c)]
+    return hits[0] if len(hits) == 1 and not elsewhere(ident) else None
+
+
+class References:
+    """The company's statement lines that carry a reference (``{id, line_date, reference}``),
+    indexed by word so a check reads only the lines sharing a word with the identifier."""
+
+    def __init__(self, lines: list[dict]):
+        self.lines = lines
+        self._by_word: dict[str, list[dict]] = {}
+        for line in lines:
+            for word in set(re.findall(r"\w+", (line.get("reference") or "").casefold())):
+                self._by_word.setdefault(word, []).append(line)
+
+    def elsewhere(self, line_date, skip: set) -> Callable[[str], bool]:
+        """Whether a line not in ``skip`` (ids), dated within the exact-amount window of
+        ``line_date``, carries an identifier: the ``elsewhere`` of ``identified``."""
+        def check(ident: str) -> bool:
+            words = re.findall(r"\w+", ident)
+            pool = min((self._by_word.get(w, []) for w in words), key=len) if words else self.lines
+            return any(str(l["id"]) not in skip and _days(l["line_date"], line_date) <= matcher.EXACT_DAYS
+                       and carries(ident, l.get("reference")) for l in pool)
+        return check
+
+
+def rank(want: dict, entries: list[dict]) -> list[dict]:
+    """``entries`` (each with ``evidence``) in the order the user is shown them: those sharing more of
+    ``want``'s contacts and accounts first, then the nearest (their order in)."""
+    def shared(e: dict) -> int:
+        ev = e.get("evidence") or {}
+        return -(bool(set(want.get("contacts") or ()) & set(ev.get("contacts") or ())) +
+                 bool(set(want.get("accounts") or ()) & set(ev.get("accounts") or ())))
+    return sorted(entries, key=shared)
 
 
 def twins(amount, line_date, entries: list[dict]) -> list[dict]:
     """The book entries a line's money could already be: exactly its amount, the same way, dated
-    within the matcher's exact-amount window, nearest first. Only ``same_transaction`` decides
-    which of them, if any, is the line's own entry."""
+    within the matcher's exact-amount window, nearest first. Only ``identified`` decides which of
+    them, if any, is the line's own entry."""
     near = [e for e in entries if _amt(e["amount"]) == _amt(amount)
             and _days(e.get("date") or e.get("ts"), line_date) <= matcher.EXACT_DAYS]
     return sorted(near, key=lambda e: (_days(e.get("date") or e.get("ts"), line_date), e["je_id"]))
@@ -221,8 +281,10 @@ def _transfer(line: dict, ctx: LadderContext) -> dict | None:
         return None
     s = {"kind": "transfer", "source": "transfer", "target_bank_id": banks.pop(),
          "reason": t("acct.recon_reason_transfer", date=str(pairs[0]["line_date"])[:10])}
-    proven = [p for p in pairs if same_transaction({"reference": line.get("reference")}, {"text": p.get("reference")})]
-    return {**s, "paired_line_id": str(proven[0]["id"])} if len(proven) == 1 else s
+    skip = {str(line["id"])} | {str(p["id"]) for p in pairs}
+    pick = identified(line.get("reference"), [p.get("reference") for p in pairs],
+                      ctx.references.elsewhere(line["line_date"], skip))
+    return s if pick is None else {**s, "paired_line_id": str(pairs[pick]["id"]), "evidence": {"identifier": True}}
 
 
 def _slip(line: dict, ctx: LadderContext) -> dict | None:
@@ -289,7 +351,7 @@ def _answer(line: dict, ctx: LadderContext) -> dict | None:
 def ladder_rungs(lines: list[dict], ctx: LadderContext) -> tuple[dict, list[dict]]:
     """Rungs 0 to 6: ({line id: suggestion}, residue groups for the model). A residue group
     is ``{key, direction, count, total, sample}`` for lines no rung answered."""
-    out = _reversals(lines)
+    out = _reversals(lines, ctx)
     rest = [l for l in lines if l["id"] not in out]
     out.update(_matches(rest, ctx))
     for line in lines:

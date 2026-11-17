@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Selecione pelo menos um lançamento contábil para relacionar com esta linha.",
   "acct.recon_reason_reversal": "O banco reverteu a transação em 3 dias, portanto, nenhuma das linhas precisa de lançamento.",
   "acct.recon_reason_match": "Um lançamento contábil do mesmo valor em {date}.",
-  "acct.recon_reason_twins": "{count} lançamentos contábeis já têm este valor perto desta data; o mais próximo é de {date}. Escolha o que corresponde a esta linha.",
   "acct.recon_reason_looks_like": "Parece o lançamento contábil de {date} com o mesmo valor, mas nada mostra que seja o mesmo pagamento. Concilie-o ou lance mesmo assim.",
   "acct.recon_reason_combo": "Os lançamentos contábeis de uma das contrapartes somam esse valor. Verifique-os antes de realizar a conciliação.",
   "acct.recon_reason_document": "{ref} está em aberto pelo mesmo valor.",

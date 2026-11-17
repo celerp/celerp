@@ -430,6 +430,9 @@ async def test_transfer_pair_posts_once_from_either_side(client):
     je = r.json()["results"][0]["je_ids"][0]
     r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "transfer",
                                                           "target_bank_id": b["id"]}])
+    stop = r.json()["results"][0]
+    assert not stop["ok"] and stop["candidates"] == [je], stop  # no identifier: the user confirms it
+    r = await B.resolve(client, co, a["id"], decisions=[{"line_ids": [la["id"]], "kind": "match", "je_ids": [je]}])
     assert r.json()["results"][0]["je_ids"] == [je]
     journal = (await client.get("/accounting/journal", headers=co["h"])).json()["entries"]
     assert len([e for e in journal if e.get("je_type") == "recon_transfer"]) == 1

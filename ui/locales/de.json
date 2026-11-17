@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Wählen Sie mindestens einen Buchungseintrag aus, mit dem diese Zeile abgeglichen werden soll.",
   "acct.recon_reason_reversal": "Die Bank hat dies innerhalb von 3 Tagen rückgängig gemacht, daher ist für keine der beiden Zeilen ein Eintrag erforderlich.",
   "acct.recon_reason_match": "Ein Buchungseintrag über denselben Betrag am {date}.",
-  "acct.recon_reason_twins": "{count} Buchungseinträge haben bereits diesen Betrag nahe diesem Datum; der nächste ist am {date}. Wählen Sie den Eintrag, der zu dieser Zeile gehört.",
   "acct.recon_reason_looks_like": "Das sieht aus wie der Buchungseintrag vom {date} über denselben Betrag, aber nichts zeigt, dass es dieselbe Zahlung ist. Ordnen Sie ihn zu oder buchen Sie trotzdem.",
   "acct.recon_reason_combo": "Die Buchungseinträge einer Gegenpartei ergeben zusammen diesen Betrag. Prüfen Sie diese vor dem Abgleich.",
   "acct.recon_reason_document": "{ref} ist mit demselben Betrag offen.",

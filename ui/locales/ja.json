@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "この明細に一致させる帳簿の仕訳を少なくとも1つ選択してください。",
   "acct.recon_reason_reversal": "銀行は3日以内にこの取引を元に戻したため、どちらの行にも記入は不要です。",
   "acct.recon_reason_match": "{date} に同額の帳簿の仕訳があります。",
-  "acct.recon_reason_twins": "この日付の近くに同額の帳簿の仕訳がすでに {count} 件あります。最も近いのは {date} です。この行に当たる仕訳を選んでください。",
   "acct.recon_reason_looks_like": "{date} の同額の仕訳のように見えますが、同じ支払いであることを示すものはありません。照合するか、そのまま記帳してください。",
   "acct.recon_reason_combo": "同じ取引先の帳簿の仕訳の合計がこの金額になります。照合する前に確認してください。",
   "acct.recon_reason_document": "{ref} が同額で未決済です。",

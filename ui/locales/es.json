@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Elija al menos una entrada de libro con la que coincida esta línea.",
   "acct.recon_reason_reversal": "El banco revirtió la operación en un plazo de 3 días, por lo que ninguna de las dos líneas necesita un asiento.",
   "acct.recon_reason_match": "Una entrada de libro por el mismo importe el {date}.",
-  "acct.recon_reason_twins": "{count} asientos contables ya tienen este importe cerca de esta fecha; el más cercano es del {date}. Elija el que corresponde a esta línea.",
   "acct.recon_reason_looks_like": "Parece el asiento contable del {date} por el mismo importe, pero nada indica que sea el mismo pago. Concílielo o regístrelo de todos modos.",
   "acct.recon_reason_combo": "Las entradas de libro de una contraparte suman este importe. Compruébelas antes de hacerlas coincidir.",
   "acct.recon_reason_document": "{ref} está abierto por la misma cantidad.",

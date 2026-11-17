@@ -143,14 +143,20 @@ async def _statement_first(client, w):
 
 async def _mixed(client, w):
     """Both statements read, then ACME keyed and the invoice paid by hand before deciding:
-    the posting decision for ACME matches the keyed entry instead of posting it again."""
+    the posting decision for ACME stops on the keyed entry (equal money, no identifier) and the
+    user matches it instead of posting it again."""
     await _pre_start(client, w)
     await _import(client, w, "a")
     await _import(client, w, "b")
     await _key_acme(client, w)
     await _key_payment(client, w)
     before = await _books(client, w)
-    await _decide(client, w, "a", "ACME", "post", account_code="5100")
+    line = B.line_by_text(await B.groups(client, w["co"], w["a"]["id"]), "ACME")
+    r = await B.resolve(client, w["co"], w["a"]["id"],
+                        decisions=[{"line_ids": [line["id"]], "kind": "post", "account_code": "5100"}])
+    stop = r.json()["results"][0]
+    assert not stop["ok"] and len(stop["candidates"]) == 1, stop
+    await _decide(client, w, "a", "ACME", "match", je_ids=stop["candidates"])
     await _decide(client, w, "a", "TRANSFER", "transfer", target_bank_id=w["b"]["id"])
     await _accept_all(client, w, "a")
     await _accept_all(client, w, "b")
@@ -226,27 +232,3 @@ async def test_undo_returns_each_order_to_the_books_before_reconciling(client, o
     assert after["ledger"] == before["ledger"], (order, after["ledger"], before["ledger"])
     assert after["outstanding"] == before["outstanding"]
     assert not any(after["lines"].values()), after["lines"]
-
-
-async def test_a_line_matched_instead_says_why_in_each_readers_language(client):
-    """The reason a line matched an entry keyed after import is kept as its catalog key, so the
-    answer a repeat replays reads in the language of whoever reads it, not the first request's."""
-    from ui.i18n import english, refusal_text, set_lang
-
-    w = await _world(client)
-    await _pre_start(client, w)
-    await _import(client, w, "a")
-    await _key_acme(client, w)
-    line = B.line_by_text(await B.groups(client, w["co"], w["a"]["id"]), "ACME")
-    decisions, idem = [{"line_ids": [line["id"]], "kind": "post", "account_code": "5100"}], B.key()
-    rows = [(await B.resolve(client, w["co"], w["a"]["id"], decisions=decisions, idem=idem,
-                             headers={**w["co"]["h"], "Accept-Language": lang})).json()["results"][0]
-            for lang in ("th", "en")]
-    assert rows[0] == rows[1] and rows[0]["matched_instead"], rows
-    reason = rows[0]["reason"]
-    assert reason["message_key"] == "acct.recon_reason_match", reason
-    set_lang("th")
-    thai = refusal_text(reason)
-    with english():
-        assert refusal_text(reason) == reason["message"]
-    assert thai and thai != reason["message"], thai

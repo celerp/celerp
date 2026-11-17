@@ -8336,7 +8336,6 @@
   "acct.err_recon_match_needs_entry": "Seleziona almeno una registrazione contabile da abbinare a questa riga.",
   "acct.recon_reason_reversal": "La banca ha stornato l'operazione entro 3 giorni, quindi nessuna delle due righe richiede una registrazione.",
   "acct.recon_reason_match": "Una registrazione contabile dello stesso importo il {date}.",
-  "acct.recon_reason_twins": "{count} registrazioni contabili hanno già questo importo vicino a questa data; la più vicina è del {date}. Scegli quella che corrisponde a questa riga.",
   "acct.recon_reason_looks_like": "Sembra la registrazione contabile del {date} per lo stesso importo, ma nulla indica che sia lo stesso pagamento. Abbinala o registra comunque.",
   "acct.recon_reason_combo": "La somma delle registrazioni contabili di una controparte è pari a questo importo. Verificale prima di abbinarle.",
   "acct.recon_reason_document": "{ref} è aperto per lo stesso importo.",
