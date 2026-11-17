@@ -698,3 +698,80 @@ async def test_missing_file_raises_404(monkeypatch):
         await _run(file_ids=["ai_up_missing"])
     assert ei.value.status_code == 404
     assert (ei.value.detail["code"], ei.value.detail["message_key"]) == ("file_gone", "error.file_gone")
+
+
+# -- Tool-call ids: every call of a run is told apart by its id -------------
+
+def _counting(result):
+    ran: list[str] = []
+
+    async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
+        ran.append(call_id)
+        return result
+    return _exec, ran
+
+
+_READ = {"ok": True, "status": 200, "data": {"items": []}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call_id", ["", "   ", "x" * 129, None, 7])
+async def test_a_call_without_a_usable_id_is_refused_before_it_runs(monkeypatch, call_id):
+    call = tool_call("list_items", {"query": {"q": "a"}}, "placeholder")
+    call["id"] = call_id
+    execute, ran = _counting(_READ)
+    fake = _install(monkeypatch, [tool_result(calls=[call]), tool_result(content="done")], execute=execute)
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.error, result.pending_actions) == ("bad_tool_calls", t("ai.err_bad_reply"), [])
+    assert ran == [] and len(fake.calls) == 1
+    assert not [k for k in journal._done if k.startswith("tool:")]
+
+
+@pytest.mark.asyncio
+async def test_an_id_of_the_longest_allowed_length_runs(monkeypatch):
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "x" * 128)]),
+                           tool_result(content="done")], execute=execute)
+    result = await _run()
+    assert result.error_code is None and ran == ["x" * 128]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other", ["get_item", "create_contact"])
+async def test_two_tools_sharing_one_id_in_a_reply_propose_and_run_nothing(monkeypatch, other):
+    caps = {**CAPS, "update_contact": {**CAPS["create_contact"], "name": "update_contact",
+                                       "method": "PATCH", "tool": _tool("update_contact")}}
+    first = "update_contact" if other == "create_contact" else "list_items"
+    execute, ran = _counting(_READ)
+    _install(monkeypatch, [tool_result(calls=[
+        tool_call(first, {"body": {"name": "A"}} if first == "update_contact" else {"query": {"q": "a"}}, "same"),
+        tool_call(other, {"body": {"name": "B"}} if other == "create_contact" else {"path": {"item_id": "1"}}, "same"),
+    ]), tool_result(content="done")], execute=execute, caps=caps)
+    result = await _run()
+    assert (result.error_code, result.pending_actions, ran) == ("bad_tool_calls", [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("again", ["get_item", "create_contact"])
+async def test_an_id_used_by_an_earlier_turn_of_the_run_is_refused(monkeypatch, again):
+    execute, ran = _counting(_READ)
+    fake = _install(monkeypatch, [
+        tool_result(calls=[tool_call("list_items", {"query": {"q": "a"}}, "r1")]),
+        tool_result(calls=[tool_call(again, {"body": {"name": "B"}} if again == "create_contact"
+                                     else {"path": {"item_id": "1"}}, "r1")]),
+        tool_result(content="done"),
+    ], execute=execute)
+    journal = jobs.Journal(uuid.uuid4())
+    result = await _run(journal=journal, operation_id=journal.question_id)
+    assert (result.error_code, result.pending_actions) == ("bad_tool_calls", [])
+    assert ran == ["r1"] and len(fake.calls) == 2
+    assert journal.stored("tool:r1")["result"] == _READ
+
+
+def test_two_action_records_under_one_id_are_never_updated():
+    from celerp.ai.conversations import _replace
+    items = [{"id": "x", "name": "a"}, {"id": "x", "name": "b"}]
+    with pytest.raises(ValueError):
+        _replace(items, "x", lambda item: {**item, "status": "executing"})
+    assert _replace([{"id": "y"}], "x", lambda item: item) == (None, None)

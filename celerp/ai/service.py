@@ -58,6 +58,7 @@ log = logging.getLogger(__name__)
 MAX_MODEL_TURNS = 6            # model responses per run (local bound)
 MAX_TOOL_CALLS_PER_TURN = 5
 MAX_TOOL_CALLS_PER_RUN = 12
+MAX_TOOL_CALL_ID_CHARS = 128
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
 MAX_FOR_EACH = 200             # records one propose_for_each card changes
 MAX_FOR_EACH_ARGUMENT_BYTES = 64 * 1024
@@ -170,10 +171,11 @@ RETRYABLE_ERRORS = frozenset({
 })
 # Failures after which the question id is not taken again: the outcome of its first
 # send is unknown (final for that id), the id expired, the question was sent with
-# different content, or its asker may not make a read it needs. Only a new question,
-# under a new id and the asker's authority now, can follow.
+# different content, its asker may not make a read it needs, or the model's kept reply
+# named its tool calls by ids no call can be told apart by (asked again, the same reply
+# is read back). Only a new question, under a new id and the asker's authority now, can follow.
 NEW_QUESTION_ERRORS = frozenset({"outcome_unknown", "operation_expired", "operation_mismatch",
-                                 "read_refused"})
+                                 "read_refused", "bad_tool_calls"})
 
 
 class _CallerRefused(Exception):
@@ -494,6 +496,18 @@ def _unopened(name: str) -> dict:
                         f"{name} is not open. Find it with {LIST_TOOLS} and open it with {OPEN_TOOLS} first.")
 
 
+def _call_ids_valid(calls, earlier: set[str]) -> bool:
+    """Whether every tool call of one model reply carries an id the run can tell it apart
+    by: a string, not blank, at most MAX_TOOL_CALL_ID_CHARS characters, used once in the
+    reply and by no call of an earlier turn of the run (``earlier``). A card, a journaled
+    result and an action's idempotency key are each found by that id."""
+    if not isinstance(calls, list):
+        return False
+    ids = [call.get("id") if isinstance(call, dict) else None for call in calls]
+    return (all(isinstance(i, str) and i.strip() and len(i) <= MAX_TOOL_CALL_ID_CHARS for i in ids)
+            and len(set(ids)) == len(ids) and not earlier & set(ids))
+
+
 def _parse_call(call: dict, capabilities: dict, opened: set[str]) -> tuple[str, str, dict | None, dict | None, dict | None]:
     """Parse one tool call into (call_id, name, capability, arguments, error). Only an
     opened tool (``opened``) or a meta tool may be called; a meta call has no capability.
@@ -778,6 +792,7 @@ async def _agent_loop(
     tools_called: list[str] = []
     tool_calls_total = 0
     meta_calls = 0
+    call_ids: set[str] = set()
 
     for turn in range(MAX_MODEL_TURNS):
         if _request_text_bytes(messages, tools) > REQUEST_TEXT_BUDGET:
@@ -811,6 +826,13 @@ async def _agent_loop(
         message = result["message"]
         content = message.get("content") or ""
         calls = message.get("tool_calls") or []
+        if not _call_ids_valid(calls, call_ids):
+            # Refused whole, before any card is stored or any call runs or is journaled.
+            return tally.result(
+                answer="", model_used=model_used, tools_called=tools_called,
+                pending_actions=[], error=t("ai.err_bad_reply"), error_code="bad_tool_calls",
+            )
+        call_ids |= {call["id"] for call in calls}
 
         if not calls:
             return tally.result(

@@ -686,14 +686,19 @@ async def change_tools_called(
 
 def _replace(items: list, tool_call_id: str, update) -> tuple[list | None, dict | None]:
     """``items`` with the record ``tool_call_id`` replaced by ``update(record)``; (None,
-    None) when no record matches or ``update`` returns None (nothing to write)."""
-    for i, item in enumerate(items):
-        if isinstance(item, dict) and item.get("id") == tool_call_id:
-            updated = update(item)
-            if updated is None:
-                return None, None
-            return [*items[:i], updated, *items[i + 1:]], updated
-    return None, None
+    None) when no record matches or ``update`` returns None (nothing to write). Two records
+    under one id raise: the agent loop never stores such a pair, and updating either would
+    act on a record nobody chose."""
+    found = [i for i, item in enumerate(items) if isinstance(item, dict) and item.get("id") == tool_call_id]
+    if len(found) > 1:
+        raise ValueError(f"{len(found)} action records share the id {tool_call_id!r}")
+    if not found:
+        return None, None
+    i = found[0]
+    updated = update(items[i])
+    if updated is None:
+        return None, None
+    return [*items[:i], updated, *items[i + 1:]], updated
 
 
 async def claim_tool_call(

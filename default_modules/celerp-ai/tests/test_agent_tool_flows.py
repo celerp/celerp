@@ -391,3 +391,55 @@ async def test_propose_for_each_prefers_the_bulk_route(client, session, agent_ca
         body = await asked_in_thread(client, ctx["admin_h"], conv_id, {"query": "all of them"})
     assert body["pending_actions"] == []
     assert bulk in str(model.seen[-1])
+
+
+async def _new_location(client, headers, name: str) -> str:
+    r = await client.post(_LOCATIONS, headers=headers, json={"name": name, "type": "warehouse"})
+    assert r.status_code in (200, 201), r.text
+    body = r.json()
+    return str(body.get("id") or body.get("location", {}).get("id"))
+
+
+@pytest.mark.asyncio
+async def test_two_changes_under_one_id_get_no_card_and_cannot_be_confirmed(client, session, agent_caps, ai_session):
+    """A reply that names two different changes by one id is refused whole: neither is
+    proposed, so confirming that id runs nothing."""
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    doomed = await _new_location(client, admin, "Doomed")
+    before = await _location_count(client, admin)
+    model = ScriptedModel(lambda _m: tool_result(calls=[
+        tool_call(_op(agent_caps, "POST", _LOCATIONS), {"body": {"name": "Twin", "type": "warehouse"}}, "dup"),
+        tool_call(_op(agent_caps, "DELETE", "/companies/me/locations/{location_id}"),
+                  {"path": {"location_id": doomed}}, "dup"),
+    ]))
+    conv_id = await _new_conversation(client, admin)
+    with patch("celerp.ai.service.complete", model):
+        body = await asked_in_thread(client, admin, conv_id, {"query": "add one and remove one"})
+    assert not body.get("pending_actions")
+    assert body["error_code"] == "bad_tool_calls" and body["new_question"] is True
+    r = await _confirm(client, admin, conv_id, body["id"], "dup")
+    assert r.status_code != 200
+    assert await _location_count(client, admin) == before
+
+
+@pytest.mark.asyncio
+async def test_confirming_the_second_card_runs_the_second_change(client, session, agent_caps, ai_session):
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    doomed = await _new_location(client, admin, "Doomed")
+    before = await _location_count(client, admin)
+    model = ScriptedModel(lambda _m: tool_result(calls=[
+        tool_call(_op(agent_caps, "POST", _LOCATIONS), {"body": {"name": "Twin", "type": "warehouse"}}, "k1"),
+        tool_call(_op(agent_caps, "DELETE", "/companies/me/locations/{location_id}"),
+                  {"path": {"location_id": doomed}}, "k2"),
+    ]), lambda _m: text_result("Removed."))
+    conv_id = await _new_conversation(client, admin)
+    with patch("celerp.ai.service.complete", model):
+        body = await asked_in_thread(client, admin, conv_id, {"query": "add one and remove one"})
+        assert [a["id"] for a in body["pending_actions"]] == ["k1", "k2"]
+        r = await _confirm(client, admin, conv_id, body["id"], "k2")
+    assert r.status_code == 200, r.text
+    assert (await _record(session, body["id"], "k2"))["status"] == "completed"
+    assert (await _record(session, body["id"], "k1")).get("status", "pending") == "pending"
+    assert await _location_count(client, admin) == before - 1
