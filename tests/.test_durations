@@ -30881,6 +30881,7 @@
     "tests/test_ai_capabilities.py::test_a_preview_read_named_like_another_tool_does_not_compile": 0.003042871947400272,
     "tests/test_ai_capabilities.py::test_the_gate_scan_passes_over_a_helper_whose_source_does_not_parse": 0.0030868760077282786,
     "tests/test_ai_card_names.py::test_a_bank_resolve_card_names_the_bank_and_the_line_never_their_ids": 0.29073867306578904,
+    "tests/test_ai_card_names.py::test_a_card_names_an_entry_by_its_amount_on_the_bank_in_the_bank_currency": 0.62,
     "tests/test_ai_card_names.py::test_a_name_is_kept_only_for_a_record_the_asker_may_read": 0.20825662789866328,
     "tests/test_ai_card_names.py::test_a_namer_that_fails_leaves_its_ids_as_they_are_and_the_next_namer_still_names": 0.05054361396469176,
     "tests/test_bank_grid_columns.py::test_a_posted_line_says_which_accounts_it_was_posted_to": 0.0033108111238107085,
