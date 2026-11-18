@@ -58,9 +58,10 @@ def _rungs():
     match = [_line("m", "2026-01-10", "-120.00", "OFFICE DEPOT 1199")]
     entry = {"je_id": "je:1", "date": "2026-01-09", "amount": Decimal("-120.00"), "memo": "Office Depot",
              "reference": "", "contact": None}
-    doc_line = [_line("d", "2026-01-12", "1500.00", "ACME LTD")]
+    doc_line = [_line("d", "2026-01-12", "1500.00", "ACME LTD", "INV-1")]
+    amount_line = [_line("e", "2026-01-12", "1500.00", "ACME LTD")]
     doc = {"doc_id": "doc:inv1", "doc_type": "invoice", "contact_id": "contact-acme",
-           "open_balance": Decimal("1500.00"), "ref": "INV-1"}
+           "open_balance": Decimal("1500.00"), "ref": "INV-1", "identifier": "inv-1"}
     rule_line = [_line("r", "2026-01-15", "-15.99", "NETFLIX.COM")]
     transfer_line = [_line("t", "2026-01-20", "-1000.00", "TRANSFER TO OWN SAVINGS")]
     pair = {"id": "p", "bank_id": OTHER_BANK, "line_date": "2026-01-21", "amount": Decimal("1000.00"),
@@ -76,6 +77,7 @@ def _rungs():
         ("0-reversal", reversal, _ctx(), "a", "reversal", "no_entry"),
         ("1-match", match, _ctx(entries=[entry]), "m", "match", "match"),
         ("2-document", doc_line, _ctx(open_docs=[doc]), "d", "document", "pay_doc"),
+        ("2-document-amount", amount_line, _ctx(open_docs=[doc]), "e", "document_amount", "pay_doc"),
         ("3-rule", rule_line, _ctx(rules=[_rule()]), "r", "rule", "post"),
         ("4-transfer", transfer_line, _ctx(pair_lines=[pair]), "t", "transfer", "transfer"),
         ("5-slip", slip_line, _ctx(slips=[slip]), "s", "slip", "post"),

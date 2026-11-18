@@ -647,3 +647,60 @@ def test_a_match_starts_ticked_only_with_an_identifier_and_a_post_only_with_an_a
     assert not _starts_ticked(line(kind="match", evidence={}))
     assert _starts_ticked(line(kind="post", account_code="6100"))
     assert not _starts_ticked(line(kind="post"))
+
+
+async def _open_bill(client, co, total: float, contact: str) -> tuple[str, str]:
+    """A finalized supplier bill of ``total`` with nothing paid: its id and its number."""
+    r = await client.post("/docs", headers=co["h"], json={
+        "doc_type": "bill", "contact_id": contact, "issue_date": "2026-01-02",
+        "line_items": [{"name": "Supplies", "quantity": 1, "unit_price": total, "line_total": total}],
+        "subtotal": total, "tax": 0.0, "total": total})
+    assert r.status_code == 200, r.text
+    doc = r.json()["id"]
+    assert (await client.post(f"/docs/{doc}/finalize", json={}, headers=co["h"])).status_code == 200
+    state = (await client.get(f"/docs/{doc}", headers=co["h"])).json()
+    return doc, state.get("ref_id") or state["doc_number"]
+
+
+async def _post_ticked(client, co, bk) -> None:
+    """Post ticked as the bank page sends it: the groups that start ticked, nothing else."""
+    table = await B.groups(client, co, bk["id"])
+    keys = [g["key"] for g in table["groups"] if g["ticked"]]
+    if keys:
+        r = await B.resolve(client, co, bk["id"], accept=B.accept(table, keys))
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suppliers", [1, 2])
+async def test_an_open_bill_of_the_same_amount_is_shown_never_ticked(client, suppliers):
+    """Equal money names no document: with one open bill of the amount, or two of different
+    suppliers, the payment shows a bill unticked and Post ticked pays none of them."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    bills = [await _open_bill(client, co, 300.0, await _contact(client, co, f"Supplier {i}")) for i in range(suppliers)]
+    await _one_line(client, co, bk, [("2026-01-10", "PAYMENT OUT", "-300.00")])
+    [(line, ticked)] = await _suggested(client, co, bk)
+    assert line["suggestion"]["kind"] == "pay_doc" and line["suggestion"]["source"] == "document_amount", line
+    assert not ticked, line
+    await _post_ticked(client, co, bk)
+    assert await _statuses(client, co, bk) == ["unmatched"]
+    for doc, _number in bills:
+        assert (await client.get(f"/docs/{doc}", headers=co["h"])).json()["amount_outstanding"] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_a_payment_naming_the_one_bill_it_pays_starts_ticked(client):
+    """A payment whose reference is the number of the one open bill of its amount, carried by
+    nothing else, is that bill's payment: it starts ticked and Post ticked pays the bill."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    doc, number = await _open_bill(client, co, 300.0, await _contact(client, co, "Supplier A"))
+    await _open_bill(client, co, 300.0, await _contact(client, co, "Supplier B"))
+    await _one_line(client, co, bk, [("2026-01-10", "PAYMENT OUT", "-300.00")], reference=number)
+    [(line, ticked)] = await _suggested(client, co, bk)
+    assert line["suggestion"]["source"] == "document" and line["suggestion"]["docs"][0]["doc_id"] == doc, line
+    assert ticked, line
+    await _post_ticked(client, co, bk)
+    assert await _statuses(client, co, bk) == ["posted"]
+    assert (await client.get(f"/docs/{doc}", headers=co["h"])).json()["amount_outstanding"] == 0

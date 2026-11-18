@@ -1411,7 +1411,6 @@ async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) ->
     payment entry pays, while that payment is the document's only one (none refunded) and no other
     document of the company has that number. A memo, a contact or an account is never one, and an
     entry keyed by hand carries none: it is a candidate the user confirms."""
-    from celerp.models.projections import Projection
     from celerp_accounting import suggest
     from celerp_accounting.routes import _je_doc_refs
 
@@ -1423,15 +1422,25 @@ async def _entry_identifiers(db: AsyncSession, company_id: uuid.UUID, je_ids) ->
         if ref["trigger"] == "doc.payment.received" and ident and only.get("status", "active") == "active" \
                 and not only.get("refunded") and not only.get("refund_count"):
             out[je_id] = ident
-    if not out:
-        return out
+    once = await _carried_once(db, company_id, set(out.values()))
+    return {je_id: ident for je_id, ident in out.items() if ident in once}
+
+
+async def _carried_once(db: AsyncSession, company_id: uuid.UUID, idents: set) -> set:
+    """Of ``idents`` (normalised document numbers), those exactly one record of the company
+    carries as its number: what makes a number an identifier."""
+    from celerp.models.projections import Projection
+    from celerp_accounting import suggest
+
+    if not idents:
+        return set()
     numbers = [Projection.state[k].as_string() for k in ("ref_id", "doc_number")]
     holders: dict[str, set] = {}
     for entity_id, *found in (await db.execute(select(Projection.entity_id, *numbers).where(
-            Projection.company_id == company_id, or_(*(_narrowed(n, set(out.values())) for n in numbers))))).all():
-        for number in {suggest.normalised(f) for f in found} & set(out.values()):
+            Projection.company_id == company_id, or_(*(_narrowed(n, idents) for n in numbers))))).all():
+        for number in {suggest.normalised(f) for f in found} & idents:
             holders.setdefault(number, set()).add(entity_id)
-    return {je_id: ident for je_id, ident in out.items() if len(holders.get(ident, ())) == 1}
+    return {ident for ident in idents if len(holders.get(ident, ())) == 1}
 
 
 async def _caught_up(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, book: _Book) -> None:
@@ -1454,8 +1463,11 @@ async def _caught_up(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount,
 
 
 async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, base: str) -> list[dict]:
-    """Invoices and bills with a balance left, in the bank's currency."""
+    """Invoices and bills with a balance left, in the bank's currency, each with its
+    ``identifier``: its normalised number while no other record of the company carries it,
+    else None (see ``suggest.identified``)."""
     from celerp.models.projections import Projection
+    from celerp_accounting import suggest
 
     rows = (await db.execute(select(Projection.entity_id, Projection.state).where(
         Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
@@ -1467,8 +1479,10 @@ async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, bas
         if (state.get("currency") or base) != currency or not state.get("amount_outstanding"):
             continue
         out.append({"doc_id": doc_id, "doc_type": state["doc_type"], "contact_id": state.get("contact_id"),
-                    "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id")})
-    return out
+                    "open_balance": _money_text(state["amount_outstanding"], currency), "ref": state.get("ref_id"),
+                    "identifier": suggest.normalised(state.get("ref_id") or state.get("doc_number"))})
+    once = await _carried_once(db, company_id, {d["identifier"] for d in out if d["identifier"]})
+    return [{**d, "identifier": d["identifier"] if d["identifier"] in once else None} for d in out]
 
 
 async def _slips(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:

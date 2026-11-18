@@ -32,7 +32,8 @@ from ui.i18n import t
 NO_CONTACT_REASON = str(t("acct.recon_no_contact_named", "en"))
 
 # Sources whose suggestion a group may start ticked with: each names its evidence. A reversal or a
-# transfer pair takes two statement lines to be one transaction, which only the user confirms.
+# transfer pair takes two statement lines to be one transaction, which only the user confirms, and
+# an open document of the same amount ("document_amount") names no payment: equal money is no identity.
 TICKED_SOURCES = frozenset({"match", "document", "rule", "slip", "history"})
 
 MODEL_BATCH = 100
@@ -159,14 +160,21 @@ def _matches(lines: list[dict], ctx: LadderContext) -> dict:
 
 
 def _document(line: dict, ctx: LadderContext) -> dict | None:
+    """The open invoice or bill a line pays in full. It is the line's own ("document") only when
+    ``identified`` proves it: the line's reference is the document's identifier. Otherwise the
+    first one open for the same amount is offered ("document_amount"), never ticked."""
     want = "invoice" if _amt(line["amount"]) > 0 else "bill"
-    for doc in ctx.open_docs:
-        if doc.get("doc_type") == want and _amt(doc["open_balance"]) == abs(_amt(line["amount"])):
-            return {"kind": "pay_doc", "source": "document", "contact_id": doc.get("contact_id"),
-                    "docs": [{"doc_id": doc["doc_id"], "amount": _money(abs(_amt(line["amount"])))}],
-                    "evidence": {"names_contact": True, "doc_id": doc["doc_id"]},
-                    "reason": t("acct.recon_reason_document", ref=doc.get("ref") or doc["doc_id"])}
-    return None
+    money = abs(_amt(line["amount"]))
+    docs = [d for d in ctx.open_docs if d.get("doc_type") == want and _amt(d["open_balance"]) == money]
+    if not docs:
+        return None
+    pick = identified(line.get("reference"), [d.get("identifier") for d in docs],
+                      ctx.references.elsewhere({str(line["id"])}))
+    doc = docs[0] if pick is None else docs[pick]
+    return {"kind": "pay_doc", "source": "document_amount" if pick is None else "document",
+            "contact_id": doc.get("contact_id"), "docs": [{"doc_id": doc["doc_id"], "amount": _money(money)}],
+            "evidence": {"names_contact": True, "doc_id": doc["doc_id"]},
+            "reason": t("acct.recon_reason_document", ref=doc.get("ref") or doc["doc_id"])}
 
 
 def _rule(line: dict, ctx: LadderContext) -> dict | None:
