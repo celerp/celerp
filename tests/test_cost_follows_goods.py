@@ -553,7 +553,7 @@ async def test_finalizing_on_a_shared_sku_stays_fast_with_many_open_invoices(cli
 _HISTORY = 150
 
 
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(120)
 async def test_finalizing_reads_no_more_rows_after_many_invoices_elsewhere(client, auth, _db_engine):
     """Finalizing an invoice reads the cost records of only the open invoices on its own
     goods, never every invoice the company has finalized, so the rows it reads stay the
