@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "Extrato bancário atualizado",
   "acct.recon_no_contact_named": "Nenhum registro indica um contato, portanto, nenhum foi definido.",
   "acct.err_recon_line_state": "Esta linha já é {status}. Desfaça-a primeiro e tente novamente.",
+  "acct.err_suggest_stale": "As linhas do extrato mudaram enquanto as sugestões eram preparadas, por isso nenhuma foi guardada. Peça sugestões novamente para trabalhar com as linhas como estão agora.",
   "acct.err_recon_match_needs_entry": "Selecione pelo menos um lançamento contábil para relacionar com esta linha.",
   "acct.recon_reason_reversal": "O banco reverteu a transação em 3 dias, portanto, nenhuma das linhas precisa de lançamento.",
   "acct.recon_reason_match": "Um lançamento contábil do mesmo valor em {date}.",

@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "የባንክ መግለጫ ተዘምኗል",
   "acct.recon_no_contact_named": "ምንም መዝገብ አንድን እውቂያ አይጠቅስም፣ ስለዚህ ምንም አልተዘጋጀም።",
   "acct.err_recon_line_state": "ይህ መስመር {status} ነው። መጀመሪያ ይቀልብሱት፣ ከዚያ እንደገና ይሞክሩ።",
+  "acct.err_suggest_stale": "ጥቆማዎቹ እየተዘጋጁ ሳሉ የመግለጫው መስመሮች ስለተቀየሩ አንዳቸውም አልተቀመጡም። መስመሮቹን አሁን ባሉበት ሁኔታ ለመጠቀም እንደገና ጥቆማ ይጠይቁ።",
   "acct.err_recon_match_needs_entry": "ከዚህ መስመር ጋር የሚዛመድ ቢያንስ አንድ የመዝገብ ግቤት ይምረጡ።",
   "acct.recon_reason_reversal": "ባንኩ ይህንን በ3 ቀናት ውስጥ ቀልብሶታል፣ ስለዚህ ለሁለቱም መስመሮች ግቤት አያስፈልግም።",
   "acct.recon_reason_match": "ተመሳሳይ መጠን ያለው የመዝገብ ግቤት በ{date} ላይ።",

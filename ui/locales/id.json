@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "Rekening koran diperbarui",
   "acct.recon_no_contact_named": "Tidak ada catatan yang menyebutkan kontak, jadi tidak ada yang diatur.",
   "acct.err_recon_line_state": "Baris ini sudah {status}. Batalkan terlebih dahulu, lalu coba lagi.",
+  "acct.err_suggest_stale": "Baris rekening koran berubah saat saran sedang disiapkan, jadi tidak ada yang disimpan. Minta saran lagi untuk memakai baris seperti sekarang.",
   "acct.err_recon_match_needs_entry": "Pilih setidaknya satu entri buku untuk dicocokkan dengan baris ini.",
   "acct.recon_reason_reversal": "Pihak bank membatalkan transaksi ini dalam waktu 3 hari, jadi tidak ada entri yang diperlukan untuk kedua transaksi tersebut.",
   "acct.recon_reason_match": "Entri buku dengan jumlah yang sama pada {date}.",

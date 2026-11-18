@@ -1563,7 +1563,8 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
 
 
 async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict | None:
-    """The model's replies for the residue groups; None when the model cannot run."""
+    """The model's replies for the residue groups; None when the model cannot run. The usage
+    of each batch is committed as it comes, so no lock it takes is held over the next call."""
     import inspect
 
     from celerp_accounting import suggest
@@ -1577,26 +1578,20 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
         for batch in suggest.model_batches(residue):
             reply = rung(batch, accounts)
             replies.update((await reply if inspect.isawaitable(reply) else reply) or {})
+            await call.session.commit()
     except Exception:  # the model's failure leaves the lines to questions, said in the summary
+        await call.session.rollback()
         return None
     finally:
         suggest.current_call.reset(token)
     return replies
 
 
-@router.post(f"{API}/bank/{{bank_id}}/suggest", summary="Suggest an answer for each open statement line of a bank.",
-             openapi_extra=_agent(credits=True))
-async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
-                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
-                        db: AsyncSession = Depends(get_session)) -> dict:
-    """Suggestions only: no line is posted or matched. A replay of the same key answers
-    the first result and the model is not asked again."""
+async def _suggest_input(db: AsyncSession, company_id: uuid.UUID, bank_id) -> tuple:
+    """(open unmatched lines, what the ladder reads of each, its context, its answers before
+    the model, the residue groups for the model) of a bank, as the transaction reads them."""
     from celerp_accounting import suggest
 
-    key, actor_id = payload.idempotency_key, user.id
-    request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
-        return first
     bank = await _bank(db, company_id, bank_id)
     open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
     rows = [l for l in await _statement_lines(db, company_id, bank)
@@ -1606,18 +1601,50 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
               "counterparty_account": l.counterparty_account, "reference": l.reference,
               "client": l.client_query if SL.asked(l) and l.client_query.get("answered") else None} for l in rows]
     ctx = await _ladder_context(db, company_id, bank, {l.id for l in rows})
-    out, residue = suggest.ladder_rungs(lines, ctx)
+    return (rows, lines, ctx, *suggest.ladder_rungs(lines, ctx))
+
+
+@router.post(f"{API}/bank/{{bank_id}}/suggest", summary="Suggest an answer for each open statement line of a bank.",
+             openapi_extra=_agent(credits=True))
+async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUID = Depends(get_current_company_id),
+                        _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
+                        db: AsyncSession = Depends(get_session)) -> dict:
+    """Suggestions only: no line is posted or matched. A replay of the same key answers
+    the first result and the model is not asked again.
+
+    The lines are read and the model asked with no lock held; the suggestions are written
+    under the company lock only when no run under the key has answered meanwhile (its answer
+    is returned instead) and the lines, and what the ladder makes of them, are as they were
+    read. Otherwise the request is refused and nothing is written. A run whose model could not
+    answer records no outcome, so the same key asks again."""
+    from celerp.services.company_lock import lock_company
+    from celerp_accounting import suggest
+
+    key, actor_id = payload.idempotency_key, user.id
+    request = _request(payload, bank_id=bank_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        return first
+    _rows, lines, ctx, out, residue = await _suggest_input(db, company_id, bank_id)
+    await db.rollback()  # a read: nothing it took is held while the model runs
     replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(db, company_id, actor_id, key)) \
         if residue else {}
-    suggest.apply_model(out, residue, replies or {}, ctx.accounts)
-    found = suggest.finish(out)
+    await lock_company(db, company_id)
+    if (first := await _replayed(db, company_id, key, request)) is not None:
+        await db.rollback()
+        return first
+    rows, now_lines, now_ctx, now_out, now_residue = await _suggest_input(db, company_id, bank_id)
+    if (now_lines, now_out, now_residue, now_ctx.accounts) != (lines, out, residue, ctx.accounts):
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_stale"))
+    suggest.apply_model(now_out, now_residue, replies or {}, now_ctx.accounts)
+    found = suggest.finish(now_out)
     for line in rows:
         SL.write_suggestion(line, found.get(str(line.id)))
-    model_ran = bool(residue) and replies is not None
-    summary = t("acct.recon_suggested", count=len(found)) if replies is not None else \
-        t("acct.recon_model_not_run", count=sum(g["count"] for g in residue))
-    result = await _recorded(db, company_id, actor_id, key, request, "suggest", bank.id,
-                             {"model_ran": model_ran, "summary": str(summary), "suggested": len(found)})
+    result = {"model_ran": bool(residue) and replies is not None, "suggested": len(found),
+              "summary": str(t("acct.recon_suggested", count=len(found)) if replies is not None else
+                             t("acct.recon_model_not_run", count=sum(g["count"] for g in residue)))}
+    if replies is not None:
+        result = await _recorded(db, company_id, actor_id, key, request, "suggest", bank_id, result)
     await db.commit()
     return result
 

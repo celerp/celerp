@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "Extracto bancario actualizado",
   "acct.recon_no_contact_named": "No hay ningún registro que mencione un contacto, por lo que no se ha configurado ninguno.",
   "acct.err_recon_line_state": "Esta línea ya está {status}. Deshágala primero y vuelva a intentarlo.",
+  "acct.err_suggest_stale": "Las líneas del extracto cambiaron mientras se preparaban las sugerencias, así que no se guardó ninguna. Vuelva a pedir sugerencias para trabajar con las líneas tal como están ahora.",
   "acct.err_recon_match_needs_entry": "Elija al menos una entrada de libro con la que coincida esta línea.",
   "acct.recon_reason_reversal": "El banco revirtió la operación en un plazo de 3 días, por lo que ninguna de las dos líneas necesita un asiento.",
   "acct.recon_reason_match": "Una entrada de libro por el mismo importe el {date}.",

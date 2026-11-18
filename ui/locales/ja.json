@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "銀行明細を更新しました",
   "acct.recon_no_contact_named": "連絡先が登録されていないため、連絡先は設定されていません。",
   "acct.err_recon_line_state": "この行は既に{status}になっています。まず元に戻してから、もう一度試してください。",
+  "acct.err_suggest_stale": "提案の準備中に明細の行が変更されたため、提案は保存されていません。現在の行で提案するには、もう一度提案を実行してください。",
   "acct.err_recon_match_needs_entry": "この明細に一致させる帳簿の仕訳を少なくとも1つ選択してください。",
   "acct.recon_reason_reversal": "銀行は3日以内にこの取引を元に戻したため、どちらの行にも記入は不要です。",
   "acct.recon_reason_match": "{date} に同額の帳簿の仕訳があります。",

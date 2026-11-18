@@ -8336,6 +8336,7 @@
   "event.acc.bank_statement.done": "Relevé bancaire mis à jour",
   "acct.recon_no_contact_named": "Aucun enregistrement ne désigne un contact, donc aucun n'est défini.",
   "acct.err_recon_line_state": "Cette ligne est déjà {status}. Annulez-la d'abord, puis réessayez.",
+  "acct.err_suggest_stale": "Les lignes du relevé ont changé pendant la préparation des suggestions, aucune n'a donc été enregistrée. Relancez les suggestions pour partir des lignes telles qu'elles sont maintenant.",
   "acct.err_recon_match_needs_entry": "Choisissez au moins une entrée de livre à laquelle faire correspondre cette ligne.",
   "acct.recon_reason_reversal": "La banque a annulé cette opération en 3 jours, donc aucune des deux lignes ne nécessite d'écriture.",
   "acct.recon_reason_match": "Une entrée de livre du même montant le {date}.",
