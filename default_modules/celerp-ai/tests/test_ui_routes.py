@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -22,6 +23,7 @@ from fasthtml.common import to_xml
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
+from celerp_ai.ui_routes import _action_dom_id
 from ui.api_client import APIError
 from ui.i18n import t
 from test_helpers import assert_not_permitted_redirect, make_test_token
@@ -488,6 +490,17 @@ def _bills(n: int, *, flagged: set[int] = frozenset()) -> list[dict]:
     } for i in range(1, n + 1)]
 
 
+def _dom(n: int) -> str:
+    return _action_dom_id("m2", f"p{n}")
+
+
+def test_action_dom_id_is_css_safe_and_unique_per_message_and_call():
+    ids = {_action_dom_id(m, c) for m in ("m1", "m 2#.:") for c in ("a b#c.d:e", "a b#c.d:f", "p1", "")}
+    assert len(ids) == 8
+    assert all(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", i) for i in ids)
+    assert _action_dom_id("m1", "p1") == _action_dom_id("m1", "p1")
+
+
 def _group_html(actions: list[dict]) -> str:
     from fasthtml.common import to_xml
     from celerp_ai.ui_routes import _action_group
@@ -499,9 +512,9 @@ def test_action_group_renders_review_table_past_five_proposals():
     assert 'id="ai-actions-m2"' in html and "ai-action-table" in html
     assert html.count('class="bulk-select"') == 6
     # Flagged rows start unticked with the reason in the Checks column.
-    row2 = html[html.index('id="ai-act-m2-p2"'):html.index('id="ai-act-m2-p3"')]
+    row2 = html[html.index(f'id="{_dom(2)}"'):html.index(f'id="{_dom(3)}"')]
     assert "checked" not in row2 and "No date was found." in row2
-    row1 = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row1 = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert "checked" in row1
     assert "Vendor 3" in html and "฿30.00" in html and "2026-09-03" in html
     # The shared bulk toolbar posts the ticked ids to the chunked confirm route.
@@ -525,7 +538,7 @@ def test_action_table_failed_record_has_no_checkbox():
     actions[0] = {**actions[0], "status": "failed", "error": "The model stopped."}
     html = _group_html(actions)
     assert html.count('class="bulk-select"') == 5
-    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert "Failed" in row and "The model stopped." in row
 
 
@@ -533,7 +546,7 @@ def test_action_table_retryable_is_actionable_but_not_preselected():
     actions = _bills(6)
     actions[0] = {**actions[0], "status": "retryable", "error": "Result was uncertain."}
     html = _group_html(actions)
-    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    row = html[html.index(f'id="{_dom(1)}"'):html.index(f'id="{_dom(2)}"')]
     assert 'class="bulk-select"' in row
     assert "checked" not in row
     assert "Retry" in row and "Result was uncertain." in row
@@ -568,10 +581,10 @@ async def test_confirm_all_runs_the_first_chunk_and_chains_the_rest(ui_client):
     assert 'name="completed" value="10"' in r.text
     assert 'name="doc_ids" value="doc:1,doc:2,doc:3,doc:4,doc:5,doc:6,doc:7,doc:8,doc:9,doc:10"' in r.text
     # Each finished row loses its checkbox and gains a status badge with a record link.
-    assert 'hx-swap-oob="true" id="ai-act-m2-p1-pick"' in r.text
-    assert 'id="ai-act-m2-p1-status"' in r.text and "Applied" in r.text
+    assert f'hx-swap-oob="true" id="{_dom(1)}-pick"' in r.text
+    assert f'id="{_dom(1)}-status"' in r.text and "Applied" in r.text
     assert 'href="/docs/doc:1"' in r.text and 'href="/docs/doc:10"' in r.text
-    assert "ai-act-m2-p11" not in r.text
+    assert _dom(11) not in r.text
 
 
 @pytest.mark.asyncio
@@ -610,7 +623,7 @@ async def test_confirm_all_cards_view_replaces_each_card(ui_client):
     assert call.await_args.kwargs["tool_call_ids"] == ["p1", "p2"]
     assert r.status_code == 200
     assert t("ai.confirm_all_result", "en", completed=1, failed=1) in r.text
-    assert 'hx-swap-oob="true" id="ai-act-m2-p1"' in r.text
+    assert f'hx-swap-oob="true" id="{_dom(1)}"' in r.text
     assert "Add vendor Supplier Co" in r.text and "ai-action__done" in r.text
     assert 'href="/contacts/contact:1"' in r.text
     assert "Create bill from receipt.jpg" in r.text and "total is required" in r.text

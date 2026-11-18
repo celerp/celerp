@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 
@@ -1350,8 +1351,10 @@ def _action_title(action: dict, lang: str | None = None) -> str:
 
 def _action_dom_id(message_id: str, tool_call_id: str) -> str:
     """The element id a proposal's card or table row carries, so an outcome can
-    replace it out of band after a bulk confirm."""
-    return f"ai-act-{message_id}-{tool_call_id}"
+    replace it out of band after a bulk confirm. A digest of the message and the call
+    id: unique per card and safe in markup and selectors whatever characters the model's
+    call id holds (the call id itself stays the confirmation identity, in the form)."""
+    return "ai-act-" + hashlib.sha256(json.dumps([message_id, tool_call_id]).encode()).hexdigest()[:24]
 
 
 def _action_body(action: dict, lang: str = "en") -> list[FT]:

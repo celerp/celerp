@@ -377,3 +377,38 @@ def test_bulk_card_lists_every_record_in_a_scrolling_box(page: Page, ui_server, 
     rows.last.scroll_into_view_if_needed()
     expect(rows.last).to_be_in_viewport()
     expect(rows.last).to_contain_text("RENT-0199")
+
+
+def test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold(page: Page, ui_server, item_create_cap,
+                                                                               agent_caps, monkeypatch):
+    """A model may name its tool calls with spaces and selector characters; the review
+    table still swaps the outcome into the row that was confirmed and no other."""
+    import json
+    import celerp_ai.ui_routes as ui_routes
+    monkeypatch.setattr(ui_routes, "TABLE_FROM", 2)  # a turn proposes at most MAX_TOOL_CALLS_PER_TURN
+    ids = ["a b#c.d:e", "a b#c.d:f", "a b#c.d:g"]
+    bodies = [(agent_caps[("POST", "/companies/me/locations")]["name"], {"name": "Odd Id Shelf"}),
+              (item_create_cap, {"name": "Odd Id Widget", "sell_by": "piece"}),
+              (agent_caps[("POST", "/companies/me/categories")]["name"], {"name": "Odd Id Category"})]
+    calls = [{"id": cid, "type": "function", "function": {"name": name, "arguments": json.dumps({"body": body})}}
+             for cid, (name, body) in zip(ids, bodies)]
+    _SCRIPT.append(ModelResult(
+        message={"role": "assistant", "content": "I'll add these once you confirm.", "tool_calls": calls},
+        model_used="fake-model", usage={}, reservation_id=None, remaining=None))
+    _open_chat(page, ui_server)
+    _send(page, "add the widgets")
+
+    table = page.locator(".ai-action-table")
+    rows = table.locator("tbody tr.data-row")
+    expect(rows).to_have_count(len(ids))
+    assert page.evaluate("[...document.querySelectorAll('[id]')].filter(e => /[^A-Za-z0-9_-]/.test(e.id)).length") == 0
+    for n in range(len(ids)):
+        if n != 1:
+            rows.nth(n).locator(".bulk-select").uncheck()
+    page.locator(".bulkbar .bulk-action-select").select_option("confirm")
+
+    expect(rows.nth(1).locator(".ai-action-table__status")).to_contain_text("Applied")
+    for n in range(len(ids)):
+        if n != 1:
+            expect(rows.nth(n).locator(".bulk-select")).to_have_count(1)
+            expect(rows.nth(n).locator(".ai-action-table__status")).not_to_contain_text("Applied")
