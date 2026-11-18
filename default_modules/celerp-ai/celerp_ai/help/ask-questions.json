@@ -6,7 +6,7 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 1,
-  "checked": "7fa816fcab25c4c9b8c1a3beba88811f3c3be2a1d28fe4c6b1fb67094d93127d",
+  "checked": "d2bf1e900b8f2b6ae074bef9ebdbc172df8fc3a2845d39392babb271589e45ed",
   "steps": [
     {
       "text": "Open {ai} from the sidebar. Without a Celerp account it shows example conversations and a {create} button; eligible free accounts with a verified email address receive AI questions at no cost.",

@@ -31195,9 +31195,6 @@
     "default_modules/celerp-ai/tests/test_agent_tool_flows.py::test_two_changes_under_one_id_get_no_card_and_cannot_be_confirmed": 4.50583950500004,
     "default_modules/celerp-ai/tests/test_agent_tool_flows.py::test_two_questions_whose_keyed_changes_share_a_call_id_each_run_their_own": 4.870059334789403,
     "tests/test_ai_action_state_races_pg.py::test_finishing_keeps_the_error_and_outcomes_it_is_given_and_clears_a_stale_error": 0.162829510984011,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.ask-questions]": 17.43843753100373,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.review-proposals]": 0.9941535940160975,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.2457204818492755,
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_action_dom_id_is_css_safe_and_unique_per_message_and_call": 0.026114532840438187,
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_bulk_preview_keeps_a_field_name_that_two_sections_share": 0.006690198904834688,
     "tests/test_ai_agent_help.py::test_help_search_finds_the_recipe_page_for_a_make_and_take_from_stock_question": 0.055234488914720714,
@@ -31224,5 +31221,15 @@
     "default_modules/celerp-ai/tests/test_protected_work.py::test_retention_retrieval_and_deletion_follow_one_rule[8]": 0.08463357800064841,
     "default_modules/celerp-ai/tests/test_protected_work.py::test_retention_retrieval_and_deletion_follow_one_rule[9]": 0.10458937299881654,
     "default_modules/celerp-ai/tests/test_protected_work.py::test_running_action_blocks_deletion_and_stays_auditable": 7.968121101999714,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-ai/tests/test_protected_work.py]": 0.010003849999520753
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-ai/tests/test_protected_work.py]": 0.010003849999520753,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_failed_model_records_no_outcome_and_the_same_key_runs_again": 1.7804075739986729,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_line_resolved_while_the_model_runs_refuses_and_writes_nothing": 1.1665760219984804,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_interleavings_write_only_when_the_recheck_matches": 8.547769486001926,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_same_key_runs_write_once_and_the_later_answers_the_first_result": 0.917341234999185,
+    "default_modules/celerp-ai/tests/test_protected_work.py::test_more_older_actions_than_a_page_are_each_reached_by_paging_and_acted_on": 6.514289089005615,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_older_actions_are_reached_from_the_thread_page_by_page": 0.039701397996395826,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_suggest_races_pg.py]": 0.007863579994591419,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.ask-questions]": 18.331257003992505,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.review-proposals]": 1.531007032004709,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.411870264004392
 }

@@ -6,7 +6,7 @@
   "routes": ["/ai"],
   "permission": "use_ai_assistant",
   "order": 2,
-  "checked": "7fa816fcab25c4c9b8c1a3beba88811f3c3be2a1d28fe4c6b1fb67094d93127d",
+  "checked": "d2bf1e900b8f2b6ae074bef9ebdbc172df8fc3a2845d39392babb271589e45ed",
   "steps": [
     {
       "text": "Before the assistant changes anything in your books, it shows the change as a card naming what it wants to create, update or delete, with its fields in your language and the records and files it uses by name. The card also says when the change sends something outside Celerp, or finalizes or voids a document, and a change to many records comes as one card with their count and list.",
@@ -22,6 +22,12 @@
     },
     {
       "text": "A proposal that failed can be retried from the same card; one still waiting on something else shows why, so you know what to do next.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/ai", "selector": "main", "actions": []}
+    },
+    {
+      "text": "When a conversation holds more unanswered proposals than its first page shows, a Show older actions button opens at the top of the thread; each click loads the next page of older proposals in order, so none of them go unanswered.",
       "labels": {},
       "image": null,
       "capture": {"route": "/ai", "selector": "main", "actions": []}
