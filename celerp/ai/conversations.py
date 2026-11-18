@@ -254,7 +254,7 @@ async def _protected_message_ids(
 ) -> set[uuid.UUID]:
     """Of ``rows`` (message id, tools_called) of one conversation, the messages carrying
     protected work: an action under ``_protected``, or the question an open job answers.
-    Pruning keeps them and the conversation read returns them, however old."""
+    Pruning keeps them and the conversation read reaches them, however old (protected_before)."""
     asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
     return {message_id for message_id, tools_called in rows
             if message_id in asked or _has_protected_action(tools_called)}
@@ -345,37 +345,58 @@ async def add_message(
     return msg
 
 
+Cursor = tuple[datetime, uuid.UUID]
+
+
 async def get_messages(
     session: AsyncSession,
     conversation_id: uuid.UUID,
     *,
-    limit: int = MAX_MESSAGES_PER_CONVERSATION,
-) -> list[AIMessage]:
-    """The newest ``limit`` messages plus the older ones carrying protected work, so a
-    card pruning kept stays reachable, in time order (created_at, then id).
-
-    Bounded: at most ``limit`` older messages join, the newest of them, so a read
-    returns at most twice ``limit``."""
+    limit: int | None = None,
+) -> tuple[list[AIMessage], Cursor | None]:
+    """The newest ``limit`` messages (MAX_MESSAGES_PER_CONVERSATION by default) plus the
+    first page of older ones carrying protected work (protected_before), in time order
+    (created_at, then id), and the cursor of the next older page, None when every older
+    protected message is in this read. Bounded: a read returns at most twice ``limit``."""
+    limit = limit or MAX_MESSAGES_PER_CONVERSATION
     newest = list((await session.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id)
         .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
         .limit(limit)
     )).scalars().all())
+    older = None
     if newest and len(newest) == limit:
-        edge = newest[-1]
-        older = (await session.execute(
-            select(AIMessage.id, AIMessage.tools_called)
-            .where(AIMessage.conversation_id == conversation_id,
-                   tuple_(AIMessage.created_at, AIMessage.id) < tuple_(edge.created_at, edge.id))
-            .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
-        )).all()
-        protected = await _protected_message_ids(session, conversation_id, older)
-        keep = [message_id for message_id, _ in older if message_id in protected][:limit]
-        if keep:
-            newest += (await session.execute(select(AIMessage).where(AIMessage.id.in_(keep)))).scalars().all()
+        page, older = await protected_before(session, conversation_id, (newest[-1].created_at, newest[-1].id),
+                                             limit=limit)
+        newest += page
     newest.sort(key=lambda m: (m.created_at, m.id))
-    return newest
+    return newest, older
+
+
+async def protected_before(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    before: Cursor,
+    *,
+    limit: int | None = None,
+) -> tuple[list[AIMessage], Cursor | None]:
+    """The newest ``limit`` messages older than ``before`` (created_at, id) that carry
+    protected work (_protected_message_ids), in time order, and the cursor of the next older
+    page: the oldest of them, None when no older message carries protected work. Paging
+    from the cursor reaches every such message once, so a card pruning kept is never lost."""
+    limit = limit or MAX_MESSAGES_PER_CONVERSATION
+    older = (await session.execute(
+        select(AIMessage.id, AIMessage.tools_called)
+        .where(AIMessage.conversation_id == conversation_id,
+               tuple_(AIMessage.created_at, AIMessage.id) < tuple_(*before))
+        .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
+    )).all()
+    protected = await _protected_message_ids(session, conversation_id, older)
+    keep = [message_id for message_id, _ in older if message_id in protected]
+    page = sorted((await session.execute(select(AIMessage).where(AIMessage.id.in_(keep[:limit])))).scalars().all(),
+                  key=lambda m: (m.created_at, m.id)) if keep else []
+    return page, ((page[0].created_at, page[0].id) if len(keep) > limit else None)
 
 
 async def get_message(

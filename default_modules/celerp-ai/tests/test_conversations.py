@@ -213,7 +213,7 @@ async def test_get_conversation_with_messages(session, company, user):
 
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is not None
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     assert len(msgs) == 2
     assert msgs[0].role == "user"
     assert msgs[1].role == "assistant"
@@ -235,7 +235,7 @@ async def test_delete_conversation_cascades_messages(session, company, user):
     # Conversation and its messages gone
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is None
-    assert await get_messages(session, conv.id) == []
+    assert await get_messages(session, conv.id) == ([], None)
 
 
 @pytest.mark.asyncio
@@ -266,7 +266,7 @@ async def test_query_in_conversation_adds_messages(session, company, user):
     await add_message(session, conv.id, "assistant", "Answer 1", model_used="test-model", tools_called=["kpis"])
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     assert len(msgs) == 2
     assert msgs[1].model_used == "test-model"
     assert msgs[1].tools_called == ["kpis"]
@@ -279,7 +279,7 @@ async def test_message_limit_per_conversation(session, company, user):
         await add_message(session, conv.id, "user" if i % 2 == 0 else "assistant", f"Msg {i}")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id, limit=300)
+    msgs, _ = await get_messages(session, conv.id, limit=300)
     assert len(msgs) <= MAX_MESSAGES_PER_CONVERSATION
 
 
@@ -298,7 +298,7 @@ async def test_message_pruning_preserves_unresolved_action(session, company, use
     await session.commit()
 
     assert await session.get(AIMessage, protected_id) is not None
-    msgs = await get_messages(session, conv.id, limit=MAX_MESSAGES_PER_CONVERSATION + 10)
+    msgs, _ = await get_messages(session, conv.id, limit=MAX_MESSAGES_PER_CONVERSATION + 10)
     assert len(msgs) == MAX_MESSAGES_PER_CONVERSATION + 1
 
 
@@ -314,7 +314,7 @@ async def test_history_token_budget_truncates(session, company, user):
     await add_message(session, conv.id, "assistant", "Short answer")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     # The long message should be excluded (exceeds budget)
     # Only the short answer fits
@@ -335,7 +335,7 @@ async def test_history_excludes_file_content(session, company, user):
     await add_message(session, conv.id, "assistant", "Processed!")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     # History should contain the text but no file data
     assert len(history) == 2
@@ -381,7 +381,7 @@ async def test_get_messages_returns_newest_n_chronological(session, company, use
         await add_message(session, conv.id, "user", f"m{i}")
     await session.commit()
 
-    msgs = await get_messages(session, conv.id, limit=3)
+    msgs, _ = await get_messages(session, conv.id, limit=3)
     assert [m.content for m in msgs] == ["m2", "m3", "m4"]
 
 
@@ -610,7 +610,7 @@ async def test_history_appends_proposed_action_lines(session, company, user):
     )
     await session.commit()
 
-    msgs = await get_messages(session, conv.id)
+    msgs, _ = await get_messages(session, conv.id)
     history = build_history_context(msgs)
     assert "[proposed action: create_contact]" in history[0]["content"]
 

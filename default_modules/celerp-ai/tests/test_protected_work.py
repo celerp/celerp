@@ -4,7 +4,8 @@
 
 An action awaiting the user (pending, retryable, outcome unknown) or being run
 (executing) is protected work, as is the question an open job answers. Pruning past
-the message cap keeps it, the conversation read returns it however old it is, and
+the message cap keeps it, the conversation read and its older-actions pages reach it
+however old it is, and
 deleting the conversation is refused while a confirmed action is running.
 """
 from __future__ import annotations
@@ -153,6 +154,62 @@ async def test_running_action_blocks_deletion_and_stays_auditable(client, sessio
 
 # ── pruning keeps a running action ──────────────────────────────────────────
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("tools_open_when_called", "model_answers_unscripted_runs")
+async def test_more_older_actions_than_a_page_are_each_reached_by_paging_and_acted_on(
+        client, session, agent_caps, ai_session, monkeypatch):
+    """Far more older open actions than a page: the conversation read and the older-actions
+    pages, followed by their cursors, return each exactly once in time order, every response
+    bounded, and each is then confirmed, retried or dismissed as its status allows."""
+    cap = 4
+    monkeypatch.setattr(ai_conversations, "MAX_MESSAGES_PER_CONVERSATION", cap)
+    ctx = await perm_setup(client, session)
+    admin = ctx["admin_h"]
+    before = await _location_count(client, admin)
+    conv_id, message_id, call_id = await _propose_location(client, admin, agent_caps, "Room 0")
+    seed = await _record(session, message_id, call_id)
+    cards = {message_id: (call_id, "pending")}
+    for i in range(1, 3 * cap + 6):
+        status = ("pending", "retryable", "unknown")[i % 3]
+        record = {**seed, "id": f"loc{i}", "arguments": {"body": {"name": f"Room {i}", "type": "warehouse"}},
+                  **({} if status == "pending" else {"status": status})}
+        msg = await add_message(session, uuid.UUID(conv_id), "assistant", f"proposal {i}", tools_called=[record])
+        await add_message(session, uuid.UUID(conv_id), "user", f"chat {i}")
+        cards[str(msg.id)] = (f"loc{i}", status)
+    await session.commit()
+    await _flood(session, conv_id, cap)
+
+    conv = (await client.get(f"/ai/conversations/{conv_id}", headers=admin)).json()
+    assert len(conv["messages"]) <= 2 * cap
+    seen, pages = [m["id"] for m in conv["messages"]], 0
+    older = conv["older_actions"]
+    while older is not None:
+        r = await client.get(f"/ai/conversations/{conv_id}/older-actions", headers=admin, params=older)
+        assert r.status_code == 200, r.text
+        page = r.json()
+        assert 0 < len(page["messages"]) <= cap and pages < len(cards)
+        times = [datetime.fromisoformat(m["created_at"]) for m in page["messages"]]
+        assert times == sorted(times) and times[-1] <= datetime.fromisoformat(older["before_at"])
+        seen = [m["id"] for m in page["messages"]] + seen
+        older, pages = page["older_actions"], pages + 1
+    assert pages >= 3
+    assert len(seen) == len(set(seen)), "a message came back twice"
+    assert set(cards) <= set(seen), "an open action was never returned"
+
+    for mid, (cid, status) in cards.items():
+        if status == "unknown" or (status == "pending" and int(cid.removeprefix("loc") or 0) % 2):
+            r = await client.post(f"/ai/conversations/{conv_id}/dismiss", headers=admin,
+                                  json={"message_id": mid, "tool_call_id": cid})
+            assert r.status_code == 200, (status, r.text)
+            assert (await _record(session, mid, cid))["status"] == "dismissed"
+        else:
+            r = await _confirm(client, admin, conv_id, mid, cid)
+            assert r.status_code == 200 and r.json()["ok"] is True, (status, r.text)
+    confirmed = sum(1 for cid, status in cards.values()
+                    if status == "retryable" or (status == "pending" and not int(cid.removeprefix("loc") or 0) % 2))
+    assert await _location_count(client, admin) == before + confirmed
+
+
 async def _owner(session) -> tuple[Company, User]:
     company = Company(name="Protected Co", slug=f"protected-{uuid.uuid4().hex[:8]}", settings={})
     user = User(email=f"p-{uuid.uuid4().hex[:8]}@test.com", name="P")
@@ -241,7 +298,7 @@ async def test_retention_retrieval_and_deletion_follow_one_rule(session, seed, m
         select(AIMessage.id).where(AIMessage.id.in_([mid for mid, _ in old])))).scalars().all())
     assert surviving == expected_kept
 
-    read = await get_messages(session, conv_id, limit=cap)
+    read, _ = await get_messages(session, conv_id, limit=cap)
     newest = list((await session.execute(
         select(AIMessage.id).where(AIMessage.conversation_id == conv_id)
         .order_by(AIMessage.created_at.desc(), AIMessage.id.desc()).limit(cap))).scalars().all())
@@ -253,6 +310,6 @@ async def test_retention_retrieval_and_deletion_follow_one_rule(session, seed, m
         with pytest.raises(ConversationBusy):
             await delete_conversation(session, conv_id, company_id, user_id)
         await session.rollback()
-        assert len(await get_messages(session, conv_id, limit=cap)) == len(read)
+        assert len((await get_messages(session, conv_id, limit=cap))[0]) == len(read)
     else:
         assert await delete_conversation(session, conv_id, company_id, user_id) is True

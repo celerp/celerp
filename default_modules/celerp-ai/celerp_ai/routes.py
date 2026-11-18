@@ -19,6 +19,7 @@ Endpoints:
   POST   /ai/conversations                           Start a conversation
   GET    /ai/conversations                           List conversations
   GET    /ai/conversations/{id}                      Thread with messages and jobs
+  GET    /ai/conversations/{id}/older-actions        Older messages still carrying actions, a page
   PATCH  /ai/conversations/{id}                      Rename
   DELETE /ai/conversations/{id}                      Delete
   POST   /ai/conversations/{id}/query                Ask, or hand receipts to a job
@@ -42,7 +43,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal_detail
@@ -462,9 +463,25 @@ class ConversationOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OlderActions(BaseModel):
+    """Where the next older page of messages carrying actions starts (older-actions)."""
+    before_at: datetime
+    before_id: uuid.UUID
+
+
+def _older(cursor) -> OlderActions | None:
+    return None if cursor is None else OlderActions(before_at=cursor[0], before_id=cursor[1])
+
+
 class ConversationDetail(ConversationOut):
     messages: list[MessageOut]
     jobs: list[BatchJobOut] = []
+    older_actions: OlderActions | None = None
+
+
+class ActionsPage(BaseModel):
+    messages: list[MessageOut]
+    older_actions: OlderActions | None = None
 
 
 def _failure_next(code: str | None) -> dict:
@@ -622,7 +639,7 @@ async def get_conv(
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
-    msgs = await get_messages(session, conversation_id)
+    msgs, older = await get_messages(session, conversation_id)
     rows = await jobs.conversation_jobs(session, conversation_id, company_id=company_id, user_id=user.id,
                                         shape="documents")
     return ConversationDetail(
@@ -630,7 +647,28 @@ async def get_conv(
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
         messages=[await _message_out(session, company_id, user.id, m) for m in msgs],
         jobs=await _jobs_out(session, rows),
+        older_actions=_older(older),
     )
+
+
+@router.get("/conversations/{conversation_id}/older-actions", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-result-permissions": "*"}, summary="Show the next page of older messages in an assistant conversation that still carry actions.")
+async def get_older_actions(
+    conversation_id: uuid.UUID,
+    before_at: AwareDatetime,
+    before_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ActionsPage:
+    """The messages older than the cursor a conversation read or the previous page gave
+    (older_actions) that still carry an action awaiting the user or being run, a page at a
+    time, with the cursor of the next older page."""
+    from celerp.ai.conversations import get_conversation, protected_before
+    if await get_conversation(session, conversation_id, company_id, user.id) is None:
+        raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
+    page, older = await protected_before(session, conversation_id, (before_at, before_id))
+    return ActionsPage(messages=[await _message_out(session, company_id, user.id, m) for m in page],
+                       older_actions=_older(older))
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204, openapi_extra=agent_excluded("assistant"))

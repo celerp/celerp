@@ -1286,7 +1286,7 @@ async def _question_context(session, job) -> dict | None:
         asked = await session.get(AIMessage, job.question_id)
         if asked is None:
             return None
-        prior = await get_messages(session, job.conversation_id)
+        prior, _ = await get_messages(session, job.conversation_id)
         history = await _earlier(session, job, asked, [m for m in prior if m.created_at < asked.created_at])
     return dict(app=app, bearer=_bearer(job, role or ""), operation_id=job.id, query=job.query,
                 company_id=job.company_id, user_id=job.user_id, company_settings=company_settings,
