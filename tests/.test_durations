@@ -31232,5 +31232,18 @@
     "default_modules/celerp-ai/tests/test_routes_coverage.py::test_older_actions_404": 0.3524359619987081,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.ask-questions]": 17.542434595998202,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.review-proposals]": 1.4113054580011521,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.245362887995725
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.245362887995725,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_a_retry_on_changed_input_is_a_new_step_and_an_identical_one_the_same": 0.025429781002458185,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_a_step_still_running_is_asked_again_under_its_identity_and_answered": 3.010315843996068,
+    "default_modules/celerp-accounting/tests/test_suggest_model_step.py::test_the_step_identity_is_the_request_plus_the_canonical_model_input": 0.04902744599530706,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_reported_mismatch_is_refused_with_nothing_written_and_the_key_asks_again": 1.2862485159930657,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_request_still_waiting_on_the_running_step_at_its_deadline_refuses_and_writes_nothing": 0.7018755879980745,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_retry_after_a_stale_refusal_with_changed_lines_is_a_new_model_step_under_the_same_key": 1.2180287680021138,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_an_identical_request_waits_for_the_running_model_step_and_answers_its_result": 1.0482706219918327,
+    "default_modules/celerp-ai/tests/test_llm.py::test_a_model_call_outside_send_step_is_refused": 0.0048695740042603575,
+    "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[0]": 0.21851484500075458,
+    "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[1]": 0.1658533189984155,
+    "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[2]": 0.28719031399668893,
+    "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[3]": 0.1443672309978865,
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_suggest_model_step.py]": 0.005395817999669816
 }
