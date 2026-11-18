@@ -243,3 +243,13 @@ async def test_relay_refusal_after_a_charged_turn_carries_the_credits(monkeypatc
     assert refused.value.status_code == 503
     assert refused.value.detail["code"] == "free_paused"
     assert refused.value.credits == 1
+
+
+def test_help_search_finds_the_recipe_page_for_a_make_and_take_from_stock_question():
+    """The lookup the assistant's help_search runs, over the shipped pages: a question about
+    making a product from another and taking the ingredient out of stock lands on the page
+    that walks the recipe, work order, issue and complete steps."""
+    from celerp.help import search
+
+    hits = search.search("how do I make oil from rapeseed and take the seed out of stock", "en", {}, "owner")
+    assert hits and hits[0].page.id == "manufacturing.make-from-recipe"
