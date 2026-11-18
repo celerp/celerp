@@ -429,6 +429,18 @@ def test_action_card_reads_records_nested_at_any_depth():
     assert "Period start: 2026-03-01" in html and "Memo: BANK FEE" in html and "a, b" in html
 
 
+def test_bulk_preview_keeps_a_field_name_that_two_sections_share():
+    """The same field name in the path and the body is two columns, each headed with its
+    section; names held by one section keep the plain header."""
+    records = [{"path": {"warehouse": "Path Shelf"}, "body": {"warehouse": "Body Shelf", "note": "n1"}},
+               {"path": {"warehouse": "Path Two"}, "body": {"warehouse": "Body Two", "note": "n2"}}]
+    html = _card_html({"id": "p", "name": "t", "title": "T", "for_each": True, "shown": {"records": records}})
+    for value in ("Path Shelf", "Body Shelf", "Path Two", "Body Two"):
+        assert value in html
+    assert "Warehouse (Record)" in html and "Warehouse (Change)" in html
+    assert "<th>Notes</th>" in html
+
+
 def test_action_card_lists_warnings_before_the_buttons():
     action = {**_ACTION, "title": "Create bill",
               "warnings": ["The tax does not match the line totals."]}

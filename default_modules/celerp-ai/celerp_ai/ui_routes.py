@@ -1323,23 +1323,32 @@ def _records_table(records: list, names: dict) -> FT:
     """Every record a propose_for_each card changes, one row each, in a box that scrolls
     on the page: the record by its name and each value it will write, read as a single
     card reads them (a record id hidden where its row names the record)."""
-    rows = [{k: v for part in ("path", "query", "body") if isinstance(r.get(part), dict) for k, v in r[part].items()}
+    # A column is one field of one argument section: the same name in the path and the
+    # body is two columns, headed with its section only where the names collide.
+    sections = ("path", "query", "body")
+    rows = [{(part, str(k)): v for part in sections if isinstance(r.get(part), dict) for k, v in r[part].items()}
             for r in records if isinstance(r, dict)]
-    keys = list(dict.fromkeys(str(k) for row in rows for k in row
-                              if not (str(k).endswith("_id") and f"{str(k)[:-3]}_name" in row)))
-    def is_number(key: str) -> bool:  # amounts and quantities sit right, under a right-aligned header
+    keys = list(dict.fromkeys(
+        (part, name) for row in rows for part, name in row
+        if not (name.endswith("_id") and (part, f"{name[:-3]}_name") in row)))
+    names_in_two = {name for _, name in keys if sum(1 for _, n in keys if n == name) > 1}
+
+    def is_number(key: tuple[str, str]) -> bool:  # amounts and quantities sit right, under a right-aligned header
         values = [row[key] for row in rows if row.get(key) not in (None, "")]
-        return is_money_field(key) or key in QTY_FIELD_KEYS or bool(values) and all(
+        return is_money_field(key[1]) or key[1] in QTY_FIELD_KEYS or bool(values) and all(
             isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
 
     numeric = {k: {"cls": "cell--number"} if is_number(k) else {} for k in keys}
 
-    def cell(row: dict, key: str) -> FT:
-        currency = row.get("currency") if isinstance(row.get("currency"), str) else None
-        return Td(_fmt_value(key, row.get(key), currency, names), **numeric[key])
+    def head(key: tuple[str, str]) -> str:
+        return f"{_label(key[1])} ({t('ai.section_' + key[0])})" if key[1] in names_in_two else _label(key[1])
+
+    def cell(row: dict, key: tuple[str, str]) -> FT:
+        currency = row.get((key[0], "currency")) if isinstance(row.get((key[0], "currency")), str) else None
+        return Td(_fmt_value(key[1], row.get(key), currency, names), **numeric[key])
 
     return Div(Table(
-        Thead(Tr(*[Th(_label(k), **numeric[k]) for k in keys])),
+        Thead(Tr(*[Th(head(k), **numeric[k]) for k in keys])),
         Tbody(*[Tr(*[cell(row, k) for k in keys]) for row in rows]),
         cls="data-table ai-action__records-table",
     ), cls="table-scroll-wrap ai-action__records")
