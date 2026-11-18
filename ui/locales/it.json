@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Addebitato automaticamente. Se il pagamento non compare ancora su questa fattura, cercalo in Pagamenti non abbinati a fattura in Impostazioni, Pagamenti online.",
   "ai.warn_outside_message": "Questo messaggio va a una persona esterna all'azienda e non può essere richiamato.",
   "ai.warn_selection_size": "Questa operazione modifica {count} record.",
+  "ai.show_older_actions": "Mostra azioni precedenti",
   "ai.continuing_request": "Proseguo con la tua richiesta",
   "ai.not_run_dependent": "Non eseguito: una modifica precedente allo stesso record non è riuscita: {title}",
   "ai.generated_password_once": "Password del nuovo membro, mostrata solo questa volta: {password}. Comunicala ora; Celerp non ne conserva una copia.",

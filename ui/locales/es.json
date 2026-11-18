@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Cobrado automáticamente. Si el pago aún no figura en esta factura, búsquelo en Pagos no asociados a una factura, en Configuración, Pagos en línea.",
   "ai.warn_outside_message": "Este mensaje va a alguien fuera de la empresa y no se puede recuperar.",
   "ai.warn_selection_size": "Esto cambia {count} registros.",
+  "ai.show_older_actions": "Mostrar acciones anteriores",
   "ai.continuing_request": "Continuando con su solicitud",
   "ai.not_run_dependent": "No ejecutado: falló un cambio anterior en el mismo registro: {title}",
   "ai.generated_password_once": "Contraseña del nuevo miembro, se muestra solo esta vez: {password}. Compártala ahora; Celerp no guarda una copia.",

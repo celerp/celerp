@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "自動請求が完了しました。この請求書にまだ支払が表示されない場合は、「設定 > オンライン決済」の「請求書に未照合の支払」を確認してください。",
   "ai.warn_outside_message": "このメッセージは社外の相手に送信され、取り消すことはできません。",
   "ai.warn_selection_size": "この操作で {count} 件のレコードが変更されます。",
+  "ai.show_older_actions": "以前のアクションを表示",
   "ai.continuing_request": "リクエストを続行しています",
   "ai.not_run_dependent": "未実行: 同じレコードへの前の変更が失敗しました: {title}",
   "ai.generated_password_once": "新しいメンバーのパスワード（この一度だけ表示されます）: {password}。今すぐ伝えてください。Celerp は控えを保存しません。",

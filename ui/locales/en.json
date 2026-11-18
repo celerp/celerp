@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Charged automatically. If the payment is not on this invoice yet, find it under Payments not matched to an invoice in Settings, Online Payments.",
   "ai.warn_outside_message": "This message goes to someone outside the company and cannot be called back.",
   "ai.warn_selection_size": "This changes {count} records.",
+  "ai.show_older_actions": "Show older actions",
   "ai.continuing_request": "Continuing your request",
   "ai.not_run_dependent": "Not run: an earlier change to the same record failed: {title}",
   "ai.generated_password_once": "Password for the new member, shown only this once: {password}. Pass it on now; Celerp does not keep a copy.",

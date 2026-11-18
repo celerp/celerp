@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Automatisch belastet. Falls die Zahlung noch nicht auf dieser Rechnung erscheint, suchen Sie unter Einstellungen, Online-Zahlungen, Zahlungen ohne Rechnungszuordnung.",
   "ai.warn_outside_message": "Diese Nachricht geht an jemanden außerhalb des Unternehmens und kann nicht zurückgerufen werden.",
   "ai.warn_selection_size": "Dies ändert {count} Datensätze.",
+  "ai.show_older_actions": "Ältere Aktionen anzeigen",
   "ai.continuing_request": "Ihre Anfrage wird fortgesetzt",
   "ai.not_run_dependent": "Nicht ausgeführt: Eine frühere Änderung am selben Datensatz ist fehlgeschlagen: {title}",
   "ai.generated_password_once": "Passwort für das neue Mitglied, nur dieses eine Mal angezeigt: {password}. Geben Sie es jetzt weiter; Celerp speichert keine Kopie.",

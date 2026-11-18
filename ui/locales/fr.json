@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Prélevé automatiquement. Si le paiement ne figure pas encore sur cette facture, recherchez-le dans Paiements non rapprochés d'une facture, sous Paramètres, Paiements en ligne.",
   "ai.warn_outside_message": "Ce message est envoyé à une personne extérieure à l'entreprise et ne peut pas être rappelé.",
   "ai.warn_selection_size": "Cette action modifie {count} enregistrements.",
+  "ai.show_older_actions": "Afficher les actions plus anciennes",
   "ai.continuing_request": "Poursuite de votre demande",
   "ai.not_run_dependent": "Non exécuté : une modification précédente du même enregistrement a échoué : {title}",
   "ai.generated_password_once": "Mot de passe du nouveau membre, affiché une seule fois : {password}. Transmettez-le maintenant ; Celerp n'en garde aucune copie.",

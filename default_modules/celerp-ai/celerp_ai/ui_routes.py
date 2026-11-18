@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from urllib.parse import urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -378,6 +379,7 @@ def setup_ui_routes(app) -> None:
                 return RedirectResponse("/ai", status_code=302)
         messages: list[dict] = []
         jobs: list[dict] = []
+        older: dict | None = None
         failed: FT | None = None
         if conversation_id:
             from celerp.gateway.state import get_session_token
@@ -386,6 +388,7 @@ def setup_ui_routes(app) -> None:
                 conv = await api.ai_conversation_get(token, session_token, conversation_id)
                 messages = conv.get("messages") or []
                 jobs = conv.get("jobs") or []
+                older = conv.get("older_actions")
             except APIError as exc:
                 if exc.status == 401:
                     raise
@@ -399,7 +402,7 @@ def setup_ui_routes(app) -> None:
         return await base_shell(
             _chat_view(
                 messages=messages, jobs=jobs, conversation_id=conversation_id,
-                lang=lang, failed=failed, tier=status.get("tier"), badge=badge,
+                lang=lang, failed=failed, tier=status.get("tier"), badge=badge, older=older,
             ),
             title="AI Assistant - Celerp", nav_active="ai", request=request,
         )
@@ -640,6 +643,33 @@ def setup_ui_routes(app) -> None:
             # The question's state could not be read this time: say so and read it again.
             return _question_bubble({"notice": _error_text(e.detail, lang)}, conversation_id, question_id, lang)
         return await _question_view(token, state, conversation_id, question_id, lang)
+
+    @app.get("/ai/older-actions-ui")
+    async def ai_older_actions_ui(request: Request):
+        """Show older actions: the next older page of messages still carrying actions,
+        in time order, under the button for the page after it while more remain."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        lang = get_lang(request)
+        q = request.query_params
+        conversation_id = (q.get("conversation") or "").strip()
+        cursor = {"before_at": q.get("before_at") or "", "before_id": q.get("before_id") or ""}
+
+        from celerp.gateway.state import get_session_token
+        try:
+            page = await api.ai_older_actions(token, get_session_token(), conversation_id,
+                                              cursor["before_at"], cursor["before_id"])
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return _older_actions_button(conversation_id, cursor, lang, notice=_error_text(e.detail, lang))
+        older = page.get("older_actions")
+        out: list[FT] = [_older_actions_button(conversation_id, older, lang)] if older else []
+        for message in page.get("messages") or []:
+            out.extend(_message_parts(message, conversation_id, None, lang, offer_again=False))
+        return html_response(tuple(out))
 
     @app.post("/ai/jobs-ui/{job_id}/{action}")
     async def ai_job_action_ui(request: Request, job_id: str, action: str):
@@ -2045,15 +2075,16 @@ def _showcase_view(lang: str = "en", *, offer: dict | None = None, owner: bool |
 
 
 def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: str,
-            tier: str | None = None) -> list[FT]:
+            tier: str | None = None, older: dict | None = None) -> list[FT]:
     """Render a stored conversation in time order: message bubbles, reading-job
     bubbles, and the action cards beneath the assistant turn that proposed them (a
     reading job's reply carries the ``tier`` plan's tip when a file held several bills).
     A last question with no reply yet and no reading job is a running or interrupted
-    question job: its bubble reads its state."""
+    question job: its bubble reads its state. When ``older`` (the older_actions cursor)
+    is set, the thread opens with Show older actions."""
     entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
     entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
-    out: list[FT] = []
+    out: list[FT] = [_older_actions_button(conversation_id, older, lang)] if older else []
     # Only the thread's last reply, when it is a failure, offers to ask the question
     # before it again or as a new question.
     last = messages[-1] if messages else None
@@ -2073,6 +2104,21 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
     if last is not None and last.get("role") == "user" and str(last.get("id")) not in reading:
         out.append(_question_bubble({}, conversation_id, str(last.get("id")), lang))
     return out
+
+
+def _older_actions_button(conversation_id: str, older: dict, lang: str, notice: str = "") -> FT:
+    """Show older actions: loads the page of older messages still carrying actions that
+    starts at the ``older`` cursor in its place (and the next button while more remain).
+    ``notice`` says why the last load failed; the button stays to try again."""
+    query = urlencode({"conversation": conversation_id, "before_at": older.get("before_at") or "",
+                       "before_id": older.get("before_id") or ""})
+    return Div(
+        P(notice, cls="ai-older-actions__notice") if notice else "",
+        Button(t("ai.show_older_actions", lang), cls="btn btn--secondary btn--sm",
+               hx_get=f"/ai/older-actions-ui?{query}", hx_target="closest .ai-older-actions",
+               hx_swap="outerHTML"),
+        cls="ai-older-actions",
+    )
 
 
 def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: str, *,
@@ -2104,7 +2150,7 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
 def _chat_view(
     messages: list[dict] | None = None, jobs: list[dict] | None = None,
     conversation_id: str = "", lang: str = "en", failed: FT | None = None,
-    tier: str | None = None, badge: str = "",
+    tier: str | None = None, badge: str = "", older: dict | None = None,
 ) -> FT:
     """The chat. A paid ``tier`` offers the top-up link, and the tier decides the bills
     tip under the drop zone; a free account's ``badge`` (its questions left) is rendered
@@ -2114,7 +2160,7 @@ def _chat_view(
     if failed is not None:
         message_children = [failed]
     elif messages or jobs:
-        message_children = _thread(messages or [], jobs or [], conversation_id, lang, tier)
+        message_children = _thread(messages or [], jobs or [], conversation_id, lang, tier, older)
     else:
         message_children = [_empty_state(lang)]
     return Div(

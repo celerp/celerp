@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Ditagih otomatis. Jika pembayaran belum muncul pada faktur ini, cari di Pembayaran yang belum dicocokkan dengan faktur pada Pengaturan, Pembayaran Online.",
   "ai.warn_outside_message": "Pesan ini dikirim ke seseorang di luar perusahaan dan tidak dapat ditarik kembali.",
   "ai.warn_selection_size": "Ini mengubah {count} catatan.",
+  "ai.show_older_actions": "Tampilkan tindakan sebelumnya",
   "ai.continuing_request": "Melanjutkan permintaan Anda",
   "ai.not_run_dependent": "Tidak dijalankan: perubahan sebelumnya pada catatan yang sama gagal: {title}",
   "ai.generated_password_once": "Kata sandi untuk anggota baru, hanya ditampilkan kali ini: {password}. Sampaikan sekarang; Celerp tidak menyimpan salinannya.",

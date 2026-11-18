@@ -3621,9 +3621,20 @@ async def ai_conversation_create(token: str, session_token: str, title: str | No
 
 
 async def ai_conversation_get(token: str, session_token: str, conversation_id: str) -> dict:
-    """GET /ai/conversations/{id} - the conversation with all its messages."""
+    """GET /ai/conversations/{id} - the conversation: its newest messages, older ones
+    still carrying actions, and ``older_actions``, the cursor of older ones beyond those."""
     async with _ai_api_client(token, session_token) as c:
         return _raise(await c.get(f"/ai/conversations/{conversation_id}")).json()
+
+
+async def ai_older_actions(token: str, session_token: str, conversation_id: str,
+                           before_at: str, before_id: str) -> dict:
+    """GET /ai/conversations/{id}/older-actions - the next older page of messages that
+    still carry actions, before the cursor (before_at, before_id): {"messages",
+    "older_actions"}, the cursor of the page after it or None."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.get(f"/ai/conversations/{conversation_id}/older-actions",
+                                  params={"before_at": before_at, "before_id": before_id})).json()
 
 
 async def ai_conversation_query(token: str, session_token: str, conversation_id: str,

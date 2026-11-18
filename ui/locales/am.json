@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "ክፍያው በራስ-ሰር ተወስዷል። ክፍያው እስካሁን በዚህ መጠየቂያ ላይ ካልታየ፣ በ«ቅንብሮች > የመስመር ላይ ክፍያዎች» ውስጥ «ከክፍያ መጠየቂያ ጋር ያልተዛመዱ ክፍያዎች» ስር ያግኙት።",
   "ai.warn_outside_message": "ይህ መልእክት ከኩባንያው ውጭ ላለ ሰው ይላካል፤ መልሶ መጥራት አይቻልም።",
   "ai.warn_selection_size": "ይህ {count} መዝገቦችን ይቀይራል።",
+  "ai.show_older_actions": "የቆዩ እርምጃዎችን አሳይ",
   "ai.continuing_request": "ጥያቄዎን በመቀጠል ላይ",
   "ai.not_run_dependent": "አልተካሄደም፦ በዚሁ መዝገብ ላይ የቀደመ ለውጥ አልተሳካም፦ {title}",
   "ai.generated_password_once": "የአዲሱ አባል የይለፍ ቃል፣ የሚታየው አሁን ብቻ ነው፦ {password}። አሁኑኑ ያስተላልፉት፤ Celerp ቅጂ አያስቀምጥም።",

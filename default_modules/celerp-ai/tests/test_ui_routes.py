@@ -177,6 +177,48 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     assert 'value="11111111-1111-4111-8111-111111111111"' in r.text  # hidden conversation_id seeded
 
 
+@pytest.mark.asyncio
+async def test_older_actions_are_reached_from_the_thread_page_by_page(ui_client):
+    """A conversation whose older messages still carry actions beyond the first read opens
+    with Show older actions; each click loads the next page's action cards in place, with
+    the button for the page after it until none remain."""
+    conv_id = "11111111-1111-4111-8111-111111111111"
+    first = {"before_at": "2026-11-01T10:00:00+00:00", "before_id": "22222222-2222-4222-8222-222222222222"}
+    second = {"before_at": "2026-10-01T10:00:00+00:00", "before_id": "33333333-3333-4333-8333-333333333333"}
+    detail = {"id": conv_id, "older_actions": first,
+              "messages": [{"id": "m9", "role": "assistant", "content": "Newest reply"}]}
+    older = AsyncMock(side_effect=[
+        {"messages": [{"id": "m5", "role": "assistant", "content": "Older proposal",
+                       "pending_actions": [_ACTION]}], "older_actions": second},
+        {"messages": [{"id": "m1", "role": "assistant", "content": "Oldest proposal",
+                       "pending_actions": [_ACTION]}], "older_actions": None},
+        APIError(500, "boom"),
+    ])
+    patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail), ai_older_actions=older)
+    _apply(patches)
+    ui_client.cookies.update(_authed())
+    try:
+        page = await ui_client.get(f"/ai?conversation={conv_id}")
+        one = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **first})
+        two = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **second})
+        failed = await ui_client.get("/ai/older-actions-ui", params={"conversation": conv_id, **second})
+    finally:
+        _stop(patches)
+    assert page.status_code == 200
+    assert "Show older actions" in page.text and "/ai/older-actions-ui?" in page.text
+    assert page.text.index("Show older actions") < page.text.index("Newest reply")
+    assert [c.args[2:] for c in older.call_args_list[:2]] == [
+        (conv_id, first["before_at"], first["before_id"]),
+        (conv_id, second["before_at"], second["before_id"]),
+    ]
+    assert "Older proposal" in one.text and "ai-action__card" in one.text
+    assert "Show older actions" in one.text and "before_id=33333333" in one.text
+    assert "Oldest proposal" in two.text and "ai-action__card" in two.text
+    assert "Show older actions" not in two.text
+    # A failed load says so and keeps the button to try the same page again.
+    assert "Show older actions" in failed.text and "before_id=33333333" in failed.text
+
+
 # ── POST /ai/chat ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

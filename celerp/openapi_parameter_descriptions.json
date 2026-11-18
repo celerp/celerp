@@ -207,6 +207,11 @@
   "GET /ai/conversations/{conversation_id}": {
     "path:conversation_id": "Identifier of the AI conversation."
   },
+  "GET /ai/conversations/{conversation_id}/older-actions": {
+    "path:conversation_id": "Identifier of the AI conversation.",
+    "query:before_at": "Creation time of the cursor message from older_actions; the page holds messages older than it.",
+    "query:before_id": "Identifier of the cursor message from older_actions, breaking ties on the same creation time."
+  },
   "GET /ai/file/{file_id}": {
     "path:file_id": "Identifier of the uploaded or stored file."
   },

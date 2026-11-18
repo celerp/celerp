@@ -7996,6 +7996,7 @@
   "collection.status_succeeded": "Đã thu tiền tự động. Nếu khoản thanh toán chưa xuất hiện trên hóa đơn, hãy tìm ở Thanh toán chưa khớp với hóa đơn trong Cài đặt, Thanh toán trực tuyến.",
   "ai.warn_outside_message": "Tin nhắn này được gửi tới người ngoài công ty và không thể thu hồi.",
   "ai.warn_selection_size": "Thao tác này thay đổi {count} bản ghi.",
+  "ai.show_older_actions": "Hiện các thao tác cũ hơn",
   "ai.continuing_request": "Đang tiếp tục yêu cầu của bạn",
   "ai.not_run_dependent": "Không chạy: một thay đổi trước đó trên cùng bản ghi đã thất bại: {title}",
   "ai.generated_password_once": "Mật khẩu của thành viên mới, chỉ hiển thị lần này: {password}. Hãy chuyển nó ngay; Celerp không lưu bản sao.",
