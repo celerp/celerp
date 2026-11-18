@@ -313,3 +313,47 @@ async def test_retention_retrieval_and_deletion_follow_one_rule(session, seed, m
         assert len((await get_messages(session, conv_id, limit=cap))[0]) == len(read)
     else:
         assert await delete_conversation(session, conv_id, company_id, user_id) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", range(4))
+async def test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history(session, monkeypatch, seed):
+    """DB work per page is bounded, never the whole history: paging a long history of
+    protected and plain messages (ties on one timestamp included) from the newest, each
+    request reads at most the rows down to the message after its page plus one batch, and
+    every protected message is reached exactly once, each page in time order."""
+    rng = random.Random(seed)
+    company, user = await _owner(session)
+    conv = await create_conversation(session, company.id, user.id)
+    start, limit = datetime(2026, 1, 1, tzinfo=timezone.utc), rng.randint(2, 9)
+    protected_kinds, plain_kinds = sorted(PROTECTED), sorted(set(KINDS) - PROTECTED)
+    for i in range(400):
+        kind = rng.choice(protected_kinds if rng.random() < 0.5 else plain_kinds)
+        session.add(AIMessage(conversation_id=conv.id, role="assistant", content=kind,
+                              created_at=start + timedelta(seconds=i // 3), tools_called=[_record_of(kind, f"c{i}")]))
+    await session.commit()
+    rows = (await session.execute(select(AIMessage.id, AIMessage.created_at, AIMessage.content)
+                                  .where(AIMessage.conversation_id == conv.id))).all()
+    newest_first = sorted(rows, key=lambda r: (r.created_at, r.id), reverse=True)
+
+    scanned: list[int] = []
+    real = ai_conversations._protected_message_ids
+
+    async def _counting(session_, conversation_id, read):
+        scanned.append(len(read))
+        return await real(session_, conversation_id, read)
+    monkeypatch.setattr(ai_conversations, "_protected_message_ids", _counting)
+
+    cursor, seen = (start + timedelta(days=1), uuid.UUID(int=2 ** 128 - 1)), []
+    while cursor is not None:
+        older = [r for r in newest_first if (r.created_at, r.id) < cursor]
+        wanted = [r.id for r in older if r.content in PROTECTED]
+        after = wanted[limit] if len(wanted) > limit else None
+        need = next(i for i, r in enumerate(older) if r.id == after) + 1 if after else len(older)
+        scanned.clear()
+        page, cursor = await ai_conversations.protected_before(session, conv.id, cursor, limit=limit)
+        assert sum(scanned) <= need + limit + 1, (sum(scanned), need, limit)
+        assert [m.id for m in page] == list(reversed(wanted[:limit]))
+        assert (cursor is None) == (after is None)
+        seen += [m.id for m in page]
+    assert sorted(seen) == sorted(r.id for r in rows if r.content in PROTECTED)

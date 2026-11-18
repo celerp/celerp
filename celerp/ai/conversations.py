@@ -384,16 +384,28 @@ async def protected_before(
     """The newest ``limit`` messages older than ``before`` (created_at, id) that carry
     protected work (_protected_message_ids), in time order, and the cursor of the next older
     page: the oldest of them, None when no older message carries protected work. Paging
-    from the cursor reaches every such message once, so a card pruning kept is never lost."""
+    from the cursor reaches every such message once, so a card pruning kept is never lost.
+
+    The older messages are read newest first in keyset batches of ``limit + 1`` and the read
+    stops at the first protected message past the page, so one page reads the page, the
+    plain messages between (pruning bounds those) and at most one batch more, however long
+    the protected history."""
     limit = limit or MAX_MESSAGES_PER_CONVERSATION
-    older = (await session.execute(
-        select(AIMessage.id, AIMessage.tools_called)
-        .where(AIMessage.conversation_id == conversation_id,
-               tuple_(AIMessage.created_at, AIMessage.id) < tuple_(*before))
-        .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
-    )).all()
-    protected = await _protected_message_ids(session, conversation_id, older)
-    keep = [message_id for message_id, _ in older if message_id in protected]
+    keep: list[uuid.UUID] = []
+    cursor = before
+    while len(keep) <= limit:
+        batch = (await session.execute(
+            select(AIMessage.id, AIMessage.tools_called, AIMessage.created_at)
+            .where(AIMessage.conversation_id == conversation_id,
+                   tuple_(AIMessage.created_at, AIMessage.id) < tuple_(*cursor))
+            .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
+            .limit(limit + 1)
+        )).all()
+        protected = await _protected_message_ids(session, conversation_id, [(i, tools) for i, tools, _ in batch])
+        keep += [message_id for message_id, _, _ in batch if message_id in protected]
+        if len(batch) <= limit:
+            break
+        cursor = (batch[-1].created_at, batch[-1].id)
     page = sorted((await session.execute(select(AIMessage).where(AIMessage.id.in_(keep[:limit])))).scalars().all(),
                   key=lambda m: (m.created_at, m.id)) if keep else []
     return page, ((page[0].created_at, page[0].id) if len(keep) > limit else None)
