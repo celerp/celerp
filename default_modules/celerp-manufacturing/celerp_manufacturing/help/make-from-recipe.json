@@ -21,8 +21,8 @@
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
     {
-      "text": "On {dp}, tick the line and choose {make}. This creates the work order for that item and quantity.",
-      "labels": {"dp": "manufacturing.demand_planning", "make": "manufacturing.action_make_selected"},
+      "text": "On {dp}, tick the line and choose Make selected from the Action list. This creates the work order for that item and quantity.",
+      "labels": {"dp": "manufacturing.demand_planning"},
       "image": null,
       "capture": {"route": "/manufacturing", "selector": "main", "actions": []}
     },
@@ -42,7 +42,7 @@
       "text": "A work order makes one product. A second product from the same batch, such as oil cake from pressing rapeseed, is not part of the run: add it to stock as its own item with {add}.",
       "labels": {"add": "btn.add_item"},
       "image": null,
-      "capture": {"route": "/manufacturing/production", "selector": "main", "actions": []}
+      "capture": {"route": "/inventory", "selector": "main", "actions": []}
     },
     {
       "text": "You can also ask the assistant to create the work order, issue its components or complete it. It shows each change as a card and makes it only when you confirm.",
