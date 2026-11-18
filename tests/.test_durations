@@ -31229,7 +31229,5 @@
     "default_modules/celerp-ai/tests/test_protected_work.py::test_more_older_actions_than_a_page_are_each_reached_by_paging_and_acted_on": 6.514289089005615,
     "default_modules/celerp-ai/tests/test_ui_routes.py::test_older_actions_are_reached_from_the_thread_page_by_page": 0.039701397996395826,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_suggest_races_pg.py]": 0.007863579994591419,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.ask-questions]": 18.331257003992505,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.review-proposals]": 1.531007032004709,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.411870264004392
+    "default_modules/celerp-ai/tests/test_routes_coverage.py::test_older_actions_404": 0.3524359619987081
 }
