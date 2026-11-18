@@ -10,6 +10,7 @@ them are as they were read; otherwise nothing is written."""
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import uuid
 
@@ -64,6 +65,57 @@ async def _outcomes(engine, co, key) -> int:
 
 async def _suggestions(c, co, bk) -> dict:
     return {l["description"]: l["suggestion"] for l in B.all_lines(await B.groups(c, co, bk["id"], view="all"))}
+
+
+class Service:
+    """The model service as ``llm.complete`` reaches it, per operation id: the first send
+    runs (the first run waits for ``go`` when ``hold``), a send while it runs is refused
+    operation_in_progress, a later send of the same content answers the kept reply and one
+    of other content is refused operation_mismatch."""
+
+    def __init__(self, reason: str, hold: bool = False):
+        self.reason, self.hold, self.runs, self.refused = reason, hold, 0, 0
+        self.kept, self.running, self.sent = {}, set(), []
+        self.held, self.go, self.waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def complete(self, messages, *, operation_id, **_):
+        from celerp.ai.llm import ModelResult, RelayError
+
+        content = json.dumps(messages, sort_keys=True)
+        self.sent.append((operation_id, json.loads(messages[-1]["content"])))
+        if operation_id in self.running:
+            self.refused += 1
+            if self.refused >= 3:
+                self.waiting.set()
+            raise RelayError("operation_in_progress", "still running", status=409, retry_after=0.01)
+        if operation_id in self.kept:
+            if self.kept[operation_id][0] != content:
+                raise RelayError("operation_mismatch", "other content", status=422)
+            return self.kept[operation_id][1]
+        self.running.add(operation_id)
+        self.runs += 1
+        try:
+            if self.hold and self.runs == 1:
+                self.held.set()
+                await self.go.wait()
+        finally:
+            self.running.discard(operation_id)
+        reply = {g["key"]: {"account_code": "5100", "reason": self.reason}
+                 for g in json.loads(messages[-1]["content"])["groups"]}
+        result = ModelResult(message={"content": json.dumps(reply)}, model_used="test", usage={"credits": 1},
+                             reservation_id=None, remaining=None, operation_credits=1)
+        self.kept[operation_id] = (content, result)
+        return result
+
+
+def _service(monkeypatch, service: Service) -> Service:
+    """Bank suggestions ask ``service`` through the real model rung."""
+    from celerp.ai import llm
+    from celerp_accounting import suggest
+
+    monkeypatch.setattr(suggest, "model_rung", suggest.ask_model)
+    monkeypatch.setattr(llm, "complete", service.complete)
+    return service
 
 
 def _said(suggestion) -> str | None:
@@ -183,3 +235,51 @@ async def test_interleavings_write_only_when_the_recheck_matches(committed_engin
             assert held.status_code == 200, (case, held.text)
             assert _said(after[NEW]) == _said(after[OTHER]) == f"held {trial}", case
         assert await _outcomes(committed_engine, co, key) == (1 if same_key or not (line_change or relevant) else 0), case
+
+
+async def test_an_identical_request_waits_for_the_running_model_step_and_answers_its_result(
+        committed_engine, own_client, monkeypatch):
+    """A same-key request whose model step the service still runs (operation_in_progress) is
+    no model failure: it writes nothing while the first runs, then answers the first result."""
+    c = own_client
+    co, bk = await _bank(c)
+    service = _service(monkeypatch, Service("one model run", hold=True))
+    key = B.key()
+    first = asyncio.create_task(_suggest(c, co, bk, key))
+    await asyncio.wait_for(service.held.wait(), timeout=20)
+    second = asyncio.create_task(_suggest(c, co, bk, key))
+    waiting = asyncio.create_task(service.waiting.wait())
+    await asyncio.wait({second, waiting}, timeout=20, return_when=asyncio.FIRST_COMPLETED)
+    assert not second.done(), f"answered while the first model step ran: {second.result().text}"
+    assert await _outcomes(committed_engine, co, key) == 0
+    assert set((await _suggestions(c, co, bk)).values()) == {None}
+    service.go.set()
+    done = [await asyncio.wait_for(task, timeout=60) for task in (first, second)]
+    assert [r.status_code for r in done] == [200, 200], [r.text for r in done]
+    assert done[0].json() == done[1].json() and done[0].json()["model_ran"] is True, done[1].text
+    assert service.runs == 1 and await _outcomes(committed_engine, co, key) == 1
+    assert {_said(s) for s in (await _suggestions(c, co, bk)).values()} == {"one model run"}
+
+
+async def test_a_request_still_waiting_on_the_running_step_at_its_deadline_refuses_and_writes_nothing(
+        committed_engine, own_client, monkeypatch):
+    """Past the synchronous wait, the later request says the same request is still running
+    (409), writes no suggestion and records no outcome; the first then finishes as usual."""
+    from celerp.ai import deadlines
+
+    c = own_client
+    co, bk = await _bank(c)
+    service = _service(monkeypatch, Service("first run", hold=True))
+    key = B.key()
+    first = asyncio.create_task(_suggest(c, co, bk, key))
+    await asyncio.wait_for(service.held.wait(), timeout=20)
+    monkeypatch.setattr(deadlines, "SYNC_WAIT_S", 0.2)
+    refused = await asyncio.wait_for(_suggest(c, co, bk, key), timeout=20)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["message_key"] == "acct.err_suggest_running"
+    assert await _outcomes(committed_engine, co, key) == 0
+    assert set((await _suggestions(c, co, bk)).values()) == {None}
+    service.go.set()
+    done = await asyncio.wait_for(first, timeout=60)
+    assert done.status_code == 200 and done.json()["model_ran"] is True, done.text
+    assert await _outcomes(committed_engine, co, key) == 1

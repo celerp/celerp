@@ -8338,6 +8338,7 @@
   "acct.recon_no_contact_named": "Nessun record indica un contatto, quindi non ne è stato impostato alcuno.",
   "acct.err_recon_line_state": "Questa riga è già {status}. Annullala prima, poi riprova.",
   "acct.err_suggest_stale": "Le righe dell'estratto conto sono cambiate mentre si preparavano i suggerimenti, quindi nessuno è stato salvato. Richiedi di nuovo i suggerimenti per lavorare sulle righe come sono ora.",
+  "acct.err_suggest_running": "I suggerimenti per questa stessa richiesta sono ancora in preparazione, quindi non è stato salvato nulla. Riprova tra un momento.",
   "acct.err_recon_match_needs_entry": "Seleziona almeno una registrazione contabile da abbinare a questa riga.",
   "acct.recon_reason_reversal": "La banca ha stornato l'operazione entro 3 giorni, quindi nessuna delle due righe richiede una registrazione.",
   "acct.recon_reason_match": "Una registrazione contabile dello stesso importo il {date}.",

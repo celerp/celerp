@@ -31,10 +31,24 @@ from _fixtures import synthetic_response
 _RELAY = "https://relay.test"
 
 
+def _surface(exc: BaseException) -> None:
+    raise exc
+
+
 async def complete(*args, **kwargs) -> ModelResult:
-    """``llm.complete`` as every caller runs it: inside a slot of the app's model gate."""
+    """``llm.complete`` as every caller runs it: a step of ``jobs.send_step`` inside a slot
+    of the app's model gate, every refusal surfaced as the client raised it."""
     async with jobs.gate.slot("interactive"):
-        return await llm_mod.complete(*args, **kwargs)
+        return await jobs.send_step(lambda: llm_mod.complete(*args, **kwargs), resend=False, on_refusal=_surface)
+
+
+async def test_a_model_call_outside_send_step_is_refused(relay):
+    """The one model-step primitive: a call sent other than through ``jobs.send_step`` (and
+    so outside its in-progress and resend rules) never leaves the app."""
+    async with jobs.gate.slot("interactive"):
+        with pytest.raises(AssertionError, match="send_step"):
+            await llm_mod.complete([{"role": "user", "content": "hi"}])
+    assert not jobs.sending_step()
 
 
 @pytest.fixture

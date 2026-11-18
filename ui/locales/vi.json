@@ -8338,6 +8338,7 @@
   "acct.recon_no_contact_named": "Không có bản ghi nào đặt tên cho người liên hệ, vì vậy chưa có thông tin nào được thiết lập.",
   "acct.err_recon_line_state": "Dòng này đã là {status} rồi. Hãy hoàn tác nó trước, rồi thử lại.",
   "acct.err_suggest_stale": "Các dòng sao kê đã thay đổi trong lúc đang chuẩn bị gợi ý, nên không gợi ý nào được lưu. Hãy yêu cầu gợi ý lại để dùng các dòng như hiện tại.",
+  "acct.err_suggest_running": "Gợi ý cho chính yêu cầu này vẫn đang được chuẩn bị nên chưa có gì được lưu. Vui lòng thử lại sau giây lát.",
   "acct.err_recon_match_needs_entry": "Hãy chọn ít nhất một bút toán để khớp với dòng này.",
   "acct.recon_reason_reversal": "Ngân hàng đã đảo ngược giao dịch này trong vòng 3 ngày nên cả hai dòng đều không cần bút toán.",
   "acct.recon_reason_match": "Một bút toán ghi sổ với cùng số tiền vào ngày {date}.",

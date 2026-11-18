@@ -433,10 +433,20 @@ _MODEL_PROMPT = (
 )
 
 
+class ModelStepRunning(Exception):
+    """The same model step, sent first by another run of the request, was still running
+    when this run's synchronous wait (``deadlines.SYNC_WAIT_S``) ran out."""
+
+
 async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
-    """One model call for ``groups`` under the request's key (so a replay is not charged
-    again), its usage recorded for the company. Raises when the model cannot be reached."""
-    from celerp.ai import jobs, llm
+    """One model step for ``groups`` under the request's key (so a replay is not charged
+    again), its usage recorded for the company. The step is sent through the assistant's
+    ``send_step``: while the same step sent by another run of the request still runs, it
+    is asked again after the service's ``retry_after`` and answered the first run's reply;
+    past the synchronous wait it raises ModelStepRunning. Raises when the model cannot be reached."""
+    import time
+
+    from celerp.ai import deadlines, jobs, llm
     from celerp.ai.usage import record_usage
 
     call = current_call.get()
@@ -445,9 +455,18 @@ async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
     op = uuid.uuid5(uuid.NAMESPACE_URL, f"celerp:bank-suggest:{call.company_id}:{call.key}:{groups[0]['key']}")
     messages = [{"role": "system", "content": _MODEL_PROMPT},
                 {"role": "user", "content": json.dumps({"accounts": accounts, "groups": groups}, ensure_ascii=False)}]
+    hints = {"query": "bank suggestions", "file_count": 0, "is_batch": False}
+    since: list[float] = []
+
+    def _running(exc) -> None:
+        if exc.code == "operation_in_progress":
+            since.append(time.monotonic())
+            if since[-1] - since[0] >= deadlines.SYNC_WAIT_S:
+                raise ModelStepRunning from exc
+
     async with jobs.gate.slot("interactive"):
-        result = await llm.complete(messages, operation_id=op, hints={"query": "bank suggestions", "file_count": 0,
-                                                                        "is_batch": False})
+        result = await jobs.send_step(lambda: llm.complete(messages, operation_id=op, hints=hints), resend=False,
+                                      on_refusal=_running)
     known = result.operation_credits is not None
     credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
     await record_usage(call.session, company_id=call.company_id, user_id=call.user_id, operation_id=op,

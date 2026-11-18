@@ -8,7 +8,8 @@ concurrency setting). A slot is taken as ``interactive`` (a question someone is
 waiting on) or ``documents`` (a document reading job): document steps never hold the
 last slot while there is more than one, and a waiting question is granted the next
 free slot ahead of every waiting document step, so a question never waits behind a
-queue of files. ``llm.complete`` refuses to run outside a slot.
+queue of files. ``llm.complete`` refuses to run outside a slot, or other than as a step
+of ``send_step``.
 
 A job is an ``AIBatchJob`` row and its ``AIJobStep`` rows: one step per file of a
 reading job, one per model turn and tool call of a question. A step's operation id is the identity the AI service answers it by, so a
@@ -92,6 +93,14 @@ _slot: contextvars.ContextVar[str | None] = contextvars.ContextVar("ai_gate_slot
 def holding_slot() -> bool:
     """Whether the running task holds a gate slot."""
     return _slot.get() is not None
+
+
+_step: contextvars.ContextVar[bool] = contextvars.ContextVar("ai_model_step", default=False)
+
+
+def sending_step() -> bool:
+    """Whether the running task sends a model step through ``send_step``."""
+    return _step.get()
 
 
 class ModelGate:
@@ -995,10 +1004,13 @@ async def send_step(call: Callable[[], Awaitable], *, resend: bool,
     step is sent again only under its own identity: while its first send still runs on
     the service, and, when ``resend`` (a background step), after the service surely did
     not run it or no reply came back, at most RESEND_LIMIT times. Anything else is
-    raised. ``on_refusal`` is told every refusal, with the credits it reports."""
+    raised. ``on_refusal`` is told every refusal, with the credits it reports; what it
+    raises ends the step. Every model call runs through here (``llm.complete`` refuses
+    any other)."""
     from celerp.ai.llm import RelayError
     resends = 0
     while True:
+        token = _step.set(True)
         try:
             return await call()
         except RelayError as exc:
@@ -1017,6 +1029,8 @@ async def send_step(call: Callable[[], Awaitable], *, resend: bool,
                 resends += 1
                 continue
             raise
+        finally:
+            _step.reset(token)
 
 
 async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID | None,

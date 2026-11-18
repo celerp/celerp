@@ -8338,6 +8338,7 @@
   "acct.recon_no_contact_named": "Es ist kein Kontakt in einem Datensatz hinterlegt, daher ist kein Kontakt festgelegt.",
   "acct.err_recon_line_state": "Diese Zeile ist bereits {status}. Machen Sie sie zuerst rückgängig und versuchen Sie es dann erneut.",
   "acct.err_suggest_stale": "Die Auszugszeilen haben sich geändert, während die Vorschläge erstellt wurden, daher wurde keiner gespeichert. Fordern Sie erneut Vorschläge an, um mit den aktuellen Zeilen zu arbeiten.",
+  "acct.err_suggest_running": "Die Vorschläge für genau diese Anfrage werden noch vorbereitet, daher wurde nichts gespeichert. Versuchen Sie es gleich noch einmal.",
   "acct.err_recon_match_needs_entry": "Wählen Sie mindestens einen Buchungseintrag aus, mit dem diese Zeile abgeglichen werden soll.",
   "acct.recon_reason_reversal": "Die Bank hat dies innerhalb von 3 Tagen rückgängig gemacht, daher ist für keine der beiden Zeilen ein Eintrag erforderlich.",
   "acct.recon_reason_match": "Ein Buchungseintrag über denselben Betrag am {date}.",

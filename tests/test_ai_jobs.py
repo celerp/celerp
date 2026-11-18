@@ -857,7 +857,7 @@ async def test_a_steps_declared_budget_is_computed_after_it_takes_the_slot(cloud
     monkeypatch.setattr(deadlines, "call_budget", _budget)
     async with jobs.gate.slot("interactive"):
         order.append("slot")
-        await llm.complete([{"role": "user", "content": "hi"}])
+        await jobs.send_step(lambda: llm.complete([{"role": "user", "content": "hi"}]), resend=False)
     assert order == ["slot", "budget"]
 
 

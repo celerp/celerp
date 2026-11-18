@@ -253,7 +253,9 @@ async def complete(
     Posts to {relay}/ai/complete with the session headers, or with the
     install's account key when there is no Connect session. tools,
     tool_choice, reservation_id, operation_id and step_id are sent only when not None.
-    The caller holds a slot of the model gate (celerp.ai.jobs.gate); the call's
+    The caller holds a slot of the model gate (celerp.ai.jobs.gate) and sends the
+    call as a step of celerp.ai.jobs.send_step, the one place a refusal is answered
+    (a step still running is asked again after ``retry_after``); the call's
     budget is computed once the slot is held and declared to the service.
     ``before_send(nbytes)`` is awaited after the budget and before the request
     leaves, with the body's size (a job step journals the send there).
@@ -270,6 +272,7 @@ async def complete(
     call's budget.
     """
     assert jobs.holding_slot(), "a model call runs inside a slot of celerp.ai.jobs.gate"
+    assert jobs.sending_step(), "a model call is sent as a step of celerp.ai.jobs.send_step"
     body: dict = {"messages": messages, "max_tokens": max_tokens}
     if hints is not None:
         body["hints"] = hints

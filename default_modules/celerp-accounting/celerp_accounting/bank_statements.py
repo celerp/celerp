@@ -1579,6 +1579,9 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
             reply = rung(batch, accounts)
             replies.update((await reply if inspect.isawaitable(reply) else reply) or {})
             await call.session.commit()
+    except suggest.ModelStepRunning:  # the first run of the request still asks: no write, no failure
+        await call.session.rollback()
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_running")) from None
     except Exception:  # the model's failure leaves the lines to questions, said in the summary
         await call.session.rollback()
         return None
@@ -1615,7 +1618,9 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
     The lines are read and the model asked with no lock held; the suggestions are written
     under the company lock only when no run under the key has answered meanwhile (its answer
     is returned instead) and the lines, and what the ladder makes of them, are as they were
-    read. Otherwise the request is refused and nothing is written. A run whose model could not
+    read. Otherwise the request is refused and nothing is written. A run whose model step is
+    still being answered for another run of the same request waits for that answer, and past
+    the synchronous wait is refused with nothing written. A run whose model could not
     answer records no outcome, so the same key asks again."""
     from celerp.services.company_lock import lock_company
     from celerp_accounting import suggest

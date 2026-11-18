@@ -8338,6 +8338,7 @@
   "acct.recon_no_contact_named": "No record names a contact, so none is set.",
   "acct.err_recon_line_state": "This line is {status} already. Undo it first, then try again.",
   "acct.err_suggest_stale": "The statement lines changed while suggestions were being prepared, so none were saved. Suggest again to work from the lines as they are now.",
+  "acct.err_suggest_running": "Suggestions for this same request are still being prepared, so nothing was saved. Try again in a moment.",
   "acct.err_recon_match_needs_entry": "Pick at least one book entry to match this line to.",
   "acct.recon_reason_reversal": "The bank reversed this within 3 days, so neither line needs an entry.",
   "acct.recon_reason_match": "A book entry of the same amount on {date}.",
