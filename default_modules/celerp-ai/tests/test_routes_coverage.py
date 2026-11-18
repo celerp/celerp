@@ -239,6 +239,15 @@ async def test_rename_conversation_404(auth_client):
     assert r.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_older_actions_404(auth_client):
+    c, h = auth_client
+    fake_id = str(uuid.uuid4())
+    r = await c.get(f"/ai/conversations/{fake_id}/older-actions", headers=h,
+                     params={"before_at": "2026-11-01T10:00:00+00:00", "before_id": str(uuid.uuid4())})
+    assert r.status_code == 404
+
+
 # ── POST /ai/conversations/{id}/query ────────────────────────────────────────
 
 def _pending(name="create_contact", call_id="call_1"):
