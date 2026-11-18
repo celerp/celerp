@@ -17,6 +17,7 @@ it returns ``{group key: {account_code, reason}}`` (or an awaitable of it).
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import uuid
 from collections import Counter
@@ -433,17 +434,39 @@ _MODEL_PROMPT = (
 )
 
 
+_MODEL_HINTS = {"query": "bank suggestions", "file_count": 0, "is_batch": False}
+
+
+def _canonical(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def model_step(call: ModelCall, groups: list[dict], accounts: list[str]) -> tuple[uuid.UUID, list[dict]]:
+    """(identity, messages) of one model step for ``groups``. The groups and accounts are
+    put in one order and serialised one way, so the same input in any order is sent byte
+    for byte the same; the identity is the request (company and key) plus a hash of all
+    that is sent, so a retry of the same input is the same step (its kept reply answers it)
+    and any change to what the model sees is a new step. The service can never be sent two
+    contents under one identity."""
+    shown = {"accounts": sorted(str(a) for a in accounts), "groups": sorted(groups, key=_canonical)}
+    messages = [{"role": "system", "content": _MODEL_PROMPT}, {"role": "user", "content": _canonical(shown)}]
+    digest = hashlib.sha256(_canonical({"messages": messages, "hints": _MODEL_HINTS}).encode()).hexdigest()
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"celerp:bank-suggest:{call.company_id}:{call.key}:{digest}"), messages
+
+
 class ModelStepRunning(Exception):
     """The same model step, sent first by another run of the request, was still running
     when this run's synchronous wait (``deadlines.SYNC_WAIT_S``) ran out."""
 
 
 async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
-    """One model step for ``groups`` under the request's key (so a replay is not charged
-    again), its usage recorded for the company. The step is sent through the assistant's
+    """One model step for ``groups`` under its identity (``model_step``: a replay is not
+    charged again), its usage recorded for the company. The step is sent through the assistant's
     ``send_step``: while the same step sent by another run of the request still runs, it
     is asked again after the service's ``retry_after`` and answered the first run's reply;
-    past the synchronous wait it raises ModelStepRunning. Raises when the model cannot be reached."""
+    past the synchronous wait it raises ModelStepRunning. Raises RelayError
+    operation_mismatch as it comes (``model_step`` makes it impossible; the caller refuses
+    it rather than counting it a model failure), and whatever else stops the model."""
     import time
 
     from celerp.ai import deadlines, jobs, llm
@@ -452,10 +475,7 @@ async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
     call = current_call.get()
     if call is None:
         return {}
-    op = uuid.uuid5(uuid.NAMESPACE_URL, f"celerp:bank-suggest:{call.company_id}:{call.key}:{groups[0]['key']}")
-    messages = [{"role": "system", "content": _MODEL_PROMPT},
-                {"role": "user", "content": json.dumps({"accounts": accounts, "groups": groups}, ensure_ascii=False)}]
-    hints = {"query": "bank suggestions", "file_count": 0, "is_batch": False}
+    op, messages = model_step(call, groups, accounts)
     since: list[float] = []
 
     def _running(exc) -> None:
@@ -465,7 +485,7 @@ async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
                 raise ModelStepRunning from exc
 
     async with jobs.gate.slot("interactive"):
-        result = await jobs.send_step(lambda: llm.complete(messages, operation_id=op, hints=hints), resend=False,
+        result = await jobs.send_step(lambda: llm.complete(messages, operation_id=op, hints=_MODEL_HINTS), resend=False,
                                       on_refusal=_running)
     known = result.operation_credits is not None
     credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)

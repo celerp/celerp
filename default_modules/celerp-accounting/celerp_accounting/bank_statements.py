@@ -1567,6 +1567,7 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
     of each batch is committed as it comes, so no lock it takes is held over the next call."""
     import inspect
 
+    from celerp.ai.llm import RelayError
     from celerp_accounting import suggest
 
     token = suggest.current_call.set(call)
@@ -1582,6 +1583,11 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
     except suggest.ModelStepRunning:  # the first run of the request still asks: no write, no failure
         await call.session.rollback()
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_running")) from None
+    except RelayError as exc:
+        await call.session.rollback()
+        if exc.code == "operation_mismatch":  # the service broke the step's identity: no write, no failure
+            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_mismatch")) from None
+        return None
     except Exception:  # the model's failure leaves the lines to questions, said in the summary
         await call.session.rollback()
         return None
@@ -1620,7 +1626,8 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
     is returned instead) and the lines, and what the ladder makes of them, are as they were
     read. Otherwise the request is refused and nothing is written. A run whose model step is
     still being answered for another run of the same request waits for that answer, and past
-    the synchronous wait is refused with nothing written. A run whose model could not
+    the synchronous wait is refused with nothing written, as is a run the AI service says
+    was sent with other content under its step's identity. A run whose model could not
     answer records no outcome, so the same key asks again."""
     from celerp.services.company_lock import lock_company
     from celerp_accounting import suggest

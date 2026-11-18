@@ -73,8 +73,8 @@ class Service:
     operation_in_progress, a later send of the same content answers the kept reply and one
     of other content is refused operation_mismatch."""
 
-    def __init__(self, reason: str, hold: bool = False):
-        self.reason, self.hold, self.runs, self.refused = reason, hold, 0, 0
+    def __init__(self, reason: str, hold: bool = False, mismatch: int = 0):
+        self.reason, self.hold, self.runs, self.refused, self.mismatch = reason, hold, 0, 0, mismatch
         self.kept, self.running, self.sent = {}, set(), []
         self.held, self.go, self.waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -83,6 +83,9 @@ class Service:
 
         content = json.dumps(messages, sort_keys=True)
         self.sent.append((operation_id, json.loads(messages[-1]["content"])))
+        if self.mismatch:  # a service that reports a mismatch however it was sent
+            self.mismatch -= 1
+            raise RelayError("operation_mismatch", "other content", status=422)
         if operation_id in self.running:
             self.refused += 1
             if self.refused >= 3:
@@ -282,4 +285,55 @@ async def test_a_request_still_waiting_on_the_running_step_at_its_deadline_refus
     service.go.set()
     done = await asyncio.wait_for(first, timeout=60)
     assert done.status_code == 200 and done.json()["model_ran"] is True, done.text
+    assert await _outcomes(committed_engine, co, key) == 1
+
+
+async def test_a_retry_after_a_stale_refusal_with_changed_lines_is_a_new_model_step_under_the_same_key(
+        committed_engine, own_client, monkeypatch):
+    """The model step's identity is the request plus everything the model sees: after a stale
+    refusal, the same key on changed lines is a distinct step, asked afresh (never refused as
+    sent with other content), and its suggestions are recorded under the original key."""
+    c = own_client
+    co, bk = await _bank(c, rows=((NEW, "-40.00"), (OTHER, "-20.00"), ("A THIRD NEW ONE", "-10.00")))
+    service = _service(monkeypatch, Service("asked", hold=True))
+    key = B.key()
+    run = asyncio.create_task(_suggest(c, co, bk, key))
+    await asyncio.wait_for(service.held.wait(), timeout=20)
+    first_op, first_input = service.sent[0]
+    keep = first_input["groups"][0]["sample"]  # the first group stays; another line is resolved
+    lines = B.all_lines(await B.groups(c, co, bk["id"]))
+    gone = next(l for l in lines if l["description"] not in str(keep))
+    r = await B.resolve(c, co, bk["id"], decisions=[{"line_ids": [gone["id"]], "kind": "post",
+                                                     "account_code": "5100"}])
+    assert r.status_code == 200 and r.json()["results"][0]["ok"], r.text
+    service.go.set()
+    refused = await asyncio.wait_for(run, timeout=60)
+    assert refused.status_code == 409 and refused.json()["detail"]["message_key"] == "acct.err_suggest_stale"
+    again = await _suggest(c, co, bk, key)
+    assert again.status_code == 200 and again.json()["model_ran"] is True, again.text
+    op, seen = service.sent[-1]
+    assert op != first_op and seen != first_input and service.runs == 2
+    assert await _outcomes(committed_engine, co, key) == 1
+    after = await _suggestions(c, co, bk)
+    assert after[gone["description"]] is None or _said(after[gone["description"]]) != "asked", after
+    assert {_said(v) for d, v in after.items() if d != gone["description"]} == {"asked"}, after
+    replay = await _suggest(c, co, bk, key)
+    assert replay.json() == again.json() and service.runs == 2
+
+
+async def test_a_reported_mismatch_is_refused_with_nothing_written_and_the_key_asks_again(
+        committed_engine, own_client, monkeypatch):
+    """A service that still reports the step as sent with other content is no plain model
+    failure: 409, no suggestion, no outcome, and the same key then asks and is answered."""
+    c = own_client
+    co, bk = await _bank(c)
+    service = _service(monkeypatch, Service("after mismatch", mismatch=1))
+    key = B.key()
+    refused = await _suggest(c, co, bk, key)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["message_key"] == "acct.err_suggest_mismatch"
+    assert await _outcomes(committed_engine, co, key) == 0
+    assert set((await _suggestions(c, co, bk)).values()) == {None}
+    again = await _suggest(c, co, bk, key)
+    assert again.status_code == 200 and again.json()["model_ran"] is True, again.text
     assert await _outcomes(committed_engine, co, key) == 1
