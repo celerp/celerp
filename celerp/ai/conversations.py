@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Callable, Literal, Sequence, TypeVar
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import jobs
@@ -216,7 +216,8 @@ async def delete_conversation(
 ) -> bool:
     """Delete a conversation and its messages, and end its open jobs as stopped in the
     same transaction, so none outlives it open. Returns True if found. Raises
-    ``ConversationBusy``, and deletes nothing, while a job runs in it.
+    ``ConversationBusy``, and deletes nothing, while a job runs in it or a confirmed
+    action of it is being run.
 
     One DELETE of the conversation's row: the row is locked first and the database's
     foreign-key cascade then removes the messages, the same order every message writer
@@ -225,7 +226,9 @@ async def delete_conversation(
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return False
-    if not await jobs.end_conversation_jobs(session, conversation_id, company_id=company_id, user_id=user_id):
+    if (await _runs_an_action(session, conversation_id)
+            or not await jobs.end_conversation_jobs(session, conversation_id, company_id=company_id,
+                                                    user_id=user_id)):
         raise ConversationBusy
     await session.execute(delete(AIConversation).where(
         AIConversation.id == conversation_id, AIConversation.company_id == company_id,
@@ -234,7 +237,27 @@ async def delete_conversation(
 
 
 class ConversationBusy(Exception):
-    """A job runs in the conversation: it can be deleted once the job ends or is stopped."""
+    """A job or a confirmed action runs in the conversation: it can be deleted once that ends."""
+
+
+async def _runs_an_action(session: AsyncSession, conversation_id: uuid.UUID) -> bool:
+    """Whether a confirmed action of the conversation is being run right now. The caller
+    holds the company's lock, which every claim takes, so none starts meanwhile."""
+    rows = await session.execute(select(AIMessage.tools_called).where(
+        AIMessage.conversation_id == conversation_id, AIMessage.tools_called.isnot(None)))
+    now = datetime.now(timezone.utc)
+    return any(_running(record, now) for (tools_called,) in rows.all() for record in tools_called or [])
+
+
+async def _protected_message_ids(
+    session: AsyncSession, conversation_id: uuid.UUID, rows: Sequence[tuple[uuid.UUID, list | None]],
+) -> set[uuid.UUID]:
+    """Of ``rows`` (message id, tools_called) of one conversation, the messages carrying
+    protected work: an action under ``_protected``, or the question an open job answers.
+    Pruning keeps them and the conversation read returns them, however old."""
+    asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
+    return {message_id for message_id, tools_called in rows
+            if message_id in asked or _has_protected_action(tools_called)}
 
 
 async def rename_conversation(
@@ -307,19 +330,14 @@ async def add_message(
         old_rows = list((await session.execute(
             select(AIMessage.id, AIMessage.tools_called)
             .where(AIMessage.conversation_id == conversation_id)
-            .order_by(AIMessage.created_at.desc())
+            .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
             .offset(MAX_MESSAGES_PER_CONVERSATION)
         )).all())
         if old_rows:
-            # Unresolved proposals and ambiguous writes (retryable or unknown) are durable
-            # user decisions, not disposable chat history, and an open job's question is
-            # what it answers. Preserve them until they reach a terminal state, even
-            # if that means temporarily exceeding the soft history cap.
-            asked = {job.question_id for job in await jobs.open_jobs(session, [conversation_id])}
-            prunable = [
-                message_id for message_id, tools_called in old_rows
-                if message_id not in asked and not pending_actions(tools_called)
-            ]
+            # Protected work is a durable user decision or a change being run, not
+            # disposable chat history: it stays until it ends, even past the soft cap.
+            protected = await _protected_message_ids(session, conversation_id, old_rows)
+            prunable = [message_id for message_id, _ in old_rows if message_id not in protected]
             if prunable:
                 await session.execute(delete(AIMessage).where(AIMessage.conversation_id == conversation_id,
                                                               AIMessage.id.in_(prunable)))
@@ -333,16 +351,31 @@ async def get_messages(
     *,
     limit: int = MAX_MESSAGES_PER_CONVERSATION,
 ) -> list[AIMessage]:
-    """Get the newest ``limit`` messages, returned oldest-first (chronological)."""
-    q = (
+    """The newest ``limit`` messages plus the older ones carrying protected work, so a
+    card pruning kept stays reachable, in time order (created_at, then id).
+
+    Bounded: at most ``limit`` older messages join, the newest of them, so a read
+    returns at most twice ``limit``."""
+    newest = list((await session.execute(
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id)
-        .order_by(AIMessage.created_at.desc())
+        .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
         .limit(limit)
-    )
-    newest_first = list((await session.execute(q)).scalars().all())
-    newest_first.reverse()
-    return newest_first
+    )).scalars().all())
+    if newest and len(newest) == limit:
+        edge = newest[-1]
+        older = (await session.execute(
+            select(AIMessage.id, AIMessage.tools_called)
+            .where(AIMessage.conversation_id == conversation_id,
+                   tuple_(AIMessage.created_at, AIMessage.id) < tuple_(edge.created_at, edge.id))
+            .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
+        )).all()
+        protected = await _protected_message_ids(session, conversation_id, older)
+        keep = [message_id for message_id, _ in older if message_id in protected][:limit]
+        if keep:
+            newest += (await session.execute(select(AIMessage).where(AIMessage.id.in_(keep)))).scalars().all()
+    newest.sort(key=lambda m: (m.created_at, m.id))
+    return newest
 
 
 async def get_message(
@@ -576,19 +609,25 @@ class ActionOutcomeUnknown(Exception):
         self.record = record
 
 
+def _protected(record: object, now: datetime) -> bool:
+    """The one definition of protected work on an action record: a decision still the
+    user's (a proposal inside its TTL, retryable, or outcome unknown) or a change being
+    run (executing, a fresh claim or a stale one). Retention, the conversation read,
+    deletion and the continuation claim all ask this."""
+    if _still_pending(record, now):
+        return True
+    return isinstance(record, dict) and record.get("status") in {"retryable", "unknown", "executing"}
+
+
+def _running(record: object, now: datetime) -> bool:
+    """Protected work being run right now: a claim not yet stale."""
+    return _protected(record, now) and record.get("status") == "executing" and not _stale_executing(record, now)
+
+
 def _has_protected_action(tools_called: list | None) -> bool:
-    """True while an action must keep its conversation reachable."""
-    if not tools_called:
-        return False
+    """True while an action must keep its message and conversation reachable."""
     now = datetime.now(timezone.utc)
-    for record in tools_called:
-        if _still_pending(record, now):
-            return True
-        if _outcome_unknown(record, now):
-            return True
-        if isinstance(record, dict) and record.get("status") in {"retryable", "executing"}:
-            return True
-    return False
+    return any(_protected(record, now) for record in tools_called or [])
 
 
 def pending_actions(tools_called: list | None) -> list[dict]:
@@ -739,11 +778,6 @@ async def claim_tool_call(
     return dict(claimed) if claimed is not None else None
 
 
-def _unfinished(record: dict) -> bool:
-    """A record whose change may still run: open, or being run right now."""
-    return record.get("status") == "executing" or bool(pending_actions([record]))
-
-
 async def claim_continuation(
     session: AsyncSession,
     *,
@@ -765,7 +799,7 @@ async def claim_continuation(
         if claimed:
             return None, (claimed, False)
         records = [r for r in items if isinstance(r, dict) and r.get("name")]
-        if (not records or any(_unfinished(r) for r in records)
+        if (not records or _has_protected_action(records)
                 or not any(r.get("status") == "completed" for r in records)):
             return None, None
         return [*items, {"continued_job_id": str(job_id)}], (str(job_id), True)
