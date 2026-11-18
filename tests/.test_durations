@@ -31197,5 +31197,10 @@
     "tests/test_ai_action_state_races_pg.py::test_finishing_keeps_the_error_and_outcomes_it_is_given_and_clears_a_stale_error": 0.162829510984011,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.ask-questions]": 17.43843753100373,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.review-proposals]": 0.9941535940160975,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.2457204818492755
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-ai.usage-settings]": 1.2457204818492755,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_action_dom_id_is_css_safe_and_unique_per_message_and_call": 0.026114532840438187,
+    "default_modules/celerp-ai/tests/test_ui_routes.py::test_bulk_preview_keeps_a_field_name_that_two_sections_share": 0.006690198904834688,
+    "tests/test_ai_agent_help.py::test_help_search_finds_the_recipe_page_for_a_make_and_take_from_stock_question": 0.055234488914720714,
+    "tests/test_browser/test_ai_chat_journey.py::test_bulk_confirm_updates_only_the_selected_row_whatever_the_call_ids_hold[chromium]": 9.239856009953655,
+    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-manufacturing.make-from-recipe]": 13.588346290984191
 }
