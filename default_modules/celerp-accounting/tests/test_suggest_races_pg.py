@@ -193,6 +193,27 @@ async def test_a_failed_model_records_no_outcome_and_the_same_key_runs_again(com
     assert _said((await _suggestions(c, co, bk))[NEW]) == "second try"
 
 
+async def test_a_relay_error_other_than_a_mismatch_records_no_outcome(committed_engine, own_client, monkeypatch):
+    """A RelayError the service reports for a reason other than a stale identity (here
+    ``no_session``) is the same ``model could not answer`` outcome as any other model
+    failure: no outcome recorded, the suggestions fall back to questions, and the key asks
+    again. Distinct from ``operation_mismatch`` (refused 409, nothing written at all)."""
+    from celerp.ai.llm import RelayError
+    from celerp_accounting import suggest
+
+    def model_rung(groups, accounts):
+        raise RelayError("no_session", "signed out of Celerp Connect")
+
+    c = own_client
+    co, bk = await _bank(c, rows=((NEW, "-40.00"),))
+    monkeypatch.setattr(suggest, "model_rung", model_rung)
+    key = B.key()
+    failed = await _suggest(c, co, bk, key)
+    assert failed.status_code == 200 and failed.json()["model_ran"] is False, failed.text
+    assert await _outcomes(committed_engine, co, key) == 0
+    assert (await _suggestions(c, co, bk))[NEW]["source"] == "question"
+
+
 async def test_interleavings_write_only_when_the_recheck_matches(committed_engine, own_client, monkeypatch):
     """Seeded: while the model runs, any of a resolved line, a rule that answers a line (the
     ladder changes), a rule that answers nothing (the ladder does not), a same-key run that

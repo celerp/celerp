@@ -31245,5 +31245,6 @@
     "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[1]": 0.1658533189984155,
     "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[2]": 0.28719031399668893,
     "default_modules/celerp-ai/tests/test_protected_work.py::test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history[3]": 0.1443672309978865,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_suggest_model_step.py]": 0.005395817999669816
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_suggest_model_step.py]": 0.005395817999669816,
+    "default_modules/celerp-accounting/tests/test_suggest_races_pg.py::test_a_relay_error_other_than_a_mismatch_records_no_outcome": 1.4436587919917656
 }
