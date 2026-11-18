@@ -95,6 +95,7 @@
   "de": [
     "acct.source_system",
     "acct.tab_journal",
+    "ai.section_query",
     "attr.form",
     "attr.format",
     "attr.material",
@@ -489,6 +490,7 @@
     "activity.m_pcs",
     "activity.m_wt",
     "activity.total_change",
+    "ai.section_query",
     "attr.diameter_mm",
     "attr.format",
     "attr.gender",
@@ -626,6 +628,7 @@
     "th.total"
   ],
   "it": [
+    "ai.section_path",
     "attr.volume_l",
     "btn.u00d7",
     "category.tablet",
