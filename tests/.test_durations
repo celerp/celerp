@@ -31668,5 +31668,15 @@
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/help/translations.py]": 0.0026754370192065835,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_bank_questions_races_pg.py]": 0.0029095330100972205,
     "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_donors_races_pg.py]": 0.0026607720355968922,
-    "tests/test_services/test_reorder.py::test_the_daily_digest_email_goes_out_after_the_scan_commits": 0.14343113798531704
+    "tests/test_services/test_reorder.py::test_the_daily_digest_email_goes_out_after_the_scan_commits": 0.14343113798531704,
+    "tests/test_export_help.py::test_check_build_yml_help_asset_attach_loop[help.json]": 0.12609004299156368,
+    "tests/test_export_help.py::test_check_build_yml_help_asset_attach_loop[none]": 0.11848715299856849,
+    "tests/test_export_help.py::test_check_build_yml_help_asset_export_step": 0.028754939005011693,
+    "tests/test_export_help.py::test_check_build_yml_help_asset_site_checkout": 0.028507856011856347,
+    "tests/test_export_help.py::test_export_help_git_history[git_date_empty]": 0.20340894401306286,
+    "tests/test_export_help.py::test_export_help_git_history[shallow_clone]": 0.15076170800602995,
+    "tests/test_export_help.py::test_export_help_module_without_topic": 0.1587246999843046,
+    "tests/test_export_help.py::test_export_help_problems_block_write": 0.15751214101328515,
+    "tests/test_export_help.py::test_export_help_unwritable": 0.16399922099662945,
+    "tests/test_export_help.py::test_shipped_help_exports": 0.1616518749797251
 }
