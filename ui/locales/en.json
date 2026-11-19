@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "The statement ties: the opening balance plus every line equals the closing balance.",
   "bank.preview_not_tied": "The statement does not tie yet. Check the opening and closing balances and the period.",
   "bank.preview_duplicate": "Already imported",
+  "bank.preview_in_books": "May already be in the books",
+  "bank.preview_may_repeat": "May repeat a line of the statement of {date}",
   "bank.failed_steps": "{n} pages could not be read. Import the rest, or drop those pages again.",
   "bank.import_confirm": "Import these statements onto this bank?",
   "bank.field_opening": "Opening balance",

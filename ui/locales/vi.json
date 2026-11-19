@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "Bản sao kê khớp: số dư đầu kỳ cộng với tất cả các dòng bằng số dư cuối kỳ.",
   "bank.preview_not_tied": "Bản sao kê chưa khớp. Hãy kiểm tra số dư đầu kỳ, số dư cuối kỳ và khoảng thời gian.",
   "bank.preview_duplicate": "Đã nhập",
+  "bank.preview_in_books": "Có thể đã có trong sổ sách",
+  "bank.preview_may_repeat": "Có thể trùng một dòng của sao kê ngày {date}",
   "bank.failed_steps": "Không thể đọc {n} trang. Hãy nhập phần còn lại hoặc thả lại các trang đó.",
   "bank.import_confirm": "Nhập các bản sao kê này vào tài khoản ngân hàng này?",
   "bank.field_opening": "Số dư đầu kỳ",

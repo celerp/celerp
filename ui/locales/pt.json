@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "O extrato fecha: o saldo inicial mais cada linha é igual ao saldo final.",
   "bank.preview_not_tied": "O extrato ainda não fecha. Verifique os saldos inicial e final e o período.",
   "bank.preview_duplicate": "Já importado",
+  "bank.preview_in_books": "Pode já estar nos livros",
+  "bank.preview_may_repeat": "Pode repetir uma linha do extrato de {date}",
   "bank.failed_steps": "{n} páginas não puderam ser lidas. Importe o restante ou solte essas páginas novamente.",
   "bank.import_confirm": "Importar esses extratos para esta conta bancária?",
   "bank.field_opening": "Saldo inicial",

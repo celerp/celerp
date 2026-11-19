@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "Rekening koran sesuai: saldo awal ditambah setiap baris sama dengan saldo akhir.",
   "bank.preview_not_tied": "Rekening koran belum sesuai. Periksa saldo awal dan akhir serta periodenya.",
   "bank.preview_duplicate": "Sudah diimpor",
+  "bank.preview_in_books": "Mungkin sudah tercatat di pembukuan",
+  "bank.preview_may_repeat": "Mungkin mengulang baris dari laporan {date}",
   "bank.failed_steps": "{n} halaman tidak dapat dibaca. Impor sisanya, atau seret halaman tersebut lagi.",
   "bank.import_confirm": "Impor rekening koran ini ke rekening bank tersebut?",
   "bank.field_opening": "Saldo awal",

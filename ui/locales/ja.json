@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "明細書は一致しています。期首残高に全行を加えると、期末残高と等しくなります。",
   "bank.preview_not_tied": "明細書はまだ一致していません。期首残高と期末残高、および期間を確認してください。",
   "bank.preview_duplicate": "既にインポート済み",
+  "bank.preview_in_books": "既に帳簿に記録されている可能性があります",
+  "bank.preview_may_repeat": "{date} の明細書の行と重複している可能性があります",
   "bank.failed_steps": "{n} ページを読み取れませんでした。残りのページをインポートするか、これらのページをもう一度ドロップしてください。",
   "bank.import_confirm": "これらの明細書をこの銀行口座にインポートしますか？",
   "bank.field_opening": "期首残高",

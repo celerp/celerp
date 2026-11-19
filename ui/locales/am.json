@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "መግለጫው ይስማማል፦ የመክፈቻ ቀሪ ሒሳብ ሲደመር እያንዳንዱ መስመር ከመዝጊያ ቀሪ ሒሳብ ጋር እኩል ነው።",
   "bank.preview_not_tied": "መግለጫው እስካሁን አይስማማም። የመክፈቻ እና የመዝጊያ ቀሪ ሒሳቦችን እና የጊዜ ገደቡን ያረጋግጡ።",
   "bank.preview_duplicate": "አስቀድሞ ገብቷል",
+  "bank.preview_in_books": "አስቀድሞ በመዝገቦቹ ውስጥ ሊኖር ይችላል",
+  "bank.preview_may_repeat": "የ{date} መግለጫ መስመርን ሊደግም ይችላል",
   "bank.failed_steps": "{n} ገጾች ሊነበቡ አልቻሉም። የቀረውን ያስገቡ ወይም እነዚያን ገጾች እንደገና ይጣሉ።",
   "bank.import_confirm": "እነዚህን የባንክ መግለጫዎች ወደዚህ የባንክ ሂሳብ ያስመጣሉ?",
   "bank.field_opening": "የመክፈቻ ቀሪ ሂሳብ",

@@ -25,6 +25,10 @@ from ui.config import get_token as _token
 from ui.i18n import refusal_text, t
 
 _QUESTION_STATUSES = ("open", "answered", "all")
+# What the import takes of a line as read (the API's StatementLineIn); the rest of a
+# previewed line is worked out again by the review.
+_LINE_FIELDS = ("line_date", "description", "amount", "reference", "raw_balance", "fitid", "source",
+                "counterparty_account", "raw_csv_row", "flags")
 
 
 def _login() -> Response:
@@ -243,6 +247,15 @@ def setup_routes(app):
             return Response(status_code=400)
         headers, column_map = state
         statements = [{"header": h} for h in headers]
+        ticks = {tuple(v.split(":")) for v in form.getlist("tick")}
+        if ticks:
+            # Lines left out as possible repeats and ticked in: send the statements' lines as
+            # read with those ticked; every other line keeps the review's choice.
+            found = await api.statement_preview(token, job_id, statements, column_map)
+            for i, (st, read) in enumerate(zip(statements, found["statements"])):
+                st["lines"] = [{**{k: l.get(k) for k in _LINE_FIELDS},
+                                **({"ticked": True} if (str(i), str(j)) in ticks else {})}
+                               for j, l in enumerate(read["lines"])]
         try:
             await api.import_statement(token, {"job_id": job_id, "bank_id": bank_id, "statements": statements,
                                                "column_map": column_map,

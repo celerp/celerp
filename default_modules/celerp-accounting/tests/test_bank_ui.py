@@ -262,6 +262,56 @@ async def test_a_preview_state_it_did_not_render_is_refused_and_nothing_is_sent(
     imp.assert_not_awaited()
 
 
+_REPEAT = {"line_date": "2026-01-09", "description": "COFFEE", "amount": "-4.50", "reference": None,
+           "raw_balance": None, "fitid": None, "source": "csv", "counterparty_account": None, "raw_csv_row": {"a": "1"},
+           "flags": [], "fingerprint": "fp-r", "counterparty_key": "COFFEE:out", "duplicate": False,
+           "probable": True, "repeats": "2025-12-31", "ticked": False}
+_IN_BOOKS = {**_REPEAT, "description": "RENT", "amount": "-900.00", "fingerprint": "fp-b", "repeats": None}
+_NEW = {**_REPEAT, "description": "LUNCH", "fingerprint": "fp-n", "probable": False, "ticked": True}
+_POSSIBLE = {"job_id": "j1", "bank_id": "b1", "receipts": [], "failed_steps": [], "statements": [{
+    "file_id": "f1", "header": {"opening_balance": "1000.00", "closing_balance": "91.00", "period_start": "2026-01-01",
+                                "period_end": "2026-01-31", "currency": "USD"},
+    "lines": [_REPEAT, _IN_BOOKS, _NEW], "tie": {"ok": True}, "blocking": [], "notices": []}]}
+
+
+async def test_a_possible_repeat_shows_why_it_is_left_out_with_a_box_that_ticks_it_in(ui_client):
+    """A line left out as a possible repeat says which statement it may repeat (or that it
+    may already be in the books) and carries a box tied to the Import form; a new line has
+    neither."""
+    from ui.i18n import t
+    with patch("ui.api_client.statement_preview", AsyncMock(return_value=_POSSIBLE)):
+        html = (await _get(ui_client, "/accounting/reconcile/bank/b1/preview/j1", _TABLE)).text
+    assert t("bank.preview_may_repeat", date="2025-12-31") in html
+    assert t("bank.preview_in_books") in html
+    form_id = _tag(html, r'<form[^>]+id="(statement-import-j1)"')
+    boxes = re.findall(r'<input[^>]+name="tick"[^>]*>', html)
+    assert [re.search(r'value="([^"]+)"', b).group(1) for b in boxes] == ["0:0", "0:1"]
+    assert all('form="statement-import-j1"' in b and 'type="checkbox"' in b for b in boxes) and form_id
+
+
+async def test_import_sends_the_lines_ticked_in_and_leaves_the_others_to_the_review(ui_client):
+    """Import with a possible repeat ticked sends the statement's lines as read with that one
+    ticked; the box left empty keeps the review's choice. Nothing ticked sends headers only."""
+    preview, imp = AsyncMock(return_value=_POSSIBLE), AsyncMock(return_value={})
+    _signed_in(ui_client)
+    state = json.dumps({"headers": [_POSSIBLE["statements"][0]["header"]], "column_map": None})
+    with patch("ui.api_client.statement_preview", preview), patch("ui.api_client.import_statement", imp):
+        r = await ui_client.post("/accounting/reconcile/bank/b1/preview/j1/import",
+                                 data={"state": state, "idempotency_key": "k1", "tick": "0:0"})
+        assert r.status_code == 204, r.text
+        sent = imp.await_args.args[1]["statements"][0]
+        assert [l.get("ticked") for l in sent["lines"]] == [True, None, None]
+        assert set(sent["lines"][0]) <= {"line_date", "description", "amount", "reference", "raw_balance", "fitid",
+                                         "source", "counterparty_account", "raw_csv_row", "flags", "ticked"}
+        assert sent["lines"][0]["description"] == "COFFEE" and sent["lines"][0]["raw_csv_row"] == {"a": "1"}
+        imp.reset_mock()
+        preview.reset_mock()
+        await ui_client.post("/accounting/reconcile/bank/b1/preview/j1/import",
+                             data={"state": state, "idempotency_key": "k2"})
+        assert "lines" not in imp.await_args.args[1]["statements"][0]
+        preview.assert_not_awaited()
+
+
 async def test_a_header_figure_edit_with_an_unreadable_position_is_refused(ui_client):
     preview = AsyncMock()
     _signed_in(ui_client)

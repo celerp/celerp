@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "El extracto cuadra: el saldo inicial más cada línea es igual al saldo final.",
   "bank.preview_not_tied": "El extracto aún no cuadra. Verifique los saldos inicial y final, así como el período.",
   "bank.preview_duplicate": "Ya importado",
+  "bank.preview_in_books": "Puede que ya esté en los libros",
+  "bank.preview_may_repeat": "Puede repetir una línea del extracto del {date}",
   "bank.failed_steps": "No se pudieron leer {n} páginas. Importe el resto o vuelva a soltar esas páginas.",
   "bank.import_confirm": "¿Importar estos extractos a esta cuenta bancaria?",
   "bank.field_opening": "Saldo inicial",

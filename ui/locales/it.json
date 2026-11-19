@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "L'estratto conto quadra: il saldo iniziale più ogni riga è uguale al saldo di chiusura.",
   "bank.preview_not_tied": "L'estratto conto non quadra ancora. Controlla i saldi iniziale e di chiusura e il periodo.",
   "bank.preview_duplicate": "Già importato",
+  "bank.preview_in_books": "Potrebbe essere già nei libri contabili",
+  "bank.preview_may_repeat": "Potrebbe ripetere una riga dell'estratto del {date}",
   "bank.failed_steps": "Impossibile leggere {n} pagine. Importa le restanti oppure trascina di nuovo quelle pagine.",
   "bank.import_confirm": "Importare questi estratti conto in questo conto bancario?",
   "bank.field_opening": "Saldo iniziale",

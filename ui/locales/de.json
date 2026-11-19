@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "Der Kontoauszug geht auf: Der Anfangssaldo zuzüglich aller Zeilen ergibt den Endsaldo.",
   "bank.preview_not_tied": "Der Kontoauszug geht noch nicht auf. Überprüfen Sie Anfangs- und Endsaldo sowie den Zeitraum.",
   "bank.preview_duplicate": "Bereits importiert",
+  "bank.preview_in_books": "Möglicherweise bereits gebucht",
+  "bank.preview_may_repeat": "Wiederholt möglicherweise eine Zeile des Auszugs vom {date}",
   "bank.failed_steps": "{n} Seiten konnten nicht gelesen werden. Importieren Sie den Rest oder legen Sie diese Seiten erneut ab.",
   "bank.import_confirm": "Diese Kontoauszüge in dieses Bankkonto importieren?",
   "bank.field_opening": "Anfangssaldo",

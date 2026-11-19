@@ -493,6 +493,24 @@ def column_mapper(bank_id: str, job_id: str, columns: list[str], state: str) -> 
         cls="bank-preview__mapper", data_testid="column-mapper")
 
 
+def _import_form_id(job_id: str) -> str:
+    return f"statement-import-{job_id}"
+
+
+def _preview_status(job_id: str, idx: int, j: int, line: dict) -> FT:
+    """Why a line is left out of the import: already imported, or a possible repeat (of a line
+    of an earlier statement, or of an entry already in the books) with a box tied to the
+    Import form that ticks it in."""
+    if line.get("duplicate"):
+        return Span(t("bank.preview_duplicate"))
+    if not line.get("probable"):
+        return Span("")
+    reason = (t("bank.preview_may_repeat", date=line["repeats"]) if line.get("repeats")
+              else t("bank.preview_in_books"))
+    return Label(Input(type="checkbox", name="tick", value=f"{idx}:{j}", form=_import_form_id(job_id)),
+                 Span(reason), cls="bank-preview__tick")
+
+
 def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
     """The statements a reading job found, each with its header figures (click to edit),
     whether it ties, what blocks Import, and its lines. A tabular file whose columns were
@@ -518,8 +536,8 @@ def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
                 *[_row(Span(l.get("line_date") or EMPTY), Span(l.get("description") or EMPTY, cls="bank-cell--text"),
                        Span(money(l.get("amount"), cur), cls="bank-cell--money"),
                        Span(money(l.get("raw_balance"), cur), cls="bank-cell--money"),
-                       Span(t("bank.preview_duplicate") if l.get("duplicate") else ""),
-                       cls="bank-row bank-row--preview", heads=_PREVIEW_HEAD) for l in st["lines"]],
+                       _preview_status(job_id, idx, j, l),
+                       cls="bank-row bank-row--preview", heads=_PREVIEW_HEAD) for j, l in enumerate(st["lines"])],
                 cls="bank-preview__lines"),
             cls="bank-preview__statement"))
     failed = preview.get("failed_steps") or []
@@ -529,7 +547,7 @@ def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
         P(t("bank.failed_steps", n=len(failed)), cls="flash flash--warning") if failed else None,
         *blocks,
         Form(Input(type="hidden", name="state", value=state), _key_input(),
-             Button(t("btn.import"), type="submit", cls="btn btn--primary"),
+             Button(t("btn.import"), type="submit", cls="btn btn--primary"), id=_import_form_id(job_id),
              hx_post=bank_url(bank_id, "preview", job_id, "import"), hx_confirm=t("bank.import_confirm"),
              hx_target="closest [data-testid=statement-preview]", hx_swap="outerHTML") if importable else None,
         cls="bank-preview settings-card", data_testid="statement-preview")

@@ -8472,6 +8472,8 @@
   "bank.preview_ties": "Le relevé est équilibré : le solde d'ouverture plus chaque ligne est égal au solde de clôture.",
   "bank.preview_not_tied": "Le relevé n'est pas encore équilibré. Vérifiez les soldes d'ouverture et de clôture ainsi que la période.",
   "bank.preview_duplicate": "Déjà importé",
+  "bank.preview_in_books": "Peut déjà figurer dans les comptes",
+  "bank.preview_may_repeat": "Peut répéter une ligne du relevé du {date}",
   "bank.failed_steps": "{n} pages n'ont pas pu être lues. Importez le reste ou déposez à nouveau ces pages.",
   "bank.import_confirm": "Importer ces relevés sur ce compte bancaire ?",
   "bank.field_opening": "Solde d'ouverture",
