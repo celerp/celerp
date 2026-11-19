@@ -5,7 +5,10 @@ routes: every file and every decision is either taken as a reference reading say
 be, or refused with a keyed reason. Never a server error, never an empty statement read
 from a file that held nothing. A generated statement printed with its signs reversed (a card
 statement) reads to the same lines, fingerprints, counterparties and duplicates as the same
-statement printed in the bank's convention, with running balances or without."""
+statement printed in the bank's convention, with running balances or without. Two generated
+statements cut from one ledger (the same file again, an overlap, the next one; read with running
+balances, the bank's ids or neither; reversed or not) leave out, offer for review and import each
+line as an independent count of the duplicate rule says."""
 
 from __future__ import annotations
 
@@ -167,3 +170,111 @@ async def test_a_statement_printed_with_reversed_signs_reads_to_the_same_line_id
     assert (bank["flipped"], bank["blocking"], card["flipped"], card["blocking"]) == (False, [], True, [])
     fields = ("amount", "fingerprint", "counterparty_key", "duplicate", "repeats", "probable", "ticked")
     assert [[l[f] for f in fields] for l in card["lines"]] == [[l[f] for f in fields] for l in bank["lines"]]
+
+
+# ── Overlapping statements: a line read again or a repeat of it ──────────────
+# A bank's ledger of genuine transactions drawn from a tiny pool, so identical transactions
+# abound; two statements cut from it overlap (a line read again) or follow it (repeats only).
+# Each statement is read one way: "none" (no running balance, no bank id), "balance" (running
+# balances) or "fitid" (OFX: the bank's id, read as the reference too), the second one printed
+# in the bank's convention or reversed.
+_POOL = [("2026-01-02", "COFFEE SHOP", "-4.50"), ("2026-01-02", "ATM", "-20.00"), ("2026-01-03", "DEPOSIT", "250.00")]
+_MODES = ("none", "balance", "fitid")
+
+
+def _ledger(rng: random.Random) -> tuple[Decimal, list[dict]]:
+    opening, running, out = Decimal("100.00"), Decimal("100.00"), []
+    for k in range(rng.randint(2, 12)):
+        date, text, amount = rng.choice(_POOL)
+        running += Decimal(amount)
+        out.append({"line_date": date, "description": text, "amount": Decimal(amount), "balance": running,
+                    "fitid": f"FIT{k:03d}", "id": k})
+    return opening, out
+
+
+def _statement(opening: Decimal, ledger: list[dict], lo: int, hi: int, mode: str,
+               reversed_: bool) -> tuple[dict, list[dict]]:
+    before = opening if lo == 0 else ledger[lo - 1]["balance"]
+    lines = []
+    for tx in ledger[lo:hi]:
+        line = {"line_date": tx["line_date"], "description": tx["description"],
+                "amount": str(-tx["amount"] if reversed_ else tx["amount"]), "raw_balance": None}
+        if mode == "balance":
+            line["raw_balance"] = str(tx["balance"])
+        if mode == "fitid":
+            line.update(source="ofx", reference=tx["fitid"])
+        lines.append(line)
+    header = {"currency": "USD", "period_start": "2026-01-01", "period_end": "2026-01-31",
+              "opening_balance": str(before), "closing_balance": str(ledger[hi - 1]["balance"])}
+    return header, lines
+
+
+def _oracle(held: list[dict], held_mode: str, read: list[dict], mode: str) -> list[str]:
+    """The rule counted per transaction, independent of the reader: with the bank's id on both
+    sides only the id decides; with running balances on both sides only the same balance is
+    the same line; otherwise k identical lines against m held leave min(k, m) for review."""
+    base = lambda tx: (tx["line_date"], tx["description"], tx["amount"])
+    if mode == held_mode and mode != "none":
+        key = (lambda tx: tx["fitid"]) if mode == "fitid" else (lambda tx: (base(tx), tx["balance"]))
+        pool = [key(tx) for tx in held]
+        out = []
+        for tx in read:
+            out.append("duplicate" if key(tx) in pool else "new")
+            if key(tx) in pool:
+                pool.remove(key(tx))
+        return out
+    left = {}
+    for tx in held:
+        left[base(tx)] = left.get(base(tx), 0) + 1
+    out = []
+    for tx in read:
+        out.append("repeat" if left.get(base(tx), 0) > 0 else "new")
+        left[base(tx)] = left.get(base(tx), 0) - 1
+    return out
+
+
+def _seen(line: dict) -> str:
+    if line["duplicate"]:
+        return "duplicate"
+    return "repeat" if line["repeats"] and not line["ticked"] else "new" if line["ticked"] else "other"
+
+
+@pytest.mark.parametrize("seed", range(200))
+async def test_overlapping_statements_tell_a_line_read_again_from_a_repeat_by_the_rule(seed):
+    rng = random.Random(seed)
+    opening, ledger = _ledger(rng)
+    n = len(ledger)
+    a_lo, a_hi = 0, rng.randint(1, n - 1)
+    b_lo = rng.choice([0, rng.randint(0, a_hi), a_hi])     # the same file again, an overlap, or the next one
+    b_hi = n if b_lo == 0 and rng.random() < 0.5 else rng.randint(max(b_lo, a_hi) if b_lo < a_hi else b_lo + 1, n)
+    if b_lo == 0 and rng.random() < 0.3:
+        b_hi = a_hi
+    a_mode, b_mode = rng.choice(_MODES), rng.choice(_MODES)
+    b_total = sum((tx["amount"] for tx in ledger[b_lo:b_hi]), Decimal(0))
+    reversed_ = bool(b_total) and rng.random() < 0.4
+    a = review_statement(*_statement(opening, ledger, a_lo, a_hi, a_mode, False), bank_currency="USD")
+    assert a["blocking"] == []
+    known = [{**l, "statement": "2026-01-15"} for l in a["lines"]]
+    b = review_statement(*_statement(opening, ledger, b_lo, b_hi, b_mode, reversed_), bank_currency="USD",
+                         known=known)
+    assert (b["blocking"], b["flipped"]) == ([], reversed_)
+    read, held = ledger[b_lo:b_hi], ledger[a_lo:a_hi]
+    want = _oracle(held, a_mode, read, b_mode)
+    seen = [_seen(l) for l in b["lines"]]
+    # Lines identical as read may take their verdicts in any order: compare per identity.
+    ident = lambda tx: (tx["line_date"], tx["description"], tx["amount"],
+                        tx["balance"] if b_mode == "balance" else None, tx["fitid"] if b_mode == "fitid" else None)
+    assert sorted(zip(map(ident, read), seen)) == sorted(zip(map(ident, read), want))
+    assert all(l["repeats"] == "2026-01-15" for l in b["lines"] if l["repeats"])
+    # A line that may import never collides with a held line or another line of the statement.
+    importable = [l["fingerprint"] for l in b["lines"] if not l["duplicate"]]
+    assert len(set(importable)) == len(importable) and not set(importable) & {l["fingerprint"] for l in known}
+    # Against what really happened: a line left out as read again is one, and no more lines
+    # import ticked than are genuinely new, per transaction kind.
+    unique_balance = len({(tx["line_date"], tx["description"], tx["amount"], tx["balance"]) for tx in ledger}) == n
+    held_ids = {tx["id"] for tx in held}
+    if b_mode == "fitid" or unique_balance:
+        assert all(tx["id"] in held_ids for tx, s in zip(read, seen) if s == "duplicate")
+    for kind in _POOL:
+        mine = [(tx, s) for tx, s in zip(read, seen) if (tx["line_date"], tx["description"], str(tx["amount"])) == kind]
+        assert sum(s == "new" for _, s in mine) <= sum(tx["id"] not in held_ids for tx, _ in mine)
