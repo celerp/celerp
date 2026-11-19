@@ -31780,5 +31780,7 @@
     "tests/test_help_export.py::test_git_names_the_command_and_stderr_on_a_real_failure": 0.03721802297513932,
     "tests/test_help_export.py::test_the_bundle_embeds_a_step_image_as_base64": 0.010039621993200853,
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_undo_of_an_already_unmatched_line_says_it_is_already_open": 0.9158449069655035,
-    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_the_preview_import_button_carries_the_spreadsheet_icon": 0.012784040998667479
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_the_preview_import_button_carries_the_spreadsheet_icon": 0.012784040998667479,
+    "default_modules/celerp-accounting/tests/test_bank_files.py::test_a_0_byte_statement_file_is_refused": 0.7239890619821381,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_receipt_sent_with_a_generic_type_is_kept_by_its_name": 0.5067530190281104
 }
