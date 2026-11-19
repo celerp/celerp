@@ -30,7 +30,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.agent_markers import agent_excluded
 from celerp.db import get_session
-from celerp.events.engine import emit_event, keyed_event, request_fingerprint
+from celerp.events.engine import emit_event, keyed_event, refuse_other_request, request_fingerprint
 from celerp.importers.results import keyed_reason
 from celerp.schemas.numbers import FiniteFloat, PositiveFloat
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -79,10 +79,11 @@ async def _replayed(db: AsyncSession, company_id: uuid.UUID, key: str, request: 
     return None if row is None else (row.metadata_ or {}).get("result")
 
 
-async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
-                    bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> dict:
-    """Store ``result`` as the answer to ``key``; the caller commits. When another run
-    stored an answer under ``key`` first, that answer is the one returned."""
+async def _claimed(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
+                   bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> tuple[dict, bool]:
+    """Store ``result`` as the answer to ``key`` in the caller's transaction; the caller commits.
+    A run that stored under ``key`` first is waited for (the key's unique index): its answer
+    comes back with False, and another request under the key is refused (request.key_reused)."""
     entity_id = entity_id or f"bankop:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
     entry = await emit_event(db, company_id=company_id, entity_id=entity_id,
                      entity_type="bank_operation", event_type="acc.bank_statement.done",
@@ -90,7 +91,17 @@ async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str,
                            **(data or {})},
                      actor_id=actor_id, location_id=None, source="reconciliation", idempotency_key=key,
                      metadata_={"request": request_fingerprint(request), "result": result})
-    return (entry.metadata_ or {}).get("result") if getattr(entry, "was_deduped", False) else result
+    if not getattr(entry, "was_deduped", False):
+        return result, True
+    refuse_other_request((entry.metadata_ or {}).get("request"), request)
+    return (entry.metadata_ or {}).get("result"), False
+
+
+async def _recorded(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, operation: str,
+                    bank_id, result: dict, entity_id: str | None = None, data: dict | None = None) -> dict:
+    """The answer to ``key``: ``result``, or the one a run that stored under ``key`` first gave."""
+    return (await _claimed(db, company_id, actor_id, key, request, operation, bank_id, result,
+                           entity_id, data))[0]
 
 
 def _unit(key: str, request: dict, line_ids) -> tuple[str, dict]:
@@ -1884,18 +1895,40 @@ class Ask(BaseModel):
 async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(get_current_company_id),
               _: None = require_permission("manage_accounting"), user=Depends(get_current_user),
               db: AsyncSession = Depends(get_session)) -> dict:
-    """The question is kept, and the client told in Celerp, before the email goes out; a
-    failed email is said in the outcome and the question stays."""
-    key = payload.idempotency_key
+    """The key is claimed with the Ask's plan before the questions and notices are written, and
+    they are kept before any email goes out; a failed email is said in the outcome and the
+    question stays."""
+    key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
-        return first
-    bank = await _bank(db, company_id, bank_id)
-    lines = await _locked_lines(db, company_id, bank, payload.line_ids)
-    result = await SL.ask_lines(db, company_id=company_id, key=key, lines=lines, note=payload.note)
-    await _recorded(db, company_id, user.id, key, request, "ask", bank.id, result)
+    if await _replayed(db, company_id, key, request) is None:
+        bank = await _bank(db, company_id, bank_id)
+        lines = await _locked_lines(db, company_id, bank, payload.line_ids)
+        plan = await SL.ask_plan(db, company_id=company_id, lines=lines, note=payload.note)
+        plan, first = await _claimed(db, company_id, actor_id, key, request, "ask", bank.id, plan)
+        if first:
+            await SL.write_ask(db, company_id=company_id, lines=lines, plan=plan)
+            await db.commit()
+        else:
+            await db.rollback()
+    return await _ask_emails(db, company_id, actor_id, key, request, bank_id)
+
+
+async def _ask_emails(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, bank_id) -> dict:
+    """The outcome of the Ask claimed under ``key``, its emails sent once: the claim is held
+    while they go out, so a concurrent run of the key waits and answers the stored outcome, and
+    a run stopped before its outcome was stored sends again under the same operation ids."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(db, company_id)  # the order every writer takes: the company, then its rows
+    plan = (await db.execute(select(LedgerEntry.metadata_).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).with_for_update())).scalar_one()
+    email_key = f"{key}:email"
+    if (done := await _replayed(db, company_id, email_key, request)) is None:
+        done = await _recorded(db, company_id, actor_id, email_key, request, "ask_email", bank_id,
+                               await SL.email_ask(db, company_id=company_id, key=key, plan=plan["result"]))
     await db.commit()
-    return result
+    return done
 
 
 class LineIds(BaseModel):

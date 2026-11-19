@@ -207,9 +207,12 @@ async def test_ask_notice_rolls_back_with_question(client, session, monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)
     from celerp_accounting import statement_lines
 
+    real = statement_lines.write_ask
+
     async def boom(*a, **kw):
+        await real(*a, **kw)
         raise RuntimeError("commit failed")
-    monkeypatch.setattr(statement_lines, "after_ask_written", boom)
+    monkeypatch.setattr(statement_lines, "write_ask", boom)
     with pytest.raises(RuntimeError):
         await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])
     assert await _notices(session, co["company_id"]) == 0

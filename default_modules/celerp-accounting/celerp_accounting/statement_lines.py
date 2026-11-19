@@ -530,6 +530,7 @@ BANK_CALLS = {
 }
 
 QUESTIONS_URL = "/accounting/questions"
+_TITLE_KEY = "acct.recon_questions_title"
 # Worst first: the state an Ask reports for its emails is the worst one.
 _EMAIL_STATES = ("failed", "unconfirmed", "sent")
 
@@ -558,65 +559,76 @@ def asked(line: BankStatementLine) -> bool:
     return bool(q.get("asked")) and not q.get("withdrawn")
 
 
+def _open(line: BankStatementLine) -> bool:
+    """A question the client can see and has not answered."""
+    return asked(line) and not (line.client_query or {}).get("answered")
+
+
 async def _open_questions(db: AsyncSession, company_id: uuid.UUID) -> int:
     rows = (await db.execute(select(BankStatementLine).where(
         BankStatementLine.company_id == company_id, BankStatementLine.client_query.is_not(None)))).scalars()
-    return sum(1 for l in rows if asked(l) and not (l.client_query or {}).get("answered"))
+    return sum(1 for l in rows if _open(l))
 
 
-async def after_ask_written(db: AsyncSession) -> None:
-    """The question and its notice are kept before any email goes out."""
-    await db.commit()
-
-
-async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines: list[BankStatementLine],
-                    note: str) -> dict:
-    """Ask the client about ``lines`` (or remind them): each line's question is written, the
-    client members are told once per key, the question is kept, then each is emailed under an
-    operation id of the key, so a retry of the key sends no second email."""
-    from datetime import datetime, timezone
-
-    from celerp.config import settings
-    from celerp.models.company import Company
-    from celerp.notifications.service import notify_once
-    from celerp.services import email as email_service
-    from ui.i18n import as_sentence, t
-
+async def ask_plan(db: AsyncSession, *, company_id: uuid.UUID, lines: list[BankStatementLine], note: str) -> dict:
+    """What an Ask about ``lines`` does, read before anything is written: the client members it
+    tells and emails, and the notice it sends (a reminder when a line was already asked). The
+    handler claims its key with this plan before the questions are written, so every run of the
+    key emails what the first one planned."""
     members = await client_users(db, company_id)
     if not members:
         raise HTTPException(status_code=409, detail=catalog_refusal(
             "reconciliation.no_client_user", permission=catalog_refusal("perm.name.answer_bank_questions"),
             books=catalog_refusal("perm.name.manage_accounting")))
+    reminder = max((l.client_query or {}).get("asks", 0) if asked(l) else 0 for l in lines)
+    count = await _open_questions(db, company_id) + sum(1 for l in lines if not _open(l))
+    return {"asked": [str(l.id) for l in lines], "note": note, "members": [str(m.id) for m in members],
+            "body_key": "acct.recon_questions_reminder" if reminder else "acct.recon_questions_body",
+            "params": {"count": count, "n": reminder}}
+
+
+async def write_ask(db: AsyncSession, *, company_id: uuid.UUID, lines: list[BankStatementLine], plan: dict) -> None:
+    """Write each line's question and tell the client members in Celerp, as ``plan`` says; the
+    caller commits."""
+    from datetime import datetime, timezone
+
+    from celerp.notifications.service import notify_once
+    from ui.i18n import t
+
     now = datetime.now(timezone.utc).isoformat()
-    reminder = 0
     for line in lines:
         q = dict(line.client_query or {})
-        if q.get("key") == key:  # a retry of this Ask after its question was kept
-            reminder = max(reminder, q["asks"] - 1)
-            continue
-        reminder = max(reminder, q.get("asks", 0) if asked(line) else 0)
-        line.client_query = {"asked": now, "note": note or q.get("note") or "", "asks": q.get("asks", 0) + 1, "key": key, "answer": None,
-                             "contact_text": None, "answered": None, "withdrawn": None}
-    await db.flush()
-    count = await _open_questions(db, company_id)
-    title_key, body_key = "acct.recon_questions_title", ("acct.recon_questions_reminder" if reminder
-                                                         else "acct.recon_questions_body")
-    params = {"count": count, "n": reminder}
+        line.client_query = {"asked": now, "note": plan["note"] or q.get("note") or "", "asks": q.get("asks", 0) + 1,
+                             "answer": None, "contact_text": None, "answered": None, "withdrawn": None}
+    title_key, body_key, params = _TITLE_KEY, plan["body_key"], plan["params"]
     title, body = str(t(title_key, "en")), str(t(body_key, "en", **params))
-    for member in members:
-        await notify_once(db, company_id, "bank_questions", title, body, user_id=member.id, action_url=QUESTIONS_URL,
-                          i18n={"title": title_key, "body": body_key, "params": params})
-    await after_ask_written(db)
+    for member in plan["members"]:
+        await notify_once(db, company_id, "bank_questions", title, body, user_id=uuid.UUID(member),
+                          action_url=QUESTIONS_URL, i18n={"title": title_key, "body": body_key, "params": params})
 
+
+async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str, plan: dict) -> dict:
+    """Email each member ``plan`` names under an operation id of ``key``, so a second run of the
+    key sends no second email; the Ask's outcome."""
+    from celerp.config import settings
+    from celerp.models.company import Company, User
+    from celerp.services import email as email_service
+    from ui.i18n import as_sentence, t
+
+    found = {str(u.id): u for u in (await db.execute(select(User).where(
+        User.id.in_([uuid.UUID(m) for m in plan["members"]])))).scalars()}
+    members = [found[m] for m in plan["members"] if m in found]
     company = await db.get(Company, company_id)
     base = (settings.celerp_public_url or "").rstrip("/")
     link = f"{base}{QUESTIONS_URL}" if base else None
-    text = "\n\n".join(filter(None, [str(t(body_key, **params)), note, link or str(t("acct.recon_questions_where"))]))
+    body_key, params = plan["body_key"], plan["params"]
+    text = "\n\n".join(filter(None, [str(t(body_key, **params)), plan["note"],
+                                     link or str(t("acct.recon_questions_where"))]))
     html = "".join(f"<p>{_html(p)}</p>" for p in text.split("\n\n"))
     worst, failed = "sent", []
     for member in members:
         result = await email_service.send_email(
-            to=member.email, subject=str(t(title_key)), body_html=html, body_text=text,
+            to=member.email, subject=str(t(_TITLE_KEY)), body_html=html, body_text=text,
             from_name=company.name if company else "",
             operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member.id}")),
             fail_closed_on_uncertain=True)
@@ -624,16 +636,14 @@ async def ask_lines(db: AsyncSession, *, company_id: uuid.UUID, key: str, lines:
         if state != "sent":
             failed.append((member.name, state, as_sentence(str(t(result.reason)) if result.reason else result.detail or "")))
         worst = min(worst, state, key=_EMAIL_STATES.index)
-    asked_ids = [str(l.id) for l in lines]
-    one = len(lines) == 1
+    count, one = len(plan["asked"]), len(plan["asked"]) == 1
     if not failed:
-        outcome = t("acct.recon_asked_one" if one else "acct.recon_asked", count=len(lines),
+        outcome = t("acct.recon_asked_one" if one else "acct.recon_asked", count=count,
                     names=", ".join(m.name for m in members))
     else:
         state, reason = failed[0][1], failed[0][2]
-        key = _ASKED_NOT_SENT[state][one]
-        outcome = t(key, count=len(lines), name=", ".join(n for n, _s, _r in failed), reason=reason)
-    return {"asked": asked_ids, "outcome": str(outcome), "email": {"state": worst}}
+        outcome = t(_ASKED_NOT_SENT[state][one], count=count, name=", ".join(n for n, _s, _r in failed), reason=reason)
+    return {"asked": plan["asked"], "outcome": str(outcome), "email": {"state": worst}}
 
 
 # The outcome of asking when an email did not go out, by send state, then by whether one line was asked.
