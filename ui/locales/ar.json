@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "لا يستطيع Celerp إلغاء نشر منتج في Shopify. استخدم «إيقاف» للتوقف عن إرساله إلى Shopify.",
+  "connectors.err_item_not_linked_shopify": "غير مرتبط بمنتج في Shopify. استورده من Shopify أولًا.",
   "documents.list_old_rule_notice": "حُسب إجمالي عرض السعر هذا وفق قاعدة التقريب السابقة: {stored}. وتعطي القاعدة الحالية {current}. أعد حساب الإجمالي لاستخدام القاعدة الحالية. ويمكنك استعادة الإجمالي السابق بعد ذلك.",
   "documents.btn_recalculate_total": "إعادة حساب الإجمالي",
   "documents.list_total_recalculated": "أُعيد حساب الإجمالي من {old} إلى {new}.",

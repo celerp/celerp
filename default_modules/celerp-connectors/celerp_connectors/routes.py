@@ -1425,6 +1425,8 @@ async def set_item_sync(
         from celerp.events.engine import emit_event
         from celerp.connectors.product_links import external_link_for_state
         from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
+        from celerp.accounting_roles import catalog_refusal
+        from celerp.importers.results import keyed_reason, row_refusal
         if connector_name == "shopify":
             from celerp.connectors.ownership import lock_connector_operation
 
@@ -1432,13 +1434,14 @@ async def set_item_sync(
             # the company lock (emit_event).
             await lock_connector_operation(session, company_id, "shopify", require_owner=True)
         anchors: dict[str, object] = {}
-        errors: list[str] = []
+        # Each refused item as a keyed refusal naming it, so it reads in each reader's language.
+        errors: list = []
         for entity_id in dict.fromkeys(payload.entity_ids):
             try:
                 anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
                 anchors[anchor.entity_id] = anchor
             except ValueError as exc:
-                errors.append(f"{entity_id}: {exc}")
+                errors.append(row_refusal(entity_id, keyed_reason(exc)))
         updated = 0
         needs_confirmation: list[dict] = []
         action = payload.action
@@ -1448,7 +1451,8 @@ async def set_item_sync(
                 state = anchor.state or {}
                 linked = external_link_for_state(state, "shopify")
                 if desired and not linked:
-                    errors.append(f"{state.get('sku') or anchor_id}: not linked to a Shopify product; import it from Shopify first")
+                    errors.append(row_refusal(state.get("sku") or anchor_id,
+                                              catalog_refusal("connectors.err_item_not_linked_shopify")))
                     continue
                 if bool(anchor.is_sync_to_shopify) == desired: continue
                 await emit_event(session, company_id=company_id, entity_id=anchor_id, entity_type="item",
@@ -1487,7 +1491,7 @@ async def set_item_sync(
                     needs_confirmation.append({"entity_id": anchor_id, "sku": sku, "remote_id": ask.remote_id,
                                                "remote_name": ask.remote_name, "message": str(ask)})
                 except Exception as exc:
-                    errors.append(f"{sku}: {exc}")
+                    errors.append(row_refusal(sku, keyed_reason(exc)))
         return {"updated": updated, "action": action, "errors": errors,
                 "needs_confirmation": needs_confirmation}
 

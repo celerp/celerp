@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp ne peut pas retirer un produit Shopify de la publication. Utilisez « Arrêter » pour ne plus l'envoyer vers Shopify.",
+  "connectors.err_item_not_linked_shopify": "Non lié à un produit Shopify. Importez-le d'abord depuis Shopify.",
   "documents.list_old_rule_notice": "Le total de ce devis a été calculé selon l’ancienne règle d’arrondi : {stored}. La règle actuelle donne {current}. Recalculez le total pour appliquer la règle actuelle. Vous pourrez ensuite rétablir le total précédent.",
   "documents.btn_recalculate_total": "Recalculer le total",
   "documents.list_total_recalculated": "Total recalculé de {old} à {new}.",

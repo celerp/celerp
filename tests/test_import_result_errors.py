@@ -256,6 +256,51 @@ async def test_every_batch_route_has_refused_rows_here(client):
     assert _batch_routes() == set(REFUSED_ROWS)
 
 
+# Each route that runs on chosen records (an ``entity_ids`` list): the test proving every
+# record it refuses is a keyed refusal, or why it answers no refused record of its own.
+CHOSEN_RECORD_ROUTES: dict[str, str] = {
+    "/connector-items/{connector_name}/sync":
+        "test_channel_link_truth.py::test_a_refused_store_sync_item_is_a_keyed_refusal",
+    "/items/bulk/status": "refuses the whole request",
+    "/items/bulk/make-available": "refuses the whole request",
+    "/items/bulk/revert-to-draft": "refuses the whole request",
+    "/items/bulk/delete": "refuses the whole request",
+    "/items/bulk/restore-deleted": "refuses the whole request",
+    "/items/bulk/expire": "refuses the whole request",
+    "/items/bulk/transfer": "a refused lot carries the write's own refusal detail as raised",
+    "/items/metadata": "a read",
+    "/api/labels/bulk-print": "refuses the whole request",
+    "/docs/accounting-sync/bulk": "refuses the whole request",
+    "/lists/writeoff": "refuses the whole request",
+}
+
+
+def _chosen_record_routes() -> set[str]:
+    schemas = app.openapi()["components"]["schemas"]
+    found = set()
+    for path, ops in app.openapi()["paths"].items():
+        body = (ops.get("post", {}).get("requestBody") or {}).get("content", {}).get("application/json", {})
+        ref = (body.get("schema") or {}).get("$ref", "")
+        props = schemas.get(ref.rsplit("/", 1)[-1], {}).get("properties", {}) if ref else {}
+        if props.get("entity_ids", {}).get("type") == "array":
+            found.add(path)
+    return found
+
+
+@pytest.mark.asyncio
+async def test_every_route_on_chosen_records_answers_refused_records_keyed(client):
+    """A new route on chosen records names here the test that its refused records are
+    keyed refusals, so none answers a refused record as English-only text."""
+    from pathlib import Path
+
+    assert _chosen_record_routes() == set(CHOSEN_RECORD_ROUTES)
+    tests = Path(__file__).parent
+    for target in CHOSEN_RECORD_ROUTES.values():
+        if "::" in target:
+            name, test = target.split("::")
+            assert f"def {test}(" in (tests / name).read_text(encoding="utf-8"), target
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", sorted(REFUSED_ROWS))
 async def test_a_refused_row_is_a_keyed_refusal(client, auth, path):

@@ -6831,6 +6831,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp cannot unpublish a Shopify product. Use Stop to stop pushing it to Shopify.",
+  "connectors.err_item_not_linked_shopify": "Not linked to a Shopify product. Import it from Shopify first.",
   "chip.paid": "Paid",
   "chip.issued_invoices": "Issued invoices",
   "error.ai_no_account": "Celerp AI needs a Celerp account. The person who installed Celerp can create a free one on the AI page.",

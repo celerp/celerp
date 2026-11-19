@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp የShopify ምርትን ከህትመት ማስወገድ አይችልም። ወደ Shopify መላክን ለማቆም «አቁም» ይጠቀሙ።",
+  "connectors.err_item_not_linked_shopify": "ከShopify ምርት ጋር አልተገናኘም። መጀመሪያ ከShopify ያስገቡት።",
   "documents.list_old_rule_notice": "ይህ የዋጋ ጥቅስ ጠቅላላ ድምር በቀድሞው የማጠጋጋት ሕግ ተሰልቷል፦ {stored}። የአሁኑ ሕግ {current} ያስገኛል። የአሁኑን ሕግ ለመጠቀም ጠቅላላ ድምሩን እንደገና ያስሉ። ከዚያ በኋላ የቀድሞውን ድምር መመለስ ይችላሉ።",
   "documents.btn_recalculate_total": "ጠቅላላ ድምሩን እንደገና አስላ",
   "documents.list_total_recalculated": "ጠቅላላ ድምሩ ከ{old} ወደ {new} እንደገና ተሰልቷል።",

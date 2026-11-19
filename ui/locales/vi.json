@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp không thể ngừng đăng một sản phẩm trên Shopify. Hãy dùng «Dừng» để ngừng đẩy sản phẩm lên Shopify.",
+  "connectors.err_item_not_linked_shopify": "Chưa liên kết với sản phẩm Shopify. Hãy nhập sản phẩm từ Shopify trước.",
   "documents.list_old_rule_notice": "Tổng báo giá này được tính theo quy tắc làm tròn trước đây: {stored}. Theo quy tắc hiện tại, tổng là {current}. Hãy tính lại tổng để áp dụng quy tắc hiện tại. Sau đó, bạn có thể khôi phục tổng cũ.",
   "documents.btn_recalculate_total": "Tính lại tổng",
   "documents.list_total_recalculated": "Đã tính lại tổng từ {old} thành {new}.",

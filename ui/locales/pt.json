@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "O Celerp não pode retirar um produto do Shopify da publicação. Use «Parar» para deixar de enviá-lo ao Shopify.",
+  "connectors.err_item_not_linked_shopify": "Não está vinculado a um produto do Shopify. Importe-o primeiro do Shopify.",
   "documents.list_old_rule_notice": "O total desta cotação foi calculado pela regra de arredondamento anterior: {stored}. A regra atual resulta em {current}. Recalcule o total para aplicar a regra atual. Depois, você poderá restaurar o total anterior.",
   "documents.btn_recalculate_total": "Recalcular total",
   "documents.list_total_recalculated": "Total recalculado de {old} para {new}.",

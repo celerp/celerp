@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp kann die Veröffentlichung eines Shopify-Produkts nicht aufheben. Verwenden Sie „Stoppen“, um die Übertragung an Shopify zu beenden.",
+  "connectors.err_item_not_linked_shopify": "Nicht mit einem Shopify-Produkt verknüpft. Importieren Sie es zuerst aus Shopify.",
   "documents.list_old_rule_notice": "Die Gesamtsumme dieses Angebots wurde nach der früheren Rundungsregel berechnet: {stored}. Nach der aktuellen Regel ergibt sich {current}. Berechnen Sie die Gesamtsumme neu, um die aktuelle Regel anzuwenden. Anschließend können Sie die vorherige Summe wiederherstellen.",
   "documents.btn_recalculate_total": "Gesamtsumme neu berechnen",
   "documents.list_total_recalculated": "Gesamtsumme von {old} auf {new} neu berechnet.",

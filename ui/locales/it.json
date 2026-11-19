@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp non può rimuovere dalla pubblicazione un prodotto Shopify. Usa «Interrompi» per non inviarlo più a Shopify.",
+  "connectors.err_item_not_linked_shopify": "Non collegato a un prodotto Shopify. Importalo prima da Shopify.",
   "documents.list_old_rule_notice": "Il totale di questo preventivo è stato calcolato con la precedente regola di arrotondamento: {stored}. La regola attuale dà {current}. Ricalcola il totale per applicare la regola attuale. Potrai poi ripristinare il totale precedente.",
   "documents.btn_recalculate_total": "Ricalcola il totale",
   "documents.list_total_recalculated": "Totale ricalcolato da {old} a {new}.",

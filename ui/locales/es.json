@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp no puede retirar de la publicación un producto de Shopify. Use «Detener» para dejar de enviarlo a Shopify.",
+  "connectors.err_item_not_linked_shopify": "No está vinculado a un producto de Shopify. Impórtelo primero desde Shopify.",
   "documents.list_old_rule_notice": "El total de este presupuesto se calculó con la regla de redondeo anterior: {stored}. La regla actual da {current}. Vuelva a calcular el total para aplicar la regla actual. Después podrá restablecer el total anterior.",
   "documents.btn_recalculate_total": "Volver a calcular el total",
   "documents.list_total_recalculated": "Total recalculado de {old} a {new}.",

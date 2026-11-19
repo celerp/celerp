@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp ไม่สามารถยกเลิกการเผยแพร่สินค้าใน Shopify ได้ โปรดใช้คำสั่งหยุดเพื่อหยุดส่งข้อมูลสินค้าไปยัง Shopify",
+  "connectors.err_item_not_linked_shopify": "ยังไม่ได้เชื่อมกับสินค้าใน Shopify โปรดนำเข้าจาก Shopify ก่อน",
   "documents.list_old_rule_notice": "ยอดรวมใบเสนอราคานี้คำนวณตามกฎการปัดเศษเดิม: {stored} ส่วนกฎปัจจุบันได้ {current} โปรดคำนวณยอดรวมใหม่เพื่อใช้กฎปัจจุบัน และสามารถคืนค่ายอดรวมเดิมได้ภายหลัง",
   "documents.btn_recalculate_total": "คำนวณยอดรวมใหม่",
   "documents.list_total_recalculated": "คำนวณยอดรวมใหม่จาก {old} เป็น {new} แล้ว",

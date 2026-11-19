@@ -6744,6 +6744,7 @@
   "connectors.item_action_woocommerce": "WooCommerce",
   "connectors.item_action_shopify": "Shopify",
   "connectors.err_unpublish_shopify": "Celerp から Shopify 商品の公開を解除することはできません。「停止」で Shopify への送信を止めてください。",
+  "connectors.err_item_not_linked_shopify": "Shopify の商品にリンクされていません。先に Shopify からインポートしてください。",
   "documents.list_old_rule_notice": "この見積書の合計は以前の端数処理ルールで計算されています：{stored}。現在のルールでは{current}です。現在のルールを適用するには合計を再計算してください。その後、以前の合計に戻すこともできます。",
   "documents.btn_recalculate_total": "合計を再計算",
   "documents.list_total_recalculated": "合計を{old}から{new}に再計算しました。",
