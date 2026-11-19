@@ -1,4 +1,4 @@
-"""Every keyed handler of the accounting module and the AI routes claims its key before it
+"""Every keyed handler in a package that keeps a claim or replay store claims its key before it
 commits or does anything another person can see (an email, a notice), so a second request
 under the key waits on the claim or is refused before any effect, and a retry finds the key.
 
@@ -8,11 +8,25 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = [*sorted((ROOT / "default_modules/celerp-accounting/celerp_accounting").glob("*.py")),
-         ROOT / "default_modules/celerp-ai/celerp_ai/routes.py"]
-# The calls that claim a key: the bank replay store and the AI action claims; any write
-# that carries an idempotency key claims it through the key's unique index.
-CLAIMS = {"_claimed", "_recorded", "_unit_recorded", "claim_tool_call", "claim_continuation"}
+# The calls that claim a key, each by the module that owns it: the bank replay store, the AI
+# action claims and the manufacturing movement replay; any write that carries an idempotency
+# key claims it through the key's unique index.
+CLAIM_OWNERS = {
+    "default_modules/celerp-accounting/celerp_accounting/bank_statements.py":
+        {"_claimed", "_recorded", "_unit_recorded", "_replayed"},
+    "celerp/ai/conversations.py": {"claim_tool_call", "claim_continuation"},
+    "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py": {"_replayed"},
+}
+CLAIMS = {n for names in CLAIM_OWNERS.values() for n in names}
+# The effects another person can see, each by the module that owns it: a commit, an email,
+# a notice. A name renamed or moved out of its module fails test_the_claim_and_boundary_names_exist.
+BOUNDARY = {
+    "celerp/services/email.py": {"send_email", "send_durably", "transmit"},
+    "celerp/ai/jobs.py": {"send_step", "notify"},
+    "celerp/notifications/service.py": {"notify_once", "notify_standing", "notify_every_company"},
+    "celerp/ai/batch.py": {"notify_finished"},
+}
+EFFECTS = {"commit", *(n for names in BOUNDARY.values() for n in names)}
 
 
 def _name(call: ast.Call) -> str:
@@ -25,8 +39,26 @@ def _claims(call: ast.Call) -> bool:
 
 
 def _effect(call: ast.Call) -> bool:
-    n = _name(call).lower()
-    return n == "commit" or "email" in n or n.startswith(("send", "notify"))
+    return _name(call) in EFFECTS
+
+
+def _defined(module: str) -> set[str]:
+    return {n.name for n in ast.walk(ast.parse((ROOT / module).read_text()))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _files() -> list[Path]:
+    """Every module of each package that owns a claim store or calls a public claim."""
+    sources = [p for p in [*ROOT.glob("celerp/**/*.py"), *ROOT.glob("default_modules/*/celerp_*/**/*.py")]
+               if "tests" not in p.parts]
+    public = {n for n in CLAIMS if not n.startswith("_")}
+    packages = {(ROOT / m).parent for m in CLAIM_OWNERS} | {
+        p.parent for p in sources
+        if any(isinstance(n, ast.Call) and _name(n) in public for n in ast.walk(ast.parse(p.read_text())))}
+    return sorted(p for p in sources if p.parent in packages)
+
+
+FILES = _files()
 
 
 def _calls(fn) -> list[ast.Call]:
@@ -71,7 +103,17 @@ def census() -> list[tuple[str, str, int, list]]:
 def test_census_finds_the_keyed_handlers():
     names = {r[1] for r in census()}
     assert {"ask", "import_statement", "resolve", "answer_question", "_send_statement",
-            "create_manual_journal_entry", "_run_confirmed_action"} <= names
+            "create_manual_journal_entry", "_run_confirmed_action",
+            "issue", "complete", "receive", "repair_output", "return_materials"} <= names
+    assert {"celerp/ai", "default_modules/celerp-accounting/celerp_accounting",
+            "default_modules/celerp-ai/celerp_ai",
+            "default_modules/celerp-manufacturing/celerp_manufacturing"} <= {
+        str(p.parent.relative_to(ROOT)) for p in FILES}
+
+
+def test_the_claim_and_boundary_names_exist():
+    for module, names in [*CLAIM_OWNERS.items(), *BOUNDARY.items()]:
+        assert names <= _defined(module), (module, names - _defined(module))
 
 
 def test_no_keyed_handler_commits_or_sends_before_its_claim():
