@@ -13,13 +13,15 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.error_body import error_response
-from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
+from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials, sqlstate
+from celerp.modules.boundary import LOCK_TIMEOUT, CompanyBusy
 from celerp.openapi_parameters import describe_parameters
 from celerp.services.account_roles import PostingRoleError
 from celerp.services.business_time import InvalidTimezoneError
@@ -790,6 +792,16 @@ async def not_found_handler(request: Request, exc):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
+
+
+@app.exception_handler(DBAPIError)
+async def lock_timeout_handler(request: Request, exc: DBAPIError):
+    """A lock wait that gave up at the request lock timeout, in any route: other work for
+    the company held the rows longer, and the transaction rolled back, so it is refused as
+    busy, to try again. Any other database error stays a server error."""
+    if sqlstate(exc) != LOCK_TIMEOUT:
+        raise exc
+    return await http_exception_handler(request, CompanyBusy())
 
 
 @app.exception_handler(Exception)

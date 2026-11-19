@@ -398,13 +398,10 @@ async def _item_name(engine, company_id, item) -> str | None:
             {"c": uuid.UUID(str(company_id)), "e": item})).scalar_one_or_none()
 
 
-async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replaced_company(
-        real_client, real_engine, _data_dir, monkeypatch):
-    """The replace holds the company for deletion; a person's item edit sent meanwhile waits
-    for it, then is refused with the company gone, and the new company holds the item as the
-    copy has it."""
-    import asyncio
-
+async def _edit_behind_a_replace(real_client, real_engine, monkeypatch, *, hold_s: float):
+    """A replace holds the company for deletion for *hold_s* seconds after a person's item
+    edit sent meanwhile starts waiting for it; the replace's response, the edit's, the
+    item's name in the copy and the replaced company's id."""
     from celerp.services import company_backup as cb
     from test_import_preflight_invariants import _until_blocked_or_done
     tok, data = await _copy_then_more_work(real_client, real_engine)
@@ -430,10 +427,48 @@ async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replac
         headers=auth(tok)))
     await _until_blocked_or_done(real_engine, edit)
     assert not edit.done(), edit.result().text
+    await asyncio.sleep(hold_s)
     go.set()
-    replaced, edited = await asyncio.wait_for(asyncio.gather(replace, edit), timeout=30)
+    replaced, edited = await asyncio.wait_for(asyncio.gather(replace, edit), timeout=60)
+    return replaced, edited, (item, name), cid
+
+
+async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replaced_company(
+        real_client, real_engine, _data_dir, monkeypatch):
+    """The replace holds the company for deletion; a person's item edit sent meanwhile waits
+    for it, then is refused with the company gone, and the new company holds the item as the
+    copy has it. The edit waits with no lock timeout here, so how long the replace takes
+    (a loaded machine) never decides the outcome; the timeout has its own test below."""
+    from celerp.db import get_session
+    from celerp.main import app
+    waited = app.dependency_overrides[get_session]
+
+    async def unbounded():
+        async for session in waited():
+            await session.execute(text("SET lock_timeout = 0"))
+            yield session
+
+    monkeypatch.setitem(app.dependency_overrides, get_session, unbounded)
+    replaced, edited, (item, name), cid = await _edit_behind_a_replace(
+        real_client, real_engine, monkeypatch, hold_s=0)
     assert replaced.status_code == 200, replaced.text
     assert edited.status_code == 403 and "nothing was saved" in refusal_text(edited.json()["detail"]), edited.text
+    [(new, _)] = await _companies(real_engine)
+    assert new != cid
+    assert await _item_name(real_engine, new, item) == name
+
+
+async def test_an_item_edit_waiting_past_the_lock_timeout_is_refused_as_busy(
+        real_client, real_engine, _data_dir, monkeypatch):
+    """A replace that holds the company longer than the request lock timeout (a large
+    company) refuses a person's item edit sent meanwhile as busy, to try again, never a
+    server error, and the edit writes nothing into the new company."""
+    from celerp.db import _REQUEST_LOCK_TIMEOUT_MS
+    replaced, edited, (item, name), cid = await _edit_behind_a_replace(
+        real_client, real_engine, monkeypatch, hold_s=int(_REQUEST_LOCK_TIMEOUT_MS) / 1000 + 1)
+    assert edited.status_code == 409, edited.text
+    assert edited.json()["detail"]["message_key"] == "modules.company_busy", edited.text
+    assert replaced.status_code == 200, replaced.text
     [(new, _)] = await _companies(real_engine)
     assert new != cid
     assert await _item_name(real_engine, new, item) == name
