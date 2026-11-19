@@ -32,10 +32,13 @@ from ui.i18n import t
 
 NO_CONTACT_REASON = str(t("acct.recon_no_contact_named", "en"))
 
-# Sources whose suggestion a group may start ticked with: each names its evidence. A reversal or a
-# transfer pair takes two statement lines to be one transaction, which only the user confirms, and
-# an open document of the same amount ("document_amount") names no payment: equal money is no identity.
-TICKED_SOURCES = frozenset({"match", "document", "rule", "slip", "history"})
+# Sources whose suggestion a group may start ticked with, each with the evidence key naming the one
+# record it rests on: the entry ``identified`` proved, the document, the rule, the slip, the history
+# key. A reversal or a transfer pair takes two statement lines to be one transaction, which only the
+# user confirms, and an open document of the same amount ("document_amount") names no payment:
+# equal money is no identity.
+TICKED_EVIDENCE = {"match": "identifier", "document": "doc_id", "rule": "rule_id", "slip": "file_id",
+                   "history": "history"}
 
 MODEL_BATCH = 100
 _PAIR_DAYS = 3

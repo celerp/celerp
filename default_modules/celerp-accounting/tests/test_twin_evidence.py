@@ -638,15 +638,37 @@ async def test_a_reversal_pair_sharing_a_reference_is_offered_not_accepted(clien
     assert books[0] == books[1]
 
 
-def test_a_match_starts_ticked_only_with_an_identifier_and_a_post_only_with_an_account():
+@pytest.mark.parametrize("source,kind,evidence", [
+    ("match", "match", {"identifier": True}),
+    ("document", "pay_doc", {"names_contact": True, "doc_id": "d1"}),
+    ("rule", "post", {"names_contact": True, "rule_id": "r1"}),
+    ("slip", "post", {"names_contact": True, "file_id": "f1"}),
+    ("history", "post", {"names_contact": True, "history": "ACME"}),
+])
+def test_every_source_starts_ticked_only_with_the_evidence_it_names(source, kind, evidence):
+    """A group starts ticked only on a suggestion whose evidence names the one record it rests
+    on: the identified entry, the document, the rule, the slip or the history key. The same
+    suggestion without that record, or with it empty, waits for the user to tick it."""
     from celerp_accounting.bank_statements import _starts_ticked
 
     def line(**suggestion):
-        return {"counterparty_key": "ACME", "description": "ACME", "suggestion": {"source": "match", **suggestion}}
-    assert _starts_ticked(line(kind="match", evidence={"identifier": "INV-1"}))
-    assert not _starts_ticked(line(kind="match", evidence={}))
-    assert _starts_ticked(line(kind="post", account_code="6100"))
-    assert not _starts_ticked(line(kind="post"))
+        return {"counterparty_key": "ACME", "description": "ACME",
+                "suggestion": {"source": source, "kind": kind, "account_code": "6100", **suggestion}}
+    assert _starts_ticked(line(evidence=evidence))
+    named = {k: v for k, v in evidence.items() if k != "names_contact"}
+    assert not _starts_ticked(line(evidence={k: v for k, v in evidence.items() if k not in named}))
+    assert not _starts_ticked(line(evidence={**evidence, **{k: None for k in named}}))
+    assert not _starts_ticked(line())
+    if kind == "post":
+        assert not _starts_ticked(line(evidence=evidence, account_code=None))
+
+
+@pytest.mark.parametrize("source", ["transfer", "reversal", "document_amount", "answer", None])
+def test_a_source_that_names_no_one_record_never_starts_ticked(source):
+    from celerp_accounting.bank_statements import _starts_ticked
+
+    assert not _starts_ticked({"counterparty_key": "ACME", "description": "ACME", "suggestion": {
+        "source": source, "kind": "post", "account_code": "6100", "evidence": {"names_contact": True, "answer": True}}})
 
 
 async def _open_bill(client, co, total: float, contact: str) -> tuple[str, str]:

@@ -629,16 +629,16 @@ def _group_key(line: dict) -> str:
 
 
 def _starts_ticked(line: dict) -> bool:
-    """Whether a line's suggestion is evidence enough to start ticked: a source that names
-    its evidence, a key that is not a sparse one, and an account or entry to post to. A match
-    starts ticked only when ``suggest.identified`` proved the entry is the line's own; a reversal
-    or transfer pair (two statement lines taken as one transaction) never does: the user ticks it."""
-    from celerp_accounting.suggest import TICKED_SOURCES
+    """Whether a line's suggestion is evidence enough to start ticked: a source of
+    ``suggest.TICKED_EVIDENCE`` whose evidence carries the record that source names, a key that
+    is not a sparse one, and an account or entry to post to. A match starts ticked only when
+    ``suggest.identified`` proved the entry is the line's own; a reversal or transfer pair (two
+    statement lines taken as one transaction) never does: the user ticks it."""
+    from celerp_accounting.suggest import TICKED_EVIDENCE
     s = line["suggestion"] or {}
-    if s.get("source") not in TICKED_SOURCES or _group_key(line).startswith("SPARSE:"):
+    named = TICKED_EVIDENCE.get(s.get("source"))
+    if named is None or not (s.get("evidence") or {}).get(named) or _group_key(line).startswith("SPARSE:"):
         return False
-    if s.get("kind") == "match":
-        return bool((s.get("evidence") or {}).get("identifier"))
     return s.get("kind") != "post" or bool(s.get("account_code"))
 
 
