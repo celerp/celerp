@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "Il saldo progressivo smette di sommare alla riga {n}.",
   "acct.recon_block_tie_out": "Il saldo iniziale più le righe non è uguale al saldo di chiusura.",
   "acct.recon_block_balances_missing": "Inserisci il saldo iniziale e il saldo di chiusura dall'estratto conto.",
+  "acct.recon_block_too_long": "Riga {n}: {field} supera i {limit} caratteri che può contenere.",
+  "acct.recon_block_header_too_long": "{field} supera i {limit} caratteri che può contenere.",
   "ai.err_file_not_found": "Celerp non è riuscito a trovare questo file. Potrebbe essere stato rimosso. Caricalo di nuovo.",
   "bank.list_title": "Conti bancari",
   "bank.list_intro": "Apri un conto bancario per vedere i movimenti dei suoi estratti conto, oppure trascina un nuovo estratto conto sulla sua pagina.",

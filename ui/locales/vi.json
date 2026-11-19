@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "Số dư lũy kế bắt đầu không khớp từ dòng {n}.",
   "acct.recon_block_tie_out": "Số dư đầu kỳ cộng với các dòng không bằng số dư cuối kỳ.",
   "acct.recon_block_balances_missing": "Nhập số dư đầu kỳ và cuối kỳ từ bảng sao kê.",
+  "acct.recon_block_too_long": "Dòng {n}: {field} dài hơn {limit} ký tự cho phép.",
+  "acct.recon_block_header_too_long": "{field} dài hơn {limit} ký tự cho phép.",
   "ai.err_file_not_found": "Celerp không tìm thấy tệp này. Có thể tệp đã bị xóa. Vui lòng tải lại tệp.",
   "bank.list_title": "Tài khoản ngân hàng",
   "bank.list_intro": "Mở tài khoản ngân hàng để xem các giao dịch trên sao kê, hoặc kéo thả bản sao kê mới vào trang của tài khoản đó.",

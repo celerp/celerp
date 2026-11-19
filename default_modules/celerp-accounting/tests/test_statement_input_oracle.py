@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 import pytest
 
 import bank_statement_helpers as B
+from celerp_accounting.models import BankStatementLine, ReconciliationSession
 from celerp_accounting.statement_reader import review_statement
 
 pytestmark = pytest.mark.asyncio
@@ -278,3 +279,78 @@ async def test_overlapping_statements_tell_a_line_read_again_from_a_repeat_by_th
     for kind in _POOL:
         mine = [(tx, s) for tx, s in zip(read, seen) if (tx["line_date"], tx["description"], str(tx["amount"])) == kind]
         assert sum(s == "new" for _, s in mine) <= sum(tx["id"] not in held_ids for tx, _ in mine)
+
+
+# What a stored line and statement can hold, read from their columns (the one source the
+# import's check reads too); each generated value is sized around its limit.
+_LINE_LIMITS = {f: BankStatementLine.__table__.c[f].type.length
+                for f in ("line_date", "reference", "fitid", "counterparty_account")}
+_HEADER_LIMITS = {"period_start": ReconciliationSession.__table__.c.period_start.type.length,
+                  "period_end": ReconciliationSession.__table__.c.statement_date.type.length}
+_STARTS = {"line_date": "2026-01-15", "period_start": "2026-01-01", "period_end": "2026-01-31",
+           "reference": "R", "fitid": "F", "counterparty_account": "9"}
+
+
+def _sized(rng: random.Random, field: str, limit: int) -> str:
+    """A value of ``field`` one under, at, one over or far over ``limit`` characters."""
+    n = rng.choice([limit - 1, limit, limit + 1, limit * 4])
+    start = _STARTS[field]
+    return start + "Z" * (n - len(start))
+
+
+@pytest.mark.parametrize("seed", range(24))
+async def test_a_value_longer_than_its_stored_column_is_refused_by_name_and_never_reaches_the_database(client, seed):
+    """Through the read, preview and import routes, a statement whose header or line values are
+    sized around what their columns hold (an edited line, or a bank file's own FITID imported as
+    read): imported with every value stored as sent when each fits, otherwise refused naming the
+    field, never a server error. A long description still imports, its counterparty fitting."""
+    rng = random.Random(seed)
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    header = {"opening_balance": "0", "closing_balance": "-15.00", "period_start": "2026-01-01",
+              "period_end": "2026-01-31"}
+    if rng.random() < 0.3:      # the bank file's own FITID, imported as the file reads it
+        fitid = _sized(rng, "fitid", _LINE_LIMITS["fitid"])
+        content, name = _ofx([(f" {fitid} ", "2026-01-15", "-15.00")]), "st.ofx"
+        sized, edit = {"fitid": fitid, "reference": fitid}, None     # an OFX FITID is read as the reference too
+    else:
+        content, name = B.csv_bytes([("2026-01-15", "PAYEE " + " ".join(["W" * 70] * 3), "-15.00")]), "st.csv"
+        fields = rng.sample(sorted(_LINE_LIMITS | _HEADER_LIMITS), rng.randint(1, 3))
+        sized = {f: _sized(rng, f, (_LINE_LIMITS | _HEADER_LIMITS)[f]) for f in fields}
+        header.update({f: v for f, v in sized.items() if f in _HEADER_LIMITS})
+        edit = {f: v for f, v in sized.items() if f in _LINE_LIMITS}
+    preview = await B.read(client, co, [(content, name, "application/octet-stream")], bank_id=bk["id"])
+    [st] = preview["statements"]
+    lines = None if edit is None else [{**line, **edit, "ticked": True} for line in st["lines"]]
+    statement = {"header": {**st["header"], **header}, **({} if lines is None else {"lines": lines})}
+    if preview.get("column_map"):
+        statement_map = {"column_map": preview["column_map"]}
+    else:
+        statement_map = {}
+    over = sorted(f for f, v in sized.items() if len(v) > (_LINE_LIMITS | _HEADER_LIMITS)[f])
+    checked = await client.post(f"{B.API}/statement-preview/{preview['job_id']}", headers=co["h"],
+                                json={"statements": [statement], **statement_map})
+    assert checked.status_code == 200, checked.text
+    flagged = sorted(b["params"]["field"]["message_key"] for b in checked.json()["statements"][0]["blocking"]
+                     if b["code"] in ("too_long", "header_too_long"))
+    assert flagged == sorted(f"field.{f}" if f != "reference" else "label.reference" for f in over)
+    r = await client.post(f"{B.API}/import-statement", headers=co["h"], json={
+        "job_id": preview["job_id"], "bank_id": bk["id"], "idempotency_key": B.key(),
+        "statements": [statement], **statement_map})
+    assert r.status_code < 500, r.text
+    if over:
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        named = [detail, *detail.get("also", [])]
+        keys = {d["message_key"] for d in named}
+        assert keys & {"acct.recon_block_too_long", "acct.recon_block_header_too_long"}, detail
+        return
+    assert r.status_code == 200, r.text
+    [session] = r.json()["sessions"]
+    assert session["statement_date"] == header["period_end"]
+    [line] = [l for l in B.all_lines(await B.groups(client, co, bk["id"], view="all"))
+              if l["statement_id"] == session["id"]]
+    for f, v in sized.items():
+        if f in _LINE_LIMITS:
+            assert line[f] == v, (f, line[f])
+    assert len(line["counterparty_key"]) <= BankStatementLine.__table__.c.counterparty_key.type.length

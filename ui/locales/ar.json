@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "يتوقف الرصيد الجاري عن الاتساق مع المبالغ عند السطر {n}.",
   "acct.recon_block_tie_out": "الرصيد الافتتاحي بالإضافة إلى البنود لا يساوي الرصيد الختامي.",
   "acct.recon_block_balances_missing": "أدخل الرصيد الافتتاحي والرصيد الختامي من كشف الحساب.",
+  "acct.recon_block_too_long": "السطر {n}: {field} أطول من {limit} حرفًا يمكن حفظها.",
+  "acct.recon_block_header_too_long": "{field} أطول من {limit} حرفًا يمكن حفظها.",
   "ai.err_file_not_found": "لم يتمكن برنامج Celerp من العثور على هذا الملف. ربما تم حذفه. يرجى إعادة تحميله.",
   "bank.list_title": "الحسابات المصرفية",
   "bank.list_intro": "افتح حسابًا بنكيًا لعرض حركات كشف الحساب، أو اسحب كشفًا جديدًا وأفلته في صفحته.",

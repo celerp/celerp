@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "残高が{n}行目から合わなくなります。",
   "acct.recon_block_tie_out": "期首残高に各明細を加えた額が、期末残高と一致しません。",
   "acct.recon_block_balances_missing": "明細書に記載されている期首残高と期末残高を入力してください。",
+  "acct.recon_block_too_long": "行 {n}: {field} が保存できる {limit} 文字を超えています。",
+  "acct.recon_block_header_too_long": "{field} が保存できる {limit} 文字を超えています。",
   "ai.err_file_not_found": "Celerpはこのファイルを見つけることができませんでした。削除された可能性があります。再度アップロードしてください。",
   "bank.list_title": "銀行口座",
   "bank.list_intro": "銀行口座を開いて明細を確認するか、そのページに新しい明細をドロップしてください。",

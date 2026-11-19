@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "El saldo acumulado deja de sumar en la línea {n}.",
   "acct.recon_block_tie_out": "El saldo inicial más las líneas no es igual al saldo final.",
   "acct.recon_block_balances_missing": "Introduzca el saldo inicial y final del extracto.",
+  "acct.recon_block_too_long": "Línea {n}: {field} supera los {limit} caracteres que puede contener.",
+  "acct.recon_block_header_too_long": "{field} supera los {limit} caracteres que puede contener.",
   "ai.err_file_not_found": "Celerp no pudo encontrar este archivo. Es posible que haya sido eliminado. Vuelva a subirlo.",
   "bank.list_title": "Cuentas bancarias",
   "bank.list_intro": "Abra una cuenta bancaria para ver los movimientos de sus extractos, o arrastre un extracto nuevo a su página.",

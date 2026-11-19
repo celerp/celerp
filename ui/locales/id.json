@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "Saldo berjalan berhenti bertambah pada baris {n}.",
   "acct.recon_block_tie_out": "Saldo awal ditambah baris tidak sama dengan saldo akhir.",
   "acct.recon_block_balances_missing": "Masukkan saldo awal dan saldo akhir dari rekening koran.",
+  "acct.recon_block_too_long": "Baris {n}: {field} lebih panjang dari {limit} karakter yang dapat ditampung.",
+  "acct.recon_block_header_too_long": "{field} lebih panjang dari {limit} karakter yang dapat ditampung.",
   "ai.err_file_not_found": "Celerp tidak dapat menemukan file ini. File tersebut mungkin telah dihapus. Unggah kembali.",
   "bank.list_title": "Rekening bank",
   "bank.list_intro": "Buka rekening bank untuk melihat baris rekening korannya, atau seret rekening koran baru ke halamannya.",

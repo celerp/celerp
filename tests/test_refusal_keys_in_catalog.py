@@ -281,6 +281,12 @@ def _peer_lines_keys() -> list[str]:
 
 
 _DYNAMIC_KEY_SITES = {
+    # statement_reader.py: _too_long names each over-long field by its label key from _LINE_LIMITS
+    # and _HEADER_LIMITS
+    "default_modules/celerp-accounting/celerp_accounting/statement_reader.py": [
+        "field.line_date", "label.reference", "field.fitid", "field.counterparty_account",
+        "field.period_start", "field.period_end",
+    ],
     # celerp/services/lot_origin.py: _refused(status, key, message) wraps refusal(key, ...)
     # for the older-stock move, undo and adjustment refusals
     "celerp/services/lot_origin.py": [

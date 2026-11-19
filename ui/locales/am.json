@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "ተከታታይ ቀሪ ሒሳቡ ከመስመር {n} ጀምሮ አይደመርም።",
   "acct.recon_block_tie_out": "የመክፈቻ ቀሪ ሒሳብ ሲደመር መስመሮቹ ከመዝጊያ ቀሪ ሒሳብ ጋር እኩል አይደለም።",
   "acct.recon_block_balances_missing": "ከመግለጫው የመክፈቻ እና የመዝጊያ ቀሪ ሂሳብ ያስገቡ።",
+  "acct.recon_block_too_long": "መስመር {n}: {field} ሊይዘው ከሚችለው {limit} ቁምፊ በላይ ረጅም ነው።",
+  "acct.recon_block_header_too_long": "{field} ሊይዘው ከሚችለው {limit} ቁምፊ በላይ ረጅም ነው።",
   "ai.err_file_not_found": "Celerp ይህንን ፋይል ማግኘት አልቻለም። ተወግዶ ሊሆን ይችላል። እንደገና ይስቀሉት።",
   "bank.list_title": "የባንክ ሂሳቦች",
   "bank.list_intro": "የባንክ ሂሳብ መግለጫ መስመሮችን ለማየት ሂሳቡን ይክፈቱ፣ ወይም አዲስ መግለጫ በዚያ ገጽ ላይ ይስቀሉ።",

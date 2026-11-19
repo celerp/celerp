@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "The running balance stops adding up at line {n}.",
   "acct.recon_block_tie_out": "Opening balance plus the lines does not equal the closing balance.",
   "acct.recon_block_balances_missing": "Enter the opening and closing balance from the statement.",
+  "acct.recon_block_too_long": "Line {n}: {field} is longer than the {limit} characters it can hold.",
+  "acct.recon_block_header_too_long": "{field} is longer than the {limit} characters it can hold.",
   "ai.err_file_not_found": "Celerp couldn't find this file. It may have been removed. Upload it again.",
   "bank.list_title": "Bank accounts",
   "bank.list_intro": "Open a bank to see its statement lines, or drop a new statement on its page.",

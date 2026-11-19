@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "Der laufende Saldo stimmt ab Zeile {n} nicht mehr.",
   "acct.recon_block_tie_out": "Anfangssaldo zuzüglich der Zeilen ergibt nicht den Endsaldo.",
   "acct.recon_block_balances_missing": "Geben Sie den Anfangs- und Endsaldo aus dem Kontoauszug ein.",
+  "acct.recon_block_too_long": "Zeile {n}: {field} ist länger als die {limit} Zeichen, die es fassen kann.",
+  "acct.recon_block_header_too_long": "{field} ist länger als die {limit} Zeichen, die es fassen kann.",
   "ai.err_file_not_found": "Celerp konnte diese Datei nicht finden. Sie wurde möglicherweise gelöscht. Bitte laden Sie sie erneut hoch.",
   "bank.list_title": "Bankkonten",
   "bank.list_intro": "Öffnen Sie ein Bankkonto, um die Kontoauszugszeilen anzuzeigen, oder fügen Sie einen neuen Kontoauszug auf dieser Seite hinzu.",

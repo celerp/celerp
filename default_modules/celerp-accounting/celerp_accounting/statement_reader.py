@@ -5,8 +5,9 @@
 ``counterparty_key`` names who a line was with, so lines group by counterparty and
 direction. ``review_statement`` checks a statement as read: the tie-out (opening plus
 lines equals closing, and each running balance follows the one before), the sign
-convention, the period, the currency, rows with no readable amount, each line's
-fingerprint, the lines already in Celerp and the lines that may repeat one.
+convention, the period, the currency, rows with no readable amount, values longer than
+their stored column holds, each line's fingerprint, the lines already in Celerp and the
+lines that may repeat one.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 from celerp.services.field_fingerprints import statement_line, statement_line_fitid, statement_line_ident
 from celerp.services.money import round_money
+from celerp_accounting.models import BankStatementLine, ReconciliationSession
 
 # Words banks print around the counterparty, in every locale a statement arrives in.
 # Each maps to the kind a line with nothing else left is grouped under.
@@ -26,6 +28,13 @@ _BOILERPLATE = {
     "ชำระเงิน": None, "ฝากเงิน": "DEPOSIT",
 }
 _AFTER_TRANSFER = {"TO", "FROM"}
+# What a stored line and statement header hold, read from their columns: (field, length, label key).
+_LINE_LIMITS = tuple((f, BankStatementLine.__table__.c[f].type.length, label) for f, label in (
+    ("line_date", "field.line_date"), ("reference", "label.reference"), ("fitid", "field.fitid"),
+    ("counterparty_account", "field.counterparty_account")))
+_HEADER_LIMITS = tuple((f, ReconciliationSession.__table__.c[col].type.length, label) for f, col, label in (
+    ("period_start", "period_start", "field.period_start"), ("period_end", "statement_date", "field.period_end")))
+_KEY_LENGTH = BankStatementLine.__table__.c.counterparty_key.type.length
 # The kind a sparse line takes when it carried several words: the most telling first.
 _KIND_ORDER = ("ATM", "CHEQUE", "WITHDRAWAL", "DEPOSIT", "TRANSFER", "REFERENCE")
 
@@ -74,7 +83,7 @@ def counterparty_key(description: str, reference: str | None, amount: Decimal,
             kept.append(word)
         previous = word
     if kept:
-        return " ".join(kept[:3]), None
+        return " ".join(kept[:3])[:_KEY_LENGTH], None
     kind = next((k for k in _KIND_ORDER if k in kinds), "OTHER")
     return f"SPARSE:{kind}:{'in' if amount > 0 else 'out'}", None
 
@@ -107,6 +116,14 @@ def _block(code: str, line: int | None = None, **params) -> dict:
     from ui.i18n import refusal_text
 
     return {"code": code, "line": line, "params": params, "text": refusal_text(block_refusal(code, **params))}
+
+
+def _too_long(values: dict, limits: tuple) -> list[dict]:
+    """The refusal params of each value longer than its column holds: the field and its length."""
+    from celerp.accounting_roles import catalog_refusal
+
+    return [{"field": catalog_refusal(label), "limit": limit} for field, limit, label in limits
+            if len(str(values.get(field) or "")) > limit]
 
 
 def _tie(opening: Decimal | None, closing: Decimal | None, amounts: list[Decimal],
@@ -170,6 +187,7 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
     notices: list[str] = []
     if currency != bank_currency.upper():
         blocking.append(_block("currency", currency=currency, bank_currency=bank_currency))
+    blocking += [_block("header_too_long", **params) for params in _too_long(header, _HEADER_LIMITS)]
     start, end = header.get("period_start"), header.get("period_end")
     out: list[dict] = []
     seen: dict[tuple, int] = {}
@@ -183,6 +201,8 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
         date = raw.get("line_date") or ""
         if (start and date < start) or (end and date > end):
             blocking.append(_block("outside_period", i, n=i + 1, date=date))
+        blocking += [_block("too_long", i, n=i + 1, **params)
+                     for params in _too_long({**raw, "fitid": _external_id(raw)}, _LINE_LIMITS)]
         out.append({**{k: v for k, v in raw.items() if not k.startswith("_")}, "amount": amount,
                     "raw_balance": balance, "flags": flags})
     amounts = [l["amount"] or Decimal(0) for l in out]

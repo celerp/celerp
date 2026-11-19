@@ -8407,6 +8407,8 @@
   "acct.recon_block_tie_break": "Le solde courant ne concorde plus à partir de la ligne {n}.",
   "acct.recon_block_tie_out": "Le solde d'ouverture plus les lignes n'est pas égal au solde de clôture.",
   "acct.recon_block_balances_missing": "Saisissez le solde d'ouverture et le solde de clôture figurant sur le relevé.",
+  "acct.recon_block_too_long": "Ligne {n} : {field} dépasse les {limit} caractères qu'il peut contenir.",
+  "acct.recon_block_header_too_long": "{field} dépasse les {limit} caractères qu'il peut contenir.",
   "ai.err_file_not_found": "Celerp n'a pas trouvé ce fichier. Il a peut-être été supprimé. Veuillez l'importer à nouveau.",
   "bank.list_title": "Comptes bancaires",
   "bank.list_intro": "Ouvrez un compte bancaire pour consulter ses lignes de relevé, ou déposez un nouveau relevé sur sa page.",
