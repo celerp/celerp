@@ -759,8 +759,10 @@ def filled_path(template: str, names: Any, values: dict[str, Any]) -> str | dict
     url_path = template
     for name in names:
         raw = str(values[name])
-        if "/" in raw or "\\" in raw:
-            return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "Path parameters cannot contain path separators.")
+        # A separator or a dot segment ("." or "..", which the HTTP client collapses) would
+        # send the request to a different route than the one the card names.
+        if "/" in raw or "\\" in raw or raw in {"", ".", ".."}:
+            return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "A path parameter must name one record.")
         url_path = url_path.replace("{" + name + "}", quote(raw, safe=""))
     if "{" in url_path or "}" in url_path:
         return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "A path parameter could not be resolved.")

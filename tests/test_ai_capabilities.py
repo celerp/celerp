@@ -391,6 +391,35 @@ async def test_executor_rejects_request_infrastructure_and_path_escape():
     )
     assert bad_path["error"]["code"] == "invalid_path_parameter"
 
+    for dot in (".", ".."):
+        rerouted = await ai_tools.execute_agent_capability(
+            app, "Bearer user-token", cap, {"path": {"item_id": dot}}, "call-dot",
+        )
+        assert rerouted["error"]["code"] == "invalid_path_parameter"
+
+
+@pytest.mark.parametrize("value", [".", "..", "%2e%2e", "%2E.", "", ". .", "x"])
+def test_no_path_value_sends_a_tool_to_another_route(value):
+    """The request a confirmed card runs reaches the route the card names: every filled
+    path of every tool survives the HTTP client's dot-segment normalisation unchanged."""
+    import httpx
+
+    caps = ai_tools.compile_agent_capabilities(real_agent_app(), {})
+    rerouted = []
+    for name, cap in sorted(caps.items()):
+        names = tuple(cap.get("path_names") or ())
+        for target in names:
+            values = {n: (value if n == target else "id1") for n in names}
+            filled = ai_tools.filled_path(str(cap["path"]), names, values)
+            if isinstance(filled, dict):
+                assert filled["error"]["code"] == "invalid_path_parameter"
+                continue
+            sent = httpx.Request(cap["method"], "http://testserver" + filled).url.raw_path.decode()
+            if sent != filled:
+                rerouted.append(f"{name} [{target}={value!r}] {filled} -> {sent}")
+    assert any(cap.get("path_names") for cap in caps.values())
+    assert rerouted == []
+
 
 async def test_executor_bounds_json_result():
     app = FastAPI()
