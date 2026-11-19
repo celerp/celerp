@@ -31271,5 +31271,6 @@
     "tests/test_migrations/test_y8d9e0f1a2b3_ai_messages_conversation_created_index.py::test_the_composite_replaces_the_conversation_index_and_the_downgrade_restores_it[SQL_ASCII]": 0.3296121850144118,
     "tests/test_migrations/test_y8d9e0f1a2b3_ai_messages_conversation_created_index.py::test_the_composite_replaces_the_conversation_index_and_the_downgrade_restores_it[UTF8]": 0.372783733997494,
     "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/x7c8d9e0f1a2_ai_usage_one_row_per_operation.py]": 0.006311486999038607,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/y8d9e0f1a2b3_ai_messages_conversation_created_index.py]": 0.0033775850024539977
+    "tests/test_python310_floor.py::test_no_python311_only_imports[celerp/migrations/versions/y8d9e0f1a2b3_ai_messages_conversation_created_index.py]": 0.0033775850024539977,
+    "tests/test_migrations/test_y8d9e0f1a2b3_ai_messages_conversation_created_index.py::test_a_fresh_create_all_database_already_carries_the_composite_index": 0.3873502169881249
 }
