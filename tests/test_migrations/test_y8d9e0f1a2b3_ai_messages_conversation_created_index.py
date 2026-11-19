@@ -87,3 +87,18 @@ def test_a_database_without_the_ai_tables_upgrades_and_downgrades():
                 assert conn.execute(text("SELECT to_regclass('ai_messages')")).scalar() is None
         finally:
             eng.dispose()
+
+
+def test_a_fresh_create_all_database_already_carries_the_composite_index():
+    """The dev startup path never runs this migration on a database it creates: it builds
+    ai_messages straight from the model, so the model's own index declaration is what a
+    fresh install gets."""
+    from celerp.models.base import Base
+    with throwaway_db("aimsgidxcreateall") as (_, sync_url):
+        upgrade_to(sync_url, _PREV)
+        eng = create_engine(sync_url)
+        try:
+            Base.metadata.create_all(eng, tables=[Base.metadata.tables[t] for t in ("ai_conversations", "ai_messages")])
+        finally:
+            eng.dispose()
+        assert _indexes(sync_url) == {_NEW: True}
