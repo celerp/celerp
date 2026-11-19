@@ -348,19 +348,45 @@ async def test_two_lines_match_one_entry(client):
     assert bad.json()["results"][0]["ok"] is False
 
 
-async def test_fingerprint_refuses_overlapping_lines(client):
+async def test_a_line_read_again_with_its_running_balance_is_left_out_as_a_duplicate(client):
+    co, bk = await _co_bank(client)
+    rows = [("2026-01-05", "FEE", "-5.00"), ("2026-01-20", "WIRE", "50.00"), ("2026-02-03", "FEE", "-5.00")]
+    jan = await B.read(client, co, [(B.csv_bytes(rows[:2], balance=True), "jan.csv", "text/csv")], bank_id=bk["id"])
+    await B.import_statement(client, co, jan, bank_id=bk["id"], header={
+        "opening_balance": "0.00", "closing_balance": "45.00", "period_start": "2026-01-01", "period_end": "2026-01-31"})
+    feb = await B.read(client, co, [(B.csv_bytes(rows, balance=True), "feb.csv", "text/csv")], bank_id=bk["id"])
+    assert [bool(l["duplicate"]) for l in feb["statements"][0]["lines"]] == [True, True, False]
+    out = await B.import_statement(client, co, feb, bank_id=bk["id"], tick_all=True, header={
+        "opening_balance": "0.00", "closing_balance": "40.00", "period_start": "2026-01-01", "period_end": "2026-02-28"})
+    assert out["sessions"][0]["skipped_duplicates"] == 2
+    lines = B.all_lines(await B.groups(client, co, bk["id"], view="all"))
+    assert sorted(l["description"] for l in lines) == ["FEE", "FEE", "WIRE"]
+
+
+async def test_a_second_identical_transaction_without_balance_is_left_for_review_and_imports_when_ticked(client):
     co, bk = await _co_bank(client)
     rows = [("2026-01-05", "FEE", "-5.00"), ("2026-01-20", "WIRE", "50.00")]
     await _one_month(client, co, bk, rows)
     overlap = rows[1:] + [("2026-02-03", "FEE", "-5.00")]
+    header = {"opening_balance": "-5.00", "closing_balance": "40.00", "period_start": "2026-01-20", "period_end": "2026-02-28"}
     preview = await B.read(client, co, [(B.csv_bytes(overlap), "feb.csv", "text/csv")], bank_id=bk["id"])
     first = preview["statements"][0]["lines"][0]
-    assert first["duplicate"] and first["ticked"] is False
-    out = await B.import_statement(client, co, preview, bank_id=bk["id"], header={
-        "opening_balance": "-5.00", "closing_balance": "40.00", "period_start": "2026-01-20", "period_end": "2026-02-28"})
-    assert out["sessions"][0]["skipped_duplicates"] == 1
+    assert (first["duplicate"], first["probable"], first["repeats"], first["ticked"]) == (False, True, "2026-01-31", False)
+    out = await B.import_statement(client, co, preview, bank_id=bk["id"], header=header, tick_all=True)
+    assert out["sessions"][0] == {**out["sessions"][0], "imported": 2, "skipped_duplicates": 0}
     lines = B.all_lines(await B.groups(client, co, bk["id"], view="all"))
-    assert sum(1 for l in lines if l["description"] == "WIRE") == 1
+    assert sum(1 for l in lines if l["description"] == "WIRE") == 2
+
+
+async def test_two_identical_lines_against_one_held_line_leave_one_for_review(client):
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "ATM FEE", "-3.00")])
+    rows = [("2026-01-05", "ATM FEE", "-3.00"), ("2026-01-05", "ATM FEE", "-3.00")]
+    preview = await B.read(client, co, [(B.csv_bytes(rows), "feb.csv", "text/csv")], bank_id=bk["id"])
+    assert [(l["probable"], l["ticked"]) for l in preview["statements"][0]["lines"]] == [(True, False), (False, True)]
+    out = await B.import_statement(client, co, preview, bank_id=bk["id"], header={
+        "opening_balance": "0.00", "closing_balance": "-6.00", "period_start": "2026-01-01", "period_end": "2026-02-28"})
+    assert out["sessions"][0]["imported"] == 1
 
 
 async def test_saved_column_map_reused_for_identical_headers(client):

@@ -11,11 +11,18 @@ import pytest
 
 from celerp_accounting.csv_parser import parse_bank_csv, parse_ofx
 from celerp_accounting.statement_reader import counterparty_key, review_statement
+from ui.i18n import t
 
 
 
-def _line(d, amount, desc="Line", balance=None, reference=None):
-    return {"line_date": d, "description": desc, "amount": amount, "raw_balance": balance, "reference": reference}
+def _line(d, amount, desc="Line", balance=None, reference=None, **kw):
+    return {"line_date": d, "description": desc, "amount": amount, "raw_balance": balance, "reference": reference, **kw}
+
+
+def _held(review: dict, indices=None, statement="2025-12-31") -> list[dict]:
+    """The lines of ``review`` at ``indices`` (every line by default) as the bank holds them."""
+    picked = range(len(review["lines"])) if indices is None else indices
+    return [{**review["lines"][i], "statement": statement} for i in picked]
 
 
 def _review(header, lines, **kw):
@@ -69,20 +76,72 @@ def test_fingerprints_number_identical_lines_in_a_file():
     assert a != b and len(a) == 16
 
 
-def test_existing_fingerprint_listed_and_unticked():
+def test_a_line_held_with_its_running_balance_is_a_confirmed_duplicate():
+    lines = [_line("2026-01-02", "-10.00", "FEE", "90.00")]
+    first = _review({**_HEADER, "closing_balance": "90.00"}, lines)
+    line = _review({**_HEADER, "closing_balance": "90.00"}, lines, known=_held(first, statement="2026-01-31"))["lines"][0]
+    assert line["duplicate"] == t("acct.recon_duplicate_of", date="2026-01-31")
+    assert line["ticked"] is False and line["repeats"] is None
+
+
+def test_a_second_identical_transaction_without_balance_or_fitid_is_left_for_review_and_importable():
     lines = [_line("2026-01-02", "-10.00", "FEE")]
     first = _review({**_HEADER, "closing_balance": "90.00"}, lines)
-    fp = first["lines"][0]["fingerprint"]
-    again = _review({**_HEADER, "closing_balance": "90.00"}, lines, existing={fp: "Statement 2026-01-31"})
-    line = again["lines"][0]
-    assert line["duplicate"] == "Statement 2026-01-31" and line["ticked"] is False
+    line = _review({**_HEADER, "closing_balance": "90.00"}, lines, known=_held(first, statement="2026-01-31"))["lines"][0]
+    assert line["duplicate"] is False and line["probable"] is True and line["repeats"] == "2026-01-31"
+    assert line["ticked"] is False and line["fingerprint"] != first["lines"][0]["fingerprint"]
+
+
+def test_a_statement_read_again_with_running_balances_is_a_duplicate_line_for_line():
+    header = {**_HEADER, "closing_balance": "84.00"}
+    lines = [_line("2026-01-02", "-3.00", "ATM FEE", "97.00"), _line("2026-01-02", "-3.00", "ATM FEE", "94.00"),
+             _line("2026-01-03", "-10.00", "SHOP", "84.00")]
+    first = _review(header, lines)
+    again = _review(header, lines, known=_held(first))
+    assert [bool(l["duplicate"]) for l in again["lines"]] == [True, True, True]
+    assert [l["fingerprint"] for l in again["lines"]] == [l["fingerprint"] for l in first["lines"]]
+
+
+def test_a_fitid_read_again_is_a_duplicate_and_another_fitid_is_a_new_line():
+    ofx = [_line("2026-01-02", "-10.00", "FEE", reference="F1", source="ofx"),
+           _line("2026-01-02", "-10.00", "FEE", reference="F2", source="ofx")]
+    first = _review({**_HEADER, "closing_balance": "80.00"}, ofx[:1] + [_line("2026-01-05", "-10.00", "X")])
+    again = _review({**_HEADER, "closing_balance": "80.00"}, ofx, known=_held(first, [0]))
+    assert first["lines"][0]["fitid"] == "F1" and first["lines"][0]["reference"] == "F1"
+    assert bool(again["lines"][0]["duplicate"]) is True
+    assert again["lines"][1]["duplicate"] is False and again["lines"][1]["probable"] is False
+    assert again["lines"][1]["ticked"] is True
+    sent = _review({**_HEADER, "closing_balance": "90.00"}, [_line("2026-01-02", "-10.00", "FEE", reference="INV 7",
+                                                                   fitid="F1")], known=_held(first, [0]))
+    assert bool(sent["lines"][0]["duplicate"]) is True and sent["lines"][0]["reference"] == "INV 7"
+
+
+def test_two_identical_lines_against_one_held_leave_one_for_review_and_import_the_other():
+    lines = [_line("2026-01-02", "-3.00", "ATM FEE"), _line("2026-01-02", "-3.00", "ATM FEE")]
+    held = _held(_review({**_HEADER, "closing_balance": "97.00"}, lines[:1]))
+    out = _review({**_HEADER, "closing_balance": "94.00"}, lines, known=held)
+    assert [(l["duplicate"], l["probable"], l["ticked"]) for l in out["lines"]] == [(False, True, False),
+                                                                                  (False, False, True)]
+    fps = [l["fingerprint"] for l in out["lines"]]
+    assert len(set(fps)) == 2 and held[0]["fingerprint"] not in fps
+
+
+def test_a_line_another_format_read_with_balances_is_confirmed_only_where_the_evidence_names_it():
+    header = {**_HEADER, "closing_balance": "80.00"}
+    csv = _review(header, [_line("2026-01-02", "-10.00", "FEE", "90.00"), _line("2026-01-03", "-10.00", "SHOP", "80.00")])
+    ofx = _review(header, [_line("2026-01-02", "-10.00", "FEE", reference="F1", source="ofx"),
+                           _line("2026-01-03", "-10.00", "SHOP", reference="F2", source="ofx")], known=_held(csv))
+    assert [(l["duplicate"], l["repeats"]) for l in ofx["lines"]] == [(False, "2025-12-31"), (False, "2025-12-31")]
+    layout = _review(header, [_line("2026-01-02", "-10.00", "fee", "90.00"), _line("2026-01-03", "-10.00", "SHOP", "80.00")],
+                     known=_held(csv))
+    assert [bool(l["duplicate"]) for l in layout["lines"]] == [True, True]
+    other = _review(header, [_line("2026-01-02", "-10.00", "FEE", "91.00")], known=_held(csv))
+    assert other["lines"][0]["duplicate"] is False and other["lines"][0]["probable"] is False
 
 
 def _again(header, lines, imported: list[int]):
     """``lines`` reviewed again once the lines at ``imported`` were imported by an earlier statement."""
-    first = _review(header, lines)
-    return _review(header, lines, existing={first["lines"][i]["fingerprint"]: "Statement 2025-12-31"
-                                            for i in imported})
+    return _review(header, lines, known=_held(_review(header, lines), imported))
 
 
 def test_overlap_ties_out_with_the_lines_already_imported():
@@ -109,17 +168,18 @@ def test_a_statement_that_ties_only_without_its_imported_lines_is_blocked():
     assert [b["code"] for b in out["blocking"]] == ["tie_out"]
 
 
-def test_overlap_with_repeated_identical_lines_skips_each_once():
+def test_overlap_with_repeated_identical_lines_leaves_each_held_one_for_review_once():
     lines = [_line("2026-01-02", "-3.00", "ATM FEE"), _line("2026-01-02", "-3.00", "ATM FEE"),
              _line("2026-01-03", "-3.00", "ATM FEE")]
     out = _again({**_HEADER, "closing_balance": "91.00"}, lines, [0, 1])
-    assert [bool(l["duplicate"]) for l in out["lines"]] == [True, True, False]
+    assert [(bool(l["duplicate"]), l["probable"], l["ticked"]) for l in out["lines"]] == [
+        (False, True, False), (False, True, False), (False, False, True)]
     assert out["tie"]["ok"] is True and out["blocking"] == []
 
 
 def test_card_statement_overlap_reverses_every_line_and_keeps_its_fingerprints():
     header = {**_HEADER, "opening_balance": "0.00", "closing_balance": "-100.00"}
-    lines = [_line("2026-01-02", "25.00", "COFFEE"), _line("2026-01-05", "75.00", "HOTEL")]
+    lines = [_line("2026-01-02", "25.00", "COFFEE", "-25.00"), _line("2026-01-05", "75.00", "HOTEL", "-100.00")]
     first = _review(header, lines)
     out = _again(header, lines, [0])
     assert out["flipped"] is True and out["blocking"] == []
@@ -132,6 +192,7 @@ def test_pdf_and_csv_overlap_flagged_probable_duplicate():
     lines = [_line("2026-01-02", "-10.00", "Fee charged Jan"), _line("2026-01-04", "-7.00", "Other")]
     out = _review({**_HEADER, "closing_balance": "83.00"}, lines, held_counts={("2026-01-02", "-10.00"): 1})
     assert out["lines"][0]["probable"] is True and out["lines"][0]["ticked"] is False
+    assert out["lines"][0]["repeats"] is None
     assert out["lines"][1]["probable"] is False and out["lines"][1]["ticked"] is True
 
 
@@ -253,10 +314,10 @@ def test_a_reversed_line_without_a_counterparty_is_keyed_as_spending():
 
 def test_a_line_imported_from_another_format_is_a_duplicate_on_a_reversed_statement():
     bank = _review(_CARD, [_line("2026-01-05", "-100.00", "HOTEL", "-100.00")])
-    card = _review(_CARD, [_line("2026-01-05", "100.00", "HOTEL", "-100.00")],
-                   existing={bank["lines"][0]["fingerprint"]: "Statement 2025-12-31"})
+    card = _review(_CARD, [_line("2026-01-05", "100.00", "HOTEL", "-100.00")], known=_held(bank))
     assert card["flipped"] is True and card["lines"][0]["fingerprint"] == bank["lines"][0]["fingerprint"]
-    assert card["lines"][0]["duplicate"] == "Statement 2025-12-31" and card["lines"][0]["ticked"] is False
+    assert card["lines"][0]["duplicate"] == t("acct.recon_duplicate_of", date="2025-12-31")
+    assert card["lines"][0]["ticked"] is False
     held = _review(_CARD, [_line("2026-01-05", "100.00", "HOTEL")],
                    held_counts={("2026-01-05", "-100.00"): 1})
     assert held["lines"][0]["probable"] is True
@@ -268,7 +329,8 @@ def test_repeated_identical_lines_of_a_reversed_statement_keep_their_fingerprint
     bank = _review(_CARD, [_line("2026-01-02", "-50.00", "ATM FEE"), _line("2026-01-02", "-50.00", "ATM FEE")])
     fps = [l["fingerprint"] for l in first["lines"]]
     assert fps[0] != fps[1] and fps == [l["fingerprint"] for l in bank["lines"]]
-    assert [bool(l["duplicate"]) for l in again["lines"]] == [True, True]
+    assert [(l["probable"], l["ticked"]) for l in again["lines"]] == [(True, False), (True, False)]
+    assert not set(fps) & {l["fingerprint"] for l in again["lines"]}
 
 
 def test_a_statement_that_ties_in_neither_convention_blocks_at_the_first_break_as_read():
@@ -282,5 +344,5 @@ def test_a_refund_is_never_the_duplicate_of_the_charge_it_mirrors():
     charge = _line("2026-01-02", "-100.00", "TRANSFER SHOP")
     first = _review({**_HEADER, "closing_balance": "0.00"}, [charge])
     out = _review({**_HEADER, "closing_balance": "100.00"}, [_line("2026-01-02", "100.00", "TRANSFER SHOP"), charge],
-                  existing={first["lines"][0]["fingerprint"]: "Statement 2025-12-31"})
-    assert out["flipped"] is False and [bool(l["duplicate"]) for l in out["lines"]] == [False, True]
+                  known=_held(first))
+    assert out["flipped"] is False and [l["probable"] for l in out["lines"]] == [False, True]

@@ -114,6 +114,8 @@ class BankStatementLine(Base):
     amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)
     raw_balance: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The id the bank gave the line (OFX FITID), kept as read: the evidence a line read again is this one.
+    fitid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="unmatched", nullable=False, server_default="unmatched")  # unmatched|matched|posted|skipped
     counterparty_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     counterparty_account: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -6,7 +6,7 @@
 direction. ``review_statement`` checks a statement as read: the tie-out (opening plus
 lines equals closing, and each running balance follows the one before), the sign
 convention, the period, the currency, rows with no readable amount, each line's
-fingerprint, and lines already in Celerp.
+fingerprint, the lines already in Celerp and the lines that may repeat one.
 """
 
 from __future__ import annotations
@@ -125,13 +125,46 @@ def _tie(opening: Decimal | None, closing: Decimal | None, amounts: list[Decimal
     return opening + sum(amounts, Decimal(0)) == closing, None
 
 
+def _external_id(line: dict) -> str | None:
+    """The id the bank gave the line (OFX FITID), if any: sent as ``fitid`` or read from an
+    OFX file as the line's reference."""
+    fitid = line.get("fitid") or (line.get("reference") if line.get("source") == "ofx" else None)
+    return (str(fitid).strip() or None) if fitid else None
+
+
+def _evidence(line: dict) -> tuple:
+    """(external id, what two readings of one transaction share, printed reference, running
+    balance): the reference is the printed one, not the external id an OFX file reads as it."""
+    fitid = line.get("fitid")
+    reference = line.get("reference")
+    date, amount, text, ref, balance = statement_line_ident(
+        line.get("line_date"), line["amount"] or Decimal(0), line.get("description"),
+        None if fitid and (reference or "").strip() == fitid else reference, line.get("raw_balance"))
+    return fitid, (date, amount, text), ref, balance
+
+
+def _relation(new: tuple, held: tuple) -> str | None:
+    """How a line read now stands to a line the bank already holds. ``confirmed``: evidence
+    names one transaction (the same external id, or the same line with the same running
+    balance). ``None``: they are distinct (another external id, date, amount, description,
+    printed reference or running balance). Otherwise ``ambiguous``: a repeat the data cannot
+    tell from the same line read twice."""
+    fitid, base, ref, balance = new
+    h_fitid, h_base, h_ref, h_balance = held
+    if fitid and h_fitid:
+        return "confirmed" if fitid == h_fitid else None
+    if base != h_base or (ref and h_ref and ref != h_ref) or (balance and h_balance and balance != h_balance):
+        return None
+    return "confirmed" if balance and balance == h_balance and ref == h_ref else "ambiguous"
+
+
 def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
-                     existing: dict[str, str] | None = None,
+                     known: list[dict] | None = None,
                      held_counts: dict[tuple[str, str], int] | None = None) -> dict:
     """The statement as it would import: each line with its amount at the currency's minor
-    unit, fingerprint, counterparty, duplicate and tick; the tie-out; notices; and the
-    reasons Import is blocked (each with the line it names)."""
-    existing = existing or {}
+    unit, fingerprint, counterparty, duplicate or possible repeat and tick; the tie-out;
+    notices; and the reasons Import is blocked (each with the line it names). ``known`` is the
+    bank's lines (as this returns them, each with the date of its ``statement``)."""
     currency = (header.get("currency") or bank_currency).upper()
     blocking: list[dict] = []
     notices: list[str] = []
@@ -140,7 +173,6 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
     start, end = header.get("period_start"), header.get("period_end")
     out: list[dict] = []
     seen: dict[tuple, int] = {}
-    held = dict(held_counts or {})
     for i, raw in enumerate(lines):
         amount = _money(raw.get("amount"), bank_currency)
         balance = _money(raw.get("raw_balance"), bank_currency)
@@ -175,30 +207,63 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
         notices.append("The amounts on this statement were reversed to match its balances "
                        "(card statements print spending as positive).")
 
+    held = [(h, _evidence(h)) for h in known or []]
+    taken = {h["fingerprint"] for h, _ in held}
+    by_base: dict[tuple, list[int]] = {}
+    by_fitid: dict[str, list[int]] = {}
+    for i, (_, ev) in enumerate(held):
+        by_base.setdefault(ev[1], []).append(i)
+        if ev[0]:
+            by_fitid.setdefault(ev[0], []).append(i)
+    for line in out:
+        line.update(fitid=_external_id(line), duplicate=False, repeats=None)
+    evidence = [_evidence(line) for line in out]
+    claimed: set[int] = set()
+    # Confirmed duplicates first, so a repeat never takes the held line another line names;
+    # then each held line a repeat may be is offered once, so k identical lines against m held
+    # leave min(k, m) for review and import the rest.
+    for kind in ("confirmed", "ambiguous"):
+        for line, ev in zip(out, evidence):
+            if line["duplicate"] or line["repeats"]:
+                continue
+            pool = by_fitid.get(ev[0], []) + by_base.get(ev[1], []) if kind == "confirmed" else by_base.get(ev[1], [])
+            hit = next((i for i in pool if i not in claimed and _relation(ev, held[i][1]) == kind), None)
+            if hit is None:
+                continue
+            claimed.add(hit)
+            statement = held[hit][0].get("statement") or ""
+            if kind == "confirmed":
+                from ui.i18n import t
+                line["duplicate"] = t("acct.recon_duplicate_of", date=statement)
+            else:
+                line["repeats"] = statement
+
+    bucket_counts = dict(held_counts or {})
     for line in out:
         amount = line["amount"] or Decimal(0)
-        if line.get("fitid") or (line.get("source") == "ofx" and line.get("reference")):
-            fitid = str(line.get("fitid") or line["reference"]).strip()
-            n = seen.get(("FITID", fitid), 0)
-            seen[("FITID", fitid)] = n + 1
-            fp = statement_line_fitid(fitid, n)
-        else:
-            ident = statement_line_ident(line.get("line_date"), amount, line.get("description"),
-                                         line.get("reference"), line["raw_balance"])
-            n = seen.get(ident, 0)
-            seen[ident] = n + 1
-            fp = statement_line(line.get("line_date"), amount, line.get("description"),
-                                line.get("reference"), line["raw_balance"], n)
+        fitid = line["fitid"]
+        ident = ("FITID", fitid) if fitid else statement_line_ident(
+            line.get("line_date"), amount, line.get("description"), line.get("reference"), line["raw_balance"])
+        n = seen.get(ident, 0)
+        seen[ident] = n + 1
+        make = (lambda k: statement_line_fitid(fitid, k)) if fitid else (lambda k: statement_line(
+            line.get("line_date"), amount, line.get("description"), line.get("reference"), line["raw_balance"], k))
+        fp = make(n)
+        # A line that imports takes the first number of its kind no held or earlier line has,
+        # so a repeat ticked in never collides with the line it repeats.
+        while not line["duplicate"] and fp in taken:
+            n += 1
+            fp = make(n)
+        taken.add(fp)
         key, account = counterparty_key(line.get("description") or "", line.get("reference"), amount,
                                         line.get("counterparty_account"))
-        duplicate = existing.get(fp) or False
-        probable = False
+        probable = bool(line["repeats"])
         bucket = (line.get("line_date"), str(amount))
-        if not duplicate and held.get(bucket, 0) > 0:
-            held[bucket] -= 1
+        if not (line["duplicate"] or probable) and bucket_counts.get(bucket, 0) > 0:
+            bucket_counts[bucket] -= 1
             probable = True
         line.update(fingerprint=fp, counterparty_key=key, counterparty_account=account,
-                    duplicate=duplicate, probable=probable, ticked=not (duplicate or probable))
+                    probable=probable, ticked=not (line["duplicate"] or probable))
 
     if first_break is not None:
         blocking.append(_block("tie_break", first_break, n=first_break + 1))

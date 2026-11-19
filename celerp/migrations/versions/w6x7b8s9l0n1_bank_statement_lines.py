@@ -7,8 +7,8 @@ Revision ID: w6x7b8s9l0n1
 Revises: v5w6x7y8z9a0
 
 A statement line now belongs to its bank as well as its statement, carries a fingerprint (its
-identity on the bank, so a line read twice is refused), the counterparty its description names,
-one suggestion, a list of the entries that settle it and the question a firm asked its client
+identity on the bank, so a line read twice is refused), the id its bank gave it (OFX FITID),
+the counterparty its description names, one suggestion, a list of the entries that settle it and the question a firm asked its client
 about it. Existing lines get their bank from their statement and a fingerprint numbered among
 identical lines of the same bank, so the unique index cannot collide. A line the old matcher
 only suggested becomes an open line holding that suggestion; a line whose entry was created
@@ -75,6 +75,7 @@ def upgrade() -> None:
     op.add_column("bank_statement_lines", sa.Column("suggestion", sa.JSON, nullable=True))
     op.add_column("bank_statement_lines", sa.Column("matched_je_ids", sa.JSON, nullable=False, server_default="[]"))
     op.add_column("bank_statement_lines", sa.Column("client_query", sa.JSON, nullable=True))
+    op.add_column("bank_statement_lines", sa.Column("fitid", sa.String(128), nullable=True))
     _backfill_lines(bind)
     op.alter_column("bank_statement_lines", "bank_account_id", nullable=False)
     op.alter_column("bank_statement_lines", "fingerprint", nullable=False)
@@ -143,6 +144,6 @@ def downgrade() -> None:
     op.drop_index("uq_stmt_line_fingerprint", table_name="bank_statement_lines")
     op.add_column("bank_statement_lines", sa.Column("matched_je_id", sa.String(128), nullable=True))
     _restore_lines(bind)
-    for col in ("client_query", "matched_je_ids", "suggestion", "counterparty_account", "counterparty_key",
+    for col in ("fitid", "client_query", "matched_je_ids", "suggestion", "counterparty_account", "counterparty_key",
                 "fingerprint", "bank_account_id"):
         op.drop_column("bank_statement_lines", col)

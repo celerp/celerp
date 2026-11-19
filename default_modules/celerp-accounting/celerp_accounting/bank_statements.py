@@ -190,17 +190,19 @@ async def _statement_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAc
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars())
 
 
-async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None) -> tuple[dict, dict]:
-    """What a new statement is checked against: the fingerprints of the bank's lines
-    (``{fingerprint: "Statement <date>"}``) and, per (date, amount), how many of the bank's
-    posted entries no line holds yet (a line on them is probably already in the books)."""
+async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None) -> tuple[list, dict]:
+    """What a new statement is checked against: the bank's lines (as ``review_statement``
+    returns them, each with its statement's date) and, per (date, amount), how many of the
+    bank's posted entries no line holds yet (a line on them is probably already in the books)."""
     if bank is None:
-        return {}, {}
+        return [], {}
     from celerp_accounting.routes import _je_entries_for_account, _opening_je_id
     lines = await _statement_lines(db, company_id, bank)
     dates = {s.id: s.statement_date for s in (await db.execute(select(ReconciliationSession).where(
         ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id))).scalars()}
-    existing = {l.fingerprint: t("acct.recon_duplicate_of", date=dates.get(l.reconciliation_id, "")) for l in lines}
+    known = [{"fingerprint": l.fingerprint, "line_date": l.line_date, "description": l.description,
+              "amount": l.amount, "raw_balance": l.raw_balance, "reference": l.reference, "fitid": l.fitid,
+              "statement": dates.get(l.reconciliation_id, "")} for l in lines]
     held = {j for l in lines for j in (l.matched_je_ids or [])} | {_opening_je_id(bank.id)}
     counts: dict = {}
     for e in await _je_entries_for_account(db, company_id, bank):
@@ -208,7 +210,7 @@ async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | No
             continue
         bucket = (str(e["ts"])[:10], _money_text(e["amount"], bank.currency))
         counts[bucket] = counts.get(bucket, 0) + 1
-    return existing, counts
+    return known, counts
 
 
 def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None) -> bytes:
@@ -321,11 +323,11 @@ async def _read_job(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uu
     return out
 
 
-def _review(st: dict, bank: BankAccount | None, base: str, existing: dict, held: dict) -> dict:
+def _review(st: dict, bank: BankAccount | None, base: str, known: list, held: dict) -> dict:
     from celerp_accounting.statement_reader import review_statement
     currency = bank.currency if bank is not None else (st["header"].get("currency") or base)
     return review_statement(st["header"], st["lines"], bank_currency=currency,
-                            existing=existing, held_counts=held)
+                            known=known, held_counts=held)
 
 
 async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uuid.UUID,
@@ -339,13 +341,13 @@ async def _preview(db: AsyncSession, company_id: uuid.UUID, user_id, job_id: uui
     if given is not None and len(given) != len(read["statements"]):
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_import_statement_count"))
     base = await _base_currency(db, company_id)
-    existing, held = await _known(db, company_id, bank)
+    known, held = await _known(db, company_id, bank)
     statements = []
     for i, st in enumerate(read["statements"]):
         edit = (given or [{}] * len(read["statements"]))[i]
         found = {"header": {**st["header"], **(edit.get("header") or {})},
                  "lines": st["lines"] if edit.get("lines") is None else edit["lines"]}
-        statements.append({"file_id": st["file_id"], **_review(found, bank, base, existing, held)})
+        statements.append({"file_id": st["file_id"], **_review(found, bank, base, known, held)})
     out = {"job_id": str(job_id), "bank_id": None if bank is None else str(bank.id), "statements": statements,
            **{k: read[k] for k in ("receipts", "failed_steps", "needs_mapping", "layout_saved", "column_map", "headers")}}
     if bank is None:
@@ -519,10 +521,10 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     base = await _base_currency(db, company_id)
     out = []
     for given, found in zip(payload.statements, read["statements"]):
-        existing, held = await _known(db, company_id, bank)
+        known, held = await _known(db, company_id, bank)
         edit = given.edit()
         lines = edit["lines"] if edit["lines"] is not None else found["lines"]
-        reviewed = _review({"header": {**found["header"], **edit["header"]}, "lines": lines}, bank, base, existing, held)
+        reviewed = _review({"header": {**found["header"], **edit["header"]}, "lines": lines}, bank, base, known, held)
         if reviewed["blocking"]:
             refusals = []
             for block in reviewed["blocking"]:
@@ -551,7 +553,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
             db.add(BankStatementLine(
                 id=uuid.uuid4(), company_id=company_id, reconciliation_id=recon.id, bank_account_id=bank.id,
                 fingerprint=line["fingerprint"], line_date=line["line_date"], description=line.get("description") or "",
-                amount=to_decimal(line["amount"]), reference=line.get("reference"),
+                amount=to_decimal(line["amount"]), reference=line.get("reference"), fitid=line["fitid"],
                 raw_balance=None if line.get("raw_balance") is None else to_decimal(line["raw_balance"]),
                 counterparty_key=line.get("counterparty_key"), counterparty_account=line.get("counterparty_account"),
                 status="unmatched", matched_je_ids=[], raw_csv_row=dict(line.get("raw_csv_row") or {})))
@@ -571,7 +573,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
 def _line_dict(line: BankStatementLine, currency: str) -> dict:
     return {"id": str(line.id), "statement_id": str(line.reconciliation_id), "line_date": line.line_date,
             "description": line.description, "amount": _money_text(line.amount, currency), "status": line.status,
-            "reference": line.reference, "counterparty_key": line.counterparty_key,
+            "reference": line.reference, "fitid": line.fitid, "counterparty_key": line.counterparty_key,
             "counterparty_account": line.counterparty_account,
             "raw_balance": None if line.raw_balance is None else _money_text(line.raw_balance, currency),
             "matched_je_ids": list(line.matched_je_ids or []), "suggestion": line.suggestion,

@@ -157,13 +157,13 @@ async def test_a_statement_printed_with_reversed_signs_reads_to_the_same_line_id
     header, bank_lines = _bank_statement(rng)
     card_lines = [{**l, "amount": str(-Decimal(l["amount"]))} for l in bank_lines]
     plain = review_statement(header, bank_lines, bank_currency="USD")
-    existing = {l["fingerprint"]: "Statement 2025-12-31" for l in plain["lines"] if rng.random() < 0.4}
+    known = [{**l, "statement": "2025-12-31"} for l in plain["lines"] if rng.random() < 0.4]
     held = {}
     for line in rng.sample(plain["lines"], rng.randint(0, len(plain["lines"]))):
         bucket = (line["line_date"], line["amount"])
         held[bucket] = held.get(bucket, 0) + 1
-    bank = review_statement(header, bank_lines, bank_currency="USD", existing=existing, held_counts=held)
-    card = review_statement(header, card_lines, bank_currency="USD", existing=existing, held_counts=held)
+    bank = review_statement(header, bank_lines, bank_currency="USD", known=known, held_counts=held)
+    card = review_statement(header, card_lines, bank_currency="USD", known=known, held_counts=held)
     assert (bank["flipped"], bank["blocking"], card["flipped"], card["blocking"]) == (False, [], True, [])
-    fields = ("amount", "fingerprint", "counterparty_key", "duplicate", "probable", "ticked")
+    fields = ("amount", "fingerprint", "counterparty_key", "duplicate", "repeats", "probable", "ticked")
     assert [[l[f] for f in fields] for l in card["lines"]] == [[l[f] for f in fields] for l in bank["lines"]]

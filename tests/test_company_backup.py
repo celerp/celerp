@@ -652,7 +652,7 @@ def _bk_in_older_shape(data: bytes) -> bytes:
     default tax."""
     parts, m = members(data), manifest(data)
     added = {"bank_statement_lines": ["bank_account_id", "fingerprint", "counterparty_key", "counterparty_account",
-                                      "suggestion", "matched_je_ids", "client_query"],
+                                      "suggestion", "matched_je_ids", "client_query", "fitid"],
              "reconciliation_sessions": ["period_start", "opening_balance", "source_file_id"],
              "reconciliation_rules": ["match_amount", "contact_id", "target_bank_id", "origin"],
              "bank_accounts": ["statement_column_map"]}
