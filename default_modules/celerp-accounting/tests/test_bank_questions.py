@@ -115,6 +115,21 @@ async def test_client_answers_through_the_questions_page(client, session, monkey
     assert [q["line_id"] for q in got] == [lid] and got[0]["answered"], got
 
 
+async def test_a_receipt_sent_with_a_generic_type_is_kept_by_its_name(client, session, monkeypatch):
+    """A receipt's browser type is often generic (``application/octet-stream``); the
+    questions page keeps it by its filename, like the bank drop and the AI chat
+    (celerp/ai/files.py:upload_content_type), instead of refusing it as unsupported."""
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    lid = lines["WITHDRAWAL"]["id"]
+    await _ask(client, co, bk, [lid])
+    async with B.browser(client_h) as ui:
+        r = await ui.post(f"/accounting/questions/{lid}/answer", data={
+            "answer": "paid the plumber", "idempotency_key": B.key()},
+            files=[("files", ("slip.jpg", b"\xff\xd8\xff", "application/octet-stream"))])
+    assert r.status_code == 200 and t("bank.answer_saved") in r.text, r.text[:500]
+
+
 async def test_answer_after_post_is_refused(client, session, monkeypatch):
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)

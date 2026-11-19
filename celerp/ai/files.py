@@ -81,6 +81,8 @@ async def keep_uploads(session, company_id: uuid.UUID, user_id: uuid.UUID, files
         file.file.seek(0)
         if size > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=400, detail=t("ai.err_file_too_large", name=file.filename))
+        if size == 0:
+            raise HTTPException(status_code=400, detail=t("auth.file_empty"))
         if file.content_type not in AGENT_UPLOAD_TYPES:
             raise HTTPException(status_code=400, detail=t("ai.err_file_type_named", name=file.filename))
     if not await hold_company(session, company_id):

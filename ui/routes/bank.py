@@ -528,8 +528,10 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return _login()
+        from celerp.ai.files import upload_content_type
+
         form = await request.form()
-        files = [(f.filename, await f.read(), f.content_type or "application/octet-stream")
+        files = [(f.filename, await f.read(), upload_content_type(f.filename, f.content_type))
                  for f in form.getlist("files") if getattr(f, "filename", "")]
         try:
             ids = (await api.bank_files(token, files))["file_ids"] if files else []

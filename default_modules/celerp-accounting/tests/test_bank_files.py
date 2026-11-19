@@ -60,6 +60,12 @@ async def test_files_refused_without_bank_permission(client, session):
     assert r.status_code == 403, r.text
 
 
+async def test_a_0_byte_statement_file_is_refused(client):
+    co = await B.company(client)
+    r = await _send(client, co["h"], ("jan.csv", b"", "text/csv"))
+    assert r.status_code == 400 and "File is empty" in r.text
+
+
 async def test_files_refused_by_type_size_and_count(client, monkeypatch):
     co = await B.company(client)
     r = await _send(client, co["h"], ("run.exe", b"MZ", "application/octet-stream"))
