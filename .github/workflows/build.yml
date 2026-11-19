@@ -1277,21 +1277,35 @@ jobs:
       - name: Every account name passed
         run: test "${{ needs.win-names.result }}" = success
 
-  # ── Attach the OpenAPI schema and importer list as release assets (tag builds only)
+  # ── Attach the OpenAPI schema, importer list and help bundle as release assets (tag builds only)
   # The website renders a static API reference from openapi.json and lists the
   # sources Celerp imports from from importers.json, fetching both from the
-  # latest release. Generated without booting a server: app.openapi() builds the
-  # same document /openapi.json serves when the schema is exposed, and the
-  # importer list is read from the importer registry. Uploaded to the still-draft
-  # release before publish-release flips it live, so every published release
-  # carries them alongside the platform binaries; a failure here leaves the
-  # release a draft, like any platform build.
+  # latest release; the help center publishes the guides in help.json. Generated
+  # without booting a server: app.openapi() builds the same document
+  # /openapi.json serves when the schema is exposed, the importer list is read
+  # from the importer registry, and the help bundle from the shipped guides, with
+  # each guide's date from git (so the full history is fetched) and checked by
+  # the help center's own bundle check from its checkout. Uploaded to the
+  # still-draft release before publish-release flips it live, so every published
+  # release carries them alongside the platform binaries; a failure here,
+  # including a site checkout the token cannot read, leaves the release a draft,
+  # like any platform build.
   openapi-asset:
     needs: [build]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    env:
+      CELERP_SITE: ${{ github.workspace }}/site
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # each guide's date is its last commit
+      - name: Check out the help center for its bundle check
+        uses: actions/checkout@v7
+        with:
+          repository: ngsevers/celerp-cloud
+          path: site
+          token: ${{ secrets.SITE_READ_TOKEN }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -1304,7 +1318,9 @@ jobs:
         run: python scripts/export_openapi.py --out openapi.json
       - name: Export the importer list
         run: python scripts/export_importers.py --out importers.json
-      - name: Verify the release version of both assets
+      - name: Export the help bundle
+        run: python scripts/export_help.py --out help.json
+      - name: Verify the release version of the assets
         shell: bash
         run: |
           set -euo pipefail
@@ -1317,14 +1333,17 @@ jobs:
               schema = json.load(f)
           with open("importers.json", encoding="utf-8") as f:
               importers = json.load(f)
+          with open("help.json", encoding="utf-8") as f:
+              help_bundle = json.load(f)
 
-          for name, actual in (("OpenAPI", schema["info"]["version"]), ("Importers", importers["version"])):
+          for name, actual in (("OpenAPI", schema["info"]["version"]), ("Importers", importers["version"]),
+                               ("Help", help_bundle["version"])):
               if actual != expected:
                   raise SystemExit(f"{name} version mismatch: tag={expected!r}, asset={actual!r}")
           if not importers["importers"]:
               raise SystemExit("Importer list is empty")
           PY
-      - name: Attach openapi.json and importers.json to the draft release
+      - name: Attach the release assets to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1338,10 +1357,10 @@ jobs:
             "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
             | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else r['id'])" 2>/dev/null || true)
           if [ -z "$RELEASE_ID" ]; then
-            echo "ERROR: no release found for tag $TAG to attach openapi.json and importers.json" >&2
+            echo "ERROR: no release found for tag $TAG to attach openapi.json, importers.json and help.json" >&2
             exit 1
           fi
-          for ASSET in openapi.json importers.json; do
+          for ASSET in openapi.json importers.json help.json; do
             EXISTING_ASSET_ID=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
               "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?per_page=100" \
               | python3 -c "import sys,json; a=next((a for a in json.load(sys.stdin) if a.get('name')=='$ASSET'), None); print('' if a is None else a['id'])")

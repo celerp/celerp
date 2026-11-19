@@ -352,8 +352,8 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
 
 
 def test_build_workflow_exports_versioned_assets_before_publish():
-    """Tag releases must publish one rerunnable, version-matched OpenAPI schema and
-    importer list."""
+    """Tag releases must publish one rerunnable, version-matched OpenAPI schema,
+    importer list and help bundle (the help bundle's own steps: test_export_help.py)."""
     workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
 
     openapi_idx = workflow.index("  openapi-asset:")
@@ -367,7 +367,7 @@ def test_build_workflow_exports_versioned_assets_before_publish():
     assert 'schema["info"]["version"]' in openapi_block
     assert 'importers["version"]' in openapi_block
     assert 'expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")' in openapi_block
-    assert "for ASSET in openapi.json importers.json; do" in openapi_block
+    assert "for ASSET in openapi.json importers.json help.json; do" in openapi_block
     assert "EXISTING_ASSET_ID=" in openapi_block
     assert "/releases/assets/$EXISTING_ASSET_ID" in openapi_block
     assert "assets?name=$ASSET" in openapi_block
