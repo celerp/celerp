@@ -902,11 +902,18 @@ def test_user_facing_fields_stay_visible_to_the_model():
     assert problems == []
 
 
-def test_every_change_tool_is_confirm_first():
-    """Every change the assistant makes waits for the user's confirmation. Only a preview
-    that writes nothing opts out: on its own route, or as the review read of a change
-    whose route takes a preview flag."""
-    app = real_agent_app()
+# Changes that may run without a card because they only read: each answers a check of the
+# rows it is given and writes nothing. Anything else that is not a GET waits for the user.
+_READS_WITHOUT_CARD = {
+    ("POST", "/items/import/preview"): "maps an import file's columns and reports row errors; saves nothing",
+    ("POST", "/items/import/rows/preview"): "classifies mapped import rows as new, update or error; saves nothing",
+    ("POST", "/items/merge/preview"): "shows what a merge of the named items would produce; merges nothing",
+    ("POST", "/accounting/accounts/import/preview"): "checks chart of accounts rows; saves nothing",
+    ("POST", "/accounting/reconciliation/statement-preview/{job_id}"): "re-checks a reading job's statements with edits; imports nothing",
+}
+
+
+def _unconfirmed_changes(app) -> list[str]:
     routes = _route_index(app)
     unconfirmed = []
     for name, cap in sorted(ai_tools.compile_agent_capabilities(app, {}).items()):
@@ -914,10 +921,31 @@ def test_every_change_tool_is_confirm_first():
             extra = routes[(cap["method"], cap["path"])].openapi_extra or {}
             if cap["preview_flag"] and cap["preview_flag"] == (extra.get("x-celerp-agent-preview") or {}).get("flag"):
                 continue  # the review of a change: execute always sends the route's preview flag
+            if (cap["method"], cap["path"]) not in _READS_WITHOUT_CARD:
+                unconfirmed.append(f"{cap['method']} {cap['path']}")
+    return unconfirmed
 
-            if extra.get("x-celerp-agent-confirm") is not False or cap["method"] == "DELETE":
-                unconfirmed.append(name)
-    assert unconfirmed == []
+
+def test_every_change_tool_is_confirm_first():
+    """Every change the assistant makes waits for the user's confirmation. Only a preview
+    that writes nothing opts out: on its own route listed with the reason it only reads,
+    or as the review read of a change whose route takes a preview flag."""
+    app = real_agent_app()
+    assert _unconfirmed_changes(app) == []
+    routes = _route_index(app)
+    assert [key for key in _READS_WITHOUT_CARD
+            if (key not in routes or (routes[key].openapi_extra or {}).get("x-celerp-agent-confirm") is not False)] == []
+
+
+def test_the_confirm_guard_finds_a_writing_route_marked_no_confirm():
+    app = FastAPI()
+
+    @app.post("/things/{thing_id}/sync", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False})
+    async def sync_thing(thing_id: str) -> dict:
+        return {"ok": True}
+
+    sync_thing.__module__ = "celerp.routers.agent_test"
+    assert _unconfirmed_changes(app) == ["POST /things/{thing_id}/sync"]
 
 
 def test_owner_only_tool_is_hidden_from_a_member():

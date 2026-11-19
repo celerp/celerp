@@ -280,7 +280,7 @@ async def trigger_sync(
     )
 
 
-@router.post("/{connector_name}/sync-plan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False}, summary="Show what syncing a connected store or app now would bring in and send out.")
+@router.post("/{connector_name}/sync-plan", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"}, summary="Start a full sync of a connected store or app in the background, bringing records in and sending them out in every direction it syncs.")
 async def trigger_sync_plan(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],

@@ -8620,6 +8620,7 @@
   "tool.set_ai_memory_kv_ai_memory_kv_post": "アシスタントがこの会社用に保存する名前付きの情報を設定します。",
   "tool.rename_conv_ai_conversations__conversation_id__patch": "アシスタントとの会話の名前を変更します。",
   "tool.trigger_sync_connectors__connector_name__sync_post": "接続済みストアまたはアプリを今すぐ同期します。",
+  "tool.trigger_sync_plan_connectors__connector_name__sync_plan_post": "接続済みストアまたはアプリの完全な同期をバックグラウンドで開始し、同期する各方向でレコードを取り込み、送信します。",
   "tool.revoke_credentials_connectors__connector_name__credentials_delete": "接続済みストアまたはアプリとこの会社の連携を解除します。",
   "tool.reset_unassigned_connector_connectors__connector_name__unassigned_delete": "会社ごとに接続を分ける前に連携されたストアまたはアプリを切断します。",
   "tool.mark_order_reconciled_connectors_woocommerce_orders__order_id__reconciled_post": "変更されたWooCommerce注文を手動で照合済みに設定し、インポートによる変更を防ぎます。",

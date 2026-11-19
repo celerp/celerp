@@ -8620,6 +8620,7 @@
   "tool.set_ai_memory_kv_ai_memory_kv_post": "Đặt một thông tin có tên để trợ lý lưu cho công ty này.",
   "tool.rename_conv_ai_conversations__conversation_id__patch": "Đổi tên cuộc trò chuyện với trợ lý.",
   "tool.trigger_sync_connectors__connector_name__sync_post": "Đồng bộ cửa hàng hoặc ứng dụng đã kết nối ngay.",
+  "tool.trigger_sync_plan_connectors__connector_name__sync_plan_post": "Bắt đầu đồng bộ toàn bộ một cửa hàng hoặc ứng dụng đã kết nối ở chế độ nền, nhận và gửi bản ghi theo mọi chiều được đồng bộ.",
   "tool.revoke_credentials_connectors__connector_name__credentials_delete": "Ngắt kết nối một cửa hàng hoặc ứng dụng khỏi công ty này.",
   "tool.reset_unassigned_connector_connectors__connector_name__unassigned_delete": "Ngắt kết nối cửa hàng hoặc ứng dụng được liên kết từ trước khi mỗi công ty có kết nối riêng.",
   "tool.mark_order_reconciled_connectors_woocommerce_orders__order_id__reconciled_post": "Đánh dấu đơn hàng WooCommerce đã thay đổi là được đối chiếu thủ công để quá trình nhập không sửa đơn hàng đó.",

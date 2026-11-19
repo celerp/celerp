@@ -8620,6 +8620,7 @@
   "tool.set_ai_memory_kv_ai_memory_kv_post": "حدّد حقيقة مسماة ليحتفظ بها المساعد لهذه الشركة.",
   "tool.rename_conv_ai_conversations__conversation_id__patch": "أعد تسمية محادثة مع المساعد.",
   "tool.trigger_sync_connectors__connector_name__sync_post": "زامن الآن متجرًا أو تطبيقًا متصلًا.",
+  "tool.trigger_sync_plan_connectors__connector_name__sync_plan_post": "بدء مزامنة كاملة لمتجر أو تطبيق متصل في الخلفية، تجلب السجلات وترسلها في كل اتجاه تتم مزامنته.",
   "tool.revoke_credentials_connectors__connector_name__credentials_delete": "افصل متجرًا أو تطبيقًا متصلًا عن هذه الشركة.",
   "tool.reset_unassigned_connector_connectors__connector_name__unassigned_delete": "افصل متجرًا أو تطبيقًا كان مرتبطًا قبل اعتماد اتصال مستقل لكل شركة.",
   "tool.mark_order_reconciled_connectors_woocommerce_orders__order_id__reconciled_post": "ضع علامة «تمت التسوية يدويًا» على طلب WooCommerce تغيّر، حتى لا يعيد الاستيراد معالجته.",

@@ -8620,6 +8620,7 @@
   "tool.set_ai_memory_kv_ai_memory_kv_post": "Defina uma informação nomeada para o assistente guardar para esta empresa.",
   "tool.rename_conv_ai_conversations__conversation_id__patch": "Renomeie uma conversa com o assistente.",
   "tool.trigger_sync_connectors__connector_name__sync_post": "Sincronize agora uma loja ou aplicativo conectado.",
+  "tool.trigger_sync_plan_connectors__connector_name__sync_plan_post": "Iniciar em segundo plano uma sincronização completa de uma loja ou aplicativo conectado, trazendo e enviando registros em cada direção sincronizada.",
   "tool.revoke_credentials_connectors__connector_name__credentials_delete": "Desconecte uma loja ou aplicativo desta empresa.",
   "tool.reset_unassigned_connector_connectors__connector_name__unassigned_delete": "Desconecte uma loja ou aplicativo conectado antes de cada empresa ter suas próprias conexões.",
   "tool.mark_order_reconciled_connectors_woocommerce_orders__order_id__reconciled_post": "Marque um pedido alterado do WooCommerce como conciliado manualmente para que a importação não o modifique.",

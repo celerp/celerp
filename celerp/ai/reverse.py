@@ -203,6 +203,7 @@ WAY_BACK: dict[tuple[str, str], str] = {
     ('POST', '/connectors/{connector_name}/outbound/retry'): 'reason:sync',
     ('POST', '/connectors/{connector_name}/products/{record_id}/resolve'): 'tool:POST /connectors/{connector_name}/products/{record_id}/resolve',
     ('POST', '/connectors/{connector_name}/sync'): 'reason:sync',
+    ('POST', '/connectors/{connector_name}/sync-plan'): 'reason:sync',
     ('DELETE', '/connectors/{connector_name}/unassigned'): 'reason:is_undo',
     ('POST', '/crm/contacts'): 'tool:POST /crm/contacts/bulk/delete',
     # Only contacts no document, list or deal names can be deleted; the card lists each contact's details, and re-creating one from them is the way back.

@@ -8620,6 +8620,7 @@
   "tool.set_ai_memory_kv_ai_memory_kv_post": "ረዳቱ ለዚህ ኩባንያ እንዲያስቀምጠው ስም የተሰጠውን እውነታ ያቀናብሩ።",
   "tool.rename_conv_ai_conversations__conversation_id__patch": "የረዳቱን ውይይት ስም ይቀይሩ።",
   "tool.trigger_sync_connectors__connector_name__sync_post": "የተገናኘ መደብርን ወይም መተግበሪያን አሁኑኑ ያመሳስሉ።",
+  "tool.trigger_sync_plan_connectors__connector_name__sync_plan_post": "የተገናኘ መደብር ወይም መተግበሪያ ሙሉ ማመሳሰልን በጀርባ ይጀምሩ፣ በሚመሳሰልበት በእያንዳንዱ አቅጣጫ መዝገቦችን ያመጣል እና ይልካል።",
   "tool.revoke_credentials_connectors__connector_name__credentials_delete": "የተገናኘ መደብርን ወይም መተግበሪያን ከዚህ ኩባንያ ያላቅቁ።",
   "tool.reset_unassigned_connector_connectors__connector_name__unassigned_delete": "ለእያንዳንዱ ኩባንያ የተለየ ግንኙነት ከመኖሩ በፊት የተገናኘ መደብርን ወይም መተግበሪያን ያላቅቁ።",
   "tool.mark_order_reconciled_connectors_woocommerce_orders__order_id__reconciled_post": "የተቀየረ የWooCommerce ትዕዛዝ በእጅ እንደታረቀ ምልክት ያድርጉበት፤ ከዚያ በኋላ አስመጪው አይነካውም።",
