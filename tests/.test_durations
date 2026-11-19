@@ -31706,5 +31706,19 @@
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_near_twins_are_one_transaction_only_by_a_number_carried_once_in_either_order[3]": 2.5132410950318445,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_near_twins_are_one_transaction_only_by_a_number_carried_once_in_either_order[4]": 2.4938066550239455,
     "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_near_twins_are_one_transaction_only_by_a_number_carried_once_in_either_order[5]": 2.643142879009247,
-    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_ladder_and_a_post_identify_a_line_s_entry_the_same_way": 0.003492837044177577
+    "default_modules/celerp-accounting/tests/test_twin_evidence.py::test_the_ladder_and_a_post_identify_a_line_s_entry_the_same_way": 0.003492837044177577,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_replayed_ask_never_goes_to_an_address_the_member_no_longer_has": 1.022660056973109,
+    "tests/test_donors.py::test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer_has": 0.6730537849944085,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[0]": 0.7505671460239682,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[10]": 0.4011352699890267,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[11]": 0.5160940919886343,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[1]": 0.5533184820087627,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[2]": 0.5071884359640535,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[3]": 0.598555242002476,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[4]": 0.506541163980728,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[5]": 0.5473043210513424,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[6]": 0.34011128000565805,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[7]": 0.27973861098871566,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[8]": 0.49452299100812525,
+    "tests/test_exactly_once_oracle_pg.py::test_an_ask_emails_only_members_still_answering_whatever_the_interleaving[9]": 0.5507905450067483
 }

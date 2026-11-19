@@ -41,13 +41,14 @@ def _factory(engine):
     return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def _owner(factory) -> tuple[uuid.UUID, uuid.UUID]:
+async def _owner(factory, settings: dict | None = None) -> tuple[uuid.UUID, uuid.UUID]:
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
         s.add(User(id=user_id, email=f"u-{user_id.hex[:8]}@example.test", name="Owner", auth_hash="x",
                    is_active=True))
         await s.flush()
-        s.add(Company(id=company_id, name="OracleCo", slug=f"oracle-{company_id.hex[:8]}", settings={}))
+        s.add(Company(id=company_id, name="OracleCo", slug=f"oracle-{company_id.hex[:8]}",
+                          settings=settings or {}))
         await s.commit()
     return company_id, user_id
 
@@ -170,3 +171,159 @@ async def test_an_ai_action_is_claimed_once_whatever_the_interleaving(committed_
     assert claimed[0][2] == record, (seed, plan, runs, retry)
     assert all(r[2] is None for r in [*runs, retry] if r[0] != 0), (seed, plan, runs, retry)
     assert not any(isinstance(r, dict) and r.get("continued_job_id") for r in records)
+
+
+# How the transport takes one Ask email: delivered and answered, refused, delivered with the
+# answer lost (unconfirmed), or delivered and the process killed before the outcome is kept.
+TRANSPORT = ("accept", "reject", "lost", "killed")
+
+
+class _Killed(BaseException):
+    """The process stopping after the transport took the email, before anything is settled."""
+
+
+async def _ask_members(factory, company_id, count: int) -> dict[str, dict]:
+    from celerp.models.accounting import UserCompany
+
+    members = {}
+    async with factory() as s:
+        for i in range(count):
+            member = uuid.uuid4()
+            members[str(member)] = {"name": f"Member {i}", "email": f"m{i}-{member.hex[:8]}@example.test"}
+            s.add(User(id=member, auth_hash="x", is_active=True, **members[str(member)]))
+        await s.flush()
+        for member in members:
+            s.add(UserCompany(user_id=uuid.UUID(member), company_id=company_id, role="viewer", is_active=True))
+        await s.commit()
+    return members
+
+
+async def _change_member(factory, company_id, member: str, how: str) -> str | None:
+    """Revoke a member (membership ended, a company write) or move their address (the user's
+    own row); returns the new address."""
+    from celerp.models.accounting import UserCompany
+    from celerp.services.company_lock import lock_company
+
+    async with factory() as s:
+        if how == "revoke":
+            await lock_company(s, company_id)
+            row = (await s.execute(select(UserCompany).where(
+                UserCompany.company_id == company_id, UserCompany.user_id == uuid.UUID(member)))).scalar_one()
+            row.is_active = False
+            address = None
+        else:
+            user = await s.get(User, uuid.UUID(member))
+            user.email = address = f"moved-{uuid.uuid4().hex[:8]}@example.test"
+        await s.commit()
+    return address
+
+
+@pytest.mark.parametrize("seed", range(12))
+async def test_an_ask_emails_only_members_still_answering_whatever_the_interleaving(committed_engine, seed,
+                                                                                      monkeypatch):
+    """Ask emails under one claimed key, in rounds of 1-3 runs at once, each email taken by the
+    transport at random (accept, reject, answer lost, process killed after acceptance); between
+    rounds a member is revoked or moves address at random. Reference model: a send in a round
+    goes only to a member still answering at that round, at the address they have then; over
+    SMTP no member is ever delivered twice; a final run answers each delivered member as sent
+    (or unconfirmed when its answer never came back), answers unconfirmed and never resends an
+    attempt its killed run left pending, emails every other member still answering, and names
+    each revoked member who was never sent anything."""
+    from celerp.services import email as email_service
+    from celerp_accounting.bank_statements import _claimed
+    from celerp_accounting.statement_lines import email_ask
+    from ui.i18n import t
+
+    rng = random.Random(seed)
+    factory = _factory(committed_engine)
+    company_id, user_id = await _owner(factory, {"role_grants": {"answer_bank_questions": ["viewer"]}})
+    members = await _ask_members(factory, company_id, 3)
+    allowed = {m: v["email"] for m, v in members.items()}  # who answers now, at which address
+    by_address = {v["email"]: m for m, v in members.items()}
+    delivered: dict[str, list[str]] = {m: [] for m in members}  # how each delivery was answered
+    modes: list[str] = []
+    refused: set[str] = set()  # members an email was refused for: their next send is a new one
+    misdirected: list[tuple] = []  # sends to a member no longer answering, or to an address they left
+    monkeypatch.setattr(email_service, "SEND_TIMEOUT", timedelta(0))  # a cut-off send is unconfirmed at once
+
+    async def transport(to, subject, body_html, body_text="", **kw):
+        from celerp.services.company_lock import refuse_held_transaction
+        refuse_held_transaction("an email is sent")
+        member = by_address[to]
+        if allowed.get(member) != to:  # kept, not raised: transmit takes a raise as an unknown outcome
+            misdirected.append((member, to, dict(allowed)))
+        mode = modes.pop(0) if modes else "accept"
+        if mode == "reject":
+            refused.add(member)
+        else:
+            delivered[member].append(mode)
+        if mode == "killed":
+            raise _Killed
+        if mode == "lost":
+            raise ConnectionError("answer lost")
+        return email_service.EmailResult(mode == "accept", "sent" if mode == "accept" else "refused")
+    monkeypatch.setattr(email_service, "send_email", transport)
+    cut_off: set[str] = set()  # members whose attempt was pending when its run was killed
+    transmit = email_service.transmit
+
+    async def tracked(attempts):
+        try:
+            return await transmit(attempts)
+        except _Killed:
+            cut_off.update(by_address[a.message["to"]] for a in attempts)
+            raise
+    monkeypatch.setattr(email_service, "transmit", tracked)
+
+    key = f"bank:{uuid.uuid4()}"
+    plan = {"asked": [], "note": "a", "members": list(members), "body_key": "acct.recon_questions_body",
+            "params": {"count": 1, "n": 0}}
+    async with factory() as s:
+        await _claimed(s, company_id, user_id, key, {"note": "a"}, "ask", None, plan)
+        await s.commit()
+
+    async def run():
+        async with factory() as s:
+            try:
+                return await email_ask(s, company_id=company_id, key=key)
+            except _Killed:
+                return "killed"
+            except HTTPException as exc:
+                return exc.detail["message_key"]
+
+    for _ in range(rng.randint(3, 6)):
+        if rng.random() < 0.7 and allowed:
+            retried = sorted(refused & allowed.keys())
+            member = rng.choice(retried if retried and rng.random() < 0.5 else sorted(allowed))
+            how = rng.choice(("revoke", "move"))
+            address = await _change_member(factory, company_id, member, how)
+            if how == "revoke":
+                del allowed[member]
+            else:
+                allowed[member] = address
+                by_address[address] = member
+        modes[:] = [rng.choice(TRANSPORT) for _ in range(9)]
+        await asyncio.gather(*(run() for _ in range(rng.randint(1, 3))))
+    modes.clear()
+    final = await run()
+
+    assert misdirected == [], (seed, misdirected)
+    assert all(len(d) <= 1 for d in delivered.values()), (seed, delivered)
+    if not any(delivered.values()) and not allowed:
+        assert final == "reconciliation.no_client_user", (seed, final)
+        return
+    states = {r["name"]: r["state"] for r in final["email"]["recipients"]}
+    for member in members:
+        state, ways = states.get(members[member]["name"]), delivered[member]
+        if ways:
+            # sent only when its own answer came back and was kept (a later email of its run may
+            # have been killed before the run settled)
+            sent = ways == ["accept"] and member not in cut_off
+            assert state == ("sent" if sent else "unconfirmed"), (seed, delivered, cut_off, final)
+        elif member in cut_off:
+            assert state == "unconfirmed", (seed, member, cut_off, final)  # it may have gone: never resent
+        else:
+            assert member not in allowed, (seed, member, delivered, allowed)
+    left_out = sorted(members[m]["name"] for m in members
+                      if m not in allowed and not delivered[m] and m not in cut_off)
+    sentence = str(t("acct.recon_asked_left_out", names=", ".join(left_out)))
+    assert (sentence in final["outcome"]) == bool(left_out), (seed, left_out, final)
