@@ -270,3 +270,117 @@ async def test_cash_basis_code_needs_cutoff_and_category(client):
     preview = await _preview(client, {"headers": h})
     _refused(await _confirm(client, {"headers": h}, preview["fingerprint"]), "IVA caja", status=409)
     assert await _list(client, h) == rows
+
+
+# ── S9: a date move across a rate version is noticed, never re-snapshotted silently ─────
+
+async def _patch_doc(client, h, doc_id: str, field: str, value):
+    from test_helpers import doc_version
+    return await client.patch(f"/docs/{doc_id}", headers=h, json={
+        "expected_version": await doc_version(client, h, doc_id), "fields_changed": {field: {"new": value}}})
+
+
+async def _doc(client, h, doc_id: str) -> dict:
+    return (await client.get(f"/docs/{doc_id}", headers=h)).json()
+
+
+async def test_version_boundary_notice_on_date_move(client):
+    from ui.routes.documents import _tax_version_notice
+
+    h = await _register(client)
+    [vat] = await _saved(client, h, [{**_code("VAT"), "versions": [
+        {"rate": 7.0, "valid_to": "2026-06-30"}, {"rate": 8.0, "valid_from": "2026-07-01"}]}])
+    draft = await _draft_invoice(client, h, vat["id"], "2026-06-15")
+    [before] = draft["line_items"][0]["taxes"]
+    assert before["rate"] == 7.0
+    assert _tax_version_notice(draft, [vat]) is None
+
+    r = await _patch_doc(client, h, draft["id"], "issue_date", "2026-07-15")
+    assert r.status_code == 200, r.text
+    moved = await _doc(client, h, draft["id"])
+    assert moved["line_items"][0]["taxes"] == [before]
+    notice = _tax_version_notice(moved, [vat])
+    assert notice is not None
+    from fasthtml.common import to_xml
+    text = to_xml(notice)
+    assert "Service" in text and "Use the rate in force" in text
+
+    lines = [{**moved["line_items"][0], "taxes": [{"code_id": vat["id"]}]}]
+    r = await _patch_doc(client, h, draft["id"], "line_items", lines)
+    assert r.status_code == 200, r.text
+    resnapped = await _doc(client, h, draft["id"])
+    [after] = resnapped["line_items"][0]["taxes"]
+    assert after["rate"] == 8.0 and after["version_from"] == "2026-07-01"
+    assert _tax_version_notice(resnapped, [vat]) is None
+
+
+# ── V37: the line tax snapshot is built by the server from the code ────────────────
+
+_FROM_CODE = "Tax details come from the tax code VAT; change the code, or its rate in Settings > Taxes"
+
+
+async def test_line_snapshot_fields_server_built(client):
+    h = await _register(client)
+    [vat] = await _saved(client, h, [_code("VAT", output_account="2120")])
+    draft = await _draft_invoice(client, h, vat["id"])
+    line = draft["line_items"][0]
+    [snap] = line["taxes"]
+    for field, value in (("rate", 9.0), ("category", "zero"), ("account", "2130"), ("inclusive", True),
+                         ("base", 1.0), ("amount", -1.0), ("name", "Other"), ("version_from", "2020-01-01")):
+        r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, field: value}]}])
+        _refused(r, _FROM_CODE)
+        assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap], field
+    r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [snap]}])
+    assert r.status_code == 200, r.text
+    assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap]
+    r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, "amount": 3.5}]}])
+    assert r.status_code == 200, r.text
+    assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"][0]["amount"] == 3.5
+
+    def _new(tax: dict) -> dict:
+        return {"doc_type": "invoice", "issue_date": "2026-10-01", "line_items": [
+            {"description": "Service", "quantity": 1, "unit_price": 100.0, "taxes": [tax]}]}
+    _refused(await client.post("/docs", headers=h, json=_new({"code_id": vat["id"], "rate": 9})), _FROM_CODE)
+    r = await client.post("/docs", headers=h, json=_new({"code_id": vat["id"], "name": "VAT", "rate": 7.0}))
+    assert r.status_code == 200, r.text
+
+
+async def test_line_snapshot_frozen_on_rename_retag(client):
+    h = await _register(client)
+    [vat] = await _saved(client, h, [_code("VAT", output_account="2120", component="VAT", report_tags=["box1"])])
+    draft = await _draft_invoice(client, h, vat["id"])
+    issued = await _draft_invoice(client, h, vat["id"])
+    assert (await client.post(f"/docs/{issued['id']}/finalize", headers=h)).status_code == 200
+    snaps = {d: (await _doc(client, h, d))["line_items"][0]["taxes"] for d in (draft["id"], issued["id"])}
+    assert snaps[draft["id"]][0]["report_tags"] == ["box1"] and snaps[draft["id"]][0]["account"] == "2120"
+
+    await _saved(client, h, [{**vat, "name": "Output VAT", "report_tags": ["box6"], "component": "GST",
+                             "output_account": "2130"}])
+    for doc_id, snap in snaps.items():
+        assert (await _doc(client, h, doc_id))["line_items"][0]["taxes"] == snap
+
+
+# ── P2.3: an item's own tax codes win on its line ────────────────────────────────
+
+async def test_item_tax_codes_line_default(client):
+    h = await _register(client)
+    vat, reduced = await _saved(client, h, [_code("VAT 7%", is_default=True), _code("Reduced 5%", 5.0)])
+    skus = {}
+    for key, codes in (("a", [reduced["id"]]), ("b", None)):
+        sku = f"S-{uuid.uuid4().hex[:6]}"
+        body = {"sku": sku, "name": f"Item {key}", "status": "available", "sell_by": "piece", "quantity": 5,
+                "retail_price": 20, "cost_price": 8, **({"tax_codes": codes} if codes else {})}
+        r = await client.post("/items", headers=h, json=body)
+        assert r.status_code == 200, r.text
+        skus[key] = sku
+    r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "issue_date": "2026-10-01",
+                                                    "line_items": []})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    for key in ("a", "b"):
+        r = await client.post(f"/docs/{doc_id}/scan", headers=h, json={"barcode": skus[key], "run_key": key})
+        assert r.status_code == 200 and r.json()["scanned"] == 1, r.text
+    lines = (await _doc(client, h, doc_id))["line_items"]
+    taxes = {line["sku"]: line["taxes"] for line in lines}
+    assert [(t["code_id"], t["rate"]) for t in taxes[skus["a"]]] == [(reduced["id"], 5.0)]
+    assert [(t["code_id"], t["rate"]) for t in taxes[skus["b"]]] == [(vat["id"], 7.0)]
