@@ -116,14 +116,25 @@ def _matches(lines: list[dict], ctx: LadderContext) -> dict:
     by_id = {e["je_id"]: e for e in ctx.entries}
     used = set()
     by_line = {l["id"]: l for l in lines}
+    # The entry a line's identifier proves is that line's match, whichever the matcher ranked first;
+    # an entry so proved is no other line's ranked match.
+    owned = {}
+    for line_id, _je, _c in found:
+        line = by_line[line_id]
+        near = twins(line["amount"], line["line_date"], ctx.entries)
+        pick = own_twin(line_id, line.get("reference"), near, ctx.references)
+        if pick is not None:
+            owned[line_id] = near[pick]["je_id"]
     for line_id, je_id, confidence in found:
-        e, line = by_id[je_id], by_line[line_id]
+        if line_id in owned:
+            je_id = owned[line_id]
+        elif je_id in owned.values():
+            continue
+        e = by_id[je_id]
         used.add(je_id)
         out[line_id] = {"kind": "match", "source": "match", "je_ids": [je_id], "confidence": confidence,
                         "reason": t("acct.recon_reason_match", date=str(e.get("date") or e.get("ts") or "")[:10])}
-        near = twins(line["amount"], line["line_date"], ctx.entries)
-        pick = own_twin(line_id, line.get("reference"), near, ctx.references)
-        if pick is not None and near[pick]["je_id"] == je_id:
+        if line_id in owned:
             out[line_id]["evidence"] = {"identifier": True}
     # One line paid by up to three entries of one counterparty (or three lines of one
     # counterparty for one entry), within a week: a low suggestion, never a match.

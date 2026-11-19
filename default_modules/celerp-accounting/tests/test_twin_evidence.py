@@ -750,3 +750,106 @@ async def test_a_payment_naming_the_one_bill_it_pays_starts_ticked(client):
     await _post_ticked(client, co, bk)
     assert await _statuses(client, co, bk) == ["posted"]
     assert (await client.get(f"/docs/{doc}", headers=co["h"])).json()["amount_outstanding"] == 0
+
+
+# ── Near-twin oracle: identity through the entry points, in either order ──
+
+def _near_twin(rng) -> dict:
+    """One seeded near-twin case: a deposit of 120 carrying a reference, two invoices of 120
+    paid the day before whose numbers equal it written another way (case, spacing, ß) or are
+    another number, and maybe a later line (a refund mirroring the deposit or a fee) carrying the
+    same reference weeks away."""
+    base = rng.choice(["INV-7001", "Straße-7001", "PAYMENT", "SALARY 202611", "20261115", "15112569",
+                       "TRF 448812"])
+
+    def written(ref: str) -> str:
+        ref = rng.choice([ref, ref.upper(), ref.lower(), ref.casefold()])
+        return rng.choice([ref, f"  {ref} ", ref.replace(" ", "  ")])
+
+    numbers = [written(base) if rng.random() < .5 else f"INV-{rng.randint(10000, 99999)}" for _ in range(2)]
+    later = rng.choice([None, None, ("REFUND", "-120.00"), ("FEE", "-5.00")])
+    return {"reference": written(base), "numbers": numbers, "later": later and (*later, written(base))}
+
+
+def _identity(case: dict, stored: list[str]) -> int | None:
+    """The reference model: the deposit is the payment of the one document whose stored number
+    equals its reference normalised (spacing collapsed, casefolded), when no other line carries it."""
+    norm = " ".join(case["reference"].split()).casefold()
+    hits = [i for i, n in enumerate(stored) if " ".join(n.split()).casefold() == norm]
+    return hits[0] if len(hits) == 1 and not case["later"] else None
+
+
+async def _near_twin_books(client, session, case: dict, statement_first: bool) -> tuple:
+    """Run ``case`` on a fresh company in one order, run the ladder and Post ticked: what started
+    ticked, the line statuses and the postings the reconciliation made."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.ledger_sources import source_meta
+
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    rows = [("2026-01-09", "RECEIVED", "120.00", case["reference"])]
+    if case["later"]:
+        rows.append(("2026-01-28", *case["later"]))
+    docs: list[str] = []
+    stored: list[str] = []
+
+    async def documents():
+        for number in case["numbers"]:
+            doc, _ = await B.paid_invoice(client, co, bk, 120.0, "2026-01-08")
+            r = await client.post(f"/docs/{doc}/renumber", json={"ref_id": number}, headers=co["h"])
+            assert r.status_code in (200, 409), r.text  # 409: another document already holds the number
+            docs.append(doc)
+        stored.extend([(await client.get(f"/docs/{d}", headers=co["h"])).json()["ref_id"] for d in docs])
+
+    if not statement_first:
+        await documents()
+    await _lines(client, co, bk, rows)
+    if statement_first:
+        await documents()
+    before = await _books(client, session, co)
+    ticked = []
+    for line, on in await _suggested(client, co, bk):
+        if on:
+            s = line["suggestion"]
+            ticked.append((line["description"], s["source"], s.get("evidence")))
+    await _post_ticked(client, co, bk)
+    table = await B.groups(client, co, bk["id"], view="all")
+    lines = {l["description"]: l["status"] for l in B.all_lines(table)}
+    paid = None  # the document whose payment the deposit was matched to, from its entry's ledger source
+    for l in B.all_lines(table):
+        for je in l.get("matched_je_ids") or l.get("je_ids") or []:
+            rows = (await session.execute(select(LedgerEntry.metadata_).where(
+                LedgerEntry.company_id == uuid.UUID(co["company_id"]), LedgerEntry.entity_id == je))).scalars()
+            sources = {source_meta(je, m or {}).get("doc_id") for m in rows}
+            paid = [i for i, d in enumerate(docs) if d in sources] or ("?", l)
+    return _identity(case, stored), ticked, lines, paid, await _moved(client, session, co, before)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seed", range(6))
+async def test_near_twins_are_one_transaction_only_by_a_number_carried_once_in_either_order(
+        client, session, seed):
+    """Seeded oracle over the ladder, the ticked start and Post ticked: near twins (equal money a
+    day apart, references equal but for case, spacing or ß, generic words, compact dates, the same
+    reference on a refund or fee weeks later) start ticked only when the reference model grants
+    identity, an equal normalised number carried by exactly one document and no other line; then
+    the deposit is matched to that document's payment and nothing else moves. Statement first and
+    entries first reach the same books."""
+    import random
+
+    rng = random.Random(seed)
+    for _ in range(2):
+        case = _near_twin(rng)
+        runs = [await _near_twin_books(client, session, case, first) for first in (True, False)]
+        for want, ticked, lines, paid, moved in runs:
+            if want is None:
+                assert not ticked and lines["RECEIVED"] == "unmatched" and paid is None, (case, ticked, lines)
+            else:
+                assert [t[:2] for t in ticked] == [("RECEIVED", "match")] and ticked[0][2], (case, ticked)
+                assert lines["RECEIVED"] == "matched" and paid == [want], (case, lines, paid)
+            assert not moved, (case, moved)
+        assert runs[0][1:] == runs[1][1:], (case, runs)
