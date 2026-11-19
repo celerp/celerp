@@ -62,6 +62,7 @@ from celerp import db_catalog
 from celerp.json_text import dump_json
 from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_fits
 from celerp.migrations.compatibility import is_newer_than_running, running_version
+from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
@@ -795,6 +796,7 @@ async def _export_company(session: AsyncSession, company_id, partial: Path, *, p
                 raise BackupError(409, t("company_backup.err_module_no_version", owner=owner))
         manifest: dict = {
             "format": FORMAT, "format_version": FORMAT_VERSION, "celerp_version": running_version(),
+            "projection_semantics": PROJECTION_SEMANTICS,
             "backup_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "company": {"id": str(company.id), "lineage_id": lineage_of(company), "name": company.name,
@@ -914,6 +916,13 @@ def _check_manifest(m) -> None:
             raise BackupError(422, t(DAMAGED))
         if newer:
             raise BackupError(422, t(NEWER))
+    # The projection rules the backup's records were built by; backups made before they
+    # were recorded were built by older rules.
+    rules = m.get("projection_semantics", 0)
+    if not isinstance(rules, int) or isinstance(rules, bool) or rules < 0:
+        raise BackupError(422, t(DAMAGED))
+    if rules > PROJECTION_SEMANTICS:
+        raise BackupError(422, t(NEWER))
     company, modules, tables, files = m.get("company"), m.get("modules"), m.get("tables"), m.get("attachments")
     ok = (_is_uuid(m.get("backup_id")) and isinstance(m.get("created_at"), str)
           and isinstance(company, dict) and _is_uuid(company.get("id"))
@@ -1740,14 +1749,20 @@ async def _as_replayed(session: AsyncSession, company_id) -> None:
     await session.flush()
 
 
-async def _check_replay(session: AsyncSession, company_id) -> None:
+async def _check_replay(session: AsyncSession, company_id, *, rebuild: bool) -> None:
     """Replay the restored ledger with the running modules and refuse the restore unless it
     produces exactly the records the backup holds. The replay itself is undone, so the
-    restored records keep their own times and versions."""
+    restored records keep their own times and versions. A backup whose records were built
+    by older projection rules (``rebuild``) keeps the replay instead, as an upgraded
+    database does (run_upgrade_guard)."""
     from celerp.projections.engine import ProjectionEngine
     restored = await _projection_states(session, company_id)
     # Taken outside the savepoint, so the replay's rollback keeps the lock.
     await lock_company(session, company_id)
+    if rebuild:
+        await ProjectionEngine.rebuild(session, company_id)
+        await session.flush()
+        return
     savepoint = await session.begin_nested()
     try:
         await ProjectionEngine.rebuild(session, company_id)
@@ -1984,7 +1999,8 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
             await _as_replayed(session, new_id)
-            await _check_replay(session, new_id)
+            await _check_replay(session, new_id,
+                                rebuild=m.get("projection_semantics", 0) < PROJECTION_SEMANTICS)
             if retain_peer_identities:
                 from celerp.services.peer_identity import seed_restored_identities
                 await seed_restored_identities(

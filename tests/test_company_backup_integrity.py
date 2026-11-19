@@ -37,6 +37,7 @@ from test_company_backup import (  # noqa: F401 (_bk_modules_running: autouse, e
     _r_env,
     _r_refused,
     _r_rows,
+    _r_set_data,
     _r_source,
     _r_table_lines,
     _r_with_rows,
@@ -133,6 +134,62 @@ async def test_record_disagreeing_with_history_refused(real_engine, real_client,
     assert refusal_text(r.json()["detail"]) == t(_cb().DISAGREE)
     assert await snapshot(real_engine) == before
     assert await count(real_engine, "companies") == 1
+
+
+def _rules_of(data: bytes, rules) -> bytes:
+    """The backup with its manifest's projection rules set to ``rules`` (None: unrecorded)."""
+    parts = members(data)
+    meta = json.loads(parts["manifest.json"])
+    meta.pop("projection_semantics")
+    if rules is not None:
+        meta["projection_semantics"] = rules
+    parts["manifest.json"] = json.dumps(meta).encode()
+    return rezip(parts)
+
+
+@pytest.mark.parametrize("older", ["unrecorded", "previous"])
+async def test_a_backup_built_by_older_projection_rules_restores(real_engine, real_client, tmp_path,
+                                                                  monkeypatch, older):
+    """A backup whose records an older Celerp built by older projection rules (an item
+    holding the old weight_g / origin_country preset keys, from before they folded onto
+    weight and country of origin) restores, its records rebuilt by the running rules as an
+    upgrade rebuilds them; one built by the running rules is still checked strictly."""
+    from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
+    from celerp_inventory import projections
+
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    with monkeypatch.context() as old_rules:
+        # The records as the older rules built them: the old keys were not folded.
+        old_rules.setattr(projections, "_fold_legacy_category_fields", lambda current, written: None)
+        await _r_set_data(real_engine, cid, {"name": "Ruby", "attributes": {
+            "weight_g": "2.5", "origin_country": "Sri Lanka"}})
+        data = await download(real_client, tok)
+    (built,) = await _r_rows(real_engine, "projections", cid)
+    assert built["state"]["attributes"]["weight_g"] == "2.5"
+    r = await restore(real_client, tok, data, mode="new_company")
+    _r_refused(r)  # recorded as the running rules, records that disagree with them are refused
+    rules = None if older == "unrecorded" else PROJECTION_SEMANTICS - 1
+    body = _r_created(await restore(real_client, tok, _rules_of(data, rules), mode="new_company"))
+    (restored,) = await _r_rows(real_engine, "projections", uuid.UUID(body["company_id"]))
+    state = restored["state"]
+    assert (state["weight"], state["weight_unit"]) == (2.5, "gram")
+    assert state["attributes"] == {"country_of_origin": "Sri Lanka"}
+
+
+@pytest.mark.parametrize("rules", [-1, "3", True, 1.5, "PROJECTION_SEMANTICS + 1"])
+async def test_a_backup_with_unreadable_or_newer_projection_rules_is_refused(
+        real_engine, real_client, tmp_path, monkeypatch, rules):
+    from celerp.services.dev_release_guard import PROJECTION_SEMANTICS
+
+    _r_env(tmp_path, monkeypatch)
+    _, cid, tok = await _r_source(real_engine)
+    if rules == "PROJECTION_SEMANTICS + 1":
+        rules = PROJECTION_SEMANTICS + 1
+    before = await snapshot(real_engine)
+    r = await restore(real_client, tok, _rules_of(await download(real_client, tok), rules), mode="new_company")
+    _r_refused(r)
+    assert await snapshot(real_engine) == before
 
 
 @pytest.mark.parametrize("emptied", ["ledger", "projections"])
