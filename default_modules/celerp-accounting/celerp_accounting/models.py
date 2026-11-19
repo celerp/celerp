@@ -5,12 +5,36 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
 import sqlalchemy as sa
+from pydantic import AfterValidator, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from celerp.models.base import Base
+
+
+def length(column) -> int:
+    """The characters a text column holds: the one limit every request field and reader check
+    of a value stored in it reads."""
+    return column.expression.type.length
+
+
+def _storable(value: str) -> str:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("has a character text cannot hold (a lone surrogate)") from None
+    if "\x00" in value:
+        raise ValueError("has a NUL character, which text cannot hold")
+    return value
+
+
+def stored_text(column, **field):
+    """A request field stored in ``column``: at most the characters it holds and none a database
+    cannot store (NUL, a lone surrogate); anything else is refused naming the field, before any write."""
+    return Annotated[str, Field(max_length=length(column), **field), AfterValidator(_storable)]
 
 
 class Account(Base):

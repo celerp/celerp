@@ -45,7 +45,8 @@ from celerp_accounting.chart_rules import (
 from celerp_accounting.funds import post_fund_movement
 from celerp_accounting.import_service import AccImportRecord, ImportFundChoices
 from celerp_accounting.ledger_accounts import require_money_account
-from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
+from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
+                                      ReconciliationSession, stored_text)
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, catalog_refusal, refusal
 from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many
@@ -2763,10 +2764,10 @@ _BANK_TYPES = frozenset({"checking", "savings", "credit_card", "cash"})
 
 
 class BankAccountCreate(BaseModel):
-    bank_name: str
-    account_number: str = ""  # a cash box, or a bank read from a statement that prints none
-    bank_type: str  # checking|savings|credit_card|cash
-    currency: str
+    bank_name: stored_text(BankAccount.bank_name)
+    account_number: stored_text(BankAccount.account_number) = ""  # a cash box, or a bank read from a statement that prints none
+    bank_type: stored_text(BankAccount.bank_type)  # checking|savings|credit_card|cash
+    currency: stored_text(BankAccount.currency)
     opening_balance: FiniteFloat = 0.0
     # The day the opening balance stands on; the company's today when not given.
     opening_date: date | None = None
@@ -2776,10 +2777,10 @@ class BankAccountCreate(BaseModel):
 
 
 class BankAccountPatch(BaseModel):
-    bank_name: str | None = None
-    account_number: str | None = None
-    bank_type: str | None = None
-    currency: str | None = None
+    bank_name: stored_text(BankAccount.bank_name) | None = None
+    account_number: stored_text(BankAccount.account_number) | None = None
+    bank_type: stored_text(BankAccount.bank_type) | None = None
+    currency: stored_text(BankAccount.currency) | None = None
     is_active: bool | None = None
 
 
@@ -3821,22 +3822,22 @@ class ReconRuleCreate(BaseModel):
     sparse counterparty key (a bare WITHDRAWAL or TRANSFER) names its amount too."""
     bank_account_id: uuid.UUID | None = None
     match_field: _RULE_FIELDS = "description"
-    match_pattern: str = Field(min_length=1, max_length=256)
+    match_pattern: stored_text(ReconciliationRule.match_pattern, min_length=1)
     match_type: _RULE_TYPES = "contains"
     match_amount: FiniteFloat | None = None
-    target_account_code: str = Field(min_length=1, max_length=32)
-    contact_id: str | None = Field(None, max_length=128)
-    default_memo: str | None = Field(None, max_length=256)
+    target_account_code: stored_text(ReconciliationRule.target_account_code, min_length=1)
+    contact_id: stored_text(ReconciliationRule.contact_id) | None = None
+    default_memo: stored_text(ReconciliationRule.default_memo) | None = None
 
 
 class ReconRulePatch(BaseModel):
     match_field: _RULE_FIELDS | None = None
-    match_pattern: str | None = Field(None, min_length=1, max_length=256)
+    match_pattern: stored_text(ReconciliationRule.match_pattern, min_length=1) | None = None
     match_type: _RULE_TYPES | None = None
     match_amount: FiniteFloat | None = None
-    target_account_code: str | None = Field(None, min_length=1, max_length=32)
-    contact_id: str | None = Field(None, max_length=128)
-    default_memo: str | None = Field(None, max_length=256)
+    target_account_code: stored_text(ReconciliationRule.target_account_code, min_length=1) | None = None
+    contact_id: stored_text(ReconciliationRule.contact_id) | None = None
+    default_memo: stored_text(ReconciliationRule.default_memo) | None = None
     is_active: bool | None = None
 
 

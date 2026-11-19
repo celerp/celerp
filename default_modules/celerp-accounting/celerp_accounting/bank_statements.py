@@ -38,7 +38,8 @@ from celerp.services.payments import lock_recorded_unmatched
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
-from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
+from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
+                                      ReconciliationSession, stored_text)
 from celerp_accounting.routes import BankAccountCreate
 from celerp_accounting.statement_reader import block_refusal
 from ui.i18n import refusal_text, t
@@ -753,14 +754,14 @@ _KINDS = Literal["post", "match", "no_entry", "transfer", "cash", "pay_doc", "su
 
 
 # An account code as typed, pasted or proposed: surrounding spaces of any kind are not part of it.
-AccountCode = Annotated[str, BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v),
-                        Field(min_length=1, max_length=32)]
+AccountCode = Annotated[stored_text(Account.code, min_length=1),
+                        BeforeValidator(lambda v: v.strip() if isinstance(v, str) else v)]
 
 
 class SplitIn(BaseModel):
     account_code: AccountCode
     amount: FiniteFloat
-    contact: str | None = Field(None, max_length=128)
+    contact: stored_text(ReconciliationRule.contact_id) | None = None
     fund_id: str | None = Field(None, max_length=128)
 
 
@@ -782,7 +783,7 @@ class Decision(BaseModel):
     kind: _KINDS
     account_code: AccountCode | None = None
     splits: list[SplitIn] | None = Field(None, max_length=50)
-    contact: str | None = Field(None, max_length=128)
+    contact: stored_text(ReconciliationRule.contact_id) | None = None
     fund_id: str | None = Field(None, max_length=128)
     rate: PositiveFloat | None = None
     memo: str | None = Field(None, max_length=500)
@@ -883,11 +884,14 @@ async def suspense_account(db: AsyncSession, company_id: uuid.UUID, actor_id) ->
 
 async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, d: Decision) -> None:
     """The company-wide answer rule for the line's counterparty account, else its key (with
-    the amount on a sparse key), one per (field, pattern, amount)."""
-    from celerp_accounting.models import ReconciliationRule
+    the amount on a sparse key), one per (field, pattern, amount). A line imported before
+    lines carried a counterparty is keyed now, as an import keys it."""
+    from celerp_accounting.statement_reader import counterparty_key
 
-    field, pattern = (("counterparty_account", line.counterparty_account) if line.counterparty_account
-                      else ("counterparty_key", line.counterparty_key or line.description))
+    key, account = line.counterparty_key, line.counterparty_account
+    if not key:
+        key, account = counterparty_key(line.description, line.reference, Decimal(str(line.amount)), account)
+    field, pattern = ("counterparty_account", account) if account else ("counterparty_key", key)
     amount = Decimal(str(line.amount)) if pattern.startswith("SPARSE:") else None
     q = select(ReconciliationRule).where(
         ReconciliationRule.company_id == company_id, ReconciliationRule.bank_account_id.is_(None),
@@ -1197,8 +1201,6 @@ async def _accepted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, 
 async def _bump_rules(db: AsyncSession, company_id: uuid.UUID, done: dict, by_line: dict) -> None:
     """Count each rule whose suggestion a posted line followed."""
     from celerp.services.company_lock import lock_company
-    from celerp_accounting.models import ReconciliationRule
-
     await lock_company(db, company_id)
 
     counts: dict = {}
@@ -1554,7 +1556,6 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
     from celerp.accounting_roles import AccountRole
     from celerp.services.account_roles import resolve as resolve_role
     from celerp_accounting import suggest
-    from celerp_accounting.models import ReconciliationRule
     from celerp_accounting.routes import _base_currency, _rule_to_dict
 
     book = await _free_entries(db, company_id, bank)

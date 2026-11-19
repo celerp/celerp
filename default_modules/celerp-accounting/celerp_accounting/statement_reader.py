@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 
 from celerp.services.field_fingerprints import statement_line, statement_line_fitid, statement_line_ident
 from celerp.services.money import round_money
-from celerp_accounting.models import BankStatementLine, ReconciliationSession
+from celerp_accounting.models import BankStatementLine, ReconciliationSession, length
 
 # Words banks print around the counterparty, in every locale a statement arrives in.
 # Each maps to the kind a line with nothing else left is grouped under.
@@ -29,12 +29,12 @@ _BOILERPLATE = {
 }
 _AFTER_TRANSFER = {"TO", "FROM"}
 # What a stored line and statement header hold, read from their columns: (field, length, label key).
-_LINE_LIMITS = tuple((f, BankStatementLine.__table__.c[f].type.length, label) for f, label in (
+_LINE_LIMITS = tuple((f, length(BankStatementLine.__table__.c[f]), label) for f, label in (
     ("line_date", "field.line_date"), ("reference", "label.reference"), ("fitid", "field.fitid"),
     ("counterparty_account", "field.counterparty_account")))
-_HEADER_LIMITS = tuple((f, ReconciliationSession.__table__.c[col].type.length, label) for f, col, label in (
+_HEADER_LIMITS = tuple((f, length(ReconciliationSession.__table__.c[col]), label) for f, col, label in (
     ("period_start", "period_start", "field.period_start"), ("period_end", "statement_date", "field.period_end")))
-_KEY_LENGTH = BankStatementLine.__table__.c.counterparty_key.type.length
+_KEY_LENGTH = length(BankStatementLine.counterparty_key)
 # The kind a sparse line takes when it carried several words: the most telling first.
 _KIND_ORDER = ("ATM", "CHEQUE", "WITHDRAWAL", "DEPOSIT", "TRANSFER", "REFERENCE")
 
