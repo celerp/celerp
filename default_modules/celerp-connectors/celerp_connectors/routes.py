@@ -367,6 +367,34 @@ async def set_connector_direction(
     return {"entity_directions": directions}
 
 
+class FrequencyRequest(BaseModel):
+    sync_frequency: Literal["manual", "daily"]
+
+
+@open_router.post("/{connector_name}/frequency", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/connectors/{platform}"}, summary="Choose whether a connected accounting app syncs once a day or only when asked.")
+async def set_connector_frequency(
+    connector_name: str,
+    payload: FrequencyRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set how often a connection syncs on its own, under the connection's ownership fence
+    and the company lock."""
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.services.company_lock import lock_company
+
+    try:
+        config = await lock_connector_operation(session, company_id, connector_name, require_owner=True)
+        await lock_company(session, uuid.UUID(str(company_id)))
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
+    config.sync_frequency = payload.sync_frequency
+    await session.commit()
+    return {"sync_frequency": config.sync_frequency}
+
+
 # ── Credential management (API-key platforms) ────────────────────────────────
 
 class ApiKeyCredentials(BaseModel):

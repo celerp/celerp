@@ -291,16 +291,42 @@ async def test_outbound_enable_requires_owner_and_is_per_connector(restored, rea
     assert await _queued(real_engine, restored.cid) == 0
 
 
+async def _frequency(engine, cid, connector: str) -> str:
+    async with engine.connect() as conn:
+        return (await conn.execute(text(
+            "SELECT sync_frequency FROM connector_configs WHERE company_id = :c AND connector = :n"),
+            {"c": cid, "n": connector})).scalar_one()
+
+
+async def test_the_sync_frequency_is_saved_through_the_api(restored, real_engine, real_client, ui):
+    """The screen's frequency choice and the assistant's tool are one API write: a value
+    it does not offer is refused and nothing changes."""
+    assert await _claim(real_engine, restored.cid, "xero") == RESTORED_XERO
+    await _sql(real_engine, "UPDATE connector_configs SET sync_frequency = 'manual' WHERE company_id = :c",
+               c=restored.cid)
+    ui.cookies.set("celerp_token", restored.tok)
+    r = await ui.post("/settings/connectors/xero/frequency?detail=1", data={"sync_frequency": "hourly"})
+    assert r.status_code == 200 and "flash--warning" in r.text, r.text
+    assert await _frequency(real_engine, restored.cid, "xero") == "manual"
+    r = await ui.post("/settings/connectors/xero/frequency?detail=1", data={"sync_frequency": "daily"})
+    assert r.status_code == 200 and "flash--warning" not in r.text, r.text
+    assert await _frequency(real_engine, restored.cid, "xero") == "daily"
+    r = await real_client.post("/connectors/xero/frequency", json={"sync_frequency": "manual"},
+                               headers={"Authorization": f"Bearer {restored.tok}"})
+    assert r.status_code == 200 and r.json() == {"sync_frequency": "manual"}, r.text
+    assert await _frequency(real_engine, restored.cid, "xero") == "manual"
+
+
 @pytest.mark.parametrize("path,form,column,before,refusal", [
     ("direction", {"entity": "stock", "direction": "outbound"}, "entity_directions", RESTORED_WOO,
      lambda: missing_permission_text("manage_integrations")),
-    ("frequency", {"sync_frequency": "daily"}, "sync_frequency", "manual", lambda: t("error.access_changed")),
+    ("frequency", {"sync_frequency": "daily"}, "sync_frequency", "manual",
+     lambda: missing_permission_text("manage_integrations")),
 ])
 async def test_a_connector_change_after_access_was_revoked_is_refused(
         restored, real_engine, ui, monkeypatch, path, form, column, before, refusal):
-    """The UI checks the permission through the API, then saves: a frequency in its own
-    session, where the company lock judges the caller again; a direction through the API,
-    which judges the permission again. Access revoked in between stops the write."""
+    """The UI checks the permission, then saves through the API, which judges the
+    permission again. Access revoked in between stops the write."""
     import ui.routes.settings_connectors as settings_connectors
     assert await _claim(real_engine, restored.cid, "woocommerce") == RESTORED_WOO
     if column == "entity_directions":

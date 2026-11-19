@@ -4468,6 +4468,15 @@ async def set_connector_direction(token: str, platform: str, entity: str, direct
         )).json()
 
 
+async def set_connector_frequency(token: str, platform: str, frequency: str) -> dict:
+    """Set how often a connection syncs on its own ("manual" or "daily"); returns
+    {"sync_frequency"}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connectors/{platform}/frequency", json={"sync_frequency": frequency},
+        )).json()
+
+
 async def resolve_product_conflict(token: str, platform: str, record_id: str, keep: str) -> dict:
     """Keep the store's ("store") or Celerp's ("celerp") values of a product changed in both."""
     async with _api_client(token) as c:

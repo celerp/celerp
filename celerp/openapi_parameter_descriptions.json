@@ -983,6 +983,9 @@
   "POST /connectors/{connector_name}/credentials": {
     "path:connector_name": "Connector name identifying the external integration."
   },
+  "POST /connectors/{connector_name}/frequency": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
   "POST /connectors/{connector_name}/sync": {
     "path:connector_name": "Connector name identifying the external integration."
   },

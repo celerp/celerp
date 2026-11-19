@@ -1724,7 +1724,7 @@ def setup_routes(app):
 
     @app.post("/settings/connectors/{platform}/frequency")
     async def connector_set_frequency(request: Request, platform: str):
-        """HTMX: update sync frequency for an accounting connector."""
+        """HTMX: update sync frequency for an accounting connector through the API."""
         token = _token(request)
         if not token:
             return Span(t("error.session_expired"), cls="flash flash--warning")
@@ -1733,35 +1733,18 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.connectors.ownership import (
-            ConnectorOwnershipError,
-            lock_connector_operation,
-        )
-        from celerp.services.company_lock import lock_company
-        from celerp.db import get_session_ctx
+        from ui.api_client import APIError, set_connector_frequency
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
 
         company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
-        frequency = form.get("sync_frequency", "manual")
-
-        if frequency not in ("manual", "daily"):
-            frequency = "manual"
-
-        async with get_session_ctx() as session:
-            authorize_in_process(session, request, "manage_integrations")
-            try:
-                config = await lock_connector_operation(
-                    session, company_id, platform, require_owner=True
-                )
-                await lock_company(session, uuid.UUID(str(company_id)))
-            except (ConnectorOwnershipError, HTTPException) as exc:
-                await session.rollback()
-                return Span(_refusal(exc), cls="flash flash--warning")
-            config.sync_frequency = frequency
-            await session.commit()
+        try:
+            frequency = (await set_connector_frequency(
+                token, platform, str(form.get("sync_frequency") or "")))["sync_frequency"]
+        except APIError as exc:
+            return Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")
         if request.query_params.get("detail"):
             return _frequency_select(platform, frequency, lang, detail=True)
 

@@ -197,6 +197,7 @@ WAY_BACK: dict[tuple[str, str], str] = {
     # The credentials are a secret the user re-enters on that connector's screen, which the card names; typed into the chat they would go to the AI provider.
     ('DELETE', '/connectors/{connector_name}/credentials'): 'screen:/settings/connectors/{platform}',
     ('POST', '/connectors/{connector_name}/directions'): 'tool:POST /connectors/{connector_name}/directions',
+    ('POST', '/connectors/{connector_name}/frequency'): 'tool:POST /connectors/{connector_name}/frequency',
     ('POST', '/connectors/{connector_name}/first-sync'): 'reason:sync',
     ('POST', '/connectors/{connector_name}/first-sync/retry'): 'reason:sync',
     ('POST', '/connectors/{connector_name}/first-sync/undo-links'): 'reason:is_undo',
