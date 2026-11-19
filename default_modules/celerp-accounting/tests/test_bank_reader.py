@@ -196,6 +196,13 @@ def test_pdf_and_csv_overlap_flagged_probable_duplicate():
     assert out["lines"][1]["probable"] is False and out["lines"][1]["ticked"] is True
 
 
+def test_two_identical_lines_against_one_posted_entry_leave_only_one_probable():
+    lines = [_line("2026-01-02", "-10.00", "Fee charged Jan"), _line("2026-01-02", "-10.00", "Fee charged Jan")]
+    out = _review({**_HEADER, "closing_balance": "80.00"}, lines, held_counts={("2026-01-02", "-10.00"): 1})
+    assert out["lines"][0]["probable"] is True and out["lines"][0]["ticked"] is False
+    assert out["lines"][1]["probable"] is False and out["lines"][1]["ticked"] is True
+
+
 _OFX_SGML = b"""OFXHEADER:100
 DATA:OFXSGML
 <!DOCTYPE x [<!ENTITY boom "EXPANDED">]>
