@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} ተልከዋል፣ ኢሜይል የሌላቸው {skipped} ታልፈዋል።",
   "donors.done_already": "{already} ከዚህ በፊት ተልከዋል፣ እንደገና አልተላኩም።",
   "donors.done_failed": "ለ{names} መላክ አልተቻለም። እንደገና ለመሞከር «መግለጫዎችን ላክ» ይምረጡ።",
+  "donors.done_unconfirmed": "ወደ {names} የተላከው ኢሜይል ተልኮ ሊሆን ይችላል፣ ነገር ግን የኢሜይል አገልግሎቱ አላረጋገጠም፣ ስለዚህ እንደገና አልተላከም። እንደገና ከመላክዎ በፊት ያረጋግጡላቸው።",
   "donors.done_resent": "መግለጫው ለ{name} እንደገና ተልኳል።",
   "subscriptions.err_trial_first_bill": "የመጀመሪያው የክፍያ መጠየቂያ ቀን የሙከራ ጊዜው የሚያበቃበት {day} ነው። ቀኑን ለመቀየር የሙከራ ጊዜውን የማብቂያ ቀን ይቀይሩ።",
   "nav.subscribers": "ተመዝጋቢዎች",

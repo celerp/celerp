@@ -70,7 +70,7 @@ def census() -> list[tuple[str, str, int, list]]:
 
 def test_census_finds_the_keyed_handlers():
     names = {r[1] for r in census()}
-    assert {"ask", "import_statement", "resolve", "answer_question", "send_statements",
+    assert {"ask", "import_statement", "resolve", "answer_question", "_send_statement",
             "create_manual_journal_entry", "_run_confirmed_action"} <= names
 
 

@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} enviados, {skipped} omitidos por no tener dirección de correo electrónico.",
   "donors.done_already": "{already} ya enviados anteriormente; no se reenviaron.",
   "donors.done_failed": "No se pudo enviar a {names}. Seleccione Enviar estados de cuenta para intentarlo de nuevo.",
+  "donors.done_unconfirmed": "Es posible que el correo a {names} se haya enviado, pero el servicio de correo no lo confirmó, así que no se volvió a enviar. Consulte con ellos antes de enviarlo de nuevo.",
   "donors.done_resent": "Estado de cuenta reenviado a {name}.",
   "subscriptions.err_trial_first_bill": "La fecha de la primera factura es el fin de la prueba, {day}. Cambie la fecha de fin de prueba para moverla.",
   "nav.subscribers": "Suscriptores",

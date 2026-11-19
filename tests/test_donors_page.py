@@ -84,7 +84,7 @@ async def test_a_failed_statement_names_the_donor_and_sending_again_retries(owne
     r = await _send(owner_ui, confirm="on")
     assert _toast(r)["type"] == "warning", _toast(r)
     assert sentence("donors.done_failed", names="Cy Donor") in _toast(r)["message"]
-    assert t("donors.statement_not_sent") in (await owner_ui.get(PAGE)).text
+    assert '"seen":' not in (await owner_ui.get(PAGE)).text  # no Send again: the statement reads not sent
     sent = _mailbox(monkeypatch)
     await _send(owner_ui, confirm="on")
     assert attempts == ["cy@test.test"] and [m["to"] for m in sent] == ["cy@test.test"]

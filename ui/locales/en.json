@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} sent, {skipped} skipped with no email address.",
   "donors.done_already": "{already} already sent earlier, not sent again.",
   "donors.done_failed": "Could not send to {names}. Select Send statements to try again.",
+  "donors.done_unconfirmed": "The email to {names} may have gone out, but the email service did not confirm it, so it was not sent again. Check with them before you send it again.",
   "donors.done_resent": "Statement sent again to {name}.",
   "subscriptions.err_trial_first_bill": "The first bill date is the trial end, {day}. Change the trial end to move it.",
   "nav.subscribers": "Subscribers",

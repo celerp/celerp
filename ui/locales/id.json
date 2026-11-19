@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} terkirim, {skipped} dilewati karena tidak ada alamat email.",
   "donors.done_already": "{already} sudah dikirim sebelumnya, tidak dikirim ulang.",
   "donors.done_failed": "Gagal mengirim kepada {names}. Pilih Kirim laporan untuk mencoba lagi.",
+  "donors.done_unconfirmed": "Email ke {names} mungkin sudah terkirim, tetapi layanan email tidak mengonfirmasinya, jadi tidak dikirim lagi. Tanyakan kepada mereka sebelum mengirimnya lagi.",
   "donors.done_resent": "Laporan dikirim ulang kepada {name}.",
   "subscriptions.err_trial_first_bill": "Tanggal tagihan pertama adalah akhir masa uji coba, {day}. Ubah akhir masa uji coba untuk memindahkannya.",
   "nav.subscribers": "Pelanggan berlangganan",

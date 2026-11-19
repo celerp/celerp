@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} gesendet, {skipped} ohne E-Mail-Adresse übersprungen.",
   "donors.done_already": "{already} bereits früher gesendet, nicht erneut versendet.",
   "donors.done_failed": "Versand an {names} fehlgeschlagen. Wählen Sie Aufstellungen versenden, um es erneut zu versuchen.",
+  "donors.done_unconfirmed": "Die E-Mail an {names} ist möglicherweise verschickt worden, aber der E-Mail-Dienst hat es nicht bestätigt, daher wurde sie nicht erneut gesendet. Fragen Sie nach, bevor Sie sie erneut senden.",
   "donors.done_resent": "Aufstellung erneut an {name} gesendet.",
   "subscriptions.err_trial_first_bill": "Das erste Rechnungsdatum ist das Testende {day}. Ändern Sie das Testende, um dieses Datum zu verschieben.",
   "nav.subscribers": "Abonnenten",

@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} 件送信、メールアドレスがない {skipped} 件をスキップしました。",
   "donors.done_already": "{already} 件は送信済みのため再送しませんでした。",
   "donors.done_failed": "{names} への送信に失敗しました。「明細書を送信」から再試行してください。",
+  "donors.done_unconfirmed": "{names} へのメールは送信された可能性がありますが、メールサービスから確認が得られなかったため、再送信していません。再送信する前に相手に確認してください。",
   "donors.done_resent": "{name} に明細書を再送しました。",
   "subscriptions.err_trial_first_bill": "最初の請求日は試用期間終了日 {day} です。変更するには試用終了日を変更してください。",
   "nav.subscribers": "契約者",

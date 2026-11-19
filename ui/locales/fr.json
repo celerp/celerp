@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} envoyés, {skipped} ignorés faute d'adresse e-mail.",
   "donors.done_already": "{already} déjà envoyés auparavant, non renvoyés.",
   "donors.done_failed": "Impossible d'envoyer à {names}. Sélectionnez Envoyer les relevés pour réessayer.",
+  "donors.done_unconfirmed": "L'e-mail à {names} est peut-être parti, mais le service d'e-mail ne l'a pas confirmé, il n'a donc pas été renvoyé. Vérifiez auprès d'eux avant de le renvoyer.",
   "donors.done_resent": "Relevé renvoyé à {name}.",
   "subscriptions.err_trial_first_bill": "La date de la première facture est la fin de la période d'essai, {day}. Modifiez la date de fin de l'essai pour la déplacer.",
   "nav.subscribers": "Abonnés",

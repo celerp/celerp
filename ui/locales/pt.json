@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} enviados, {skipped} ignorados por não terem e-mail.",
   "donors.done_already": "{already} já enviados anteriormente, sem novo envio.",
   "donors.done_failed": "Não foi possível enviar para {names}. Selecione Enviar demonstrativos para tentar novamente.",
+  "donors.done_unconfirmed": "O e-mail para {names} pode ter sido enviado, mas o serviço de e-mail não confirmou, por isso não foi enviado novamente. Confirme com eles antes de enviar de novo.",
   "donors.done_resent": "Demonstrativo reenviado para {name}.",
   "subscriptions.err_trial_first_bill": "A data da primeira cobrança é o fim do período de teste, {day}. Altere o fim do teste para mudar essa data.",
   "nav.subscribers": "Assinantes",

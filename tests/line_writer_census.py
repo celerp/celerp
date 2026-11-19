@@ -143,7 +143,7 @@ ROWS: dict[str, tuple[str, str]] = {
     "default_modules/celerp-subscriptions/celerp_subscriptions/demo.py::seed_demo_agreements": (
         "LOCAL", "demo data of an empty company"),
     "celerp/services/demo.py::follow_books_currency": ("LOCAL", "demo data of an empty company"),
-    "default_modules/celerp-accounting/celerp_accounting/donors.py::send_statements": (
+    "default_modules/celerp-accounting/celerp_accounting/donors.py::begin": (
         "NON-LINE", "records the statement sent on the donor contact"),
     f"{_CORE}/collection.py::record_binding": ("NON-LINE", "records the payer's card on file on the contact"),
     f"{_CORE}/collection.py::set_attempt": ("NO-LINE-CHANGE", "records the invoice's automatic collection state"),

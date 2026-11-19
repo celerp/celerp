@@ -7838,6 +7838,7 @@
   "donors.done_sent": "{sent} inviati, {skipped} saltati perché senza indirizzo e-mail.",
   "donors.done_already": "{already} già inviati in precedenza, non reinviati.",
   "donors.done_failed": "Impossibile inviare a {names}. Seleziona Invia prospetti per riprovare.",
+  "donors.done_unconfirmed": "L'email a {names} potrebbe essere partita, ma il servizio email non l'ha confermato, quindi non è stata inviata di nuovo. Verificate con loro prima di inviarla di nuovo.",
   "donors.done_resent": "Prospetto reinviato a {name}.",
   "subscriptions.err_trial_first_bill": "La data della prima fattura coincide con la fine della prova, {day}. Modifica la fine della prova per spostarla.",
   "nav.subscribers": "Abbonati",

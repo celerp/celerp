@@ -7838,6 +7838,7 @@
   "donors.done_sent": "Đã gửi {sent}, bỏ qua {skipped} người không có địa chỉ email.",
   "donors.done_already": "Đã gửi trước đó cho {already}, không gửi lại.",
   "donors.done_failed": "Không gửi được cho {names}. Chọn Gửi bản sao kê để thử lại.",
+  "donors.done_unconfirmed": "Email gửi {names} có thể đã được gửi đi, nhưng dịch vụ email không xác nhận, nên chưa được gửi lại. Hãy hỏi lại họ trước khi gửi lại.",
   "donors.done_resent": "Đã gửi lại bản sao kê cho {name}.",
   "subscriptions.err_trial_first_bill": "Ngày xuất hóa đơn đầu tiên là ngày kết thúc dùng thử, {day}. Hãy đổi ngày kết thúc dùng thử để thay đổi ngày đó.",
   "nav.subscribers": "Người đăng ký",
