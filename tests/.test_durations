@@ -31752,5 +31752,7 @@
     "default_modules/celerp-accounting/tests/test_stored_text_oracle.py::test_hostile_text_in_a_stored_bank_field_is_stored_as_sent_or_refused_naming_it[7]": 0.14023341401480138,
     "default_modules/celerp-accounting/tests/test_stored_text_oracle.py::test_hostile_text_in_a_stored_bank_field_is_stored_as_sent_or_refused_naming_it[8]": 0.1496864749933593,
     "default_modules/celerp-accounting/tests/test_stored_text_oracle.py::test_hostile_text_in_a_stored_bank_field_is_stored_as_sent_or_refused_naming_it[9]": 0.12007481197360903,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_stored_text_oracle.py]": 0.004580264969263226
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_stored_text_oracle.py]": 0.004580264969263226,
+    "tests/test_bounded_work.py::test_a_bank_request_does_the_same_database_work_over_ten_thousand_history_rows": 2.2148497629677877,
+    "tests/test_bounded_work.py::test_an_older_actions_read_does_the_same_database_work_however_long_the_finished_history": 0.4849727299879305
 }
