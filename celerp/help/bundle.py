@@ -34,7 +34,8 @@ SITE_CHECK_TIMEOUT = 15 * 60
 
 BUNDLE_KEYS = ("schema", "version", "commit", "site_languages", "locales", "modules",
                "topics", "images", "tombstones")
-_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+# A release tag gives X.Y.Z; a development checkout adds a suffix (2.10.1.dev3+g1a2b).
+_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-.+][0-9A-Za-z.+-]+)?$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _LANGUAGE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
