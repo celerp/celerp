@@ -53,6 +53,9 @@ class AIConversation(Base):
 
 class AIMessage(Base):
     __tablename__ = "ai_messages"
+    # A conversation's messages are read newest first by (created_at, id) keyset; the index
+    # serves that order and every lookup by conversation.
+    __table_args__ = (sa.Index("ix_ai_messages_conversation_created", "conversation_id", "created_at", "id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4,
@@ -60,7 +63,6 @@ class AIMessage(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("ai_conversations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text, nullable=False)

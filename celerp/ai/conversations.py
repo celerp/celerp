@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 
 MAX_CONVERSATIONS_PER_USER = 100
 MAX_MESSAGES_PER_CONVERSATION = 200
+# Rows one older-actions read examines at most (protected_before), so a request's work stays
+# bounded however many finished actions lie between the cards still protected.
+PROTECTED_SCAN_BUDGET = 5 * MAX_MESSAGES_PER_CONVERSATION
 HISTORY_TOKEN_BUDGET = 8000
 _CHARS_PER_TOKEN = 4  # conservative estimate
 # A claimed action may outlive the process that started it. Once stale, a keyed claim
@@ -356,8 +359,9 @@ async def get_messages(
 ) -> tuple[list[AIMessage], Cursor | None]:
     """The newest ``limit`` messages (MAX_MESSAGES_PER_CONVERSATION by default) plus the
     first page of older ones carrying protected work (protected_before), in time order
-    (created_at, then id), and the cursor of the next older page, None when every older
-    protected message is in this read. Bounded: a read returns at most twice ``limit``."""
+    (created_at, then id), and the cursor of the next older page, None when the read reached
+    the start of the conversation. Bounded: a read returns at most twice ``limit`` and
+    examines at most ``limit`` plus PROTECTED_SCAN_BUDGET rows."""
     limit = limit or MAX_MESSAGES_PER_CONVERSATION
     newest = list((await session.execute(
         select(AIMessage)
@@ -381,34 +385,45 @@ async def protected_before(
     *,
     limit: int | None = None,
 ) -> tuple[list[AIMessage], Cursor | None]:
-    """The newest ``limit`` messages older than ``before`` (created_at, id) that carry
-    protected work (_protected_message_ids), in time order, and the cursor of the next older
-    page: the oldest of them, None when no older message carries protected work. Paging
-    from the cursor reaches every such message once, so a card pruning kept is never lost.
+    """Up to ``limit`` of the newest messages older than ``before`` (created_at, id) that
+    carry protected work (_protected_message_ids), in time order, and the cursor the next
+    older page starts from, None once the read reached the start of the conversation.
+    Paging from the cursor reaches every such message once, so a card pruning kept is never
+    lost.
 
-    The older messages are read newest first in keyset batches of ``limit + 1`` and the read
-    stops at the first protected message past the page, so one page reads the page, the
-    plain messages between (pruning bounds those) and at most one batch more, however long
-    the protected history."""
+    The older messages are read newest first in keyset batches of ``limit + 1``, and one
+    request examines at most PROTECTED_SCAN_BUDGET rows however long the history between
+    two protected messages (finished actions are kept rows that no longer protect). The
+    read stops at the first protected message past the page (cursor: the oldest message of
+    the page) or when the budget is spent (cursor: the last row examined, the page may be
+    short or empty and the next request carries on from there)."""
     limit = limit or MAX_MESSAGES_PER_CONVERSATION
     keep: list[uuid.UUID] = []
-    cursor = before
+    cursor: Cursor | None = before
+    scanned = 0
     while len(keep) <= limit:
+        if scanned >= PROTECTED_SCAN_BUDGET:
+            break
+        size = min(limit + 1, PROTECTED_SCAN_BUDGET - scanned)
         batch = (await session.execute(
             select(AIMessage.id, AIMessage.tools_called, AIMessage.created_at)
             .where(AIMessage.conversation_id == conversation_id,
                    tuple_(AIMessage.created_at, AIMessage.id) < tuple_(*cursor))
             .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
-            .limit(limit + 1)
+            .limit(size)
         )).all()
+        scanned += len(batch)
         protected = await _protected_message_ids(session, conversation_id, [(i, tools) for i, tools, _ in batch])
         keep += [message_id for message_id, _, _ in batch if message_id in protected]
-        if len(batch) <= limit:
+        if len(batch) < size:
+            cursor = None
             break
         cursor = (batch[-1].created_at, batch[-1].id)
     page = sorted((await session.execute(select(AIMessage).where(AIMessage.id.in_(keep[:limit])))).scalars().all(),
                   key=lambda m: (m.created_at, m.id)) if keep else []
-    return page, ((page[0].created_at, page[0].id) if len(keep) > limit else None)
+    if len(keep) > limit:
+        return page, (page[0].created_at, page[0].id)
+    return page, cursor
 
 
 async def get_message(

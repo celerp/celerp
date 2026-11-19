@@ -357,3 +357,46 @@ async def test_an_older_actions_page_reads_a_bounded_slice_of_a_long_history(ses
         assert (cursor is None) == (after is None)
         seen += [m.id for m in page]
     assert sorted(seen) == sorted(r.id for r in rows if r.content in PROTECTED)
+
+
+@pytest.mark.asyncio
+async def test_an_older_actions_request_examines_at_most_the_scan_budget_however_long_the_finished_history(
+        session, monkeypatch):
+    """A request's work is bounded by PROTECTED_SCAN_BUDGET rows, not by how many finished
+    (formerly protected) actions sit between two cards still protected: when the budget runs
+    out before the page fills, the request returns what it found and a cursor at the last row
+    it examined, and following the cursor reaches every protected message once, in time order."""
+    budget, limit = 30, 4
+    monkeypatch.setattr(ai_conversations, "PROTECTED_SCAN_BUDGET", budget)
+    company, user = await _owner(session)
+    conv = await create_conversation(session, company.id, user.id)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    finished_kinds = sorted(set(KINDS) - PROTECTED)
+    kinds = [sorted(PROTECTED)[i % len(PROTECTED)] for i in range(3)] + [
+        finished_kinds[i % len(finished_kinds)] for i in range(300)] + [sorted(PROTECTED)[0]]
+    for i, kind in enumerate(kinds):
+        session.add(AIMessage(conversation_id=conv.id, role="assistant", content=kind,
+                              created_at=start + timedelta(seconds=i), tools_called=[_record_of(kind, f"c{i}")]))
+    await session.commit()
+    rows = (await session.execute(select(AIMessage.id, AIMessage.created_at, AIMessage.content)
+                                  .where(AIMessage.conversation_id == conv.id))).all()
+    wanted = sorted((r for r in rows if r.content in PROTECTED), key=lambda r: (r.created_at, r.id))
+
+    scanned: list[int] = []
+    real = ai_conversations._protected_message_ids
+
+    async def _counting(session_, conversation_id, read):
+        scanned.append(len(read))
+        return await real(session_, conversation_id, read)
+    monkeypatch.setattr(ai_conversations, "_protected_message_ids", _counting)
+
+    cursor, seen, requests = (start + timedelta(days=1), uuid.UUID(int=2 ** 128 - 1)), [], 0
+    while cursor is not None:
+        scanned.clear()
+        page, cursor = await ai_conversations.protected_before(session, conv.id, cursor, limit=limit)
+        requests += 1
+        assert sum(scanned) <= budget, sum(scanned)
+        assert [m.id for m in page] == [m.id for m in sorted(page, key=lambda m: (m.created_at, m.id))]
+        seen = [m.id for m in page] + seen
+        assert requests <= len(rows) // budget + 2
+    assert seen == [r.id for r in wanted]
