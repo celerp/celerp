@@ -2,13 +2,18 @@
 the ledger, and passes the bundle validator; catalogs and the ledger fail by name."""
 from __future__ import annotations
 
+import dataclasses
+import json
+from pathlib import Path
+
 import pytest
 
-from celerp.help import assemble, checks, ledger, translations
+from celerp.help import assemble, checks, ledger, schema, translations
 from celerp.help.assemble import build_bundle, git_date
 from celerp.help.bundle import bundle_problems
-from celerp.help.registry import get_index
+from celerp.help.registry import Index, get_index
 
+FIXTURES = Path(__file__).parent / "fixtures" / "help"
 PAGE = {"title": "Add {x}", "summary": "S", "steps": [{"text": "Click {new}."}, {"text": "Save."}]}
 
 
@@ -93,6 +98,29 @@ def test_only_fresh_translations_and_ledger_tombstones_enter_the_bundle(monkeypa
     assert bundle_problems(bundle) == []
     over = build_bundle(lambda path: "2026-11-01", overlay={"es": {other: _fresh(other, "es")}})
     assert "es" in over["locales"] and "es" in {t["id"]: t["text"] for t in over["topics"]}[other]
+
+
+def test_git_names_the_command_and_stderr_on_a_real_failure():
+    with pytest.raises(RuntimeError, match=r"git bogus-subcommand-xyz failed"):
+        assemble._git("bogus-subcommand-xyz")
+
+
+def test_the_bundle_embeds_a_step_image_as_base64(monkeypatch):
+    path = FIXTURES / "good" / "add-item.json"
+    help_dir = FIXTURES / "good"
+    page, errors = schema.load_file(path, help_dir, "inventory")
+    assert errors == []
+    page = dataclasses.replace(page, source="core", module="core", module_display="Celerp")
+    raw = schema.read_image(page, 1)
+    assert raw
+    file = checks.PageFile(path=path, data=json.loads(path.read_text(encoding="utf-8")),
+                           module="core", help_dir=help_dir)
+    monkeypatch.setattr(assemble, "get_index", lambda: Index(pages={page.id: page}))
+    monkeypatch.setattr(assemble, "shipped_pages", lambda: [file])
+    monkeypatch.setattr(assemble, "ledger", lambda: {"locales": ["en"], "topics": {page.id: None}, "modules": {}})
+    bundle = build_bundle(lambda p: "2026-11-01")
+    sha = bundle["topics"][0]["text"]["en"]["steps"][0]["image"]
+    assert sha and bundle["images"] == {sha: assemble.base64.b64encode(raw).decode("ascii")}
 
 
 def test_git_date_refuses_a_shallow_clone_or_a_file_with_no_commit(monkeypatch):
