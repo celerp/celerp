@@ -45,6 +45,8 @@ def _sent(monkeypatch, result=EmailResult(True, "sent")):
     calls = []
 
     async def fake(to, subject, body_html, body_text="", **kw):
+        from celerp.services.company_lock import refuse_held_transaction
+        refuse_held_transaction("an email is sent")
         calls.append({"to": to, "subject": subject, **kw})
         return result
     monkeypatch.setattr("celerp.services.email.send_email", fake)
@@ -402,3 +404,72 @@ async def test_asking_about_several_lines_counts_them_and_says_each_reason_once(
     out = r.json()["outcome"]
     assert out.startswith("Asked about 2 lines. ") and ".." not in out, out
     assert f" {t('email.err_no_transport', 'en')} They see" in out, out
+
+
+class _Crash(BaseException):
+    """The process stopping after the transport took the email, before its outcome is kept."""
+
+
+async def test_a_slow_email_never_blocks_a_write_to_the_company(client, session, monkeypatch):
+    """The Ask's email goes out with no transaction open, so another writer of the company
+    does not wait on it past its lock timeout."""
+    import asyncio
+    co, bk, client_h, lines = await _setup(client, session)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        entered.set()
+        await asyncio.wait_for(release.wait(), 10)
+        return EmailResult(True, "sent")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    asking = asyncio.create_task(_ask(client, co, bk, [lines["WITHDRAWAL"]["id"]]))
+    await asyncio.wait_for(entered.wait(), 10)
+    other = await B.bank(client, co["h"])
+    release.set()
+    assert other["id"] and (await asking).status_code == 200
+
+
+@pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
+async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_relay_deduplicates(
+        client, session, monkeypatch, relay):
+    co, bk, client_h, lines = await _setup(client, session)
+    calls = []
+    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: relay)
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        calls.append(kw["operation_id"])
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    idem = B.key()
+    with pytest.raises(_Crash):
+        await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    _sent(monkeypatch)
+    again = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert again.status_code == 200, again.text
+    assert again.json()["email"] == {"state": "unconfirmed", "recipients": [{"name": "Viewer", "state": "unconfirmed"}]}
+    assert "may have gone out" in again.json()["outcome"] and len(calls) == 1
+
+
+@pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
+async def test_an_unconfirmed_email_is_replayed_under_its_operation_id_only_through_a_deduplicating_relay(
+        client, session, monkeypatch, relay):
+    co, bk, client_h, lines = await _setup(client, session)
+    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: relay)
+    first_calls = _sent(monkeypatch, EmailResult(False, "timeout", unconfirmed=True))
+    idem = B.key()
+    first = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+    assert first.json()["email"]["state"] == "unconfirmed"
+    calls = _sent(monkeypatch)
+    again = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
+    if relay:
+        assert [c["operation_id"] for c in calls] == [first_calls[0]["operation_id"]]
+        assert again["email"]["state"] == "sent"
+    else:
+        assert calls == [] and again == first.json()
+
+
+async def test_the_answer_names_each_recipients_outcome(client, session, monkeypatch):
+    _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    out = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])).json()
+    assert out["email"]["recipients"] == [{"name": "Viewer", "state": "sent"}]

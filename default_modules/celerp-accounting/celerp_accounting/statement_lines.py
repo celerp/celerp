@@ -611,50 +611,120 @@ async def write_ask(db: AsyncSession, *, company_id: uuid.UUID, lines: list[Bank
                           action_url=QUESTIONS_URL, i18n={"title": title_key, "body": body_key, "params": params})
 
 
-async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str, plan: dict) -> dict:
-    """Email each member ``plan`` names who still answers bank questions here (client_users,
-    the plan's own check, read again at send time) under an operation id of ``key``, so a
-    second run of the key sends no second email; the Ask's outcome names those left out.
-    Refused, with nothing sent, when none of them still does."""
-    from celerp.config import settings
-    from celerp.models.company import Company, User
+async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str) -> dict:
+    """Email the members the Ask claimed under ``key`` names, through the one durable send
+    (email.send_durably): each recipient's attempt is kept on the Ask's own record, so no
+    request key names it, and committed before it goes out, with no lock held while it does.
+    A member is emailed only while still answering bank questions here (client_users, read
+    again at each send); the outcome names those left out. A run of the key answers each
+    recipient as stored: an attempt cut off after it may have gone out is not sent again
+    unless the relay that took it deduplicates its operation id (email.next_step). Refused,
+    with nothing sent, when none of the members still answers."""
     from celerp.services import email as email_service
-    from ui.i18n import as_sentence, t
 
-    allowed = {str(u.id): u for u in await client_users(db, company_id)}
-    members = [allowed[m] for m in plan["members"] if m in allowed]
-    if not members:
-        raise _no_client_user()
-    left_out = [u.name for u in (await db.execute(select(User).where(User.id.in_(
-        [uuid.UUID(m) for m in plan["members"] if m not in allowed])).order_by(User.name, User.id))).scalars()]
+    sending: list[tuple[str, email_service.Attempt]] = []
+
+    async def begin(session) -> list:
+        claim = await _ask_claim(session, company_id, key)
+        plan, done = claim.metadata_["result"], dict(claim.metadata_.get("email") or {})
+        allowed = {str(u.id): u for u in await client_users(session, company_id)}
+        if not done:
+            if not any(m in allowed for m in plan["members"]):
+                raise _no_client_user()
+            done = {"message": await _ask_message(session, company_id, plan), "recipients": {}, "left_out": []}
+        recipients, left_out = dict(done["recipients"]), list(done["left_out"])
+        for member in plan["members"]:
+            record = recipients.get(member)
+            step = "new" if record is None else email_service.next_step(record)
+            if step not in ("new", "replay") or member in left_out:
+                continue
+            if member not in allowed:
+                left_out.append(member)
+                continue
+            to = record["to"] if step == "replay" else allowed[member].email
+            attempt = email_service.Attempt(
+                record["operation_id"] if step == "replay" else
+                str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member}")),
+                {**done["message"], "to": to})
+            if step == "replay" and email_service.payload_digest(attempt.message) != record["digest"]:
+                continue
+            recipients[member] = {**email_service.attempt_record(attempt), "to": to}
+            sending.append((member, attempt))
+        claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients, "left_out": left_out}}
+        return [attempt for _m, attempt in sending]
+
+    async def settle(session, results: list) -> dict:
+        claim = await _ask_claim(session, company_id, key)
+        done = claim.metadata_["email"]
+        recipients = dict(done["recipients"])
+        for (member, attempt), result in zip(sending, results):
+            record = recipients.get(member) or {}
+            if record.get("operation_id") == attempt.operation_id and record.get("state") == "sending":
+                recipients[member] = email_service.settled_record(record, result)
+        claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients}}
+        return await _ask_outcome(session, claim.metadata_["result"], claim.metadata_["email"])
+
+    return await email_service.send_durably(db, begin, settle)
+
+
+async def _ask_claim(db: AsyncSession, company_id: uuid.UUID, key: str):
+    """The Ask's claim under ``key``, held in the order every writer takes: the company, then its rows."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(db, company_id)
+    return (await db.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).with_for_update())).scalar_one()
+
+
+async def _ask_message(db: AsyncSession, company_id: uuid.UUID, plan: dict) -> dict:
+    """The one email every recipient of the Ask gets, fixed before the first goes out."""
+    from celerp.config import settings
+    from celerp.models.company import Company
+    from ui.i18n import t
+
     company = await db.get(Company, company_id)
     base = (settings.celerp_public_url or "").rstrip("/")
     link = f"{base}{QUESTIONS_URL}" if base else None
-    body_key, params = plan["body_key"], plan["params"]
-    text = "\n\n".join(filter(None, [str(t(body_key, **params)), plan["note"],
+    text = "\n\n".join(filter(None, [str(t(plan["body_key"], **plan["params"])), plan["note"],
                                      link or str(t("acct.recon_questions_where"))]))
-    html = "".join(f"<p>{_html(p)}</p>" for p in text.split("\n\n"))
-    worst, failed = "sent", []
-    for member in members:
-        result = await email_service.send_email(
-            to=member.email, subject=str(t(_TITLE_KEY)), body_html=html, body_text=text,
-            from_name=company.name if company else "",
-            operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member.id}")),
-            fail_closed_on_uncertain=True)
-        state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
-        if state != "sent":
-            failed.append((member.name, state, as_sentence(str(t(result.reason)) if result.reason else result.detail or "")))
-        worst = min(worst, state, key=_EMAIL_STATES.index)
+    return {"subject": str(t(_TITLE_KEY)), "body_html": "".join(f"<p>{_html(p)}</p>" for p in text.split("\n\n")),
+            "body_text": text, "from_name": company.name if company else ""}
+
+
+async def _ask_outcome(db: AsyncSession, plan: dict, done: dict) -> dict:
+    """The Ask's answer, read from each recipient's stored attempt: one still sending reads as
+    unconfirmed, since it may have gone out."""
+    from datetime import datetime, timezone
+
+    from celerp.models.company import User
+    from celerp.services import email as email_service
+    from ui.i18n import as_sentence, t
+
+    ids = [uuid.UUID(m) for m in plan["members"]]
+    names = {str(u.id): u.name for u in (await db.execute(select(User).where(User.id.in_(ids)))).scalars()}
+    now = datetime.now(timezone.utc)
+    rows = []
+    for member in sorted(done["recipients"], key=lambda m: (names.get(m, ""), m)):
+        record = done["recipients"][member]
+        state = email_service.attempt_state(record, now)
+        rows.append({"name": names.get(member, ""), "state": "unconfirmed" if state == "sending" else state,
+                     "reason": record.get("reason"), "detail": record.get("detail")})
+    worst = min((r["state"] for r in rows), key=_EMAIL_STATES.index, default="sent")
+    failed = [r for r in rows if r["state"] != "sent"]
     count, one = len(plan["asked"]), len(plan["asked"]) == 1
     if not failed:
         outcome = t("acct.recon_asked_one" if one else "acct.recon_asked", count=count,
-                    names=", ".join(m.name for m in members))
+                    names=", ".join(r["name"] for r in rows))
     else:
-        state, reason = failed[0][1], failed[0][2]
-        outcome = t(_ASKED_NOT_SENT[state][one], count=count, name=", ".join(n for n, _s, _r in failed), reason=reason)
-    if left_out:
+        first = failed[0]
+        reason = as_sentence(str(t(first["reason"])) if first["reason"] else first["detail"] or "")
+        outcome = t(_ASKED_NOT_SENT[first["state"]][one], count=count, name=", ".join(r["name"] for r in failed),
+                    reason=reason)
+    if left_out := sorted(names.get(m, "") for m in done["left_out"]):
         outcome = f"{outcome} {t('acct.recon_asked_left_out', names=', '.join(left_out))}"
-    return {"asked": plan["asked"], "outcome": str(outcome), "email": {"state": worst}}
+    return {"asked": plan["asked"], "outcome": str(outcome),
+            "email": {"state": worst, "recipients": [{"name": r["name"], "state": r["state"]} for r in rows]}}
 
 
 # The outcome of asking when an email did not go out, by send state, then by whether one line was asked.

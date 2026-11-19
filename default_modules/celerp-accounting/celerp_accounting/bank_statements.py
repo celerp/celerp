@@ -1916,25 +1916,7 @@ async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(
             await db.commit()
         else:
             await db.rollback()
-    return await _ask_emails(db, company_id, key)
-
-
-async def _ask_emails(db: AsyncSession, company_id: uuid.UUID, key: str) -> dict:
-    """The outcome of the Ask claimed under ``key``, its emails sent once and the outcome kept
-    on the Ask's own record, so no request key names it: the record is held while they go
-    out, so a concurrent run of the key waits and answers the stored outcome, and a run
-    stopped before its outcome was stored sends again under the same operation ids."""
-    from celerp.models.ledger import LedgerEntry
-    from celerp.services.company_lock import lock_company
-
-    await lock_company(db, company_id)  # the order every writer takes: the company, then its rows
-    claim = (await db.execute(select(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).with_for_update())).scalar_one()
-    if (done := claim.metadata_.get("email")) is None:
-        done = await SL.email_ask(db, company_id=company_id, key=key, plan=claim.metadata_["result"])
-        claim.metadata_ = {**claim.metadata_, "email": done}
-    await db.commit()
-    return done
+    return await SL.email_ask(db, company_id=company_id, key=key)
 
 
 class LineIds(BaseModel):
