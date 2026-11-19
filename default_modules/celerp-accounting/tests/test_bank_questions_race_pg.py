@@ -4,9 +4,8 @@
 against committed data in a database of the test's own.
 
 The key is claimed in the Ask's own transaction before any question or notice is written, so
-another request under a claimed key is refused before it writes anything, the same request run
-twice at once writes once, emails each member once and both runs answer the same, and a run cut
-off after its questions were kept emails on retry under the same operation ids."""
+another request under a claimed key is refused before it writes anything. The same Ask sent twice
+at once and its email lifecycle are covered in test_bank_questions_races_pg.py."""
 
 from __future__ import annotations
 
@@ -46,13 +45,11 @@ def _ask(c, co, bk, line_ids, key):
                   json={"line_ids": line_ids, "note": "What was this for?", "idempotency_key": key})
 
 
-def _sent(monkeypatch, fail_first: bool = False):
+def _sent(monkeypatch):
     calls = []
 
     async def fake(to, subject, body_html, body_text="", **kw):
         calls.append(kw["operation_id"])
-        if fail_first and len(calls) == 1:
-            raise RuntimeError("the process stopped before the email went out")
         return EmailResult(True, "sent")
     monkeypatch.setattr("celerp.services.email.send_email", fake)
     return calls
@@ -107,30 +104,3 @@ async def test_another_request_under_a_key_being_claimed_writes_nothing(committe
     assert asked == {"WITHDRAWAL": 1, "TRANSFER": None}
     assert notices == 1 and len(calls) == 1
 
-
-async def test_the_same_request_twice_at_once_writes_and_emails_once(committed_engine, own_client, monkeypatch):
-    calls = _sent(monkeypatch)
-    co, bk, lines = await _setup(own_client, committed_engine)
-    ids = [lines["WITHDRAWAL"], lines["TRANSFER"]]
-    a, b = await _race(committed_engine, own_client, co, bk, monkeypatch, ids, ids, B.key())
-    assert a.status_code == 200 and b.status_code == 200, (a.text, b.text)
-    assert a.json() == b.json()
-    asked, notices = await _state(committed_engine, co)
-    assert asked == {"WITHDRAWAL": 1, "TRANSFER": 1}
-    assert notices == 1 and len(calls) == 1
-
-
-async def test_a_run_stopped_before_its_emails_emails_once_on_retry(committed_engine, own_client, monkeypatch):
-    calls = _sent(monkeypatch, fail_first=True)
-    co, bk, lines = await _setup(own_client, committed_engine)
-    key = B.key()
-    with pytest.raises(RuntimeError):
-        await _ask(own_client, co, bk, [lines["WITHDRAWAL"]], key)
-    assert (await _state(committed_engine, co))[0]["WITHDRAWAL"] == 1  # the question was kept
-    r = await _ask(own_client, co, bk, [lines["WITHDRAWAL"]], key)
-    assert r.status_code == 200, r.text
-    again = await _ask(own_client, co, bk, [lines["WITHDRAWAL"]], key)
-    assert again.json() == r.json()
-    assert len(calls) == 2 and len(set(calls)) == 1  # the stopped attempt and one send, one operation id
-    asked, notices = await _state(committed_engine, co)
-    assert asked["WITHDRAWAL"] == 1 and notices == 1
