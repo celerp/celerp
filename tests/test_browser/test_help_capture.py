@@ -23,7 +23,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
+from celerp.help.bundle import MAX_IMAGE_BYTES
+from celerp.help.checks import CAPTURE_MARKER, shipped_pages
 from celerp.services.business_time import business_today
 from celerp_labels.presets import PRESET_TEMPLATES
 from test_helpers import grant_permission

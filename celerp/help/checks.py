@@ -22,7 +22,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from celerp.help.registry import CORE, CORE_HELP_DIR, page_files
-from celerp.help.schema import MAX_IMAGE_BYTES, load_file, module_prefix
+from celerp.help.bundle import MAX_IMAGE_BYTES
+from celerp.help.schema import load_file, module_prefix
 from celerp.help.search import covers
 from celerp.modules.loader import (
     NAV_SCREEN_HELP, first_party_names, installed_help_dirs, module_search_path, read_manifest,
