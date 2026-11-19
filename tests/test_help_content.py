@@ -74,3 +74,8 @@ def test_no_help_text_in_catalogs(pages):
 def test_help_ledger(pages):
     """Every shipped guide id is in the ledger and every live ledger id is shipped."""
     assert checks.check_ledger(pages) == []
+
+
+def test_help_translations(pages):
+    """Every guide catalog is valid and the bundle built from it passes the bundle rules."""
+    assert checks.check_translations(pages) == []

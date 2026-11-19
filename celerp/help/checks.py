@@ -17,14 +17,15 @@ import subprocess
 import sys
 import textwrap
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from celerp.help.registry import CORE, CORE_HELP_DIR, page_files
-from celerp.help.bundle import MAX_IMAGE_BYTES, MODULE_NAME, TOPIC_ID
+from celerp.help.bundle import MAX_IMAGE_BYTES, MODULE_NAME, TOPIC_ID, bundle_problems
 from celerp.help.ledger import LEDGER_FILE, SITE_LANGUAGES, ledger
-from celerp.help.translations import catalog_languages
+from celerp.help.translations import catalog, catalog_languages, entry_state
 from celerp.help.schema import load_file, module_prefix
 from celerp.help.search import covers
 from celerp.modules.loader import (
@@ -337,6 +338,41 @@ def check_ledger(pages: list[PageFile]) -> list[str]:
     except ValueError as e:
         return [str(e)]
     return [f"{LEDGER_FILE.name}: {p}" for p in _ledger_problems(data, pages)]
+
+
+def check_translations(pages: list[PageFile]) -> list[str]:
+    """Each catalog parses, names live pages only, and its fresh entries are valid with
+    unique titles; the bundle built from them and the English passes bundle_problems,
+    so text a deploy rule rejects fails here first."""
+    from celerp.help.assemble import build_bundle  # assemble reads shipped_pages from here
+
+    data = {p.data.get("id"): p.data for p in pages if isinstance(p.data, dict)}
+    out = []
+    for lang in catalog_languages():
+        try:
+            entries = catalog(lang)
+        except ValueError as e:
+            out.append(str(e))
+            continue
+        name, titles = f"{lang}.json", {}
+        for pid, entry in entries.items():
+            if pid not in data:
+                out.append(f"{name}: {pid} is not a live page id")
+                continue
+            state, problems = entry_state(data[pid], entry)
+            out += [f"{name}: {pid}: {p}" for p in problems]
+            if state == "fresh" and isinstance(entry["title"], str):
+                if entry["title"] in titles:
+                    out.append(f"{name}: {pid}: its title is also the title of {titles[entry['title']]}")
+                titles.setdefault(entry["title"], pid)
+    if out:
+        return out
+    today = date.today().isoformat()
+    try:
+        bundle = build_bundle(lambda path: today)
+    except ValueError as e:
+        return [str(e)]
+    return [f"help.json: {p}" for p in bundle_problems(bundle)]
 
 
 _CHECKED_LINE = re.compile(r'"checked"\s*:\s*"[^"]*"')
