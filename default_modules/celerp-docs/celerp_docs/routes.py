@@ -45,7 +45,7 @@ from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.line_bodies import LineItem, WriteoffLineBody
 from celerp_docs.record_copy import conversion_of, copy_of
-from celerp_docs.taxes import TaxApplication
+from celerp.localization.taxcodes import LineTaxSnapshot
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal, refusal_detail
@@ -422,7 +422,7 @@ class DocCreatePayload(BaseModel):
     line_items: list[LineItem] = Field(default_factory=list)
     subtotal: FiniteFloat = 0
     tax: FiniteFloat = 0  # deprecated: kept for backward compat; prefer doc_taxes list
-    doc_taxes: list[TaxApplication] = Field(default_factory=list)
+    doc_taxes: list[LineTaxSnapshot] = Field(default_factory=list)
     discount: FiniteFloat = 0
     shipping: FiniteFloat = 0
     total: FiniteFloat = 0

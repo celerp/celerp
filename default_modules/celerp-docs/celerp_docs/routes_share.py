@@ -57,7 +57,7 @@ from celerp.tax_regimes import line_tax_unset, tax_text, unreadable_tax
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.doc_money import UnratedTaxError, computable_tax, document_money
-from celerp_docs.taxes import TaxApplication
+from celerp.localization.taxcodes import LineTaxSnapshot
 from celerp.services.currencies import CURRENCY_CODES
 from ui.i18n import t
 from ui.components.encode import html_response
@@ -159,16 +159,16 @@ def _str(v, limit: int = _MAX_STR) -> str | None:
     return str(v)[:limit]
 
 
-def _sanitize_taxes(raw) -> list[TaxApplication]:
+def _sanitize_taxes(raw) -> list[LineTaxSnapshot]:
     """The bundle's taxes as tax definitions, amounts left to be recomputed. A tax entry that
     cannot be read is refused by name, never dropped from the totals; only its sender can
     correct it."""
     named = unreadable_tax(raw)
     if named is not None:
         raise HTTPException(status_code=422, detail=t("documents.err_tax_unreadable_shared", tax=named))
-    out: list[TaxApplication] = []
+    out: list[LineTaxSnapshot] = []
     for tax in (raw or [])[:20]:
-        out.append(TaxApplication(
+        out.append(LineTaxSnapshot(
             code=str(tax.get("code") or "")[:64],
             rate=_num(tax.get("rate")),
             amount=0.0,  # recomputed below — never trust the sender's amount

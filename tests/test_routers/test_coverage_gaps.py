@@ -128,7 +128,7 @@ async def test_docs_create_with_doc_taxes(client):
     tok = await _reg(client)
 
     # doc_taxes path: total=0, line_items set, doc_taxes list provided
-    # TaxApplication: code (str), rate (float in %), is_compound (bool)
+    # LineTaxSnapshot: code (str), rate (float in %), is_compound (bool)
     r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice",
         "contact_id": "c:1",

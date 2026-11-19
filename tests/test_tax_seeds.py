@@ -107,12 +107,13 @@ def test_ethiopia_seeds_current_law():
 
 @pytest.mark.real_packs
 def test_quebec_qst_is_not_compound_and_charges_on_the_price():
-    from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+    from celerp.localization.taxcodes import LineTaxSnapshot
+    from celerp_docs.taxes import compute_tax_amounts
 
     rows = _rows("CA")
     qst = rows["QST 9.975%"]
     assert qst["is_compound"] is False
-    applied = [TaxApplication(code=r["name"], rate=r["rate"], order=r["default_order"], is_compound=r["is_compound"])
+    applied = [LineTaxSnapshot(code=r["name"], rate=r["rate"], order=r["default_order"], is_compound=r["is_compound"])
                for r in (rows["GST 5%"], qst)]
     amounts = compute_tax_amounts(applied, 1000.0, "CAD")
     assert 1000.0 + sum(a.amount for a in amounts) == pytest.approx(1149.75)

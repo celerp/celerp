@@ -4,26 +4,15 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import BaseModel
-
+from celerp.localization.taxcodes import LineTaxSnapshot
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp.schemas.numbers import FiniteFloat
-
-
-class TaxApplication(BaseModel):
-    code: str            # references company tax registry by name
-    rate: FiniteFloat          # rate snapshot at doc creation time
-    amount: FiniteFloat = 0.0  # computed signed amount (+liability / -offset like WHT); server recomputes if 0
-    order: int = 0       # sequencing for stacking
-    is_compound: bool = False  # if True: applies to (base + sum of preceding tax amounts)
-    label: str = ""      # optional display override; if empty, derived from code or "Tax"
 
 
 def compute_tax_amounts(
-    taxes: list[TaxApplication],
+    taxes: list[LineTaxSnapshot],
     base: float,
     currency: str = "USD",
-) -> list[TaxApplication]:
+) -> list[LineTaxSnapshot]:
     """Recompute tax amounts in order, respecting is_compound.
 
     For each tax (sorted by order):
@@ -34,7 +23,7 @@ def compute_tax_amounts(
     Returns a new list with amounts filled in.
     """
     sorted_taxes = sorted(taxes, key=lambda t: t.order)
-    result: list[TaxApplication] = []
+    result: list[LineTaxSnapshot] = []
     running_tax_total = Decimal(0)
     base_d = to_decimal(base)
 

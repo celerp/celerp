@@ -19,7 +19,8 @@ from celerp.services.money import discount_from_inputs, document_line_amount, ro
 from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
                                       INBOUND_DRAFT_REVERT_STATUSES)
-from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+from celerp.localization.taxcodes import LineTaxSnapshot
+from celerp_docs.taxes import compute_tax_amounts
 from celerp.accounting_roles import catalog_refusal
 
 # The header fields a document's money comes from besides its lines: the inputs
@@ -99,13 +100,13 @@ def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] |
             raise HTTPException(status_code=422, detail=detail)
 
 
-def _definition(entry) -> TaxApplication | None:
+def _definition(entry) -> LineTaxSnapshot | None:
     """A stored tax entry as the tax definition its amount is computed from, or None when it is
     not one (not a tax object, or a rate that is not a number)."""
     if not isinstance(entry, dict):
         return None
     try:
-        return TaxApplication.model_validate({**entry, "amount": 0.0})
+        return LineTaxSnapshot.model_validate({**entry, "amount": 0.0})
     except ValueError:
         return None
 

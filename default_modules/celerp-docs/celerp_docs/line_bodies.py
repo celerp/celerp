@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from celerp.schemas.numbers import FiniteFloat
-from celerp_docs.taxes import TaxApplication
+from celerp.localization.taxcodes import LineTaxSnapshot
 
 
 class LineItem(BaseModel):
@@ -31,7 +31,7 @@ class LineItem(BaseModel):
     discount_pct: FiniteFloat | None = None
     tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
     # None: the line's tax is still for the user to set (set_new_line_taxes); it charges nothing.
-    taxes: list[TaxApplication] | None = Field(default_factory=list)
+    taxes: list[LineTaxSnapshot] | None = Field(default_factory=list)
     sell_by: str | None = None
     line_total: FiniteFloat | None = None
     # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
