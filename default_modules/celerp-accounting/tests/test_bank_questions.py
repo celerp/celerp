@@ -270,6 +270,33 @@ async def test_ask_client_email_replay_sends_once(client, session, monkeypatch):
     assert len(calls) == 2 and calls[1]["operation_id"] != calls[0]["operation_id"]
 
 
+async def test_ask_under_a_key_naming_another_asks_email_gets_its_own_plan(client, session, monkeypatch):
+    """An Ask's email outcome is kept on the Ask's own record, so no client key can name it:
+    an Ask under "K:email" with K's payload is an Ask of its own, and K still replays K."""
+    calls = _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+    lid = lines["WITHDRAWAL"]["id"]
+    idem = B.key()
+    first = await _ask(client, co, bk, [lid], idem=idem)
+    derived = await _ask(client, co, bk, [lid], idem=f"{idem}:email")
+    assert derived.status_code == 200, derived.text
+    assert len(calls) == 2 and calls[1]["operation_id"] != calls[0]["operation_id"]
+    again = await _ask(client, co, bk, [lid], idem=idem)
+    assert again.status_code == 200 and again.json() == first.json() and len(calls) == 2
+
+
+async def test_a_key_used_by_one_bank_operation_is_refused_by_another(client):
+    """Two bank operations with the same body under one key: the second is refused, never
+    answered with the first operation's result."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    key = B.key()
+    done = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": key}, headers=co["h"])
+    assert done.status_code == 200, done.text
+    other = await client.post(f"{B.API}/bank/{bk['id']}/suggest", json={"idempotency_key": key}, headers=co["h"])
+    assert other.status_code == 409 and "key" in other.text.lower(), other.text
+
+
 async def test_answer_receipt_refused_saves_nothing(client, session, monkeypatch):
     _sent(monkeypatch)
     co, bk, client_h, lines = await _setup(client, session)

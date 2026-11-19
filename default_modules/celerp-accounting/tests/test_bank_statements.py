@@ -994,3 +994,22 @@ async def test_resolve_naming_only_another_banks_line_posts_nothing_and_says_why
     assert r.status_code == 200 and row["ok"] is False, r.text
     assert row["reason"]["message_key"] == "acct.err_statement_line_not_found", r.text
     assert B.all_lines(await B.groups(client, co, b["id"]))[0]["status"] == "unmatched"
+
+
+async def test_posting_under_a_key_whose_derived_entry_key_is_taken_is_refused(client):
+    """A line's entry is written and posted under keys derived from the request key; when an
+    earlier request already holds one of them, the post is refused, never left half written."""
+    co = await B.company(client)
+    bk = await B.bank(client, co["h"])
+    await _one_month(client, co, bk, [("2026-01-05", "OFFICE SUPPLIES", "-40.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    key = B.key()
+    squat = await client.post(f"{B.API}/bank/{bk['id']}/complete", json={"idempotency_key": f"{key}:{line['id']}:p"},
+                              headers=co["h"])
+    assert squat.status_code == 200, squat.text
+    r = await B.resolve(client, co, bk["id"], idem=key, decisions=[{"line_ids": [line["id"]], "kind": "post",
+                                                                     "account_code": "5100"}])
+    assert r.status_code == 200, r.text
+    assert r.json()["results"][0]["ok"] is False, r.text
+    after = B.line_by_text(await B.groups(client, co, bk["id"]), "OFFICE SUPPLIES")
+    assert after["status"] == "unmatched" and after["matched_je_ids"] == [], after

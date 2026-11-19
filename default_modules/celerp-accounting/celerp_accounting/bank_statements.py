@@ -72,10 +72,16 @@ def _request(payload: BaseModel, **path) -> dict:
     return {**payload.model_dump(mode="json", exclude={"idempotency_key"}), **{k: str(v) for k, v in path.items()}}
 
 
-async def _replayed(db: AsyncSession, company_id: uuid.UUID, key: str, request: dict) -> dict | None:
-    """The first answer given under ``key`` for this request; None when the key is unused.
-    The same key with another request is refused."""
-    row = await keyed_event(db, company_id, key, request)
+def _bound(request: dict, operation: str) -> dict:
+    """What a key is bound to: the request and the operation it was sent to, so a key used by
+    one bank operation is refused by every other, never answered with another's result."""
+    return {**request, "operation": operation}
+
+
+async def _replayed(db: AsyncSession, company_id: uuid.UUID, key: str, request: dict, operation: str) -> dict | None:
+    """The first answer given under ``key`` for this request to ``operation``; None when the
+    key is unused. The same key with another request or operation is refused."""
+    row = await keyed_event(db, company_id, key, _bound(request, operation))
     return None if row is None else (row.metadata_ or {}).get("result")
 
 
@@ -90,10 +96,10 @@ async def _claimed(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, 
                      data={"operation": operation, "bank_account_id": None if bank_id is None else str(bank_id),
                            **(data or {})},
                      actor_id=actor_id, location_id=None, source="reconciliation", idempotency_key=key,
-                     metadata_={"request": request_fingerprint(request), "result": result})
+                     metadata_={"request": request_fingerprint(_bound(request, operation)), "result": result})
     if not getattr(entry, "was_deduped", False):
         return result, True
-    refuse_other_request((entry.metadata_ or {}).get("request"), request)
+    refuse_other_request((entry.metadata_ or {}).get("request"), _bound(request, operation))
     return (entry.metadata_ or {}).get("result"), False
 
 
@@ -114,7 +120,7 @@ def _unit(key: str, request: dict, line_ids) -> tuple[str, dict]:
 async def _unit_done(db: AsyncSession, company_id: uuid.UUID, key: str, request: dict, line_ids) -> list | None:
     """The stored outcome rows of one decision of ``key``; None while it has not run."""
     unit_key, unit_request = _unit(key, request, line_ids)
-    done = await _replayed(db, company_id, unit_key, unit_request)
+    done = await _replayed(db, company_id, unit_key, unit_request, "resolve_unit")
     return None if done is None else done["results"]
 
 
@@ -159,7 +165,7 @@ async def read_statement(payload: ReadStatement, company_id: uuid.UUID = Depends
     from celerp.ai import batch, jobs
 
     request = _request(payload)
-    if (done := await _replayed(db, company_id, payload.idempotency_key, request)) is not None:
+    if (done := await _replayed(db, company_id, payload.idempotency_key, request, "read")) is not None:
         return done
     if payload.bank_id is not None:
         await _bank(db, company_id, payload.bank_id)
@@ -514,7 +520,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
     from celerp_accounting.routes import _base_currency, add_bank
 
     request = _request(payload)
-    if (done := await _replayed(db, company_id, payload.idempotency_key, request)) is not None:
+    if (done := await _replayed(db, company_id, payload.idempotency_key, request, "import")) is not None:
         return done
     if payload.bank_id is None and payload.new_bank is None:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_import_needs_bank"))
@@ -1255,7 +1261,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
 
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "resolve")) is not None:
         return first
     await lock_company(db, company_id)
     bank = await _bank(db, company_id, bank_id)
@@ -1642,14 +1648,14 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
 
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "suggest")) is not None:
         return first
     _rows, lines, ctx, out, residue = await _suggest_input(db, company_id, bank_id)
     await db.rollback()  # a read: nothing it took is held while the model runs
     replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(company_id, actor_id, key)) \
         if residue else {}
     await lock_company(db, company_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "suggest")) is not None:
         await db.rollback()
         return first
     rows, now_lines, now_ctx, now_out, now_residue = await _suggest_input(db, company_id, bank_id)
@@ -1685,7 +1691,7 @@ async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.U
     they recorded deleted, and the lines are open again."""
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "unmatch")) is not None:
         return first
     # A document payment a line recorded is deleted the way any payment is, which locks the
     # payments recorded from unmatched ones first (after the company, before the lines).
@@ -1713,7 +1719,7 @@ async def complete_bank(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
 
     key = payload.idempotency_key
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "complete")) is not None:
         return first
     # The lock every posting takes first, before the entries that decide the balance are read:
     # a posting in flight is waited for and then counted, never judged on the books before it.
@@ -1760,7 +1766,7 @@ async def delete_statement(session_id: uuid.UUID, payload: Keyed,
 
     key = payload.idempotency_key
     request = _request(payload, session_id=session_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "delete")) is not None:
         return first
     recon, bank = await _lock_recon(db, session_id, company_id, editable=True)
     settled = (await db.execute(select(BankStatementLine.id).where(
@@ -1798,7 +1804,7 @@ async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUI
 
     key = payload.idempotency_key
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "opening")) is not None:
         return first
     await hold_fund_ledger(db, company_id)
     bank = await _bank(db, company_id, bank_id, lock=True)
@@ -1836,7 +1842,7 @@ async def reclassify(line_id: uuid.UUID, payload: Reclassify, company_id: uuid.U
     funds; the Suspense entry stays, so an undo of the line voids both."""
     key = payload.idempotency_key
     request = _request(payload, line_id=line_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "reclassify")) is not None:
         return first
     line = (await _locked_lines(db, company_id, None, [line_id], state=("posted",)))[0]
     if not is_suspense(line):
@@ -1900,7 +1906,7 @@ async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(
     question stays."""
     key, actor_id = payload.idempotency_key, user.id
     request = _request(payload, bank_id=bank_id)
-    if await _replayed(db, company_id, key, request) is None:
+    if await _replayed(db, company_id, key, request, "ask") is None:
         bank = await _bank(db, company_id, bank_id)
         lines = await _locked_lines(db, company_id, bank, payload.line_ids)
         plan = await SL.ask_plan(db, company_id=company_id, lines=lines, note=payload.note)
@@ -1910,23 +1916,23 @@ async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(
             await db.commit()
         else:
             await db.rollback()
-    return await _ask_emails(db, company_id, actor_id, key, request, bank_id)
+    return await _ask_emails(db, company_id, key)
 
 
-async def _ask_emails(db: AsyncSession, company_id: uuid.UUID, actor_id, key: str, request: dict, bank_id) -> dict:
-    """The outcome of the Ask claimed under ``key``, its emails sent once: the claim is held
-    while they go out, so a concurrent run of the key waits and answers the stored outcome, and
-    a run stopped before its outcome was stored sends again under the same operation ids."""
+async def _ask_emails(db: AsyncSession, company_id: uuid.UUID, key: str) -> dict:
+    """The outcome of the Ask claimed under ``key``, its emails sent once and the outcome kept
+    on the Ask's own record, so no request key names it: the record is held while they go
+    out, so a concurrent run of the key waits and answers the stored outcome, and a run
+    stopped before its outcome was stored sends again under the same operation ids."""
     from celerp.models.ledger import LedgerEntry
     from celerp.services.company_lock import lock_company
 
     await lock_company(db, company_id)  # the order every writer takes: the company, then its rows
-    plan = (await db.execute(select(LedgerEntry.metadata_).where(
+    claim = (await db.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key == key).with_for_update())).scalar_one()
-    email_key = f"{key}:email"
-    if (done := await _replayed(db, company_id, email_key, request)) is None:
-        done = await _recorded(db, company_id, actor_id, email_key, request, "ask_email", bank_id,
-                               await SL.email_ask(db, company_id=company_id, key=key, plan=plan["result"]))
+    if (done := claim.metadata_.get("email")) is None:
+        done = await SL.email_ask(db, company_id=company_id, key=key, plan=claim.metadata_["result"])
+        claim.metadata_ = {**claim.metadata_, "email": done}
     await db.commit()
     return done
 
@@ -1946,7 +1952,7 @@ async def withdraw_question(bank_id: uuid.UUID, payload: LineIds,
 
     key = payload.idempotency_key
     request = _request(payload, bank_id=bank_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "withdraw_question")) is not None:
         return first
     bank = await _bank(db, company_id, bank_id)
     await lock_company(db, company_id)  # the order answer_question takes: the company, then the line
@@ -2027,7 +2033,7 @@ async def answer_question(line_id: uuid.UUID, payload: Answer, company_id: uuid.
 
     key = payload.idempotency_key
     request = _request(payload, line_id=line_id)
-    if (first := await _replayed(db, company_id, key, request)) is not None:
+    if (first := await _replayed(db, company_id, key, request, "answer")) is not None:
         return first
     try:
         files = [load_file(fid, company_id, user.id) for fid in payload.file_ids]
