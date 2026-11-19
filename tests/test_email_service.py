@@ -283,3 +283,29 @@ async def test_subscription_smtp_ambiguous_failure_is_not_retriable_as_definite_
             result = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>",
                                                 fail_closed_on_uncertain=True)
     assert not result.ok and result.unconfirmed and result.reason is None
+
+
+@pytest.mark.asyncio
+async def test_an_email_is_refused_while_its_caller_holds_a_transaction_or_the_company_lock(session):
+    """No send waits on its transport while the caller holds a transaction, and with it every
+    lock the transaction took: every writer of the company would wait on the network."""
+    import uuid
+
+    from sqlalchemy import text
+
+    from celerp.services import email as email_mod
+    from celerp.services.company_lock import lock_company
+
+    async with SmtpStub() as stub:
+        with smtp_settings(stub.port):
+            await session.execute(text("SELECT 1"))
+            with pytest.raises(RuntimeError, match="transaction is open"):
+                await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+            await session.rollback()
+            await lock_company(session, uuid.uuid4())
+            with pytest.raises(RuntimeError, match="transaction is open"):
+                await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")
+            await session.rollback()
+            assert stub.messages == []
+            assert (await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>")).ok
+    assert len(stub.messages) == 1
