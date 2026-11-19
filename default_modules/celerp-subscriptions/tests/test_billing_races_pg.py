@@ -309,7 +309,7 @@ async def test_a_send_overtaken_while_in_flight_drops_its_stored_message(committ
         older = asyncio.create_task(client.post(url, headers=owner, json={"again": True, "attempt": 1}))
         try:
             await asyncio.wait_for(started.wait(), 30)
-            monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+            monkeypatch.setattr(email, "SEND_TIMEOUT", email.SEND_TIMEOUT * 0)
             newer = await client.post(url, headers=owner, json={"again": True, "attempt": 2})
         finally:
             release.set()
@@ -366,7 +366,7 @@ async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_en
             assert pressed.status_code == 409, pressed.text
             assert pressed.json()["detail"]["message_key"] == "subscriptions.err_send_in_progress"
             # The same record, once older than a send can take, reads as cut off.
-            monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+            monkeypatch.setattr(email, "SEND_TIMEOUT", email.SEND_TIMEOUT * 0)
             stale = next(r for r in (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()["rows"]
                          if r["period_index"] == 0)
             assert (stale["send"], stale["again"]) == ("unconfirmed", True)
@@ -420,7 +420,7 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
         class Later(real_datetime):
             @classmethod
             def now(cls, tz=None):
-                return real_datetime.now(tz) + billing.SEND_TIMEOUT + timedelta(minutes=1)
+                return real_datetime.now(tz) + email.SEND_TIMEOUT + timedelta(minutes=1)
         monkeypatch.setattr(billing, "datetime", Later)
         row = next(r for r in (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()["rows"]
                    if r["period_index"] == 0)
@@ -490,7 +490,7 @@ async def test_mark_as_read_after_waiting_leaves_a_send_cut_off_since_the_page_w
     async with _app_client(factory) as (client, _pending):
         shown = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert _send_kinds(shown) == ["send_sending"]
-        _clock(monkeypatch, billing.SEND_TIMEOUT + timedelta(minutes=1))
+        _clock(monkeypatch, email.SEND_TIMEOUT + timedelta(minutes=1))
         ack = await mark_read(client, owner, shown)
         assert ack.status_code == 200, ack.text
         assert _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json()) == ["send_unconfirmed"]

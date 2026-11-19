@@ -52,9 +52,15 @@ class Attempt(NamedTuple):
     message: dict
 
 
+def payload_json(message: dict) -> str:
+    """The stored form of an email's send_email arguments: every character past ASCII written
+    as itself, so a size limit counts it once."""
+    return json.dumps(message, sort_keys=True, ensure_ascii=False)
+
+
 def payload_digest(message: dict) -> str:
     """The digest of an email's stored form, which a replay of its attempt must match."""
-    return hashlib.sha256(json.dumps(message, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return hashlib.sha256(payload_json(message).encode()).hexdigest()
 
 
 def attempt_record(attempt: Attempt) -> dict:

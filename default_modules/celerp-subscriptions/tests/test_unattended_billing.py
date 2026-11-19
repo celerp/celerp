@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+from celerp.services import email
 from celerp.services.email import EmailResult
 from celerp_subscriptions.billing import ends_failure, write_agreement
 from celerp_subscriptions.periods import BILLED
@@ -44,7 +45,6 @@ class _Mail:
 
 @pytest.fixture
 def mail(monkeypatch):
-    from celerp.services import email
 
     m = _Mail()
     monkeypatch.setattr(email, "send_email", m)
@@ -54,8 +54,7 @@ def mail(monkeypatch):
 def _stopped_long_ago(monkeypatch) -> None:
     """The process stopped mid-send longer ago than a send can take, so the send it left
     recorded as sending is no longer with the mail server: it reads as cut off."""
-    from celerp_subscriptions import billing
-    monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+    monkeypatch.setattr(email, "SEND_TIMEOUT", email.SEND_TIMEOUT * 0)
 
 
 async def _auto(client, hd, *, start, catchup=0, send=False, **fields) -> str:
@@ -396,7 +395,6 @@ async def test_a_document_voided_while_it_is_emailed_stays_void(client, session,
         assert r.status_code == 200, r.text
         return await real(to, subject, body_html, body_text, **kw)
 
-    from celerp.services import email
     monkeypatch.setattr(email, "send_email", void_then_send)
     await tick(session, cid, "2026-07-01")
     [doc] = await billed_docs(session, eid)
@@ -419,7 +417,6 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     async def cut_off(*_, **__):
         raise asyncio.CancelledError
 
-    from celerp.services import email
     monkeypatch.setattr(email, "send_email", cut_off)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
@@ -491,7 +488,6 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
         assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
         return await original(to, subject, body_html, body_text, **kw)
 
-    from celerp.services import email
     monkeypatch.setattr(email, "send_email", superseded)
     await tick(session, cid, "2026-07-01")
     state = await template(client, hd, eid)
@@ -503,7 +499,6 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
 
 async def test_relay_retry_keeps_original_transport_identity(client, session, monkeypatch, mail):
     import asyncio
-    from celerp.services import email
 
     monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
     freeze_day(monkeypatch, "2026-07-01")
@@ -566,7 +561,6 @@ async def test_inactive_company_is_not_billed(client, session, monkeypatch):
 
 async def test_uncertain_email_reuses_original_payload_without_recomposition(client, session, monkeypatch, mail):
     import asyncio
-    from celerp.services import email
     from celerp_docs import routes as docs_routes
 
     monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
@@ -632,7 +626,6 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     import uuid
     from sqlalchemy import delete
     from celerp.models.subscription_email import SubscriptionEmailAttempt
-    from celerp.services import email
 
     monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
     freeze_day(monkeypatch, "2026-07-01")
@@ -663,7 +656,6 @@ async def test_uncertain_send_replay_window_enforced_at_api(client, session, mon
     import asyncio
     import uuid
     from datetime import datetime, timedelta, timezone
-    from celerp.services import email
     from celerp.models.subscription_email import SubscriptionEmailAttempt
     from celerp_subscriptions import billing
 
@@ -770,7 +762,6 @@ async def _cut_off_send(client, session, monkeypatch) -> tuple[dict, str, str]:
     """An auto-sent invoice whose send the relay took and was cut off before its answer,
     long enough ago that it reads as cut off: (headers, company id, agreement id)."""
     import asyncio
-    from celerp.services import email
 
     monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
     freeze_day(monkeypatch, "2026-07-01")
@@ -796,7 +787,6 @@ async def test_a_cut_off_send_is_retried_only_as_the_same_message_to_a_live_docu
     document was voided since, or the stored operation or message no longer match the send,
     a plain retry is refused by key and nothing is sent."""
     import uuid
-    from celerp.services import email
     from celerp_subscriptions import billing
 
     hd, cid, eid = await _cut_off_send(client, session, monkeypatch)
