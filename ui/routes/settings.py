@@ -20,7 +20,7 @@ from ui.components.shell import base_shell, page_header, flash, toast_header, pa
 from ui.components.cards import section_card
 from ui.components.operation_key import operation_key_input
 from ui.components.preview_confirm import binding_input
-from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
+from ui.components.table import EMPTY, bulk_toolbar, editable_cell, searchable_select, select_all_th, unwrap_address
 from celerp.tax_regimes import TAX_TYPES, country_name
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
@@ -3576,6 +3576,9 @@ def _localization_card(settings: dict) -> FT:
         actions.append(Button(t("btn.undo"), cls="btn btn--secondary ml-sm", hx_post="/settings/sales/localization/undo",
                               hx_vals=hx_vals({"operation_id": applied["operation_id"]}),
                               hx_target="#localization-panel"))
+        if applied.get("item_rate_table"):
+            actions.append(Button(t("rate_review.title"), cls="btn btn--secondary ml-sm",
+                                  hx_get=_rate_review_url(applied["operation_id"]), hx_target="#localization-panel"))
     return section_card(
         t("localization.title"),
         P(status),
@@ -3589,8 +3592,9 @@ def _localization_card(settings: dict) -> FT:
 def _localization_preview(preview: dict) -> FT:
     """What Update localization changes, with Confirm carrying the preview's binding."""
     diff = preview.get("diff") or {}
-    lines = [P(t(f"localization.{kind}", names=", ".join(row["name"] for row in rows)))
-             for kind, rows in diff.items() if rows and kind != "item_rates"]
+    label = {"item_rates": "hs_prefix"}
+    lines = [P(t(f"localization.{kind}", names=", ".join(row[label.get(kind, "name")] for row in rows)))
+             for kind, rows in diff.items() if rows]
     return Form(
         *(lines or [P(t("localization.nothing"))]),
         *binding_input({"binding": preview.get("fingerprint")}),
@@ -3600,6 +3604,44 @@ def _localization_preview(preview: dict) -> FT:
                    hx_get="/settings/sales/localization/close", hx_target="#localization-panel"),
             cls="page-actions"),
         hx_post="/settings/sales/localization/confirm", hx_target="#localization-panel",
+    )
+
+
+def _rate_review_url(operation_id: str, path: str = "") -> str:
+    return f"/settings/sales/localization/rate-review/{operation_id}{path}"
+
+
+def _rate_review_panel(operation_id: str, proposal: dict, code_names: dict[str, str],
+                       notice: str = "") -> FT:
+    """Review item rates: the items the update gives a different tax code by HS code, ticked and
+    applied with the bulk toolbar (bound to the list shown), with Undo of what the review applied.
+    ``code_names`` names the items' current codes; ``notice`` reports items left as they are."""
+    items = proposal.get("items") or []
+    url = _rate_review_url(operation_id)
+
+    def row(item: dict) -> FT:
+        current = ", ".join(code_names.get(code, code) for code in item.get("old") or [])
+        return Tr(Td(Input(type="checkbox", cls="bulk-select", name="selected", value=item["item_id"]),
+                     cls="col-checkbox"),
+                  Td(item.get("sku") or EMPTY), Td(item.get("name") or EMPTY), Td(item.get("hs_code") or EMPTY),
+                  Td(current or EMPTY), Td(item.get("code_name") or EMPTY), cls="data-row")
+
+    review = (P(t("rate_review.hint"), cls="text-muted"),
+              bulk_toolbar("rate-review-table", [
+                  {"value": "apply", "label": t("rate_review.apply"), "method": "post",
+                   "url": f"{url}/apply?binding={proposal.get('fingerprint') or ''}", "target": "#localization-panel"}]),
+              Div(Table(Thead(Tr(select_all_th(), Th(t("th.sku")), Th(t("th.name")), Th(t("th.hs_code")),
+                                 Th(t("rate_review.col_current")), Th(t("rate_review.col_proposed")))),
+                        Tbody(*[row(item) for item in items]), cls="data-table", id="rate-review-table"),
+                  cls="table-scroll-wrap")) if items else (P(t("rate_review.none"), cls="hint"),)
+    return Div(
+        H4(t("rate_review.title")),
+        flash(notice, "warning") if notice else None,
+        *review,
+        Div(Button(t("btn.undo"), cls="btn btn--secondary", hx_post=f"{url}/undo", hx_target="#localization-panel"),
+            Button(t("btn.close"), type="button", cls="btn btn--secondary ml-sm",
+                   hx_get="/settings/sales/localization/close", hx_target="#localization-panel"),
+            cls="page-actions"),
     )
 
 

@@ -1187,6 +1187,28 @@ async def localization_undo(token: str, operation_id: str) -> dict:
         return _raise(await c.post("/settings/taxes/localization/undo", json={"operation_id": operation_id})).json()
 
 
+async def rate_review_get(token: str, operation_id: str) -> dict:
+    """GET /settings/taxes/rate-review/{operation_id}: the items the update gives a different tax
+    code by HS code (``items``) and the ``fingerprint`` an apply sends back as its binding."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/settings/taxes/rate-review/{_segment(operation_id)}")).json()
+
+
+async def rate_review_apply(token: str, operation_id: str, item_ids: list[str], binding: str) -> dict:
+    """POST /settings/taxes/rate-review/{operation_id}/apply: give the ticked items their proposed
+    code; ``skipped`` lists the ids left as they are because they were edited since."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/settings/taxes/rate-review/{_segment(operation_id)}/apply",
+                                   json={"item_ids": item_ids, "binding": binding})).json()
+
+
+async def rate_review_undo(token: str, operation_id: str) -> dict:
+    """POST /settings/taxes/rate-review/{operation_id}/undo: put back the codes the review wrote;
+    ``kept`` lists the ids left as they are because they were edited since."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/settings/taxes/rate-review/{_segment(operation_id)}/undo")).json()
+
+
 async def set_business_type(token: str, vertical: str) -> dict:
     """Set the company's business type. Returns the API result, including
     ``restart_required`` when the type's modules are not running yet."""

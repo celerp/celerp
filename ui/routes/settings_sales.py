@@ -24,6 +24,7 @@ from ui.routes.settings import (
     _check_permission,
     _localization_card,
     _localization_preview,
+    _rate_review_panel,
     _taxes_tab,
     _terms_conditions_tab,
 )
@@ -194,6 +195,34 @@ def setup_routes(app):
             notice = toast_header(t("localization.kept", names=", ".join(row["name"] for row in kept)),
                                   "warning", persist=True) if kept else {}
             return Response("", status_code=204, headers={"HX-Refresh": "true", **notice})
+        return await _localization_call(request, call)
+
+    async def _rate_review(token: str, operation_id: str, notice: str = "", left: list[str] = ()):
+        """The review panel re-read after a change; ``notice`` names the ``left`` item ids."""
+        names = [(await api.get_item(token, i)).get("name") or i for i in left]
+        code_names = {tax.get("id"): tax.get("name") for tax in await api.get_taxes(token)}
+        return _rate_review_panel(operation_id, await api.rate_review_get(token, operation_id), code_names,
+                                  t(notice, names=", ".join(names)) if names else "")
+
+    @app.get("/settings/sales/localization/rate-review/{operation_id}")
+    async def rate_review(request: Request, operation_id: str):
+        async def call(token, form):
+            return await _rate_review(token, operation_id)
+        return await _localization_call(request, call)
+
+    @app.post("/settings/sales/localization/rate-review/{operation_id}/apply")
+    async def rate_review_apply(request: Request, operation_id: str):
+        async def call(token, form):
+            skipped = (await api.rate_review_apply(token, operation_id, list(dict.fromkeys(form.getlist("selected"))),
+                                                   request.query_params.get("binding", "")))["skipped"]
+            return await _rate_review(token, operation_id, "rate_review.edited_since", skipped)
+        return await _localization_call(request, call)
+
+    @app.post("/settings/sales/localization/rate-review/{operation_id}/undo")
+    async def rate_review_undo(request: Request, operation_id: str):
+        async def call(token, form):
+            kept = (await api.rate_review_undo(token, operation_id))["kept"]
+            return await _rate_review(token, operation_id, "localization.kept", kept)
         return await _localization_call(request, call)
 
     @app.get("/settings/sales/localization/close")
