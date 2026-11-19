@@ -306,6 +306,9 @@ def _row_matches(row: dict, want: dict) -> bool:
                     return False
             except (TypeError, ValueError):
                 return False
+        elif field == "category":
+            if row.get("category") != value:
+                return False
         elif bool(row.get(field)) != value:
             return False
     return True

@@ -1,22 +1,37 @@
 {
   "TH": {
     "version": "fixture",
-    "schema_version": 1,
-    "sha256": "1c1a2679a1e7f99dbee7b914501212570d3c0f6c6580f124e5a4406c4f744416"
+    "schema_version": 2,
+    "sha256": "be6152a01b33f31d6b9fad2da5017b95f36ac639da8730425fe60757a85abe7f"
   },
   "MY": {
     "version": "fixture",
-    "schema_version": 1,
-    "sha256": "1694b05c375535dbe55068b854c2c4f1b356395d7c0ebf096e8182013e55f321"
+    "schema_version": 2,
+    "sha256": "252e2b4000161356e5ab3a66e72ceb7953f1c093231ccf9c778a3d30cf5a3cd7"
   },
   "AU": {
     "version": "fixture",
-    "schema_version": 1,
-    "sha256": "7720729a2dc480e51fa2f6d4f22fbd5c2bb69d724bdaf1df328005746efb3078"
+    "schema_version": 2,
+    "sha256": "57d945cd32df596d9c36c66ab9770675c5624d7792b8ad7fcd2d5f089aa38eb7"
   },
   "IN": {
     "version": "fixture",
-    "schema_version": 1,
-    "sha256": "5211832646f83bd7b85fe1e82b01e36348d9a7a5942ae9dd8185498559e80c23"
+    "schema_version": 2,
+    "sha256": "fdeeefea73d008d2b4201db9919483f47664c867307cb741ed3e30cf1c239087"
+  },
+  "zzPH": {
+    "version": "fixture",
+    "schema_version": 2,
+    "sha256": "bc7ba4bbaef684f7e5d13133a2951b3905e6a38b5ac7e382d95ceab694c7b459"
+  },
+  "zzES": {
+    "version": "fixture",
+    "schema_version": 2,
+    "sha256": "77339cd431d4ba028d4473ee8f4197895440f5ce80d67a0c76288e2deeb30193"
+  },
+  "zzET": {
+    "version": "fixture",
+    "schema_version": 2,
+    "sha256": "0ec5f3bc7c706c5f6e67e8d79470273896fc7afe714f0c287ab2cb69d0875b09"
   }
 }

@@ -91,7 +91,7 @@ class TaxCode(BaseModel):
         for earlier, later in zip(self.versions, self.versions[1:]):
             if earlier.valid_to is None or earlier.valid_to >= later.valid_from:
                 ends = earlier.valid_to or "an open end"
-                raise ValueError(f"{name}: the version ending {ends} overlaps the version starting "
+                raise ValueError(f"{name}: versions overlap: the version ending {ends} overlaps the version starting "
                                  f"{later.valid_from}")
         return self
 

@@ -213,7 +213,7 @@ def test_pack_missing_is_absent_and_logged(l10n_dir, caplog):
 
     _drop(l10n_dir, "AU")
     with caplog.at_level(logging.ERROR):
-        assert tax_countries() == ("TH", "MY", "IN")
+        assert tax_countries() == ("TH", "MY", "IN", "zzPH", "zzES", "zzET")
     assert missing() == ("AU",)
     assert "AU.json" in caplog.text
 
@@ -226,7 +226,7 @@ def test_loader_makes_no_network(l10n_dir, monkeypatch):
 
     monkeypatch.setattr(socket.socket, "connect", _refuse)
     monkeypatch.setattr(socket, "create_connection", _refuse)
-    assert set(packs()) == {"TH", "MY", "AU", "IN"}
+    assert set(packs()) == {"TH", "MY", "AU", "IN", "zzPH", "zzES", "zzET"}
     assert packs()["TH"]["currency"] == "THB"
 
 
@@ -644,14 +644,14 @@ async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, 
     path = l10n_dir / "packs" / "TH.json"
     pack = json.loads(path.read_text(encoding="utf-8"))
     pack["version"] = "2099.1"
-    pack["taxes"][0]["rate"] = float(pack["taxes"][0]["rate"]) + 1
+    pack["taxes"][0]["versions"][0]["rate"] += 1
     path.write_text(json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     lock_path = l10n_dir / "packs.lock.json"
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     lock["TH"] = {**lock["TH"], "version": "2099.1", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     _reset()
-    assert get_regime("TH")["taxes"] == pack["taxes"]
+    assert get_regime("TH")["taxes"][0]["rate"] == pack["taxes"][0]["versions"][0]["rate"]
 
     await _start(monkeypatch)
     for read in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):

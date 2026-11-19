@@ -1,0 +1,63 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 2,
+  "country": "zzPH",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "PHP"
+  },
+  "taxes": [
+    {
+      "id": "zzph-vat-12",
+      "name": "VAT 12%",
+      "tax_type": "both",
+      "category": "standard",
+      "is_default": true,
+      "description": "Fixture VAT",
+      "versions": [
+        {
+          "rate": 12.0
+        }
+      ]
+    },
+    {
+      "id": "zzph-vat-exempt",
+      "name": "VAT exempt",
+      "tax_type": "both",
+      "category": "exempt",
+      "description": "Fixture exempt",
+      "versions": [
+        {
+          "rate": 0.0
+        }
+      ]
+    },
+    {
+      "id": "zzph-ewt-2-sales",
+      "name": "EWT 2% sales",
+      "tax_type": "sales",
+      "category": "withholding",
+      "withholding_point": "payment",
+      "description": "Fixture expanded withholding the customer deducts",
+      "versions": [
+        {
+          "rate": 2.0
+        }
+      ]
+    },
+    {
+      "id": "zzph-ewt-2",
+      "name": "EWT 2%",
+      "tax_type": "purchase",
+      "category": "withholding",
+      "withholding_point": "payment",
+      "default_order": 1,
+      "description": "Fixture expanded withholding on services",
+      "versions": [
+        {
+          "rate": 2.0
+        }
+      ]
+    }
+  ]
+}

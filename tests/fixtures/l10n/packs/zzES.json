@@ -1,0 +1,105 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 2,
+  "country": "zzES",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "EUR"
+  },
+  "taxes": [
+    {
+      "id": "zzes-iva-21",
+      "name": "IVA 21%",
+      "tax_type": "both",
+      "category": "standard",
+      "is_default": true,
+      "description": "Fixture standard IVA",
+      "versions": [
+        {
+          "rate": 21.0
+        }
+      ]
+    },
+    {
+      "id": "zzes-iva-10",
+      "name": "IVA 10%",
+      "tax_type": "both",
+      "category": "reduced",
+      "description": "Fixture reduced IVA",
+      "versions": [
+        {
+          "rate": 10.0
+        }
+      ]
+    },
+    {
+      "id": "zzes-iva-4",
+      "name": "IVA 4%",
+      "tax_type": "both",
+      "category": "reduced",
+      "description": "Fixture super-reduced IVA",
+      "versions": [
+        {
+          "rate": 4.0
+        }
+      ]
+    },
+    {
+      "id": "zzes-recargo-5-2",
+      "name": "Recargo 5,2%",
+      "tax_type": "sales",
+      "category": "standard",
+      "default_order": 1,
+      "description": "Fixture equivalence surcharge",
+      "versions": [
+        {
+          "rate": 5.2
+        }
+      ]
+    },
+    {
+      "id": "zzes-iva-inversion-del-sujeto-pasivo",
+      "name": "IVA inversion del sujeto pasivo",
+      "tax_type": "purchase",
+      "category": "reverse_charge",
+      "description": "Fixture reverse charge",
+      "versions": [
+        {
+          "rate": 21.0
+        }
+      ]
+    },
+    {
+      "id": "zzes-irpf-15",
+      "name": "IRPF 15%",
+      "tax_type": "sales",
+      "category": "withholding",
+      "withholding_point": "document",
+      "default_order": 2,
+      "description": "Fixture IRPF withheld on the invoice",
+      "versions": [
+        {
+          "rate": 15.0
+        }
+      ]
+    },
+    {
+      "id": "zzes-iva-criterio-de-caja",
+      "name": "IVA criterio de caja",
+      "tax_type": "sales",
+      "category": "standard",
+      "cash_basis": true,
+      "description": "Fixture cash-basis IVA",
+      "versions": [
+        {
+          "rate": 21.0
+        }
+      ]
+    }
+  ],
+  "cash_basis_cutoff": {
+    "month": 12,
+    "day": 31,
+    "years_after": 1
+  }
+}

@@ -18,6 +18,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# A pack's country: an ISO country code, or zz and a code for a test pack.
+COUNTRY_CODE = r"(zz)?[A-Z]{2}"
+
 
 def _root() -> Path:
     return Path(os.environ.get("CELERP_L10N_DIR") or Path(__file__).resolve().parent)
@@ -63,11 +66,26 @@ def packs() -> dict[str, dict]:
             continue
         try:
             pack = json.loads(data)
-            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": pack["taxes"],
+            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": _stored_rows(pack["taxes"]),
                             "retired": pack.get("retired", [])}
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:  # NoRateInForce and pydantic errors are ValueErrors
             log.error("Country pack %s does not have the pack format: %s", path.name, exc)
     return loaded
+
+
+def _stored_rows(codes: list[dict]) -> list[dict]:
+    """A pack's tax codes as a company's tax list stores them: each code's rate in force today,
+    a withheld tax as a negative rate."""
+    import datetime as dt
+
+    from celerp.localization.taxcodes import TaxCode, rate_on
+    today, rows = dt.date.today(), []
+    for code in map(TaxCode.model_validate, codes):
+        rate = rate_on(code, today)
+        rows.append({"name": code.name, "rate": -rate if code.category == "withholding" else rate,
+                     "tax_type": code.tax_type, "is_default": code.is_default, "description": code.description,
+                     "is_compound": code.is_compound, "default_order": code.default_order})
+    return rows
 
 
 def missing() -> tuple[str, ...]:

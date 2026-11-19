@@ -33,7 +33,7 @@ pytestmark = pytest.mark.timeout(150)  # each session-script run may wait up to 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "l10n_packs.py"
 FIXTURE = REPO / "tests" / "fixtures" / "l10n"
-CODES = ("TH", "MY", "AU", "IN")
+CODES = tuple(json.loads((FIXTURE / "packs.lock.json").read_text(encoding="utf-8")))
 
 
 def _script():
@@ -128,7 +128,7 @@ _VALIDATE_CASES = {
     "not normalized": (_not_normalized, "normalized"),
     "wrong country": (lambda r: _rewrite(r, "TH", _set("country", "MY")), "country field"),
     "wrong version": (lambda r: _rewrite(r, "TH", _set("version", "2099.1")), "version"),
-    "schema_version not 1": (lambda r: _rewrite(r, "TH", _set("schema_version", 2)), "schema_version"),
+    "schema_version not 2": (lambda r: _rewrite(r, "TH", _set("schema_version", 1)), "schema_version"),
     "unknown currency": (lambda r: _rewrite(r, "TH", _bad_currency), "currency"),
     "invalid tax row": (lambda r: _rewrite(r, "TH", _bad_row), "tax row"),
     "tax side outside the three": (lambda r: _rewrite(r, "TH", _row(tax_type="output")), "tax row 0 is invalid (tax_type)"),
@@ -425,9 +425,14 @@ def _http_server(handle):
         server.server_close()
 
 
+def _pack_file(folder: Path, url: str) -> Path:
+    """The pack file a pack repository URL names (repositories are named in lower case)."""
+    repo = url.split("celerp-l10n-")[1].split("/")[0]
+    return next(p for p in folder.glob("*.json") if p.stem.lower() == repo.lower())
+
+
 def _pack_body(path: str) -> tuple[int, dict, bytes]:
-    code = path.split("celerp-l10n-")[1].split("/")[0].upper()
-    return 200, {}, (FIXTURE / "packs" / f"{code}.json").read_bytes()
+    return 200, {}, _pack_file(FIXTURE / "packs", path).read_bytes()
 
 
 @pytest.mark.parametrize("target_host, forwarded", [("localhost", False), ("127.0.0.1", True)])
@@ -508,15 +513,16 @@ def test_fixture_session_stops_when_a_fixture_pack_does_not_load(tmp_path):
 
 
 _STUB_FETCH = """
-import io, runpy, sys, urllib.request
+import io, os, runpy, sys, urllib.request
 fixture, target, script = sys.argv[1:4]
 class R(io.BytesIO):
     def __enter__(self): return self
     def __exit__(self, *e): return False
 def opener(self, request, *a, **k):
     url = request.full_url
-    code = url.split("celerp-l10n-")[1].split("/")[0].upper()
-    return R(open(f"{fixture}/packs/{code}.json", "rb").read())
+    repo = url.split("celerp-l10n-")[1].split("/")[0].lower()
+    name = next(n for n in os.listdir(f"{fixture}/packs") if n.removesuffix(".json").lower() == repo)
+    return R(open(f"{fixture}/packs/{name}", "rb").read())
 urllib.request.OpenerDirector.open = opener
 sys.argv = [script, "fetch", target]
 runpy.run_path(script, run_name="__main__")

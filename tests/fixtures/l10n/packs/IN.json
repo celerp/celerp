@@ -1,6 +1,6 @@
 {
   "format": "celerp-localization",
-  "schema_version": 1,
+  "schema_version": 2,
   "country": "IN",
   "version": "fixture",
   "company_defaults": {
@@ -8,49 +8,80 @@
   },
   "taxes": [
     {
+      "id": "in-cgst-9",
       "name": "CGST 9%",
-      "rate": 9.0,
       "tax_type": "both",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 9.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture central GST",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture central GST"
     },
     {
+      "id": "in-sgst-9",
       "name": "SGST 9%",
-      "rate": 9.0,
       "tax_type": "both",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 9.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture state GST",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture state GST"
     },
     {
+      "id": "in-igst-18",
       "name": "IGST 18%",
-      "rate": 18.0,
       "tax_type": "both",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 18.0
+        }
+      ],
       "is_default": true,
-      "description": "Fixture integrated GST",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture integrated GST"
     },
     {
+      "id": "in-exempt",
       "name": "Exempt",
-      "rate": 0.0,
       "tax_type": "both",
+      "category": "exempt",
+      "versions": [
+        {
+          "rate": 0.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture exempt",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture exempt"
     },
     {
+      "id": "in-tds-2",
       "name": "TDS 2%",
-      "rate": -2.0,
       "tax_type": "purchase",
+      "category": "withholding",
+      "withholding_point": "payment",
+      "versions": [
+        {
+          "rate": 2.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture deduction at source",
       "is_compound": false,
-      "default_order": 1
+      "default_order": 1,
+      "description": "Fixture deduction at source"
     }
   ],
   "retired": [

@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, JsonValue, ValidationError, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,8 @@ from celerp.accounting_roles import Refused, catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
+from celerp.localization import COUNTRY_CODE
+from celerp.localization.taxcodes import TaxCategory, TaxCode, TaxVersion
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -223,7 +225,7 @@ class ColumnPrefsPatch(BaseModel):
 
 
 class TaxRate(BaseModel):
-    """One tax of a company's list, as the settings API and the country packs both take it."""
+    """One tax of a company's list, as the settings API takes it."""
     name: str
     rate: FiniteFloat  # percentage, e.g. 7.0
     tax_type: Literal[TAX_TYPES] = "both"
@@ -303,6 +305,16 @@ def _known_currency(code: str) -> str:
 
 PackName = Annotated[str, AfterValidator(_named)]
 PackCurrency = Annotated[str, AfterValidator(_known_currency)]
+PACK_ID = r"^[a-z0-9][a-z0-9-]*$"
+
+
+def _iso_day(value):
+    if not (isinstance(value, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value)):
+        raise ValueError("a day is written as text, YYYY-MM-DD")
+    return date.fromisoformat(value)
+
+
+PackDate = Annotated[date, BeforeValidator(_iso_day)]
 
 
 class _PackPart(BaseModel):
@@ -320,23 +332,36 @@ class _PackPart(BaseModel):
         return data
 
 
-class PackTaxRate(_PackPart):
-    """One tax of a country pack: the TaxRate fields, written as true, false, numbers and text."""
+class PackTaxVersion(_PackPart, TaxVersion):
+    """A dated rate of a pack's tax code, the TaxVersion fields written as numbers and ISO dates."""
+    valid_from: PackDate | None = None
+    valid_to: PackDate | None = None
+
+
+class PackTaxCode(_PackPart, TaxCode):
+    """One tax code of a country pack: a TaxCode whose ``id`` and ``category`` the pack always writes,
+    so a company seeded from it knows what each code means and keeps its id across updates."""
+    id: str = Field(pattern=PACK_ID)
     name: PackName
-    rate: FiniteFloat
-    tax_type: Literal[TAX_TYPES] = "both"
-    is_default: bool = False
-    description: str = ""
-    is_compound: bool = False
-    default_order: int = 0
+    category: TaxCategory
+    versions: list[PackTaxVersion] = Field(min_length=1)
 
 
 class RetiredTaxRow(_PackPart):
-    """A row a retired entry matches: its name, as tax_name_key compares it, and each other field given."""
+    """A row a retired entry matches: its name, as tax_name_key compares it, and each other field
+    given. ``rate`` is written as a positive rate, its direction given by ``category``."""
     name: PackName
     rate: FiniteFloat | None = None
+    category: TaxCategory | None = None
     is_default: bool | None = None
     is_compound: bool | None = None
+
+    @field_validator("rate")
+    @classmethod
+    def _not_negative(cls, rate: float | None) -> float | None:
+        if rate is not None and rate < 0:
+            raise ValueError(f"rate {rate:g} is negative (a withheld tax is written with category withholding)")
+        return rate
 
 
 class RetiredTax(_PackPart):
@@ -344,7 +369,7 @@ class RetiredTax(_PackPart):
     company still holding them is told (services/tax_seed_notice.py), never changed. ``match`` is
     "all" when a list must hold every row, "any" when one is enough; with ``currency`` given, only
     a company whose books are in that currency holds the retired rows."""
-    id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    id: str = Field(pattern=PACK_ID)
     match: Literal["all", "any"]
     currency: PackCurrency | None = None
     rows: list[RetiredTaxRow] = Field(min_length=1)
@@ -354,27 +379,86 @@ class PackCompanyDefaults(_PackPart):
     currency: PackCurrency
 
 
+class ItemRate(_PackPart):
+    """Items whose HS code starts with ``hs_prefix`` take the code ``code_id`` from ``valid_from``;
+    the longest matching prefix wins."""
+    hs_prefix: str = Field(pattern=r"^[0-9]{2,8}$")
+    code_id: str
+    valid_from: PackDate
+
+
+class CashBasisCutoff(_PackPart):
+    """The last day cash-basis tax may stay unpaid: ``month`` and ``day`` of the year
+    ``years_after`` the document's year (Spain: 31 December of the following year is 12, 31, 1)."""
+    month: int = Field(ge=1, le=12)
+    day: int = Field(ge=1, le=31)
+    years_after: int = Field(ge=0)
+
+
+class IdentityScheme(_PackPart):
+    """A kind of tax number a company or contact of the country holds."""
+    scheme: str = Field(pattern=PACK_ID)
+    label: str
+    default: bool = False
+
+
+class Subdivision(_PackPart):
+    """A state, province or region of the country."""
+    code: str = Field(min_length=1)
+    name: PackName
+
+
 class CountryPack(_PackPart):
     """A country pack file (scripts/l10n_packs.py validates each one with it before locking it).
     ``version`` is a tag word, letters and digits joined by dots or hyphens, as fetch names the
-    pack's release ``v<version>``."""
+    pack's release ``v<version>``. ``subdivision_rules``, ``fields`` and ``legal`` are pack data the compliance modules read."""
     format: Literal["celerp-localization"]
-    schema_version: Literal[1]
-    country: str = Field(pattern=r"^[A-Z]{2}$")
+    schema_version: Literal[2]
+    country: str = Field(pattern=f"^{COUNTRY_CODE}$")
     version: str = Field(pattern=r"^[A-Za-z0-9]+([.-][A-Za-z0-9]+)*$")
     company_defaults: PackCompanyDefaults
-    taxes: list[PackTaxRate]
+    taxes: list[PackTaxCode]
     retired: list[RetiredTax] = []
+    item_rate_table: list[ItemRate] = []
+    cash_basis_cutoff: CashBasisCutoff | None = None
+    identity_schemes: list[IdentityScheme] = []
+    subdivisions: list[Subdivision] = []
+    subdivision_rules: list[dict[str, JsonValue]] = []
+    fields: dict[Literal["item", "contact", "document"], list[dict[str, JsonValue]]] = {}
+    legal: dict[str, JsonValue] = {}
 
     _names_unique = field_validator("taxes")(_unique_tax_names)
+
+    @field_validator("taxes")
+    @classmethod
+    def _tax_ids_unique(cls, taxes: list[PackTaxCode]) -> list[PackTaxCode]:
+        _refuse_duplicates("tax id", [tax.id for tax in taxes])
+        return taxes
 
     @field_validator("retired")
     @classmethod
     def _ids_unique(cls, retired: list[RetiredTax]) -> list[RetiredTax]:
-        ids = [entry.id for entry in retired]
-        if dupes := sorted({i for i in ids if ids.count(i) > 1}):
-            raise ValueError(f"duplicate retired id {', '.join(dupes)}")
+        _refuse_duplicates("retired id", [entry.id for entry in retired])
         return retired
+
+    @model_validator(mode="after")
+    def _cross_field(self) -> "CountryPack":
+        cash = sorted(tax.name for tax in self.taxes if tax.cash_basis)
+        if cash and self.cash_basis_cutoff is None:
+            raise ValueError(f"cash_basis_cutoff is required: {', '.join(cash)} is cash basis")
+        ids, seen = {tax.id for tax in self.taxes}, set()
+        for i, row in enumerate(self.item_rate_table):
+            if row.code_id not in ids:
+                raise ValueError(f"item_rate_table row {i}: code_id {row.code_id!r} is not a tax id of this pack")
+            if (row.hs_prefix, row.valid_from) in seen:
+                raise ValueError(f"item_rate_table row {i}: prefix {row.hs_prefix} from {row.valid_from} is listed twice")
+            seen.add((row.hs_prefix, row.valid_from))
+        return self
+
+
+def _refuse_duplicates(noun: str, values: list[str]) -> None:
+    if dupes := sorted({v for v in values if values.count(v) > 1}):
+        raise ValueError(f"duplicate {noun} {', '.join(dupes)}")
 
 
 class PaymentTermsPatch(BaseModel):

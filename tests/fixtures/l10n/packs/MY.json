@@ -1,6 +1,6 @@
 {
   "format": "celerp-localization",
-  "schema_version": 1,
+  "schema_version": 2,
   "country": "MY",
   "version": "fixture",
   "company_defaults": {
@@ -8,31 +8,49 @@
   },
   "taxes": [
     {
+      "id": "my-sales-tax-10",
       "name": "Sales Tax 10%",
-      "rate": 10.0,
       "tax_type": "sales",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 10.0
+        }
+      ],
       "is_default": true,
-      "description": "Fixture sales tax",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture sales tax"
     },
     {
+      "id": "my-service-tax-6",
       "name": "Service Tax 6%",
-      "rate": 6.0,
       "tax_type": "sales",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 6.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture service tax",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture service tax"
     },
     {
+      "id": "my-exempt",
       "name": "Exempt",
-      "rate": 0.0,
       "tax_type": "both",
+      "category": "exempt",
+      "versions": [
+        {
+          "rate": 0.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture exempt",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture exempt"
     }
   ],
   "retired": [

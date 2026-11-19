@@ -214,6 +214,7 @@ def relay():
     thread.start()
     yield server
     server.shutdown()
+    server.server_close()
     _Relay.status, _Relay.body = 200, b'{"TH": 4, "AR": 2}'
 
 

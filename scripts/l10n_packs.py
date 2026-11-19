@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -37,7 +38,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROOT = REPO_ROOT / "celerp" / "localization"
 LOCK_NAME = "packs.lock.json"
-_ROW_NOUN = {"taxes": "tax", "retired": "retired"}
+# A lock key: an ISO country code, or zz and a code for a test pack; the same pattern as
+# COUNTRY_CODE in celerp/localization (this script's fetch and check import nothing from the app).
+COUNTRY_CODE = r"(zz)?[A-Z]{2}"
+_ROW_NOUN = {"taxes": "tax", "retired": "retired", "item_rate_table": "item_rate_table"}
+_ACCOUNT_FIELDS = ("output_account", "input_account")
 PACK_REPO = "celerp/celerp-l10n-{cc}"
 CONTENTS_URL = "https://api.github.com/repos/{repo}/contents/pack/localization.json?ref={tag}"
 
@@ -54,7 +59,7 @@ def _read_lock(root: Path) -> dict | None:
         return None
     if not isinstance(lock, dict):
         return None
-    return lock if all(isinstance(code, str) and code.isalpha() and len(code) == 2 and isinstance(e, dict)
+    return lock if all(isinstance(code, str) and re.fullmatch(COUNTRY_CODE, code) and isinstance(e, dict)
                        and isinstance(e.get("sha256"), str) and isinstance(e.get("version"), str)
                        for code, e in lock.items()) else None
 
@@ -101,19 +106,33 @@ def _pack_defects(code: str, data: bytes, locked: dict | None, pack_schema) -> l
         rows: dict[tuple[str, int], set[str]] = {}
         for err in exc.errors():
             loc = err["loc"]
-            if len(loc) > 1 and loc[0] in _ROW_NOUN and isinstance(loc[1], int):
-                rows.setdefault((loc[0], loc[1]), set()).add(str(loc[2]) if len(loc) > 2 else "row")
+            if len(loc) > 2 and loc[0] in _ROW_NOUN and isinstance(loc[1], int):
+                rows.setdefault((loc[0], loc[1]), set()).add(str(loc[2]))
+            elif len(loc) == 2 and loc[0] in _ROW_NOUN and isinstance(loc[1], int):
+                defects.append(f"country {code}: {_ROW_NOUN[loc[0]]} row {loc[1]}: {err['msg'].removeprefix('Value error, ')}")
             else:
                 where = ".".join(str(part) for part in loc) or "pack"
                 defects.append(f"country {code}: {where}: {err['msg'].removeprefix('Value error, ')}")
         defects += [f"country {code}: {_ROW_NOUN[field]} row {i} is invalid ({', '.join(sorted(fields))})"
                     for (field, i), fields in sorted(rows.items())]
+    else:
+        chart = _default_chart()
+        defects += [f"country {code}: tax row {i}: {field} {tax[field]} is not an account of the default chart"
+                    for i, tax in enumerate(pack["taxes"]) for field in _ACCOUNT_FIELDS
+                    if field in tax and tax[field] not in chart]
     return defects
 
 
+def _default_chart() -> frozenset[str]:
+    """The account codes of the chart Celerp seeds a company with."""
+    sys.path.insert(0, str(REPO_ROOT / "default_modules" / "celerp-accounting"))
+    from celerp_accounting.routes import DEFAULT_CHART_OF_ACCOUNTS
+    return frozenset(entry["code"] for entry in DEFAULT_CHART_OF_ACCOUNTS)
+
+
 def validate(root: Path, *, against_lock: bool = True) -> list[str]:
-    """Each pack file's fields (the CountryPack schema); with ``against_lock`` its version must
-    equal its lock entry."""
+    """Each pack file's fields (the CountryPack schema) and the accounts its taxes name (the
+    default chart); with ``against_lock`` its version must equal its lock entry."""
     sys.path.insert(0, str(REPO_ROOT))
     from celerp.routers.companies import CountryPack
 

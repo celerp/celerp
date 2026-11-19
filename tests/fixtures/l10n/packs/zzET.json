@@ -1,0 +1,38 @@
+{
+  "format": "celerp-localization",
+  "schema_version": 2,
+  "country": "zzET",
+  "version": "fixture",
+  "company_defaults": {
+    "currency": "ETB"
+  },
+  "taxes": [
+    {
+      "id": "zzet-vat-15",
+      "name": "VAT 15%",
+      "tax_type": "both",
+      "category": "standard",
+      "is_default": true,
+      "description": "Fixture VAT",
+      "versions": [
+        {
+          "rate": 15.0
+        }
+      ]
+    },
+    {
+      "id": "zzet-wht-3",
+      "name": "WHT 3%",
+      "tax_type": "both",
+      "category": "withholding",
+      "withholding_point": "document",
+      "default_order": 1,
+      "description": "Fixture withholding on the document",
+      "versions": [
+        {
+          "rate": 3.0
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "format": "celerp-localization",
-  "schema_version": 1,
+  "schema_version": 2,
   "country": "AU",
   "version": "fixture",
   "company_defaults": {
@@ -8,22 +8,34 @@
   },
   "taxes": [
     {
+      "id": "au-gst-10",
       "name": "GST 10%",
-      "rate": 10.0,
       "tax_type": "both",
+      "category": "standard",
+      "versions": [
+        {
+          "rate": 10.0
+        }
+      ],
       "is_default": true,
-      "description": "Fixture GST",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture GST"
     },
     {
+      "id": "au-gst-free",
       "name": "GST-free",
-      "rate": 0.0,
       "tax_type": "both",
+      "category": "zero",
+      "versions": [
+        {
+          "rate": 0.0
+        }
+      ],
       "is_default": false,
-      "description": "Fixture GST-free",
       "is_compound": false,
-      "default_order": 0
+      "default_order": 0,
+      "description": "Fixture GST-free"
     }
   ]
 }
