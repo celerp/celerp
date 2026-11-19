@@ -204,7 +204,8 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
     sent answers with its first result, marked ``repeat``; ``resend`` sends again to the donors it names, and only
     to them, each with the number of the send it asks for (``sends`` as the asker read it), so the same
     press arriving twice sends once and the second answers with that send as stored, marked ``repeat``. Each donor holds the
-    company from the check to its record and commits on its own, so one failure never undoes
+    company from the check to its record, claims the send's key before the email goes out (a
+    failed email takes the claim back) and commits on its own, so one failure never undoes
     another's record and a second send at once waits and answers with the first."""
     date_from, date_to = _period(payload.date_from.isoformat(), payload.date_to.isoformat())
     settings = await current_settings(session, company_id)
@@ -229,6 +230,12 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
             await session.rollback()
             continue
         key = _send_key(statement, n)
+        result = {**answer, "state": "sent", "email": row["email"]}
+        await emit_event(session, company_id=company_id, entity_id=party, entity_type="contact",
+                         event_type=STATEMENT_SENT, actor_id=user_id, location_id=None, source="api",
+                         data={"date_from": date_from, "date_to": date_to, "version": words["version"],
+                               "total": row["total"], "email": row["email"]},
+                         idempotency_key=key, metadata_={"result": result})
         sent = await email_service.send_email(
             to=row["email"], subject=t("donors.statement_subject", company=company, start=date_from, end=date_to),
             body_html=_statement_html(company, row, words["text"], date_from, date_to, currency),
@@ -239,12 +246,6 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
             await session.rollback()
             results.append({**answer, "state": "failed", "detail": sent.detail})
             continue
-        result = {**answer, "state": "sent", "email": row["email"]}
-        await emit_event(session, company_id=company_id, entity_id=party, entity_type="contact",
-                         event_type=STATEMENT_SENT, actor_id=user_id, location_id=None, source="api",
-                         data={"date_from": date_from, "date_to": date_to, "version": words["version"],
-                               "total": row["total"], "email": row["email"]},
-                         idempotency_key=key, metadata_={"result": result})
         await session.commit()
         results.append(result)
     return results
