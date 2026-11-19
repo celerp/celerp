@@ -345,6 +345,29 @@ async def test_match_and_unmatch_line(client):
 
 
 @pytest.mark.asyncio
+async def test_an_entry_matched_on_the_statement_cannot_be_taken_by_a_line(client):
+    """An entry matched on the statement itself (not through a line) is refused to a line of
+    that statement, so undoing a line never lets go of an entry the statement matched."""
+    h = await _auth(client)
+    bank = await _create_bank(client, h)
+    sid, line_id = await _one_line(client, h, bank, b"Date,Description,Amount\n2026-03-01,Match test,-500\n")
+    r = await client.post("/accounting/journal-entries", headers=h, json={
+        "ts": "2026-03-01", "memo": "Match test", "idempotency_token": _uuid.uuid4().hex,
+        "entries": [{"account": "5100", "debit": 500.0, "credit": 0.0},
+                    {"account": bank["chart_account_code"], "debit": 0.0, "credit": 500.0}]})
+    assert r.status_code == 200, r.text
+    je_id = r.json()["je_id"]
+    r = await client.post(f"/accounting/reconciliation/{sid}/match", headers=h, json={"je_ids": [je_id]})
+    assert r.status_code == 200 and je_id in r.json()["reconciled_je_ids"], r.text
+
+    r = await B.decide(client, h, sid, line_id, "match", je_ids=[je_id])
+    assert r.status_code == 200 and not r.json()["results"][0]["ok"], r.text
+    assert (await _line(client, h, sid, line_id))["status"] == "unmatched"
+    r = await client.get(f"/accounting/reconciliation/{sid}", headers=h)
+    assert je_id in r.json()["reconciled_je_ids"], r.text
+
+
+@pytest.mark.asyncio
 async def test_skip_line(client):
     h = await _auth(client)
     bank = await _create_bank(client, h)
