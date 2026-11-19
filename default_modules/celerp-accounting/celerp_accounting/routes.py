@@ -3558,7 +3558,7 @@ async def _eligible_entries(
     of other statement dates and of other accounts may count it too: each statement
     counts every entry cleared up to its date, and a transfer is reconciled on both
     accounts."""
-    amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank)}
+    amounts = {e["je_id"]: e["amount"] for e in await _je_entries_for_account(db, company_id, bank, entry_ids=je_ids)}
     amounts.pop(_opening_je_id(bank.id), None)
     taken: set[str] = set()
     if line_ids is not None:

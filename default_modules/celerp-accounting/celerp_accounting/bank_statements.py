@@ -1394,24 +1394,23 @@ async def _near_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
     return book
 
 
-async def _references(db: AsyncSession, company_id: uuid.UUID, idents: set | None) -> "object":
+async def _references(db: AsyncSession, company_id: uuid.UUID, idents: set) -> "object":
     """The company's statement lines (every bank, every state, any date) that carry a reference, as
-    a ``suggest.References``: those whose normalised reference is one of ``idents`` (every one
-    when None). A document number names a payment only while no other line carries it."""
+    a ``suggest.References``: those whose normalised reference is one of ``idents``, the only
+    ones ``References.elsewhere`` is asked about. A document number names a payment only while no other line carries it."""
     from celerp_accounting import suggest
 
     q = select(BankStatementLine.id, BankStatementLine.bank_account_id, BankStatementLine.line_date,
                BankStatementLine.reference, BankStatementLine.matched_je_ids).where(
         BankStatementLine.company_id == company_id, BankStatementLine.reference.is_not(None),
         BankStatementLine.reference != "")
-    if idents is not None:
-        idents = set(idents) - {None}
-        if not idents:
-            return suggest.References([])
-        q = q.where(_narrowed(BankStatementLine.reference, idents))
+    idents = set(idents) - {None}
+    if not idents:
+        return suggest.References([])
+    q = q.where(_narrowed(BankStatementLine.reference, idents))
     rows = [{"id": i, "bank_account_id": b, "line_date": d, "reference": r, "matched_je_ids": m}
             for i, b, d, r, m in (await db.execute(q)).all()]
-    return suggest.References([r for r in rows if idents is None or suggest.normalised(r["reference"]) in idents])
+    return suggest.References([r for r in rows if suggest.normalised(r["reference"]) in idents])
 
 
 _DIGITS = re.compile(r"[0-9]+")
@@ -1552,12 +1551,13 @@ async def _postable(db: AsyncSession, company_id: uuid.UUID) -> list[str]:
     return sorted(c for c, _p, active in rows if active and c not in parents)
 
 
-async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, own_ids: set) -> "object":
+async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, own_lines: list) -> "object":
     from celerp.accounting_roles import AccountRole
     from celerp.services.account_roles import resolve as resolve_role
     from celerp_accounting import suggest
     from celerp_accounting.routes import _base_currency, _rule_to_dict
 
+    own_ids = {line.id for line in own_lines}
     book = await _free_entries(db, company_id, bank)
     states = await _states(db, company_id, [e["je_id"] for e in book])
     carried = await _entry_identifiers(db, company_id, [e["je_id"] for e in book])
@@ -1577,7 +1577,8 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
     base = await _base_currency(db, company_id)
     return suggest.LadderContext(
         bank_id=str(bank.id), entries=entries, open_docs=await _open_docs(db, company_id, bank.currency, base),
-        rules=rules, pair_lines=pair_lines, references=await _references(db, company_id, None),
+        rules=rules, pair_lines=pair_lines,
+        references=await _references(db, company_id, {suggest.normalised(l.reference) for l in own_lines}),
         slips=await _slips(db, company_id, bank),
         history=await _history(db, company_id), accounts=await _postable(db, company_id),
         general_expense=await resolve_role(db, company_id, AccountRole.GENERAL_EXPENSE))
@@ -1625,7 +1626,7 @@ async def _suggest_input(db: AsyncSession, company_id: uuid.UUID, bank_id) -> tu
               "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
               "counterparty_account": l.counterparty_account, "reference": l.reference,
               "client": l.client_query if SL.asked(l) and l.client_query.get("answered") else None} for l in rows]
-    ctx = await _ladder_context(db, company_id, bank, {l.id for l in rows})
+    ctx = await _ladder_context(db, company_id, bank, rows)
     return (rows, lines, ctx, *suggest.ladder_rungs(lines, ctx))
 
 

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession
+from celerp_accounting.models import BankAccount, BankStatementLine, ReconciliationSession, holding_any
 
 # Request fields that name a record, by the kind ``scoped`` resolves them as.
 RECORD_FIELDS = {
@@ -399,8 +399,11 @@ async def lines_holding(db: AsyncSession, company_id: uuid.UUID, bank_id, je_ids
     """Those of ``je_ids`` a statement line of the bank (other than ``except_lines``) is matched
     to: the one reading of an entry a line already counts, for a match and for the candidates a
     line is offered (bank_statements._held). Another bank's line leaves the entry free here."""
+    if not je_ids:
+        return set()
     q = select(BankStatementLine.matched_je_ids).where(
-        BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank_id)
+        BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank_id,
+        holding_any(BankStatementLine.matched_je_ids, je_ids))
     if except_lines:
         q = q.where(BankStatementLine.id.notin_(except_lines))
     held: set[str] = set()
@@ -417,8 +420,8 @@ async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAcco
 
     if not je_ids:
         raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_recon_match_needs_entry"))
-    booked = sum((Decimal(str(e["amount"])) for e in await _je_entries_for_account(db, company_id, bank)
-                  if e["je_id"] in je_ids and e["amount"] is not None), Decimal(0))
+    booked = sum((Decimal(str(e["amount"])) for e in await _je_entries_for_account(db, company_id, bank, entry_ids=je_ids)
+                  if e["amount"] is not None), Decimal(0))
     stated = sum((Decimal(str(l.amount)) for l in lines), Decimal(0))
     if booked != stated:
         raise HTTPException(status_code=422, detail=catalog_refusal(

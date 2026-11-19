@@ -27,7 +27,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
@@ -37,7 +37,7 @@ from celerp.services.company_lock import lock_company
 from celerp.services.journal_accounts import ReconciledHistoryChanged
 from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
-from celerp_accounting.models import BankAccount, ReconciliationSession
+from celerp_accounting.models import BankAccount, ReconciliationSession, holding_any
 from celerp_accounting.routes import _bank_amounts, _base_currency, _line_amounts, _opening_je_id
 from ui.i18n import list_text
 
@@ -152,14 +152,6 @@ async def guard_journal_change(
     )).scalars().all()
     rows_before, rows_after, banks = await touched(True)
     judged = [b for b in accounts if b.chart_account_code in banks]
-    sessions: dict[uuid.UUID, list[ReconciliationSession]] = {b.id: [] for b in judged}
-    for recon in (await session.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.company_id == company_id,
-            ReconciliationSession.bank_account_id.in_(list(sessions)),
-        ).execution_options(populate_existing=True)
-    )).scalars().all():
-        sessions[recon.bank_account_id].append(recon)
 
     changed = {key for key in rows_before.keys() | rows_after.keys() if rows_before.get(key) != rows_after.get(key)}
     cancelled = event_type == "acc.journal_entry.voided" and bool(changed)
@@ -168,6 +160,24 @@ async def guard_journal_change(
         held_ids |= {row_id for row_id, _ in rows_before}
     if reversed_id:
         held_ids |= {reversed_id, f"{reversed_id}:reversal"}
+
+    # Only the sessions this change can hit are read: those holding a changed row, and those
+    # dated on or after its earliest changed day (an earlier one's period ends before it, and
+    # a session's period start among them is the same one _period_start finds among all).
+    # A change to an opening entry is held by every session of its bank.
+    days = sorted(rows[key][0] for key in changed for rows in (rows_before, rows_after) if key in rows)
+    opening = [b.id for b in judged if _opening_je_id(b.id) in held_ids]
+    sessions: dict[uuid.UUID, list[ReconciliationSession]] = {b.id: [] for b in judged}
+    for recon in (await session.execute(
+        select(ReconciliationSession).where(
+            ReconciliationSession.company_id == company_id,
+            ReconciliationSession.bank_account_id.in_(list(sessions)),
+            or_(ReconciliationSession.bank_account_id.in_(opening),
+                holding_any(ReconciliationSession.reconciled_je_ids, held_ids),
+                *([ReconciliationSession.statement_date >= days[0]] if days else [])),
+        ).execution_options(populate_existing=True)
+    )).scalars().all():
+        sessions[recon.bank_account_id].append(recon)
 
     held: list[tuple[BankAccount, ReconciliationSession]] = []
     period: list[tuple[BankAccount, ReconciliationSession]] = []

@@ -89,6 +89,15 @@ class BankAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
+def holding_any(column, ids) -> sa.ColumnElement:
+    """Rows whose JSON id list ``column`` (a session's reconciled_je_ids, a line's
+    matched_je_ids) holds any of ``ids``: the filter that reads only the rows counting those
+    entries, never every row of a bank."""
+    from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+
+    return sa.cast(column, JSONB).has_any(sa.cast(sorted(set(ids)), ARRAY(sa.Text)))
+
+
 class ReconciliationSession(Base):
     """One bank statement: its period, opening and closing balance, and the entries it cleared."""
 
