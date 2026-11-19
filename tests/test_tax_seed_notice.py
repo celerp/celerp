@@ -436,3 +436,36 @@ async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client,
     h = await _register(client)
     assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
     assert await _bell(client, h) == {"et-tot-2025"}
+
+
+_STORED_WHT_2 = {"name": "WHT 2%", "tax_type": "purchase", "category": "withholding", "withholding_point": "document",
+                 "versions": [{"rate": 2.0}]}
+_STORED_SST_6 = {"name": "SST 6%", "tax_type": "sales", "category": "standard", "versions": [{"rate": 6.0}]}
+
+
+async def test_retired_rows_still_noticed_after_upgrade(client, monkeypatch, tmp_path):
+    """A row the upgrade stored at schema 2 (versions, no bare rate; WHT 2% now 2.0 with its
+    category) is still the retired row its pack names, so saving a list that holds it keeps the
+    notice; the same name under another category is a different row. A pack giving a retired
+    row a negative rate fails ``validate``."""
+    from test_l10n_pack_schema2 import defects, valid_pack
+
+    with_retired(monkeypatch, {
+        "ET": [{"id": "et-wht-2025", "match": "any", "rows": [{"name": "WHT 2%", "rate": 2.0, "category": "withholding"}]}],
+        "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%", "rate": 6.0}]}],
+    })
+    h = await _register(client)
+    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": [_STORED_WHT_2]})
+    assert r.status_code == 200, r.text
+    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": [_STORED_SST_6]})
+    assert r.status_code == 200, r.text
+    assert await _bell(client, h) == {"et-wht-2025", "my-sst-6"}
+
+    other = {**_STORED_WHT_2, "category": "standard", "withholding_point": None}
+    other = {k: v for k, v in other.items() if v is not None}
+    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": [other]})).status_code == 200
+    assert await _bell(client, h) == {"my-sst-6"}
+
+    pack = valid_pack()
+    pack["retired"][0]["rows"][0]["rate"] = -2.0
+    assert any("retired" in d for d in defects(pack, tmp_path))
