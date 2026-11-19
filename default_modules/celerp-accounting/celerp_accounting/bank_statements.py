@@ -23,7 +23,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
-from sqlalchemy import func, or_, select, true
+from sqlalchemy import func, or_, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -39,7 +39,7 @@ from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import require_permission
 from celerp_accounting import statement_lines as SL
 from celerp_accounting.models import (Account, BankAccount, BankStatementLine, ReconciliationRule,
-                                      ReconciliationSession, stored_text)
+                                      ReconciliationSession, holding_any, stored_text)
 from celerp_accounting.routes import BankAccountCreate
 from celerp_accounting.statement_reader import block_refusal
 from ui.i18n import refusal_text, t
@@ -211,6 +211,14 @@ async def _read_bank(db: AsyncSession, company_id: uuid.UUID, job_id) -> BankAcc
 async def _statement_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[BankStatementLine]:
     return list((await db.execute(select(BankStatementLine).where(
         BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars())
+
+
+async def _open_lines(db: AsyncSession, company_id: uuid.UUID, *where) -> list[BankStatementLine]:
+    """The unmatched lines of the company's open statements, of the bank ``where`` names."""
+    return list((await db.execute(select(BankStatementLine).join(
+        ReconciliationSession, ReconciliationSession.id == BankStatementLine.reconciliation_id).where(
+        BankStatementLine.company_id == company_id, ReconciliationSession.company_id == company_id,
+        ReconciliationSession.status == "open", BankStatementLine.status == "unmatched", *where))).scalars())
 
 
 async def _known(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None) -> tuple[list, dict]:
@@ -480,8 +488,8 @@ async def _first_counted(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     """What the bank's first statement counts while it is open, its carry-in worked out from the
     books as they stand (see _carried_in), so an entry keyed after the import counts as it would
     have before: None for any other statement or a completed one, whose list is final."""
-    sessions = await _sessions(db, company_id, bank)
-    if sessions[0].id != recon.id or SL.completed(recon) or recon.period_start is None:
+    first = await _first_session(db, company_id, bank)
+    if first is None or first.id != recon.id or SL.completed(recon) or recon.period_start is None:
         return None
     matched = {j for ids in (await db.execute(select(BankStatementLine.matched_je_ids).where(
         BankStatementLine.reconciliation_id == recon.id))).scalars() for j in ids or []}
@@ -496,10 +504,18 @@ async def read_counted(db: AsyncSession, company_id: uuid.UUID, bank: BankAccoun
         set_committed_value(recon, "reconciled_je_ids", counted)
 
 
+def _of_bank(company_id: uuid.UUID, bank: BankAccount):
+    return select(ReconciliationSession).where(
+        ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id) \
+        .order_by(ReconciliationSession.statement_date, ReconciliationSession.id)
+
+
 async def _sessions(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[ReconciliationSession]:
-    return list((await db.execute(select(ReconciliationSession).where(
-        ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id)
-        .order_by(ReconciliationSession.statement_date, ReconciliationSession.id))).scalars())
+    return list((await db.execute(_of_bank(company_id, bank))).scalars())
+
+
+async def _first_session(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> ReconciliationSession | None:
+    return (await db.execute(_of_bank(company_id, bank).limit(1))).scalars().first()
 
 
 async def _seed(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, start: str, opening) -> list[str]:
@@ -1325,19 +1341,41 @@ async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, entr
 
     ids = {e["je_id"] for e in entries}
     held = {_opening_je_id(bank.id)}
-    for i, recon in enumerate(await _sessions(db, company_id, bank)):
-        early = i == 0 and recon.period_start is not None and \
-            any(str(e["ts"])[:10] < str(recon.period_start)[:10] for e in entries)
-        counted = await _first_counted(db, company_id, bank, recon) if early else None
-        held.update((recon.reconciled_je_ids or []) if counted is None else counted)
+    first = await _first_session(db, company_id, bank)
+    if first is not None:
+        early = first.period_start is not None and any(str(e["ts"])[:10] < str(first.period_start)[:10] for e in entries)
+        counted = await _first_counted(db, company_id, bank, first) if early else None
+        held.update((first.reconciled_je_ids or []) if counted is None else counted)
+        if ids:
+            for later in (await db.execute(select(ReconciliationSession.reconciled_je_ids).where(
+                    ReconciliationSession.company_id == company_id, ReconciliationSession.bank_account_id == bank.id,
+                    ReconciliationSession.id != first.id,
+                    holding_any(ReconciliationSession.reconciled_je_ids, ids)))).scalars():
+                held.update(later or [])
     return (held & ids) | await SL.lines_holding(db, company_id, bank.id, ids)
+
+
+def _counted_beyond(company_id: uuid.UUID, bank: BankAccount, first: ReconciliationSession | None):
+    """A select of the entry ids the bank's statements other than ``first`` and its lines count:
+    entries _held always holds, so a read of the free ones skips them in SQL (``first`` may count
+    its carry-in otherwise, see _first_counted, so it is left to _held)."""
+    def ids(model, column, *where):
+        return select(func.json_array_elements_text(column)).where(
+            model.company_id == company_id, model.bank_account_id == bank.id, *where)
+
+    counted = union_all(
+        ids(ReconciliationSession, ReconciliationSession.reconciled_je_ids,
+            *(() if first is None else (ReconciliationSession.id != first.id,))),
+        ids(BankStatementLine, BankStatementLine.matched_je_ids)).subquery()
+    return select(counted.c[0]).where(counted.c[0].isnot(None))
 
 
 async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:
     """The bank's book entries no statement or line of the bank counts yet: what a line can match."""
     from celerp_accounting.routes import _je_entries_for_account
 
-    entries = [e for e in await _je_entries_for_account(db, company_id, bank) if e["amount"] is not None]
+    skip = _counted_beyond(company_id, bank, await _first_session(db, company_id, bank))
+    entries = [e for e in await _je_entries_for_account(db, company_id, bank, skip_ids=skip) if e["amount"] is not None]
     held = await _held(db, company_id, bank, entries)
     return [e for e in entries if e["je_id"] not in held]
 
@@ -1491,7 +1529,9 @@ async def _open_docs(db: AsyncSession, company_id: uuid.UUID, currency: str, bas
     from celerp_accounting import suggest
 
     rows = (await db.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "doc"))).all()
+        Projection.company_id == company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string().in_(("invoice", "bill")),
+        func.coalesce(Projection.state["amount_outstanding"].as_string(), "0").notin_(("0", "0.0", "0.00", ""))))).all()
     out = []
     for doc_id, state in rows:
         state = state or {}
@@ -1511,18 +1551,26 @@ async def _slips(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> 
     from celerp.models.projections import Projection
 
     rows = (await db.execute(select(Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_type == "bank_operation"))).scalars()
+        Projection.company_id == company_id, Projection.entity_type == "bank_operation",
+        Projection.state["operation"].as_string() == "import",
+        Projection.state["bank_account_id"].as_string() == str(bank.id)))).scalars()
     return [{**r, "party_contact_id": None} for s in rows
             if (s or {}).get("operation") == "import" and s.get("bank_account_id") == str(bank.id)
             for r in s.get("receipts") or []]
 
 
-async def _history(db: AsyncSession, company_id: uuid.UUID) -> dict:
-    """What earlier posted lines went to, by counterparty key and by counterparty account."""
+async def _history(db: AsyncSession, company_id: uuid.UUID, keys: set | None = None) -> dict:
+    """What earlier posted lines went to, by counterparty key and by counterparty account: those
+    of ``keys`` when given (the lines a suggestion is for), else every one."""
     banks = {b.id: b.chart_account_code for b in (await db.execute(select(BankAccount).where(
         BankAccount.company_id == company_id))).scalars()}
-    lines = list((await db.execute(select(BankStatementLine).where(
-        BankStatementLine.company_id == company_id, BankStatementLine.status == "posted"))).scalars())
+    query = select(BankStatementLine).where(BankStatementLine.company_id == company_id,
+                                            BankStatementLine.status == "posted")
+    if keys is not None:
+        keys = sorted(keys - {None, ""})
+        query = query.where(or_(BankStatementLine.counterparty_key.in_(keys),
+                                BankStatementLine.counterparty_account.in_(keys)))
+    lines = list((await db.execute(query)).scalars())
     states = await _states(db, company_id, [j for l in lines for j in l.matched_je_ids or []])
     out: dict = {}
     for line in lines:
@@ -1566,21 +1614,18 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
                 "contact": _contact(states.get(e["je_id"]) or {}, bank.chart_account_code)} for e in book]
     rules = [_rule_to_dict(r) for r in (await db.execute(select(ReconciliationRule).where(
         ReconciliationRule.company_id == company_id, ReconciliationRule.is_active.is_(True)))).scalars()]
-    open_sessions = {s.id for s in (await db.execute(select(ReconciliationSession).where(
-        ReconciliationSession.company_id == company_id, ReconciliationSession.status == "open"))).scalars()}
     pair_lines = [{"id": str(l.id), "bank_id": str(l.bank_account_id), "amount": str(l.amount), "line_date": l.line_date,
                    "reference": l.reference}
-                  for l in (await db.execute(select(BankStatementLine).where(
-                      BankStatementLine.company_id == company_id, BankStatementLine.status == "unmatched",
-                      BankStatementLine.bank_account_id != bank.id))).scalars()
-                  if l.reconciliation_id in open_sessions and l.id not in own_ids]
+                  for l in await _open_lines(db, company_id, BankStatementLine.bank_account_id != bank.id)
+                  if l.id not in own_ids]
     base = await _base_currency(db, company_id)
     return suggest.LadderContext(
         bank_id=str(bank.id), entries=entries, open_docs=await _open_docs(db, company_id, bank.currency, base),
         rules=rules, pair_lines=pair_lines,
         references=await _references(db, company_id, {suggest.normalised(l.reference) for l in own_lines}),
         slips=await _slips(db, company_id, bank),
-        history=await _history(db, company_id), accounts=await _postable(db, company_id),
+        history=await _history(db, company_id, {k for l in own_lines for k in (l.counterparty_key, l.counterparty_account)}),
+        accounts=await _postable(db, company_id),
         general_expense=await resolve_role(db, company_id, AccountRole.GENERAL_EXPENSE))
 
 
@@ -1619,9 +1664,7 @@ async def _suggest_input(db: AsyncSession, company_id: uuid.UUID, bank_id) -> tu
     from celerp_accounting import suggest
 
     bank = await _bank(db, company_id, bank_id)
-    open_ids = {s.id for s in await _sessions(db, company_id, bank) if s.status == "open"}
-    rows = [l for l in await _statement_lines(db, company_id, bank)
-            if l.reconciliation_id in open_ids and l.status == "unmatched"]
+    rows = await _open_lines(db, company_id, BankStatementLine.bank_account_id == bank.id)
     lines = [{"id": str(l.id), "line_date": l.line_date, "description": l.description,
               "amount": _money_text(l.amount, bank.currency), "counterparty_key": l.counterparty_key,
               "counterparty_account": l.counterparty_account, "reference": l.reference,

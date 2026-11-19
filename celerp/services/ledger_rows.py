@@ -22,6 +22,7 @@ REVERSAL_SUFFIX = ":reversal"
 async def journal_rows(
     session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False,
     entry_ids: list[str] | None = None, account: str | None = None, days: tuple[str, str] | None = None,
+    skip_ids=None,
 ) -> list[tuple[str, dict, str]]:
     """All journal entry projections as (entity_id, state, date) tuples.
 
@@ -31,7 +32,10 @@ async def journal_rows(
     the general ledger buckets one scan into opening (before date_from) and period
     ranges, so callers apply their own date filtering. A caller that needs only the
     entries with a line on one ``account``, or only the rows dated within ``days``
-    (first and last ISO date, inclusive), narrows the read in SQL with them.
+    (first and last ISO date, inclusive), narrows the read in SQL with them; one that
+    already counts some entries passes ``skip_ids``, a select of row ids, and an entry it
+    returns is not read (one voided out of a locked period still is: its reversal row has
+    another id).
     """
     query = select(Projection).where(
         Projection.company_id == company_id,
@@ -45,6 +49,9 @@ async def journal_rows(
         day = func.substr(func.coalesce(Projection.state["ts"].as_string(),
                                         Projection.state["created_at"].as_string()), 1, 10)
         query = query.where(or_(day.between(*days), Projection.state["reversed_on"].as_string().between(*days)))
+    if skip_ids is not None:
+        query = query.where(or_(Projection.entity_id.notin_(skip_ids),
+                                Projection.state["reversed_on"].as_string().isnot(None)))
     if entry_ids is not None:
         ids = sorted(set(entry_ids))
         if not ids:
