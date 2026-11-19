@@ -16,8 +16,8 @@ from test_money_stock_and_contact_invariants import _account_net, _auth_company
 from test_tax_acceptance_matrix import _books, _moved
 
 __all__ = ["_account_net", "_auth_company", "_moved", "ISSUE", "PAID", "SUPPLIER", "company", "codes",
-           "code", "line", "doc", "finalized", "get", "patch_doc", "pay", "post", "roles", "upload", "contact", "figures",
-           "rebuild_divergence"]
+           "code", "line", "doc", "finalized", "get", "patch_doc", "pay", "post", "ok", "roles", "upload", "contact",
+           "figures", "every_path", "unbalanced_entries", "rebuild_divergence"]
 
 ISSUE = "2026-10-01"
 PAID = "2026-10-20"
@@ -80,12 +80,66 @@ async def finalized(client, auth, doc_id: str) -> dict:
     return await get(client, auth, doc_id)
 
 
-async def pay(client, auth, doc_id: str, amount: float, withheld: list[dict] | None = None):
-    body = {"amount": amount, "payment_date": PAID, "bank_account": "1111",
+async def pay(client, auth, doc_id: str, amount: float, withheld: list[dict] | None = None, date: str = PAID):
+    body = {"amount": amount, "payment_date": date, "bank_account": "1111",
             "idempotency_key": f"pay-{uuid.uuid4().hex[:10]}"}
     if withheld is not None:
         body["withheld"] = withheld
     return await post(client, auth, f"/docs/{doc_id}/payment", body)
+
+
+def ok(r):
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _key() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+async def every_path(client, auth, *, sale: list[str], buy: list[str], sale_wht: str | None = None,
+                     buy_wht: str | None = None) -> dict:
+    """Post the documents through every posting path with the given codes on their lines:
+    finalize a bill (PP1) and a supplier note that applies to it (PP2, PP11), finalize an
+    invoice (PP3) and a credit note applied to it (PP4, PP11), pay both (PP5, withholding the
+    payment-point code when one is given), void a payment (PP6), void and unvoid a document
+    (PP7, PP8), revert and finalize again (PP9) and run the admin re-post of missing entries
+    (PP10). The ids of the documents by role."""
+    def withheld(code_id: str | None, amount: float) -> list[dict] | None:
+        return [{"code_id": code_id, "amount": amount}] if code_id else None
+
+    ids = {}
+    for kind, note, codes_, wht in (("bill", "debit_note", buy, buy_wht), ("invoice", "credit_note", sale, sale_wht)):
+        main = await finalized(client, auth, await doc(client, auth, kind, [line(1000.0, *codes_)]))
+        ids[kind] = main["id"]
+        note_doc = await finalized(client, auth, await doc(client, auth, note, [line(100.0, *codes_)],
+                                                           original_doc_id=main["id"]))
+        ids[note] = note_doc["id"]
+        if kind == "invoice":
+            ok(await post(client, auth, f"/docs/{note_doc['id']}/apply-to-invoice", {
+                "target_doc_id": main["id"], "amount": note_doc["total"] - (note_doc.get("withheld") or 0),
+                "idempotency_key": _key()}))
+        ok(await pay(client, auth, main["id"], 200.0, withheld(wht, 10.0)))
+        ok(await post(client, auth, f"/docs/{main['id']}/void-payment", {"payment_index": 0, "idempotency_key": _key()}))
+        ok(await pay(client, auth, main["id"], 200.0, withheld(wht, 10.0)))
+
+        other = await finalized(client, auth, await doc(client, auth, kind, [line(500.0, *codes_)]))
+        ids[f"{kind}_voided"] = other["id"]
+        ok(await post(client, auth, f"/docs/{other['id']}/void", {"reason": "Entered twice", "idempotency_key": _key()}))
+        ok(await post(client, auth, f"/docs/{other['id']}/unvoid", {"idempotency_key": _key()}))
+        ok(await post(client, auth, f"/docs/{other['id']}/revert-to-draft", {"idempotency_key": _key()}))
+        await finalized(client, auth, other["id"])
+    ok(await post(client, auth, "/admin/doctor?checks=missing_jes&fix=true"))
+    return ids
+
+
+async def unbalanced_entries(session, auth) -> list[str]:
+    """The posted journal entries whose debits and credits differ."""
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type == "journal_entry"))).scalars().all()
+    return sorted(row.entity_id for row in rows if row.state.get("status") == "posted" and round(sum(
+        float(e.get("debit") or 0) - float(e.get("credit") or 0) for e in row.state.get("entries") or []), 6))
 
 
 async def roles(session, auth) -> dict:
