@@ -31776,5 +31776,7 @@
     "default_modules/celerp-accounting/tests/test_reconciliation_v2.py::test_an_entry_matched_on_the_statement_cannot_be_taken_by_a_line": 1.2043578960001469,
     "tests/test_api_engine_timeouts.py::test_a_lock_wait_past_the_request_timeout_is_refused_as_busy_in_any_route[/a/route/added/later]": 0.0037582589720841497,
     "tests/test_api_engine_timeouts.py::test_a_lock_wait_past_the_request_timeout_is_refused_as_busy_in_any_route[/items/item:1]": 0.002611389005323872,
-    "tests/test_company_copy_replace.py::test_an_item_edit_waiting_past_the_lock_timeout_is_refused_as_busy": 10.291720867011463
+    "tests/test_company_copy_replace.py::test_an_item_edit_waiting_past_the_lock_timeout_is_refused_as_busy": 10.291720867011463,
+    "tests/test_help_export.py::test_git_names_the_command_and_stderr_on_a_real_failure": 0.03721802297513932,
+    "tests/test_help_export.py::test_the_bundle_embeds_a_step_image_as_base64": 0.010039621993200853
 }
