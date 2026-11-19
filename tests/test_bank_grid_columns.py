@@ -28,22 +28,24 @@ def _rows(html: str) -> list[tuple[str, list[tuple[str | None, str]]]]:
             for m in re.finditer(r'<div\b[^>]*\bclass="(bank-row [^"]*)"[^>]*>(.*?)</div>', html, re.S)]
 
 
-def _top_cells(inner: str) -> list[tuple[str | None, str]]:
+def _top_cells(inner: str) -> list[tuple[str | None, str, str]]:
+    """Each top-level cell as (data-label or None, its own class, its text)."""
     cells, depth = [], 0
     for tag in re.finditer(r'<(/?)(span|input|button)\b([^>]*)>', inner):
         closing, name, attrs = tag.group(1), tag.group(2), tag.group(3)
         if name == "input" and depth == 0:
-            cells.append((None, ""))
+            cells.append((None, "", ""))
         elif name == "span" and not closing:
             if depth == 0:
                 label = re.search(r'data-label="([^"]*)"', attrs)
-                cells.append((label.group(1) if label else None, ""))
+                cls = re.search(r'class="([^"]*)"', attrs)
+                cells.append((label.group(1) if label else None, cls.group(1) if cls else "", ""))
                 start = tag.end()
             depth += 1
         elif name == "span" and closing:
             depth -= 1
             if depth == 0:
-                cells[-1] = (cells[-1][0], re.sub(r"<[^>]+>", "", inner[start:tag.start()]).strip())
+                cells[-1] = (cells[-1][0], cells[-1][1], re.sub(r"<[^>]+>", "", inner[start:tag.start()]).strip())
     return cells
 
 
@@ -52,9 +54,10 @@ def _grids(html: str) -> dict[str, dict]:
     for cls, cells in _rows(html):
         grid = next((c for c in cls.split() if c in ("bank-row--group", "bank-row--line", "bank-row--preview")), None)
         assert grid, f"a bank row with no column layout: {cls}"
-        g = grids.setdefault(grid, {"head": None, "rows": []})
+        g = grids.setdefault(grid, {"head": None, "head_cls": None, "rows": []})
         if "bank-row--head" in cls:
-            g["head"] = [text for _, text in cells]
+            g["head"] = [text for _, _, text in cells]
+            g["head_cls"] = [c for _, c, _ in cells]
         else:
             g["rows"].append(cells)
     return grids
@@ -67,8 +70,13 @@ def _check(html: str, want: set[str]) -> None:
         assert g["head"] is not None, f"{name} has no heading row"
         for row in g["rows"]:
             assert len(row) == len(g["head"]), (name, g["head"], row)
-            for head, (label, _) in zip(g["head"], row):
+            for head, head_cls, (label, cls, _) in zip(g["head"], g["head_cls"], row):
                 assert label == (head or None), (name, head, label)
+                # The heading's own alignment class (e.g. bank-cell--money) must survive on
+                # the cell below it: labelling a cell must never drop the class it was built
+                # with (celerp PR #429 round 21: cell.set(data_label=...) used to wipe it).
+                if head_cls:
+                    assert head_cls in cls.split(), (name, head, head_cls, cls)
 
 
 def test_the_group_table_headings_sit_over_their_columns_and_label_each_cell():

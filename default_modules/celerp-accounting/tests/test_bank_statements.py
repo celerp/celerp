@@ -731,6 +731,19 @@ async def test_bulk_unmatch_list_of_one_equals_old_unmatch(client, session):
     assert (await B.journal(session, co, je_id))["status"] == "void"
 
 
+async def test_undo_of_an_already_unmatched_line_says_it_is_already_open(client):
+    """Unmatching a line that is already unmatched is refused with a message that fits
+    the undo action itself, not the "undo it first" wording meant for a match collision
+    (celerp PR #429 round 21: the line's own status is the only one that call can ever hit)."""
+    co, bk = await _co_bank(client)
+    await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00")])
+    line = B.all_lines(await B.groups(client, co, bk["id"]))[0]
+    r = await client.post(f"{B.API}/bank/{bk['id']}/unmatch", json={"line_ids": [line["id"]],
+                                                                     "idempotency_key": B.key()}, headers=co["h"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "acct.err_recon_already_unmatched", r.text
+
+
 async def test_complete_balanced_stops_at_first_unbalanced(client):
     co, bk = await _co_bank(client)
     await _one_month(client, co, bk, [("2026-01-05", "FEE", "-5.00")])

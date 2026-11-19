@@ -152,6 +152,20 @@ async def test_an_import_refusal_shows_on_the_preview_and_keeps_what_was_entered
     assert 'value="1234.00"' in r.text and 'data-testid="statement-preview"' in r.text
 
 
+async def test_the_preview_import_button_carries_the_spreadsheet_icon(ui_client):
+    """Every spreadsheet import button carries the shared icon (celerp PR #429 round 21:
+    the statement preview's Import button lost it when the old reconciliation screen, and
+    the browser test that held it, were replaced by this one)."""
+    found = {"job_id": "j1", "bank_id": "b1", "receipts": [], "failed_steps": [], "statements": [{
+        "file_id": "f1", "header": {"opening_balance": "1000.00", "closing_balance": "800.00",
+                                    "period_start": "2026-01-01", "period_end": "2026-01-31", "currency": "USD"},
+        "lines": [_LINE], "tie": {"ok": True}, "blocking": [], "notices": []}]}
+    with patch("ui.api_client.statement_preview", AsyncMock(return_value=found)):
+        preview = (await _get(ui_client, "/accounting/reconcile/bank/b1/preview/j1", _TABLE)).text
+    btn = _tag(preview, r'<button[^>]+type="submit"[^>]+btn--primary[^>]*>.*?</button>')
+    assert 'class="import-icon"' in btn, btn
+
+
 # ── Dropping a statement and its preview ─────────────────────────────────────
 
 _CSV = ("st.csv", b"Date,Description,Amount\n2026-01-05,FEE,-5.00\n", "text/csv")

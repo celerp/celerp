@@ -19,6 +19,7 @@ from celerp.output.doc_print import money_step
 from ui.components.attrs import hx_vals
 from ui.components.encode import EVENT, THIS, call, safe_url
 from ui.components.funds import UNRESTRICTED, fund_options
+from ui.components.icons import import_icon
 from ui.components.shell import flash
 from ui.components.table import EMPTY, PARTY_SEARCH_URL, display_enum, searchable_select
 from ui.i18n import t
@@ -243,7 +244,7 @@ def _row(*cells: FT, heads: tuple, cls: str) -> FT:
     """A grid row whose cells carry their column's heading, shown beside the value when the row stacks."""
     for cell, (key, _) in zip(cells, heads):
         if key:
-            cell.set(data_label=t(key))
+            cell.attrs = {**cell.attrs, "data-label": t(key)}
     return Div(*cells, cls=cls)
 
 
@@ -547,7 +548,7 @@ def statement_preview(bank_id: str, job_id: str, preview: dict) -> FT:
         P(t("bank.failed_steps", n=len(failed)), cls="flash flash--warning") if failed else None,
         *blocks,
         Form(Input(type="hidden", name="state", value=state), _key_input(),
-             Button(t("btn.import"), type="submit", cls="btn btn--primary"), id=_import_form_id(job_id),
+             Button(import_icon(), t("btn.import"), type="submit", cls="btn btn--primary"), id=_import_form_id(job_id),
              hx_post=bank_url(bank_id, "preview", job_id, "import"), hx_confirm=t("bank.import_confirm"),
              hx_target="closest [data-testid=statement-preview]", hx_swap="outerHTML") if importable else None,
         cls="bank-preview settings-card", data_testid="statement-preview")

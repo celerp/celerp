@@ -771,8 +771,8 @@ def _route_index(app) -> dict[tuple[str, str], APIRoute]:
 def test_unknown_exclusion_reason_is_refused():
     assert agent_markers.agent_excluded("session") == {"x-celerp-agent-excluded": "session"}
     assert set(agent_markers.AGENT_EXCLUSIONS) == {
-        "session", "internal", "public", "machine", "secret", "company", "switch", "no_company",
-        "installation", "assistant",
+        "session", "internal", "public", "machine", "secret", "claim_step", "company", "switch",
+        "no_company", "installation", "assistant",
     }
     assert all(reason.strip().endswith(".") for reason in agent_markers.AGENT_EXCLUSIONS.values())
     with pytest.raises(ValueError):

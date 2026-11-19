@@ -572,7 +572,7 @@ async def import_statement(payload: ImportStatement, company_id: uuid.UUID = Dep
         header = reviewed["header"]
         start, end = header.get("period_start"), header.get("period_end")
         if any(s.statement_date == end for s in await _sessions(db, company_id, bank)):
-            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_open_exists"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_import_period_exists", date=end))
         recon = ReconciliationSession(
             id=uuid.uuid4(), company_id=company_id, bank_account_id=bank.id, statement_date=end,
             statement_balance=to_decimal(header["closing_balance"]), period_start=start,
@@ -863,7 +863,8 @@ def _one(lines: list[BankStatementLine]) -> BankStatementLine:
 
 
 async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount | None, line_ids: list,
-                        state: tuple[str, ...] | None = ("unmatched",)) -> list[BankStatementLine]:
+                        state: tuple[str, ...] | None = ("unmatched",),
+                        state_key: str = "acct.err_recon_line_state") -> list[BankStatementLine]:
     """The lines under their locks, taken in the one order: each line's statement (in id
     order, refused when completed), then the lines in id order."""
     from celerp_accounting.routes import _lock_recon
@@ -872,7 +873,7 @@ async def _locked_lines(db: AsyncSession, company_id: uuid.UUID, bank: BankAccou
         BankStatementLine.id.in_(line_ids), BankStatementLine.company_id == company_id))).scalars()
     for sid in sorted(set(sessions), key=str):
         await _lock_recon(db, sid, company_id, editable=True)
-    return await SL.scoped(db, company_id, "line", line_ids, bank=bank, state=state)
+    return await SL.scoped(db, company_id, "line", line_ids, bank=bank, state=state, state_key=state_key)
 
 
 async def suspense_account(db: AsyncSession, company_id: uuid.UUID, actor_id) -> str:
@@ -1743,7 +1744,8 @@ async def unmatch_lines(bank_id: uuid.UUID, payload: Unmatch, company_id: uuid.U
     # payments recorded from unmatched ones first (after the company, before the lines).
     await lock_recorded_unmatched(db, company_id)
     bank = await _bank(db, company_id, bank_id)
-    lines = await _locked_lines(db, company_id, bank, payload.line_ids, state=("matched", "posted", "skipped"))
+    lines = await _locked_lines(db, company_id, bank, payload.line_ids, state=("matched", "posted", "skipped"),
+                                state_key="acct.err_recon_already_unmatched")
     for line in lines:
         await SL.unmatch_line(db, company_id=company_id, actor_id=actor_id, role=role, line=line)
     result = await _recorded(db, company_id, actor_id, key, request, "unmatch", bank.id,
@@ -1925,7 +1927,7 @@ async def _question_reader(role: str = Depends(get_current_role),
 
 
 @router.post(f"{API}/files", status_code=201, summary="Keep statement and receipt files for reading or an answer.",
-             openapi_extra=agent_excluded("internal"))
+             openapi_extra=agent_excluded("assistant"))
 async def bank_files(files: list[UploadFile] = File(...), company_id: uuid.UUID = Depends(get_current_company_id),
                      _: None = Depends(_question_reader), user=Depends(get_current_user),
                      db: AsyncSession = Depends(get_session)) -> dict:

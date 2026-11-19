@@ -40,6 +40,9 @@ _NOT_USER_ACTIONS: dict[str, str] = {
 USER_ACTION_EXCLUSIONS: dict[str, str] = {
     "secret": "Takes a password, one-time code, claim token or service key; typed into the chat it "
               "would go to the AI provider and stay in the conversation log.",
+    "claim_step": "Sends a one-time code to an email address to start a claim; the code it sends "
+                  "only works through the next step, which takes the code and stays off as secret, "
+                  "so offering this one alone would lead nowhere.",
     "company": "Replaces or erases the whole company, or the installation's data, that the "
                "conversation and its confirmation run in.",
     "switch": "Opens a different company and signs the person in to it: the answer is a sign-in "

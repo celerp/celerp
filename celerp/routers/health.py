@@ -1033,7 +1033,7 @@ async def _activate_after_claim(
 _CLAIM_FAILED = "Celerp could not complete this request. Try again in a few minutes."
 
 
-@settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("secret"))
+@settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)], openapi_extra=agent_excluded("claim_step"))
 async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
     from celerp.config import activation_challenge, ensure_connect_identity

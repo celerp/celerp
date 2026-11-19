@@ -72,10 +72,13 @@ def _not_found(kind: str) -> HTTPException:
 
 
 async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, *, bank: BankAccount | None = None,
-                 state: tuple[str, ...] | None = None) -> list:
+                 state: tuple[str, ...] | None = None, state_key: str = "acct.err_recon_line_state") -> list:
     """The records ``ids`` name, each the caller company's (and, for a line or statement, the
     path bank's), lines read under their row lock in id order. A foreign id gets the same 404
-    as an unknown one; a line outside ``state`` is refused with its status."""
+    as an unknown one; a line outside ``state`` is refused with its status under ``state_key``
+    (the default fits a match-side call, where undoing first is the way out; a caller whose
+    only possible mismatch is a status that names the caller's own action, like unmatch on an
+    already-unmatched line, passes its own key)."""
     want = sorted({uuid.UUID(str(i)) for i in ids}, key=str)
     if kind == "line":
         q = select(BankStatementLine).where(BankStatementLine.id.in_(want), BankStatementLine.company_id == company_id)
@@ -99,8 +102,7 @@ async def scoped(db: AsyncSession, company_id: uuid.UUID, kind: str, ids: list, 
     if state is not None and kind == "line":
         for r in rows:
             if r.status not in state:
-                raise HTTPException(status_code=409, detail=catalog_refusal(
-                    "acct.err_recon_line_state", status=r.status))
+                raise HTTPException(status_code=409, detail=catalog_refusal(state_key, status=r.status))
     return rows
 
 

@@ -482,7 +482,7 @@ def _card_warnings(capability: dict, count: int | None, arguments: dict | None) 
     many files it reads with AI credits, and whether a message leaves the company."""
     warnings = []
     if count is not None:
-        warnings.append(t("ai.warn_selection_size", count=count))
+        warnings.append(t("ai.warn_selection_size_one") if count == 1 else t("ai.warn_selection_size", count=count))
     files = ((arguments or {}).get("body") or {}).get("file_ids")
     if capability.get("credits") and isinstance(files, list):
         warnings.append(t("ai.warn_credits_one") if len(files) == 1 else t("ai.warn_credits", count=len(files)))
