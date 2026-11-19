@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "Asked about 1 line. {names} can answer it in Celerp and got an email.",
   "acct.recon_asked_email_failed": "Asked about {count} lines. The email to {name} could not be sent. {reason} They see the questions when they sign in; Remind sends it again.",
   "acct.recon_asked_email_failed_one": "Asked about 1 line. The email to {name} could not be sent. {reason} They see the question when they sign in; Remind sends it again.",
+  "acct.recon_asked_left_out": "{names} no longer answer bank questions here, so they were not emailed.",
   "acct.recon_asked_email_unconfirmed": "Asked about {count} lines. The email to {name} may have gone out, but it was not confirmed. They see the questions when they sign in.",
   "acct.recon_asked_email_unconfirmed_one": "Asked about 1 line. The email to {name} may have gone out, but it was not confirmed. They see the question when they sign in.",
   "acct.recon_reason_client": "Client said: {answer}.",

@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "Une question a été posée sur 1 ligne. {names} peut y répondre dans Celerp et a reçu un courriel.",
   "acct.recon_asked_email_failed": "Des questions ont été posées sur {count} lignes. Le courriel à {name} n'a pas pu être envoyé. {reason} La personne voit les questions lorsqu'elle se connecte ; « Rappeler » les renvoie.",
   "acct.recon_asked_email_failed_one": "Une question a été posée sur 1 ligne. Le courriel à {name} n'a pas pu être envoyé. {reason} La personne voit la question lorsqu'elle se connecte ; « Rappeler » la renvoie.",
+  "acct.recon_asked_left_out": "{names} ne répondent plus aux questions bancaires ici et n'ont donc pas reçu d'e-mail.",
   "acct.recon_asked_email_unconfirmed": "Des questions ont été posées sur {count} lignes. Le courriel à {name} a peut-être été envoyé, mais cela n'a pas été confirmé. La personne verra les questions lors de sa connexion.",
   "acct.recon_asked_email_unconfirmed_one": "Une question a été posée sur 1 ligne. Le courriel à {name} a peut-être été envoyé, mais cela n'a pas été confirmé. La personne verra la question lors de sa connexion.",
   "acct.recon_reason_client": "Le client a dit : {answer}.",

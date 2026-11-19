@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "1 行について質問しました。{names} は Celerp で回答でき、メールを受け取りました。",
   "acct.recon_asked_email_failed": "{count} 行について質問しました。{name} 宛てのメールは送信できませんでした。{reason}サインインすると質問が表示されます。「リマインド」を使うと再送信します。",
   "acct.recon_asked_email_failed_one": "1 行について質問しました。{name} 宛てのメールは送信できませんでした。{reason}サインインすると質問が表示されます。「リマインド」を使うと再送信します。",
+  "acct.recon_asked_left_out": "{names} はここで銀行に関する質問に回答しなくなったため、メールは送信されませんでした。",
   "acct.recon_asked_email_unconfirmed": "{count} 行について質問しました。{name} 宛てのメールは送信された可能性がありますが、確認できていません。サインインすると質問が表示されます。",
   "acct.recon_asked_email_unconfirmed_one": "1 行について質問しました。{name} 宛てのメールは送信された可能性がありますが、確認できていません。サインインすると質問が表示されます。",
   "acct.recon_reason_client": "クライアントは「{answer}」と言いました。",

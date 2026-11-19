@@ -570,6 +570,12 @@ async def _open_questions(db: AsyncSession, company_id: uuid.UUID) -> int:
     return sum(1 for l in rows if _open(l))
 
 
+def _no_client_user() -> HTTPException:
+    return HTTPException(status_code=409, detail=catalog_refusal(
+        "reconciliation.no_client_user", permission=catalog_refusal("perm.name.answer_bank_questions"),
+        books=catalog_refusal("perm.name.manage_accounting")))
+
+
 async def ask_plan(db: AsyncSession, *, company_id: uuid.UUID, lines: list[BankStatementLine], note: str) -> dict:
     """What an Ask about ``lines`` does, read before anything is written: the client members it
     tells and emails, and the notice it sends (a reminder when a line was already asked). The
@@ -577,9 +583,7 @@ async def ask_plan(db: AsyncSession, *, company_id: uuid.UUID, lines: list[BankS
     key emails what the first one planned."""
     members = await client_users(db, company_id)
     if not members:
-        raise HTTPException(status_code=409, detail=catalog_refusal(
-            "reconciliation.no_client_user", permission=catalog_refusal("perm.name.answer_bank_questions"),
-            books=catalog_refusal("perm.name.manage_accounting")))
+        raise _no_client_user()
     reminder = max((l.client_query or {}).get("asks", 0) if asked(l) else 0 for l in lines)
     count = await _open_questions(db, company_id) + sum(1 for l in lines if not _open(l))
     return {"asked": [str(l.id) for l in lines], "note": note, "members": [str(m.id) for m in members],
@@ -608,16 +612,21 @@ async def write_ask(db: AsyncSession, *, company_id: uuid.UUID, lines: list[Bank
 
 
 async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str, plan: dict) -> dict:
-    """Email each member ``plan`` names under an operation id of ``key``, so a second run of the
-    key sends no second email; the Ask's outcome."""
+    """Email each member ``plan`` names who still answers bank questions here (client_users,
+    the plan's own check, read again at send time) under an operation id of ``key``, so a
+    second run of the key sends no second email; the Ask's outcome names those left out.
+    Refused, with nothing sent, when none of them still does."""
     from celerp.config import settings
     from celerp.models.company import Company, User
     from celerp.services import email as email_service
     from ui.i18n import as_sentence, t
 
-    found = {str(u.id): u for u in (await db.execute(select(User).where(
-        User.id.in_([uuid.UUID(m) for m in plan["members"]])))).scalars()}
-    members = [found[m] for m in plan["members"] if m in found]
+    allowed = {str(u.id): u for u in await client_users(db, company_id)}
+    members = [allowed[m] for m in plan["members"] if m in allowed]
+    if not members:
+        raise _no_client_user()
+    left_out = [u.name for u in (await db.execute(select(User).where(User.id.in_(
+        [uuid.UUID(m) for m in plan["members"] if m not in allowed])).order_by(User.name, User.id))).scalars()]
     company = await db.get(Company, company_id)
     base = (settings.celerp_public_url or "").rstrip("/")
     link = f"{base}{QUESTIONS_URL}" if base else None
@@ -643,6 +652,8 @@ async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str, plan: 
     else:
         state, reason = failed[0][1], failed[0][2]
         outcome = t(_ASKED_NOT_SENT[state][one], count=count, name=", ".join(n for n, _s, _r in failed), reason=reason)
+    if left_out:
+        outcome = f"{outcome} {t('acct.recon_asked_left_out', names=', '.join(left_out))}"
     return {"asked": plan["asked"], "outcome": str(outcome), "email": {"state": worst}}
 
 

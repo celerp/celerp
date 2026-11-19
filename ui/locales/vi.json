@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "Đã hỏi về 1 dòng. {names} có thể trả lời trong Celerp và đã nhận được email.",
   "acct.recon_asked_email_failed": "Đã hỏi về {count} dòng. Không thể gửi email đến {name}. {reason} Họ thấy các câu hỏi khi đăng nhập; Nhắc lại sẽ gửi lại.",
   "acct.recon_asked_email_failed_one": "Đã hỏi về 1 dòng. Không thể gửi email đến {name}. {reason} Họ thấy câu hỏi khi đăng nhập; Nhắc lại sẽ gửi lại.",
+  "acct.recon_asked_left_out": "{names} không còn trả lời câu hỏi ngân hàng ở đây nên không được gửi email.",
   "acct.recon_asked_email_unconfirmed": "Đã hỏi về {count} dòng. Email gửi đến {name} có thể đã được gửi đi nhưng chưa được xác nhận. Họ sẽ thấy các câu hỏi khi đăng nhập.",
   "acct.recon_asked_email_unconfirmed_one": "Đã hỏi về 1 dòng. Email gửi đến {name} có thể đã được gửi đi nhưng chưa được xác nhận. Họ sẽ thấy câu hỏi khi đăng nhập.",
   "acct.recon_reason_client": "Khách hàng nói: {answer}.",

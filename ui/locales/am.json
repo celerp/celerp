@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "ስለ 1 መስመር ተጠይቋል። {names} በCelerp ውስጥ መልስ መስጠት ይችላሉ፣ እና ኢሜይል ደርሷቸዋል።",
   "acct.recon_asked_email_failed": "ስለ {count} መስመሮች ተጠይቋል። ወደ {name} የተላከው ኢሜይል ሊላክ አልቻለም። {reason} ሲገቡ ጥያቄዎቹን ያያሉ፤ «አስታውስ» እንደገና ይልካል።",
   "acct.recon_asked_email_failed_one": "ስለ 1 መስመር ተጠይቋል። ወደ {name} የተላከው ኢሜይል ሊላክ አልቻለም። {reason} ሲገቡ ጥያቄውን ያያሉ፤ «አስታውስ» እንደገና ይልካል።",
+  "acct.recon_asked_left_out": "{names} እዚህ የባንክ ጥያቄዎችን ከእንግዲህ ስለማይመልሱ ኢሜይል አልተላከላቸውም።",
   "acct.recon_asked_email_unconfirmed": "ስለ {count} መስመሮች ተጠይቋል። ወደ {name} የተላከው ኢሜይል ወጥቶ ሊሆን ይችላል፣ ግን አልተረጋገጠም። ሲገቡ ጥያቄዎቹን ያያሉ።",
   "acct.recon_asked_email_unconfirmed_one": "ስለ 1 መስመር ተጠይቋል። ወደ {name} የተላከው ኢሜይል ወጥቶ ሊሆን ይችላል፣ ግን አልተረጋገጠም። ሲገቡ ጥያቄውን ያያሉ።",
   "acct.recon_reason_client": "ደንበኛው እንዲህ ብሏል፦ {answer}።",

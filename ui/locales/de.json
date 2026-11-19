@@ -8395,6 +8395,7 @@
   "acct.recon_asked_one": "Zu 1 Zeile wurde gefragt. {names} kann sie in Celerp beantworten und hat eine E-Mail erhalten.",
   "acct.recon_asked_email_failed": "Zu {count} Zeilen wurde gefragt. Die E-Mail an {name} konnte nicht gesendet werden. {reason} Die Fragen werden beim Anmelden angezeigt; „Erinnern“ sendet sie erneut.",
   "acct.recon_asked_email_failed_one": "Zu 1 Zeile wurde gefragt. Die E-Mail an {name} konnte nicht gesendet werden. {reason} Die Frage wird beim Anmelden angezeigt; „Erinnern“ sendet sie erneut.",
+  "acct.recon_asked_left_out": "{names} beantworten hier keine Bankfragen mehr und haben daher keine E-Mail erhalten.",
   "acct.recon_asked_email_unconfirmed": "Zu {count} Zeilen wurde gefragt. Die E-Mail an {name} wurde möglicherweise versendet, wurde aber nicht bestätigt. Die Fragen werden beim Anmelden angezeigt.",
   "acct.recon_asked_email_unconfirmed_one": "Zu 1 Zeile wurde gefragt. Die E-Mail an {name} wurde möglicherweise versendet, wurde aber nicht bestätigt. Die Frage wird beim Anmelden angezeigt.",
   "acct.recon_reason_client": "Der Mandant sagte: {answer}.",

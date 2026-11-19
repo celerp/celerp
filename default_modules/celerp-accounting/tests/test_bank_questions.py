@@ -285,6 +285,63 @@ async def test_ask_under_a_key_naming_another_asks_email_gets_its_own_plan(clien
     assert again.status_code == 200 and again.json() == first.json() and len(calls) == 2
 
 
+async def _between_plan_and_send(monkeypatch, change):
+    """Run ``change(db)`` after the Ask's plan and questions are written, before its email."""
+    from celerp_accounting import statement_lines as SL
+    real = SL.write_ask
+
+    async def write_then_change(db, **kw):
+        await real(db, **kw)
+        await change(db)
+    monkeypatch.setattr(SL, "write_ask", write_then_change)
+
+
+async def _two_clients(client, session):
+    co, bk, client_h, lines = await _setup(client, session)
+    other_h = await B.member(client, session, co, "viewer")
+    return co, bk, (B.user_id(client_h), B.user_id(other_h)), lines
+
+
+async def _removed(db, user_id, company_id):
+    import uuid
+    from sqlalchemy import update
+    from celerp.models.accounting import UserCompany
+    await db.execute(update(UserCompany).where(UserCompany.user_id == uuid.UUID(user_id),
+                                               UserCompany.company_id == uuid.UUID(company_id)).values(is_active=False))
+
+
+async def test_a_recipient_removed_before_the_email_is_not_mailed_and_is_named(client, session, monkeypatch):
+    calls = _sent(monkeypatch)
+    co, bk, (gone, kept), lines = await _two_clients(client, session)
+    from celerp.models.company import User
+    import uuid
+    gone_user, kept_user = (await session.get(User, uuid.UUID(gone))), (await session.get(User, uuid.UUID(kept)))
+    await _between_plan_and_send(monkeypatch, lambda db: _removed(db, gone, co["company_id"]))
+    r = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])
+    assert r.status_code == 200, r.text
+    assert [c["to"] for c in calls] == [kept_user.email]
+    assert gone_user.name in r.json()["outcome"] and "not emailed" in r.json()["outcome"], r.json()
+
+
+async def test_a_recipient_whose_permission_is_revoked_before_the_email_is_not_mailed(client, session, monkeypatch):
+    """Every recipient lost the permission between plan and send: nothing goes out and the
+    send is refused saying why."""
+    calls = _sent(monkeypatch)
+    co, bk, client_h, lines = await _setup(client, session)
+
+    async def revoke(db):
+        import uuid
+        from celerp.services.company_lock import locked_company
+        company = await locked_company(db, uuid.UUID(co["company_id"]))
+        grants = dict((company.settings or {}).get("role_grants") or {})
+        grants["answer_bank_questions"] = [r for r in grants.get("answer_bank_questions", []) if r != "viewer"]
+        company.settings = {**(company.settings or {}), "role_grants": grants}
+    await _between_plan_and_send(monkeypatch, revoke)
+    r = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])
+    assert calls == []
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "reconciliation.no_client_user", r.text
+
+
 async def test_a_key_used_by_one_bank_operation_is_refused_by_another(client):
     """Two bank operations with the same body under one key: the second is refused, never
     answered with the first operation's result."""
