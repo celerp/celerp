@@ -319,6 +319,30 @@ def test_only_a_document_number_carried_once_proves_identity():
     assert suggest.identified("20261115", ["20261115"], refs.elsewhere(set())) == 0  # its shape is no bar
 
 
+def test_the_ladder_and_a_post_identify_a_line_s_entry_the_same_way():
+    """The ladder's match and a post's keyed-instead check compose ``twins`` and ``identified``
+    through one helper (``suggest.own_twin``): a line of another bank already matched to the
+    candidate entry is that entry's own reading (a transfer counted on both accounts), never a
+    second line carrying the number; a line matched to nothing that carries it still is."""
+    from celerp_accounting import suggest
+
+    entry = {"je_id": "je:1", "amount": "-100.00", "date": "2026-01-05", "identifier": "INV-7"}
+    line = {"id": "l1", "amount": "-100.00", "line_date": "2026-01-05", "reference": "INV-7",
+            "counterparty_key": "ACME", "description": "ACME"}
+
+    def evidence(other: dict) -> dict:
+        refs = suggest.References([{"id": "l1", "bank_account_id": "b1", "line_date": "2026-01-05",
+                                    "reference": "INV-7", "matched_je_ids": []}, other])
+        ctx = suggest.LadderContext(bank_id="b1", entries=[entry], references=refs)
+        return suggest._matches([line], ctx)["l1"].get("evidence") or {}
+    counted = {"id": "l2", "bank_account_id": "b2", "line_date": "2026-01-05", "reference": "inv-7",
+               "matched_je_ids": ["je:1"]}
+    assert evidence(counted) == {"identifier": True}
+    assert evidence({**counted, "matched_je_ids": []}) == {}
+    assert suggest.own_twin("l1", "INV-7", [entry], suggest.References([counted])) == 0
+    assert suggest.own_twin("l1", "INV-7", [entry], suggest.References([{**counted, "matched_je_ids": []}])) is None
+
+
 _MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
            "October", "November", "December"]
 

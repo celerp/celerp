@@ -1010,14 +1010,13 @@ async def _keyed_instead(db: AsyncSession, company_id: uuid.UUID, bank: BankAcco
     found = [e for e in near if e["je_id"] not in held]
     if not found:
         return None
-    ids = {e["je_id"] for e in found}
-    carried = await _entry_identifiers(db, company_id, ids)
-    idents = [carried.get(e["je_id"]) for e in found]
+    carried = await _entry_identifiers(db, company_id, {e["je_id"] for e in found})
+    found = [{**e, "identifier": carried.get(e["je_id"])} for e in found]
+    idents = [e["identifier"] for e in found]
     references = await _references(db, company_id, set(idents) | {suggest.normalised(line.reference)})
-    owners = {str(l["id"]) for l in references.matched_to(ids)}
 
     def pick(reference: str | None, line_id: str) -> int | None:
-        return suggest.identified(reference, idents, references.elsewhere({line_id} | owners))
+        return suggest.own_twin(line_id, reference, found, references)
 
     if (mine := pick(line.reference, str(line.id))) is not None:
         je_ids = [found[mine]["je_id"]]

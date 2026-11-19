@@ -122,8 +122,7 @@ def _matches(lines: list[dict], ctx: LadderContext) -> dict:
         out[line_id] = {"kind": "match", "source": "match", "je_ids": [je_id], "confidence": confidence,
                         "reason": t("acct.recon_reason_match", date=str(e.get("date") or e.get("ts") or "")[:10])}
         near = twins(line["amount"], line["line_date"], ctx.entries)
-        pick = identified(line.get("reference"), [x.get("identifier") for x in near],
-                          ctx.references.elsewhere({str(line_id)}))
+        pick = own_twin(line_id, line.get("reference"), near, ctx.references)
         if pick is not None and near[pick]["je_id"] == je_id:
             out[line_id]["evidence"] = {"identifier": True}
     # One line paid by up to three entries of one counterparty (or three lines of one
@@ -224,6 +223,16 @@ def identified(reference: str | None, numbers: list, elsewhere: Callable[[str], 
         return None
     hits = [i for i, n in enumerate(numbers) if normalised(n) == ident]
     return hits[0] if len(hits) == 1 and not elsewhere(ident) else None
+
+
+def own_twin(line_id, reference: str | None, near: list[dict], references: "References") -> int | None:
+    """The index of the one of ``near`` (a line's candidate entries from ``twins``, each with its
+    ``identifier``) that ``identified`` proves is the line's own, or None: the one composition the
+    ladder and a post's keyed-instead check share. A statement line already matched to one of the
+    candidates is that entry's own reading (a transfer counted on the other bank), never another
+    line carrying its number."""
+    owners = {str(l["id"]) for l in references.matched_to({e["je_id"] for e in near})}
+    return identified(reference, [e.get("identifier") for e in near], references.elsewhere({str(line_id)} | owners))
 
 
 class References:
