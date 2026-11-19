@@ -49,11 +49,10 @@ def _amount_text(value) -> str:
 
 
 def statement_line_ident(line_date: str, amount, text: str, reference, balance) -> tuple:
-    """What two identical lines of one statement share: the date, the amount as a magnitude
-    (a card statement read with its signs reversed keeps its identity), the description with
-    its spacing and case folded, the reference and the running balance."""
-    size = None if amount is None else abs(Decimal(str(amount)))
-    return (line_date, _amount_text(size), " ".join((text or "").upper().split()), (reference or "").strip(),
+    """What two identical lines of one statement share: the date, the amount in the bank's
+    sign convention, the description with its spacing and case folded, the reference and the
+    running balance."""
+    return (line_date, _amount_text(amount), " ".join((text or "").upper().split()), (reference or "").strip(),
             _amount_text(balance))
 
 

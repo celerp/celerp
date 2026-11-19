@@ -3,7 +3,9 @@
 """Seeded generated statement input through the real read, preview, import and resolve
 routes: every file and every decision is either taken as a reference reading says it should
 be, or refused with a keyed reason. Never a server error, never an empty statement read
-from a file that held nothing."""
+from a file that held nothing. A generated statement printed with its signs reversed (a card
+statement) reads to the same lines, fingerprints, counterparties and duplicates as the same
+statement printed in the bank's convention, with running balances or without."""
 
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 import pytest
 
 import bank_statement_helpers as B
+from celerp_accounting.statement_reader import review_statement
 
 pytestmark = pytest.mark.asyncio
 
@@ -117,3 +120,50 @@ async def test_generated_decisions_post_or_refuse_by_key(client, session, seed):
     if result["ok"]:
         je = await B.journal(session, co, result["je_ids"][0])
         assert sorted(e["account"] for e in je["entries"] if e.get("debit")) == sorted([code, "5300"])
+
+
+_LINE_TEXT = ["ATM", "TRANSFER", "COFFEE SHOP", "ATM FEE", "DEPOSIT", "HOTEL 123456789012"]
+_LINE_AMOUNTS = ["-5.00", "12.34", "-0.50", "250.00", "-99.99", "7.00"]
+
+
+def _bank_statement(rng: random.Random) -> tuple[dict, list[dict]]:
+    """A statement in the bank's sign convention whose amounts do not net to nothing (so only
+    one convention ties), repeated identical lines included."""
+    while True:
+        opening, lines = Decimal(rng.choice(["0.00", "100.00", "-50.00"])), []
+        for _ in range(rng.randint(1, 8)):
+            if lines and rng.random() < 0.25:
+                lines.append(dict(lines[-1]))
+            else:
+                lines.append({"line_date": rng.choice(["2026-01-02", "2026-01-03"]),
+                              "description": rng.choice(_LINE_TEXT), "amount": rng.choice(_LINE_AMOUNTS)})
+        total = sum((Decimal(l["amount"]) for l in lines), Decimal(0))
+        if total:
+            break
+    running, balances = opening, rng.random() < 0.5
+    for line in lines:
+        running += Decimal(line["amount"])
+        line["raw_balance"] = str(running) if balances else None
+    header = {"currency": "USD", "period_start": "2026-01-01", "period_end": "2026-01-31",
+              "opening_balance": str(opening)}
+    if not balances or rng.random() < 0.5:
+        header["closing_balance"] = str(opening + total)
+    return header, lines
+
+
+@pytest.mark.parametrize("seed", range(40))
+async def test_a_statement_printed_with_reversed_signs_reads_to_the_same_line_identities(seed):
+    rng = random.Random(seed)
+    header, bank_lines = _bank_statement(rng)
+    card_lines = [{**l, "amount": str(-Decimal(l["amount"]))} for l in bank_lines]
+    plain = review_statement(header, bank_lines, bank_currency="USD")
+    existing = {l["fingerprint"]: "Statement 2025-12-31" for l in plain["lines"] if rng.random() < 0.4}
+    held = {}
+    for line in rng.sample(plain["lines"], rng.randint(0, len(plain["lines"]))):
+        bucket = (line["line_date"], line["amount"])
+        held[bucket] = held.get(bucket, 0) + 1
+    bank = review_statement(header, bank_lines, bank_currency="USD", existing=existing, held_counts=held)
+    card = review_statement(header, card_lines, bank_currency="USD", existing=existing, held_counts=held)
+    assert (bank["flipped"], bank["blocking"], card["flipped"], card["blocking"]) == (False, [], True, [])
+    fields = ("amount", "fingerprint", "counterparty_key", "duplicate", "probable", "ticked")
+    assert [[l[f] for f in fields] for l in card["lines"]] == [[l[f] for f in fields] for l in bank["lines"]]

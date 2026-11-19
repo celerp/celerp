@@ -810,7 +810,8 @@ async def test_sparse_rule_requires_amount(client):
 async def test_fingerprint_backfill_never_collides():
     """A restored older backup numbers identical lines of a bank by statement date, creation
     time and id, whatever order the backup holds them in, so no two lines of a bank collide and
-    each gets the fingerprint the schema upgrade gives it."""
+    each gets the fingerprint the schema upgrade gives it. A line of the same size in the other
+    direction (a refund of a charge) is a different line, numbered on its own."""
     from celerp.services import company_backup as cb
     from celerp.services.field_fingerprints import statement_line
 
@@ -823,10 +824,10 @@ async def test_fingerprint_backfill_never_collides():
              for i, s in enumerate(("s1", "s2", "s1", "s3", "s2", "s1", "s3"))]
     tables = {"reconciliation_sessions": statements, "bank_statement_lines": lines}
     got = {r["id"]: (r["bank_account_id"], r["fingerprint"]) for r in cb._bank_lines(lambda t: iter(tables[t]))}
-    base = ("2026-01-02", "3.0000", "ATM FEE", None, None)
-    # b1: s2 (Jan) lines id4, id1 by creation time, then s1 (Feb) lines id5, id2, id0.
-    assert got == {i: (b, statement_line(*base, n)) for b, order in (("b1", ("id4", "id1", "id5", "id2", "id0")),
-                                                                      ("b2", ("id6", "id3")))
+    # b1: s2 (Jan) lines id4, id1 by creation time, then s1 (Feb) lines id5, id2, id0; even ids are 3, odd -3.
+    assert got == {i: (b, statement_line("2026-01-02", amount, "ATM FEE", None, None, n))
+                   for b, amount, order in (("b1", "3.0000", ("id4", "id2", "id0")), ("b1", "-3.0000", ("id1", "id5")),
+                                            ("b2", "3.0000", ("id6",)), ("b2", "-3.0000", ("id3",)))
                    for n, i in enumerate(order)}
 
 

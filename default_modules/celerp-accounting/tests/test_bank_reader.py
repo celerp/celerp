@@ -231,3 +231,56 @@ def test_a_balance_or_amount_that_is_no_number_is_unread_and_blocks(bad):
     # A running balance is optional: one that is no number reads as none.
     out = _review({**_HEADER, "closing_balance": "90.00"}, [_line("2026-01-02", "-10.00", balance=bad)])
     assert out["lines"][0]["raw_balance"] is None
+
+
+# The sign convention is decided first, from the opening, the closing and every running balance;
+# every line's identity is then read from the amounts in the bank's convention.
+_CARD = {**_HEADER, "opening_balance": "0.00", "closing_balance": "-100.00"}
+
+
+def test_a_reversed_card_statement_with_running_balances_imports_reversed():
+    out = _review(_CARD, [_line("2026-01-02", "25.00", "COFFEE", "-25.00"),
+                          _line("2026-01-05", "75.00", "HOTEL", "-100.00")])
+    assert out["flipped"] is True and out["blocking"] == []
+    assert out["tie"] == {"ok": True, "first_break": None}
+    assert [l["amount"] for l in out["lines"]] == ["-25.00", "-75.00"]
+
+
+def test_a_reversed_line_without_a_counterparty_is_keyed_as_spending():
+    out = _review(_CARD, [_line("2026-01-02", "100.00", "ATM", "-100.00")])
+    assert out["flipped"] is True and out["lines"][0]["counterparty_key"] == "SPARSE:ATM:out"
+
+
+def test_a_line_imported_from_another_format_is_a_duplicate_on_a_reversed_statement():
+    bank = _review(_CARD, [_line("2026-01-05", "-100.00", "HOTEL", "-100.00")])
+    card = _review(_CARD, [_line("2026-01-05", "100.00", "HOTEL", "-100.00")],
+                   existing={bank["lines"][0]["fingerprint"]: "Statement 2025-12-31"})
+    assert card["flipped"] is True and card["lines"][0]["fingerprint"] == bank["lines"][0]["fingerprint"]
+    assert card["lines"][0]["duplicate"] == "Statement 2025-12-31" and card["lines"][0]["ticked"] is False
+    held = _review(_CARD, [_line("2026-01-05", "100.00", "HOTEL")],
+                   held_counts={("2026-01-05", "-100.00"): 1})
+    assert held["lines"][0]["probable"] is True
+
+
+def test_repeated_identical_lines_of_a_reversed_statement_keep_their_fingerprints_across_imports():
+    lines = [_line("2026-01-02", "50.00", "ATM FEE"), _line("2026-01-02", "50.00", "ATM FEE")]
+    first, again = _again(_CARD, lines, []), _again(_CARD, lines, [0, 1])
+    bank = _review(_CARD, [_line("2026-01-02", "-50.00", "ATM FEE"), _line("2026-01-02", "-50.00", "ATM FEE")])
+    fps = [l["fingerprint"] for l in first["lines"]]
+    assert fps[0] != fps[1] and fps == [l["fingerprint"] for l in bank["lines"]]
+    assert [bool(l["duplicate"]) for l in again["lines"]] == [True, True]
+
+
+def test_a_statement_that_ties_in_neither_convention_blocks_at_the_first_break_as_read():
+    out = _review({**_HEADER, "closing_balance": "85.00"}, [_line("2026-01-02", "-10.00", "A", "90.00"),
+                                                           _line("2026-01-03", "-5.00", "B", "80.00")])
+    assert out["flipped"] is False and [l["amount"] for l in out["lines"]] == ["-10.00", "-5.00"]
+    assert [(b["code"], b["line"]) for b in out["blocking"]] == [("tie_break", 1)]
+
+
+def test_a_refund_is_never_the_duplicate_of_the_charge_it_mirrors():
+    charge = _line("2026-01-02", "-100.00", "TRANSFER SHOP")
+    first = _review({**_HEADER, "closing_balance": "0.00"}, [charge])
+    out = _review({**_HEADER, "closing_balance": "100.00"}, [_line("2026-01-02", "100.00", "TRANSFER SHOP"), charge],
+                  existing={first["lines"][0]["fingerprint"]: "Statement 2025-12-31"})
+    assert out["flipped"] is False and [bool(l["duplicate"]) for l in out["lines"]] == [False, True]

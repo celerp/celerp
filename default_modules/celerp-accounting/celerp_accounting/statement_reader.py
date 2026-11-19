@@ -160,6 +160,21 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
     if closing is None and balances and balances[-1] is not None:
         closing = balances[-1]
 
+    # The sign convention comes first, from the opening, the closing and every running balance:
+    # the statement ties out as read, every line in it, those already imported too (its balances
+    # count them), or only with every amount reversed (card statements print spending as
+    # positive). Neither ties: the break as read blocks. Only then is each line's identity read,
+    # from its amount in the bank's convention, and the duplicates left out of the import.
+    ties, first_break = _tie(opening, closing, amounts, balances)
+    flipped = False
+    if ties is False and _tie(opening, closing, [-a for a in amounts], balances)[0]:
+        flipped, ties, first_break = True, True, None
+        for line in out:
+            if line["amount"] is not None:
+                line["amount"] = -line["amount"]
+        notices.append("The amounts on this statement were reversed to match its balances "
+                       "(card statements print spending as positive).")
+
     for line in out:
         amount = line["amount"] or Decimal(0)
         if line.get("fitid") or (line.get("source") == "ofx" and line.get("reference")):
@@ -185,19 +200,6 @@ def review_statement(header: dict, lines: list[dict], *, bank_currency: str,
         line.update(fingerprint=fp, counterparty_key=key, counterparty_account=account,
                     duplicate=duplicate, probable=probable, ticked=not (duplicate or probable))
 
-    # The statement ties out as read, every line in it, those already imported too: its opening,
-    # closing and running balances count them. Only then are the duplicates left out of the import.
-    ties, first_break = _tie(opening, closing, amounts, balances)
-    flipped = False
-    if ties is False and first_break is None:
-        reversed_ties, _ = _tie(opening, closing, [-a for a in amounts], [None for _ in amounts])
-        if reversed_ties:
-            flipped, ties = True, True
-            for line in out:
-                if line["amount"] is not None:
-                    line["amount"] = -line["amount"]
-            notices.append("The amounts on this statement were reversed to match its balances "
-                           "(card statements print spending as positive).")
     if first_break is not None:
         blocking.append(_block("tie_break", first_break, n=first_break + 1))
     elif ties is False:
