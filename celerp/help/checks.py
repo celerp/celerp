@@ -22,7 +22,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from celerp.help.registry import CORE, CORE_HELP_DIR, page_files
-from celerp.help.bundle import MAX_IMAGE_BYTES
+from celerp.help.bundle import MAX_IMAGE_BYTES, MODULE_NAME, TOPIC_ID
+from celerp.help.ledger import LEDGER_FILE, SITE_LANGUAGES, ledger
+from celerp.help.translations import catalog_languages
 from celerp.help.schema import load_file, module_prefix
 from celerp.help.search import covers
 from celerp.modules.loader import (
@@ -282,6 +284,59 @@ def check_checked(pages: list[PageFile], screens: dict[str, dict] | None = None)
         out.append(f"{page.path.name}: checked is {state} (handlers: {', '.join(handlers)}); re-read its steps "
                    f"against those screens, then python -m celerp.help.checks stamp {page.data.get('id')}")
     return out
+
+
+def _ledger_problems(data, pages: list[PageFile]) -> list[str]:
+    if not (isinstance(data, dict) and set(data) == {"locales", "topics", "modules"}):
+        return ["must be an object with exactly locales, topics and modules"]
+    locales, topics, modules = data["locales"], data["topics"], data["modules"]
+    out = []
+    if not (isinstance(locales, list) and all(isinstance(c, str) for c in locales)):
+        out.append("locales must be a list of language codes")
+    if not (isinstance(topics, dict) and all(isinstance(k, str) and TOPIC_ID.match(k) for k in topics)):
+        out.append("topics must be an object of topic ids")
+    if not (isinstance(modules, dict) and all(isinstance(k, str) and MODULE_NAME.match(k) for k in modules)):
+        out.append("modules must be an object of module names")
+    if out:
+        return out
+    ids = {p.data.get("id") for p in pages if isinstance(p.data, dict)}
+    live = {module_prefix(p.module) for p in pages}
+
+    def target(where, value):
+        if not (value == "" or value in ids or value in live):
+            out.append(f"{where} must be a live topic id, a live module or \"\"")
+
+    out += [f"shipped page {pid} has no topics entry" for pid in sorted(ids - set(topics))]
+    for pid, value in sorted(topics.items()):
+        if value is None and pid not in ids:
+            out.append(f"page {pid} was deleted: set its ledger value to its replacement id, module or \"\"")
+        elif value is not None and pid in ids:
+            out.append(f"page {pid} is shipped: its ledger value must be null")
+        elif value is not None:
+            target(f"topics.{pid}", value)
+    retired = {pid.split(".")[0] for pid in topics} - live
+    out += [f"retired module {name} has no modules entry" for name in sorted(retired - set(modules))]
+    for name, value in sorted(modules.items()):
+        if name in live:
+            out.append(f"module {name} is live and must have no modules entry")
+        elif name not in retired:
+            out.append(f"modules.{name} names no ledger topic")
+        else:
+            target(f"modules.{name}", value)
+    out += [f"locales lacks {code}" + ("" if code == "en" else ", which has a catalog")
+            for code in ["en", *catalog_languages()] if code not in locales]
+    out += [f"locales holds {code}, which is not a site language" for code in locales if code not in SITE_LANGUAGES]
+    return out
+
+
+def check_ledger(pages: list[PageFile]) -> list[str]:
+    """ledger.json names every shipped guide id, what replaced each deleted one, each retired
+    module, and every guide language with a catalog."""
+    try:
+        data = ledger()
+    except ValueError as e:
+        return [str(e)]
+    return [f"{LEDGER_FILE.name}: {p}" for p in _ledger_problems(data, pages)]
 
 
 _CHECKED_LINE = re.compile(r'"checked"\s*:\s*"[^"]*"')

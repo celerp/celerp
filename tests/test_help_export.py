@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from celerp.help import assemble, ledger, translations
+from celerp.help import assemble, checks, ledger, translations
 from celerp.help.assemble import build_bundle, git_date
 from celerp.help.bundle import bundle_problems
 from celerp.help.registry import get_index
@@ -105,3 +105,76 @@ def test_git_date_refuses_a_shallow_clone_or_a_file_with_no_commit(monkeypatch):
         git_date("x.json")
     answers["log"] = "2026-11-04"
     assert git_date("x.json") == "2026-11-04"
+
+
+def _ledger_pages():
+    page = lambda pid, module: checks.PageFile(path=None, data={"id": pid}, module=module, help_dir=None)
+    return [page("core.a", "core"), page("core.b", "core"), page("sales.x", "celerp-sales")]
+
+
+def _check_ledger(monkeypatch, data, languages=()):
+    monkeypatch.setattr(checks, "ledger", lambda: data)
+    monkeypatch.setattr(checks, "catalog_languages", lambda: list(languages))
+    return checks.check_ledger(_ledger_pages())
+
+
+def _good(**over):
+    data = {"locales": ["en"], "topics": {"core.a": None, "core.b": None, "sales.x": None}, "modules": {}}
+    data.update(over)
+    return data
+
+
+def test_check_ledger_accepts_a_ledger_that_matches_the_guides(monkeypatch):
+    assert _check_ledger(monkeypatch, _good()) == []
+    gone = _good(topics={"core.a": None, "core.b": None, "sales.x": None, "core.old": "core.a",
+                         "crm.y": "", "crm.z": "sales"},
+                 modules={"crm": "sales"}, locales=["en", "th"])
+    assert _check_ledger(monkeypatch, gone, ["th"]) == []
+
+
+def test_check_ledger_names_every_mismatch(monkeypatch):
+    assert _check_ledger(monkeypatch, _good(topics={"core.a": None, "sales.x": None})) == [
+        "ledger.json: shipped page core.b has no topics entry"]
+    deleted = _good(topics={**_good()["topics"], "core.gone": None})
+    assert _check_ledger(monkeypatch, deleted) == [
+        "ledger.json: page core.gone was deleted: set its ledger value to its replacement id, module or \"\""]
+    bad_target = _good(topics={**_good()["topics"], "core.old": "core.nope"})
+    assert _check_ledger(monkeypatch, bad_target) == [
+        "ledger.json: topics.core.old must be a live topic id, a live module or \"\""]
+    live_replaced = _good(topics={**_good()["topics"], "core.a": "core.b"})
+    assert _check_ledger(monkeypatch, live_replaced) == [
+        "ledger.json: page core.a is shipped: its ledger value must be null"]
+    retired = _good(topics={**_good()["topics"], "crm.y": ""})
+    assert _check_ledger(monkeypatch, retired) == [
+        "ledger.json: retired module crm has no modules entry"]
+    live_module = _good(modules={"sales": ""})
+    assert _check_ledger(monkeypatch, live_module) == [
+        "ledger.json: module sales is live and must have no modules entry"]
+    stray = _good(modules={"crm": ""})
+    assert _check_ledger(monkeypatch, stray) == [
+        "ledger.json: modules.crm names no ledger topic"]
+    bad_module_target = _good(topics={**_good()["topics"], "crm.y": ""}, modules={"crm": "nope"})
+    assert _check_ledger(monkeypatch, bad_module_target) == [
+        "ledger.json: modules.crm must be a live topic id, a live module or \"\""]
+
+
+def test_check_ledger_locales(monkeypatch):
+    assert _check_ledger(monkeypatch, _good(), ["th"]) == [
+        "ledger.json: locales lacks th, which has a catalog"]
+    assert _check_ledger(monkeypatch, _good(locales=["th"])) == ["ledger.json: locales lacks en"]
+    assert _check_ledger(monkeypatch, _good(locales=["en", "xx"])) == [
+        "ledger.json: locales holds xx, which is not a site language"]
+
+
+def test_check_ledger_shape_and_unreadable_files(monkeypatch):
+    assert _check_ledger(monkeypatch, {"locales": ["en"]}) == [
+        "ledger.json: must be an object with exactly locales, topics and modules"]
+    assert _check_ledger(monkeypatch, _good(topics=[], modules=[], locales="en")) == [
+        "ledger.json: locales must be a list of language codes",
+        "ledger.json: topics must be an object of topic ids",
+        "ledger.json: modules must be an object of module names"]
+
+    def broken():
+        raise ValueError("ledger.json is not valid JSON: x")
+    monkeypatch.setattr(checks, "ledger", broken)
+    assert checks.check_ledger(_ledger_pages()) == ["ledger.json is not valid JSON: x"]

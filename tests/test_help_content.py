@@ -69,3 +69,8 @@ def test_no_help_text_in_catalogs(pages):
         p.data.get("title") in values or p.data.get("summary") in values
         or any(isinstance(s, dict) and s.get("text") in values for s in p.data.get("steps") or []))]
     assert prose == []
+
+
+def test_help_ledger(pages):
+    """Every shipped guide id is in the ledger and every live ledger id is shipped."""
+    assert checks.check_ledger(pages) == []
