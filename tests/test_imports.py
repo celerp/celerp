@@ -31,6 +31,7 @@ def test_event_type_values() -> None:
     assert EventType.ITEM_INVENTORY_ACCOUNT_MOVED == "item.inventory_account.moved"
     assert EventType.SYS_OLDER_STOCK_PLACED == "sys.older_stock.placed"
     assert EventType.SYS_OLDER_STOCK_CORRECTED == "sys.older_stock.corrected"
+    assert EventType.SYS_LOCALIZATION_APPLIED == "sys.localization.applied"
     assert EventType.DOC_LINES_INVOICED == "doc.lines_invoiced"
     assert EventType.DOC_LINES_RETURNED == "doc.lines_returned"
     assert EventType.LIST_FILE_DESCRIPTION_UPDATED == "list.file_description_updated"

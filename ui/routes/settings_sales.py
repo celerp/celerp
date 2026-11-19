@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.encode import call, EVENT, THIS
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.operation_key import required_operation_key
+from ui.components.preview_confirm import confirmed_binding
+from ui.components.shell import base_shell, page_header, page_title, toast_header
 from ui.components.table import EMPTY
 from ui.config import COOKIE_NAME
 from ui.i18n import doc_type_label, get_lang, refusal_text, t
@@ -20,6 +22,8 @@ from ui.i18n import doc_type_label, get_lang, refusal_text, t
 from ui.routes.settings import (
     _token,
     _check_permission,
+    _localization_card,
+    _localization_preview,
     _taxes_tab,
     _terms_conditions_tab,
 )
@@ -141,7 +145,60 @@ def _line_items_tab(company: dict, lang: str = "en") -> FT:
     )
 
 
+async def _taxes_content(token: str, taxes: list[dict], lang: str):
+    """Settings > Taxes: the localization card above the tax table."""
+    try:
+        settings = (await api.get_company(token)).get("settings") or {}
+    except APIError:
+        settings = {}
+    return Div(_localization_card(settings), _taxes_tab(taxes, lang=lang))
+
+
 def setup_routes(app):
+
+    # --- Update localization (the card above the tax table) ---
+
+    async def _localization_call(request: Request, call):
+        """Run one localization API call for the card's panel: a refusal shows in the panel,
+        success reloads the page so the card and the tax table both show the result."""
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        try:
+            return await call(token, await request.form())
+        except ValueError as exc:
+            return P(str(exc), cls="cell-error")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.session_expired"), cls="cell-error")
+            return P(api.error_message(e), cls="cell-error")
+
+    @app.post("/settings/sales/localization/preview")
+    async def localization_preview(request: Request):
+        async def call(token, form):
+            return _localization_preview(await api.localization_preview(token))
+        return await _localization_call(request, call)
+
+    @app.post("/settings/sales/localization/confirm")
+    async def localization_confirm(request: Request):
+        async def call(token, form):
+            await api.localization_confirm(token, confirmed_binding(form, t("localization.stale_preview")),
+                                           required_operation_key(form))
+            return Response("", status_code=204, headers={"HX-Refresh": "true"})
+        return await _localization_call(request, call)
+
+    @app.post("/settings/sales/localization/undo")
+    async def localization_undo(request: Request):
+        async def call(token, form):
+            kept = (await api.localization_undo(token, str(form.get("operation_id") or "")))["kept"]
+            notice = toast_header(t("localization.kept", names=", ".join(row["name"] for row in kept)),
+                                  "warning", persist=True) if kept else {}
+            return Response("", status_code=204, headers={"HX-Refresh": "true", **notice})
+        return await _localization_call(request, call)
+
+    @app.get("/settings/sales/localization/close")
+    async def localization_close(request: Request):
+        return Response("")
 
     @app.get("/settings/sales")
     async def settings_sales_page(request: Request):
@@ -161,7 +218,7 @@ def setup_routes(app):
         lang = get_lang(request)
 
         if tab == "taxes":
-            content = _taxes_tab(taxes, lang=lang)
+            content = await _taxes_content(token, taxes, lang)
         elif tab == "terms-conditions":
             try:
                 tc_templates = await api.get_terms_conditions(token)
@@ -177,7 +234,7 @@ def setup_routes(app):
                 company = {}
             content = _line_items_tab(company, lang=lang)
         else:
-            content = _taxes_tab(taxes, lang=lang)
+            content = await _taxes_content(token, taxes, lang)
             tab = "taxes"
 
         return await base_shell(

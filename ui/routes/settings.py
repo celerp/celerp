@@ -17,6 +17,9 @@ from ui.components.icons import icon, import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title, error_flash
+from ui.components.cards import section_card
+from ui.components.operation_key import operation_key_input
+from ui.components.preview_confirm import binding_input
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
 from celerp.tax_regimes import TAX_TYPES, country_name
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
@@ -3556,6 +3559,47 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
             cls="data-table",
         ),
         cls="settings-card", hx_sync="this:queue all",
+    )
+
+
+def _localization_card(settings: dict) -> FT:
+    """The country pack applied to the tax list beside the company's country, with Update
+    localization (its preview opens in the panel below) and Undo of the update last applied."""
+    applied = settings.get("localization") or {}
+    country = settings.get("country") or ""
+    status = (t("localization.applied", country=country_name(applied.get("country") or ""),
+                version=applied.get("version") or EMPTY, date=str(applied.get("applied_at") or "")[:10])
+              if applied else t("localization.none"))
+    actions = [Button(t("localization.update"), cls="btn btn--primary", hx_post="/settings/sales/localization/preview",
+                      hx_target="#localization-panel")]
+    if applied.get("operation_id"):
+        actions.append(Button(t("btn.undo"), cls="btn btn--secondary ml-sm", hx_post="/settings/sales/localization/undo",
+                              hx_vals=hx_vals({"operation_id": applied["operation_id"]}),
+                              hx_target="#localization-panel"))
+    return section_card(
+        t("localization.title"),
+        P(status),
+        P(t("localization.country", country=country_name(country) if country else EMPTY)),
+        Div(*actions, cls="page-actions"),
+        Div(id="localization-panel"),
+        cls="settings-card mb-md",
+    )
+
+
+def _localization_preview(preview: dict) -> FT:
+    """What Update localization changes, with Confirm carrying the preview's binding."""
+    diff = preview.get("diff") or {}
+    lines = [P(t(f"localization.{kind}", names=", ".join(row["name"] for row in rows)))
+             for kind, rows in diff.items() if rows]
+    return Form(
+        *(lines or [P(t("localization.nothing"))]),
+        *binding_input({"binding": preview.get("fingerprint")}),
+        operation_key_input(),
+        Div(Button(t("btn.confirm"), type="submit", cls="btn btn--primary"),
+            Button(t("btn.cancel"), type="button", cls="btn btn--secondary ml-sm",
+                   hx_get="/settings/sales/localization/close", hx_target="#localization-panel"),
+            cls="page-actions"),
+        hx_post="/settings/sales/localization/confirm", hx_target="#localization-panel",
     )
 
 

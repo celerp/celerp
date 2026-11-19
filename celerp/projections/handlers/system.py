@@ -29,6 +29,8 @@ def apply_system_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "sys.older_stock.corrected":
         current.update({"recognized": data["recognized"], "unresolved": data["unresolved"],
                         "corrections": [*current.get("corrections", []), data]})
+    elif event_type == "sys.localization.applied":
+        current.update({"entity_type": "localization_operation", **data})
     else:
         raise ValueError(f"Unsupported system event: {event_type}")
 

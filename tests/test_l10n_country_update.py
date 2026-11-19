@@ -172,9 +172,10 @@ async def test_localization_update_preview_confirm_undo(client, auth, session):
     assert preview["fingerprint"]
 
     # a mid-apply failure leaves no operation row and the list unchanged
-    with patch("celerp.localization.apply.emit_event", side_effect=RuntimeError("boom")):
-        r = await _confirm(client, auth, preview["fingerprint"])
-    assert r.status_code >= 500
+    # the test client raises what the app raised instead of answering 500
+    with patch("celerp.localization.apply.emit_event", side_effect=RuntimeError("boom")), \
+            pytest.raises(RuntimeError, match="boom"):
+        await _confirm(client, auth, preview["fingerprint"])
     assert await _operations(session) == 0
     assert await _taxes(client, auth) == before
 

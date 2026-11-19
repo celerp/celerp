@@ -1180,6 +1180,13 @@ async def localization_confirm(token: str, binding: str, idempotency_key: str) -
                                    json={"binding": binding, "idempotency_key": idempotency_key})).json()
 
 
+async def localization_undo(token: str, operation_id: str) -> dict:
+    """POST /settings/taxes/localization/undo: put back what an update changed; ``kept`` names
+    the codes left as they are because they were edited since."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/taxes/localization/undo", json={"operation_id": operation_id})).json()
+
+
 async def set_business_type(token: str, vertical: str) -> dict:
     """Set the company's business type. Returns the API result, including
     ``restart_required`` when the type's modules are not running yet."""

@@ -52,7 +52,9 @@ def lock_codes() -> tuple[str, ...] | None:
 
 @lru_cache(maxsize=1)
 def packs() -> dict[str, dict]:
-    """``{code: {"currency", "taxes", "retired"}}`` for every lock entry whose pack matches its digest."""
+    """``{code: {"currency", "taxes", "codes", "retired", "version", "sha256"}}`` for every lock entry
+    whose pack matches its digest: ``codes`` are the pack's tax codes as the pack states them,
+    ``taxes`` the same codes as a company's tax list stores them."""
     loaded: dict[str, dict] = {}
     for code, entry in (_lock() or {}).items():
         path = _root() / "packs" / f"{code}.json"
@@ -66,14 +68,15 @@ def packs() -> dict[str, dict]:
             continue
         try:
             pack = json.loads(data)
-            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": _stored_rows(pack["taxes"]),
-                            "retired": pack.get("retired", [])}
+            loaded[code] = {"currency": pack["company_defaults"]["currency"], "taxes": stored_rows(pack["taxes"]),
+                            "codes": pack["taxes"], "retired": pack.get("retired", []),
+                            "version": entry.get("version"), "sha256": entry["sha256"]}
         except (ValueError, KeyError, TypeError) as exc:  # NoRateInForce and pydantic errors are ValueErrors
             log.error("Country pack %s does not have the pack format: %s", path.name, exc)
     return loaded
 
 
-def _stored_rows(codes: list[dict]) -> list[dict]:
+def stored_rows(codes: list[dict]) -> list[dict]:
     """A pack's tax codes as a company's tax list stores them: each code's rate in force today,
     a withheld tax as a negative rate."""
     import datetime as dt

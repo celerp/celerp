@@ -1489,6 +1489,18 @@ class SysOlderStockCorrected(BaseModel):
     journal: str
 
 
+class SysLocalizationApplied(BaseModel):
+    # One Update localization operation (localization/apply.py), or the undo of one
+    # (``undoes``): the settings fields it wrote, before and after, the request fingerprint its
+    # key is bound to, and the codes an undo kept because they were edited since.
+    operation_id: str
+    undoes: str | None
+    binding: str | None
+    before: dict
+    after: dict
+    kept: list[dict]
+
+
 # Subscription schemas - open/permissive since subscription data is user-defined
 class SubCreated(BaseModel):
     model_config = {"extra": "allow"}
@@ -1828,6 +1840,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "sys.migration.applied": SysMigrationApplied,
     "sys.older_stock.placed": SysOlderStockPlaced,
     "sys.older_stock.corrected": SysOlderStockCorrected,
+    "sys.localization.applied": SysLocalizationApplied,
 
     # Lists
     "list.created": ListCreated,
