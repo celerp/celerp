@@ -22,7 +22,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, BeforeValidator, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
 from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
@@ -67,6 +67,11 @@ def _agent(selection: str | None = None, *, credits: bool = False, any_permissio
 
 
 # ── Replay store ────────────────────────────────────────────────────────────
+
+# A bank request's key, as the bank stores it: in a namespace of its own, so a key a client
+# chooses is never one the books write under themselves (je:manual:..., <entry>:void).
+RequestKey = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(lambda key: f"bank:{key}")]
+
 
 def _request(payload: BaseModel, **path) -> dict:
     return {**payload.model_dump(mode="json", exclude={"idempotency_key"}), **{k: str(v) for k, v in path.items()}}
@@ -154,7 +159,7 @@ class ReadStatement(BaseModel):
     file_ids: list[str] = Field(min_length=1, max_length=50)
     bank_id: uuid.UUID | None = None
     job_id: uuid.UUID | None = None
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.post(f"{API}/read-statement", summary="Read bank or card statement files with AI before import.",
@@ -448,7 +453,7 @@ class ImportStatement(BaseModel):
     bank_id: uuid.UUID | None = None
     new_bank: BankAccountCreate | None = None
     column_map: dict[str, str] | None = None
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 async def _carried_in(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, start: str, opening,
@@ -821,7 +826,7 @@ class Accept(BaseModel):
 class Resolve(BaseModel):
     decisions: list[Decision] | None = Field(None, max_length=1000)
     accept: Accept | None = None
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 
@@ -1291,7 +1296,7 @@ async def resolve(bank_id: uuid.UUID, payload: Resolve, company_id: uuid.UUID = 
 # ── Suggest ─────────────────────────────────────────────────────────────────
 
 class Keyed(BaseModel):
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 async def _states(db: AsyncSession, company_id: uuid.UUID, entity_ids) -> dict:
@@ -1679,7 +1684,7 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
 
 class Unmatch(BaseModel):
     line_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.post(f"{API}/bank/{{bank_id}}/unmatch", summary="Undo settled statement lines: void what they posted and "
@@ -1789,7 +1794,7 @@ class Opening(BaseModel):
     amount: FiniteFloat
     date: Date
     rate: PositiveFloat | None = None
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.put("/bank-accounts/{bank_id}/opening", summary="Set a bank's opening balance; a later change posts "
@@ -1830,7 +1835,7 @@ async def set_opening(bank_id: uuid.UUID, payload: Opening, company_id: uuid.UUI
 class Reclassify(BaseModel):
     account_code: AccountCode
     contact: str | None = Field(None, max_length=200)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.post(f"{API}/lines/{{line_id}}/reclassify", summary="Move a line out of Suspense to the account it belongs to.",
@@ -1893,7 +1898,7 @@ async def bank_files(files: list[UploadFile] = File(...), company_id: uuid.UUID 
 class Ask(BaseModel):
     line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
     note: str = Field("", max_length=_NOTE_MAX)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.post(f"{API}/bank/{{bank_id}}/ask", summary="Ask the client about open statement lines, or remind them.",
@@ -1921,7 +1926,7 @@ async def ask(bank_id: uuid.UUID, payload: Ask, company_id: uuid.UUID = Depends(
 
 class LineIds(BaseModel):
     line_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 @router.post(f"{API}/bank/{{bank_id}}/withdraw-question", summary="Take back questions asked about statement lines.",
@@ -1977,7 +1982,7 @@ class Answer(BaseModel):
     answer: str = Field(min_length=1, max_length=_NOTE_MAX)
     contact_text: str | None = Field(None, max_length=200)
     file_ids: list[str] = Field(default_factory=list, max_length=20)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+    idempotency_key: RequestKey
 
 
 async def _named_contact(db: AsyncSession, company_id: uuid.UUID, text: str | None) -> dict | None:

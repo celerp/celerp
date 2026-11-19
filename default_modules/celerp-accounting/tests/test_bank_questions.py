@@ -473,3 +473,16 @@ async def test_the_answer_names_each_recipients_outcome(client, session, monkeyp
     co, bk, client_h, lines = await _setup(client, session)
     out = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]])).json()
     assert out["email"]["recipients"] == [{"name": "Viewer", "state": "sent"}]
+
+
+async def test_a_bank_key_never_takes_a_key_the_books_write_under(client, session, monkeypatch):
+    """A bank request's key lives in its own namespace: sent as the key a manual journal
+    entry posts under, the Ask still works and the entry still posts."""
+    _sent(monkeypatch)
+    co, bk, _, lines = await _setup(client, session)
+    taken = "je:manual:shared-token:c"
+    assert (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=taken)).status_code == 200
+    r = await client.post("/accounting/journal-entries", headers=co["h"], json={
+        "ts": "2026-01-15", "memo": "Adjustment", "idempotency_token": "shared-token",
+        "entries": [{"account": "1111", "debit": 10, "credit": 0}, {"account": "4100", "debit": 0, "credit": 10}]})
+    assert r.status_code == 200, r.text
