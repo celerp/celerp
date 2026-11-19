@@ -116,6 +116,21 @@ def test_a_fitid_read_again_is_a_duplicate_and_another_fitid_is_a_new_line():
     assert bool(sent["lines"][0]["duplicate"]) is True and sent["lines"][0]["reference"] == "INV 7"
 
 
+def test_a_fitid_match_confirms_a_duplicate_even_when_date_amount_and_description_differ():
+    held = _held(_review({**_HEADER, "closing_balance": "90.00"}, [_line("2026-01-02", "-10.00", "FEE", fitid="F1")]))
+    again = _review({**_HEADER, "closing_balance": "1.00"},
+                     [_line("2026-02-15", "-99.00", "CORRECTED", fitid="F1")], known=held)
+    assert bool(again["lines"][0]["duplicate"]) is True
+
+
+def test_two_duplicates_sharing_one_fitid_keep_the_distinct_fingerprints_of_what_they_repeat():
+    lines = [_line("2026-01-02", "-3.00", "ATM FEE", fitid="F1"), _line("2026-01-05", "-10.00", "SHOP", fitid="F1")]
+    first = _review({**_HEADER, "closing_balance": "87.00"}, lines)
+    again = _review({**_HEADER, "closing_balance": "87.00"}, lines, known=_held(first))
+    assert [bool(l["duplicate"]) for l in again["lines"]] == [True, True]
+    assert [l["fingerprint"] for l in again["lines"]] == [l["fingerprint"] for l in first["lines"]]
+
+
 def test_two_identical_lines_against_one_held_leave_one_for_review_and_import_the_other():
     lines = [_line("2026-01-02", "-3.00", "ATM FEE"), _line("2026-01-02", "-3.00", "ATM FEE")]
     held = _held(_review({**_HEADER, "closing_balance": "97.00"}, lines[:1]))
