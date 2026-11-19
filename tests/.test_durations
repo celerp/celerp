@@ -31555,5 +31555,8 @@
     "default_modules/celerp-accounting/tests/test_statement_input_oracle.py::test_overlapping_statements_tell_a_line_read_again_from_a_repeat_by_the_rule[9]": 0.0028285490116104484,
     "tests/test_keyed_claim_first.py::test_census_finds_the_keyed_handlers": 0.3089280399872223,
     "tests/test_keyed_claim_first.py::test_no_keyed_handler_commits_or_sends_before_its_claim": 0.17859135501203127,
-    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_bank_questions_race_pg.py]": 0.005205133013078012
+    "tests/test_python310_floor.py::test_no_python311_only_imports[default_modules/celerp-accounting/tests/test_bank_questions_race_pg.py]": 0.005205133013078012,
+    "default_modules/celerp-accounting/tests/test_bank_reader.py::test_a_fitid_match_confirms_a_duplicate_even_when_date_amount_and_description_differ": 0.07801987101265695,
+    "default_modules/celerp-accounting/tests/test_bank_reader.py::test_two_duplicates_sharing_one_fitid_keep_the_distinct_fingerprints_of_what_they_repeat": 0.0033755220065359026,
+    "default_modules/celerp-accounting/tests/test_bank_reader.py::test_two_identical_lines_against_one_posted_entry_leave_only_one_probable": 0.0031828689971007407
 }
