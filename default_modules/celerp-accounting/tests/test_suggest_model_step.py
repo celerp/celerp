@@ -21,7 +21,7 @@ CO, KEY = uuid.uuid4(), "key-1"
 
 
 def _call(company=CO, key=KEY) -> suggest.ModelCall:
-    return suggest.ModelCall(session=None, company_id=company, user_id=uuid.uuid4(), key=key)
+    return suggest.ModelCall(company_id=company, user_id=uuid.uuid4(), key=key)
 
 
 def _groups(rng: random.Random, n: int) -> list[dict]:
@@ -81,9 +81,10 @@ class _Client:
     def __init__(self, waits: int = 0):
         self.waits, self.sent, self.kept = waits, [], {}
 
-    async def complete(self, messages, *, operation_id, **_):
+    async def complete(self, messages, *, operation_id, before_send, **_):
         from celerp.ai import jobs
         assert jobs.holding_slot() and jobs.sending_step()
+        await before_send(1)
         self.sent.append(operation_id)
         if operation_id in self.kept and self.kept[operation_id] != messages:
             raise RelayError("operation_mismatch", "other content", status=422)
@@ -102,7 +103,7 @@ def client(monkeypatch):
     usage: list = []
 
     async def _record(session, **kw):
-        usage.append(kw["operation_id"])
+        usage.append(("send" if kw.get("send_bytes") else "settle", kw["operation_id"]))
 
     monkeypatch.setattr("celerp.ai.usage.record_usage", _record)
     made = _Client()
@@ -119,7 +120,8 @@ async def test_a_step_still_running_is_asked_again_under_its_identity_and_answer
     groups = _groups(random.Random(1), 2)
     reply = await suggest.ask_model(groups, ["5100"])
     assert set(reply) == {"g0", "g1"}
-    assert len(made.sent) == 4 and len(set(made.sent)) == 1 and usage == made.sent[:1]
+    assert len(made.sent) == 4 and len(set(made.sent)) == 1
+    assert usage == [("send", op) for op in made.sent] + [("settle", made.sent[0])]
 
 
 @pytest.mark.asyncio
@@ -129,4 +131,5 @@ async def test_a_retry_on_changed_input_is_a_new_step_and_an_identical_one_the_s
     await suggest.ask_model(groups, ["5100", "5200"])
     await suggest.ask_model(list(reversed(groups)), ["5200", "5100"])
     await suggest.ask_model(groups[1:], ["5100", "5200"])
-    assert made.sent[0] == made.sent[1] != made.sent[2] and usage == made.sent
+    assert made.sent[0] == made.sent[1] != made.sent[2]
+    assert usage == [(kind, op) for op in made.sent for kind in ("send", "settle")]

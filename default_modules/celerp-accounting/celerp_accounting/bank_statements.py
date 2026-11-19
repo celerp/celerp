@@ -1563,8 +1563,7 @@ async def _ladder_context(db: AsyncSession, company_id: uuid.UUID, bank: BankAcc
 
 
 async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict | None:
-    """The model's replies for the residue groups; None when the model cannot run. The usage
-    of each batch is committed as it comes, so no lock it takes is held over the next call."""
+    """The model's replies for the residue groups; None when the model cannot run."""
     import inspect
 
     from celerp.ai.llm import RelayError
@@ -1579,17 +1578,13 @@ async def _model_replies(residue: list[dict], accounts: list[str], call) -> dict
         for batch in suggest.model_batches(residue):
             reply = rung(batch, accounts)
             replies.update((await reply if inspect.isawaitable(reply) else reply) or {})
-            await call.session.commit()
     except suggest.ModelStepRunning:  # the first run of the request still asks: no write, no failure
-        await call.session.rollback()
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_running")) from None
     except RelayError as exc:
-        await call.session.rollback()
         if exc.code == "operation_mismatch":  # the service broke the step's identity: no write, no failure
             raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_suggest_mismatch")) from None
         return None
     except Exception:  # the model's failure leaves the lines to questions, said in the summary
-        await call.session.rollback()
         return None
     finally:
         suggest.current_call.reset(token)
@@ -1638,7 +1633,7 @@ async def suggest_lines(bank_id: uuid.UUID, payload: Keyed, company_id: uuid.UUI
         return first
     _rows, lines, ctx, out, residue = await _suggest_input(db, company_id, bank_id)
     await db.rollback()  # a read: nothing it took is held while the model runs
-    replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(db, company_id, actor_id, key)) \
+    replies = await _model_replies(residue, ctx.accounts, suggest.ModelCall(company_id, actor_id, key)) \
         if residue else {}
     await lock_company(db, company_id)
     if (first := await _replayed(db, company_id, key, request)) is not None:

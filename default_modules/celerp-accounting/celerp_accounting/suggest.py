@@ -416,8 +416,7 @@ def run_ladder(lines: list[dict], ctx: LadderContext) -> dict:
 
 @dataclass
 class ModelCall:
-    """Who the model rung asks for: the request's session, company, user and key."""
-    session: object
+    """Who the model rung asks for: the request's company, user and key."""
     company_id: uuid.UUID
     user_id: uuid.UUID
     key: str
@@ -461,16 +460,19 @@ class ModelStepRunning(Exception):
 
 async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
     """One model step for ``groups`` under its identity (``model_step``: a replay is not
-    charged again), its usage recorded for the company. The step is sent through the assistant's
-    ``send_step``: while the same step sent by another run of the request still runs, it
-    is asked again after the service's ``retry_after`` and answered the first run's reply;
-    past the synchronous wait it raises ModelStepRunning. Raises RelayError
-    operation_mismatch as it comes (``model_step`` makes it impossible; the caller refuses
-    it rather than counting it a model failure), and whatever else stops the model."""
+    charged again), sent the way the assistant sends one: inside an ``interactive`` slot,
+    through ``send_step``, with its usage row committed pending before each send
+    (``llm.complete``'s ``before_send``) and settled with what the service reports once
+    it answers. A reply lost after the service charged leaves the row pending for the
+    background reconcile pass. While the same step sent by another run of the request
+    still runs, it is asked again after the service's ``retry_after`` and answered the
+    first run's reply; past the synchronous wait it raises ModelStepRunning. Raises
+    RelayError operation_mismatch as it comes (``model_step`` makes it impossible; the
+    caller refuses it rather than counting it a model failure), and whatever else stops
+    the model."""
     import time
 
-    from celerp.ai import deadlines, jobs, llm
-    from celerp.ai.usage import record_usage
+    from celerp.ai import deadlines, jobs, llm, usage
 
     call = current_call.get()
     if call is None:
@@ -484,13 +486,22 @@ async def ask_model(groups: list[dict], accounts: list[str]) -> dict:
             if since[-1] - since[0] >= deadlines.SYNC_WAIT_S:
                 raise ModelStepRunning from exc
 
+    async def _record(**reported) -> None:
+        async with jobs.SessionLocal() as session:
+            await usage.record_usage(session, company_id=call.company_id, user_id=call.user_id, operation_id=op,
+                                     **reported)
+            await session.commit()
+
+    async def _before_send(nbytes: int) -> None:
+        await _record(send_bytes=nbytes)
+
     async with jobs.gate.slot("interactive"):
-        result = await jobs.send_step(lambda: llm.complete(messages, operation_id=op, hints=_MODEL_HINTS), resend=False,
-                                      on_refusal=_running)
+        result = await jobs.send_step(
+            lambda: llm.complete(messages, operation_id=op, hints=_MODEL_HINTS, before_send=_before_send),
+            resend=False, on_refusal=_running)
     known = result.operation_credits is not None
-    credits = result.operation_credits if known else int((result.usage or {}).get("credits") or 0)
-    await record_usage(call.session, company_id=call.company_id, user_id=call.user_id, operation_id=op,
-                       credits=credits, known=known)
+    await _record(credits=result.operation_credits if known else int((result.usage or {}).get("credits") or 0),
+                  known=known)
     try:
         reply = json.loads((result.message.get("content") or "").strip().strip("`").removeprefix("json"))
     except ValueError:

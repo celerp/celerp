@@ -71,17 +71,24 @@ class Service:
     """The model service as ``llm.complete`` reaches it, per operation id: the first send
     runs (the first run waits for ``go`` when ``hold``), a send while it runs is refused
     operation_in_progress, a later send of the same content answers the kept reply and one
-    of other content is refused operation_mismatch."""
+    of other content is refused operation_mismatch. Like the real client it awaits
+    ``before_send`` before anything reaches the service; ``lose`` charges the first run
+    and then loses its reply in transport."""
 
-    def __init__(self, reason: str, hold: bool = False, mismatch: int = 0):
+    def __init__(self, reason: str, hold: bool = False, mismatch: int = 0, lose: bool = False):
         self.reason, self.hold, self.runs, self.refused, self.mismatch = reason, hold, 0, 0, mismatch
+        self.lose = lose
         self.kept, self.running, self.sent = {}, set(), []
         self.held, self.go, self.waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-    async def complete(self, messages, *, operation_id, **_):
+    async def complete(self, messages, *, operation_id, before_send=None, **_):
+        import httpx
+
         from celerp.ai.llm import ModelResult, RelayError
 
         content = json.dumps(messages, sort_keys=True)
+        if before_send is not None:
+            await before_send(len(content))
         self.sent.append((operation_id, json.loads(messages[-1]["content"])))
         if self.mismatch:  # a service that reports a mismatch however it was sent
             self.mismatch -= 1
@@ -108,6 +115,8 @@ class Service:
         result = ModelResult(message={"content": json.dumps(reply)}, model_used="test", usage={"credits": 1},
                              reservation_id=None, remaining=None, operation_credits=1)
         self.kept[operation_id] = (content, result)
+        if self.lose:
+            raise httpx.ReadError("connection reset after the service charged")
         return result
 
 
@@ -212,6 +221,52 @@ async def test_a_relay_error_other_than_a_mismatch_records_no_outcome(committed_
     assert failed.status_code == 200 and failed.json()["model_ran"] is False, failed.text
     assert await _outcomes(committed_engine, co, key) == 0
     assert (await _suggestions(c, co, bk))[NEW]["source"] == "question"
+
+
+async def _usage(engine, co) -> list:
+    async with engine.connect() as conn:
+        return [dict(r) for r in (await conn.execute(text(
+            "SELECT user_id, operation_id, credits, pending FROM ai_usage WHERE company_id = :c"),
+            {"c": co["company_id"]})).mappings()]
+
+
+async def test_a_reply_lost_after_the_service_charged_leaves_a_pending_usage_row_the_reconciler_settles(
+        committed_engine, own_client, monkeypatch):
+    """The usage row is committed before the model step is sent, so a reply lost in
+    transport after the service charged still has its row: pending, and settled from the
+    operation's status by the background reconcile pass."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from celerp.ai import llm, usage
+
+    c = own_client
+    co, bk = await _bank(c, rows=((NEW, "-40.00"),))
+    _service(monkeypatch, Service("lost", lose=True))
+    failed = await _suggest(c, co, bk, B.key())
+    assert failed.status_code == 200 and failed.json()["model_ran"] is False, failed.text
+    rows = await _usage(committed_engine, co)
+    assert [(r["credits"], r["pending"]) for r in rows] == [(0, True)], rows
+
+    async def _operations_status(ids):
+        return [{"operation_id": str(i), "state": "charged", "credits": 1} for i in ids]
+
+    monkeypatch.setattr(llm, "operations_status", _operations_status)
+    async with committed_engine.begin() as conn:
+        await conn.execute(text("UPDATE ai_usage SET reconcile_at = now() - interval '1 second' WHERE company_id = :c"),
+                           {"c": co["company_id"]})
+    async with async_sessionmaker(bind=committed_engine, expire_on_commit=False)() as session:
+        await usage.reconcile_usage(session)
+    assert [(r["credits"], r["pending"]) for r in await _usage(committed_engine, co)] == [(1, False)]
+
+
+async def test_an_answered_model_step_leaves_one_settled_usage_row(committed_engine, own_client, monkeypatch):
+    c = own_client
+    co, bk = await _bank(c, rows=((NEW, "-40.00"),))
+    service = _service(monkeypatch, Service("answered"))
+    done = await _suggest(c, co, bk, B.key())
+    assert done.status_code == 200 and done.json()["model_ran"] is True, done.text
+    rows = await _usage(committed_engine, co)
+    assert [(r["operation_id"], r["credits"], r["pending"]) for r in rows] == [(service.sent[0][0], 1, False)], rows
 
 
 async def test_interleavings_write_only_when_the_recheck_matches(committed_engine, own_client, monkeypatch):
