@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Update localization (Settings > Taxes): preview, confirm and undo applying the company's
-country pack to its tax list (``celerp.localization.apply``)."""
+country pack to its tax list (``celerp.localization.apply``), and the item rate review an update
+offers (``celerp.localization.rate_review``)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.localization import apply as localization
+from celerp.localization import rate_review
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from ui.i18n import t
 
-router = APIRouter(prefix="/settings/taxes/localization", tags=["settings"],
+router = APIRouter(prefix="/settings/taxes", tags=["settings"],
                    dependencies=[Depends(get_current_user)])
 
 
@@ -28,6 +30,11 @@ class Undo(BaseModel):
     operation_id: str = Field(min_length=1, max_length=64)
 
 
+class ReviewApply(BaseModel):
+    item_ids: list[str] = Field(min_length=1, max_length=5000)
+    binding: str = Field(min_length=1, max_length=128)
+
+
 async def _company(session: AsyncSession, company_id):
     company = await locked_company(session, company_id)
     if company is None:
@@ -35,14 +42,14 @@ async def _company(session: AsyncSession, company_id):
     return company
 
 
-@router.post("/preview")
+@router.post("/localization/preview")
 async def preview(company_id=Depends(get_current_company_id),
                   _: None = require_permission("manage_company_settings"),
                   session: AsyncSession = Depends(get_session)) -> dict:
     return localization.preview(dict((await _company(session, company_id)).settings or {}))
 
 
-@router.post("/confirm")
+@router.post("/localization/confirm")
 async def confirm(payload: Confirm, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                   _: None = require_permission("manage_company_settings"),
                   session: AsyncSession = Depends(get_session)) -> dict:
@@ -52,11 +59,38 @@ async def confirm(payload: Confirm, company_id=Depends(get_current_company_id), 
     return {"operation_id": operation_id}
 
 
-@router.post("/undo")
+@router.post("/localization/undo")
 async def undo(payload: Undo, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
                _: None = require_permission("manage_company_settings"),
                session: AsyncSession = Depends(get_session)) -> dict:
     company = await _company(session, company_id)
     kept = await localization.undo(session, company, user.id, payload.operation_id)
+    await session.commit()
+    return {"kept": kept}
+
+
+@router.get("/rate-review/{operation_id}")
+async def review(operation_id: str, company_id=Depends(get_current_company_id),
+                 _: None = require_permission("edit_inventory"),
+                 session: AsyncSession = Depends(get_session)) -> dict:
+    return await rate_review.propose(session, company_id, operation_id)
+
+
+@router.post("/rate-review/{operation_id}/apply")
+async def review_apply(operation_id: str, payload: ReviewApply, company_id=Depends(get_current_company_id),
+                       user=Depends(get_current_user), _: None = require_permission("edit_inventory"),
+                       session: AsyncSession = Depends(get_session)) -> dict:
+    await _company(session, company_id)
+    skipped = await rate_review.apply(session, company_id, user.id, operation_id, payload.item_ids, payload.binding)
+    await session.commit()
+    return {"skipped": skipped}
+
+
+@router.post("/rate-review/{operation_id}/undo")
+async def review_undo(operation_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+                      _: None = require_permission("edit_inventory"),
+                      session: AsyncSession = Depends(get_session)) -> dict:
+    await _company(session, company_id)
+    kept = await rate_review.undo(session, company_id, user.id, operation_id)
     await session.commit()
     return {"kept": kept}

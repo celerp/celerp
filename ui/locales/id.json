@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Atur negara perusahaan di Pengaturan > Umum ke negara yang tarif pajaknya dimiliki Celerp, lalu perbarui lokalisasi.",
   "localization.stale_preview": "Pajak berubah sejak pratinjau; buat pratinjau lagi.",
   "localization.no_operation": "Pembaruan lokalisasi ini tidak ditemukan.",
+  "localization.rate_review_stale": "Daftar barang ini sudah usang. Buka Tinjau tarif barang lagi.",
+  "localization.rate_review_unknown_item": "Salah satu barang yang dicentang tidak ada dalam tinjauan ini. Buka Tinjau tarif barang lagi.",
   "localization.title": "Lokalisasi",
   "localization.none": "Belum ada paket negara yang diterapkan",
   "localization.country": "Negara: {country}",

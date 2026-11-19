@@ -4,8 +4,9 @@
 
 ``preview`` lists what applying the pack changes: codes the list lacks (added), dated versions a
 code lacks (added version), a category the list has not set (retag) and codes whose rates were
-changed by hand (kept, untouched). Its fingerprint binds a confirm to the list and pack it was
-worked out from. ``apply`` writes it as one ``sys.localization.applied`` event holding each field
+changed by hand (kept, untouched), and the item rate table rows that give items a different code
+(item rates: offered afterwards by ``rate_review``, never applied here). Its fingerprint binds a
+confirm to the list and pack it was worked out from. ``apply`` writes it as one ``sys.localization.applied`` event holding each field
 before and after, once per idempotency key; ``undo`` puts back, code by code, what an operation
 changed and keeps (and lists) every code edited since.
 """
@@ -20,6 +21,7 @@ from sqlalchemy import select
 from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import emit_event, find_event_by_idempotency, refuse_other_request, request_fingerprint
 from celerp.localization import stored_rows
+from celerp.localization.rate_review import moved
 from celerp.localization.taxcodes import TaxVersion
 from celerp.models.ledger import LedgerEntry
 from celerp.tax_regimes import get_regime, tax_country, tax_name_key, with_taxes
@@ -80,10 +82,12 @@ def preview(settings: dict) -> dict:
     neutral starting list, which the pack replaces rather than joins."""
     code, pack = _pack(settings)
     diff, _ = _diff(settings.get("taxes") or [], pack["codes"])
+    diff["item_rates"] = moved((settings.get("localization") or {}).get("item_rate_table") or [],
+                               pack["item_rate_table"])
     return {"diff": diff, "fingerprint": _binding(settings, code, pack)}
 
 
-async def _operation(session, company_id, operation_id: str) -> LedgerEntry | None:
+async def operation(session, company_id, operation_id: str) -> LedgerEntry | None:
     return (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.event_type == EVENT,
         LedgerEntry.entity_id == f"{ENTITY}:{operation_id}"))).scalars().first()
@@ -120,7 +124,8 @@ async def apply(session, company, user_id, binding: str, idempotency_key: str) -
     after = {"taxes": with_taxes(settings, taxes)["taxes"],
              "localization": {"country": code, "version": pack["version"], "digest": pack["sha256"],
                               "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                              "operation_id": operation_id}}
+                              "operation_id": operation_id,
+                              "item_rate_table": pack["item_rate_table"]}}
     await _record(session, company, user_id, key, {
         "operation_id": operation_id, "undoes": None, "binding": request_fingerprint(binding),
         "before": before, "after": after, "kept": []}, after)
@@ -134,7 +139,7 @@ def _rows(value) -> dict[str, dict]:
 async def undo(session, company, user_id, operation_id: str) -> list[dict]:
     """Put back what operation ``operation_id`` changed wherever it still stands as the operation
     left it; returns the codes kept because they were edited since (``[{"name"}]``)."""
-    target = await _operation(session, company.id, operation_id)
+    target = await operation(session, company.id, operation_id)
     if target is None:
         raise HTTPException(status_code=404, detail=catalog_refusal("localization.no_operation"))
     key = f"localization:undo:{operation_id}"

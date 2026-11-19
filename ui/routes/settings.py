@@ -3590,7 +3590,7 @@ def _localization_preview(preview: dict) -> FT:
     """What Update localization changes, with Confirm carrying the preview's binding."""
     diff = preview.get("diff") or {}
     lines = [P(t(f"localization.{kind}", names=", ".join(row["name"] for row in rows)))
-             for kind, rows in diff.items() if rows]
+             for kind, rows in diff.items() if rows and kind != "item_rates"]
     return Form(
         *(lines or [P(t("localization.nothing"))]),
         *binding_input({"binding": preview.get("fingerprint")}),

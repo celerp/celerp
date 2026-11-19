@@ -99,5 +99,17 @@
         }
       ]
     }
+  ],
+  "item_rate_table": [
+    {
+      "hs_prefix": "8517",
+      "code_id": "in-igst-18",
+      "valid_from": "2026-01-01"
+    },
+    {
+      "hs_prefix": "1006",
+      "code_id": "in-exempt",
+      "valid_from": "2026-01-01"
+    }
   ]
 }

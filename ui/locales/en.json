@@ -5001,6 +5001,8 @@
   "localization.no_pack": "Set the company's country in Settings > General to one Celerp has tax rates for, then update localization.",
   "localization.stale_preview": "Taxes changed since the preview; preview again.",
   "localization.no_operation": "This localization update was not found.",
+  "localization.rate_review_stale": "This item list is out of date. Open Review item rates again.",
+  "localization.rate_review_unknown_item": "One of the ticked items is not in this review. Open Review item rates again.",
   "localization.title": "Localization",
   "localization.none": "No country pack applied",
   "localization.country": "Country: {country}",

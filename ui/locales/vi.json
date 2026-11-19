@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Đặt quốc gia của công ty trong Cài đặt > Chung thành quốc gia mà Celerp có thuế suất, sau đó cập nhật bản địa hóa.",
   "localization.stale_preview": "Thuế đã thay đổi kể từ bản xem trước; hãy xem trước lại.",
   "localization.no_operation": "Không tìm thấy lần cập nhật bản địa hóa này.",
+  "localization.rate_review_stale": "Danh sách mặt hàng này đã cũ. Hãy mở lại Xem lại thuế suất mặt hàng.",
+  "localization.rate_review_unknown_item": "Một mặt hàng đã chọn không có trong lần xem lại này. Hãy mở lại Xem lại thuế suất mặt hàng.",
   "localization.title": "Bản địa hóa",
   "localization.none": "Chưa áp dụng gói quốc gia nào",
   "localization.country": "Quốc gia: {country}",

@@ -7082,6 +7082,8 @@
   "localization.no_pack": "በቅንብሮች > አጠቃላይ ውስጥ የኩባንያውን አገር Celerp የግብር ተመኖች ያሉትን አገር ያድርጉ፣ ከዚያ አካባቢያዊነትን ያዘምኑ።",
   "localization.stale_preview": "ከቅድመ እይታው በኋላ ግብሮች ተቀይረዋል፤ እንደገና ቅድመ እይታ ይመልከቱ።",
   "localization.no_operation": "ይህ የአካባቢያዊነት ዝማኔ አልተገኘም።",
+  "localization.rate_review_stale": "ይህ የእቃ ዝርዝር ጊዜው አልፎበታል። የእቃ ግብር መጠኖችን ይገምግሙ እንደገና ይክፈቱ።",
+  "localization.rate_review_unknown_item": "ከተመረጡት እቃዎች አንዱ በዚህ ግምገማ ውስጥ የለም። የእቃ ግብር መጠኖችን ይገምግሙ እንደገና ይክፈቱ።",
   "localization.title": "የአገር ማስተካከያ",
   "localization.none": "ምንም የአገር ጥቅል አልተተገበረም",
   "localization.country": "አገር: {country}",

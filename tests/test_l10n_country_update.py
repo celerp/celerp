@@ -243,7 +243,8 @@ async def test_rate_review_offered_never_applied(client, auth):
     items = []
     for n in range(3):
         r = await client.post("/items", headers=auth["headers"],
-                              json={"sku": f"HS-{n}", "name": f"Item {n}", "hs_code": moved["hs_prefix"] + "00",
+                              json={"sku": f"HS-{n}", "name": f"Item {n}", "sell_by": "piece",
+                                    "hs_code": moved["hs_prefix"] + "00",
                                     "tax_codes": ["old-code"]})
         assert r.status_code == 200, r.text
         items.append(r.json()["id"])

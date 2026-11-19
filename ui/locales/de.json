@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Stellen Sie unter Einstellungen > Allgemein ein Land für das Unternehmen ein, für das Celerp Steuersätze hat, und aktualisieren Sie dann die Lokalisierung.",
   "localization.stale_preview": "Die Steuern haben sich seit der Vorschau geändert. Bitte erneut eine Vorschau anzeigen.",
   "localization.no_operation": "Diese Lokalisierungsaktualisierung wurde nicht gefunden.",
+  "localization.rate_review_stale": "Diese Artikelliste ist veraltet. Öffnen Sie „Artikelsteuersätze prüfen“ erneut.",
+  "localization.rate_review_unknown_item": "Einer der markierten Artikel ist nicht in dieser Prüfung. Öffnen Sie „Artikelsteuersätze prüfen“ erneut.",
   "localization.title": "Lokalisierung",
   "localization.none": "Kein Länderpaket angewendet",
   "localization.country": "Land: {country}",

@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Imposta in Impostazioni > Generali un paese dell'azienda per cui Celerp ha aliquote fiscali, poi aggiorna la localizzazione.",
   "localization.stale_preview": "Le imposte sono cambiate dopo l'anteprima; genera di nuovo l'anteprima.",
   "localization.no_operation": "Questo aggiornamento della localizzazione non è stato trovato.",
+  "localization.rate_review_stale": "Questo elenco di articoli non è aggiornato. Riapri Rivedi aliquote articoli.",
+  "localization.rate_review_unknown_item": "Uno degli articoli selezionati non è in questa revisione. Riapri Rivedi aliquote articoli.",
   "localization.title": "Localizzazione",
   "localization.none": "Nessun pacchetto paese applicato",
   "localization.country": "Paese: {country}",

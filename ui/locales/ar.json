@@ -7082,6 +7082,8 @@
   "localization.no_pack": "اضبط بلد الشركة في الإعدادات > عام على بلد تتوفر له أسعار ضريبية في Celerp، ثم حدّث التوطين.",
   "localization.stale_preview": "تغيّرت الضرائب منذ المعاينة؛ اعرض المعاينة مرة أخرى.",
   "localization.no_operation": "لم يتم العثور على تحديث التوطين هذا.",
+  "localization.rate_review_stale": "قائمة الأصناف هذه لم تعد محدّثة. افتح مراجعة معدلات الأصناف مرة أخرى.",
+  "localization.rate_review_unknown_item": "أحد الأصناف المحددة ليس ضمن هذه المراجعة. افتح مراجعة معدلات الأصناف مرة أخرى.",
   "localization.title": "التوطين",
   "localization.none": "لم تُطبَّق أي حزمة دولة",
   "localization.country": "الدولة: {country}",

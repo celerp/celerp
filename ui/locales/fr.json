@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Définissez dans Paramètres > Général un pays de l'entreprise pour lequel Celerp a des taux de taxe, puis mettez à jour la localisation.",
   "localization.stale_preview": "Les taxes ont changé depuis l'aperçu ; affichez un nouvel aperçu.",
   "localization.no_operation": "Cette mise à jour de localisation est introuvable.",
+  "localization.rate_review_stale": "Cette liste d'articles n'est plus à jour. Rouvrez Vérifier les taux des articles.",
+  "localization.rate_review_unknown_item": "Un des articles cochés ne fait pas partie de cette vérification. Rouvrez Vérifier les taux des articles.",
   "localization.title": "Localisation",
   "localization.none": "Aucun pack pays appliqué",
   "localization.country": "Pays : {country}",

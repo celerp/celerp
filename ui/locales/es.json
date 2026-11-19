@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Configure en Ajustes > General un país de la empresa para el que Celerp tenga tipos impositivos y luego actualice la localización.",
   "localization.stale_preview": "Los impuestos cambiaron desde la vista previa; vuelva a generarla.",
   "localization.no_operation": "No se encontró esta actualización de localización.",
+  "localization.rate_review_stale": "Esta lista de artículos está desactualizada. Vuelva a abrir Revisar tasas de artículos.",
+  "localization.rate_review_unknown_item": "Uno de los artículos marcados no está en esta revisión. Vuelva a abrir Revisar tasas de artículos.",
   "localization.title": "Localización",
   "localization.none": "No se ha aplicado ningún paquete de país",
   "localization.country": "País: {country}",

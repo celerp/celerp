@@ -7082,6 +7082,8 @@
   "localization.no_pack": "設定 > 一般 で、Celerp に税率がある国を会社の国として設定してから、ローカライズを更新してください。",
   "localization.stale_preview": "プレビュー後に税金が変更されました。もう一度プレビューしてください。",
   "localization.no_operation": "このローカライズ更新は見つかりませんでした。",
+  "localization.rate_review_stale": "この品目リストは最新ではありません。「品目の税率を確認」をもう一度開いてください。",
+  "localization.rate_review_unknown_item": "チェックした品目の一つがこの確認に含まれていません。「品目の税率を確認」をもう一度開いてください。",
   "localization.title": "ローカライズ",
   "localization.none": "国別パックは適用されていません",
   "localization.country": "国: {country}",

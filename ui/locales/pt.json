@@ -7082,6 +7082,8 @@
   "localization.no_pack": "Defina em Configurações > Geral um país da empresa para o qual a Celerp tenha alíquotas de imposto e depois atualize a localização.",
   "localization.stale_preview": "Os impostos mudaram desde a pré-visualização; pré-visualize novamente.",
   "localization.no_operation": "Esta atualização de localização não foi encontrada.",
+  "localization.rate_review_stale": "Esta lista de itens está desatualizada. Abra Rever taxas dos itens novamente.",
+  "localization.rate_review_unknown_item": "Um dos itens marcados não está nesta revisão. Abra Rever taxas dos itens novamente.",
   "localization.title": "Localização",
   "localization.none": "Nenhum pacote de país aplicado",
   "localization.country": "País: {country}",
