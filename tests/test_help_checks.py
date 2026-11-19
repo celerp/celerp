@@ -109,6 +109,10 @@ def test_stamp_writes_the_value_once_in_place():
 
 
 def test_every_check_is_exercised():
+    # Every check_* in checks.py, so a new one fails here until its own test exists somewhere.
     defined = {n for n in dir(checks) if n.startswith("check_")}
+    # check_screen_help/_coverage/_covers_screen/_checked need a screens map, not the good/bad fixtures;
+    # check_ledger/check_translations need a real ledger and catalogs, not a page fixture. Each has its
+    # own test group here or in test_help_export.py / test_help_translations.py.
     assert defined == set(EXPECTED) | {"check_screen_help", "check_screen_coverage", "check_covers_screen",
-                                       "check_checked"}
+                                       "check_checked", "check_ledger", "check_translations"}
