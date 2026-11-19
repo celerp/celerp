@@ -57,10 +57,14 @@ def _suggest(c, co, bk, key):
 
 
 async def _outcomes(engine, co, key) -> int:
+    """The suggest outcomes stored under the client's ``key`` (kept as bank:<key>, see RequestKey)."""
+    from celerp_accounting.bank_statements import Keyed
+
+    stored = Keyed(idempotency_key=key).idempotency_key
     async with engine.connect() as conn:
         return (await conn.execute(text(
             "SELECT count(*) FROM ledger WHERE company_id = :c AND idempotency_key = :k"),
-            {"c": co["company_id"], "k": key})).scalar_one()
+            {"c": co["company_id"], "k": stored})).scalar_one()
 
 
 async def _suggestions(c, co, bk) -> dict:
