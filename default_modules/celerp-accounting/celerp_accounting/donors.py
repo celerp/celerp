@@ -260,7 +260,7 @@ async def _send_statement(session: AsyncSession, company_id, user_id, payload: S
         attempt = email_service.Attempt(
             record["operation_id"] if step == "replay" else
             str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-donor-statement:{company_id}:{key}")),
-            {**message, "to": record["to"]} if step == "replay" else message)
+            message)  # the address read now: a replay to one the donor no longer has fails its digest
         if step == "replay" and email_service.payload_digest(attempt.message) != record["digest"]:
             held["answer"] = {**entry.metadata_["result"], "state": "unconfirmed", "repeat": True}
             return []

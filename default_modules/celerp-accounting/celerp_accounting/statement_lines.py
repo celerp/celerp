@@ -651,7 +651,7 @@ async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str) -> dic
             if member not in allowed:
                 left_out.append(member)
                 continue
-            to = record["to"] if step == "replay" else allowed[member].email
+            to = allowed[member].email  # read now: a replay to an address the member left fails its digest
             attempt = email_service.Attempt(
                 record["operation_id"] if step == "replay" else
                 str(uuid.uuid5(uuid.NAMESPACE_URL, f"celerp-bank-question:{company_id}:{key}:{member}")),

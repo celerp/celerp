@@ -486,3 +486,24 @@ async def test_a_bank_key_never_takes_a_key_the_books_write_under(client, sessio
         "ts": "2026-01-15", "memo": "Adjustment", "idempotency_token": "shared-token",
         "entries": [{"account": "1111", "debit": 10, "credit": 0}, {"account": "4100", "debit": 0, "credit": 10}]})
     assert r.status_code == 200, r.text
+
+
+async def test_a_replayed_ask_never_goes_to_an_address_the_member_no_longer_has(client, session, monkeypatch):
+    """The recipient is read when the email goes out, never from the stored attempt: a member whose
+    address changed after an unconfirmed send is not emailed at the old one by the relay's replay."""
+    import uuid
+
+    from sqlalchemy import update
+
+    from celerp.models.company import User
+    co, bk, client_h, lines = await _setup(client, session)
+    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: True)
+    first = _sent(monkeypatch, EmailResult(False, "timeout", unconfirmed=True))
+    idem = B.key()
+    assert (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()["email"]["state"] == "unconfirmed"
+    old = first[0]["to"]
+    await session.execute(update(User).where(User.id == uuid.UUID(B.user_id(client_h))).values(email="moved@test.test"))
+    await session.commit()
+    calls = _sent(monkeypatch)
+    again = (await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)).json()
+    assert old not in [c["to"] for c in calls] and again["email"]["state"] == "unconfirmed", (calls, again)

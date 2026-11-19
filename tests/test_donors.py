@@ -475,3 +475,23 @@ async def test_an_unconfirmed_statement_is_reported_and_a_failed_one_is_retried_
     r = await client.get("/donors/statements/preview", headers=auth["headers"], params=PERIOD)
     assert {row["contact_id"]: row for row in r.json()["donors"]}[mine]["sends"] == 2
     assert (await _send_all(client, auth, resend={mine: 1}))[mine]["repeat"] is True and len(calls) == 1
+
+
+async def test_a_replayed_statement_never_goes_to_an_address_the_donor_no_longer_has(client, auth, monkeypatch):
+    """The recipient is read when the email goes out, never from the stored attempt: a donor whose
+    address changed after a send was cut off is not emailed at the old one by a deduplicating
+    relay's replay; the send stays unconfirmed."""
+    donors = await _statement_donors(client, auth)
+    monkeypatch.setattr("celerp.services.email.relay_send_is_idempotent", lambda: True)
+
+    async def crash(to, subject, body_html, body_text="", **kw):
+        raise _Crash()
+    monkeypatch.setattr("celerp.services.email.send_email", crash)
+    with pytest.raises(_Crash):
+        await _send_all(client, auth)
+    r = await client.patch(f"/crm/contacts/{donors['email']}", headers=auth["headers"], json={"fields_changed": {"email": {"old": "cy@test.test", "new": "new@test.test"}}})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr("celerp.services.email.SEND_TIMEOUT", timedelta(0))
+    calls = _transport(monkeypatch)
+    again = (await _send_all(client, auth))[donors["email"]]
+    assert "cy@test.test" not in [c["to"] for c in calls] and again["state"] == "unconfirmed", (calls, again)
