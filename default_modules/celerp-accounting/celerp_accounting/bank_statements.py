@@ -1329,10 +1329,7 @@ async def _held(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount, entr
             any(str(e["ts"])[:10] < str(recon.period_start)[:10] for e in entries)
         counted = await _first_counted(db, company_id, bank, recon) if early else None
         held.update((recon.reconciled_je_ids or []) if counted is None else counted)
-    for matched in (await db.execute(select(BankStatementLine.matched_je_ids).where(
-            BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id))).scalars():
-        held.update(matched or [])
-    return held & ids
+    return (held & ids) | await SL.lines_holding(db, company_id, bank.id, ids)
 
 
 async def _free_entries(db: AsyncSession, company_id: uuid.UUID, bank: BankAccount) -> list[dict]:

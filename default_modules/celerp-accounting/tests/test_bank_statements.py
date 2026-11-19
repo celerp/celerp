@@ -867,10 +867,11 @@ async def test_suggested_rows_migrate_to_suggestion():
     assert m.migrated_line({"status": "created", "matched_je_id": "je:9"})["status"] == "posted"
 
 
-async def test_match_validates_the_book_entry(client):
+async def test_match_validates_the_book_entry(client, session):
     """Matching checks the entry itself: an unknown entry is refused, one entry cannot be
     held by two lines, a line already matched is not matched again, and Undo frees the
-    entry for the other line."""
+    entry for the other line. What a match refuses as held is what the bank's candidates
+    leave out (bank_statements._held): one reading of an entry a line already counts."""
     from ui.i18n import t
 
     co, bk = await _co_bank(client)
@@ -891,6 +892,7 @@ async def test_match_validates_the_book_entry(client):
     assert (await match(first))["ok"] is True
     held = await match(second)
     assert held["ok"] is False and refusal_text(held["reason"]) == t("acct.err_recon_book_entry_matched", "en")
+    assert await _counted(session, co, bk["id"], je)
     assert (await match(first))["ok"] is False
     line = B.line_by_text(await B.groups(client, co, bk["id"], view="all"), "WIRE A")
     assert line["matched_je_ids"] == [je]
@@ -898,7 +900,19 @@ async def test_match_validates_the_book_entry(client):
     r = await client.post(f"/accounting/reconciliation/bank/{bk['id']}/unmatch", headers=co["h"],
                           json={"line_ids": [first["id"]], "idempotency_key": B.key()})
     assert r.status_code == 200, r.text
+    assert not await _counted(session, co, bk["id"], je)
     assert (await match(second))["ok"] is True
+
+
+async def _counted(session, co, bank_id, je_id: str) -> bool:
+    """Whether the bank's candidate reading (bank_statements._held) counts ``je_id`` already."""
+    import uuid as _uuid
+
+    from celerp_accounting.bank_statements import _held as held
+    from celerp_accounting.models import BankAccount
+    session.expire_all()
+    bank = await session.get(BankAccount, _uuid.UUID(bank_id))
+    return je_id in await held(session, _uuid.UUID(co["company_id"]), bank, [{"je_id": je_id, "ts": "2026-01-02"}])
 
 
 async def _held(session, co, bank_id) -> tuple[set, set]:

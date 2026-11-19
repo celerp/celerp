@@ -394,6 +394,21 @@ def settle_payment(recon: ReconciliationSession, line: BankStatementLine, je_ids
     _settle(recon, line, "posted", je_ids)
 
 
+async def lines_holding(db: AsyncSession, company_id: uuid.UUID, bank_id, je_ids, *,
+                        except_lines: list | None = None) -> set[str]:
+    """Those of ``je_ids`` a statement line of the bank (other than ``except_lines``) is matched
+    to: the one reading of an entry a line already counts, for a match and for the candidates a
+    line is offered (bank_statements._held). Another bank's line leaves the entry free here."""
+    q = select(BankStatementLine.matched_je_ids).where(
+        BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank_id)
+    if except_lines:
+        q = q.where(BankStatementLine.id.notin_(except_lines))
+    held: set[str] = set()
+    for row in (await db.execute(q)).scalars():
+        held.update(row or [])
+    return held & set(je_ids)
+
+
 async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAccount, lines: list[BankStatementLine],
                       je_ids: list[str]) -> None:
     """Match ``lines`` (one or several) to book entries on the bank (one or several) whose
@@ -409,12 +424,7 @@ async def match_lines(db: AsyncSession, *, company_id: uuid.UUID, bank: BankAcco
         raise HTTPException(status_code=422, detail=catalog_refusal(
             "acct.err_recon_match_total", total=_money_text(booked, bank.currency),
             amount=_money_text(stated, bank.currency)))
-    held: set[str] = set()
-    for row in (await db.execute(select(BankStatementLine.matched_je_ids).where(
-            BankStatementLine.company_id == company_id, BankStatementLine.bank_account_id == bank.id,
-            BankStatementLine.id.notin_([l.id for l in lines])))).scalars():
-        held.update(row or [])
-    if held & set(je_ids):
+    if await lines_holding(db, company_id, bank.id, je_ids, except_lines=[l.id for l in lines]):
         raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_book_entry_matched"))
     by_session: dict = {}
     for line in lines:
