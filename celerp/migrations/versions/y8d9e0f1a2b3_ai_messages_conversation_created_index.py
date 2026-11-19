@@ -17,7 +17,7 @@ Create Date: 2026-11-19
 """
 
 from alembic import op
-from sqlalchemy import inspect
+import sqlalchemy as sa
 
 from celerp.migrations._lookup_index import build_lookup_index
 
@@ -30,8 +30,12 @@ _NAME = "ix_ai_messages_conversation_created"
 _OLD = "ix_ai_messages_conversation_id"
 
 
+def _has_messages() -> bool:
+    return op.get_bind().execute(sa.text("SELECT to_regclass(:name)"), {"name": "ai_messages"}).scalar() is not None
+
+
 def upgrade() -> None:
-    if not inspect(op.get_bind()).has_table("ai_messages"):
+    if not _has_messages():
         return
     # The index is written out so the restamp walker proves the revision by it.
     with op.get_context().autocommit_block():
@@ -42,7 +46,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if not inspect(op.get_bind()).has_table("ai_messages"):
+    if not _has_messages():
         return
     with op.get_context().autocommit_block():
         op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_OLD} ON ai_messages (conversation_id)")
