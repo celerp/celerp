@@ -1,17 +1,17 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A company names its tax country at setup or on its default location, and starts with
-the tax rates in force there.
+"""A company names its tax country at setup or in Settings > General, and Update localization
+adds that country's tax rates to its list.
 
-The country is stored as a code on the default location's address, beside the address
-text: saving either one keeps the other. Naming a country replaces only taxes Celerp set
-up itself (the generic list or a country's), never a company's own, and the page says
-when it did.
+Applying a pack adds the codes the list lacks and keeps every rate the company set itself.
+A location's country is part of its address only: saving the address text or the country
+keeps the other, and neither touches the company's taxes.
 """
 from __future__ import annotations
 
 import copy
 import re
+import uuid
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
@@ -19,18 +19,10 @@ import httpx
 import pytest
 
 from celerp.localization import lock_codes
-from celerp.tax_regimes import get_regime
+from celerp.tax_regimes import get_regime, tax_name_key
 from test_helpers import make_test_token
 
 pytestmark = pytest.mark.asyncio
-
-
-async def _default_location(client, auth) -> dict:
-    """The company's default location, as a new company has one, with no address yet."""
-    r = await client.post("/companies/me/locations", headers=auth["headers"],
-                          json={"name": "Head office", "type": "office", "is_default": True})
-    assert r.status_code == 200, r.text
-    return r.json()
 
 
 async def _taxes(client, auth) -> list[dict]:
@@ -43,33 +35,34 @@ def _names(taxes: list[dict]) -> list[str]:
     return [tax["name"] for tax in taxes]
 
 
-async def test_naming_a_country_on_the_default_location_seeds_its_taxes_and_says_so(client, auth):
-    loc = await _default_location(client, auth)
-    r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                           json={"address": {"text": "12 MG Road, Bengaluru", "country": "IN"}})
+async def _update_localization(client, auth, country: str) -> dict:
+    """Name the company's country, then preview and confirm Update localization; returns the diff."""
+    r = await client.patch("/companies/me", headers=auth["headers"], json={"settings": {"country": country}})
     assert r.status_code == 200, r.text
-    assert r.json()["taxes_from"] == "IN"
-    assert _names(await _taxes(client, auth)) == _names(get_regime("IN")["taxes"])
+    r = await client.post("/settings/taxes/localization/preview", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    preview = r.json()
+    r = await client.post("/settings/taxes/localization/confirm", headers=auth["headers"],
+                          json={"binding": preview["fingerprint"], "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    return preview["diff"]
 
 
-async def test_another_country_before_any_change_replaces_the_first_countrys_taxes(client, auth):
-    loc = await _default_location(client, auth)
+async def test_a_later_country_adds_its_taxes_and_keeps_the_first_countrys(client, auth):
+    await _update_localization(client, auth, "TH")
+    await _update_localization(client, auth, "IN")
+    names = {tax_name_key(name) for name in _names(await _taxes(client, auth))}
     for country in ("TH", "IN"):
-        r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                               json={"address": {"country": country}})
-        assert r.json()["taxes_from"] == country
-    assert _names(await _taxes(client, auth)) == _names(get_regime("IN")["taxes"])
+        assert {tax_name_key(row["name"]) for row in get_regime(country)["taxes"]} <= names
 
 
-async def test_a_company_with_its_own_taxes_keeps_them_and_hears_nothing(client, auth):
+async def test_a_company_with_its_own_rate_keeps_it_and_the_preview_names_it(client, auth):
     own = copy.deepcopy(get_regime("TH")["taxes"])
     own[0]["rate"] = 8.0
     r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": own})
     assert r.status_code == 200, r.text
-    loc = await _default_location(client, auth)
-    r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                           json={"address": {"country": "IN"}})
-    assert r.json()["taxes_from"] is None
+    diff = await _update_localization(client, auth, "TH")
+    assert own[0]["name"] in [row["name"] for row in diff["kept"]]
     assert [tax["rate"] for tax in await _taxes(client, auth)][0] == 8.0
 
 
@@ -102,17 +95,6 @@ async def test_setup_offers_every_tax_country_and_other(ui_client):
     assert "" in offered  # Other country
 
 
-async def test_setup_names_the_country_on_the_default_location(ui_client):
-    from ui.routes.setup import apply_company_setup
-    with ExitStack() as stack:
-        _stub(stack, "patch_company", return_value={})
-        _stub(stack, "get_locations", return_value={"items": [{**_LOC, "address": None}]})
-        patch_location = _stub(stack, "patch_location", return_value={})
-        _stub(stack, "set_business_type", return_value={"restart_required": False})
-        assert await apply_company_setup("tok", "INR", "Asia/Kolkata", "blank", "in") == "/dashboard"
-    patch_location.assert_awaited_once_with("tok", "loc1", {"address": {"country": "IN"}})
-
-
 async def test_setup_refuses_a_country_without_tax_rates():
     from ui.routes.setup import company_setup_error
     assert company_setup_error("EUR", "blank", "XX")[0] == "country"
@@ -127,23 +109,12 @@ async def test_setup_refuses_a_country_without_tax_rates():
 async def test_saving_address_or_country_keeps_the_other(ui_client, field, value, stored):
     with ExitStack() as stack:
         _stub(stack, "get_locations", return_value={"items": [_LOC]})
-        patch_location = _stub(stack, "patch_location", return_value={**_LOC, "address": stored,
-                                                                       "taxes_from": None})
+        patch_location = _stub(stack, "patch_location", return_value={**_LOC, "address": stored})
         r = await ui_client.patch(f"/settings/locations/loc1/{field}", data={"value": value})
     assert r.status_code == 200, r.text
     patch_location.assert_awaited_once()
     assert patch_location.await_args.args[2] == {"address": stored}
     assert "HX-Trigger" not in r.headers
-
-
-async def test_a_country_that_set_the_taxes_is_announced_with_a_link_to_them(ui_client):
-    with ExitStack() as stack:
-        _stub(stack, "get_locations", return_value={"items": [_LOC]})
-        _stub(stack, "patch_location", return_value={**_LOC, "address": {"country": "TH"}, "taxes_from": "TH"})
-        r = await ui_client.patch("/settings/locations/loc1/country", data={"value": "TH"})
-    assert "Thailand" in r.text
-    trigger = r.headers["HX-Trigger"]
-    assert "Thailand" in trigger and "/settings/sales?tab=taxes" in trigger
 
 
 async def test_the_address_cell_edits_the_text_not_the_record(ui_client):

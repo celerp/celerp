@@ -1,19 +1,16 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Tax and payment-term defaults are neutral, reads never write, and choosing a
-country only replaces settings nobody has configured on a company with no books yet."""
+"""Tax and payment-term defaults are neutral, reads never write, and Update localization
+adds a country's taxes without changing the currency or any tax the company already has."""
 from __future__ import annotations
 
 import json
 import uuid
 from pathlib import Path
 
-import copy
-
 import pytest
 
 from celerp.services.currencies import CURRENCIES
-from celerp import tax_regimes
 from celerp.tax_regimes import DEFAULT_REGIME, get_regime, tax_countries
 from ui.i18n import t
 
@@ -35,11 +32,19 @@ async def _settings(client, h) -> dict:
 
 
 
-async def _set_country(client, h, country: str) -> None:
-    r = await client.post("/companies/me/locations", headers=h, json={
-        "name": f"HQ {uuid.uuid4().hex[:6]}", "type": "warehouse", "is_default": True,
-        "address": {"country": country}})
+async def _update_localization(client, h, country: str) -> None:
+    """Name the company's country, then preview and confirm Update localization."""
+    r = await client.patch("/companies/me", headers=h, json={"settings": {"country": country}})
     assert r.status_code == 200, r.text
+    r = await client.post("/settings/taxes/localization/preview", headers=h)
+    assert r.status_code == 200, r.text
+    r = await client.post("/settings/taxes/localization/confirm", headers=h, json={
+        "binding": r.json()["fingerprint"], "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+
+
+def _names(taxes: list[dict]) -> list[str]:
+    return [tax["name"] for tax in taxes]
 
 
 async def _post_manual_entry(client, h) -> None:
@@ -94,47 +99,43 @@ async def test_saved_purchasing_override_is_returned_unchanged(client):
 
 # --- country seeding -------------------------------------------------------
 
-async def test_country_before_any_activity_seeds_the_regime(client):
+async def test_update_localization_replaces_a_never_saved_neutral_list_with_the_pack(client):
     h = await _register(client, "fresh-th@test.example")
-    await _set_country(client, h, "TH")
+    currency = (await _settings(client, h)).get("currency")
+    await _update_localization(client, h, "TH")
     s = await _settings(client, h)
-    assert s["currency"] == get_regime("TH")["currency"]
-    assert s["taxes"] == get_regime("TH")["taxes"]
+    assert s.get("currency") == currency
+    assert _names(s["taxes"]) == _names(get_regime("TH")["taxes"])
 
 
 async def test_customized_standard_tax_with_the_same_name_is_not_overwritten(client):
     h = await _register(client, "custom-std@test.example")
     r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": _CUSTOM_STANDARD})
     assert r.status_code == 200, r.text
-    await _set_country(client, h, "AU")
-    assert (await client.get("/companies/me/taxes", headers=h)).json() == _CUSTOM_STANDARD
+    await _update_localization(client, h, "AU")
+    assert (await client.get("/companies/me/taxes", headers=h)).json()[:2] == _CUSTOM_STANDARD
 
 
-async def test_explicit_empty_taxes_are_not_replaced(client):
-    h = await _register(client, "empty-country@test.example")
-    await client.patch("/companies/me/taxes", headers=h, json={"taxes": []})
-    await _set_country(client, h, "AU")
-    assert (await client.get("/companies/me/taxes", headers=h)).json() == []
-
-
-async def test_saved_currency_is_kept_while_untouched_taxes_are_seeded(client):
+async def test_saved_currency_is_kept_when_a_country_pack_is_applied(client):
     h = await _register(client, "saved-ccy@test.example")
     r = await client.patch("/companies/me/books", headers=h, json={"currency": "EUR"})
     assert r.status_code == 200, r.text
-    await _set_country(client, h, "AU")
+    await _update_localization(client, h, "AU")
     s = await _settings(client, h)
     assert s["currency"] == "EUR"
-    assert s["taxes"] == get_regime("AU")["taxes"]
+    assert _names(s["taxes"]) == _names(get_regime("AU")["taxes"])
 
 
-async def test_financially_active_company_keeps_currency_and_taxes(client):
+async def test_financially_active_company_keeps_currency_and_its_taxes(client):
     h = await _register(client, "active@test.example")
     await _post_manual_entry(client, h)
+    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": _CUSTOM_STANDARD})
+    assert r.status_code == 200, r.text
     before = await _settings(client, h)
-    await _set_country(client, h, "AU")
+    await _update_localization(client, h, "AU")
     after = await _settings(client, h)
     assert after.get("currency") == before.get("currency")
-    assert after.get("taxes") == before.get("taxes")
+    assert after["taxes"][:len(before["taxes"])] == before["taxes"]
 
 
 # --- Spanish copy ----------------------------------------------------------
@@ -146,41 +147,7 @@ def test_spanish_navigation_and_issue_date_strings():
 
 
 
-# --- who set the taxes -----------------------------------------------------
-
-async def test_taxes_saved_at_a_catalog_rate_are_the_company_own(client):
-    """Saving the very rates a country's catalog holds still makes them the company's own:
-    naming another country afterwards keeps them."""
-    h = await _register(client, "same-rates@test.example")
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": get_regime("TH")["taxes"]})
-    assert r.status_code == 200, r.text
-    await _set_country(client, h, "AU")
-    s = await _settings(client, h)
-    assert s["taxes"] == get_regime("TH")["taxes"] and "taxes_seeded_for" not in s
-
-
-async def test_imported_taxes_are_the_company_own(client):
-    h = await _register(client, "imported-rates@test.example")
-    await _set_country(client, h, "TH")
-    r = await client.post("/companies/me/taxes/import/batch", headers=h, json={"records": [
-        {"entity_id": "tax:levy", "event_type": "sys.tax.created", "source": "csv_import",
-         "idempotency_key": uuid.uuid4().hex, "data": {"name": "Local levy", "rate": 3.0, "tax_type": "both"}}]})
-    assert r.status_code == 200, r.text
-    imported = (await _settings(client, h))["taxes"]
-    await _set_country(client, h, "AU")
-    assert (await _settings(client, h))["taxes"] == imported
-
-
-async def test_seeded_taxes_follow_a_country_change_and_stay_on_repeated_edits(client):
-    h = await _register(client, "moves@test.example")
-    await _set_country(client, h, "TH")
-    assert (await _settings(client, h))["taxes_seeded_for"] == "TH"
-    await _set_country(client, h, "TH")
-    assert (await _settings(client, h))["taxes"] == get_regime("TH")["taxes"]
-    await _set_country(client, h, "AU")
-    s = await _settings(client, h)
-    assert (s["taxes"], s["taxes_seeded_for"]) == (get_regime("AU")["taxes"], "AU")
-
+# --- every country pack ----------------------------------------------------
 
 @pytest.mark.real_packs
 @pytest.mark.parametrize("country", tax_countries())
@@ -190,36 +157,5 @@ async def test_every_tax_country_starts_with_exactly_its_catalog(client, country
     assert regime["currency"] in CURRENCIES
     assert len([x for x in regime["taxes"] if x.get("is_default")]) == 1
     h = await _register(client, f"catalog-{country.lower()}@test.example")
-    await _set_country(client, h, country)
-    s = await _settings(client, h)
-    assert (s["taxes"], s["currency"], s["taxes_seeded_for"]) == (regime["taxes"], regime["currency"], country)
-
-
-async def test_a_catalog_change_never_changes_the_taxes_of_a_company_seeded_before_it(client, monkeypatch):
-    h = await _register(client, "catalog-moved@test.example")
-    await _set_country(client, h, "TH")
-    before = (await _settings(client, h))["taxes"]
-    newer = copy.deepcopy(tax_regimes.packs())
-    newer["TH"]["taxes"].append({**newer["TH"]["taxes"][1], "name": "VAT 0% (later)"})
-    monkeypatch.setattr(tax_regimes, "packs", lambda: newer)
-    await _set_country(client, h, "TH")
-    assert (await _settings(client, h))["taxes"] == before
-
-
-async def test_taxes_stored_before_their_source_was_recorded_are_kept(client, session):
-    """A company whose taxes match a catalog but carry no record of who set them may have
-    chosen them: they are kept."""
-    from sqlalchemy import select
-
-    from celerp.models.company import Company
-
-    h = await _register(client, "legacy-rates@test.example")
-    from celerp.services.company_lock import locked_company
-
-    company_id = (await session.execute(select(Company.id).where(Company.name == "Tax Co")
-                                        .order_by(Company.created_at.desc()))).scalars().first()
-    company = await locked_company(session, company_id)
-    company.settings = {**(company.settings or {}), "taxes": get_regime("TH")["taxes"]}
-    await session.commit()
-    await _set_country(client, h, "AU")
-    assert (await _settings(client, h))["taxes"] == get_regime("TH")["taxes"]
+    await _update_localization(client, h, country)
+    assert _names((await _settings(client, h))["taxes"]) == _names(regime["taxes"])

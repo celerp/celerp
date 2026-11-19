@@ -180,28 +180,6 @@ async def test_the_database_refuses_a_second_default(committed_engine):
             await s.flush()
 
 
-async def test_default_location_country_reads_the_one_default(committed_engine):
-    from celerp.routers.companies import _default_location_country
-    from celerp.services.company_lock import lock_company
-    from celerp.services.locations import make_default_location
-
-    factory = _factory(committed_engine)
-    c = await _seed(factory)
-    async with factory() as s:
-        # Company first, then its locations, as every location writer.
-        await lock_company(s, c["company_id"])
-        loc = Location(id=uuid.uuid4(), company_id=c["company_id"], name="Bangkok", type="warehouse",
-                       address={"country": "TH"}, is_default=False)
-        s.add(loc)
-        await make_default_location(s, c["company_id"], loc)
-        assert await _default_location_country(s, c["company_id"]) == "TH"
-        main = (await s.execute(select(Location).where(
-            Location.company_id == c["company_id"], Location.name == "Main"))).scalar_one()
-        await make_default_location(s, c["company_id"], main)
-        assert await _default_location_country(s, c["company_id"]) == ""
-        await s.rollback()
-
-
 async def test_making_a_default_takes_the_company_lock(committed_engine):
     """The helper takes the company's lock itself, so a caller that did not take it first still
     clears and marks the default one writer at a time."""

@@ -103,18 +103,22 @@ async def _stored(session, company_id) -> dict:
     return (await session.execute(select(Company.settings).where(Company.id == company_id))).scalar_one()
 
 
-async def _default_location(client, auth) -> dict:
-    r = await client.post("/companies/me/locations", headers=auth["headers"],
-                          json={"name": "Head office", "type": "office", "is_default": True})
-    assert r.status_code == 200, r.text
-    return r.json()
+async def _patch_country(client, auth, country: str):
+    return await client.patch("/companies/me", headers=auth["headers"], json={"settings": {"country": country}})
 
 
-async def _patch_address(client, auth, location_id, address: dict) -> dict:
-    r = await client.patch(f"/companies/me/locations/{location_id}", headers=auth["headers"],
-                           json={"address": address})
+async def _update_localization(client, auth, country: str) -> dict:
+    """Name the company's country, then preview and confirm Update localization; returns the preview."""
+    import uuid
+    r = await _patch_country(client, auth, country)
     assert r.status_code == 200, r.text
-    return r.json()
+    r = await client.post("/settings/taxes/localization/preview", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    preview = r.json()
+    r = await client.post("/settings/taxes/localization/confirm", headers=auth["headers"],
+                          json={"binding": preview["fingerprint"], "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 200, r.text
+    return preview
 
 
 async def _sync_notice(session) -> None:
@@ -145,17 +149,6 @@ def _stub(stack: ExitStack, name: str, **kw) -> AsyncMock:
 
 _LOC = {"id": "loc1", "name": "Main", "type": "warehouse", "is_default": True,
         "address": {"text": "1 Silom Road", "country": "IN"}}
-
-
-async def _location_cell_refusal(value: str) -> tuple[str, AsyncMock]:
-    """The location country cell's answer to ``value``, and the save it would have made."""
-    with ExitStack() as stack:
-        _stub(stack, "get_locations", return_value={"items": [_LOC]})
-        patch_location = _stub(stack, "patch_location", return_value={**_LOC, "taxes_from": None})
-        async with _ui_client() as ui:
-            r = await ui.patch("/settings/locations/loc1/country", data={"value": value})
-    assert r.status_code == 200, r.text
-    return r.text, patch_location
 
 
 # ── The loader ───────────────────────────────────────────────────────────────
@@ -246,9 +239,7 @@ async def test_lock_unreadable_gives_default_only(l10n_dir, how, client, auth, s
     assert missing() == ()
     assert [(code, str(name)) for code, name in tax_country_options()] == [("", t("setup.country_other"))]
 
-    loc = await _default_location(client, auth)
-    r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                           json={"address": {"country": "MY"}})
+    r = await _patch_country(client, auth, "MY")
     assert r.status_code == 422 and r.json()["detail"]["message"] == t("l10n.pack_lock_missing.body"), r.text
     assert await _stored(session, company_id) == before
 
@@ -321,8 +312,9 @@ def test_any_lock_shape_is_read_or_unreadable_never_raises(l10n_dir, caplog):
 
 
 async def test_lock_entry_not_an_object_is_unreadable_through_the_app(l10n_dir, client, auth, session):
-    """A lock still JSON but with an entry that is not an object: the locations page answers, the
-    company's taxes stay, and the bell says the lock is unreadable."""
+    """A lock still JSON but with an entry that is not an object: the locations page answers, a
+    country is refused with the reason, the company's taxes stay, and the bell says the lock is
+    unreadable."""
     from ui.i18n import t
 
     company_id = auth["company_id"]
@@ -334,63 +326,42 @@ async def test_lock_entry_not_an_object_is_unreadable_through_the_app(l10n_dir, 
 
     r = await client.get("/companies/me/locations", headers=auth["headers"])
     assert r.status_code == 200, r.text
-    loc = await _default_location(client, auth)
-    r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                           json={"address": {"country": "MY"}})
+    r = await _patch_country(client, auth, "MY")
     assert r.status_code == 422 and r.json()["detail"]["message"] == t("l10n.pack_lock_missing.body"), r.text
     assert await _stored(session, company_id) == before
-    text, patch_location = await _location_cell_refusal("MY")
-    assert str(t("l10n.pack_lock_missing.body")) in text.replace("&#x27;", "'")
-    patch_location.assert_not_awaited()
 
     await _sync_notice(session)
     [notice] = await _pack_notices(session, company_id)
     assert notice.i18n["body"] == "l10n.pack_lock_missing.body"
 
 
-async def test_other_country_is_accepted_when_the_lock_is_unreadable(l10n_dir):
+async def test_other_country_is_accepted_when_the_lock_is_unreadable(l10n_dir, client, auth):
     from ui.routes.setup import company_setup_error
 
     _break_lock(l10n_dir)
-    text, patch_location = await _location_cell_refusal("")
-    patch_location.assert_awaited_once()
+    r = await _patch_country(client, auth, "")
+    assert r.status_code == 200, r.text
     assert company_setup_error("USD", "blank", "") is None
 
 
 # ── Writers and refusals ─────────────────────────────────────────────────────
 
 async def test_missing_pack_keeps_company_taxes_and_notifies(l10n_dir, client, auth, session):
+    """A company whose country's pack went missing keeps its taxes: Update localization says
+    there is no pack to apply, and the bell names the country."""
     company_id = auth["company_id"]
-    await _set_settings(session, company_id, _pin_shaped("TH"))
+    await _set_settings(session, company_id, {**_pin_shaped("TH"), "country": "TH"})
     before = await _stored(session, company_id)
     _drop(l10n_dir, "TH")
 
-    loc = await _default_location(client, auth)
-    await _store_address(session, loc["id"], {"text": "1 Silom Road", "country": "TH"})
-    saved = await _patch_address(client, auth, loc["id"], {"text": "2 Silom Road", "country": "TH"})
-    assert saved.get("taxes_from") is None
+    r = await client.post("/settings/taxes/localization/preview", headers=auth["headers"])
+    assert r.status_code == 409, r.text
     assert await _stored(session, company_id) == before
 
     await _sync_notice(session)
     [notice] = await _pack_notices(session, company_id)
     assert notice.i18n["params"] == {"countries": ["TH"]}
     assert "Thailand" in notice.body and "TH" not in notice.body.split()
-
-
-async def _store_address(session, location_id, address: dict) -> None:
-    """Write a location's address as an earlier release stored it, past today's checks."""
-    import uuid
-    from celerp.models.company import Location
-    loc = await session.get(Location, uuid.UUID(location_id))
-    loc.address = address
-    await session.commit()
-
-
-async def _location_address(session, location_id):
-    import uuid
-    from celerp.models.company import Location
-    session.expire_all()
-    return (await session.get(Location, uuid.UUID(location_id))).address
 
 
 async def _post_own_entry(client, auth) -> None:
@@ -409,69 +380,45 @@ def _refused_for_missing_pack(r) -> None:
 
 
 @pytest.mark.parametrize("own_books", [False, True], ids=["before-entries", "after-entries"])
-async def test_new_default_location_in_a_country_whose_pack_is_missing_is_refused(
-        l10n_dir, client, auth, session, own_books):
+async def test_company_country_whose_pack_is_missing_is_refused(l10n_dir, client, auth, session, own_books):
     company_id = auth["company_id"]
+    r = await _patch_country(client, auth, "MY")
+    assert r.status_code == 200, r.text
     if own_books:
         await _post_own_entry(client, auth)
+    before = await _stored(session, company_id)
+    _drop(l10n_dir, "TH")
+    _refused_for_missing_pack(await _patch_country(client, auth, "TH"))
+    assert await _stored(session, company_id) == before
+
+
+async def test_a_location_in_a_country_whose_pack_is_missing_is_saved(l10n_dir, client, auth, session):
+    """A location's country is part of its address: a missing pack refuses nothing there and
+    changes nothing of the company's."""
+    company_id = auth["company_id"]
     before = await _stored(session, company_id)
     _drop(l10n_dir, "TH")
     r = await client.post("/companies/me/locations", headers=auth["headers"], json={
         "name": "Bangkok", "type": "office", "is_default": True,
         "address": {"text": "1 Silom Road", "country": "TH"}})
-    _refused_for_missing_pack(r)
-    names = [l["name"] for l in (await client.get("/companies/me/locations", headers=auth["headers"])).json()["items"]]
-    assert "Bangkok" not in names
-    assert await _stored(session, company_id) == before
-
-
-@pytest.mark.parametrize("own_books", [False, True], ids=["before-entries", "after-entries"])
-@pytest.mark.parametrize("change", ["address", "is_default"])
-async def test_default_location_changed_to_a_country_whose_pack_is_missing_is_refused(
-        l10n_dir, client, auth, session, own_books, change):
-    company_id = auth["company_id"]
-    loc = await _default_location(client, auth)
-    await _patch_address(client, auth, loc["id"], {"text": "1 Jalan Ampang", "country": "MY"})
-    if own_books:
-        await _post_own_entry(client, auth)
-    before = await _stored(session, company_id)
-    _drop(l10n_dir, "TH")
-    if change == "address":
-        target, body = loc["id"], {"address": {"text": "1 Silom Road", "country": "TH"}}
-    else:
-        r = await client.post("/companies/me/locations", headers=auth["headers"], json={
-            "name": "Bangkok", "type": "office", "address": {"text": "1 Silom Road", "country": "TH"}})
-        assert r.status_code == 200, r.text
-        target, body = r.json()["id"], {"is_default": True}
-    r = await client.patch(f"/companies/me/locations/{target}", headers=auth["headers"], json=body)
-    _refused_for_missing_pack(r)
-    assert (await _location_address(session, loc["id"]))["country"] == "MY"
-    defaults = [l["name"] for l in (await client.get("/companies/me/locations", headers=auth["headers"])).json()["items"]
-                if l["is_default"]]
-    assert defaults == ["Head office"]
-    assert await _stored(session, company_id) == before
-
-
-@pytest.mark.parametrize("own_books", [False, True], ids=["before-entries", "after-entries"])
-async def test_default_location_keeps_a_stored_country_whose_pack_is_missing(
-        l10n_dir, client, auth, session, own_books):
-    company_id = auth["company_id"]
-    await _set_settings(session, company_id, _pin_shaped("TH"))
-    loc = await _default_location(client, auth)
-    await _store_address(session, loc["id"], {"text": "1 Silom Road", "country": "TH"})
-    if own_books:
-        await _post_own_entry(client, auth)
-    before = await _stored(session, company_id)
-    _drop(l10n_dir, "TH")
-    r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                           json={"name": "Silom office", "type": "warehouse", "is_default": True})
     assert r.status_code == 200, r.text
-    assert r.json()["name"] == "Silom office" and r.json()["taxes_from"] is None
-    assert await _location_address(session, loc["id"]) == {"text": "1 Silom Road", "country": "TH"}
+    items = (await client.get("/companies/me/locations", headers=auth["headers"])).json()["items"]
+    assert [loc["address"] for loc in items if loc["name"] == "Bangkok"] == [{"text": "1 Silom Road", "country": "TH"}]
     assert await _stored(session, company_id) == before
 
 
-async def test_missing_pack_refusal_names_pack(l10n_dir):
+async def test_company_keeps_a_stored_country_whose_pack_is_missing(l10n_dir, client, auth, session):
+    """Saving another general setting keeps the stored country and its taxes."""
+    company_id = auth["company_id"]
+    await _set_settings(session, company_id, {**_pin_shaped("TH"), "country": "TH"})
+    _drop(l10n_dir, "TH")
+    r = await client.patch("/companies/me", headers=auth["headers"], json={"settings": {"phone": "+66 2 000 0000"}})
+    assert r.status_code == 200, r.text
+    after = await _stored(session, company_id)
+    assert after["country"] == "TH" and after["taxes"] == _pin_shaped("TH")["taxes"]
+
+
+async def test_missing_pack_refusal_names_pack(l10n_dir, client, auth):
     from fasthtml.common import to_xml
 
     from ui.i18n import t
@@ -481,9 +428,7 @@ async def test_missing_pack_refusal_names_pack(l10n_dir):
     _drop(l10n_dir, "TH")
     refusal = str(t("l10n.pack_missing.body", countries="Thailand"))
 
-    text, patch_location = await _location_cell_refusal("TH")
-    assert refusal in text.replace("&#x27;", "'")
-    patch_location.assert_not_awaited()
+    assert (await _patch_country(client, auth, "TH")).json()["detail"]["message"] == refusal
     assert company_setup_error("THB", "blank", "TH") == ("country", refusal)
     assert "Thailand" in to_xml(_location_display_cell("loc1", "country", {"text": "1 Silom Road", "country": "TH"}))
 
@@ -561,10 +506,7 @@ async def test_source_checkout_without_packs_offers_other_only(tmp_path, client,
         company_id = auth["company_id"]
         await _set_settings(session, company_id, _pin_shaped("TH"))
         before = await _stored(session, company_id)
-        loc = await _default_location(client, auth)
-        r = await client.patch(f"/companies/me/locations/{loc['id']}", headers=auth["headers"],
-                               json={"address": {"country": "TH"}})
-        _refused_for_missing_pack(r)
+        _refused_for_missing_pack(await _patch_country(client, auth, "TH"))
         assert await _stored(session, company_id) == before
 
         await _sync_notice(session)
@@ -581,27 +523,24 @@ async def test_source_checkout_without_packs_offers_other_only(tmp_path, client,
         _reset()
 
 
-async def test_country_outside_lock_refused_as_invalid(l10n_dir):
+async def test_country_outside_lock_refused_as_invalid(l10n_dir, client, auth):
     from ui.i18n import t
     from ui.routes.setup import company_setup_error
 
     invalid = str(t("setup.invalid_country", value=repr("SG")))
     assert company_setup_error("SGD", "blank", "SG") == ("country", invalid)
-    text, patch_location = await _location_cell_refusal("SG")
-    assert invalid in text.replace("&#x27;", "'")
-    patch_location.assert_not_awaited()
+    assert (await _patch_country(client, auth, "SG")).json()["detail"]["message"] == invalid
 
     _break_lock(l10n_dir)
     lock_body = str(t("l10n.pack_lock_missing.body"))
     assert company_setup_error("SGD", "blank", "SG") == ("country", lock_body)
-    text, patch_location = await _location_cell_refusal("SG")
-    assert lock_body in text.replace("&#x27;", "'")
-    patch_location.assert_not_awaited()
+    assert (await _patch_country(client, auth, "SG")).json()["detail"]["message"] == lock_body
 
 
 async def test_existing_company_untouched(l10n_dir, client, auth, session, monkeypatch):
     """A company the pinned release seeded keeps its stored settings through a start and its
-    reads; naming another country still re-seeds as it always did."""
+    reads; Update localization for another country adds that country's taxes and keeps the
+    ones it had and its currency."""
     from celerp.tax_regimes import get_regime
 
     company_id = auth["company_id"]
@@ -613,18 +552,17 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
         assert r.status_code == 200, r.text
     assert await _stored(session, company_id) == before
 
-    loc = await _default_location(client, auth)
-    saved = await _patch_address(client, auth, loc["id"], {"country": "MY"})
-    assert saved["taxes_from"] == "MY"
+    await _update_localization(client, auth, "MY")
     after = await _stored(session, company_id)
-    assert after["taxes"] == get_regime("MY")["taxes"] and after["taxes_seeded_for"] == "MY"
+    assert after["taxes"][:len(before["taxes"])] == before["taxes"]
+    assert {row["name"] for row in get_regime("MY")["taxes"]} <= {row["name"] for row in after["taxes"]}
     assert after["currency"] == before["currency"]
 
 
 async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, session, monkeypatch):
     """A company seeded from one pack version keeps its saved settings, byte for byte, after the
-    lock moves to a later version with other rates: through a start, its reads, and saving its
-    default location again in the same country."""
+    lock moves to a later version with other rates: through a start, its reads, saving the same
+    country again and previewing Update localization."""
     import hashlib
 
     from sqlalchemy import text
@@ -632,8 +570,7 @@ async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, 
     from celerp.tax_regimes import get_regime
 
     company_id = auth["company_id"]
-    loc = await _default_location(client, auth)
-    assert (await _patch_address(client, auth, loc["id"], {"country": "TH"}))["taxes_from"] == "TH"
+    await _update_localization(client, auth, "TH")
 
     async def raw() -> str:
         session.expire_all()
@@ -656,7 +593,8 @@ async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, 
     await _start(monkeypatch)
     for read in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):
         assert (await client.get(read, headers=auth["headers"])).status_code == 200
-    await _patch_address(client, auth, loc["id"], {"country": "TH", "city": "Bangkok"})
+    assert (await _patch_country(client, auth, "TH")).status_code == 200
+    assert (await client.post("/settings/taxes/localization/preview", headers=auth["headers"])).status_code == 200
     assert await raw() == before
 
 
