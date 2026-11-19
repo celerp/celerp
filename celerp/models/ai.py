@@ -164,7 +164,8 @@ class AIJobStep(Base):
 class AIUsage(Base):
     """One question the AI service was asked, named by its ``operation_id`` (the user
     message, one file of a reading job, or the one-off request), with what the service
-    charged for it. The row is written before the question leaves, and stays
+    charged for it: one row per operation of a company, attributed to the user who sent
+    it first. The row is written before the question leaves, and stays
     ``pending`` until the service has named the whole charge (in a reply, or in the
     operation's status read by celerp.ai.usage.reconcile_usage, once ``reconcile_at``
     has passed). A pending row the service can no longer confirm (past its retry
@@ -174,7 +175,7 @@ class AIUsage(Base):
 
     __tablename__ = "ai_usage"
     __table_args__ = (
-        sa.UniqueConstraint("company_id", "user_id", "operation_id", name="uq_ai_usage_operation"),
+        sa.UniqueConstraint("company_id", "operation_id", name="uq_ai_usage_operation"),
         sa.CheckConstraint("pending OR NOT unresolved", name="ck_ai_usage_unresolved_pending"),
     )
 
