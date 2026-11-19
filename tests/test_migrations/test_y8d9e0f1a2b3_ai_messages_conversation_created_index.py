@@ -7,6 +7,8 @@ them from the models) upgrades without them."""
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from sqlalchemy import create_engine, text
 
@@ -76,17 +78,29 @@ def test_a_failed_build_keeps_the_conversation_index(monkeypatch):
 
 
 def test_a_database_without_the_ai_tables_upgrades_and_downgrades():
+    """Nothing to index is not a failed build: no warning that the index is built at the next start.
+    The handler sits on the index logger itself: alembic's logging config replaces the root's."""
     from alembic_support import alembic_run
-    with throwaway_db("aimsgidxnone") as (_, sync_url):
-        upgrade_to(sync_url, _REV)
-        alembic_run(sync_url, "downgrade", _PREV)
-        eng = create_engine(sync_url)
-        try:
-            with eng.connect() as conn:
-                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == _PREV
-                assert conn.execute(text("SELECT to_regclass('ai_messages')")).scalar() is None
-        finally:
-            eng.dispose()
+    warned = []
+    handler = logging.Handler(logging.WARNING)
+    handler.emit = lambda record: warned.append(record.getMessage())
+    index_log = logging.getLogger("celerp.migrations._lookup_index")
+    index_log.addHandler(handler)
+    try:
+        with throwaway_db("aimsgidxnone") as (_, sync_url):
+            upgrade_to(sync_url, _PREV)
+            upgrade_to(sync_url, _REV)
+            alembic_run(sync_url, "downgrade", _PREV)
+            eng = create_engine(sync_url)
+            try:
+                with eng.connect() as conn:
+                    assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == _PREV
+                    assert conn.execute(text("SELECT to_regclass('ai_messages')")).scalar() is None
+            finally:
+                eng.dispose()
+    finally:
+        index_log.removeHandler(handler)
+    assert warned == []
 
 
 def test_a_fresh_create_all_database_already_carries_the_composite_index():
