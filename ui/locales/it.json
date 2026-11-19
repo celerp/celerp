@@ -7083,8 +7083,6 @@
   "l10n.pack_lock_missing.body": "Celerp non riesce a leggere il suo elenco di aliquote fiscali per paese, quindi lascia invariate le imposte di ogni azienda. Aggiorna o reinstalla Celerp per ripristinarle.",
   "l10n.pack_missing.body": "In questa installazione mancano le aliquote fiscali di {countries}, quindi Celerp lascia invariate le imposte delle aziende di quei paesi. Aggiorna o reinstalla Celerp per ripristinarle.",
   "settings.location_country_hint": "Il Paese della sede predefinita determina inizialmente le aliquote fiscali applicabili all'azienda, finché non vengono modificate le imposte o registrata la prima scrittura contabile.",
-  "settings.taxes_set_from_country": "Le imposte ora partono dalle aliquote applicabili a {country}. Controllale prima della prima fattura.",
-  "settings.review_taxes": "Controlla le imposte",
   "help.pages_in_english": "Queste pagine sono in inglese.",
   "company.err_price_list_name_empty": "Ogni listino prezzi deve avere un nome.",
   "company.err_price_list_name_taken": "Ogni listino prezzi deve avere un nome univoco. {name} viene utilizzato più di una volta.",

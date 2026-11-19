@@ -7083,8 +7083,6 @@
   "l10n.pack_lock_missing.body": "Celerp የአገር የግብር ተመኖች ዝርዝሩን ማንበብ አልቻለም፣ ስለዚህ የሁሉንም ኩባንያዎች ግብሮች እንዳሉ ይተዋል። መልሶ ለማግኘት Celerpን ያዘምኑ ወይም እንደገና ይጫኑ።",
   "l10n.pack_missing.body": "የ{countries} የግብር ተመኖች ከዚህ ጭነት ጠፍተዋል፣ ስለዚህ Celerp በእነዚያ አገሮች ያሉ ኩባንያዎችን ግብሮች እንዳሉ ይተዋል። መልሶ ለማግኘት Celerpን ያዘምኑ ወይም እንደገና ይጫኑ።",
   "settings.location_country_hint": "የነባሪ አካባቢው አገር ለኩባንያው መጀመሪያ ተፈጻሚ የሚሆኑትን የግብር ተመኖች ይወስናል። ኩባንያው ግብሮቹን እስኪቀይር ወይም የመጀመሪያ የሂሳብ ግቤቱን እስኪመዘግብ ድረስ ይህ ይሠራል።",
-  "settings.taxes_set_from_country": "ግብሮች አሁን በ{country} ተፈጻሚ በሆኑት ተመኖች ይጀምራሉ። የመጀመሪያዎን የሽያጭ ደረሰኝ ከማዘጋጀትዎ በፊት ይፈትሹአቸው።",
-  "settings.review_taxes": "ግብሮችን ይገምግሙ",
   "help.pages_in_english": "እነዚህ ገጾች በእንግሊዝኛ ናቸው።",
   "company.err_price_list_name_empty": "እያንዳንዱ የዋጋ ዝርዝር ስም ሊኖረው ይገባል።",
   "company.err_price_list_name_taken": "እያንዳንዱ የዋጋ ዝርዝር የተለየ ስም ሊኖረው ይገባል። {name} ከአንድ ጊዜ በላይ ጥቅም ላይ ውሏል።",

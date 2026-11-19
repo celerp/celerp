@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from ui.components.icons import icon
 from fasthtml.common import *
@@ -32,7 +33,7 @@ from celerp.services.currencies import CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
-from celerp.tax_regimes import country_name, missing_pack_refusal, tax_countries, tax_country
+from celerp.tax_regimes import country_name, country_refusal, tax_countries, tax_country
 from ui.components.encode import js_value, safe_url
 
 logger = logging.getLogger(__name__)
@@ -84,10 +85,8 @@ def company_setup_error(currency: str, vertical: str, country: str) -> tuple[str
         return "vertical", t("setup.business_type_required")
     if vertical not in {value for value, _ in business_type_options()}:
         return "vertical", t("setup.unknown_business_type", value=repr(vertical))
-    if refusal := missing_pack_refusal(country):
+    if refusal := country_refusal(country):
         return "country", refusal
-    if country and not tax_country(country):
-        return "country", t("setup.invalid_country", value=repr(country))
     return None
 
 
@@ -100,27 +99,19 @@ def tax_country_options(current: str = "") -> list[tuple[str, str]]:
     return named + [("", t("setup.country_other"))]
 
 
-async def set_tax_country(token: str, country: str) -> None:
-    """Name ``country`` on the company's default location, which starts the company
-    with the tax rates in force there (the server keeps taxes the company set itself)."""
-    from ui.routes.settings import location_address
-    locations = (await api.get_locations(token)).get("items", [])
-    default = next((loc for loc in locations if loc.get("is_default")), None)
-    if default is not None:
-        await api.patch_location(token, default["id"],
-                                 {"address": location_address(default.get("address"), country=country)})
-
-
 async def apply_company_setup(token: str, currency: str, timezone: str, vertical: str,
                               country: str) -> str:
-    """Store the currency and timezone, name the tax country, then apply the business
-    type, and return where the user goes next. Raises APIError when a step fails; the
-    business type is applied last, so a company without one has not finished setup,
-    and applying it again is safe. The currency is stored first, so the one chosen
-    stays the books' currency whatever the country's usual one is."""
+    """Store the currency and timezone, store the country and apply its pack, then apply
+    the business type, and return where the user goes next. Raises APIError when a step
+    fails; the business type is applied last, so a company without one has not finished
+    setup, and applying it again is safe. No country (Other country) keeps the neutral tax
+    list. The currency is stored first, so the one chosen stays the books' currency
+    whatever the country's usual one is."""
     await api.patch_company(token, {"currency": currency, "timezone": setup_timezone(timezone)})
     if country:
-        await set_tax_country(token, tax_country(country))
+        await api.patch_company(token, {"settings": {"country": tax_country(country)}})
+        preview = await api.localization_preview(token)
+        await api.localization_confirm(token, preview["fingerprint"], uuid.uuid4().hex)
     result = await api.set_business_type(token, vertical)
     if not result.get("restart_required"):
         return "/dashboard"

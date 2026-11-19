@@ -936,7 +936,7 @@ async def reactivate_company(token: str, company_id: str) -> dict:
 def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
-    for k in ("currency", "timezone", "fiscal_year_start", "opening_balance_date", "tax_id", "phone", "address", "vertical", "email",
+    for k in ("currency", "timezone", "fiscal_year_start", "opening_balance_date", "tax_id", "country", "phone", "address", "vertical", "email",
               "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
               "line_item_identifier"):
         if k not in data:
@@ -1163,6 +1163,21 @@ async def patch_company(token: str, data: dict) -> dict:
         raw = _raise(await c.get("/companies/me")).json()
     _invalidate_inventory_metadata()
     return _flatten_company(raw)
+
+
+async def localization_preview(token: str) -> dict:
+    """POST /settings/taxes/localization/preview: what applying the company's country pack
+    changes (``diff``) and the ``fingerprint`` that binds a confirm to it."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/taxes/localization/preview")).json()
+
+
+async def localization_confirm(token: str, binding: str, idempotency_key: str) -> dict:
+    """POST /settings/taxes/localization/confirm: apply the previewed pack; a retry with the
+    same ``idempotency_key`` applies it once. Returns the ``operation_id`` Undo takes."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/settings/taxes/localization/confirm",
+                                   json={"binding": binding, "idempotency_key": idempotency_key})).json()
 
 
 async def set_business_type(token: str, vertical: str) -> dict:

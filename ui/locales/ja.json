@@ -7083,8 +7083,6 @@
   "l10n.pack_lock_missing.body": "Celerp は国別税率の一覧を読み込めないため、すべての会社の税金をそのままにしています。復元するには Celerp を更新するか再インストールしてください。",
   "l10n.pack_missing.body": "このインストールには {countries} の税率がないため、Celerp はそれらの国の会社の税金をそのままにしています。復元するには Celerp を更新するか再インストールしてください。",
   "settings.location_country_hint": "既定の拠点が属する国の現行税率が会社の初期税率になります。会社が税率を変更するか、最初の仕訳を計上するまで適用されます。",
-  "settings.taxes_set_from_country": "初期税率を{country}の現行税率に設定しました。最初の請求書を発行する前に確認してください。",
-  "settings.review_taxes": "税金を確認",
   "help.pages_in_english": "これらのページは英語です。",
   "company.err_price_list_name_empty": "すべての価格表に名前が必要です。",
   "company.err_price_list_name_taken": "価格表の名前はそれぞれ異なる必要があります。{name}が重複しています。",

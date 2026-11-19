@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title, error_flash
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
-from celerp.tax_regimes import TAX_TYPES, country_name, missing_pack_refusal, pack_missing, tax_country
+from celerp.tax_regimes import TAX_TYPES, country_name
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -939,6 +939,18 @@ def setup_routes(app):
                 cls="cell cell--editing",
             )
 
+        if field == "country":
+            from ui.routes.setup import tax_country_options
+            return Td(
+                searchable_select(
+                    "value", tax_country_options(val), value=val,
+                    aria_label=t("label.country"), autofocus=True,
+                    hx_patch=f"/settings/company/{field}",
+                    hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
+                ),
+                cls="cell cell--editing",
+            )
+
         if field == "vertical":
             # Searchable combobox: the preset catalog can exceed ten entries.
             return Td(
@@ -1724,17 +1736,13 @@ def setup_routes(app):
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
         elif field in ("address", "country"):
-            if field == "country" and (refusal := missing_pack_refusal(value)):
-                return P(refusal, cls="cell-error")
-            if field == "country" and value and not tax_country(value):
-                return P(t("setup.invalid_country", value=repr(value)), cls="cell-error")
             try:
                 current = next((l for l in (await api.get_locations(token)).get("items", [])
                                 if l.get("id") == location_id), {})
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
             # Address and country live in one address record: each keeps the other.
-            changes = {"text": value} if field == "address" else {"country": tax_country(value)}
+            changes = {"text": value} if field == "address" else {"country": value.strip().upper()}
             patch_val = location_address(current.get("address"), **changes)
         if field == "is_default":
             # The default badge moves between rows, so the whole list is drawn again.
@@ -1749,13 +1757,7 @@ def setup_routes(app):
             saved = await api.patch_location(token, location_id, {stored: patch_val})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        cell = _location_display_cell(location_id, field, saved.get(stored))
-        if not saved.get("taxes_from"):
-            return cell
-        # Naming the country replaced the company's starting taxes: say so, with the way to them.
-        return html_response(cell, headers=toast_header(
-            t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
-            action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
+        return _location_display_cell(location_id, field, saved.get(stored))
 
     @app.delete("/settings/locations/{location_id}")
     async def delete_location(request: Request, location_id: str):
@@ -2859,6 +2861,8 @@ def _company_display_cell(field: str, value) -> FT:
         display = label_map.get(raw, raw)
     elif field == "vertical" and raw:
         display = business_type_label(raw) or EMPTY
+    elif field == "country":
+        display = country_name(raw) if raw else t("setup.country_other")
     else:
         display = raw or EMPTY
     return Td(
@@ -3072,11 +3076,8 @@ def location_address(address, **changes) -> dict:
 
 
 def _location_country(address) -> str:
-    """The location's tax country code; a stored country whose pack is missing stays as stored."""
-    if not isinstance(address, dict):
-        return ""
-    value = address.get("country")
-    return str(value).strip().upper() if pack_missing(value) else tax_country(value)
+    """The country code on the location's address, "" when it names none."""
+    return str(address.get("country") or "").strip().upper() if isinstance(address, dict) else ""
 
 
 def _location_address_text(address) -> str:
@@ -3152,12 +3153,13 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
 
 
 def _company_settings_card(company: dict, lang: str = "en", can_change_business_type: bool = False) -> FT:
-    """The company's regional settings (Currency / Timezone / Fiscal Year Start / Opening balances
-    as at), plus Business Type for roles allowed to change it, edited inline via the existing
+    """The company's regional settings (Country / Currency / Timezone / Fiscal Year Start / Opening
+    balances as at), plus Business Type for roles allowed to change it, edited inline via the existing
     /settings/company/{field} routes. Sits to the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
     Language is omitted - it is set from the header language switcher, so duplicating it here would be
     cruft."""
     fields = [
+        ("country", t("label.country", lang)),
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),

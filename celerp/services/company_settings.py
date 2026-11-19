@@ -34,6 +34,8 @@ OWNERS: dict[str, str] = {
     "address": COMPANY_SETTINGS,
     "email": COMPANY_SETTINGS,
     "tax_id": COMPANY_SETTINGS,
+    # The country whose pack Update localization applies; saving it applies nothing.
+    "country": COMPANY_SETTINGS,
     "reorder_alerts_enabled": COMPANY_SETTINGS,
     "reorder_alert_email": COMPANY_SETTINGS,
     # The order lots are picked in. Cost follows the lot that ships; nothing posted moves.
@@ -97,6 +99,7 @@ OWNERS: dict[str, str] = {
     "reorder_last_scan_at": SYSTEM,
     "pay_tip_shown": SYSTEM,
     "erased_connector_items": SYSTEM,
+    "localization": SYSTEM,  # the pack Update localization last applied
 }
 
 GENERAL = frozenset(k for k, owner in OWNERS.items() if owner == COMPANY_SETTINGS)

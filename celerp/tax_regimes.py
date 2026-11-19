@@ -41,7 +41,9 @@ def tax_countries() -> tuple[str, ...]:
 
 
 def _code(value: str | None) -> str:
-    return str(value or "").strip().upper()
+    """``value`` as a pack code: upper case, a test pack's ``zz`` prefix kept as written."""
+    code = str(value or "").strip()
+    return "zz" + code[2:].upper() if code[:2].lower() == "zz" else code.upper()
 
 
 def tax_country(value: str | None) -> str:
@@ -83,26 +85,25 @@ def missing_pack_refusal(value: str | None) -> str | None:
     return t("l10n.pack_missing.body", countries=country_name(value))
 
 
+def country_refusal(value: str | None) -> str | None:
+    """Why ``value`` cannot be the company's country, else None (no country is a choice too:
+    Other country)."""
+    if refusal := missing_pack_refusal(value):
+        return refusal
+    if _code(value) and not tax_country(value):
+        from ui.i18n import t
+        return t("setup.invalid_country", value=repr(_code(value)))
+    return None
+
+
 def get_regime(country_code: str | None) -> dict:
     """Return the tax regime for a country code (case-insensitive). Falls back to DEFAULT_REGIME."""
     return packs().get(_code(country_code), DEFAULT_REGIME)
 
 
-# Which catalog Celerp set the company's sales taxes from: a tax country's code, or "" for the
-# generic list. Present only while those taxes are untouched; any other write of them drops it.
-TAXES_SEEDED_FOR = "taxes_seeded_for"
-
-
-def with_taxes(settings: dict, taxes: list[dict], seeded_for: str | None = None) -> dict:
-    """``settings`` with the company's sales taxes set to ``taxes``. ``seeded_for`` is the
-    catalog Celerp set them from; a write by anyone else passes none, so the list is the
-    company's own from then on and is never replaced automatically."""
-    out = {**settings, "taxes": taxes}
-    if seeded_for is None:
-        out.pop(TAXES_SEEDED_FOR, None)
-    else:
-        out[TAXES_SEEDED_FOR] = seeded_for
-    return out
+def with_taxes(settings: dict, taxes: list[dict]) -> dict:
+    """``settings`` with the company's sales taxes set to ``taxes``."""
+    return {**settings, "taxes": taxes}
 
 
 def generic_taxes() -> list[dict]:

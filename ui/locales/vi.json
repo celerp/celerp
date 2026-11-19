@@ -7083,8 +7083,6 @@
   "l10n.pack_lock_missing.body": "Celerp không đọc được danh sách thuế suất theo quốc gia, nên giữ nguyên thuế của mọi công ty. Hãy cập nhật hoặc cài đặt lại Celerp để khôi phục.",
   "l10n.pack_missing.body": "Bản cài đặt này thiếu thuế suất của {countries}, nên Celerp giữ nguyên thuế của các công ty ở những quốc gia đó. Hãy cập nhật hoặc cài đặt lại Celerp để khôi phục.",
   "settings.location_country_hint": "Quốc gia của địa điểm mặc định xác định các mức thuế suất ban đầu áp dụng cho công ty, cho đến khi công ty thay đổi thuế hoặc ghi sổ bút toán đầu tiên.",
-  "settings.taxes_set_from_country": "Thuế hiện được khởi tạo theo mức thuế suất có hiệu lực tại {country}. Hãy kiểm tra trước khi xuất hóa đơn đầu tiên.",
-  "settings.review_taxes": "Kiểm tra thuế",
   "help.pages_in_english": "Các trang này bằng tiếng Anh.",
   "company.err_price_list_name_empty": "Mỗi bảng giá phải có tên.",
   "company.err_price_list_name_taken": "Mỗi bảng giá phải có tên riêng. {name} đã được sử dụng nhiều lần.",

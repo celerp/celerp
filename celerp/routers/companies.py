@@ -53,8 +53,8 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import (
-    TAX_TYPES, TAXES_SEEDED_FOR, configured, get_regime, missing_pack_refusal, pack_missing, purchasing_taxes,
-    sales_taxes, tax_country, tax_name_key, with_taxes,
+    TAX_TYPES, configured, country_refusal, purchasing_taxes, sales_taxes, tax_country, tax_name_key,
+    with_taxes,
 )
 from celerp.services import company_lifecycle, nav_overrides
 from celerp.services.currencies import CURRENCY_CODES, require_phone
@@ -73,62 +73,6 @@ from ui.i18n import t
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
-
-async def _default_location_country(session: AsyncSession, company_id) -> str:
-    """The country stored on the company's one default location, "" when it names none."""
-    return _address_country((await session.execute(
-        select(Location.address).where(Location.company_id == company_id, Location.is_default.is_(True))
-    )).scalar_one_or_none())
-
-
-def _address_country(address) -> str:
-    return str(address.get("country") or "").strip() if isinstance(address, dict) else ""
-
-
-async def _apply_default_location(session: AsyncSession, company_id, before: str, address: dict | None) -> str | None:
-    """Every write that leaves ``address`` on the company's default location ends here: it
-    refuses a newly chosen country whose pack is missing, then seeds the country's tax
-    regime into a company that has not set anything up yet, and returns the country whose
-    taxes it set (None when it set none).
-
-    ``before`` is the default location's country before the write. A country newly chosen
-    there whose pack this installation lacks is refused, so no default location points at
-    taxes Celerp cannot set up; a country already stored is kept as it is, with the taxes
-    stored for it.
-
-    Taxes are replaced only while they are unset or still the list Celerp itself seeded
-    (TAXES_SEEDED_FOR), and only when the country differs from the one they were seeded
-    for. Taxes someone saved or imported, even at the very same rates, and taxes stored
-    before Celerp recorded where its lists came from, are kept. The currency is set only
-    while none was ever saved. A company that has posted entries of its own keeps both:
-    changing them would silently restate its books, so it changes them explicitly in
-    settings. Safe to call repeatedly."""
-    country = _address_country(address)
-    if country.upper() != before.upper() and (refusal := missing_pack_refusal(country)):
-        raise HTTPException(status_code=422, detail=refusal)
-    if not country or pack_missing(country):
-        return None
-
-    company = await locked_company(session, company_id)
-    if company is None:
-        return None
-    seeded_for, code = company.settings.get(TAXES_SEEDED_FOR), tax_country(country)
-    if company.settings.get("taxes") is not None and (seeded_for is None or seeded_for == code):
-        return None
-    from celerp.services.demo import has_own_books
-    if await has_own_books(session, company_id):
-        return None
-
-    regime = get_regime(country)
-    settings = with_taxes(dict(company.settings), copy.deepcopy(regime["taxes"]), code)
-    seeds_currency = "currency" not in settings
-    if seeds_currency:
-        settings["currency"] = regime["currency"]
-    company.settings = settings
-    if seeds_currency:
-        await _books_currency_set(session, company_id)
-    return code or None
-
 
 async def _books_currency_set(session: AsyncSession, company_id) -> None:
     """Tell every module the books' currency was just set, so what it keeps in the
@@ -596,6 +540,14 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             except Refused as exc:
                 raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         require_phone(payload.settings.get("phone"))
+        if "country" in payload.settings:
+            # Saving the country applies nothing: Update localization applies its pack.
+            if refusal := country_refusal(payload.settings["country"]):
+                raise HTTPException(status_code=422, detail=refusal)
+            if country := tax_country(payload.settings["country"]):
+                merged["country"] = country
+            else:
+                merged.pop("country")
         company.settings = merged
     await session.commit()
     return {"ok": True}
@@ -926,9 +878,8 @@ async def create_location(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    # Company first, then the location, as patch_location: the default regime below needs it too.
+    # Company first, then the location, as patch_location.
     await lock_company(session, company_id)
-    before = await _default_location_country(session, company_id)
     loc = Location(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -941,7 +892,6 @@ async def create_location(
     await _flush_location(session, payload.name)
     if payload.is_default:
         await make_default_location(session, company_id, loc)
-        await _apply_default_location(session, company_id, before, payload.address)
     await session.commit()
     return {"id": str(loc.id)}
 
@@ -1024,10 +974,9 @@ async def patch_location(
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=t("company.err_location_invalid"))
-    # Company first, then the location: the order an import commit takes them in (and the
-    # tax re-seed below needs the company lock), so the two wait instead of deadlocking.
+    # Company first, then the location: the order an import commit takes them in, so the two
+    # wait instead of deadlocking.
     await lock_company(session, company_id)
-    before = await _default_location_country(session, company_id)
     loc = await session.get(Location, loc_uuid)
     if loc is None or loc.company_id != company_id:
         raise HTTPException(status_code=404, detail=t("company.err_location_not_found"))
@@ -1042,14 +991,9 @@ async def patch_location(
         await make_default_location(session, company_id, loc)
     elif payload.is_default is not None:
         loc.is_default = False
-    # Re-seed regime if this is (or is becoming) the default location with a country
-    effective_default = payload.is_default if payload.is_default is not None else loc.is_default
-    effective_address = payload.address if payload.address is not None else loc.address
-    taxes_from = (await _apply_default_location(session, company_id, before, effective_address)
-                  if effective_default else None)
     await session.commit()
     return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address,
-            "is_default": loc.is_default, "taxes_from": taxes_from}
+            "is_default": loc.is_default}
 
 
 @router.delete("/me/locations/{location_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-check": "/settings/inventory"}, summary="Delete a location that no longer holds any stock.")

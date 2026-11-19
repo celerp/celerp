@@ -7083,8 +7083,6 @@
   "l10n.pack_lock_missing.body": "Celerp tidak dapat membaca daftar tarif pajak negaranya, jadi pajak setiap perusahaan dibiarkan apa adanya. Perbarui atau instal ulang Celerp untuk memulihkannya.",
   "l10n.pack_missing.body": "Tarif pajak untuk {countries} tidak ada di instalasi ini, jadi Celerp membiarkan pajak perusahaan di negara tersebut apa adanya. Perbarui atau instal ulang Celerp untuk memulihkannya.",
   "settings.location_country_hint": "Negara lokasi default menentukan tarif pajak yang berlaku bagi perusahaan pada awalnya, hingga perusahaan mengubah pajaknya atau mencatat entri jurnal pertamanya.",
-  "settings.taxes_set_from_country": "Pajak sekarang dimulai dengan tarif yang berlaku di {country}. Periksa tarifnya sebelum membuat faktur pertama.",
-  "settings.review_taxes": "Tinjau pajak",
   "help.pages_in_english": "Halaman-halaman ini berbahasa Inggris.",
   "company.err_price_list_name_empty": "Setiap daftar harga harus memiliki nama.",
   "company.err_price_list_name_taken": "Setiap daftar harga harus memiliki nama unik. {name} digunakan lebih dari sekali.",
