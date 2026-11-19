@@ -20,7 +20,7 @@ VERSIONS = Path(__file__).resolve().parents[2] / "celerp" / "migrations" / "vers
 
 
 def _module() -> str:
-    found = [p.stem for p in VERSIONS.glob("*.py") if "reconcile_at" in p.read_text()]
+    found = [p.stem for p in VERSIONS.glob("*.py") if 'sa.Column("reconcile_at"' in p.read_text()]
     assert len(found) == 1, f"one migration adds ai_usage.reconcile_at, found {found}"
     return found[0]
 
