@@ -18,6 +18,7 @@ from migration_support import auth, maker, real_client, real_engine  # noqa: F40
 from peer_attention_support import attention_keys
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
+from test_helpers import rate_today, save_taxes
 from test_peer_sync_end_to_end import _company_of, _iid, _route_to_app, seed_demo
 from test_peer_two_way_sync import (
     ADJUSTED, _journals, _notices, _pair_journals, _post_journal, _two_way,
@@ -469,11 +470,9 @@ async def test_a_tax_code_crosses_with_its_document(real_client, real_engine, mo
     firm_company = _company_of(firm_tok)
     levy = {"name": "Import levy", "rate": 3.0, "tax_type": "purchase"}
     customs = {"name": "Customs", "rate": 4.0, "tax_type": "purchase"}
-    r = await real_client.patch("/companies/me/purchasing-taxes", json={"taxes": [levy, customs]},
-                                headers=auth(tok))
+    r = await save_taxes(real_client, auth(tok), [levy, customs], "purchase")
     assert r.status_code == 200, r.text
-    r = await real_client.patch("/companies/me/purchasing-taxes", json={"taxes": [
-        {"name": "Customs", "rate": 5.0, "tax_type": "purchase"}]}, headers=auth(firm_tok))
+    r = await save_taxes(real_client, auth(firm_tok), [{"name": "Customs", "rate": 5.0, "tax_type": "purchase"}], "purchase")
     assert r.status_code == 200, r.text
     bill = await _bill(real_client, tok, [
         {"name": "Crates", "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
@@ -488,8 +487,8 @@ async def test_a_tax_code_crosses_with_its_document(real_client, real_engine, mo
 
     taxes = {x["name"]: x for x in (await real_client.get("/companies/me/purchasing-taxes",
                                                           headers=auth(firm_tok))).json()}
-    assert taxes["Import levy"]["rate"] == 3.0
-    assert taxes["Customs"]["rate"] == 5.0  # the receiver's own code stays as it is
+    assert rate_today(taxes["Import levy"]) == 3.0
+    assert rate_today(taxes["Customs"]) == 5.0  # the receiver's own code stays as it is
     told = [n for n in await _notices(real_engine, firm_company) if "Import levy" in n[1]]
     assert len(told) == 1 and "3" in told[0][1], told
     from celerp.models.company_peer import CompanyPeerIdentity

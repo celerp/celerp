@@ -335,17 +335,20 @@ def retired_taxes() -> list[dict]:
     return [{**entry, "country": code} for code, pack in packs().items() for entry in pack["retired"]]
 
 
-def _row_matches(row: dict, want: dict) -> bool:
-    """Whether a stored tax row is the retired row ``want`` describes."""
+def _row_matches(row: dict, want: dict, day: dt.date) -> bool:
+    """Whether a stored tax row is the retired row ``want`` describes on ``day``: its rate is the
+    one in force that day (rate_on); a row that is not a valid tax code, or has no rate in force,
+    matches no rate."""
+    from celerp.localization.taxcodes import TaxCode, rate_on
     for field, value in want.items():
         if field == "name":
             if tax_name_key(row.get("name")) != tax_name_key(value):
                 return False
         elif field == "rate":
             try:
-                if float(row.get("rate") or 0) != value:
+                if rate_on(TaxCode.model_validate(row), day) != value:
                     return False
-            except (TypeError, ValueError):
+            except ValueError:  # not a valid code (pydantic's ValidationError), or NoRateInForce
                 return False
         elif field == "category":
             if row.get("category") != value:
@@ -360,7 +363,9 @@ def retired_seed_rows(settings: dict) -> list[dict]:
     ``{"country", "id", "lists"}`` naming the lists ("sales", "purchase") it was found in. Only lists the
     company saved are read: a purchasing list never saved is a copy of the sales list, not a
     second place to find the same row. An entry of another currency than the saved one is not
-    read. A list or row of the wrong shape holds nothing."""
+    read. A list or row of the wrong shape holds nothing. Rates are compared as they stand today
+    in the business timezone."""
+    day = tax_day(None, settings.get("timezone"))
     saved = {"sales": settings.get("taxes"), "purchase": settings.get("purchasing_taxes")}
     lists = {side: [r for r in rows if isinstance(r, dict)]
              for side, rows in saved.items() if isinstance(rows, list)}
@@ -370,7 +375,7 @@ def retired_seed_rows(settings: dict) -> list[dict]:
             continue
         test = all if entry["match"] == "all" else any
         sides = {side for side, rows in lists.items()
-                 if test(any(_row_matches(r, want) for r in rows) for want in entry["rows"])}
+                 if test(any(_row_matches(r, want, day) for r in rows) for want in entry["rows"])}
         if sides:
             found.append({"country": entry["country"], "id": entry["id"], "lists": sides})
     return found

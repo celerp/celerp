@@ -344,6 +344,30 @@ async def own_sessions_on(session):
                           shared)
 
 
+TAX_LIST_PATHS = {"sales": "/companies/me/taxes", "purchase": "/companies/me/purchasing-taxes"}
+
+
+async def save_taxes(client, headers: dict, rows: list[dict], side: str = "sales"):
+    """PATCH ``rows`` as the whole ``side`` tax list, edited from the list stored now (its
+    fingerprint read first); a row given one bare ``rate`` is sent as one open version. Returns
+    the response, so a test can assert a refusal."""
+    from celerp.localization.taxcodes import list_fingerprint
+    path = TAX_LIST_PATHS[side]
+    current = (await client.get(path, headers=headers)).json()
+    taxes = [{**{k: v for k, v in row.items() if k != "rate"}, "versions": [{"rate": row["rate"]}]}
+             if "rate" in row and "versions" not in row else row for row in rows]
+    return await client.patch(path, headers=headers, json={"taxes": taxes, "fingerprint": list_fingerprint(current)})
+
+
+def rate_today(row: dict) -> float:
+    """The rate of a stored tax list row in force today (the company's day is not needed: every
+    test row has one open version unless the test dates it itself)."""
+    import datetime as dt
+
+    from celerp.localization.taxcodes import TaxCode, rate_on
+    return rate_on(TaxCode.model_validate(row), dt.date.today())
+
+
 TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
 
 

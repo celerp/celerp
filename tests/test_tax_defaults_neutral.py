@@ -12,10 +12,11 @@ import pytest
 
 from celerp.services.currencies import CURRENCIES
 from celerp.tax_regimes import DEFAULT_REGIME, get_regime, tax_countries
+from test_helpers import save_taxes
 from ui.i18n import t
 
 _GENERIC = DEFAULT_REGIME["taxes"]
-_CUSTOM_STANDARD = [{**_GENERIC[0], "rate": 12.0}, _GENERIC[1]]
+_CUSTOM_STANDARD = [{**_GENERIC[0], "versions": [{"rate": 12.0}]}, _GENERIC[1]]
 
 
 async def _register(client, email: str) -> dict:
@@ -64,7 +65,7 @@ async def test_new_company_reads_the_neutral_generic_taxes(client):
 
 async def test_explicit_empty_sales_taxes_stay_empty(client):
     h = await _register(client, "empty-sales@test.example")
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": []})
+    r = await save_taxes(client, h, [])
     assert r.status_code == 200, r.text
     assert (await client.get("/companies/me/taxes", headers=h)).json() == []
     assert (await client.get("/companies/me/purchasing-taxes", headers=h)).json() == []
@@ -90,10 +91,10 @@ async def test_purchasing_reads_make_no_writes(client):
 
 async def test_saved_purchasing_override_is_returned_unchanged(client):
     h = await _register(client, "override@test.example")
-    own = [{**_GENERIC[0], "name": "Input VAT", "rate": 5.0}]
-    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": own})
+    r = await save_taxes(client, h, [{**_GENERIC[0], "name": "Input VAT", "versions": [{"rate": 5.0}]}], "purchase")
     assert r.status_code == 200, r.text
-    await client.patch("/companies/me/taxes", headers=h, json={"taxes": _CUSTOM_STANDARD})
+    own = (await client.get("/companies/me/purchasing-taxes", headers=h)).json()
+    assert (await save_taxes(client, h, _CUSTOM_STANDARD)).status_code == 200
     assert (await client.get("/companies/me/purchasing-taxes", headers=h)).json() == own
 
 
@@ -110,10 +111,11 @@ async def test_update_localization_replaces_a_never_saved_neutral_list_with_the_
 
 async def test_customized_standard_tax_with_the_same_name_is_not_overwritten(client):
     h = await _register(client, "custom-std@test.example")
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": _CUSTOM_STANDARD})
+    r = await save_taxes(client, h, _CUSTOM_STANDARD)
     assert r.status_code == 200, r.text
+    saved = (await client.get("/companies/me/taxes", headers=h)).json()
     await _update_localization(client, h, "AU")
-    assert (await client.get("/companies/me/taxes", headers=h)).json()[:2] == _CUSTOM_STANDARD
+    assert (await client.get("/companies/me/taxes", headers=h)).json()[:2] == saved
 
 
 async def test_saved_currency_is_kept_when_a_country_pack_is_applied(client):
@@ -129,7 +131,7 @@ async def test_saved_currency_is_kept_when_a_country_pack_is_applied(client):
 async def test_financially_active_company_keeps_currency_and_its_taxes(client):
     h = await _register(client, "active@test.example")
     await _post_manual_entry(client, h)
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": _CUSTOM_STANDARD})
+    r = await save_taxes(client, h, _CUSTOM_STANDARD)
     assert r.status_code == 200, r.text
     before = await _settings(client, h)
     await _update_localization(client, h, "AU")

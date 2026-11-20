@@ -33,6 +33,7 @@ from consent_census import billable_routes, route_doors  # noqa: E402
 from celerp.services.email import EmailResult  # noqa: E402
 from celerp_subscriptions import billing, routes  # noqa: E402
 from celerp_subscriptions.billing import write_agreement  # noqa: E402
+from test_helpers import save_taxes  # noqa: E402
 from ui.i18n import t  # noqa: E402
 from ui.routes.documents import persist_then_post  # noqa: E402
 
@@ -287,7 +288,7 @@ async def _sending(client, monkeypatch):
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     tax = {"name": "Dues VAT", "rate": 7.0, "tax_type": "both"}
-    assert (await client.patch("/companies/me/taxes", headers=hd, json={"taxes": [tax]})).status_code == 200
+    assert (await save_taxes(client, hd, [tax])).status_code == 200
     line = {"description": "Dues", "quantity": 1, "unit_price": 100, "taxes": [{"code": tax["name"], "rate": tax["rate"]}]}
     eid = await agreement(client, hd, start="2026-07-01", line_items=[line],
                           contact_id=await contact(client, hd, "member@example.test"))
@@ -295,7 +296,8 @@ async def _sending(client, monkeypatch):
     assert r.status_code == 200, r.text
 
     async def purchase_only():
-        r = await client.patch("/companies/me/taxes", headers=hd, json={"taxes": [{**tax, "tax_type": "purchase"}]})
+        [stored] = (await client.get("/companies/me/taxes", headers=hd)).json()
+        r = await save_taxes(client, hd, [{**stored, "tax_type": "purchase"}])
         assert r.status_code == 200, r.text
     return hd, await company_id(client, hd), eid, purchase_only
 

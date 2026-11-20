@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 
+from test_helpers import rate_today, save_taxes
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,13 +167,13 @@ async def test_tax_rates_patch(client):
         {"name": "VAT 10%", "rate": 10.0, "tax_type": "both", "is_default": True, "description": "Custom VAT"},
         {"name": "Zero Rated", "rate": 0.0, "tax_type": "sales", "is_default": False, "description": ""},
     ]
-    r = await client.patch("/companies/me/taxes", headers=_auth(token), json={"taxes": new_taxes})
+    r = await save_taxes(client, _auth(token), new_taxes)
     assert r.status_code == 200
 
     r2 = await client.get("/companies/me/taxes", headers=_auth(token))
     taxes = r2.json()
     assert len(taxes) == 2
-    assert taxes[0]["rate"] == 10.0
+    assert rate_today(taxes[0]) == 10.0
     assert taxes[1]["name"] == "Zero Rated"
 
 
@@ -412,7 +414,7 @@ async def test_tax_rate_has_new_fields(client):
             "default_order": 1,
         },
     ]
-    r = await client.patch("/companies/me/taxes", headers=_auth(token), json={"taxes": new_taxes})
+    r = await save_taxes(client, _auth(token), new_taxes)
     assert r.status_code == 200
 
     r2 = await client.get("/companies/me/taxes", headers=_auth(token))
@@ -711,10 +713,9 @@ async def test_customised_taxes_not_overwritten_by_location(client):
     token = await _register(client, email="regime_custom@test.example")
 
     # Customise taxes first
-    await client.patch("/companies/me/taxes", headers=_auth(token), json={
-        "taxes": [{"name": "My Special Tax", "rate": 13.0, "tax_type": "both",
-                   "is_default": True, "description": "", "is_compound": False, "default_order": 0}]
-    })
+    await save_taxes(client, _auth(token), [{"name": "My Special Tax", "rate": 13.0, "tax_type": "both",
+                                            "is_default": True, "description": "", "is_compound": False,
+                                            "default_order": 0}])
 
     # Now create a default location with a country
     await client.post("/companies/me/locations", headers=_auth(token), json={

@@ -281,26 +281,29 @@ def _settings(sales: list[dict] | None = None, purchasing: list[dict] | None = N
     return settings
 
 
+# The rows old seeds wrote, as a tax list stores them (schema 2: dated versions, a withholding
+# code's rate positive with its category).
 _OLD_ET = [
-    {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True, "is_compound": False},
-    {"name": "TOT 2%", "rate": 2.0, "tax_type": "sales", "is_default": False, "is_compound": False},
-    {"name": "TOT 10%", "rate": 10.0, "tax_type": "sales", "is_default": False, "is_compound": False},
-    {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False, "is_compound": False},
+    {"name": "VAT 15%", "versions": [{"rate": 15.0}], "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "TOT 2%", "versions": [{"rate": 2.0}], "tax_type": "sales", "is_default": False, "is_compound": False},
+    {"name": "TOT 10%", "versions": [{"rate": 10.0}], "tax_type": "sales", "is_default": False, "is_compound": False},
+    {"name": "WHT 2%", "versions": [{"rate": 2.0}], "tax_type": "purchase", "category": "withholding",
+     "withholding_point": "document", "is_default": False, "is_compound": False},
 ]
 _OLD_IN = [
-    {"name": "CGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True, "is_compound": False},
-    {"name": "SGST 9%", "rate": 9.0, "tax_type": "both", "is_default": True, "is_compound": False},
-    {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False, "is_compound": False},
+    {"name": "CGST 9%", "versions": [{"rate": 9.0}], "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "SGST 9%", "versions": [{"rate": 9.0}], "tax_type": "both", "is_default": True, "is_compound": False},
+    {"name": "IGST 18%", "versions": [{"rate": 18.0}], "tax_type": "both", "is_default": False, "is_compound": False},
 ]
 
 
-# The retired rows core listed before the country packs carried them, as they stood then. The
-# packs must keep telling the same companies the same things (golden), and a company is told,
-# never changed.
+# The retired rows core listed before the country packs carried them, at pack schema 2 (a rate
+# in the stored sign, with its category). The packs must keep telling the same companies the
+# same things (golden), and a company is told, never changed.
 OLD_CORE_RETIRED = {
     "IN": [{"id": "in-default-2025", "match": "all",
             "rows": [{"name": "CGST 9%", "is_default": True}, {"name": "SGST 9%", "is_default": True}]}],
-    "ET": [{"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": [{"name": "WHT 2%", "rate": -2.0}]},
+    "ET": [{"id": "et-wht-2025", "match": "any", "currency": "ETB", "rows": [{"name": "WHT 2%", "rate": 2.0, "category": "withholding"}]},
            {"id": "et-tot-2025", "match": "any", "rows": [{"name": "TOT 2%"}, {"name": "TOT 10%"}]}],
     "CA": [{"id": "ca-qst-compound", "match": "any", "rows": [{"name": "QST 9.975%", "is_compound": True}]}],
     "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%", "rate": 6.0}]}],
@@ -350,8 +353,10 @@ def test_retired_seed_rows_matches_old_seeds(old_retired):
     # Without a saved purchasing list the derived copy of the sales list is not read twice.
     assert [m["lists"] for m in retired_seed_rows(_settings([_OLD_ET[3]]))] == [{"sales"}]
     # Old Quebec compound QST and Malaysia SST 6%.
-    qst = {"name": "QST 9.975%", "rate": 9.975, "tax_type": "both", "is_default": False, "is_compound": True}
-    sst = {"name": "SST 6%", "rate": 6.0, "tax_type": "sales", "is_default": True, "is_compound": False}
+    qst = {"name": "QST 9.975%", "versions": [{"rate": 9.975}], "tax_type": "both", "is_default": False,
+           "is_compound": True}
+    sst = {"name": "SST 6%", "versions": [{"rate": 6.0}], "tax_type": "sales", "is_default": True,
+           "is_compound": False}
     assert {m["id"] for m in retired_seed_rows(_settings([qst, sst]))} == {"ca-qst-compound", "my-sst-6"}
     # A fixed row no longer matches: one default left, QST not compound.
     fixed = [{**_OLD_IN[0], "is_default": False}, _OLD_IN[1], _OLD_IN[2]]

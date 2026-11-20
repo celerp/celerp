@@ -15,7 +15,7 @@ from celerp.accounting_roles import catalog_refusal
 
 from celerp.services.list_behavior import LIST_TYPES
 from celerp_docs.sequences import _PREFIX_BY_DOC_TYPE
-from test_helpers import reserve_item, sell_item
+from test_helpers import reserve_item, save_taxes, sell_item
 
 # Every numbered document type except the list types, which scan through /lists.
 DOC_TYPES = sorted(set(_PREFIX_BY_DOC_TYPE) - {"list", *LIST_TYPES})
@@ -162,10 +162,10 @@ async def test_doc_scan_prices_from_price_list(client):
 
 async def test_doc_scan_applies_default_sales_tax(client):
     t = await _register(client)
-    r = await client.patch("/companies/me/taxes", headers=_h(t), json={"taxes": [
+    r = await save_taxes(client, _h(t), [
         {"name": "VAT", "rate": 7, "tax_type": "both", "is_default": True},
         {"name": "Zero", "rate": 0, "tax_type": "both", "is_default": False},
-    ]})
+    ])
     assert r.status_code == 200, r.text
     await _item(client, t, "TX", retail_price=100)
     doc = await _doc(client, t)
@@ -177,7 +177,7 @@ async def test_doc_scan_applies_default_sales_tax(client):
 
 
 async def _taxes(client, t, *taxes):
-    r = await client.patch("/companies/me/taxes", headers=_h(t), json={"taxes": list(taxes)})
+    r = await save_taxes(client, _h(t), list(taxes))
     assert r.status_code == 200, r.text
 
 

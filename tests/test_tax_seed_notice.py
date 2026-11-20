@@ -16,6 +16,7 @@ from celerp.models.company import Company
 from celerp.models.notification import Notification
 from celerp.services.company_lock import locked_company
 
+from test_helpers import save_taxes
 from test_tax_seeds import _OLD_ET, old_retired, with_retired  # noqa: F401 - old_retired is a fixture
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("old_retired")]
@@ -119,7 +120,8 @@ async def test_tax_seed_notice_clears_when_row_fixed(session):
 
     company = await locked_company(session, company_id)
     fixed = [r for r in copy.deepcopy(_OLD_ET) if r["name"] != "WHT 2%"]
-    fixed.append({"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False, "is_compound": False})
+    fixed.append({"name": "WHT 3%", "versions": [{"rate": 3.0}], "tax_type": "purchase", "category": "withholding",
+                  "withholding_point": "document", "is_default": False, "is_compound": False})
     company.settings = {**company.settings, "taxes": fixed}
     await session.commit()
 
@@ -335,16 +337,16 @@ def _record(row: dict) -> dict:
             "idempotency_key": f"tax-{uuid.uuid4().hex[:8]}", "data": row}
 
 
-@pytest.mark.parametrize("path", ["/companies/me/taxes", "/companies/me/purchasing-taxes"])
-async def test_saving_a_tax_list_brings_its_notices_up_to_date_at_once(client, path):
+@pytest.mark.parametrize("side", ["sales", "purchase"])
+async def test_saving_a_tax_list_brings_its_notices_up_to_date_at_once(client, side):
     """No restart needed: saving a list holding a retired row raises its notice, and saving it
     fixed clears the notice the same moment."""
     h = await _register(client)
-    assert (await client.patch(path, headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert (await save_taxes(client, h, _OLD_ET, side)).status_code == 200
     assert await _bell(client, h) == {"et-wht-2025", "et-tot-2025"}
 
     fixed = [r for r in _OLD_ET if r["name"] not in ("WHT 2%", "TOT 2%", "TOT 10%")]
-    assert (await client.patch(path, headers=h, json={"taxes": fixed})).status_code == 200
+    assert (await save_taxes(client, h, fixed, side)).status_code == 200
     assert await _bell(client, h) == set()
 
 
@@ -420,12 +422,12 @@ async def test_saving_the_sales_list_fixed_moves_the_notice_link_to_the_purchasi
     and now link to the purchasing list, where the rows still are."""
     h = await _register(client)
     sales, purchase = "/settings/sales?tab=taxes", "/settings/purchasing?tab=taxes"
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert (await save_taxes(client, h, _OLD_ET)).status_code == 200
+    assert (await save_taxes(client, h, _OLD_ET, "purchase")).status_code == 200
     assert await _bell_links(client, h) == {"et-wht-2025": sales, "et-tot-2025": sales}
 
     fixed = [r for r in _OLD_ET if r["name"] not in ("WHT 2%", "TOT 2%", "TOT 10%")]
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": fixed})).status_code == 200
+    assert (await save_taxes(client, h, fixed)).status_code == 200
     assert await _bell_links(client, h) == {"et-wht-2025": purchase, "et-tot-2025": purchase}
 
 
@@ -434,7 +436,7 @@ async def test_a_company_past_the_notification_cap_keeps_only_its_newest(client,
     and the one kept is the newer, raised second in the Ethiopia pack's retired list."""
     monkeypatch.setattr("celerp.notifications.service.MAX_PER_COMPANY", 1)
     h = await _register(client)
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _OLD_ET})).status_code == 200
+    assert (await save_taxes(client, h, _OLD_ET)).status_code == 200
     assert await _bell(client, h) == {"et-tot-2025"}
 
 
@@ -455,15 +457,15 @@ async def test_retired_rows_still_noticed_after_upgrade(client, monkeypatch, tmp
         "MY": [{"id": "my-sst-6", "match": "any", "rows": [{"name": "SST 6%", "rate": 6.0}]}],
     })
     h = await _register(client)
-    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": [_STORED_WHT_2]})
+    r = await save_taxes(client, h, [_STORED_WHT_2], "purchase")
     assert r.status_code == 200, r.text
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": [_STORED_SST_6]})
+    r = await save_taxes(client, h, [_STORED_SST_6])
     assert r.status_code == 200, r.text
     assert await _bell(client, h) == {"et-wht-2025", "my-sst-6"}
 
     other = {**_STORED_WHT_2, "category": "standard", "withholding_point": None}
     other = {k: v for k, v in other.items() if v is not None}
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": [other]})).status_code == 200
+    assert (await save_taxes(client, h, [other], "purchase")).status_code == 200
     assert await _bell(client, h) == {"my-sst-6"}
 
     pack = valid_pack()

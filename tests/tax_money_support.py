@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from test_money_stock_and_contact_invariants import _account_net, _auth_company
+from test_helpers import TAX_LIST_PATHS, save_taxes
 from test_tax_acceptance_matrix import _books, _moved
 
 __all__ = ["_account_net", "_auth_company", "_moved", "ISSUE", "PAID", "SUPPLIER", "company", "codes",
@@ -22,7 +23,6 @@ __all__ = ["_account_net", "_auth_company", "_moved", "ISSUE", "PAID", "SUPPLIER
 ISSUE = "2026-10-01"
 PAID = "2026-10-20"
 SUPPLIER = "supplier:1"
-_PATH = {"sales": "/companies/me/taxes", "purchase": "/companies/me/purchasing-taxes"}
 
 
 async def company(session, currency: str = "USD") -> dict:
@@ -35,12 +35,10 @@ def code(name: str, rate: float, side: str = "both", category: str = "standard",
 
 async def codes(client, auth, rows: list[dict], side: str = "sales") -> dict:
     """Save ``rows`` as the whole tax list of ``side``; the stored rows by name."""
-    from celerp.localization.taxcodes import list_fingerprint
     h = auth["headers"]
-    current = (await client.get(_PATH[side], headers=h)).json()
-    r = await client.patch(_PATH[side], headers=h, json={"taxes": rows, "fingerprint": list_fingerprint(current)})
+    r = await save_taxes(client, h, rows, side)
     assert r.status_code == 200, r.text
-    return {row["name"]: row for row in (await client.get(_PATH[side], headers=h)).json()}
+    return {row["name"]: row for row in (await client.get(TAX_LIST_PATHS[side], headers=h)).json()}
 
 
 def line(price: float, *code_ids: str, quantity: float = 1, description: str = "Service") -> dict:
