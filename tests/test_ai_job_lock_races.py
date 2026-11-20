@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from ai_fake_cloud import answer, cloud  # noqa: F401
 from celerp.ai import deadlines, jobs, usage
@@ -264,6 +265,96 @@ async def test_running_tasks_keeps_a_lease_renewal_visible_past_its_jobs_own_tas
     release.set()
     await until(lambda: not jobs.running_tasks())
     assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+
+
+def _lock_job_errors(monkeypatch, fail_first: int = 0) -> list[Exception]:
+    """The errors ``jobs._lock_job`` raised, kept as they happen. Its first ``fail_first``
+    calls raise a database error of their own, as a dropped connection would."""
+    errors, real = [], jobs._lock_job
+
+    async def _watched(session, job_id):
+        try:
+            if len(errors) < fail_first:
+                raise DBAPIError("SELECT", {}, Exception("the connection dropped"))
+            return await real(session, job_id)
+        except Exception as exc:
+            errors.append(exc)
+            raise
+    monkeypatch.setattr(jobs, "_lock_job", _watched)
+    return errors
+
+
+async def _alive_past_a_failed_claim(task, errors) -> None:
+    """The job's task met a claim that raised (the company lock timed out) and lives on."""
+    await until(lambda: bool(errors) or task.done(), 30.0)
+    await asyncio.sleep(0.3)
+    assert not task.done(), f"the job's task ended while its job is open: {errors}"
+
+
+async def test_a_start_up_claim_that_times_out_on_the_company_lock_is_tried_again(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """Another company write gets in between the commit that hands a job to this process
+    (here the start-up recovery) and the task's first claim, and holds the lock past the
+    request lock timeout. The task claims again once the lock is free, the job ends, and
+    the operations the recovery held back from the usage reconciler are let go."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud, end="cut")
+    await jobs.shutdown()                               # the process stops mid-step
+    _finish_cut_off(cloud, identity)
+    started, real_start = [], jobs.start_job
+    monkeypatch.setattr(jobs, "start_job", started.append)
+    assert await jobs.recover_on_start() == 1           # the next start takes the job, committed
+    monkeypatch.setattr(jobs, "start_job", real_start)
+    assert jobs.held_operation_ids()
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        for job in started:
+            real_start(job)
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert not jobs.held_operation_ids()
+
+
+async def test_a_claim_after_a_failed_run_that_times_out_on_the_company_lock_is_tried_again(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A company write holds the lock while a file's answer arrives: the step's write and
+    its failed-write time out, the run raises, and the claim that follows times out too.
+    The task lives on and the job ends once the lock is free, with one model run."""
+    monkeypatch.setattr(jobs, "STEP_ATTEMPTS", 1)
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    errors = _lock_job_errors(monkeypatch)
+    async with _company_held(pg, company_id):
+        cloud.release(identity)             # the model answers; the step write now needs the company lock
+        await _alive_past_a_failed_claim(jobs._tasks[job_id], errors)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert not jobs.held_operation_ids()
+
+
+async def test_a_claim_that_raises_once_is_tried_again_and_the_job_runs_once(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """Any database error at the claim counts as a failed run: the task claims again after
+    the delay and the job ends with one model run. Nothing ran under the failed claim, so
+    there is no failure of a run to record for it."""
+    monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.05)
+    recorded, real_after = [], jobs._after_failure
+
+    async def _after(job_id_, runner_id):
+        recorded.append(runner_id)
+        await real_after(job_id_, runner_id)
+    monkeypatch.setattr(jobs, "_after_failure", _after)
+    errors = _lock_job_errors(monkeypatch, fail_first=1)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+    cloud.release(identity)
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+    assert cloud.executions[identity] == 1
+    assert len(errors) == 1 and recorded == []
+    assert not jobs.held_operation_ids()
 
 
 # ── A reset ───────────────────────────────────────────────────────────────────

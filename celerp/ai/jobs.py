@@ -556,8 +556,8 @@ def start_job(job_id: uuid.UUID) -> bool:
 
 async def _supervise(job_id: uuid.UUID) -> None:
     """The job's task: it holds the job's lease and renews it, runs the job, and when
-    the run raises runs it again after a growing delay, for as long as the process
-    lives. Meanwhile the job reads as running: a question is moved to the background
+    the claim or the run raises (a lock timeout, a dropped connection) claims and runs
+    it again after a growing delay, for as long as the process lives. Meanwhile the job reads as running: a question is moved to the background
     so the thread offers Stop, and a Stop ends the job at the next failure.
 
     A claim this process took for the job while this task lives (a reopen: the user
@@ -570,16 +570,18 @@ async def _supervise(job_id: uuid.UUID) -> None:
     failures = 0
     try:
         while True:
+            ran = False
             try:
-                async with SessionLocal() as session:
-                    claim[0] = None if await _lock_job(session, job_id) is None else \
-                        await _claim(session, job_id, own=True)
-                    await session.commit()
-            except CompanyGone:
-                claim[0] = None
-            if claim[0] is None:
-                break       # ended, or another process runs it
-            try:
+                try:
+                    async with SessionLocal() as session:
+                        claim[0] = None if await _lock_job(session, job_id) is None else \
+                            await _claim(session, job_id, own=True)
+                        await session.commit()
+                except CompanyGone:
+                    claim[0] = None
+                if claim[0] is None:
+                    break       # ended, or another process runs it
+                ran = True
                 await _run(job_id, claim[0])
                 failures = 0
             except ClaimTaken:
@@ -587,7 +589,8 @@ async def _supervise(job_id: uuid.UUID) -> None:
             except Exception:
                 failures += 1
                 log.exception("AI job %s stopped (%d in a row); running it again", job_id, failures)
-                await _after_failure(job_id, claim[0])
+                if ran:     # a claim that raised ran nothing: there is no run's failure to record
+                    await _after_failure(job_id, claim[0])
                 await asyncio.sleep(min(STEP_RETRY_DELAY_S * 2 ** failures, RUNNER_RESTART_MAX_DELAY_S))
                 continue
             if job_id not in _again:
