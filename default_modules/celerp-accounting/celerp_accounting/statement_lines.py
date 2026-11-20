@@ -663,7 +663,7 @@ async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str) -> dic
                 {**done["message"], "to": to})
             if step == "replay" and email_service.payload_digest(attempt.message) != record["digest"]:
                 continue
-            recipients[member] = {**email_service.attempt_record(attempt), "to": to}
+            recipients[member] = {**email_service.attempt_record(attempt, record), "to": to}
             sending.append((member, attempt))
         claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients, "left_out": left_out}}
         return [attempt for _m, attempt in sending]

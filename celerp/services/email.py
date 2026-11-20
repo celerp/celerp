@@ -70,11 +70,15 @@ def payload_digest(message: dict) -> str:
     return hashlib.sha256(payload_json(message).encode()).hexdigest()
 
 
-def attempt_record(attempt: Attempt) -> dict:
+def attempt_record(attempt: Attempt, previous: dict | None) -> dict:
     """The stored record of ``attempt`` before it goes out: kept and committed first, so a run
-    stopped at any point after leaves the attempt sending, never forgotten."""
+    stopped at any point after leaves the attempt sending, never forgotten. ``previous`` is the
+    record it replaces (None for a first send): a replay of the same operation id keeps when
+    that attempt first began, so repeated replays never move the replay window."""
+    began = (previous.get("began") or previous.get("at")
+             if previous and previous.get("operation_id") == attempt.operation_id else None)
     return {"state": "sending", "at": datetime.now(timezone.utc).isoformat(), "operation_id": attempt.operation_id,
-            "digest": payload_digest(attempt.message), "relay": relay_identity()}
+            "digest": payload_digest(attempt.message), "relay": relay_identity(), **({"began": began} if began else {})}
 
 
 def settled_record(record: dict, result: EmailResult) -> dict:

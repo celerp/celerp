@@ -265,7 +265,7 @@ async def _send_statement(session: AsyncSession, company_id, user_id, payload: S
             held["answer"] = {**entry.metadata_["result"], "state": "unconfirmed", "repeat": True}
             return []
         stored = {"result": {**answer, "state": "sending", "email": attempt.message["to"]},
-                  "email": {**email_service.attempt_record(attempt), "to": attempt.message["to"]}}
+                  "email": {**email_service.attempt_record(attempt, record), "to": attempt.message["to"]}}
         if entry is None:
             entry = await emit_event(s, company_id=company_id, entity_id=party, entity_type="contact",
                                      event_type=STATEMENT_SENT, actor_id=user_id, location_id=None, source="api",

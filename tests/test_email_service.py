@@ -317,7 +317,7 @@ def _attempt_record(monkeypatch, *, age, state="unconfirmed", settled=True):
 
     from celerp.services import email
     monkeypatch.setattr(email, "relay_identity", lambda: "account")
-    record = email.attempt_record(email.Attempt("op-1", {"to": "a@test.test", "subject": "s", "body_html": "b"}))
+    record = email.attempt_record(email.Attempt("op-1", {"to": "a@test.test", "subject": "s", "body_html": "b"}), None)
     record = {**record, "at": (datetime.now(timezone.utc) - age).isoformat()}
     if settled:
         record = {**email.settled_record(record, email.EmailResult(False, "timeout", unconfirmed=True)), "state": state}
@@ -347,6 +347,23 @@ def test_the_replay_window_runs_from_when_the_attempt_began_not_from_its_answer(
     record = _attempt_record(monkeypatch, age=email.REPLAY_WINDOW * 2)
     assert datetime.fromisoformat(record["at"]) > datetime.now(timezone.utc) - email.REPLAY_WINDOW
     assert email.next_step(record) == "unverified"
+
+
+def test_a_replay_keeps_when_the_attempt_first_began_so_replays_cannot_roll_the_window(monkeypatch):
+    from celerp.services import email
+    message = {"to": "a@test.test", "subject": "s", "body_html": "b"}
+    first = _attempt_record(monkeypatch, age=email.REPLAY_WINDOW * 0.75)
+    assert email.next_step(first) == "replay"
+    replayed = email.attempt_record(email.Attempt("op-1", message), first)
+    assert replayed["state"] == "sending" and replayed["began"] == first["began"]
+    cut_off = email.settled_record(replayed, email.EmailResult(False, "timeout", unconfirmed=True))
+    assert cut_off["began"] == first["began"]
+    # the same replay half a window later is past the window of the first attempt
+    later = {**cut_off, "began": first["began"]}
+    monkeypatch.setattr(email, "REPLAY_WINDOW", email.REPLAY_WINDOW * 0.5)
+    assert email.next_step(later) == "unverified"
+    # a new email (another operation id) starts its own window
+    assert "began" not in email.attempt_record(email.Attempt("op-2", message), first)
 
 
 def test_an_unconfirmed_attempt_is_never_replayed_through_another_relay_account(monkeypatch):
