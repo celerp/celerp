@@ -31668,7 +31668,6 @@
     "tests/test_export_help.py::test_check_build_yml_help_asset_attach_loop[help.json]": 0.12609004299156368,
     "tests/test_export_help.py::test_check_build_yml_help_asset_attach_loop[none]": 0.11848715299856849,
     "tests/test_export_help.py::test_check_build_yml_help_asset_export_step": 0.028754939005011693,
-    "tests/test_export_help.py::test_check_build_yml_help_asset_site_checkout": 0.028507856011856347,
     "tests/test_export_help.py::test_export_help_git_history[git_date_empty]": 0.20340894401306286,
     "tests/test_export_help.py::test_export_help_git_history[shallow_clone]": 0.15076170800602995,
     "tests/test_export_help.py::test_export_help_module_without_topic": 0.1587246999843046,
@@ -31818,5 +31817,6 @@
     "tests/test_email_service.py::test_a_replay_keeps_when_the_attempt_first_began_so_replays_cannot_roll_the_window": 0.0029308819794096053,
     "tests/test_email_service.py::test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails": 0.0035258610150776803,
     "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_read_while_its_email_is_slow_says_it_is_still_being_sent_then_how_it_went": 1.4691086359962355,
-    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_whose_answer_did_not_come_back_shows_its_stored_state_not_an_error": 0.010277471970766783
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_whose_answer_did_not_come_back_shows_its_stored_state_not_an_error": 0.010277471970766783,
+    "tests/test_export_help.py::test_check_no_workflow_reads_another_repository": 0.0891566339705605
 }
