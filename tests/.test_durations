@@ -31821,5 +31821,15 @@
     "tests/test_export_help.py::test_check_no_workflow_reads_another_repository": 0.0891566339705605,
     "tests/test_export_help.py::test_check_ci_yml_pins_a_deterministic_version": 0.04352979999384843,
     "tests/test_smoke_records.py::test_every_smoke_script_limit_fits_its_routes_declared_bound": 1.2778388960286975,
-    "tests/test_smoke_records.py::test_ledger_events_pages_through_the_endpoint_instead_of_exceeding_its_limit": 0.0029219189600553364
+    "tests/test_smoke_records.py::test_ledger_events_pages_through_the_endpoint_instead_of_exceeding_its_limit": 0.0029219189600553364,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_reads_as_sent_only_when_an_email_went_out[all]": 1.4619817989878356,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_reads_as_sent_only_when_an_email_went_out[one_of_two]": 0.5775187900289893,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_reads_as_sent_only_when_an_email_went_out[sole]": 0.47494993402506225,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_a_page_that_waits_less_than_its_emails_can_take_shows_the_stored_send": 0.03235483603202738,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[failed-recipients2-warning]": 0.006339454994304106,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[not_sent-recipients1-warning]": 0.006122013001004234,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[sent-recipients0-success]": 0.005780842970125377,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[unconfirmed-recipients3-warning]": 0.005776065983809531,
+    "tests/test_donors_page.py::test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_stored": 1.0129470539977774,
+    "tests/test_donors_page.py::test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out": 0.003983697999501601
 }
