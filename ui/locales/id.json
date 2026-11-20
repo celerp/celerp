@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Produk",
   "ai.card_name_unavailable": "Nama tidak tersedia",
   "error.fix_ask_roles": "Peran Anda tidak dapat melakukan langkah ini di halaman {place}. Minta bantuan seseorang dengan salah satu peran berikut: {roles}.",
-  "settings.no_rate_in_force": "Tidak ada tarif untuk {name} pada {date}. Tambahkan versi tarif yang mencakup hari ini."
+  "settings.no_rate_in_force": "Tidak ada tarif untuk {name} pada {date}. Tambahkan versi tarif yang mencakup hari ini.",
+  "settings.rate_versions": "Versi tarif ({count})",
+  "btn.add_rate_version": "Tambah versi tarif",
+  "th.valid_from": "Berlaku dari",
+  "th.valid_to": "Berlaku sampai",
+  "settings.confirm_remove_version": "Hapus versi {rate}% dari {name}?"
 }

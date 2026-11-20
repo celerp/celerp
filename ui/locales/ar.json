@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "المنتجات",
   "ai.card_name_unavailable": "الاسم غير متاح",
   "error.fix_ask_roles": "لا يمكن لدورك تنفيذ هذه الخطوة في صفحة {place}. اطلب ذلك من شخص لديه أحد هذه الأدوار: {roles}.",
-  "settings.no_rate_in_force": "لا يوجد سعر لـ {name} في {date}. أضف إصدار سعر يشمل هذا اليوم."
+  "settings.no_rate_in_force": "لا يوجد سعر لـ {name} في {date}. أضف إصدار سعر يشمل هذا اليوم.",
+  "settings.rate_versions": "إصدارات السعر ({count})",
+  "btn.add_rate_version": "إضافة إصدار سعر",
+  "th.valid_from": "ساري من",
+  "th.valid_to": "ساري حتى",
+  "settings.confirm_remove_version": "هل تريد إزالة إصدار {rate}% من {name}؟"
 }

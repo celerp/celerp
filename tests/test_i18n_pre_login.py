@@ -24,8 +24,10 @@ from ui.app import app as ui_app
 _ALLOWLIST = json.loads((Path(__file__).parent / "i18n_source_identical_allowlist.json").read_text())
 _LANGS = sorted(i18n._DISK_LANGS - {"en"})
 _ATTRS = {"placeholder", "title", "aria-label", "alt"}
-# Read the same in every language: the product name, and the dots standing in for a password.
-_NOT_WORDS = {"Celerp", "••••••••"}
+# Read the same in every language: the product name, the dots standing in for a password, and
+# the test country packs, whose user-assigned codes (zz) have no name in any language.
+_NOT_WORDS = {"Celerp", "••••••••",
+              *(pack.stem for pack in (Path(__file__).parent / "fixtures" / "l10n" / "packs").glob("zz*.json"))}
 
 
 class _Shown(HTMLParser):

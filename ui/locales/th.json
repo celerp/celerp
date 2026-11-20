@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "สินค้า",
   "ai.card_name_unavailable": "ไม่มีชื่อให้แสดง",
   "error.fix_ask_roles": "บทบาทของคุณไม่สามารถทำขั้นตอนนี้ในหน้า {place} ได้ โปรดขอให้ผู้ที่มีบทบาทใดบทบาทหนึ่งต่อไปนี้ดำเนินการ: {roles}",
-  "settings.no_rate_in_force": "ไม่มีอัตราสำหรับ {name} ในวันที่ {date} เพิ่มเวอร์ชันอัตราที่ครอบคลุมวันนี้"
+  "settings.no_rate_in_force": "ไม่มีอัตราสำหรับ {name} ในวันที่ {date} เพิ่มเวอร์ชันอัตราที่ครอบคลุมวันนี้",
+  "settings.rate_versions": "เวอร์ชันอัตรา ({count})",
+  "btn.add_rate_version": "เพิ่มเวอร์ชันอัตรา",
+  "th.valid_from": "มีผลตั้งแต่",
+  "th.valid_to": "มีผลถึง",
+  "settings.confirm_remove_version": "ลบเวอร์ชัน {rate}% ของ {name} หรือไม่?"
 }

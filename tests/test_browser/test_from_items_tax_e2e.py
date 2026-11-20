@@ -19,6 +19,7 @@ document editor's item picker.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import time
@@ -30,7 +31,7 @@ import httpx
 import psycopg2
 import pytest
 
-from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
+from celerp.tax_regimes import default_line_taxes, get_regime, line_tax, taxes_on
 from celerp_docs.doc_money import draft_route
 from test_helpers import tax_list_body
 from ui.i18n import t
@@ -48,12 +49,13 @@ _INDIA_BEFORE = [
     {"name": "IGST 18%", "rate": 18.0, "tax_type": "both", "is_default": False},
     {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False},
 ]
-_VAT_WHOLE = line_tax(next(tax for tax in get_regime("TH")["taxes"] if tax["name"] == "VAT 7%"))
+_VAT_WHOLE = line_tax(next(tax for tax in taxes_on(get_regime("TH")["taxes"], dt.date.today())
+                           if tax["name"] == "VAT 7%"))
 
 
 def _default_factor(country: str) -> float:
     """What an invoice line of a company newly set up in ``country`` costs per unit of price."""
-    taxes = default_line_taxes(get_regime(country)["taxes"], "invoice", doc=None)
+    taxes = default_line_taxes(taxes_on(get_regime(country)["taxes"], dt.date.today()), "invoice", doc=None)
     return 1 + sum(tax["rate"] for tax in taxes) / 100
 
 
@@ -66,9 +68,13 @@ def _demo_company(api_server, ui_server, api, country: str, taxes: list[dict] | 
     with httpx.Client(base_url=api_server, headers={"Authorization": f"Bearer {token}"}, timeout=10,
                       limits=_API_LIMITS) as company, \
             httpx.Client(base_url=ui_server, cookies={"celerp_token": token}, timeout=30) as ui:
-        default = next(loc for loc in company.get("/companies/me/locations").json()["items"] if loc["is_default"])
-        r = company.patch(f"/companies/me/locations/{default['id']}",
-                          json={"address": {**(default.get("address") or {}), "country": country}})
+        # The company's country, then Update localization adds that country's taxes.
+        r = company.patch("/companies/me", json={"settings": {"country": country}})
+        assert r.status_code == 200, r.text
+        r = company.post("/settings/taxes/localization/preview")
+        assert r.status_code == 200, r.text
+        r = company.post("/settings/taxes/localization/confirm",
+                         json={"binding": r.json()["fingerprint"], "idempotency_key": uuid.uuid4().hex})
         assert r.status_code == 200, r.text
         if taxes is not None:
             r = company.patch("/companies/me/taxes",

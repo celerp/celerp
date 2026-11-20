@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Produits",
   "ai.card_name_unavailable": "Nom non disponible",
   "error.fix_ask_roles": "Votre rôle ne permet pas de faire cette étape sur la page {place}. Demandez à une personne ayant l'un de ces rôles : {roles}.",
-  "settings.no_rate_in_force": "Aucun taux pour {name} le {date}. Ajoutez une version de taux qui couvre ce jour."
+  "settings.no_rate_in_force": "Aucun taux pour {name} le {date}. Ajoutez une version de taux qui couvre ce jour.",
+  "settings.rate_versions": "Versions du taux ({count})",
+  "btn.add_rate_version": "Ajouter une version de taux",
+  "th.valid_from": "Valable du",
+  "th.valid_to": "Valable au",
+  "settings.confirm_remove_version": "Supprimer la version à {rate}% de {name} ?"
 }

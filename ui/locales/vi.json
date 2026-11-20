@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Sản phẩm",
   "ai.card_name_unavailable": "Không có tên",
   "error.fix_ask_roles": "Vai trò của bạn không thể thực hiện bước này trên trang {place}. Hãy nhờ người có một trong các vai trò sau: {roles}.",
-  "settings.no_rate_in_force": "Không có thuế suất cho {name} vào ngày {date}. Thêm một phiên bản thuế suất bao gồm ngày này."
+  "settings.no_rate_in_force": "Không có thuế suất cho {name} vào ngày {date}. Thêm một phiên bản thuế suất bao gồm ngày này.",
+  "settings.rate_versions": "Phiên bản thuế suất ({count})",
+  "btn.add_rate_version": "Thêm phiên bản thuế suất",
+  "th.valid_from": "Hiệu lực từ",
+  "th.valid_to": "Hiệu lực đến",
+  "settings.confirm_remove_version": "Xóa phiên bản {rate}% của {name}?"
 }

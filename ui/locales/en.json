@@ -9351,5 +9351,10 @@
   "enum.scopes.journals": "Journals",
   "enum.scopes.products": "Products",
   "error.fix_ask_roles": "Your role cannot take this step on the {place} page. Ask someone with one of these roles: {roles}.",
-  "settings.no_rate_in_force": "No rate for {name} on {date}. Add a rate version that covers this day."
+  "settings.no_rate_in_force": "No rate for {name} on {date}. Add a rate version that covers this day.",
+  "settings.rate_versions": "Rate versions ({count})",
+  "btn.add_rate_version": "Add rate version",
+  "th.valid_from": "Valid from",
+  "th.valid_to": "Valid to",
+  "settings.confirm_remove_version": "Remove the {rate}% version of {name}?"
 }

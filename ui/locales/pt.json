@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Produtos",
   "ai.card_name_unavailable": "Nome não disponível",
   "error.fix_ask_roles": "Sua função não pode realizar esta etapa na página {place}. Peça a alguém com uma destas funções: {roles}.",
-  "settings.no_rate_in_force": "Não há taxa para {name} em {date}. Adicione uma versão da taxa que cubra este dia."
+  "settings.no_rate_in_force": "Não há taxa para {name} em {date}. Adicione uma versão da taxa que cubra este dia.",
+  "settings.rate_versions": "Versões da taxa ({count})",
+  "btn.add_rate_version": "Adicionar versão da taxa",
+  "th.valid_from": "Válido de",
+  "th.valid_to": "Válido até",
+  "settings.confirm_remove_version": "Remover a versão de {rate}% de {name}?"
 }

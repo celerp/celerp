@@ -384,7 +384,8 @@ async def test_a_rate_edit_changes_the_version_in_force_and_never_another(ui_cli
 async def test_deleting_a_tax_sends_the_fingerprint_the_table_rendered(ui_client, prefix, gname, pname):
     from ui.routes.settings import _taxes_tab
     rendered = str(_taxes_tab(_taxes(), dt.date.today(), prefix=prefix))
-    assert rendered.count(f'hx-include="#{prefix}-fingerprint"') == 2  # New and Delete
+    # New, and per code Delete, Add rate version and one Remove per version
+    assert rendered.count(f'hx-include="#{prefix}-fingerprint"') == 1 + sum(2 + len(x["versions"]) for x in _taxes())
     saved = AsyncMock(return_value={})
     ui_client.cookies.update(_authed())
     with patch(f"ui.api_client.{gname}", new=AsyncMock(return_value=_taxes())), \

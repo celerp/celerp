@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Prodotti",
   "ai.card_name_unavailable": "Nome non disponibile",
   "error.fix_ask_roles": "Il tuo ruolo non può eseguire questo passaggio nella pagina {place}. Chiedi a qualcuno con uno di questi ruoli: {roles}.",
-  "settings.no_rate_in_force": "Nessuna aliquota per {name} il {date}. Aggiungi una versione dell'aliquota che copra questo giorno."
+  "settings.no_rate_in_force": "Nessuna aliquota per {name} il {date}. Aggiungi una versione dell'aliquota che copra questo giorno.",
+  "settings.rate_versions": "Versioni dell'aliquota ({count})",
+  "btn.add_rate_version": "Aggiungi versione dell'aliquota",
+  "th.valid_from": "Valido dal",
+  "th.valid_to": "Valido fino al",
+  "settings.confirm_remove_version": "Rimuovere la versione al {rate}% di {name}?"
 }

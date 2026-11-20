@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Produkte",
   "ai.card_name_unavailable": "Name nicht verfügbar",
   "error.fix_ask_roles": "Ihre Rolle kann diesen Schritt auf der Seite {place} nicht ausführen. Bitten Sie jemanden mit einer dieser Rollen: {roles}.",
-  "settings.no_rate_in_force": "Für {name} gilt am {date} kein Satz. Fügen Sie eine Satzversion hinzu, die diesen Tag abdeckt."
+  "settings.no_rate_in_force": "Für {name} gilt am {date} kein Satz. Fügen Sie eine Satzversion hinzu, die diesen Tag abdeckt.",
+  "settings.rate_versions": "Satzversionen ({count})",
+  "btn.add_rate_version": "Satzversion hinzufügen",
+  "th.valid_from": "Gültig ab",
+  "th.valid_to": "Gültig bis",
+  "settings.confirm_remove_version": "Die Version mit {rate}% von {name} entfernen?"
 }

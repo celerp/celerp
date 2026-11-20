@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import zoneinfo as _zi
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from fasthtml.common import *
@@ -230,6 +230,8 @@ def _load_cat_schema_sorted(fields_raw: list[dict]) -> list[dict]:
 _TAX_FIELDS = frozenset({"name", "rate", "tax_type", "is_default", "is_compound", "description"})
 _TAX_BOOL_FIELDS = frozenset({"is_default", "is_compound"})
 _TAX_SELECT_FIELDS = _TAX_BOOL_FIELDS | {"tax_type"}
+# A rate version's editable fields, each with its cell editor type.
+_VERSION_FIELDS = {"rate": "rate", "valid_from": "date", "valid_to": "date"}
 _YES_NO = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
 
 
@@ -248,21 +250,36 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
     at call time so that ``unittest.mock.patch`` can intercept them.
     """
 
-    async def _tax_at(request: Request, gname: str, idx: int, field: str) -> dict | FT:
-        """The tax row ``idx`` of the list ``gname`` reads (an empty row past its end), or the
-        cell-error paragraph to show instead."""
+    async def _read_taxes(request: Request, gname: str) -> list[dict] | FT:
+        """The list ``gname`` reads, or the cell-error paragraph to show instead."""
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        if idx < 0 or field not in _TAX_FIELDS:
-            return P(t("error.invalid_value"), cls="cell-error")
         try:
-            taxes = await getattr(api, gname)(token)
+            return await getattr(api, gname)(token)
         except APIError as e:
             if e.status == 401:
                 raise
             return P(str(e.detail), cls="cell-error")
+
+    async def _tax_at(request: Request, gname: str, idx: int, field: str) -> dict | FT:
+        """The tax row ``idx`` of the list ``gname`` reads (an empty row past its end), or the
+        cell-error paragraph to show instead."""
+        if idx < 0 or field not in _TAX_FIELDS:
+            return P(t("error.invalid_value"), cls="cell-error")
+        taxes = await _read_taxes(request, gname)
+        if not isinstance(taxes, list):
+            return taxes
         return taxes[idx] if idx < len(taxes) else {}
+
+    async def _version_at(request: Request, gname: str, idx: int, v: int, field: str) -> dict | FT:
+        """Rate version ``v`` of tax row ``idx``, or the cell-error paragraph to show instead."""
+        taxes = await _read_taxes(request, gname)
+        if not isinstance(taxes, list):
+            return taxes
+        if field not in _VERSION_FIELDS or not (0 <= idx < len(taxes) and 0 <= v < len(taxes[idx]["versions"])):
+            return P(t("error.invalid_value"), cls="cell-error")
+        return taxes[idx]["versions"][v]
 
     async def _cell_day(request: Request, field: str) -> date | None:
         """The company's today for a rate cell (the rate shown is the one in force that day)."""
@@ -333,6 +350,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 except (ValueError, TypeError):
                     return P(t("settings.rate_must_be_a_number"), cls="cell-error")
             day = await _cell_day(request, field)
+            at = None
             try:
                 taxes = await getattr(api, gname)(token)
                 if idx < len(taxes):
@@ -355,9 +373,105 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     raise
                 return P(str(e.detail), cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
-            return (_tax_display_cell(idx, field, tax, day, prefix=pfx),
+            # The version the rate cell edited also shows in the rate versions under the row.
+            version = (_version_cell(pfx, idx, at, "rate", tax["versions"][at], oob=True)
+                       if at is not None and at < len(tax.get("versions", [])) else "")
+            return (_tax_display_cell(idx, field, tax, day, prefix=pfx), version,
                     _tax_fingerprint(pfx, taxes, oob=True))
         return tax_field_patch
+
+    def _make_version_edit(pfx, gname):
+        async def version_field_edit(request: Request, idx: int, v: int, field: str):
+            version = await _version_at(request, gname, idx, v, field)
+            if not isinstance(version, dict):
+                return version
+            val = version.get(field)
+            if field == "rate":
+                val = plain_number(float(val))
+            base = f"/settings/{pfx}/{idx}/versions/{v}/{field}"
+            return editable_cell(f"{idx}-{v}", field, "" if val is None else str(val), cell_type=_VERSION_FIELDS[field],
+                                 patch_url=base, restore_url=f"{base}/display",
+                                 cls_extra="cell--number" if field == "rate" else "", include=f"#{pfx}-fingerprint")
+        return version_field_edit
+
+    def _make_version_display(pfx, gname):
+        async def version_field_display(request: Request, idx: int, v: int, field: str):
+            """The version cell again (the Escape cancel handler)."""
+            version = await _version_at(request, gname, idx, v, field)
+            if not isinstance(version, dict):
+                return version
+            return _version_cell(pfx, idx, v, field, version)
+        return version_field_display
+
+    def _make_version_patch(pfx, gname, pname):
+        async def version_field_patch(request: Request, idx: int, v: int, field: str):
+            token = _token(request)
+            if not token:
+                return P(t("error.session_expired"), cls="cell-error")
+            form = await request.form()
+            raw = str(form.get("value", "")).strip()
+            if field == "rate":
+                try:
+                    value = float(raw)
+                except ValueError:
+                    return P(t("settings.rate_must_be_a_number"), cls="cell-error")
+            elif field in _VERSION_FIELDS:
+                try:
+                    value = date.fromisoformat(raw).isoformat() if raw else None
+                except ValueError:
+                    return P(t("error.date_invalid", value=raw), cls="cell-error")
+            else:
+                return P(t("error.invalid_value"), cls="cell-error")
+            try:
+                taxes = await getattr(api, gname)(token)
+                if not (0 <= idx < len(taxes) and 0 <= v < len(taxes[idx]["versions"])):
+                    return P(t("error.invalid_value"), cls="cell-error")
+                taxes[idx]["versions"][v][field] = value
+                await getattr(api, pname)(token, taxes, str(form.get("fingerprint", "")))
+                taxes = await getattr(api, gname)(token)
+            except APIError as e:
+                if e.status == 401:
+                    raise
+                return P(str(e.detail), cls="cell-error")
+            tax = taxes[idx]
+            # A version's rate or dates can change the rate in force today, shown in the row above.
+            return (_version_cell(pfx, idx, v, field, tax["versions"][v]),
+                    _tax_display_cell(idx, "rate", tax, await _cell_day(request, "rate"), prefix=pfx, oob=True),
+                    _tax_fingerprint(pfx, taxes, oob=True))
+        return version_field_patch
+
+    def _make_add_version(gname, pname, redir):
+        async def add_version(request: Request, idx: int):
+            from starlette.responses import Response as _R
+            token = _token(request)
+            if not token:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            try:
+                taxes = await getattr(api, gname)(token)
+                if 0 <= idx < len(taxes):
+                    _append_version(taxes[idx]["versions"], date.fromisoformat(await _company_today(token)))
+                    await getattr(api, pname)(token, taxes, str((await request.form()).get("fingerprint", "")))
+            except APIError as e:
+                return api.refusal_response(e)
+            return _R("", status_code=204, headers={"HX-Redirect": redir})
+        return add_version
+
+    def _make_remove_version(gname, pname, redir):
+        async def remove_version(request: Request, idx: int, v: int):
+            from starlette.responses import Response as _R
+            token = _token(request)
+            if not token:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            try:
+                taxes = await getattr(api, gname)(token)
+                if 0 <= idx < len(taxes) and 0 <= v < len(taxes[idx]["versions"]):
+                    # The server refuses a code left with no version.
+                    taxes[idx]["versions"].pop(v)
+                    await getattr(api, pname)(token, taxes, request.query_params.get("fingerprint", ""))
+            except APIError as e:
+                return api.refusal_response(e)
+            return _R("", status_code=204, headers={"HX-Redirect": redir})
+        return remove_version
 
     def _make_new(gname, pname, redir):
         async def create_tax(request: Request):
@@ -396,6 +510,12 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
     app.get(f"/settings/{prefix}/{{idx}}/{{field}}/display")(_make_display(prefix, get_fn_name))
     app.post(f"/settings/{prefix}/new")(_make_new(get_fn_name, patch_fn_name, redirect_url))
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url))
+    versions = f"/settings/{prefix}/{{idx}}/versions"
+    app.get(f"{versions}/{{v}}/{{field}}/edit")(_make_version_edit(prefix, get_fn_name))
+    app.get(f"{versions}/{{v}}/{{field}}/display")(_make_version_display(prefix, get_fn_name))
+    app.patch(f"{versions}/{{v}}/{{field}}")(_make_version_patch(prefix, get_fn_name, patch_fn_name))
+    app.post(versions)(_make_add_version(get_fn_name, patch_fn_name, redirect_url))
+    app.delete(f"{versions}/{{v}}")(_make_remove_version(get_fn_name, patch_fn_name, redirect_url))
 
 
 def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, redirect_url: str):
@@ -2935,24 +3055,58 @@ def _rate_on(tax: dict, day: date) -> float | None:
     return shown["rate"]
 
 
-def _tax_display_cell(idx: int, field: str, tax: dict, day: date | None, prefix: str = "taxes") -> FT:
+def _rate_text(rate) -> str:
+    """A rate as a tax list cell shows it."""
+    return f"{plain_number(float(rate))}%" if rate not in (None, "") else EMPTY
+
+
+def _tax_cell(display: str, edit_url: str, number: bool, cell_id: str | None, oob: bool) -> FT:
+    """A click-to-edit tax list cell; ``cell_id`` lets another cell's save swap it in place
+    (``oob``) when that save changes what it shows."""
+    return Td(
+        Span(display, cls="cell-text"),
+        title=t("settings.click_to_edit"),
+        hx_get=edit_url,
+        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+        cls="cell cell--clickable" + (" cell--number" if number else ""),
+        **({"id": cell_id} if cell_id else {}), **({"hx_swap_oob": "true"} if oob else {}),
+    )
+
+
+def _tax_display_cell(idx: int, field: str, tax: dict, day: date | None, prefix: str = "taxes",
+                      oob: bool = False) -> FT:
     """One tax list cell; a rate cell shows the rate in force on ``day``, the company's today."""
     val = _rate_on(tax, day) if field == "rate" else tax.get(field, "")
     if field == "rate":
-        display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
+        display = _rate_text(val)
     elif field in _TAX_BOOL_FIELDS:
         display = t("settings.yes") if val else t("settings.no")
     elif field == "tax_type":
         display = t(f"enum.tax_type.{val}") if val in TAX_TYPES else EMPTY
     else:
         display = str(val) if val and str(val).strip() else EMPTY
-    return Td(
-        Span(display, cls="cell-text"),
-        title=t("settings.click_to_edit"),
-        hx_get=f"/settings/{prefix}/{idx}/{field}/edit",
-        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        cls="cell cell--clickable" + (" cell--number" if field == "rate" else ""),
-    )
+    return _tax_cell(display, f"/settings/{prefix}/{idx}/{field}/edit", field == "rate",
+                     f"{prefix}-{idx}-rate" if field == "rate" else None, oob)
+
+
+def _version_cell(prefix: str, idx: int, v: int, field: str, version: dict, oob: bool = False) -> FT:
+    """One cell of a tax code's rate versions: its rate, or the day it starts or ends (empty: no
+    start, or still open)."""
+    val = version.get(field)
+    display = _rate_text(val) if field == "rate" else (str(val) if val else EMPTY)
+    return _tax_cell(display, f"/settings/{prefix}/{idx}/versions/{v}/{field}/edit", field == "rate",
+                     f"{prefix}-{idx}-v{v}-{field}", oob)
+
+
+def _append_version(versions: list[dict], today: date) -> None:
+    """Add a rate version at the last version's rate, starting today or, when the last version
+    starts or ends later, the day after; an open last version now ends the day before."""
+    last = versions[-1]
+    start = max([today] + [date.fromisoformat(d) + timedelta(days=1)
+                           for d in (last.get("valid_from"), last.get("valid_to")) if d])
+    if not last.get("valid_to"):
+        last["valid_to"] = (start - timedelta(days=1)).isoformat()
+    versions.append({"rate": last["rate"], "valid_from": start.isoformat()})
 
 
 def _term_display_cell(idx: int, field: str, term: dict, prefix: str = "terms") -> FT:
@@ -3578,6 +3732,26 @@ def _taxes_tab(taxes: list[dict], today: date, lang: str = "en", prefix: str = "
             cls="data-row",
         )
 
+    def _versions(idx: int, tax: dict) -> FT:
+        versions = tax.get("versions") or []
+        rows = [Tr(*[_version_cell(prefix, idx, v, field, version) for field in ("valid_from", "valid_to", "rate")],
+                   Td(Button(t("btn.remove"), cls="btn btn--danger btn--xs",
+                             hx_delete=f"/settings/{prefix}/{idx}/versions/{v}",
+                             hx_confirm=t("settings.confirm_remove_version", rate=plain_number(float(version["rate"])),
+                                          name=tax.get("name", "")),
+                             hx_include=f"#{prefix}-fingerprint", hx_swap="none"),
+                      cls="cell"),
+                   cls="data-row")
+                for v, version in enumerate(versions)]
+        return Tr(Td(Details(
+            Summary(t("settings.rate_versions", count=len(versions))),
+            Table(Thead(Tr(Th(t("th.valid_from")), Th(t("th.valid_to")), Th(t("th.rate"), cls="cell--number"), Th(""))),
+                  Tbody(*rows), cls="data-table"),
+            Button(t("btn.add_rate_version"), cls="btn btn--secondary btn--xs",
+                   hx_post=f"/settings/{prefix}/{idx}/versions", hx_include=f"#{prefix}-fingerprint", hx_swap="none",
+                   hx_trigger="click delay:250ms"),
+        ), colspan="7"))
+
     actions = [
         # Sent a moment after the click, behind the save an editor fires as it blurs (the card
         # queues its requests), so a rate typed just before the click is kept.
@@ -3593,7 +3767,7 @@ def _taxes_tab(taxes: list[dict], today: date, lang: str = "en", prefix: str = "
         _tax_fingerprint(prefix, taxes),
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.rate"), cls="cell--number"), Th(t("label.tax_type")), Th(t("th.default")), Th(t("th.compound")), Th(t("th.description")), Th(""))),
-            Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),
+            Tbody(*[part for i, tax in enumerate(taxes) for part in (_row(i, tax), _versions(i, tax))]),
             cls="data-table",
         ),
         cls="settings-card", hx_sync="this:queue all",

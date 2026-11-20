@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "Productos",
   "ai.card_name_unavailable": "Nombre no disponible",
   "error.fix_ask_roles": "Su rol no puede realizar este paso en la página {place}. Pídaselo a alguien con uno de estos roles: {roles}.",
-  "settings.no_rate_in_force": "No hay tipo para {name} el {date}. Añada una versión del tipo que cubra este día."
+  "settings.no_rate_in_force": "No hay tipo para {name} el {date}. Añada una versión del tipo que cubra este día.",
+  "settings.rate_versions": "Versiones del tipo ({count})",
+  "btn.add_rate_version": "Añadir versión del tipo",
+  "th.valid_from": "Válido desde",
+  "th.valid_to": "Válido hasta",
+  "settings.confirm_remove_version": "¿Quitar la versión del {rate}% de {name}?"
 }

@@ -9351,5 +9351,10 @@
   "enum.scopes.products": "商品",
   "ai.card_name_unavailable": "名前を表示できません",
   "error.fix_ask_roles": "あなたのロールでは{place}ページでこの操作を行えません。次のいずれかのロールを持つ人に依頼してください: {roles}。",
-  "settings.no_rate_in_force": "{date} の {name} の税率がありません。この日を含む税率バージョンを追加してください。"
+  "settings.no_rate_in_force": "{date} の {name} の税率がありません。この日を含む税率バージョンを追加してください。",
+  "settings.rate_versions": "税率バージョン ({count})",
+  "btn.add_rate_version": "税率バージョンを追加",
+  "th.valid_from": "適用開始日",
+  "th.valid_to": "適用終了日",
+  "settings.confirm_remove_version": "{name} の {rate}% のバージョンを削除しますか?"
 }
