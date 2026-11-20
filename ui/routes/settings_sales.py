@@ -9,6 +9,8 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from celerp.services.business_time import business_today
+
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.encode import call, EVENT, THIS
@@ -28,6 +30,7 @@ from ui.routes.settings import (
     _taxes_tab,
     _terms_conditions_tab,
 )
+from ui.routes.reports import _get_company
 from ui.routes.settings_general import _section_breadcrumb
 
 # The list types are numbered here too. Transfers and audits may move to an Inventory settings
@@ -148,11 +151,9 @@ def _line_items_tab(company: dict, lang: str = "en") -> FT:
 
 async def _taxes_content(token: str, taxes: list[dict], lang: str):
     """Settings > Taxes: the localization card above the tax table."""
-    try:
-        settings = (await api.get_company(token)).get("settings") or {}
-    except APIError:
-        settings = {}
-    return Div(_localization_card(settings), _taxes_tab(taxes, lang=lang))
+    company = await _get_company(token)
+    today = business_today(company.get("timezone"))
+    return Div(_localization_card(company.get("settings") or {}), _taxes_tab(taxes, today, lang=lang))
 
 
 def setup_routes(app):

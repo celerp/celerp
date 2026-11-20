@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -15,6 +17,7 @@ from ui.components.shell import base_shell, page_header, page_title
 from ui.config import COOKIE_NAME
 from ui.i18n import t
 
+from ui.routes.reports import _company_today
 from ui.routes.settings import _token, _check_permission, _taxes_tab, _terms_conditions_tab
 from ui.routes.settings_general import _section_breadcrumb
 from ui.routes.settings_sales import _numbering_content
@@ -57,7 +60,8 @@ def setup_routes(app):
             purchasing_taxes = []
 
         if tab == "taxes":
-            content = _taxes_tab(purchasing_taxes, lang=lang, prefix="purchasing-taxes", import_path=None)
+            content = _taxes_tab(purchasing_taxes, date.fromisoformat(await _company_today(token)), lang=lang,
+                                prefix="purchasing-taxes", import_path=None)
         elif tab == "terms-conditions":
             try:
                 tc_templates = await api.get_terms_conditions(token)
@@ -67,7 +71,8 @@ def setup_routes(app):
         elif tab == "numbering":
             content = await _numbering_content(token, _PURCHASING_DOC_TYPES)
         else:
-            content = _taxes_tab(purchasing_taxes, lang=lang, prefix="purchasing-taxes", import_path=None)
+            content = _taxes_tab(purchasing_taxes, date.fromisoformat(await _company_today(token)), lang=lang,
+                                prefix="purchasing-taxes", import_path=None)
             tab = "taxes"
 
         return await base_shell(

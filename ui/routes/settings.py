@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import zoneinfo as _zi
+from datetime import date
 from typing import Any
 
 from fasthtml.common import *
@@ -22,7 +23,7 @@ from ui.components.operation_key import operation_key_input
 from ui.components.preview_confirm import binding_input
 from ui.components.table import EMPTY, bulk_toolbar, editable_cell, searchable_select, select_all_th, unwrap_address
 from celerp.localization.taxcodes import list_fingerprint
-from celerp.tax_regimes import TAX_TYPES, country_name, tax_day, taxes_on
+from celerp.tax_regimes import TAX_TYPES, country_name, taxes_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -37,6 +38,7 @@ from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
+from ui.routes.reports import _company_today
 from ui.routes.setup import business_type_label, business_type_options
 from ui.components.encode import call, EVENT, html_response, inert_media_type, safe_url, THIS
 
@@ -253,6 +255,10 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             return P(str(e.detail), cls="cell-error")
         return taxes[idx] if idx < len(taxes) else {}
 
+    async def _cell_day(request: Request, field: str) -> date | None:
+        """The company's today for a rate cell (the rate shown is the one in force that day)."""
+        return date.fromisoformat(await _company_today(_token(request))) if field == "rate" else None
+
     def _make_edit(pfx, gname):
         async def tax_field_edit(request: Request, idx: int, field: str):
             tax = await _tax_at(request, gname, idx, field)
@@ -281,7 +287,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 )
             # Typed fields use the shared cell editor: Enter saves, Escape restores, and an
             # untouched editor puts the shown cell back without a write.
-            val = _rate_today(tax) if field == "rate" else tax.get(field)
+            val = _rate_on(tax, await _cell_day(request, field)) if field == "rate" else tax.get(field)
             if field == "rate" and val not in (None, ""):
                 val = plain_number(float(val))
             return editable_cell(str(idx), field, val, cell_type="rate" if field == "rate" else "text",
@@ -293,7 +299,9 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
         async def tax_field_display(request: Request, idx: int, field: str):
             """The display cell again (the Escape cancel handler)."""
             tax = await _tax_at(request, gname, idx, field)
-            return _tax_display_cell(idx, field, tax, prefix=pfx) if isinstance(tax, dict) else tax
+            if not isinstance(tax, dict):
+                return tax
+            return _tax_display_cell(idx, field, tax, await _cell_day(request, field), prefix=pfx)
         return tax_field_display
 
     def _make_patch(pfx, gname, pname):
@@ -331,7 +339,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     raise
                 return P(str(e.detail), cls="cell-error")
             tax = taxes[idx] if idx < len(taxes) else {}
-            return _tax_display_cell(idx, field, tax, prefix=pfx)
+            return _tax_display_cell(idx, field, tax, await _cell_day(request, field), prefix=pfx)
         return tax_field_patch
 
     def _make_new(gname, pname, redir):
@@ -2905,14 +2913,15 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
     )
 
 
-def _rate_today(tax: dict) -> float | None:
-    """The rate of a stored tax list row in force today (taxes_on), None when no version is."""
-    [shown] = taxes_on([tax], tax_day(None)) or [{"rate": None}]
+def _rate_on(tax: dict, day: date) -> float | None:
+    """The rate of a stored tax list row in force on ``day`` (taxes_on), None when no version is."""
+    [shown] = taxes_on([tax], day) or [{"rate": None}]
     return shown["rate"]
 
 
-def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") -> FT:
-    val = _rate_today(tax) if field == "rate" else tax.get(field, "")
+def _tax_display_cell(idx: int, field: str, tax: dict, day: date | None, prefix: str = "taxes") -> FT:
+    """One tax list cell; a rate cell shows the rate in force on ``day``, the company's today."""
+    val = _rate_on(tax, day) if field == "rate" else tax.get(field, "")
     if field == "rate":
         display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
     elif field in _TAX_BOOL_FIELDS:
@@ -3533,15 +3542,16 @@ def _role_permissions_matrix(settings: dict | None, is_owner: bool, lang: str = 
     )
 
 
-def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", import_path: str | None = "/settings/import/taxes") -> FT:
+def _taxes_tab(taxes: list[dict], today: date, lang: str = "en", prefix: str = "taxes",
+               import_path: str | None = "/settings/import/taxes") -> FT:
     def _row(idx: int, tax: dict) -> FT:
         return Tr(
-            _tax_display_cell(idx, "name", tax, prefix=prefix),
-            _tax_display_cell(idx, "rate", tax, prefix=prefix),
-            _tax_display_cell(idx, "tax_type", tax, prefix=prefix),
-            _tax_display_cell(idx, "is_default", tax, prefix=prefix),
-            _tax_display_cell(idx, "is_compound", tax, prefix=prefix),
-            _tax_display_cell(idx, "description", tax, prefix=prefix),
+            _tax_display_cell(idx, "name", tax, today, prefix=prefix),
+            _tax_display_cell(idx, "rate", tax, today, prefix=prefix),
+            _tax_display_cell(idx, "tax_type", tax, today, prefix=prefix),
+            _tax_display_cell(idx, "is_default", tax, today, prefix=prefix),
+            _tax_display_cell(idx, "is_compound", tax, today, prefix=prefix),
+            _tax_display_cell(idx, "description", tax, today, prefix=prefix),
             Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/{prefix}/{idx}",

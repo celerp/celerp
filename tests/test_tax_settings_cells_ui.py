@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import datetime as dt
+
 import html
 import re
 
 import pytest
 
+from test_helpers import with_versions
 from test_ui import _authed, ui_client  # noqa: F401  (ui_client is a fixture)
 from ui.api_client import APIError
 from ui.i18n import t
@@ -32,8 +35,8 @@ _PREFIXES = [("taxes", "get_taxes", "patch_taxes"),
 
 
 def _taxes() -> list[dict]:
-    return [{"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True, "is_compound": False,
-             "description": "Standard rate"}]
+    return with_versions([{"name": "VAT 7%", "rate": 7.0, "tax_type": "both", "is_default": True,
+                           "is_compound": False, "description": "Standard rate"}])
 
 
 @pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
@@ -82,7 +85,7 @@ async def test_taxes_tab_shows_a_compound_column(ui_client):
     from ui.routes.settings import _taxes_tab
 
     from fasthtml.common import to_xml
-    html = to_xml(_taxes_tab([{**_taxes()[0], "is_compound": True}], prefix="taxes"))
+    html = to_xml(_taxes_tab([{**_taxes()[0], "is_compound": True}], dt.date.today(), prefix="taxes"))
     assert ">Compound<" in html
     assert 'hx-get="/settings/taxes/0/is_compound/edit"' in html
     assert html.index("/0/is_default/edit") < html.index("/0/is_compound/edit")
@@ -158,18 +161,22 @@ async def test_taxes_tab_rate_column_is_right_aligned(prefix):
     # Rate is a number column: its header and every cell sit right, over the figures.
     from fasthtml.common import to_xml
     from ui.routes.settings import _tax_display_cell, _taxes_tab
-    html = to_xml(_taxes_tab(_taxes(), prefix=prefix))
+    html = to_xml(_taxes_tab(_taxes(), dt.date.today(), prefix=prefix))
     header = re.search(r"<th[^>]*>" + re.escape(t("th.rate")) + "</th>", html)
     assert header and "cell--number" in header.group(0), html
-    assert 'class="cell cell--clickable cell--number"' in to_xml(_tax_display_cell(0, "rate", _taxes()[0], prefix=prefix))
-    assert "cell--number" not in to_xml(_tax_display_cell(0, "name", _taxes()[0], prefix=prefix))
+    assert 'class="cell cell--clickable cell--number"' in to_xml(_tax_display_cell(0, "rate", _taxes()[0], dt.date.today(), prefix=prefix))
+    assert "cell--number" not in to_xml(_tax_display_cell(0, "name", _taxes()[0], None, prefix=prefix))
 
 
-@pytest.mark.parametrize("rate, shown", [(0, "0%"), (0.0, "0%"), (7.0, "7%"), (7.25, "7.25%"), (None, "--"), ("", "--")])
-async def test_a_zero_rate_reads_as_a_rate_not_an_empty_cell(rate, shown):
+@pytest.mark.parametrize("version, shown", [({"rate": 0}, "0%"), ({"rate": 0.0}, "0%"), ({"rate": 7.0}, "7%"),
+                                             ({"rate": 7.25}, "7.25%"),
+                                             ({"rate": 7.0, "valid_to": "2020-12-31"}, "--")])
+async def test_a_zero_rate_reads_as_a_rate_not_an_empty_cell(version, shown):
+    # A rate of 0 is a rate; only a code with no version in force on the day shows "--".
     from fasthtml.common import to_xml
     from ui.routes.settings import _tax_display_cell
-    assert f">{shown}</span>" in to_xml(_tax_display_cell(0, "rate", {"rate": rate}))
+    row = {"name": "VAT", "versions": [version]}
+    assert f">{shown}</span>" in to_xml(_tax_display_cell(0, "rate", row, dt.date.today()))
 
 
 @pytest.mark.parametrize("tax, label", [({"name": "Exempt", "rate": 0.0}, "Exempt (0%)"),
@@ -199,7 +206,7 @@ async def test_new_tax_waits_for_a_pending_cell_save(prefix):
     # editor's save has been sent, so a rate typed just before the click is not overwritten.
     from fasthtml.common import to_xml
     from ui.routes.settings import _taxes_tab
-    html = to_xml(_taxes_tab(_taxes(), prefix=prefix))
+    html = to_xml(_taxes_tab(_taxes(), dt.date.today(), prefix=prefix))
     assert re.search(r'class="settings-card"[^>]*hx-sync="this:queue all"|hx-sync="this:queue all"[^>]*class="settings-card"', html), html
     button = re.search(r'<button[^>]*hx-post="/settings/' + prefix + r'/new"[^>]*>', html).group(0)
     assert 'hx-trigger="click delay:' in button, button
@@ -324,3 +331,27 @@ async def test_tax_side_cell_takes_only_the_three_sides(ui_client, prefix, gname
         saved.assert_not_awaited()
         r = await ui_client.patch(f"/settings/{prefix}/0/tax_type", data={"value": "purchase"})
         assert saved.await_args.args[1][0]["tax_type"] == "purchase"
+
+
+@pytest.mark.parametrize("url", ["/settings/sales?tab=taxes", "/settings/purchasing?tab=taxes",
+                                 "/settings/taxes/0/rate/display", "/settings/purchasing-taxes/0/rate/display",
+                                 "/settings/taxes/0/rate/edit"])
+async def test_the_rate_column_shows_the_rate_in_force_on_the_company_day(ui_client, url):
+    # A rate change from Kiritimati's today shows there, and not yet in Pago Pago, a day or two
+    # behind: whatever the hour, one of the two days differs from today in UTC.
+    from celerp.services.business_time import business_today
+    change = business_today("Pacific/Kiritimati")
+    row = {"name": "VAT", "tax_type": "both",
+           "versions": [{"rate": 7.0, "valid_to": (change - dt.timedelta(days=1)).isoformat()},
+                        {"rate": 8.0, "valid_from": change.isoformat()}]}
+    ui_client.cookies.update(_authed())
+    for tz, shown in [("Pacific/Kiritimati", "8"), ("Pacific/Pago_Pago", "7")]:
+        company = {"current_role": "owner", "timezone": tz, "settings": {}}
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[row])), \
+             patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=[row])), \
+             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.get_purchasing_payment_terms", new=AsyncMock(return_value=[])):
+            r = await ui_client.get(url)
+        assert r.status_code == 200, r.text
+        assert re.search(rf'(>{shown}%</span>|value="{shown}")', r.text), (tz, r.text[-2000:])
