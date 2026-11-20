@@ -125,8 +125,9 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
     A tax sent as its ``code_id`` alone is line_tax of that code on the document's day (tax_day)
     for the document's side. A tax sending any snapshot field keeps what the same line already
     stored for that code and version, so a code renamed or retagged since changes nothing on
-    it; with nothing stored, it is built from the code. Only ``amount`` (0: computed),
-    ``order``, ``is_compound`` and ``label`` are the writer's. Refused (422): a code_id the
+    it; with nothing stored, it is built from the code. Only ``order``, ``is_compound`` and
+    ``label`` are the writer's; the amount is computed from the line (document_money), and a
+    sent one only has its sign checked. Refused (422): a code_id the
     document's tax list does not hold, a code with no rate in force on the day, and a sent
     snapshot field, ``inclusive`` or amount sign that differs from what the code gives."""
     from celerp.localization.taxcodes import NoRateInForce
@@ -175,7 +176,7 @@ def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict)
                     or sign < 0):
                 raise HTTPException(status_code=422, detail=catalog_refusal(
                     "documents.err_tax_from_code", name=ref["code"]))
-            built.append({**ref, "amount": 0.0, **{key: merged[key] for key in ("amount", "order", "is_compound", "label")
+            built.append({**ref, "amount": 0.0, **{key: merged[key] for key in ("order", "is_compound", "label")
                                                    if key in sent}})
         line["taxes"] = built
 

@@ -201,7 +201,8 @@ async def test_tax_code_identity_and_lifecycle(client):
     assert await _list(client, h) == [renamed]
 
     assert (await client.post(f"/docs/{draft['id']}/finalize", headers=h)).status_code == 200
-    r = await client.patch(f"/items/{item_id}", headers=h, json={"tax_codes": []})
+    r = await client.patch(f"/items/{item_id}", headers=h,
+                           json={"fields_changed": {"tax_codes": {"old": [vat["id"]], "new": []}}})
     assert r.status_code == 200, r.text
     assert await _saved(client, h, []) == []
     issued = (await client.get(f"/docs/{draft['id']}", headers=h)).json()["line_items"][0]["taxes"][0]
@@ -234,7 +235,8 @@ async def test_rate_on_no_version_in_force_refused(client):
     for day in ("2025-12-31", "2026-07-15"):
         r = await client.post("/docs", headers=h, json={"doc_type": "invoice", "issue_date": day, "line_items": [
             {"description": "Service", "quantity": 1, "unit_price": 100.0, "taxes": [{"code_id": stored["id"]}]}]})
-        _refused(r, f"No rate for VAT on {day}", "Settings > Taxes")
+        _refused(r, "No rate for VAT on", "Settings > Taxes")
+        assert r.json()["detail"]["params"]["day"] == day
     in_force = await _draft_invoice(client, h, stored["id"], "2026-08-01")
     assert in_force["line_items"][0]["taxes"][0]["rate"] == 8.0
 
@@ -335,7 +337,7 @@ async def test_line_snapshot_fields_server_built(client):
     assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap]
     r = await _patch_doc(client, h, draft["id"], "line_items", [{**line, "taxes": [{**snap, "amount": 3.5}]}])
     assert r.status_code == 200, r.text
-    assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"][0]["amount"] == 3.5
+    assert (await _doc(client, h, draft["id"]))["line_items"][0]["taxes"] == [snap]
 
     def _new(tax: dict) -> dict:
         return {"doc_type": "invoice", "issue_date": "2026-10-01", "line_items": [

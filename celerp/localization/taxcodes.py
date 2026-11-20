@@ -16,7 +16,7 @@ import json
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_serializer, field_validator, model_validator
 
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import TAX_TYPES, tax_name_key
@@ -170,6 +170,11 @@ class LineTaxSnapshot(BaseModel):
     withholding_point: WithholdingPoint | None = None
     cash_basis: bool | None = None
     account: str | None = None
+
+    @field_serializer("version_from")
+    def _iso_day(self, day: dt.date | None) -> str | None:
+        """The version start as its ISO day in every dump, so a stored line holds JSON."""
+        return day.isoformat() if day else None
 
 
 class LineTaxEntry(LineTaxSnapshot):
