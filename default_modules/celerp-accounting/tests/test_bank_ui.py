@@ -594,15 +594,14 @@ async def test_a_page_that_waits_less_than_its_emails_can_take_shows_the_stored_
     back, show the send as stored and never the timeout or a failure; every durable sender is
     listed here with the UI call that reaches it."""
     from contextlib import asynccontextmanager
-    from pathlib import Path
 
     import httpx
 
     import ui.api_client as api
     from celerp.services import email
+    from shipped_sources import APP_ROOTS, REPO
 
-    root = Path(__file__).resolve().parents[3]
-    senders = {str(p.relative_to(root)) for top in ("celerp", "default_modules", "ui") for p in (root / top).rglob("*.py")
+    senders = {str(p.relative_to(REPO)) for top in APP_ROOTS for p in (REPO / top).rglob("*.py")
                if "tests" not in p.parts and "send_durably(" in p.read_text(encoding="utf-8")}
     assert senders - {"celerp/services/email.py"} == set(_DURABLE_SENDS), "list each durable sender with its UI call"
     waits: list[float] = []
