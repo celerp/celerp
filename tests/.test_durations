@@ -31809,5 +31809,12 @@
     "tests/test_email_service.py::test_an_unconfirmed_attempt_is_replayed_only_inside_the_replay_window[answered_unconfirmed]": 0.0023895209887996316,
     "tests/test_email_service.py::test_an_unconfirmed_attempt_is_replayed_only_inside_the_replay_window[cut_off_while_sending]": 0.0023142890131566674,
     "tests/test_email_service.py::test_only_the_email_primitive_decides_a_replay": 0.19506489799823612,
-    "tests/test_email_service.py::test_the_replay_window_runs_from_when_the_attempt_began_not_from_its_answer": 0.0034988900006283075
+    "tests/test_email_service.py::test_the_replay_window_runs_from_when_the_attempt_began_not_from_its_answer": 0.0034988900006283075,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_recipient_who_changes_while_an_earlier_email_is_slow_is_not_mailed[moved]": 1.2021919899852946,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_recipient_who_changes_while_an_earlier_email_is_slow_is_not_mailed[revoked]": 0.42790101299760863,
+    "tests/test_donors.py::test_a_donor_whose_address_changes_while_an_earlier_statement_is_slow_is_not_mailed_at_the_old_one[None]": 0.989288460026728,
+    "tests/test_donors.py::test_a_donor_whose_address_changes_while_an_earlier_statement_is_slow_is_not_mailed_at_the_old_one[moved@test.test]": 0.6923857049841899,
+    "tests/test_email_service.py::test_a_durable_send_confirms_each_recipient_just_before_their_own_email": 0.0037209120055194944,
+    "tests/test_email_service.py::test_a_replay_keeps_when_the_attempt_first_began_so_replays_cannot_roll_the_window": 0.0029308819794096053,
+    "tests/test_email_service.py::test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails": 0.0035258610150776803
 }
