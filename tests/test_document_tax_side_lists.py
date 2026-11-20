@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from test_helpers import script_cfg
+from test_helpers import save_taxes, script_cfg, with_versions
 from test_ui import _authed, _mock_get_company, ui_client  # noqa: F401  (fixtures)
 
 _SALES = [{"name": "Output VAT", "rate": 7.0, "tax_type": "both", "is_default": True}]
@@ -22,8 +22,8 @@ async def _company(client) -> dict:
         "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200, r.text
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _SALES})).status_code == 200
-    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": _PURCHASING})
+    assert (await save_taxes(client, h, _SALES)).status_code == 200
+    r = await save_taxes(client, h, _PURCHASING, "purchase")
     assert r.status_code == 200, r.text
     r = await client.post("/items", headers=h, json={
         "status": "available", "sku": "TAX-SKU", "name": "Taxed", "sell_by": "piece", "quantity": 5,
@@ -63,7 +63,7 @@ async def test_purchasing_taxes_never_saved_read_as_the_sales_list(client):
         "company_name": "One List Co", "email": f"ol-{uuid.uuid4().hex[:8]}@test.example",
         "name": "Admin", "password": "pwvalid1"})
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _SALES})).status_code == 200
+    assert (await save_taxes(client, h, _SALES)).status_code == 200
     assert [x["name"] for x in (await client.get("/companies/me/purchasing-taxes", headers=h)).json()] == ["Output VAT"]
 
 
@@ -76,8 +76,8 @@ async def _editor(ui_client, doc_type: str, sales: list[dict] = _SALES, purchasi
            "line_items": [{"line_id": "l1", "description": "Widget", "quantity": 1, "unit_price": 5}]}
     with (
         patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
-        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=sales)),
-        patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=purchasing)),
+        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=with_versions(sales))),
+        patch("ui.api_client.get_purchasing_taxes", new=AsyncMock(return_value=with_versions(purchasing))),
     ):
         ui_client.cookies.update(_authed())
         r = await ui_client.get("/docs/d:1")
@@ -125,8 +125,8 @@ async def test_a_tax_both_lists_name_takes_its_side_from_the_documents_own_list(
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     sales = [{"name": "GST", "rate": 5.0, "tax_type": "sales"}]
     purchasing = [{"name": "GST", "rate": 5.0, "tax_type": "both"}, {"name": "WHT", "rate": 3.0, "tax_type": "purchase"}]
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": sales})).status_code == 200
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": purchasing})).status_code == 200
+    assert (await save_taxes(client, h, sales)).status_code == 200
+    assert (await save_taxes(client, h, purchasing, "purchase")).status_code == 200
 
     def body(doc_type: str, code: str, rate: float) -> dict:
         return {"doc_type": doc_type, "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100,
@@ -162,9 +162,9 @@ async def test_a_supplier_credit_note_takes_the_purchasing_taxes(client):
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
     sales = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
     purchasing = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True},
-                  {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase"}]
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": sales})).status_code == 200
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": purchasing})).status_code == 200
+                  {"name": "WHT 3%", "rate": 3.0, "tax_type": "purchase", "category": "withholding", "withholding_point": "document"}]
+    assert (await save_taxes(client, h, sales)).status_code == 200
+    assert (await save_taxes(client, h, purchasing, "purchase")).status_code == 200
     assert (await client.post("/items", headers=h, json={
         "status": "available", "sku": "SCN-SKU", "name": "Returned", "sell_by": "piece", "quantity": 5,
         "retail_price": 20, "cost_price": 8})).status_code == 200
@@ -207,8 +207,8 @@ async def test_a_tax_name_written_differently_keeps_its_side(client):
     h = await _company(client)
     sales = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
     purchasing = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True}]
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": sales})).status_code == 200
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": purchasing})).status_code == 200
+    assert (await save_taxes(client, h, sales)).status_code == 200
+    assert (await save_taxes(client, h, purchasing, "purchase")).status_code == 200
 
     def body(doc_type: str, code: str, rate: float) -> dict:
         return {"doc_type": doc_type, "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100,

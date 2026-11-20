@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from test_helpers import TAX_LIST_PATHS, save_taxes
+
 from connector_test_support import connector_routes, connector_session, record_first_sync  # noqa: F401
 
 from celerp.services.je_keys import je_idempotency_key
@@ -1139,8 +1141,8 @@ async def _drop_document_entries(session, company_id, doc_id: str) -> None:
 
 async def _service_tax(client, token, tax_type: str) -> None:
     taxes = [{"name": "Service tax", "rate": 5.0, "tax_type": tax_type, "is_default": False}]
-    for path in ("/companies/me/taxes", "/companies/me/purchasing-taxes"):
-        assert (await client.patch(path, headers=_h(token), json={"taxes": taxes})).status_code == 200
+    for side in TAX_LIST_PATHS:
+        assert (await save_taxes(client, _h(token), taxes, side)).status_code == 200
 
 
 async def _finalized_invoice(client, token, *, taxed: bool = False, issue_date: str | None = None) -> str:

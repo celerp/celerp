@@ -351,12 +351,28 @@ async def save_taxes(client, headers: dict, rows: list[dict], side: str = "sales
     """PATCH ``rows`` as the whole ``side`` tax list, edited from the list stored now (its
     fingerprint read first); a row given one bare ``rate`` is sent as one open version. Returns
     the response, so a test can assert a refusal."""
-    from celerp.localization.taxcodes import list_fingerprint
     path = TAX_LIST_PATHS[side]
     current = (await client.get(path, headers=headers)).json()
-    taxes = [{**{k: v for k, v in row.items() if k != "rate"}, "versions": [{"rate": row["rate"]}]}
-             if "rate" in row and "versions" not in row else row for row in rows]
-    return await client.patch(path, headers=headers, json={"taxes": taxes, "fingerprint": list_fingerprint(current)})
+    return await client.patch(path, headers=headers, json=tax_list_body(current, rows))
+
+
+def new_rows(rows: list[dict]) -> list[dict]:
+    """``rows`` (pack rows, say) as taxes typed in by hand: without their ids, so the list writer
+    mints new ones instead of refusing an id the company's list does not hold."""
+    return [{k: v for k, v in row.items() if k != "id"} for row in rows]
+
+
+def tax_list_body(current: list[dict], rows: list[dict]) -> dict:
+    """The PATCH body saving ``rows`` (with_versions) over the stored list ``current``, carrying
+    ``current``'s fingerprint."""
+    from celerp.localization.taxcodes import list_fingerprint
+    return {"taxes": with_versions(rows), "fingerprint": list_fingerprint(current)}
+
+
+def with_versions(rows: list[dict]) -> list[dict]:
+    """``rows`` as a tax list holds them: a row given one bare ``rate`` becomes one open version."""
+    return [{**{k: v for k, v in row.items() if k != "rate"}, "versions": [{"rate": row["rate"]}]}
+            if "rate" in row and "versions" not in row else row for row in rows]
 
 
 def rate_today(row: dict) -> float:

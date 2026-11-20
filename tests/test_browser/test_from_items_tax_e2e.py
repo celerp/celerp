@@ -32,6 +32,7 @@ import pytest
 
 from celerp.tax_regimes import default_line_taxes, get_regime, line_tax
 from celerp_docs.doc_money import draft_route
+from test_helpers import tax_list_body
 from ui.i18n import t
 
 from .conftest import _API_LIMITS, set_session_cookies
@@ -70,7 +71,8 @@ def _demo_company(api_server, ui_server, api, country: str, taxes: list[dict] | 
                           json={"address": {**(default.get("address") or {}), "country": country}})
         assert r.status_code == 200, r.text
         if taxes is not None:
-            r = company.patch("/companies/me/taxes", json={"taxes": taxes})
+            r = company.patch("/companies/me/taxes",
+                              json=tax_list_body(company.get("/companies/me/taxes").json(), taxes))
             assert r.status_code == 200, r.text
         _seed_demo_items(company)
         items = company.get("/items", params={"filter": "demo", "limit": 500}).json()["items"]

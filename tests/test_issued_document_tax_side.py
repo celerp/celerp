@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
+from test_helpers import save_taxes
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
@@ -20,7 +22,7 @@ pytestmark = pytest.mark.asyncio
 
 _SALES = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
 _PURCHASING = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True},
-               {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False}]
+               {"name": "WHT 3%", "rate": 3.0, "tax_type": "purchase", "category": "withholding", "withholding_point": "document", "is_default": False}]
 _VAT = {"code": "Output VAT", "rate": 7.0, "order": 0}
 _WHT = {"code": "WHT 3%", "rate": -3.0, "order": 1}
 
@@ -31,8 +33,8 @@ async def _company(client) -> dict:
         "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200, r.text
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _SALES})).status_code == 200
-    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": _PURCHASING})
+    assert (await save_taxes(client, h, _SALES)).status_code == 200
+    r = await save_taxes(client, h, _PURCHASING, "purchase")
     assert r.status_code == 200, r.text
     return h
 

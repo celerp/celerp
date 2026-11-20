@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
+from test_helpers import save_taxes
 from sqlalchemy import select
 
 from celerp.events.engine import emit_event
@@ -30,8 +32,7 @@ async def _company(client) -> tuple[dict, uuid.UUID]:
         "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200, r.text
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": [
-        {"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": False}]})
+    r = await save_taxes(client, h, [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": False}])
     assert r.status_code == 200, r.text
     return h, uuid.UUID((await client.get("/companies/me", headers=h)).json()["id"])
 

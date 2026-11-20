@@ -7,6 +7,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import expect
 
+from test_helpers import rate_today
+
 pytestmark = pytest.mark.browser
 
 RATE = 'td[hx-get="/settings/taxes/{idx}/rate/edit"]'
@@ -32,7 +34,7 @@ def test_enter_saves_a_tax_rate(page, ui_server, fresh_company):
     with page.expect_response(lambda r: r.request.method == "PATCH" and "/settings/taxes/0/rate" in r.url):
         editor.press("Enter")
     expect(page.locator(RATE.format(idx=0))).to_contain_text("4.5%")
-    assert _taxes(fresh_company)[0]["rate"] == 4.5
+    assert rate_today(_taxes(fresh_company)[0]) == 4.5
 
 
 def test_a_rate_typed_before_new_tax_is_kept(page, ui_server, fresh_company):
@@ -43,7 +45,7 @@ def test_a_rate_typed_before_new_tax_is_kept(page, ui_server, fresh_company):
     page.locator(RATE.format(idx=before)).wait_for(state="visible", timeout=8000)
     taxes = _taxes(fresh_company)
     assert len(taxes) == before + 1
-    assert taxes[0]["rate"] == 9
+    assert rate_today(taxes[0]) == 9
     # The new tax's 0% is a rate, not an empty cell.
     expect(page.locator(RATE.format(idx=before))).to_have_text("0%")
     expect(page.locator(RATE.format(idx=0))).to_have_text("9%")

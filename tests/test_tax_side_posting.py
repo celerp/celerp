@@ -9,6 +9,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+
+from test_helpers import save_taxes
 from fastapi import HTTPException
 from sqlalchemy import select
 
@@ -19,7 +21,7 @@ pytestmark = pytest.mark.asyncio
 
 _SALES = [{"name": "Output VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]
 _PURCHASING = [{"name": "Input VAT", "rate": 10.0, "tax_type": "purchase", "is_default": True},
-               {"name": "WHT 3%", "rate": -3.0, "tax_type": "purchase", "is_default": False}]
+               {"name": "WHT 3%", "rate": 3.0, "tax_type": "purchase", "category": "withholding", "withholding_point": "document", "is_default": False}]
 _VAT = {"code": "Output VAT", "rate": 7.0, "order": 0}
 _WHT = {"code": "WHT 3%", "rate": -3.0, "order": 1}
 
@@ -30,8 +32,8 @@ async def _company(client) -> tuple[dict, uuid.UUID]:
         "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200, r.text
     h = {"Authorization": f"Bearer {r.json()['access_token']}"}
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": _SALES})).status_code == 200
-    r = await client.patch("/companies/me/purchasing-taxes", headers=h, json={"taxes": _PURCHASING})
+    assert (await save_taxes(client, h, _SALES)).status_code == 200
+    r = await save_taxes(client, h, _PURCHASING, "purchase")
     assert r.status_code == 200, r.text
     return h, uuid.UUID((await client.get("/companies/me", headers=h)).json()["id"])
 
@@ -130,10 +132,9 @@ async def test_unvoiding_a_credit_note_checks_its_taxes_again(client, session):
     assert (await client.post(f"/docs/{cn}/finalize", headers=h, json={})).status_code == 200
     assert (await client.post(f"/docs/{cn}/void", headers=h, json={})).status_code == 200
     moved = {**_SALES[0], "tax_type": "purchase", "is_default": False}
-    assert (await client.patch("/companies/me/purchasing-taxes", headers=h,
-                               json={"taxes": [*_PURCHASING, moved]})).status_code == 200
-    assert (await client.patch("/companies/me/taxes", headers=h, json={"taxes": [
-        {"name": "Sales VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}]})).status_code == 200
+    assert (await save_taxes(client, h, [*_PURCHASING, moved], "purchase")).status_code == 200
+    assert (await save_taxes(client, h, [
+        {"name": "Sales VAT", "rate": 7.0, "tax_type": "sales", "is_default": True}])).status_code == 200
     before = await _entries(session)
     r = await client.post(f"/docs/{cn}/unvoid", headers=h, json={})
     assert r.status_code == 422 and "Output VAT" in r.text, r.text

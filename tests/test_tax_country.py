@@ -9,7 +9,6 @@ keeps the other, and neither touches the company's taxes.
 """
 from __future__ import annotations
 
-import copy
 import re
 import uuid
 from contextlib import ExitStack
@@ -20,7 +19,7 @@ import pytest
 
 from celerp.localization import lock_codes
 from celerp.tax_regimes import get_regime, tax_name_key
-from test_helpers import make_test_token
+from test_helpers import make_test_token, new_rows, rate_today, save_taxes
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,13 +56,13 @@ async def test_a_later_country_adds_its_taxes_and_keeps_the_first_countrys(clien
 
 
 async def test_a_company_with_its_own_rate_keeps_it_and_the_preview_names_it(client, auth):
-    own = copy.deepcopy(get_regime("TH")["taxes"])
-    own[0]["rate"] = 8.0
-    r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": own})
+    own = new_rows(get_regime("TH")["taxes"])
+    own[0]["versions"] = [{"rate": 8.0}]
+    r = await save_taxes(client, auth["headers"], own)
     assert r.status_code == 200, r.text
     diff = await _update_localization(client, auth, "TH")
     assert own[0]["name"] in [row["name"] for row in diff["kept"]]
-    assert [tax["rate"] for tax in await _taxes(client, auth)][0] == 8.0
+    assert rate_today((await _taxes(client, auth))[0]) == 8.0
 
 
 # ── The page: setup and Settings > Locations ─────────────────────────────────

@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.tax_regimes import get_regime
-from test_helpers import company_auth
+from test_helpers import company_auth, save_taxes
 
 pytestmark = pytest.mark.asyncio
 
@@ -201,8 +201,7 @@ async def test_localization_update_stale_preview_refused(client, auth, other_aut
     assert r.status_code == 200, r.text
     preview = await _preview(client, auth)
     taxes = await _taxes(client, auth)
-    r = await client.patch("/companies/me/taxes", headers=auth["headers"],
-                           json={"taxes": [{**taxes[0], "description": "edited after the preview"}, *taxes[1:]]})
+    r = await save_taxes(client, auth["headers"], [{**taxes[0], "description": "edited after the preview"}, *taxes[1:]])
     assert r.status_code == 200, r.text
     r = await _confirm(client, auth, preview["fingerprint"])
     assert r.status_code == 409
@@ -222,7 +221,7 @@ async def test_localization_undo_keeps_later_edits(client, auth):
     applied = await _apply_country(client, auth, "TH")
     taxes = await _taxes(client, auth)
     edited = {**taxes[0], "description": "my own words"}
-    r = await client.patch("/companies/me/taxes", headers=auth["headers"], json={"taxes": [edited, *taxes[1:]]})
+    r = await save_taxes(client, auth["headers"], [edited, *taxes[1:]])
     assert r.status_code == 200, r.text
     r = await client.post("/settings/taxes/localization/undo", headers=auth["headers"],
                           json={"operation_id": applied["operation_id"]})
