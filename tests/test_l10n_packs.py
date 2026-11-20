@@ -541,6 +541,7 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
     """A company the pinned release seeded keeps its stored settings through a start and its
     reads; Update localization for another country adds that country's taxes and keeps the
     ones it had and its currency."""
+    from celerp.localization.taxcodes import normalized_list
     from celerp.tax_regimes import get_regime
 
     company_id = auth["company_id"]
@@ -554,7 +555,7 @@ async def test_existing_company_untouched(l10n_dir, client, auth, session, monke
 
     await _update_localization(client, auth, "MY")
     after = await _stored(session, company_id)
-    assert after["taxes"][:len(before["taxes"])] == before["taxes"]
+    assert after["taxes"][:len(before["taxes"])] == normalized_list(before["taxes"])
     assert {row["name"] for row in get_regime("MY")["taxes"]} <= {row["name"] for row in after["taxes"]}
     assert after["currency"] == before["currency"]
 
@@ -588,7 +589,7 @@ async def test_a_pack_upgrade_never_changes_saved_taxes(l10n_dir, client, auth, 
     lock["TH"] = {**lock["TH"], "version": "2099.1", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     _reset()
-    assert get_regime("TH")["taxes"][0]["rate"] == pack["taxes"][0]["versions"][0]["rate"]
+    assert get_regime("TH")["taxes"][0]["versions"][0]["rate"] == pack["taxes"][0]["versions"][0]["rate"]
 
     await _start(monkeypatch)
     for read in ("/companies/me", "/companies/me/taxes", "/companies/me/purchasing-taxes"):

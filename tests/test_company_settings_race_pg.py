@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.models.company import Company, Location, User
 from celerp.models.projections import Projection
 from celerp.services import demo
+from test_helpers import tax_list_body
 
 pytestmark = pytest.mark.asyncio
 
@@ -231,14 +232,16 @@ async def test_category_library_apply_never_reverts_a_type_change(committed_engi
 
 async def test_settings_writer_and_type_change_both_land(committed_engine, monkeypatch):
     from celerp.routers.companies import TaxRatesPatch, patch_taxes
+    from celerp.tax_regimes import sales_taxes
 
     factory = _factory(committed_engine)
     company_id, user_id = await _seed(factory)
     taxes = [{"name": "Local VAT", "rate": 7.0, "tax_type": "sales", "is_default": True, "description": ""}]
+    body = tax_list_body(sales_taxes(await _stored_settings(factory, company_id)), taxes)
 
     await _race(
         committed_engine, lambda s: _hold_first_call(monkeypatch, s, "commit"),
-        lambda s: patch_taxes(payload=TaxRatesPatch(taxes=taxes), company_id=company_id, _=None, session=s),
+        lambda s: patch_taxes(payload=TaxRatesPatch(**body), company_id=company_id, _=None, session=s),
         _type_change(company_id, user_id),
     )
 
