@@ -22,7 +22,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from test_helpers import make_test_token, authed_cookies
+from test_helpers import make_test_token, authed_cookies, with_versions
 from ui.api_client import APIError
 
 
@@ -62,7 +62,7 @@ _COMPANY = {
     "settings": {},
     "current_role": "owner",
 }
-_TAXES = [{"name": "VAT", "rate": 7.0, "tax_type": "sales", "is_default": True, "description": ""}]
+_TAXES = with_versions([{"name": "VAT", "rate": 7.0, "tax_type": "sales", "is_default": True, "description": ""}])
 _TERMS = [{"name": "Net 30", "days": 30, "description": ""}]
 _USERS = [{"id": "u1", "name": "Alice", "email": "alice@example.com", "role": "admin", "is_active": True}]
 _MODULES = []

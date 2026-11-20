@@ -1836,14 +1836,14 @@ def setup_routes(app) -> None:
         except Exception:
             pass
 
+        co = await _get_company(token)
+        tz = co.get("timezone") or "UTC"
         company_taxes: list = []
         try:
-            company_taxes = await api.get_document_taxes(token, doc_type, tax_day(None))
+            company_taxes = await api.get_document_taxes(token, doc_type, tax_day(None, tz))
         except Exception:
             pass
 
-        co = await _get_company(token)
-        tz = co.get("timezone") or "UTC"
         company_currency = co.get("currency") or "USD"
         co_settings: dict = co.get("settings") or {}
         co_connectors: set[str] = set()

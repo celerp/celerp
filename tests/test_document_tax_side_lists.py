@@ -221,3 +221,20 @@ async def test_a_tax_name_written_differently_keeps_its_side(client):
         r = await client.post("/docs", headers=h, json=body("invoice", code, 10.0))
         assert r.status_code == 422, (code, r.text)
     assert (await client.post("/docs", headers=h, json=body("bill", "input vat", 10.0))).status_code == 200
+
+
+@pytest.mark.parametrize("tz", ["Pacific/Kiritimati", "Pacific/Pago_Pago"])
+async def test_a_subscription_reads_its_taxes_on_the_company_day(ui_client, tz):
+    # Kiritimati and Pago Pago are never on the same day, so one of them is always off UTC's.
+    from celerp.services.business_time import business_today
+    sub = {"entity_id": "sub:1", "doc_type": "invoice", "status": "active", "line_items": []}
+    read = AsyncMock(return_value=[])
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value={"timezone": tz, "settings": {}})), \
+         patch("ui.api_client.get_subscription_periods",
+               new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})), \
+         patch("ui.api_client.get_document_taxes", new=read):
+        r = await ui_client.get("/subscriptions/sub:1")
+    assert r.status_code == 200, r.text
+    assert read.await_args.args[1:] == ("invoice", business_today(tz))

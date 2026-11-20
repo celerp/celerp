@@ -18,7 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 from urllib.parse import unquote
 
-from test_helpers import make_test_token, authed_cookies
+from test_helpers import make_test_token, authed_cookies, with_versions
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -92,7 +92,7 @@ _ACTIVITY = {"activities": [
      "entity_id": "item:1", "summary": "Item Ruby added", "actor": "admin"},
 ]}
 _LOCATIONS = [{"id": "loc:1", "name": "Main Warehouse", "type": "warehouse", "address": {}}]
-_TAXES = [{"name": "VAT", "rate": 7}]
+_TAXES = with_versions([{"name": "VAT", "rate": 7}])
 _TERMS = [{"name": "Net 30", "days": 30}]
 _USERS = [{"id": "u1", "email": "admin@test.com", "name": "Admin", "role": "admin"}]
 _SCHEMA = [{"key": "name", "label": "Name", "type": "text", "editable": True}]
