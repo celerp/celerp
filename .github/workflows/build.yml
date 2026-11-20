@@ -1285,27 +1285,18 @@ jobs:
   # /openapi.json serves when the schema is exposed, the importer list is read
   # from the importer registry, and the help bundle from the shipped guides, with
   # each guide's date from git (so the full history is fetched) and checked by
-  # the help center's own bundle check from its checkout. Uploaded to the
+  # the bundle rules in celerp/help before it is written. Uploaded to the
   # still-draft release before publish-release flips it live, so every published
-  # release carries them alongside the platform binaries; a failure here,
-  # including a site checkout the token cannot read, leaves the release a draft,
-  # like any platform build.
+  # release carries them alongside the platform binaries; a failure here leaves
+  # the release a draft, like any platform build.
   openapi-asset:
     needs: [build]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
-    env:
-      CELERP_SITE: ${{ github.workspace }}/site
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # each guide's date is its last commit
-      - name: Check out the help center for its bundle check
-        uses: actions/checkout@v7
-        with:
-          repository: ngsevers/celerp-cloud
-          path: site
-          token: ${{ secrets.SITE_READ_TOKEN }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"

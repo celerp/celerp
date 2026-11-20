@@ -103,8 +103,7 @@ def _step(job: dict, name: str) -> dict:
 
 def test_check_build_yml_help_asset_export_step():
     job = _job()
-    checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout")
-                    and "repository" not in s.get("with", {}))
+    checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert checkout["with"]["fetch-depth"] == 0
     names = [s.get("name") for s in job["steps"]]
     export = _step(job, "Export the help bundle")
@@ -114,15 +113,22 @@ def test_check_build_yml_help_asset_export_step():
     assert 'open("help.json"' in check and '("Help", help_bundle["version"])' in check
 
 
-def test_check_build_yml_help_asset_site_checkout():
-    job = _job()
-    site = next(s for s in job["steps"] if s.get("with", {}).get("repository"))
-    assert site["with"] == {"repository": "ngsevers/celerp-cloud", "path": "site",
-                            "token": "${{ secrets.SITE_READ_TOKEN }}"}
-    assert "continue-on-error" not in site and "if" not in site
-    assert job["env"]["CELERP_SITE"] == "${{ github.workspace }}/site"
-    names = [s.get("name") for s in job["steps"]]
-    assert names.index(site.get("name")) < names.index("Export the help bundle")
+def test_check_no_workflow_reads_another_repository():
+    """The public workflows check out this repository only and never name the website
+    repository or a site secret. news-ping.yml alone names it, to send one dispatch; it
+    checks nothing out."""
+    flows = sorted((_ROOT / ".github" / "workflows").glob("*.y*ml"))
+    assert flows
+    for flow in flows:
+        text = flow.read_text(encoding="utf-8")
+        for job in yaml.safe_load(text)["jobs"].values():
+            for step in job.get("steps", []):
+                assert "repository" not in (step.get("with") or {}), f"{flow.name}: {step}"
+        assert "SITE_" not in text, flow.name
+        if flow.name == "news-ping.yml":
+            assert "actions/checkout" not in text
+        else:
+            assert "celerp-cloud" not in text, flow.name
 
 
 _CURL = r"""#!/bin/sh
