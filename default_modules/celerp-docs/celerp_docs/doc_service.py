@@ -62,6 +62,8 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
       order.id                → idempotency_key
     """
     from celerp.db import SessionLocal
+    from celerp.services.doc_balance import amount_due
+    from celerp.services.money import to_stored_float
 
     idem_key = f"shopify:order:{order['id']}"
 
@@ -89,10 +91,10 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
             "status": status,
             "line_items": line_items,
             "total": total,
-            "amount_outstanding": 0.0 if status == "closed" else total,
             "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
+        data["amount_outstanding"] = 0.0 if status == "closed" else to_stored_float(amount_due(data))
         return await _emit_doc(session, company_id, data, idem_key, operation=operation, origin=None)
 
 
@@ -600,7 +602,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
     from celerp.models.company import Company
     from celerp.models.projections import Projection
     from celerp.services.business_time import business_date_of
-    from celerp.services.money import to_decimal
+    from celerp.services.money import to_decimal, to_stored_float
     from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
     from celerp_inventory.projections import FREE_STOCK, OWN_RESERVED, demand_claim, is_item_available
@@ -628,7 +630,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
         _get_doc,
         apply_doc_payment,
     )
-    from celerp.services.doc_balance import outstanding_balance
+    from celerp.services.doc_balance import amount_due, outstanding_balance
 
     order_id = str(order["id"])
     idem_key = f"woocommerce:order:{order_id}"
@@ -1019,7 +1021,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
                 "discount": 0.0,
                 "total": total,
                 "amount_paid": 0.0,
-                "amount_outstanding": total,
                 "currency": currency,
                 "issue_date": str(order.get("date_created") or "")[:10] or business_date_of(None, company_settings.get("timezone")),
                 "contact_id": contact_id,
@@ -1035,6 +1036,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
                 "woocommerce_source_fingerprint": source_fingerprint,
                 "woocommerce_transaction_id": order.get("transaction_id"),
             }
+            data["amount_outstanding"] = to_stored_float(amount_due(data))
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,

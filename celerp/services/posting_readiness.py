@@ -53,6 +53,7 @@ from celerp.services.account_roles import (
     target_problems,
     with_role,
 )
+from celerp.tax_regimes import doc_side
 
 NOTICE_CATEGORY = "accounting"
 NOTICE_TITLE = "Posting accounts need attention"
@@ -106,6 +107,8 @@ async def used_groups(session: AsyncSession, company_id, settings: dict) -> set[
             groups.add("consignment")
         if float(state.get("tax") or 0):
             groups.add("tax")
+        if float(state.get("withheld") or 0):
+            groups.add("sales_withholding" if doc_side(state.get("doc_type")) == "sales" else "withholding")
         if any(p.get("method") == "stripe" for p in state.get("payments") or ()):
             groups.add("online_payments")
         if str(state.get("currency") or base).upper() != base:

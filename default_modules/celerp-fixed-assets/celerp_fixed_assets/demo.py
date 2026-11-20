@@ -16,7 +16,8 @@ from types import SimpleNamespace
 
 from celerp.events.engine import find_event_by_idempotency
 from celerp.services.business_time import business_today
-from celerp.services.money import books_currency
+from celerp.services.doc_balance import amount_due
+from celerp.services.money import books_currency, to_stored_float
 
 # key, supplier, line name, quantity, unit price, months back, day of month, account code
 _BILLS = (
@@ -62,7 +63,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
         await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc",
                          event_type="doc.created", data={
                              "doc_type": "bill", "ref_id": ref, "contact_name": supplier, "line_items": [line],
-                             "currency": currency, **money, "amount_outstanding": money["total"],
+                             "currency": currency, **money, "amount_outstanding": to_stored_float(amount_due(money)),
                              "issue_date": _months_back(today, months, day)},
                          actor_id=user_id, location_id=None, source=DEMO_SOURCE,
                          idempotency_key=f"fa:demo:{key}")

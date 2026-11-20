@@ -6,6 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.doc_balance import amount_due
 from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
@@ -134,12 +135,12 @@ def _credited(state: dict):
 def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
     """Return document-currency paid and outstanding balances. Goods sent back to the supplier
     owe nothing: what their return took off accounts payable (``returned_credit``) comes off
-    the total the same as a payment, once. The part of it the bill had already paid moved to a
-    supplier credit note (``supplier_credit``), so it stays settled here and is owed on the
-    note instead. What an issued credit note settled between itself and the invoice it
+    what the document is owed (amount_due) the same as a payment, once. The part of it the bill
+    had already paid moved to a supplier credit note (``supplier_credit``), so it stays settled
+    here and is owed on the note instead. What an issued credit note settled between itself and the invoice it
     credits (``credited``, CREDITED_DOC_TYPES) is owed by neither."""
     currency = str(state.get("currency") or "USD")
-    owed = round_money(to_decimal(state.get("total", 0) or 0) - to_decimal(state.get("returned_credit", 0) or 0)
+    owed = round_money(amount_due(state) - to_decimal(state.get("returned_credit", 0) or 0)
                        + to_decimal(state.get("supplier_credit", 0) or 0), currency)
     paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
     credited = round_money(_credited(state), currency)
@@ -209,7 +210,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("status", "draft")
         current.setdefault("linked", [])
         current.setdefault("amount_paid", 0.0)
-        current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
+        current.setdefault("amount_outstanding", to_stored_float(amount_due(current)))
         current.setdefault("files", [])
         if current["status"] in UNISSUED_STATUSES and (current.get("amount_paid") or current.get("payments")):
             # An older import could store a draft or void document as paid; no payment was
@@ -615,7 +616,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "received"
         current.setdefault("linked", [])
         current.setdefault("amount_paid", 0.0)
-        current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
+        current.setdefault("amount_outstanding", to_stored_float(amount_due(current)))
     elif event_type in ("doc.file_attached", "list.file_attached"):
         current.setdefault("files", [])
         current["files"].append({

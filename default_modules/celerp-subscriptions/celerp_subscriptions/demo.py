@@ -16,7 +16,8 @@ from datetime import timedelta
 from types import SimpleNamespace
 from typing import NamedTuple
 
-from celerp.services.money import books_currency
+from celerp.services.doc_balance import amount_due
+from celerp.services.money import books_currency, to_stored_float
 
 class _Sample(NamedTuple):
     key: str
@@ -89,7 +90,7 @@ async def seed_demo_agreements(session, company_id, user_id) -> None:
         doc_id = f"doc:{ref}"
         data = {"doc_type": "subscription_invoice", "ref_id": ref, "contact_name": sample.customer,
                 "line_items": [line], "currency": currency, **money, "amount_paid": 0.0,
-                "amount_outstanding": money["total"], "issue_date": start.isoformat(),
+                "amount_outstanding": to_stored_float(amount_due(money)), "issue_date": start.isoformat(),
                 "start_date": start.isoformat(), "frequency": sample.frequency, "kind": sample.kind}
         if sample.grace_days is not None:
             data["grace_days"] = sample.grace_days

@@ -99,7 +99,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, SCHEDULE_OWNED_FIELDS, SCHEDULE_REMOVED_FIELDS, SCHEDULE_TERM_FIELDS, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES, LINE_REFUSAL_NEXT, LINE_SKIP_REASONS, outcome_shown, TOTAL_POSTED_DOC_TYPES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, amount_due, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
     behavior, list_fact, scan_behavior, status_key, terminal_action, is_money_list,
@@ -2232,7 +2232,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
         ))
 
     data["amount_paid"] = 0.0
-    data["amount_outstanding"] = float(data.get("total", 0))
+    data["amount_outstanding"] = to_stored_float(amount_due(data))
 
     entry = await emit_event(
         session,
@@ -3129,7 +3129,7 @@ async def finalize_document(
         if _scn_bill is not None:
             # A note against a bill settles it at once, as far as the bill still owes: the
             # same paired application a user makes by hand.
-            amount = min(to_decimal(_initial_doc_state.get("total") or 0), _payable_balance(_scn_bill.state))
+            amount = min(amount_due(_initial_doc_state), _payable_balance(_scn_bill.state))
             if amount > 0:
                 await apply_credit_note(
                     session, company_id, entity_id, _scn_bill.entity_id, to_stored_float(amount),
@@ -3689,7 +3689,7 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
         def money(state, key):
             return round_money(to_decimal(state.get(key) or 0), currency)
 
-        claimed = max(Decimal(0), money(note, "total") - money(note, "amount_paid")
+        claimed = max(Decimal(0), round_money(amount_due(note), currency) - money(note, "amount_paid")
                       - money(note, "amount_outstanding") - money(note, "credited"))
         if inv.get("status") in (None, "draft", "void"):
             if claimed > 0 and cn_id == entity_id and note.get("import_treatment") != OPENING_BALANCES:
@@ -3702,7 +3702,7 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
             continue
         if claimed <= 0:
             continue
-        settled = min(claimed, max(Decimal(0), money(inv, "total") - money(inv, "amount_paid")
+        settled = min(claimed, max(Decimal(0), round_money(amount_due(inv), currency) - money(inv, "amount_paid")
                                    - money(inv, "amount_outstanding") - money(inv, "credited")))
         metadata = {"source_credit_note": cn_id, "credit_note_effect": "reduced",
                     "credit_amount": to_stored_float(settled), "imported": True}

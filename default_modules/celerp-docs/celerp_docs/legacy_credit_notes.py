@@ -48,6 +48,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.services.doc_balance import amount_due
+
 log = logging.getLogger(__name__)
 
 MARKER_KEY = "legacy_credit_notes_settled"
@@ -247,7 +249,7 @@ async def _settle(session: AsyncSession, company_id, invoice_id: str, cn_id: str
                  note.get("status") or "deleted", reduction)
         return "restored", [("restored", number)]
 
-    room = max(Decimal(0), money(inv, "total") - money(inv, "amount_paid") - money(inv, "credited"))
+    room = max(Decimal(0), round_money(amount_due(inv), currency) - money(inv, "amount_paid") - money(inv, "credited"))
     left = money(note, "amount_outstanding")
     settled = min(left, room, reduction)
     await _mark_invoice(session, company_id, invoice_id, inv, cn_id, effect="reduced", settled=settled,

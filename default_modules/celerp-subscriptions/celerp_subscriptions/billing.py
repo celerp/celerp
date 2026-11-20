@@ -35,6 +35,7 @@ from celerp.models.subscription_email import SubscriptionEmailAttempt
 from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
+from celerp.services.doc_balance import amount_due
 from celerp.services.document_lines import strip_line_ids
 from celerp.services.money import document_line_amount, document_line_unit, round_money, to_stored_float
 from celerp.services.peer_lines import granted_from_stored
@@ -667,7 +668,7 @@ async def agreement_document(session, company: Company, tid: str, state: dict, d
     doc = {
         "doc_type": doc_type, "contact_id": contact_id,
         "contact_name": contact_state.get("name") or "", "contact_company_name": contact_state.get("company_name") or "",
-        "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
+        "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": to_stored_float(amount_due(money)), "issue_date": today.isoformat(),
         "notes": notes, **service,
     }
     if due := compute_due_date(today, state.get("payment_terms"), company):

@@ -104,14 +104,20 @@ def settled_on(state: dict) -> str | None:
     return max(days, default=None)
 
 
+def amount_due(state: dict) -> Decimal:
+    """What a document is owed in full: its total less the tax withheld on the document
+    (``withheld``, none when absent). The one owed figure every balance starts from. Raises as
+    to_decimal does on a value that is not a number."""
+    return to_decimal(doc_value(state, "total") or 0) - to_decimal(state.get("withheld") or 0)
+
+
 def outstanding_balance(state: dict) -> Decimal | None:
-    """What a document still owes: its recorded balance, else its total when no balance is
-    recorded, else 0. None when the value is not a number, so it is never counted as 0."""
+    """What a document still owes: its recorded balance, else what it is owed in full
+    (amount_due) when no balance is recorded. None when the value is not a number, so it is
+    never counted as 0."""
     balance = doc_value(state, "amount_outstanding")
-    if balance in (None, ""):
-        balance = doc_value(state, "total")
     try:
-        amount = to_decimal(balance or 0)
+        amount = amount_due(state) if balance in (None, "") else to_decimal(balance)
     except (ArithmeticError, TypeError, ValueError):
         return None
     return amount if amount.is_finite() else None

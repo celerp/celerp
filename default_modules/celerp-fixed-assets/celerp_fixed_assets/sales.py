@@ -26,7 +26,8 @@ from decimal import Decimal
 from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
-from celerp.services.money import currency_dp, round_money
+from celerp.services.doc_balance import amount_due
+from celerp.services.money import currency_dp, round_money, to_stored_float
 from celerp_fixed_assets import disposal, runs, setup
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
@@ -239,7 +240,7 @@ async def _draft(session, company_id, user_id, data: dict, before=None) -> str:
     data = money_from_lines(data, data["currency"])
     ref = await claim_number(session, company, draft_counter(data["doc_type"]))
     doc_id = f"doc:{ref}"
-    data.update(ref_id=ref, status="draft", amount_paid=0.0, amount_outstanding=data["total"])
+    data.update(ref_id=ref, status="draft", amount_paid=0.0, amount_outstanding=to_stored_float(amount_due(data)))
     if before is not None:
         await before(doc_id)
     await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
