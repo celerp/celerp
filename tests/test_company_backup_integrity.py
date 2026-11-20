@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -175,6 +177,38 @@ async def test_a_backup_built_by_older_projection_rules_restores(real_engine, re
     state = restored["state"]
     assert (state["weight"], state["weight_unit"]) == (2.5, "gram")
     assert state["attributes"] == {"country_of_origin": "Sri Lanka"}
+
+
+RELEASED = sorted((Path(__file__).parent / "fixtures" / "released_backups").glob("*/*.zip"))
+
+
+def _totals(ledger: list[dict], records: list[dict]) -> tuple:
+    """How many of each event a company's history holds, and each item's quantity."""
+    items = sorted((r["entity_id"], r["state"].get("sku"), r["state"].get("quantity"))
+                   for r in records if r["entity_type"] == "item")
+    return Counter((e["entity_id"], e["event_type"]) for e in ledger), items
+
+
+@pytest.mark.parametrize("path", RELEASED, ids=lambda p: f"{p.parent.name}/{p.stem}")
+async def test_a_backup_made_by_a_released_version_restores(real_engine, real_client, tmp_path,
+                                                            monkeypatch, path):
+    """Every demo company backup a released Celerp made (fixtures/released_backups/<version>/,
+    captured from that release by capture.py there) restores at head as a new company with
+    the history and item quantities it holds."""
+    import celerp
+    from packaging.version import Version
+
+    made_by = Version(path.parent.name)
+    monkeypatch.setattr(celerp, "__version__", f"{made_by.major}.{made_by.minor}.{made_by.micro + 1}")
+    _r_env(tmp_path, monkeypatch)
+    _, _, tok = await _r_source(real_engine)
+    data = path.read_bytes()
+    held = _totals(*([json.loads(line) for line in _r_table_lines(data, table)]
+                     for table in ("ledger", "projections")))
+    body = _r_created(await restore(real_client, tok, data, mode="new_company"))
+    cid = uuid.UUID(body["company_id"])
+    assert _totals(await _r_rows(real_engine, "ledger", cid), await _r_rows(real_engine, "projections", cid)) == held
+    assert held[1], "a demo company holds items"
 
 
 @pytest.mark.parametrize("rules", [-1, "3", True, 1.5, "PROJECTION_SEMANTICS + 1"])

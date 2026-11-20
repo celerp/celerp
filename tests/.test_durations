@@ -31782,5 +31782,22 @@
     "default_modules/celerp-accounting/tests/test_bank_statements.py::test_undo_of_an_already_unmatched_line_says_it_is_already_open": 0.9158449069655035,
     "default_modules/celerp-accounting/tests/test_bank_ui.py::test_the_preview_import_button_carries_the_spreadsheet_icon": 0.012784040998667479,
     "default_modules/celerp-accounting/tests/test_bank_files.py::test_a_0_byte_statement_file_is_refused": 0.7239890619821381,
-    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_receipt_sent_with_a_generic_type_is_kept_by_its_name": 0.5067530190281104
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_a_receipt_sent_with_a_generic_type_is_kept_by_its_name": 0.5067530190281104,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/agricultural]": 1.4259248320013285,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/artwork]": 1.088840609008912,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/automotive]": 1.1341928339679725,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/blank]": 1.1743438970006537,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/books_media]": 1.1974917889747303,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/coins_precious_metals]": 1.144878997001797,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/consulting]": 1.2414222119841725,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/cosmetics]": 1.1025313760037534,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/electronics]": 1.199038150953129,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/fashion]": 1.1320992260007188,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/food_beverage]": 1.0919541520124767,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/furniture]": 1.2412247429892886,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/gemstones]": 1.195129794999957,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/hardware]": 1.1098148210148793,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/retail]": 1.0371575809840579,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/watches]": 1.1079053950088564,
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/wine_spirits]": 1.1990255959972274
 }
