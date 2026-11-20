@@ -5966,6 +5966,7 @@
   "event.sys.api_key.revoked": "Đã thu hồi khóa API",
   "event.sys.backup.created": "Đã tạo bản sao lưu",
   "event.sys.company.created": "Đã tạo công ty",
+  "event.sys.localization.applied": "Đã áp dụng cài đặt quốc gia",
   "event.sys.user.created": "Đã thêm người dùng",
   "event.sys.user.deactivated": "Đã vô hiệu hóa người dùng",
   "financial.unclosed_net_income": "Lợi nhuận chưa kết chuyển",

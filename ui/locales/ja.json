@@ -5964,6 +5964,7 @@
   "event.sys.api_key.revoked": "APIキーを失効させました",
   "event.sys.backup.created": "バックアップを作成しました",
   "event.sys.company.created": "会社を作成しました",
+  "event.sys.localization.applied": "国の設定を適用しました",
   "event.sys.user.created": "ユーザーを追加しました",
   "event.sys.user.deactivated": "ユーザーを無効化しました",
   "financial.unclosed_net_income": "未締めの当期純利益",

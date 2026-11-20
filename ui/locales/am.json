@@ -5964,6 +5964,7 @@
   "event.sys.api_key.revoked": "የAPI ቁልፍ ተሽሯል",
   "event.sys.backup.created": "ምትኬ ተፈጥሯል",
   "event.sys.company.created": "ኩባንያ ተፈጥሯል",
+  "event.sys.localization.applied": "የአገር ቅንብሮች ተተግብረዋል",
   "event.sys.user.created": "ተጠቃሚ ታክሏል",
   "event.sys.user.deactivated": "ተጠቃሚ ተሰናክሏል",
   "financial.unclosed_net_income": "ገና ያልተዘጋ የተጣራ ገቢ",

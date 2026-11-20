@@ -5964,6 +5964,7 @@
   "event.sys.api_key.revoked": "เพิกถอนคีย์ API แล้ว",
   "event.sys.backup.created": "สร้างข้อมูลสำรองแล้ว",
   "event.sys.company.created": "สร้างบริษัทแล้ว",
+  "event.sys.localization.applied": "ใช้การตั้งค่าประเทศแล้ว",
   "event.sys.user.created": "เพิ่มผู้ใช้แล้ว",
   "event.sys.user.deactivated": "ปิดการใช้งานผู้ใช้แล้ว",
   "financial.unclosed_net_income": "กำไรสุทธิที่ยังไม่ปิดบัญชี",

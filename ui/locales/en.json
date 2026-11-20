@@ -6074,6 +6074,7 @@
   "event.sys.api_key.revoked": "API key revoked",
   "event.sys.backup.created": "Backup created",
   "event.sys.company.created": "Company created",
+  "event.sys.localization.applied": "Country settings applied",
   "event.sys.user.created": "User added",
   "event.sys.user.deactivated": "User deactivated",
   "financial.unclosed_net_income": "Net income not yet closed",

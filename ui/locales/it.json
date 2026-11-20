@@ -5966,6 +5966,7 @@
   "event.sys.api_key.revoked": "Chiave API revocata",
   "event.sys.backup.created": "Backup creato",
   "event.sys.company.created": "Azienda creata",
+  "event.sys.localization.applied": "Impostazioni del paese applicate",
   "event.sys.user.created": "Utente aggiunto",
   "event.sys.user.deactivated": "Utente disattivato",
   "financial.unclosed_net_income": "Utile non ancora chiuso",

@@ -5966,6 +5966,7 @@
   "event.sys.api_key.revoked": "تم إبطال مفتاح API",
   "event.sys.backup.created": "تم إنشاء نسخة احتياطية",
   "event.sys.company.created": "تم إنشاء الشركة",
+  "event.sys.localization.applied": "تم تطبيق إعدادات البلد",
   "event.sys.user.created": "تمت إضافة مستخدم",
   "event.sys.user.deactivated": "تم تعطيل المستخدم",
   "financial.unclosed_net_income": "صافي الدخل غير المقفل بعد",

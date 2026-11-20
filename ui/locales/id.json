@@ -5966,6 +5966,7 @@
   "event.sys.api_key.revoked": "Kunci API dicabut",
   "event.sys.backup.created": "Cadangan dibuat",
   "event.sys.company.created": "Perusahaan dibuat",
+  "event.sys.localization.applied": "Pengaturan negara diterapkan",
   "event.sys.user.created": "Pengguna ditambahkan",
   "event.sys.user.deactivated": "Pengguna dinonaktifkan",
   "financial.unclosed_net_income": "Laba bersih belum ditutup",

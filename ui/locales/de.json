@@ -5966,6 +5966,7 @@
   "event.sys.api_key.revoked": "API-Schlüssel widerrufen",
   "event.sys.backup.created": "Sicherung erstellt",
   "event.sys.company.created": "Unternehmen angelegt",
+  "event.sys.localization.applied": "Ländereinstellungen übernommen",
   "event.sys.user.created": "Benutzer hinzugefügt",
   "event.sys.user.deactivated": "Benutzer deaktiviert",
   "financial.unclosed_net_income": "Noch nicht abgeschlossenes Jahresergebnis",

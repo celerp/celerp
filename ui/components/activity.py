@@ -90,8 +90,8 @@ _EVENT_TYPES: tuple[str, ...] = (
     "received_doc.imported", "received_doc.reconciled", "received_doc.revised",
     "shop.sync.disabled", "shop.sync.enabled", "sub.cancelled", "sub.created", "sub.expired",
     "sub.generated", "sub.paused", "sub.resumed", "sub.updated", "sys.api_key.created",
-    "sys.api_key.revoked", "sys.backup.created", "sys.company.created", "sys.user.created",
-    "sys.user.deactivated",
+    "sys.api_key.revoked", "sys.backup.created", "sys.company.created", "sys.localization.applied",
+    "sys.user.created", "sys.user.deactivated",
 )
 EVENT_TYPE_LABELS: dict[str, str] = {et: f"event.{et}" for et in _EVENT_TYPES}
 
