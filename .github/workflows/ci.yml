@@ -229,6 +229,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
       - uses: actions/download-artifact@v8
         with:
