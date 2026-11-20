@@ -31816,5 +31816,7 @@
     "tests/test_donors.py::test_a_donor_whose_address_changes_while_an_earlier_statement_is_slow_is_not_mailed_at_the_old_one[moved@test.test]": 0.6923857049841899,
     "tests/test_email_service.py::test_a_durable_send_confirms_each_recipient_just_before_their_own_email": 0.0037209120055194944,
     "tests/test_email_service.py::test_a_replay_keeps_when_the_attempt_first_began_so_replays_cannot_roll_the_window": 0.0029308819794096053,
-    "tests/test_email_service.py::test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails": 0.0035258610150776803
+    "tests/test_email_service.py::test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails": 0.0035258610150776803,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_ask_read_while_its_email_is_slow_says_it_is_still_being_sent_then_how_it_went": 1.4691086359962355,
+    "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_whose_answer_did_not_come_back_shows_its_stored_state_not_an_error": 0.010277471970766783
 }
