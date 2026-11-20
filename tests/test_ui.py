@@ -39,7 +39,7 @@ from ui.routes.inventory import _IMPORT_SPEC
 from ui.components.shell import _CLIENT_JS
 from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
-from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background
+from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background, with_versions
 from ui.config import API_BASE as _API_BASE
 
 
@@ -1216,7 +1216,7 @@ _AGING = {"as_of": "2026-02-24", "lines": [{"contact_name": "Alice", "doc_number
 _SALES = {"lines": [{"label": "Alice", "count": 3, "total": 500}], "group_by": "customer", "total": 500}
 _EXPIRING = {"count": 1, "days_threshold": 30, "items": [
     {"sku": "SKU-1", "name": "Ruby", "expiry_date": "2026-03-20", "days_left": 24, "status": "available"}]}
-_TAXES = [{"name": "VAT", "rate": 7, "tax_type": "sales", "is_default": True, "description": "Standard VAT"}]
+_TAXES = with_versions([{"name": "VAT", "rate": 7, "tax_type": "sales", "is_default": True, "description": "Standard VAT"}])
 _TERMS = [{"name": "Net 30", "days": 30, "description": "Payment due in 30 days"}]
 _USERS = [{"id": "u1", "name": "Owner", "email": "owner@test.example", "role": "owner", "is_active": True}]
 
