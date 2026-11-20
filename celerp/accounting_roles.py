@@ -90,6 +90,10 @@ class AccountRole(StrEnum):
     LANDED_IMPORT_VAT = "landed_import_vat"
     TAX_INPUT = "tax_input"
     TAX_OUTPUT = "tax_output"
+    TAX_WITHHELD_PAYABLE = "tax_withheld_payable"
+    TAX_WITHHELD_CREDIT = "tax_withheld_credit"
+    TAX_INPUT_PENDING = "tax_input_pending"
+    TAX_OUTPUT_PENDING = "tax_output_pending"
     FIXED_ASSETS = "fixed_assets"
     INTANGIBLE_ASSETS = "intangible_assets"
     RETAINED_EARNINGS = "retained_earnings"
@@ -134,6 +138,10 @@ ROLE_LABELS: dict[AccountRole, str] = {
     R.LANDED_IMPORT_VAT: "Non-recoverable import VAT clearing",
     R.TAX_INPUT: "Input tax",
     R.TAX_OUTPUT: "Output tax",
+    R.TAX_WITHHELD_PAYABLE: "Withheld tax payable",
+    R.TAX_WITHHELD_CREDIT: "Withheld tax credit",
+    R.TAX_INPUT_PENDING: "Input tax pending",
+    R.TAX_OUTPUT_PENDING: "Output tax pending",
     R.FIXED_ASSETS: "Fixed assets",
     R.INTANGIBLE_ASSETS: "Intangible assets",
     R.RETAINED_EARNINGS: "Retained earnings",
@@ -180,6 +188,10 @@ ROLE_TYPES: dict[AccountRole, frozenset[str]] = {
     R.LANDED_IMPORT_VAT: _ASSET,
     R.TAX_INPUT: _ASSET,
     R.TAX_OUTPUT: frozenset({"liability"}),
+    R.TAX_WITHHELD_PAYABLE: frozenset({"liability"}),
+    R.TAX_WITHHELD_CREDIT: _ASSET,
+    R.TAX_INPUT_PENDING: _ASSET,
+    R.TAX_OUTPUT_PENDING: frozenset({"liability"}),
     R.FIXED_ASSETS: _ASSET,
     R.INTANGIBLE_ASSETS: _ASSET,
     R.RETAINED_EARNINGS: frozenset({"equity"}),
@@ -231,6 +243,7 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.LANDED_IMPORT_VAT: "1130-IVT",
     R.TAX_INPUT: "1150",
     R.TAX_OUTPUT: "2120",
+    R.TAX_WITHHELD_PAYABLE: "2130",
     R.FIXED_ASSETS: "1210",
     R.INTANGIBLE_ASSETS: "1230",
     R.RETAINED_EARNINGS: "3200",
@@ -257,11 +270,15 @@ SEEDED_TARGETS: dict[AccountRole, str] = {
     R.PAYMENT_DISPUTE_LOSSES: "6945",
 }
 
-# Roles a seeded chart holds no account for: Celerp adds this account (code, name, parent)
-# and maps the role to it when the feature posting there is first turned on, never before.
-ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str]] = {
-    R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "3000"),
-    R.SUSPENSE: ("1190", "Suspense", "1100"),
+# Roles a seeded chart holds no account for: Celerp adds this account (code, name, account
+# type, parent) and maps the role to it when the feature posting there is first used
+# (account_roles.map_added_role), never before.
+ADDED_WHEN_TURNED_ON: dict[AccountRole, tuple[str, str, str, str]] = {
+    R.RESTRICTED_NET_ASSETS: ("3500", "Restricted Net Assets", "equity", "3000"),
+    R.SUSPENSE: ("1190", "Suspense", "asset", "1100"),
+    R.TAX_WITHHELD_CREDIT: ("1180", "Withheld Tax Credit", "asset", "1100"),
+    R.TAX_INPUT_PENDING: ("1155", "Input Tax Pending", "asset", "1100"),
+    R.TAX_OUTPUT_PENDING: ("2125", "Output Tax Pending", "liability", "2100"),
 }
 
 # The default code of every role: the seeded account, or the one added when turned on.
@@ -301,6 +318,9 @@ ROLE_GROUPS: dict[str, tuple[AccountRole, ...]] = {
     "core": (R.RECEIVABLE, R.PAYABLE, R.SALES_REVENUE, R.GENERAL_EXPENSE, R.DEFAULT_DEPOSIT,
              R.RETAINED_EARNINGS, R.CASH_AND_EQUIVALENTS),
     "tax": (R.TAX_INPUT, R.TAX_OUTPUT),
+    "withholding": (R.TAX_WITHHELD_PAYABLE,),
+    "sales_withholding": (R.TAX_WITHHELD_CREDIT,),
+    "cash_basis": (R.TAX_INPUT_PENDING, R.TAX_OUTPUT_PENDING),
     "inventory": (R.INVENTORY, R.INVENTORY_PURCHASED, R.INVENTORY_OPENING, R.COGS,
                   R.STOCK_GAIN, R.STOCK_SHRINKAGE),
     "landed_cost": (R.LANDED_FREIGHT, R.LANDED_INSURANCE, R.LANDED_DUTY, R.LANDED_IMPORT_VAT),

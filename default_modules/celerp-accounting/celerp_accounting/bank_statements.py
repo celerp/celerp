@@ -878,22 +878,16 @@ async def suspense_account(db: AsyncSession, company_id: uuid.UUID, actor_id) ->
     the chart already holds at that number is the company's own, and a chart from elsewhere
     predates the role, so neither is guessed: the line is refused until the role has its
     account in Posting accounts."""
-    from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole, chart_from_elsewhere
+    from celerp.accounting_roles import ADDED_WHEN_TURNED_ON, AccountRole
     from celerp.models.company import Company
-    from celerp.services.account_roles import role_map, set_role
-    from celerp.services.journal_accounts import lock_accounts
-    from celerp_accounting.import_service import add_posting_account
+    from celerp.services.account_roles import map_added_role, role_map
 
     role = AccountRole.SUSPENSE
     settings = (await db.execute(select(Company.settings).where(Company.id == company_id))).scalar_one_or_none() or {}
     if code := role_map(settings).get(role.value):
         return code
-    code, name, parent = ADDED_WHEN_TURNED_ON[role]
-    if chart_from_elsewhere(settings) or code in (await lock_accounts(db, company_id, {code}) or {}):
-        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_suspense_unmapped", role=role.value))
-    await add_posting_account(db, company_id, code=code, name=name, account_type="asset", parent_code=parent)
-    await set_role(db, company_id, role.value, code, actor_id)
-    return code
+    await map_added_role(db, company_id, settings, role, actor_id, "acct.err_suspense_unmapped")
+    return ADDED_WHEN_TURNED_ON[role][0]
 
 
 async def _remember(db: AsyncSession, company_id: uuid.UUID, line: BankStatementLine, d: Decision) -> None:

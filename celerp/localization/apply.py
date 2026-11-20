@@ -18,11 +18,12 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refusal_detail
 from celerp.events.engine import emit_event, find_event_by_idempotency, refuse_other_request, request_fingerprint
 from celerp.localization.rate_review import moved
 from celerp.localization.taxcodes import TaxVersion
 from celerp.models.ledger import LedgerEntry
+from celerp.services.account_roles import map_tax_roles
 from celerp.tax_regimes import get_regime, tax_country, tax_name_key, with_taxes
 
 EVENT = "sys.localization.applied"
@@ -124,11 +125,12 @@ async def apply(session, company, user_id, binding: str, idempotency_key: str) -
     try:
         written = with_taxes({**settings, "localization": localization}, "sales", taxes)
     except ValueError as exc:  # a code the list keeps that the new pack's rules refuse
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     after = {"taxes": written["taxes"], "localization": localization}
     await _record(session, company, user_id, key, {
         "operation_id": operation_id, "undoes": None, "binding": request_fingerprint(binding),
         "before": before, "after": after, "kept": []}, after)
+    await map_tax_roles(session, company.id, company.settings, user_id)
     return operation_id
 
 

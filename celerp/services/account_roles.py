@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    ADDED_WHEN_TURNED_ON,
     CONSIGNOR_FIELD,
     CONSIGNOR_PAYABLE_FIELD,
     INVENTORY_VALUE_ROLES,
@@ -33,6 +34,8 @@ from celerp.accounting_roles import (
     UNGUESSED_ROLES,
     pair_of,
     AccountRole,
+    catalog_refusal,
+    chart_from_elsewhere,
     is_role,
     needs_accounting,
     no_account_chosen,
@@ -132,15 +135,33 @@ def reconciled_settings(settings: dict, accounts: dict[str, dict], claim=frozens
 
 
 def unmapped_roles(settings: dict | None) -> list[str]:
-    """The roles with no account, leaving out the roles Celerp maps when their feature is
-    first used (restricted net assets while funds are off, Suspense until a bank line is
-    first posted there): no posting reaches them before."""
+    """The roles with no account, leaving out a role Celerp adds when its feature is first
+    used while that feature is off: restricted net assets while funds are off, Suspense until a
+    bank line is first posted there, the tax roles while no code needs them (tax_roles). No
+    posting reaches such a role before."""
     from celerp.services.journal_accounts import funds_enabled
 
     current = role_map(settings)
+    turned_on = tax_roles(settings or {})
+    if funds_enabled(settings or {}):
+        turned_on.add(AccountRole.RESTRICTED_NET_ASSETS)
     return [role.value for role in AccountRole if not current.get(role.value)
-            and role is not AccountRole.SUSPENSE
-            and (role is not AccountRole.RESTRICTED_NET_ASSETS or funds_enabled(settings or {}))]
+            and (role not in ADDED_WHEN_TURNED_ON or role in turned_on)]
+
+
+def tax_roles(settings: dict) -> set[AccountRole]:
+    """The posting roles the company's tax codes need beyond input and output tax: a sales
+    withholding code needs the withheld tax credit, a purchase one the withheld tax payable,
+    a cash basis code the pending input and output tax."""
+    needed: set[AccountRole] = set()
+    for code in (*(settings.get("taxes") or ()), *(settings.get("purchasing_taxes") or ())):
+        sides = {"sales", "purchase"} if code.get("tax_type", "both") == "both" else {code.get("tax_type")}
+        if code.get("category") == "withholding":
+            needed |= {AccountRole.TAX_WITHHELD_CREDIT if side == "sales" else AccountRole.TAX_WITHHELD_PAYABLE
+                       for side in sides}
+        if code.get("cash_basis"):
+            needed |= {AccountRole.TAX_INPUT_PENDING, AccountRole.TAX_OUTPUT_PENDING}
+    return needed
 
 
 async def reconcile_company(session: AsyncSession, company_id, claim=frozenset()) -> list[str]:
@@ -642,3 +663,39 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     company.settings = settings
     await session.flush()
     return settings
+
+
+async def map_added_role(session: AsyncSession, company_id, settings: dict, role: AccountRole, user_id,
+                         refusal_key: str) -> None:
+    """Point ``role`` (one of ADDED_WHEN_TURNED_ON) at an account the first time its feature
+    goes on, only at the account Celerp adds for it now. An account the chart already holds at
+    that number is the company's own, and a chart from elsewhere predates the role, so neither
+    is guessed from a number: the turn-on is refused (``refusal_key``, naming the role) until
+    the role has its account in Posting accounts."""
+    from celerp.services.journal_accounts import chart_access, lock_accounts
+
+    if role_map(settings).get(role.value):
+        return
+    code, name, account_type, parent = ADDED_WHEN_TURNED_ON[role]
+    chart = chart_access()
+    if chart is None:
+        raise HTTPException(status_code=409, detail=needs_accounting())
+    if chart_from_elsewhere(settings) or code in (await lock_accounts(session, company_id, {code}) or {}):
+        raise HTTPException(status_code=422, detail=catalog_refusal(refusal_key, role=role.value))
+    await chart.add_account(session, company_id, code=code, name=name, account_type=account_type, parent_code=parent)
+    await set_role(session, company_id, role.value, code, user_id)
+
+
+async def map_tax_roles(session: AsyncSession, company_id, settings: dict, user_id) -> None:
+    """Map every role the company's tax codes (``settings``, as just written to the company)
+    now need: an added role at the account Celerp adds for it (map_added_role), refused on a
+    chart from elsewhere or a taken number; a seeded role left unmapped is refused, never
+    invented. The refusal names the role and where to choose its account."""
+    from celerp.services.company_lock import locked_company
+
+    for role in sorted(tax_roles(settings), key=lambda r: r.value):
+        if role in ADDED_WHEN_TURNED_ON:
+            await map_added_role(session, company_id, settings, role, user_id, "tax.turn_on_role_unmapped")
+            settings = (await locked_company(session, company_id)).settings or {}
+        elif not role_map(settings).get(role.value):
+            raise HTTPException(status_code=422, detail=catalog_refusal("tax.turn_on_role_unmapped", role=role.value))

@@ -63,6 +63,7 @@ from celerp.services.locations import make_default_location
 from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
+from celerp.services.account_roles import map_tax_roles
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
@@ -1684,12 +1685,13 @@ async def patch_column_prefs(
 _TAX_LISTS = {"sales": sales_taxes, "purchase": purchasing_taxes}
 
 
-async def _save_tax_list(session: AsyncSession, company_id, side: str, payload: TaxRatesPatch) -> None:
+async def _save_tax_list(session: AsyncSession, company_id, user_id, side: str, payload: TaxRatesPatch) -> None:
     """Save the company's ``side`` tax list as one whole list, edited from the list whose
     fingerprint the payload carries. Refused: a list changed since (409), an id this list does
     not hold (422), an account not open for posting in the chart (422), removing a code an item
-    or a draft line still carries (409, with the filtered item list), and anything with_taxes
-    refuses (422)."""
+    or a draft line still carries (409, with the filtered item list), anything with_taxes
+    refuses (422), and a code whose posting role has no account and cannot get one
+    (map_tax_roles, 422)."""
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
@@ -1707,8 +1709,9 @@ async def _save_tax_list(session: AsyncSession, company_id, side: str, payload: 
     try:
         settings = with_taxes(dict(company.settings), side, rows)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     company.settings = settings
+    await map_tax_roles(session, company_id, settings, user_id)
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
 
@@ -1761,10 +1764,11 @@ async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSe
 async def patch_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _save_tax_list(session, company_id, "sales", payload)
+    await _save_tax_list(session, company_id, user.id, "sales", payload)
     return {"ok": True}
 
 
@@ -1824,6 +1828,7 @@ async def _import_tax_rows(session: AsyncSession, company_id, user_id, side: str
         res.created = 0
         return res
     company.settings = settings
+    await map_tax_roles(session, company_id, settings, user_id)
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
     return res
@@ -2032,10 +2037,11 @@ async def get_purchasing_taxes(
 async def patch_purchasing_taxes(
     payload: TaxRatesPatch,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _save_tax_list(session, company_id, "purchase", payload)
+    await _save_tax_list(session, company_id, user.id, "purchase", payload)
     return {"ok": True}
 
 

@@ -43,7 +43,7 @@ def test_importer_reimport_same_code_is_no_conflict():
     assert _all_taxes(company) == before
 
     error = _apply_tax_code(company, _cif("vat 7%", 9, category="standard"))
-    assert error and "vat 7%" in error.lower() and "rate" in error
+    assert error and "vat 7%" in message_text(error).lower() and "rate" in message_text(error)
     assert _all_taxes(company) == before
 
     assert _apply_tax_code(company, _cif("WHT 3%", 3, category="withholding", tax_type="purchase")) is None
