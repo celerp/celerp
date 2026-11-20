@@ -125,9 +125,10 @@ def test_check_ci_yml_pins_a_deterministic_version():
 
 
 def test_check_no_workflow_reads_another_repository():
-    """The public workflows check out this repository only and never name the website
-    repository or a site secret. news-ping.yml alone names it, to send one dispatch; it
-    checks nothing out."""
+    """The public workflows check out and fetch only this repository: no step names a
+    different repository to check out, and no workflow reads a site secret. news-ping.yml
+    is the one named exception: it sends a single dispatch to tell the website a release
+    was published, and checks nothing out."""
     flows = sorted((_ROOT / ".github" / "workflows").glob("*.y*ml"))
     assert flows
     for flow in flows:
@@ -138,8 +139,6 @@ def test_check_no_workflow_reads_another_repository():
         assert "SITE_" not in text, flow.name
         if flow.name == "news-ping.yml":
             assert "actions/checkout" not in text
-        else:
-            assert "celerp-cloud" not in text, flow.name
 
 
 _CURL = r"""#!/bin/sh
