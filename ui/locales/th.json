@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "คงเหลือ: {amount}",
   "documents.remove_doc_tax": "ลบภาษีนี้",
   "documents.line_tax_unset": "โปรดเลือกภาษีของบรรทัดนี้ เนื่องจากเอกสารคิดภาษีในภาพรวม ระบบจึงไม่ได้เพิ่มภาษีเริ่มต้นให้",
+  "documents.shipping_tax": "ภาษีค่าขนส่ง",
   "documents.igst_note": "IGST 18% ใช้กับการซื้อขายระหว่างรัฐ ส่วนการซื้อขายภายในรัฐเดียวกัน อัตรารวม 18% มาจาก CGST 9% บวก SGST 9%",
   "documents.remove_from_draft": "นำออกจากร่าง",
   "documents.reprice_failed": "คำนวณราคาใหม่ไม่ได้ เลือก ลองอีกครั้ง",

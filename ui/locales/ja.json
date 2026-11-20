@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "残数量：{amount}",
   "documents.remove_doc_tax": "この税を削除",
   "documents.line_tax_unset": "この明細行の税を選択してください。文書全体に課税する設定のため、既定の税は追加されていません。",
+  "documents.shipping_tax": "送料にかかる税",
   "documents.igst_note": "IGST 18%は州をまたぐ売買に適用されます。同じ州内での売買にはCGST 9%とSGST 9%を合わせた18%が適用されます。",
   "documents.remove_from_draft": "下書きから削除",
   "documents.reprice_failed": "価格を再計算できませんでした。「再試行」を選んでください。",

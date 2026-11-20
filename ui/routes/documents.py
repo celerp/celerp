@@ -3288,6 +3288,8 @@ def setup_routes(app):
                 return P(error_message(e), cls="cell-error")
             if _memo_rate_open(doc):
                 return await _set_memo_rate(token, entity_id, doc, value, form)
+        if field == "shipping_taxes":
+            return await _set_shipping_taxes(token, entity_id, value)
         try:
             patch = {field: value}
             # A contact change sends only the contact: the backend copies its details, terms,
@@ -3353,6 +3355,19 @@ def setup_routes(app):
                 "celerpListVersion": {"version": doc.get("version")},
                 **(doc_money_redraw() if field in DOC_MONEY_FIELDS else {}),
             })})
+
+    async def _set_shipping_taxes(token: str, entity_id: str, value: str):
+        """Save the shipping's tax picked in the totals: a code id (the API builds the tax from
+        the code on the document's day) or "" for No Tax. The stored taxes shown as one option
+        are kept as they are. The page then redraws its money figures."""
+        if value != "|stored":
+            try:
+                await api.patch_doc(token, entity_id, {"shipping_taxes": [{"code_id": value}] if value else []})
+            except APIError as e:
+                # The redraw puts the stored choice back beside the refusal.
+                return _action_error(e, **doc_money_redraw())
+        from starlette.responses import Response as _R
+        return _R("", status_code=204, headers={"HX-Trigger": _json.dumps(doc_money_redraw())})
 
     # Line-item fields editable on finalized docs (description, account_code)
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
@@ -7492,6 +7507,40 @@ def _tax_option_value(tax: dict) -> str:
     return f"{tax.get('code') or tax.get('name') or ''}|{float(tax.get('rate', 0) or 0)}"
 
 
+def _codes_in_force(company_taxes: list | None, doc: dict) -> list:
+    """The company taxes a document's tax choices offer: those for its side, each in force on the
+    document's day at its rate that day (taxes_on)."""
+    return taxes_on(taxes_for(company_taxes or [], doc.get("doc_type", "")), tax_day(doc))
+
+
+def _shipping_tax_choice(doc: dict, company_taxes: list | None, can_edit: bool) -> FT:
+    """The shipping's taxes beside its amount. On an editable draft, a choice of the codes in force
+    on the document's day (or No Tax), saved as soon as one is picked; the API builds the tax from
+    the code. Stored taxes no single code in force matches show as one option naming them all.
+    Elsewhere, their names as text."""
+    held = _held_taxes(doc.get("shipping_taxes"))
+    stored_label = " + ".join(_held_tax_label(tx) for tx in held)
+    if not can_edit:
+        return Span(stored_label or t("doc.no_tax"), cls="total-label")
+    in_force = _codes_in_force(company_taxes, doc)
+    stored = tax_entries(held)
+    code_id = stored[0].get("code_id") if len(held) == 1 and len(stored) == 1 else None
+    options = [("", t("doc.no_tax"))] + [(tax.get("id", ""), _tax_label(tax)) for tax in in_force if tax.get("id")]
+    if not held:
+        value = ""
+    elif code_id in {val for val, _label in options}:
+        value = code_id
+    else:
+        value = "|stored"
+        options.insert(0, (value, stored_label))
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    return searchable_select(
+        name="value", options=options, value=value, cls_extra="cell-input cell-input--xs",
+        aria_label=t("documents.shipping_tax"), hx_patch=f"/docs/{entity_id}/field/shipping_taxes",
+        hx_trigger="change", hx_swap="none",
+    )
+
+
 def _line_account_picker(chart_accounts: list | None, value: str) -> FT:
     """A purchase line's account, saved as soon as one is picked. Blank posts the line to
     the company's account for its kind (stock or expense)."""
@@ -7531,7 +7580,7 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
 
 def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
     """The tax rows of a document's totals, from the amounts the API stored: one row per tax on
-    the lines (#doc-tax-rows) and the document-level taxes (#doc-stored-tax-rows). The page renders
+    the lines and the shipping (#doc-tax-rows) and the document-level taxes (#doc-stored-tax-rows). The page renders
     them and every line save puts them back in place, so the rows always hold the saved figures."""
     tax_amount = float(doc.get("tax_amount") if doc.get("tax_amount") is not None else doc.get("tax") or 0)
     line_items = doc.get("line_items") or []
@@ -7540,12 +7589,13 @@ def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
     def _add_tax(key: str, label: str, amount) -> None:
         code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
 
-    for li in line_items:
-        for item in tax_entries(li.get("taxes")):
-            code = item.get("code") or ""
-            rate = float(item.get("rate", 0) or 0)
-            label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
-            _add_tax(code or f"custom_{rate}", label, item.get("amount"))
+    # The shipping's taxes add to the rows of their codes, as another line's would.
+    charged = [tx for li in line_items for tx in tax_entries(li.get("taxes"))] + tax_entries(doc.get("shipping_taxes"))
+    for item in charged:
+        code = item.get("code") or ""
+        rate = float(item.get("rate", 0) or 0)
+        label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"
+        _add_tax(code or f"custom_{rate}", label, item.get("amount"))
     stored_tax_rows = _stored_doc_tax_rows(doc, currency, can_edit)
     stored_tax = sum(float(d.get("amount") or 0) for d in tax_entries(doc.get("doc_taxes")))
     # A document tax that cannot be read keeps its rows, so it can be removed.
@@ -8597,7 +8647,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         _taxes_list = taxes_for(company_taxes or [], doc_type)
         _tax_on = tax_day(doc)
-        _taxes_in_force = taxes_on(_taxes_list, _tax_on)
+        _taxes_in_force = _codes_in_force(company_taxes, doc)
 
         def _tax_select(li: dict | None = None) -> FT:
             """Build tax <select> + hidden custom-rate input + hidden label for a line item.
@@ -11613,6 +11663,7 @@ async function celerpCsvImport(input, entityId) {
         stored_tax_rows,
         *_memo_take_rows(doc, currency),
         Div(Span(t("doc.shipping"), cls="total-label"),
+            _shipping_tax_choice(doc, company_taxes, can_edit_lines),
             Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
             cls="total-row") if shipping else "",
         Div(

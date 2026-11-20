@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "المتبقي: {amount}",
   "documents.remove_doc_tax": "إزالة هذه الضريبة",
   "documents.line_tax_unset": "اختر ضريبة هذا البند: يخضع المستند للضريبة ككل، لذلك لم تُضف ضريبة افتراضية.",
+  "documents.shipping_tax": "الضريبة على الشحن",
   "documents.igst_note": "تنطبق IGST بنسبة 18% على البيع أو الشراء بين الولايات. وداخل الولاية نفسها تتكون نسبة 18% من CGST بنسبة 9% إضافة إلى SGST بنسبة 9%.",
   "documents.remove_from_draft": "إزالة من المسودة",
   "documents.reprice_failed": "تعذّرت إعادة حساب الأسعار. اختر إعادة المحاولة.",

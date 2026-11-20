@@ -2747,6 +2747,7 @@
   "documents.remaining_amount": "የቀረው: {amount}",
   "documents.remove_doc_tax": "ይህን ታክስ ያስወግዱ",
   "documents.line_tax_unset": "የዚህን መስመር ታክስ ይምረጡ፤ ሰነዱ በጠቅላላው ስለሚታከስ ነባሪ ታክስ አልተጨመረም።",
+  "documents.shipping_tax": "በማጓጓዣ ላይ ያለ ግብር",
   "documents.igst_note": "IGST 18% በግዛቶች መካከል ለሚደረግ ግዢ ወይም ሽያጭ ይሠራል። በአንድ ግዛት ውስጥ ይኸው 18% ከCGST 9% እና SGST 9% የተዋቀረ ነው።",
   "documents.remove_from_draft": "ከረቂቅ አስወግድ",
   "documents.reprice_failed": "ዋጋዎች እንደገና ሊሰሉ አልቻሉም። እንደገና ሞክር ይምረጡ።",

@@ -2520,6 +2520,7 @@
   "documents.remaining_amount": "Reste : {amount}",
   "documents.remove_doc_tax": "Supprimer cette taxe",
   "documents.line_tax_unset": "Choisissez la taxe de cette ligne : le document est taxé dans son ensemble, aucune taxe par défaut n’a donc été ajoutée.",
+  "documents.shipping_tax": "Taxe sur la livraison",
   "documents.igst_note": "L’IGST à 18 % s’applique aux ventes ou achats entre États. Dans un même État, ces 18 % correspondent à la CGST à 9 % plus la SGST à 9 %.",
   "documents.remove_from_draft": "Supprimer du brouillon",
   "documents.reprice_failed": "Les prix n'ont pas pu être recalculés. Sélectionnez « Réessayer ».",

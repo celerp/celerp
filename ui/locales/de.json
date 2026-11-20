@@ -2520,6 +2520,7 @@
   "documents.remaining_amount": "Verbleibend: {amount}",
   "documents.remove_doc_tax": "Diese Steuer entfernen",
   "documents.line_tax_unset": "Wählen Sie die Steuer für diese Position: Das Dokument wird insgesamt besteuert, deshalb wurde keine Standardsteuer hinzugefügt.",
+  "documents.shipping_tax": "Steuer auf Versand",
   "documents.igst_note": "IGST 18 % gilt für Verkäufe oder Käufe zwischen Bundesstaaten. Innerhalb eines Bundesstaats setzen sich dieselben 18 % aus CGST 9 % und SGST 9 % zusammen.",
   "documents.remove_from_draft": "Aus dem Entwurf entfernen",
   "documents.reprice_failed": "Die Preise konnten nicht neu berechnet werden. Wählen Sie „Erneut versuchen“.",

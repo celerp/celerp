@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "Số lượng còn lại: {amount}",
   "documents.remove_doc_tax": "Xóa thuế này",
   "documents.line_tax_unset": "Chọn thuế cho dòng này: chứng từ được tính thuế trên toàn bộ nên không có thuế mặc định nào được thêm vào.",
+  "documents.shipping_tax": "Thuế trên phí vận chuyển",
   "documents.igst_note": "IGST 18% áp dụng cho mua bán giữa các bang. Trong cùng một bang, mức 18% tương đương CGST 9% cộng SGST 9%.",
   "documents.remove_from_draft": "Xóa khỏi bản nháp",
   "documents.reprice_failed": "Không thể tính lại giá. Hãy chọn Thử lại.",

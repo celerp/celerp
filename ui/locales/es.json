@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "Restante: {amount}",
   "documents.remove_doc_tax": "Eliminar este impuesto",
   "documents.line_tax_unset": "Seleccione el impuesto de esta línea: como el documento tributa en conjunto, no se ha añadido ningún impuesto predeterminado.",
+  "documents.shipping_tax": "Impuesto sobre el envío",
   "documents.igst_note": "El IGST del 18 % se aplica a las ventas o compras entre estados. Dentro de un mismo estado, ese 18 % corresponde al CGST del 9 % más el SGST del 9 %.",
   "documents.remove_from_draft": "Eliminar del borrador",
   "documents.reprice_failed": "No se pudieron recalcular los precios. Seleccione Reintentar.",

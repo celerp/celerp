@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "Sisa: {amount}",
   "documents.remove_doc_tax": "Hapus pajak ini",
   "documents.line_tax_unset": "Pilih pajak untuk baris ini: dokumen dikenai pajak secara keseluruhan, jadi tidak ada pajak bawaan yang ditambahkan.",
+  "documents.shipping_tax": "Pajak atas pengiriman",
   "documents.igst_note": "IGST 18% berlaku untuk penjualan atau pembelian antarnegara bagian. Dalam satu negara bagian, 18% tersebut terdiri atas CGST 9% ditambah SGST 9%.",
   "documents.remove_from_draft": "Hapus dari draf",
   "documents.reprice_failed": "Harga tidak bisa dihitung ulang. Pilih Coba lagi.",

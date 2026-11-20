@@ -2519,6 +2519,7 @@
   "documents.remaining_amount": "Restante: {amount}",
   "documents.remove_doc_tax": "Remover este imposto",
   "documents.line_tax_unset": "Escolha o imposto desta linha: o documento é tributado como um todo, por isso nenhum imposto padrão foi adicionado.",
+  "documents.shipping_tax": "Imposto sobre o frete",
   "documents.igst_note": "IGST de 18% vale para vendas ou compras entre estados. Dentro de um mesmo estado, os mesmos 18% correspondem a CGST de 9% mais SGST de 9%.",
   "documents.remove_from_draft": "Remover do rascunho",
   "documents.reprice_failed": "Não foi possível recalcular os preços. Selecione Tentar novamente.",

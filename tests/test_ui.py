@@ -15786,6 +15786,36 @@ class TestPriceLists:
         assert [li["taxes"] for li in args[2]["line_items"]] == [[{"code_id": "tc-vat"}, manual], [current]]
 
     @pytest.mark.asyncio
+    async def test_shipping_tax_choice_saves_code_id(self, ui_client):
+        """A draft's shipping shows its tax as a choice of the codes in force on the document's
+        day; a pick sends the code id alone (No Tax sends an empty list) and redraws the money."""
+        vat = {"id": "tc-vat", "name": "VAT", "category": "standard", "rate": 7.0, "versions": [{"rate": 7.0}]}
+        stored = {"code": "VAT", "code_id": "tc-vat", "rate": 7.0, "amount": 7.0}
+        doc = {**_BLANK_DOC, "shipping": 100, "shipping_taxes": [stored], "tax": 7.0, "total": 107.0}
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[vat])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.get(f"/docs/{doc['entity_id']}")
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert f'hx-patch="/docs/{doc["entity_id"]}/field/shipping_taxes"' in html
+        assert 'data-value="tc-vat"' in html and 'value="tc-vat"' in html
+        # The shipping's tax counts in the VAT row, so the rows add up to the stored tax.
+        assert "VAT (7%):" in html
+        for value, sent in (("tc-vat", [{"code_id": "tc-vat"}]), ("", [])):
+            with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={})) as mock_patch:
+                r = await ui_client.patch("/docs/doc:1/field/shipping_taxes", data={"value": value})
+            assert r.status_code == 204
+            assert "celerpDocMoney" in r.headers["HX-Trigger"]
+            assert mock_patch.await_args.args[1:] == ("doc:1", {"shipping_taxes": sent})
+
+    @pytest.mark.asyncio
     async def test_reprice_manual_line_result_is_passed_through(self, ui_client):
         """Manual-line behavior belongs to the backend; the UI preserves its result."""
         result = {

@@ -2520,6 +2520,7 @@
   "documents.remaining_amount": "Rimanente: {amount}",
   "documents.remove_doc_tax": "Rimuovi questa imposta",
   "documents.line_tax_unset": "Scegli l'imposta della riga: il documento è tassato nel suo complesso, quindi non è stata aggiunta un'imposta predefinita.",
+  "documents.shipping_tax": "Imposta sulla spedizione",
   "documents.igst_note": "L'IGST del 18% si applica a vendite o acquisti tra Stati. All'interno dello stesso Stato, il medesimo 18% è composto da CGST al 9% più SGST al 9%.",
   "documents.remove_from_draft": "Rimuovi dalla bozza",
   "documents.reprice_failed": "Non è stato possibile ricalcolare i prezzi. Seleziona Riprova.",
