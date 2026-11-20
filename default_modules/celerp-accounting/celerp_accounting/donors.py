@@ -239,7 +239,10 @@ async def send_statements(session: AsyncSession, company_id, user_id, payload: S
 async def _send_statement(session: AsyncSession, company_id, user_id, payload: SendIn, row: dict, answer: dict,
                           message: dict, date_from: str, date_to: str, version: int) -> dict:
     """One donor's statement through email.send_durably; the attempt lives on the send's own
-    STATEMENT_SENT record (metadata ``email``), its answer in metadata ``result``."""
+    STATEMENT_SENT record (metadata ``email``), its answer in metadata ``result``. The donor's
+    address is read again just before the email goes out (the batch read it before its first
+    send): one that changed meanwhile is not sent to, and the statement answers failed, so the
+    next Send goes to the address the donor has then."""
     party = row["contact_id"]
     statement = _statement_key(party, date_from, date_to, version)
     held: dict = {}
@@ -277,6 +280,12 @@ async def _send_statement(session: AsyncSession, company_id, user_id, payload: S
         held["key"] = key
         return [attempt]
 
+    async def current(s, attempt) -> bool:
+        state = (await s.execute(select(Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "contact",
+            Projection.entity_id == party))).scalar_one_or_none() or {}
+        return (state.get("email") or "").strip() == attempt.message["to"]
+
     async def settle(s, results: list) -> dict:
         if "key" not in held:
             await s.rollback()
@@ -289,7 +298,7 @@ async def _send_statement(session: AsyncSession, company_id, user_id, payload: S
         entry.metadata_ = {**entry.metadata_, "email": record, "result": result}
         return result
 
-    return await email_service.send_durably(session, begin, settle)
+    return await email_service.send_durably(session, begin, current, settle)
 
 
 _READ = (require_permission("view_contacts"), require_permission("view_payments"))

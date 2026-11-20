@@ -388,6 +388,72 @@ def test_an_unconfirmed_attempt_is_never_replayed_through_another_relay_account(
     assert email.relay_identity() is None
 
 
+class _Session:
+    """A session that records when its transaction ends, for the order of a durable send."""
+    def __init__(self, log):
+        self.log = log
+
+    def expire_all(self):
+        self.log.append("expire")
+
+    async def commit(self):
+        self.log.append("commit")
+
+    async def rollback(self):
+        self.log.append("rollback")
+
+
+async def test_a_durable_send_confirms_each_recipient_just_before_their_own_email(monkeypatch):
+    """Any caller of send_durably gets the check: each attempt's recipient is read afresh
+    immediately before that attempt, the read's transaction is ended before the transport is
+    called, and an attempt that is not confirmed (or whose check fails) is never sent."""
+    import inspect
+
+    from celerp.services import email
+    log: list = []
+    a, b, c = (email.Attempt(f"op-{n}", {"to": f"{n}@test.test", "subject": "s", "body_html": "b"}) for n in "abc")
+
+    async def send(to, subject, body_html, body_text="", **kw):
+        log.append(("send", to))
+        return email.EmailResult(True, "sent")
+    monkeypatch.setattr(email, "send_email", send)
+
+    async def begin(session):
+        log.append("begin")
+        return [a, b, c]
+
+    async def current(session, attempt):
+        log.append(("current", attempt.message["to"]))
+        if attempt is c:
+            raise RuntimeError("the read failed")
+        return attempt is a
+
+    async def settle(session, results):
+        log.append("settle")
+        return results
+
+    results = await email.send_durably(_Session(log), begin, current, settle)
+    assert log == ["begin", "commit",
+                   "expire", ("current", "a@test.test"), "rollback", ("send", "a@test.test"),
+                   "expire", ("current", "b@test.test"), "rollback",
+                   "expire", ("current", "c@test.test"), "rollback",
+                   "settle", "commit"]
+    assert results[0].ok
+    for refused in results[1:]:
+        assert not refused.ok and not refused.unconfirmed and refused.reason == email.RECIPIENT_UNCONFIRMED
+    assert inspect.signature(email.send_durably).parameters["current"].default is inspect.Parameter.empty
+
+
+def test_a_replay_whose_recipient_is_not_confirmed_stays_unconfirmed_and_a_first_send_fails(monkeypatch):
+    from celerp.services import email
+    refused = email.EmailResult(False, "recipient not confirmed before sending", reason=email.RECIPIENT_UNCONFIRMED)
+    attempt = email.Attempt("op-1", {"to": "a@test.test", "subject": "s", "body_html": "b"})
+    first = email.settled_record(email.attempt_record(attempt, None), refused)
+    assert first["state"] == "failed" and first["reason"] == email.RECIPIENT_UNCONFIRMED
+    cut_off = _attempt_record(monkeypatch, age=email.REPLAY_WINDOW * 0.5)
+    assert email.settled_record(email.attempt_record(attempt, cut_off), refused)["state"] == "unconfirmed"
+
+
 def test_only_the_email_primitive_decides_a_replay():
     """The window and the relay account are read by next_step alone: every other shipped file
     asks it, so a new caller cannot replay past either."""

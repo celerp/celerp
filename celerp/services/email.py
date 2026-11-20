@@ -52,6 +52,9 @@ SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
 # time the relay answers for an operation id, so a replay is never taken as a new email.
 REPLAY_WINDOW = timedelta(hours=12)
 
+# Why an email was not sent: its recipient was not confirmed just before it went out.
+RECIPIENT_UNCONFIRMED = "email.err_recipient_unconfirmed"
+
 
 class Attempt(NamedTuple):
     """One email of a durable send: its operation id and its send_email arguments."""
@@ -85,6 +88,8 @@ def settled_record(record: dict, result: EmailResult) -> dict:
     """``record`` with the outcome of its send: sent, unconfirmed (it may have gone out) or failed.
     ``began`` keeps when the attempt first went out, which bounds its replay (next_step)."""
     state = "sent" if result.ok else "unconfirmed" if result.unconfirmed else "failed"
+    if result.reason == RECIPIENT_UNCONFIRMED and record.get("began"):
+        state = "unconfirmed"  # a replay not sent this time: its first attempt may still have gone out
     return {**record, "state": state, "at": datetime.now(timezone.utc).isoformat(),
             "began": record.get("began") or record.get("at"),
             **({"reason": result.reason, "detail": result.detail} if state == "failed" else {})}
@@ -134,11 +139,23 @@ def next_step(record: dict | None, *, again: bool = False) -> str:
     return "replay" if abs(now - began) < REPLAY_WINDOW else "unverified"
 
 
-async def transmit(attempts: list[Attempt]) -> list[EmailResult]:
+async def transmit(attempts: list[Attempt],
+                   current: Callable[[Attempt], Awaitable[bool]] | None = None) -> list[EmailResult]:
     """Send each attempt under its operation id, failing closed on an unknown outcome; a send
-    cut off or past TRANSPORT_TIMEOUT is unconfirmed, as it may have gone out."""
+    cut off or past TRANSPORT_TIMEOUT is unconfirmed, as it may have gone out. ``current`` is
+    asked immediately before each attempt goes out, since the ones before it may have been
+    slow: an attempt whose recipient it does not confirm is not sent (RECIPIENT_UNCONFIRMED)."""
     results = []
     for attempt in attempts:
+        try:
+            if current is not None and not await current(attempt):
+                results.append(EmailResult(False, "recipient not confirmed before sending",
+                                           reason=RECIPIENT_UNCONFIRMED))
+                continue
+        except Exception as exc:
+            log.warning("Confirming an email's recipient failed (%s)", type(exc).__name__)
+            results.append(EmailResult(False, "recipient not confirmed before sending", reason=RECIPIENT_UNCONFIRMED))
+            continue
         try:
             results.append(await asyncio.wait_for(send_email(
                 **attempt.message, operation_id=attempt.operation_id, fail_closed_on_uncertain=True),
@@ -150,16 +167,29 @@ async def transmit(attempts: list[Attempt]) -> list[EmailResult]:
 
 
 async def send_durably(session, begin: Callable[..., Awaitable[list[Attempt]]],
+                       current: Callable[..., Awaitable[bool]],
                        settle: Callable[..., Awaitable[object]]):
     """The one lifecycle of an email a later run must not send twice. ``begin(session)``
     takes the caller's locks, records each attempt it sends (attempt_record) and returns
     them; that is committed, releasing every lock, before anything goes out, so no writer of
-    the company waits on the transport. ``settle(session, results)`` then takes the locks
+    the company waits on the transport. ``current(session, attempt)`` answers, from what is
+    stored now, whether the attempt's recipient may still get it at the address it carries;
+    it is asked immediately before each attempt goes out, on rows read afresh, and its
+    transaction is ended before the transport is called, so a recipient who changed while an
+    earlier attempt was slow is not sent to. ``settle(session, results)`` then takes the locks
     again, records each outcome on the attempt it read back (settled_record) and returns
     the answer, which is committed."""
     attempts = await begin(session)
     await session.commit()
-    results = await transmit(attempts) if attempts else []
+
+    async def confirmed(attempt: Attempt) -> bool:
+        session.expire_all()
+        try:
+            return await current(session, attempt)
+        finally:
+            await session.rollback()
+
+    results = await transmit(attempts, confirmed) if attempts else []
     answer = await settle(session, results)
     await session.commit()
     return answer

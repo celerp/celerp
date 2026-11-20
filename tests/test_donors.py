@@ -480,6 +480,44 @@ async def test_a_cut_off_statement_the_relay_may_no_longer_know_is_never_replaye
     assert calls == [] and again["state"] == "unconfirmed" and again["repeat"] is True
 
 
+@pytest.mark.parametrize("address", ["moved@test.test", None])
+async def test_a_donor_whose_address_changes_while_an_earlier_statement_is_slow_is_not_mailed_at_the_old_one(
+        client, auth, monkeypatch, address):
+    """Each donor's address is read again just before their own email: one changed or removed
+    while an earlier statement of the batch is with the transport gets nothing at the old one."""
+    import asyncio
+
+    from celerp.services.company_lock import refuse_held_transaction
+    donors = await _statement_donors(client, auth)
+    later = await _donor(client, auth, "Bo Donor", "bo@test.test")
+    await _direct_gift(client, auth, later, 50, "2026-03-10")
+    entered, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        refuse_held_transaction("an email is sent")
+        calls.append(to)
+        if not entered.is_set():
+            entered.set()
+            await asyncio.wait_for(release.wait(), 10)
+        return EmailResult(ok=True, detail="accepted")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    sending = asyncio.create_task(_send_all(client, auth))
+    await asyncio.wait_for(entered.wait(), 10)
+    assert calls == ["cy@test.test"]
+    r = await client.patch(f"/crm/contacts/{later}", headers=auth["headers"],
+                           json={"fields_changed": {"email": {"old": "bo@test.test", "new": address}}})
+    assert r.status_code == 200, r.text
+    release.set()
+    out = await sending
+    assert calls == ["cy@test.test"] and out[donors["email"]]["state"] == "sent", (calls, out)
+    assert out[later]["state"] == "failed", out
+    again = await _send_all(client, auth)
+    if address:
+        assert again[later]["state"] == "sent" and calls[1:] == [address], (calls, again)
+    else:
+        assert again[later]["state"] == "no_email" and calls == ["cy@test.test"], (calls, again)
+
+
 async def test_an_unconfirmed_statement_is_reported_and_a_failed_one_is_retried_once(client, auth, monkeypatch):
     """The answer names an email that may have gone out; one the transport refused is sent again
     by the next Send under the same send, and a press after that answers as stored."""

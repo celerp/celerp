@@ -444,6 +444,54 @@ async def test_a_slow_email_never_blocks_a_write_to_the_company(client, session,
     assert other["id"] and (await asking).status_code == 200
 
 
+@pytest.mark.parametrize("change", ["revoked", "moved"])
+async def test_a_recipient_who_changes_while_an_earlier_email_is_slow_is_not_mailed(client, session, monkeypatch, change):
+    """Each recipient is read again just before their own email: one removed, or at a new
+    address, while an earlier email of the same Ask is with the transport gets nothing at
+    the address the Ask began with."""
+    import asyncio
+    import uuid
+
+    from sqlalchemy import update
+
+    from celerp.models.company import User
+    from celerp.services.company_lock import refuse_held_transaction
+    co, bk, members, lines = await _two_clients(client, session)
+    known = {m: ((u := await session.get(User, uuid.UUID(m))).email, u.name) for m in members}
+    entered, release, calls = asyncio.Event(), asyncio.Event(), []
+
+    async def slow(to, subject, body_html, body_text="", **kw):
+        refuse_held_transaction("an email is sent")
+        calls.append(to)
+        if not entered.is_set():
+            entered.set()
+            await asyncio.wait_for(release.wait(), 10)
+        return EmailResult(True, "sent")
+    monkeypatch.setattr("celerp.services.email.send_email", slow)
+    idem = B.key()
+    asking = asyncio.create_task(_ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem))
+    await asyncio.wait_for(entered.wait(), 10)
+    later = next(m for m in members if known[m][0] != calls[0])
+    if change == "revoked":
+        await _removed(session, later, co["company_id"])
+    else:
+        await session.execute(update(User).where(User.id == uuid.UUID(later)).values(email="moved@test.test"))
+    await session.commit()
+    release.set()
+    r = await asking
+    assert r.status_code == 200, r.text
+    assert calls == [calls[0]] and known[later][0] not in calls, calls
+    out = r.json()
+    if change == "revoked":
+        assert known[later][1] in out["outcome"] and "not emailed" in out["outcome"], out
+        assert out["email"]["state"] == "sent", out
+    else:
+        assert {"name": known[later][1], "state": "failed"} in out["email"]["recipients"], out
+        assert "changed just before" in out["outcome"], out
+        again = await _ask(client, co, bk, [lines["WITHDRAWAL"]["id"]], idem=idem)
+        assert again.json()["email"]["state"] == "sent" and calls[1:] == ["moved@test.test"], (calls, again.text)
+
+
 @pytest.mark.parametrize("relay", [False, True], ids=["smtp", "relay"])
 async def test_an_email_taken_before_a_crash_is_never_sent_again_unless_the_relay_deduplicates(
         client, session, monkeypatch, relay):

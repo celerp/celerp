@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "O Celerp não conseguiu se conectar ao servidor SMTP. Verifique as configurações de SMTP e tente novamente.",
   "email.err_smtp_login": "O servidor SMTP recusou o login. Verifique o nome de usuário e a senha do SMTP e tente novamente.",
   "email.err_smtp_refused": "O servidor SMTP recusou este e-mail. Verifique os endereços do remetente e do destinatário e tente novamente.",
+  "email.err_recipient_unconfirmed": "Os dados do destinatário mudaram pouco antes de o e-mail ser enviado.",
   "subscriptions.err_send_unverified": "É possível que o último envio deste e-mail tenha sido recebido. Confirme com o cliente antes de enviá-lo novamente.",
   "subscriptions.err_request_key_reused": "Esta solicitação já foi usada em outra operação de faturamento. Selecione Tentar novamente.",
   "subscriptions.err_send_preparation": "Não foi possível preparar o e-mail. Verifique o documento e tente novamente.",

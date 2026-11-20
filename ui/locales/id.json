@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp tidak dapat terhubung ke server SMTP. Periksa pengaturan SMTP, lalu coba lagi.",
   "email.err_smtp_login": "Server SMTP menolak proses masuk. Periksa nama pengguna dan kata sandi SMTP, lalu coba lagi.",
   "email.err_smtp_refused": "Server SMTP menolak email ini. Periksa alamat pengirim dan penerima, lalu coba lagi.",
+  "email.err_recipient_unconfirmed": "Data penerima berubah tepat sebelum email dikirim.",
   "subscriptions.err_send_unverified": "Upaya terakhir untuk mengirim email ini mungkin telah berhasil. Konfirmasikan kepada pelanggan sebelum mengirimnya lagi.",
   "subscriptions.err_request_key_reused": "Permintaan ini sudah digunakan untuk tindakan penagihan lain. Pilih Coba lagi.",
   "subscriptions.err_send_preparation": "Email tidak dapat disiapkan. Periksa dokumennya, lalu coba lagi.",

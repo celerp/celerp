@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp ከSMTP አገልጋዩ ጋር መገናኘት አልቻለም። የSMTP ቅንብሮችን ያረጋግጡና እንደገና ይሞክሩ።",
   "email.err_smtp_login": "የSMTP አገልጋዩ መግባቱን አልተቀበለም። የSMTP ተጠቃሚ ስምና የይለፍ ቃል ያረጋግጡ፣ ከዚያም እንደገና ይሞክሩ።",
   "email.err_smtp_refused": "የSMTP አገልጋዩ ይህን ኢሜይል አልተቀበለም። የላኪውንና የተቀባዩን አድራሻዎች ያረጋግጡ፣ ከዚያም እንደገና ይሞክሩ።",
+  "email.err_recipient_unconfirmed": "የተቀባዩ ዝርዝሮች ኢሜይሉ ከመላኩ ጥቂት ቀደም ብሎ ተቀይረዋል።",
   "subscriptions.err_send_unverified": "የመጨረሻው የኢሜይል ሙከራ ተሳክቶ ሊሆን ይችላል። እንደገና ከመላክዎ በፊት ከደንበኛው ጋር ያረጋግጡ።",
   "subscriptions.err_request_key_reused": "ይህ ጥያቄ ለሌላ የክፍያ መጠየቂያ ሂደት አስቀድሞ ተጠቅሟል። እንደገና ሞክር ይምረጡ።",
   "subscriptions.err_send_preparation": "ኢሜይሉን ማዘጋጀት አልተቻለም። ሰነዱን ያረጋግጡና እንደገና ይሞክሩ።",

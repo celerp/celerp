@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp không thể kết nối với máy chủ SMTP. Hãy kiểm tra cài đặt SMTP rồi thử lại.",
   "email.err_smtp_login": "Máy chủ SMTP đã từ chối đăng nhập. Hãy kiểm tra tên người dùng và mật khẩu SMTP rồi thử lại.",
   "email.err_smtp_refused": "Máy chủ SMTP đã từ chối email này. Hãy kiểm tra địa chỉ người gửi và người nhận rồi thử lại.",
+  "email.err_recipient_unconfirmed": "Thông tin của người nhận đã thay đổi ngay trước khi email được gửi đi.",
   "subscriptions.err_send_unverified": "Email ở lần gửi trước có thể đã đến nơi. Hãy xác nhận với khách hàng trước khi gửi lại.",
   "subscriptions.err_request_key_reused": "Yêu cầu này đã được dùng cho một thao tác lập hóa đơn khác. Hãy chọn Thử lại.",
   "subscriptions.err_send_preparation": "Không thể chuẩn bị email. Hãy kiểm tra chứng từ rồi thử lại.",

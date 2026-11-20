@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp no ha podido conectarse al servidor SMTP. Compruebe la configuración SMTP y vuelva a intentarlo.",
   "email.err_smtp_login": "El servidor SMTP ha rechazado el inicio de sesión. Compruebe el nombre de usuario y la contraseña de SMTP y vuelva a intentarlo.",
   "email.err_smtp_refused": "El servidor SMTP ha rechazado este correo. Compruebe las direcciones del remitente y del destinatario y vuelva a intentarlo.",
+  "email.err_recipient_unconfirmed": "Los datos del destinatario cambiaron justo antes de que se enviara el correo.",
   "subscriptions.err_send_unverified": "Es posible que el último intento de envío haya llegado a su destino. Confírmelo con el cliente antes de volver a enviarlo.",
   "subscriptions.err_request_key_reused": "Esta solicitud ya se ha utilizado para otra operación de facturación. Seleccione Reintentar.",
   "subscriptions.err_send_preparation": "No se ha podido preparar el correo. Compruebe el documento y vuelva a intentarlo.",

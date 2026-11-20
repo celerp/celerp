@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp could not connect to the SMTP server. Check the SMTP settings, then retry.",
   "email.err_smtp_login": "The SMTP server refused the sign-in. Check the SMTP user name and password, then retry.",
   "email.err_smtp_refused": "The SMTP server refused this email. Check the sender and recipient addresses, then retry.",
+  "email.err_recipient_unconfirmed": "The recipient's details changed just before the email went out.",
   "subscriptions.err_send_unverified": "The last attempt to send this email may have arrived. Check with the customer before sending it again.",
   "subscriptions.err_request_key_reused": "This request was already used for a different billing action. Select Try again.",
   "subscriptions.err_send_preparation": "The email could not be prepared. Check the document, then retry.",

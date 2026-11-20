@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "Celerp non è riuscito a connettersi al server SMTP. Controlla le impostazioni SMTP e riprova.",
   "email.err_smtp_login": "Il server SMTP ha rifiutato l'accesso. Controlla il nome utente e la password SMTP, quindi riprova.",
   "email.err_smtp_refused": "Il server SMTP ha rifiutato questa email. Controlla gli indirizzi del mittente e del destinatario, quindi riprova.",
+  "email.err_recipient_unconfirmed": "I dati del destinatario sono cambiati poco prima dell'invio dell'email.",
   "subscriptions.err_send_unverified": "L'ultimo tentativo di invio potrebbe essere andato a buon fine. Verifica con il cliente prima di inviare di nuovo l'email.",
   "subscriptions.err_request_key_reused": "Questa richiesta è già stata usata per un'altra operazione di fatturazione. Seleziona Riprova.",
   "subscriptions.err_send_preparation": "Impossibile preparare l'email. Controlla il documento e riprova.",

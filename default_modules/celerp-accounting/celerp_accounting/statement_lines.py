@@ -630,14 +630,16 @@ async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str) -> dic
     """Email the members the Ask claimed under ``key`` names, through the one durable send
     (email.send_durably): each recipient's attempt is kept on the Ask's own record, so no
     request key names it, and committed before it goes out, with no lock held while it does.
-    A member is emailed only while still answering bank questions here (client_users, read
-    again at each send); the outcome names those left out. A run of the key answers each
+    A member is emailed only while still answering bank questions here, at the address they
+    have now (client_users, read when the send begins and again just before each member's own
+    email, as the ones before it may have been slow); the outcome names those left out. A run of the key answers each
     recipient as stored: an attempt cut off after it may have gone out is not sent again
     unless the relay that took it deduplicates its operation id (email.next_step). Refused,
     with nothing sent, when none of the members still answers."""
     from celerp.services import email as email_service
 
     sending: list[tuple[str, email_service.Attempt]] = []
+    gone: set[str] = set()
 
     async def begin(session) -> list:
         claim = await _ask_claim(session, company_id, key)
@@ -668,18 +670,29 @@ async def email_ask(db: AsyncSession, *, company_id: uuid.UUID, key: str) -> dic
         claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients, "left_out": left_out}}
         return [attempt for _m, attempt in sending]
 
+    async def current(session, attempt) -> bool:
+        member = next(m for m, sent in sending if sent is attempt)
+        user = next((u for u in await client_users(session, company_id) if str(u.id) == member), None)
+        if user is None:
+            gone.add(member)
+        return user is not None and user.email == attempt.message["to"]
+
     async def settle(session, results: list) -> dict:
         claim = await _ask_claim(session, company_id, key)
         done = claim.metadata_["email"]
-        recipients = dict(done["recipients"])
+        recipients, left_out = dict(done["recipients"]), list(done["left_out"])
         for (member, attempt), result in zip(sending, results):
             record = recipients.get(member) or {}
-            if record.get("operation_id") == attempt.operation_id and record.get("state") == "sending":
-                recipients[member] = email_service.settled_record(record, result)
-        claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients}}
+            if record.get("operation_id") != attempt.operation_id or record.get("state") != "sending":
+                continue
+            recipients[member] = email_service.settled_record(record, result)
+            if member in gone and "began" not in record:  # a first send that never went out: left out
+                del recipients[member]
+                left_out.append(member)
+        claim.metadata_ = {**claim.metadata_, "email": {**done, "recipients": recipients, "left_out": left_out}}
         return await _ask_outcome(session, claim.metadata_["result"], claim.metadata_["email"])
 
-    return await email_service.send_durably(db, begin, settle)
+    return await email_service.send_durably(db, begin, current, settle)
 
 
 async def _ask_claim(db: AsyncSession, company_id: uuid.UUID, key: str):

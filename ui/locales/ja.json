@@ -7202,6 +7202,7 @@
   "email.err_smtp_unreachable": "CelerpはSMTPサーバーに接続できませんでした。SMTP設定を確認してから再試行してください。",
   "email.err_smtp_login": "SMTPサーバーがログインを拒否しました。SMTPのユーザー名とパスワードを確認してから再試行してください。",
   "email.err_smtp_refused": "SMTPサーバーがこのメールを拒否しました。送信元と送信先のメールアドレスを確認してから再試行してください。",
+  "email.err_recipient_unconfirmed": "メールが送信される直前に受信者の情報が変更されました。",
   "subscriptions.err_send_unverified": "前回のメール送信が成功している可能性があります。再送信する前に顧客に確認してください。",
   "subscriptions.err_request_key_reused": "このリクエストは別の請求操作にすでに使用されています。「再試行」を選んでください。",
   "subscriptions.err_send_preparation": "メールを準備できませんでした。伝票を確認してから再試行してください。",
