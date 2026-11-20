@@ -31833,7 +31833,7 @@
     "tests/test_donors_page.py::test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_stored": 1.0129470539977774,
     "tests/test_donors_page.py::test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out": 0.003983697999501601,
     "tests/test_donors_page.py::test_a_pending_sends_status_check_failure_shows_as_pending_with_its_own_error": 1.3103712380107027,
-    "tests/test_lock_rank_checker.py::test_a_waitable_lock_in_another_task_leaves_a_pending_leaf_unspoiled": 0.025807458005147055,
-    "tests/test_lock_rank_checker.py::test_a_waitable_lock_on_another_connection_of_the_same_task_still_spoils_a_pending_leaf": 0.002750568964984268,
-    "tests/test_lock_rank_checker.py::test_a_waitable_lock_on_the_same_connection_still_spoils_a_pending_leaf": 0.0024852929927874357
+    "tests/test_lock_rank_checker.py::test_a_declared_renewals_pending_leaf_survives_a_waitable_take_on_another_connection": 0.02540833002422005,
+    "tests/test_lock_rank_checker.py::test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_its_leaf": 0.0025215070054400712,
+    "tests/test_lock_rank_checker.py::test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection": 0.002407986030448228
 }
