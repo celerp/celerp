@@ -3676,7 +3676,6 @@
     "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_unattended_rechecks_the_mode_under_the_lock": 0.285,
     "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_unattended_stops_when_authorizer_loses_permission": 0.624,
     "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_uncertain_email_reuses_original_payload_without_recomposition": 0.382,
-    "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_uncertain_send_replay_window_enforced_at_api": 0.327,
     "default_modules/celerp-verticals/tests/test_verticals.py::test_apply_category_diamond": 0.216,
     "default_modules/celerp-verticals/tests/test_verticals.py::test_apply_category_idempotent": 0.198,
     "default_modules/celerp-verticals/tests/test_verticals.py::test_apply_category_multiple_verticals": 0.376,
@@ -31799,5 +31798,16 @@
     "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/hardware]": 1.1098148210148793,
     "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/retail]": 1.0371575809840579,
     "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/watches]": 1.1079053950088564,
-    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/wine_spirits]": 1.1990255959972274
+    "tests/test_company_backup_integrity.py::test_a_backup_made_by_a_released_version_restores[v2.9.0/wine_spirits]": 1.1990255959972274,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_unconfirmed_email_the_relay_may_no_longer_know_is_never_replayed[another_relay_account]": 1.1169275590218604,
+    "default_modules/celerp-accounting/tests/test_bank_questions.py::test_an_unconfirmed_email_the_relay_may_no_longer_know_is_never_replayed[past_the_window]": 0.32722371397539973,
+    "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_uncertain_send_replay_window_enforced_at_api[another_relay_account]": 0.4404748819943052,
+    "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_uncertain_send_replay_window_enforced_at_api[past_the_window]": 0.35859745199559256,
+    "tests/test_donors.py::test_a_cut_off_statement_the_relay_may_no_longer_know_is_never_replayed[another_relay_account]": 0.5267124529636931,
+    "tests/test_donors.py::test_a_cut_off_statement_the_relay_may_no_longer_know_is_never_replayed[past_the_window]": 0.4746931770059746,
+    "tests/test_email_service.py::test_an_unconfirmed_attempt_is_never_replayed_through_another_relay_account": 0.002756302012130618,
+    "tests/test_email_service.py::test_an_unconfirmed_attempt_is_replayed_only_inside_the_replay_window[answered_unconfirmed]": 0.0023895209887996316,
+    "tests/test_email_service.py::test_an_unconfirmed_attempt_is_replayed_only_inside_the_replay_window[cut_off_while_sending]": 0.0023142890131566674,
+    "tests/test_email_service.py::test_only_the_email_primitive_decides_a_replay": 0.19506489799823612,
+    "tests/test_email_service.py::test_the_replay_window_runs_from_when_the_attempt_began_not_from_its_answer": 0.0034988900006283075
 }
