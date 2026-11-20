@@ -206,6 +206,66 @@ async def test_a_stalled_heartbeat_never_sends_the_question_again_under_a_new_id
     assert await count(pg, "ai_usage", "company_id = :c", c=str(company_id)) == 1
 
 
+async def test_running_tasks_keeps_a_lease_renewal_visible_past_its_jobs_own_task(
+        real_client, pg, cloud, monkeypatch, tmp_path):
+    """A renewal already sent to the database when the job's run finishes can still be
+    mid-transaction a moment after the job's own task leaves ``_tasks`` (the ordering
+    that keeps a reopen from being lost). ``running_tasks()`` is what every drain waits
+    on for "nothing of this job's is still mid-write", so it must stay non-empty for as
+    long as that renewal is open, not just for as long as the job's own task is."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.dml import Update
+    monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.05)
+    tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
+
+    # Patched before the job starts, not after: `_supervise` looks up `_run` as soon as
+    # its task runs, so a patch applied once the run is already under way (as it would be
+    # by the time `_reading_job` returns, which waits for the model call to arrive) would
+    # wrap nothing - the in-flight call already closed over the original function.
+    real_run, held, let_return = jobs._run, asyncio.Event(), asyncio.Event()
+
+    async def delayed_run(job_id_, runner_id):
+        await real_run(job_id_, runner_id)
+        held.set()
+        await let_return.wait()
+    monkeypatch.setattr(jobs, "_run", delayed_run)
+
+    # The run's own write is let all the way to its commit before a renewal is let race
+    # it for the row: the real window is between that write and `_supervise` leaving
+    # `_tasks`, never a contest for the row itself.
+    _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
+
+    armed, reached, release = {"on": False}, asyncio.Event(), asyncio.Event()
+    real_execute, real_commit = AsyncSession.execute, AsyncSession.commit
+
+    async def traced_execute(self, stmt, *a, **kw):
+        result = await real_execute(self, stmt, *a, **kw)
+        if isinstance(stmt, Update) and "lease_until" in str(stmt):
+            self._renewal_sent = True
+        return result
+
+    async def pausing_commit(self):
+        if armed["on"] and getattr(self, "_renewal_sent", False):
+            armed["on"], self._renewal_sent = False, False
+            reached.set()
+            await release.wait()
+        return await real_commit(self)
+    monkeypatch.setattr(AsyncSession, "execute", traced_execute)
+    monkeypatch.setattr(AsyncSession, "commit", pausing_commit)
+
+    cloud.release(identity)
+    await asyncio.wait_for(held.wait(), 5.0)                # the run's own write has committed
+    armed["on"] = True
+    await asyncio.wait_for(reached.wait(), 5.0)              # a renewal is now mid-transaction
+    let_return.set()                                        # `_supervise` may now leave `_tasks`
+    await until(lambda: not jobs.task_alive(job_id))         # the job's own task has left `_tasks`
+    assert jobs.running_tasks(), "a renewal still open must keep the job visible to a drain"
+
+    release.set()
+    await until(lambda: not jobs.running_tasks())
+    assert (await _finished(real_client, tok, job_id))["status"] == "completed"
+
+
 # ── A reset ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("first", ["reset", "question"])

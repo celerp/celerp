@@ -164,6 +164,9 @@ _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Jobs reopened while their task was ending: the task runs them once more.
 _again: set[uuid.UUID] = set()
+# Heartbeats still finishing a renewal already in flight when their job's own task left
+# ``_tasks``: a draining caller must still read the job as running until these are done too.
+_draining: set[asyncio.Task] = set()
 # Questions sends of this process are creating, from before the commit that shows them held
 # by this process until their task starts: per job, the sends still creating it and what a
 # send that read it meanwhile waits on.
@@ -597,8 +600,14 @@ async def _supervise(job_id: uuid.UUID) -> None:
         if _tasks.get(job_id) is asyncio.current_task():
             del _tasks[job_id]
         # Never cancelled mid-query: the renewal in flight ends, then the heartbeat does.
+        # Tracked here, not left invisible between the two: a renewal already sent when
+        # the job leaves ``_tasks`` can still hold its transaction open a moment longer.
         stop.set()
-        await asyncio.gather(beat, return_exceptions=True)
+        _draining.add(beat)
+        try:
+            await asyncio.gather(beat, return_exceptions=True)
+        finally:
+            _draining.discard(beat)
 
 
 async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.Event) -> None:
@@ -657,18 +666,23 @@ async def _run(job_id: uuid.UUID, runner_id: str) -> None:
 
 
 def running_tasks() -> list[asyncio.Task]:
-    """The job tasks of this process, for the app's shutdown to cancel and wait for."""
-    return list(_tasks.values())
+    """The job tasks of this process, for the app's shutdown to cancel and wait for, plus
+    any heartbeat still draining a renewal its own job's task already left ``_tasks`` for:
+    a caller reading this as empty must be able to trust that nothing of a job's is still
+    mid-write."""
+    return list(_tasks.values()) + list(_draining)
 
 
 async def shutdown() -> None:
     """Cancel every job task and wait for it. A step cut off mid-call keeps its state,
     so the next start resumes it under its own identity. Leases are left to lapse, as
-    a crash leaves them; the next start lets them go (``recover_on_start``)."""
+    a crash leaves them; the next start lets them go (``recover_on_start``). A draining
+    heartbeat is awaited, never cancelled: cancelling it mid-renewal is the one thing
+    that must not happen to it, so it is left to finish on its own."""
     tasks = list(_tasks.values())
     for task in tasks:
         task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*tasks, *_draining, return_exceptions=True)
     _tasks.clear()
     _again.clear()
     _held_operations.clear()
