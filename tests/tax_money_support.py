@@ -110,8 +110,10 @@ async def every_path(client, auth, *, sale: list[str], buy: list[str], sale_wht:
     for kind, note, codes_, wht in (("bill", "debit_note", buy, buy_wht), ("invoice", "credit_note", sale, sale_wht)):
         main = await finalized(client, auth, await doc(client, auth, kind, [line(1000.0, *codes_)]))
         ids[kind] = main["id"]
-        note_doc = await finalized(client, auth, await doc(client, auth, note, [line(100.0, *codes_)],
-                                                           original_doc_id=main["id"]))
+        # A supplier note issued against its bill is applied to it on finalize (PP2); the credit
+        # note is issued on its own and applied through the route (PP11).
+        against = {"original_doc_id": main["id"]} if kind == "bill" else {}
+        note_doc = await finalized(client, auth, await doc(client, auth, note, [line(100.0, *codes_)], **against))
         ids[note] = note_doc["id"]
         if kind == "invoice":
             ok(await post(client, auth, f"/docs/{note_doc['id']}/apply-to-invoice", {

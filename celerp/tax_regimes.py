@@ -103,8 +103,19 @@ def get_regime(country_code: str | None) -> dict:
     return packs().get(_code(country_code), DEFAULT_REGIME)
 
 
+# Categories the buyer accounts for itself: the tax is computed on the line and posted both as
+# output and input on a purchase, but never charged, so it is in no tax or total.
+SELF_ASSESSED = ("reverse_charge", "self_assessed_import")
+
+
+def charged(tax) -> bool:
+    """Whether a tax snapshot (a LineTaxSnapshot or its stored dict) is charged on the document:
+    every tax but a self-assessed one (SELF_ASSESSED), which the buyer accounts for itself."""
+    category = tax.get("category") if isinstance(tax, dict) else tax.category
+    return category not in SELF_ASSESSED
+
 # Categories whose tax is settled when the document is, never when the cash moves (V36).
-_NOT_CASH_BASIS = ("withholding", "perception", "reverse_charge", "self_assessed_import")
+_NOT_CASH_BASIS = ("withholding", "perception", *SELF_ASSESSED)
 
 
 def with_taxes(settings: dict, side: str, taxes: list[dict]) -> dict:

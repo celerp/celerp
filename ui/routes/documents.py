@@ -45,7 +45,7 @@ from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, 
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, item_line_taxes, legacy_line_taxes, line_tax,
+from celerp.tax_regimes import (charged, default_line_taxes, doc_side, holds_tax, item_line_taxes, legacy_line_taxes, line_tax,
                                 line_tax_unset, matching_tax, outdated_line_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
                                 unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
@@ -1202,7 +1202,7 @@ def _outdated_tax_lines(doc: dict, taxes: list[dict], tz: str | None = None) -> 
     day = tax_day(doc, tz)
     codes = {row["id"]: row for row in taxes if row.get("id")}
     return [i for i, li in enumerate(doc.get("line_items") or [])
-            if any(outdated_line_tax(tax, codes, day) for tax in li.get("taxes") or [])]
+            if any(outdated_line_tax(tax, codes, day) for tax in tax_entries(li.get("taxes")))]
 
 
 def _tax_version_notice(doc: dict, taxes: list[dict], tz: str | None = None) -> FT | None:
@@ -7609,9 +7609,10 @@ def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
     def _add_tax(key: str, label: str, amount) -> None:
         code_totals.setdefault(key, {"label": label, "amount": 0.0})["amount"] += float(amount or 0)
 
-    # The shipping's taxes add to the rows of their codes, as another line's would.
-    charged = [tx for li in line_items for tx in tax_entries(li.get("taxes"))] + tax_entries(doc.get("shipping_taxes"))
-    for item in charged:
+    # The shipping's taxes add to the rows of their codes, as another line's would. A
+    # self-assessed tax is not charged, so it has no row in the totals.
+    applied = [tx for li in line_items for tx in tax_entries(li.get("taxes"))] + tax_entries(doc.get("shipping_taxes"))
+    for item in filter(charged, applied):
         code = item.get("code") or ""
         rate = float(item.get("rate", 0) or 0)
         label = f"{code} ({rate:g}%)" if code else f"{item.get('label') or t('documents.tax')} ({rate:g}%)"

@@ -71,7 +71,7 @@ from celerp.services.money import allocate_pro_rata, checked_exchange_rate, docu
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
-from celerp.tax_regimes import doc_side, misplaced_tax, tax_entries
+from celerp.tax_regimes import charged, doc_side, misplaced_tax, tax_entries
 from sqlalchemy import ARRAY, String, any_, bindparam, func, or_
 from sqlalchemy import select as _select
 from ui.i18n import t
@@ -2302,7 +2302,8 @@ def bill_line_charges(doc: dict) -> list[tuple[_Dec, _Dec, _Dec]]:
                 - round_money(doc.get("total", 0) or 0, currency))
     discounts = (allocate_pro_rata(discount, gross, currency) if 0 < discount <= goods
                  else [_Dec(0)] * len(items))
-    taxes = [round_money(sum((to_decimal(t.get("amount") or 0) for t in tax_entries(li.get("taxes"))), _Dec(0)), currency)
+    taxes = [round_money(sum((to_decimal(t.get("amount") or 0) for t in tax_entries(li.get("taxes")) if charged(t)),
+                             _Dec(0)), currency)
              for li in items]
     net = [g - d for g, d in zip(gross, discounts)]
     rest = tax - sum(taxes, _Dec(0))
@@ -2661,11 +2662,29 @@ async def create_for_receipt_undone(
     )
 
 
+def _self_assessed(doc: dict) -> tuple[dict[int, _Dec], _Dec]:
+    """The self-assessed tax a purchase computed (reverse charge, self-assessed import), in the
+    document's currency: by line number the tax on each line, and the whole of it with the
+    shipping and document taxes."""
+    currency = doc.get("currency", "USD")
+
+    def due(taxes) -> _Dec:
+        return round_money(sum((to_decimal(t.get("amount") or 0) for t in tax_entries(taxes) if not charged(t)),
+                               _Dec(0)), currency)
+
+    by_line = {n: d for n, li in enumerate(doc.get("line_items") or [], 1)
+               if isinstance(li, dict) and (d := due(li.get("taxes"))) > 0}
+    whole = sum(by_line.values(), _Dec(0)) + due(doc.get("shipping_taxes")) + due(doc.get("doc_taxes"))
+    return by_line, whole
+
+
 async def _bill_entries(session, company_id, doc_id: str, doc: dict,
                         base_currency: str) -> tuple[list[dict], list[int | None], list[_Dec]] | None:
     """What a bill books, before any netting: its debit lines and then the AP line, the
     line index each debit comes from (None for tax and shipping), and each debit in base
-    currency. None for a bill with nothing to book.
+    currency. None for a bill with nothing to book. Self-assessed tax (_self_assessed) is
+    booked both ways just before the AP line, input debited and output credited (debits holds
+    it as a positive and a negative amount), and never in the AP.
 
     A line's own account_code takes priority; otherwise the line posts to the role
     for what it brings in: inventory for stock, general expense for anything else."""
@@ -2705,23 +2724,36 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
         return min(held, key=lambda c: (-held[c], c)), target
 
     lines = [(drawn_home(target), a) for target, a in lines]
-    acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE])
+    _, self_assessed = _self_assessed(doc)
+    acc = await resolve_many(session, company_id, [*(t for t, _ in lines if isinstance(t, AccountRole)), R.PAYABLE,
+                                                   *([R.TAX_INPUT, R.TAX_OUTPUT] if self_assessed else [])])
     base_total = to_base(to_stored_float(total_d), rate, base_currency)
     debits = _base_debits(parts, base_total, rate, base_currency)
     entries = [_bill_debit_line(acc, target, to_stored_float(d)) for (target, _), d in zip(lines, debits)]
+    if self_assessed:
+        both = to_decimal(to_base(to_stored_float(self_assessed), rate, base_currency))
+        entries += [_line(acc[R.TAX_INPUT], R.TAX_INPUT, debit=to_stored_float(both)),
+                    _line(acc[R.TAX_OUTPUT], R.TAX_OUTPUT, credit=to_stored_float(both))]
+        sources += [None, None]
+        debits = [*debits, both, -both]
     entries.append(_line(acc[R.PAYABLE], R.PAYABLE, credit=base_total))
     return entries, sources, debits
 
 
 def _bill_bases(doc: dict, built) -> list:
     """The document lines behind each line _bill_entries books: a debit its own line, tax the
-    lines that incurred it, shipping every goods line, and the payable each fund's balance."""
+    lines that incurred it, shipping every goods line, the self-assessed pair the lines that
+    computed it, and the payable each fund's balance."""
     entries, sources, debits = built
     goods = {index + 1: d for index, d in zip(sources, debits) if index is not None}
+    by_line, self_assessed = _self_assessed(doc)
+    pair = 2 if self_assessed else 0
+    charged_lines = len(debits) - pair
     return [*({index + 1: d} if index is not None
               else _line_tax_basis(doc) if R.TAX_INPUT.value in (e.get("account_roles") or [])
               else goods or HEADER
-              for index, e, d in zip(sources, entries, debits)), CONTROL]
+              for index, e, d in zip(sources[:charged_lines], entries, debits[:charged_lines])),
+            *[by_line or HEADER] * pair, CONTROL]
 
 
 async def create_for_bill_conversion(
@@ -2952,7 +2984,7 @@ async def _bill_carriage_parts(session, company_id, doc_id: str, snapshot: dict)
             if amount:
                 in_stock += amount
                 e = {**e, "debit": to_stored_float(d - amount)}
-            if to_decimal(e["debit"]):
+            if to_decimal(e["debit"]) or to_decimal(e["credit"]):
                 held.append((e, s, basis))
         if in_stock:
             held.append((_line(await resolve(session, company_id, R.RETAINED_EARNINGS), R.RETAINED_EARNINGS,

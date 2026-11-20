@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES
 from celerp.services.list_behavior import FINALIZED
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
-from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
+from celerp.tax_regimes import charged, line_tax_unset, tax_entries, tax_text, unreadable_tax
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
                                       INBOUND_DRAFT_REVERT_STATUSES)
 from celerp.localization.taxcodes import LineTaxSnapshot
@@ -215,11 +215,12 @@ def computable_tax(entry) -> bool:
 def _recompute_tax_applications(entries: list, base, currency: str, inclusive: bool = False):
     """Recompute stored tax definitions against a new base, never stale amounts; with
     *inclusive*, *base* already holds them (compute_tax_amounts). The entries were checked first
-    (refuse_malformed_taxes)."""
+    (refuse_malformed_taxes). Returns the snapshots and what they charge (a self-assessed tax
+    keeps its amount on the snapshot and charges nothing)."""
     resolved = compute_tax_amounts([_definition(value) for value in entries],
                                    to_stored_float(round_money(base, currency)), currency, inclusive=inclusive)
     return [item.model_dump() for item in resolved], sum(
-        (to_decimal(item.amount) for item in resolved), to_decimal(0))
+        (to_decimal(item.amount) for item in resolved if charged(item)), to_decimal(0))
 
 
 def line_tax_definition(line: dict) -> tuple[list[dict], Decimal]:
