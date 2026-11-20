@@ -22,6 +22,8 @@ from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 
 # The sides a tax is for; a row stored without one, or with a blank one, is for both.
 TAX_TYPES = ("sales", "purchase", "both")
+# The settings page that edits each side's tax list.
+TAX_LIST_PAGES = {"sales": "/settings/sales?tab=taxes", "purchase": "/settings/purchasing?tab=taxes"}
 
 DEFAULT_REGIME: dict = {
     "currency": "USD",
@@ -228,6 +230,18 @@ def default_line_taxes(taxes: list[dict], doc_type: str | None, day: dt.date, *,
     side = doc_side(doc_type)
     return [line_tax(tax, day, side) for tax in taxes_on(taxes_for(taxes, doc_type), day)
             if tax.get("is_default") and tax["rate"]]
+
+
+def item_line_taxes(item: dict, taxes: list[dict], doc_type: str | None, day: dt.date, *,
+                    doc: dict | None) -> list[dict] | None:
+    """The taxes a new line for catalog *item* (its state) starts with: the codes its
+    ``tax_codes`` names on the document's side with a rate in force on *day*, each as line_tax
+    builds it, in the item's order; when it names none (or none of them is in force that day),
+    default_line_taxes."""
+    by_id = {tax.get("id"): tax for tax in taxes_on(taxes_for(taxes, doc_type), day)}
+    side = doc_side(doc_type)
+    own = [line_tax(by_id[code_id], day, side) for code_id in item.get("tax_codes") or [] if code_id in by_id]
+    return own or default_line_taxes(taxes, doc_type, day, doc=doc)
 
 
 def matching_tax(taxes: list[dict], code: str, rate: float, day: dt.date) -> dict | None:

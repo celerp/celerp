@@ -38,8 +38,8 @@ from celerp.models.projections import (
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
-                                   list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
+from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, build_line_taxes, document_money, document_terms,
+                                   drawn_line_money, fixed_discount, list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
@@ -62,7 +62,7 @@ from celerp.services.ledger_sources import record_entry_ids
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
-from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes, tax_day
+from celerp.tax_regimes import item_line_taxes, set_new_line_taxes, side_taxes, tax_day
 from celerp.services.business_time import business_date_at, business_date_of, company_timezone, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, line_name, proposed_sell_qty,
@@ -352,10 +352,11 @@ _LINE_FIELD_TYPES = {
 }
 
 
-def refuse_malformed_input(values: dict) -> None:
+def refuse_malformed_input(values: dict, *, taxes: bool = True) -> None:
     """Refuse (422) ``line_items`` in *values* that are not a list of objects, or a line holding
     a field of the wrong type (naming the line and the field), then taxes no total can be computed from
-    (refuse_malformed_taxes), before any check reads them. Every write that takes a document's
+    (refuse_malformed_taxes), before any check reads them. A document edit passes ``taxes=False``
+    and checks the taxes once build_line_taxes has built those sent as a code. Every write that takes a document's
     or a List's lines from outside (a save, a create, an import, a peer) checks it first, so
     nothing of a refused write is stored.
 
@@ -374,7 +375,8 @@ def refuse_malformed_input(values: dict) -> None:
             except ValidationError:
                 raise HTTPException(status_code=422, detail=catalog_refusal(
                     "line.invalid_field", line=number, sku=_line_label(line), field=key)) from None
-    refuse_malformed_taxes(values)
+    if taxes:
+        refuse_malformed_taxes(values)
 
 
 def _stale_doc(key: str) -> HTTPException:
@@ -2179,9 +2181,9 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
 
     data = payload.model_dump(exclude_none=True)
     # A line whose tax is still for the user to set keeps that None, which the dump above drops.
+    # Its taxes are kept as sent, so build_line_taxes tells a field sent from one left out.
     for line, item in zip(data.get("line_items") or [], payload.line_items):
-        if item.taxes is None:
-            line["taxes"] = None
+        line["taxes"] = None if item.taxes is None else [tax.model_dump(exclude_unset=True) for tax in item.taxes]
     _attach_drawn_from(data.get("line_items") or [], memo_draw)
     chosen = _chosen_terms(data)
     if memo_draw is not None:
@@ -2210,6 +2212,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
 
     # Default issue_date to the company's today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
+    build_line_taxes(data, data.get("line_items") or [], [], settings)
 
     # Compute the money from the lines and header inputs when no total is given, by the same rule
     # every later edit applies (header discount before tax, shipping in the total).
@@ -2431,7 +2434,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
-    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
+    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()}, taxes=False)
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
@@ -2507,6 +2510,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
             **row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}})
     if "from_location_id" in fields_changed:
         await require_ship_from(session, company_id, (fields_changed["from_location_id"] or {}).get("new"))
+    if is_draft and isinstance(_incoming_lines, list):
+        build_line_taxes({**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}},
+                         _incoming_lines, row.state.get("line_items"), settings)
+    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     # Taxes change only on a draft; a finalized document's line edits leave them as posted.
     if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
@@ -14605,7 +14612,8 @@ def _scan_lot(code: str, res, sb: ScanBehavior, settings: dict, entity_id: str,
 def _scan_doc_line(lot: Projection, quantity, priced: bool, price_list: str, currency: str | None,
                    price_config: tuple[list[dict], str, str], line_taxes: list[dict] | None) -> dict:
     """A new document line for a scanned lot: the scan line, how a purchase receives it, the item's
-    customs fields and the taxes a new line takes (default_line_taxes; None leaves them to the user)."""
+    customs fields and the taxes a new line for its item takes (item_line_taxes; None leaves them to
+    the user)."""
     st = lot.state or {}
     line = _scan_line(lot, quantity, priced=priced, price_list=price_list, currency=currency,
                       price_config=price_config)
@@ -14646,8 +14654,7 @@ async def scan_doc(
     priced = sb.priced and (not is_cost_list_name(price_list) or role_has_permission(settings, role, "view_inventory_costs"))
     legacy = await converted_from_memo(session, company_id, entity_id, state)
     currency = state.get("currency")
-    line_taxes = default_line_taxes(side_taxes(settings, doc_type), doc_type, tax_day(state, settings.get("timezone")),
-                                    doc=state)
+    taxes, tax_on = side_taxes(settings, doc_type), tax_day(state, settings.get("timezone"))
     existing = [dict(l) for l in (state.get("line_items") or [])]
     known = line_id_counts(existing)
 
@@ -14664,7 +14671,8 @@ async def scan_doc(
     lines = [dict(l) for l in existing]
     results, failed = await _apply_scan_run(
         session, company_id, entity_id, state, lines, codes, sb, settings, noun="this document",
-        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config, line_taxes),
+        build=lambda lot, quantity: _scan_doc_line(lot, quantity, priced, price_list, currency, price_config,
+                                                   item_line_taxes(lot.state or {}, taxes, doc_type, tax_on, doc=state)),
         admit=admit)
     scanned = len(results) - len(failed)
     version = row.version

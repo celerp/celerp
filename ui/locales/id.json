@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Ini sudah dikirim dengan detail berbeda, mungkin dari tab lain. Pilih Coba lagi.",
   "documents.err_peer_synced": "{company} mengirim dokumen ini, jadi hanya {company} yang dapat mengubah atau membatalkannya. Untuk mengoreksinya di sini, posting entri jurnal (journal entry).",
   "documents.err_item_missing": "{where} memakai barang yang sudah tidak ada ({ident}). Hapus baris itu atau pilih barang lain, lalu simpan lagi.",
+  "documents.err_no_rate_in_force": "Tidak ada tarif untuk {name} pada {day}. Tambahkan versi tarif di Pengaturan > Pajak: {url}",
+  "documents.err_tax_from_code": "Rincian pajak berasal dari kode pajak {name}; ubah kodenya, atau tarifnya di Pengaturan > Pajak",
   "documents.err_tax_unreadable": "Pajak pada dokumen ini tidak dapat dibaca: {tax}. Totalnya tidak dapat dihitung ulang hingga pajak tersebut dihapus atau dipilih lagi. Hapus dari pajak dokumen atau pilih kembali pajak baris dari daftar, lalu coba lagi.",
   "documents.err_tax_unreadable_shared": "Pajak pada dokumen yang dibagikan tidak dapat dibaca: {tax}. Minta pengirim memperbaiki pajak dan membagikan dokumen lagi.",
   "documents.err_line_tax_unset": "Baris {line} belum memiliki pajak yang dipilih, sehingga tidak akan dikenai pajak. Pilih pajak untuk baris tersebut atau Tanpa Pajak jika tidak dikenai pajak, lalu coba lagi.",

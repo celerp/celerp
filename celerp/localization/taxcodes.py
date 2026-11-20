@@ -172,6 +172,19 @@ class LineTaxSnapshot(BaseModel):
     account: str | None = None
 
 
+class LineTaxEntry(LineTaxSnapshot):
+    """A line's tax as a document write sends it: a full snapshot, or a ``code_id`` alone (any
+    other field optional) that the server builds the snapshot from (build_line_taxes)."""
+    code: str | None = None
+    rate: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def _code_or_code_id(self):
+        if self.code_id is None and (self.code is None or self.rate is None):
+            raise ValueError("a line tax needs code_id, or code and rate")
+        return self
+
+
 class TaxIdentity(BaseModel):
     """A tax number a company or contact holds under one scheme from ``valid_from`` (None:
     always)."""

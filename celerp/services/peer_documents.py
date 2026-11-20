@@ -385,7 +385,7 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
     company does not have, at the sender's rate, with a notice; a tax of the same name
     is left as the receiving company keeps it."""
     from celerp.services.peer_journals import _notify
-    from celerp.tax_regimes import doc_side, side_taxes, tax_entries, with_taxes
+    from celerp.tax_regimes import TAX_LIST_PAGES, doc_side, side_taxes, tax_entries, with_taxes
 
     named = [tax for line in incoming.get("line_items") or [] for tax in tax_entries(line.get("taxes"))]
     named += tax_entries(incoming.get("doc_taxes"))
@@ -410,10 +410,9 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
     if not added:
         return
     company.settings = with_taxes(settings, side, taxes)
-    page = "/settings/purchasing?tab=taxes" if side == "purchase" else "/settings/sales?tab=taxes"
     for name, rate in added:
         await _notify(session, company.id, "notice.peer_tax_added", tax=name, rate=f"{rate:g}",
-                      record=record, company=sender, action_url=page)
+                      record=record, company=sender, action_url=TAX_LIST_PAGES[side])
 
 
 async def _choose_funds(session: AsyncSession, company_id: uuid.UUID, doc_id: str, posting: HeldPosting) -> None:

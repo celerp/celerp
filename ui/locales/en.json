@@ -4572,6 +4572,8 @@
   "documents.err_already_submitted": "This was already submitted with different details, possibly from another tab. Select Try again.",
   "documents.err_peer_synced": "{company} sent this document, so only {company} can change or void it. To correct it here, post a journal entry.",
   "documents.err_item_missing": "{where} uses an item that no longer exists ({ident}). Remove that line or choose another item, then save again.",
+  "documents.err_no_rate_in_force": "No rate for {name} on {day}. Add a rate version in Settings > Taxes: {url}",
+  "documents.err_tax_from_code": "Tax details come from the tax code {name}; change the code, or its rate in Settings > Taxes",
   "documents.err_tax_unreadable": "A tax on this document can't be read: {tax}. Its totals can't be recalculated until it is removed or chosen again. Remove it from the document's taxes, or pick the line's tax again from the list, then try again.",
   "documents.err_tax_unreadable_shared": "A tax on the shared document can't be read: {tax}. Ask the sender to correct the tax and share the document again.",
   "documents.err_line_tax_unset": "Line {line} has no tax chosen yet, so it would be charged none. Choose the line's tax, or No Tax if it isn't taxed, then try again.",

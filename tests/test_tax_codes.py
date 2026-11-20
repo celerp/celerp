@@ -192,7 +192,7 @@ async def test_tax_code_identity_and_lifecycle(client):
     assert kept == line_tax
 
     r = await client.post("/items", headers=h, json={"sku": f"S-{uuid.uuid4().hex[:6]}", "name": "Widget",
-                                                     "tax_codes": [vat["id"]]})
+                                                     "sell_by": "piece", "tax_codes": [vat["id"]]})
     assert r.status_code == 200, r.text
     item_id = r.json()["id"]
     removal = await _save(client, h, [])

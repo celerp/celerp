@@ -111,6 +111,75 @@ def _definition(entry) -> LineTaxSnapshot | None:
         return None
 
 
+# The snapshot fields a line tax copies from its code and version (line_tax); a write never sets them.
+_FROM_CODE_FIELDS = ("code", "rate", "base_fraction", "category", "component", "report_tags", "version_from",
+                     "withholding_point", "cash_basis", "account", "base")
+
+
+def build_line_taxes(doc: dict, lines: list, stored_lines: list, settings: dict) -> None:
+    """Build in place each tax on a draft's *lines* that names a ``code_id`` into the snapshot
+    posting reads (LineTaxSnapshot), so a write never sets what a tax code decides. *doc* is the
+    document as written (its type, issue date and prices_include_tax), *stored_lines* its lines
+    before this write.
+
+    A tax sent as its ``code_id`` alone is line_tax of that code on the document's day (tax_day)
+    for the document's side. A tax sending any snapshot field keeps what the same line already
+    stored for that code and version, so a code renamed or retagged since changes nothing on
+    it; with nothing stored, it is built from the code. Only ``amount`` (0: computed),
+    ``order``, ``is_compound`` and ``label`` are the writer's. Refused (422): a code_id the
+    document's tax list does not hold, a code with no rate in force on the day, and a sent
+    snapshot field, ``inclusive`` or amount sign that differs from what the code gives."""
+    from celerp.localization.taxcodes import NoRateInForce
+    from celerp.tax_regimes import TAX_LIST_PAGES, doc_side, line_tax, side_taxes, tax_day, taxes_for
+
+    doc_type = doc.get("doc_type")
+    side = doc_side(doc_type)
+    day = tax_day(doc, settings.get("timezone"))
+    codes = {code.get("id"): code for code in taxes_for(side_taxes(settings, doc_type), doc_type)}
+    stored = {line["line_id"]: line for line in stored_lines or [] if isinstance(line, dict) and line.get("line_id")}
+
+    def _reference(line: dict, entry: dict, sent: dict) -> dict:
+        if sent.keys() - {"code_id"}:
+            kept = next((tax for tax in tax_entries((stored.get(line.get("line_id")) or {}).get("taxes"))
+                         if tax.get("code_id") == entry["code_id"]
+                         and str(tax.get("version_from")) == str(sent.get("version_from", tax.get("version_from")))), None)
+            if kept is not None:
+                return LineTaxSnapshot.model_validate(kept).model_dump(mode="json")
+        code = codes.get(entry["code_id"])
+        if code is None:
+            raise unreadable_tax_refusal(str(entry["code_id"]))
+        try:
+            return line_tax(code, day, side)
+        except NoRateInForce as gap:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "documents.err_no_rate_in_force", name=gap.code.name, day=day.isoformat(),
+                url=TAX_LIST_PAGES[side])) from None
+
+    for line in lines:
+        if not isinstance(line, dict) or not isinstance(line.get("taxes"), list):
+            continue
+        built = []
+        for entry in line["taxes"]:
+            if not (isinstance(entry, dict) and entry.get("code_id")):
+                built.append(entry)
+                continue
+            sent = {key: value for key, value in entry.items() if value is not None}
+            ref = _reference(line, entry, sent)
+            try:
+                merged = LineTaxSnapshot.model_validate({**ref, **sent}).model_dump(mode="json")
+            except ValueError:
+                raise unreadable_tax_refusal(tax_text(entry)) from None
+            sign = merged["amount"] * ref["rate"]
+            if (any(field in sent and merged[field] != ref[field] for field in _FROM_CODE_FIELDS)
+                    or ("inclusive" in sent and merged["inclusive"] != bool(doc.get("prices_include_tax")))
+                    or sign < 0):
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "documents.err_tax_from_code", name=ref["code"]))
+            built.append({**ref, "amount": 0.0, **{key: merged[key] for key in ("amount", "order", "is_compound", "label")
+                                                   if key in sent}})
+        line["taxes"] = built
+
+
 def computable_tax(entry) -> bool:
     """Whether a stored tax entry is a tax a total can be computed from."""
     return _definition(entry) is not None

@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Nội dung này đã được gửi với thông tin khác, có thể từ một thẻ khác. Hãy chọn Thử lại.",
   "documents.err_peer_synced": "{company} đã gửi chứng từ này nên chỉ {company} mới sửa hoặc hủy được. Để sửa ở đây, hãy ghi một bút toán (journal entry).",
   "documents.err_item_missing": "{where} dùng một mặt hàng không còn tồn tại ({ident}). Hãy xóa dòng đó hoặc chọn mặt hàng khác rồi lưu lại.",
+  "documents.err_no_rate_in_force": "Không có thuế suất cho {name} vào ngày {day}. Hãy thêm một phiên bản thuế suất trong Cài đặt > Thuế: {url}",
+  "documents.err_tax_from_code": "Chi tiết thuế lấy từ mã thuế {name}; hãy đổi mã thuế, hoặc thuế suất của mã trong Cài đặt > Thuế",
   "documents.err_tax_unreadable": "Không thể đọc một khoản thuế trên chứng từ này: {tax}. Chưa thể tính lại tổng tiền cho đến khi xóa hoặc chọn lại khoản thuế đó. Hãy xóa trong phần thuế của chứng từ, hoặc chọn lại thuế của dòng từ danh sách rồi thử lại.",
   "documents.err_tax_unreadable_shared": "Không thể đọc một khoản thuế trên chứng từ đã chia sẻ: {tax}. Hãy yêu cầu người gửi sửa thuế rồi chia sẻ lại chứng từ.",
   "documents.err_line_tax_unset": "Dòng {line} chưa chọn thuế nên sẽ không bị tính thuế. Hãy chọn thuế của dòng, hoặc Không thuế nếu không chịu thuế, rồi thử lại.",

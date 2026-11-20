@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Esto ya se envió con otros datos, quizá desde otra pestaña. Seleccione Reintentar.",
   "documents.err_peer_synced": "{company} envió este documento, así que solo {company} puede cambiarlo o anularlo. Para corregirlo aquí, registre un asiento (journal entry).",
   "documents.err_item_missing": "{where} usa un artículo que ya no existe ({ident}). Quite esa línea o elija otro artículo y vuelva a guardar.",
+  "documents.err_no_rate_in_force": "No hay tipo para {name} el {day}. Añada una versión del tipo en Configuración > Impuestos: {url}",
+  "documents.err_tax_from_code": "Los datos del impuesto vienen del código de impuesto {name}; cambie el código, o su tipo en Configuración > Impuestos",
   "documents.err_tax_unreadable": "No se puede leer un impuesto de este documento: {tax}. No se podrán recalcular los totales hasta que lo elimine o vuelva a seleccionarlo. Elimínelo de los impuestos del documento o vuelva a seleccionar el impuesto de la línea en la lista y reinténtelo.",
   "documents.err_tax_unreadable_shared": "No se puede leer un impuesto del documento compartido: {tax}. Pida al remitente que lo corrija y comparta el documento de nuevo.",
   "documents.err_line_tax_unset": "La línea {line} todavía no tiene un impuesto seleccionado, por lo que no se cobraría ninguno. Elija el impuesto de la línea o «Sin impuestos» si está exenta y vuelva a intentarlo.",

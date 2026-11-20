@@ -11,7 +11,7 @@ import re
 import time
 import json as _json
 from decimal import Decimal
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -45,8 +45,8 @@ from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, 
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
-from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, legacy_line_taxes, line_tax, line_tax_unset,
-                                matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
+from celerp.tax_regimes import (default_line_taxes, doc_side, holds_tax, item_line_taxes, legacy_line_taxes, line_tax,
+                                line_tax_unset, matching_tax, set_new_line_taxes, tax_day, tax_entries, tax_text, taxes_for, taxes_on,
                                 unreadable_tax)
 from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import missing_permission_text, role_has_permission
@@ -1572,14 +1572,16 @@ def _form_version(form) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) -> list[dict] | None:
-    """The taxes a new line on a document of this type starts with (see default_line_taxes; `doc` is
-    the target document when appending, None for a new one; None where the user sets them); none for
-    a list. A failed read raises, so no line is added without its tax."""
+async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) -> Callable[[dict], list[dict] | None]:
+    """The taxes a new line for a catalog item (its state; {} for a line with no item) on a document
+    of this type starts with, as a function of the item (see item_line_taxes; `doc` is the target
+    document when appending, None for a new one; None where the user sets them); none for a list.
+    The tax list is read once; a failed read raises, so no line is added without its tax."""
     if not doc_type or doc_type == "list":
-        return []
+        return lambda item: []
     day = tax_day(doc)
-    return default_line_taxes(await api.get_document_taxes(token, doc_type, day), doc_type, day, doc=doc)
+    taxes = await api.get_document_taxes(token, doc_type, day)
+    return lambda item: item_line_taxes(item, taxes, doc_type, day, doc=doc)
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
@@ -1613,7 +1615,7 @@ async def _line_items_from_inventory(token: str, entity_ids: list[str], price_li
             "allow_splitting": splitting_allowed(item),
             "item_quantity": item.get("quantity"),
         }
-        set_new_line_taxes(line, line_taxes)
+        set_new_line_taxes(line, line_taxes(item))
         line_items.append(line)
     return line_items
 
@@ -1704,7 +1706,7 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_t
         line = _reorder_po_line(item, unit_decimals=decimals)
         if not line["quantity"] and decimals is not None:
             unset.append(item.get("sku") or item.get("name") or eid)
-        set_new_line_taxes(line, line_taxes)
+        set_new_line_taxes(line, line_taxes(item))
         lines.append(line)
     if unset:
         raise APIError(422, t("inv.reorder_needs_quantity", items=", ".join(unset)))
@@ -2303,7 +2305,7 @@ def setup_routes(app):
         # A row with no tax of its own is a new line like any other (_new_line_taxes).
         try:
             doc = await api.get_doc(token, entity_id)
-            new_taxes = await _new_line_taxes(token, doc.get("doc_type"), doc)
+            new_taxes = (await _new_line_taxes(token, doc.get("doc_type"), doc))({})
         except APIError as e:
             if e.status == 401:
                 raise

@@ -30,14 +30,13 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notification_service
 from celerp.services.list_behavior import DRAFT, FINALIZED, is_money_list
 from celerp.services.migrations import is_company_migration_staged
-from celerp.tax_regimes import retired_seed_rows, retired_taxes
+from celerp.tax_regimes import TAX_LIST_PAGES, retired_seed_rows, retired_taxes
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
 _CATEGORY = "accounting"
 _PREFIX = "notice.tax_seed."  # every retired-seed notice's catalog keys start with it
-_TAX_TABS = {"sales": "/settings/sales?tab=taxes", "purchase": "/settings/purchasing?tab=taxes"}
 
 
 async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings: dict | None) -> None:
@@ -62,7 +61,7 @@ async def reconcile_tax_seed_notices(session: AsyncSession, company_id, settings
             continue
         await notification_service.notify_once(
             session, company_id, _CATEGORY, title, t(notice["body"], "en", **notice["params"]),
-            action_url=_TAX_TABS["sales" if "sales" in lists else "purchase"], i18n=notice)
+            action_url=TAX_LIST_PAGES["sales" if "sales" in lists else "purchase"], i18n=notice)
 
 
 def _notice_keys(entry: dict) -> dict:

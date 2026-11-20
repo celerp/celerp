@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Ceci a déjà été envoyé avec d'autres informations, peut-être depuis un autre onglet. Sélectionnez « Réessayer ».",
   "documents.err_peer_synced": "{company} a envoyé ce document, donc seule {company} peut le modifier ou l'annuler. Pour le corriger ici, passez une écriture (journal entry).",
   "documents.err_item_missing": "{where} utilise un article qui n'existe plus ({ident}). Supprimez cette ligne ou choisissez un autre article, puis enregistrez à nouveau.",
+  "documents.err_no_rate_in_force": "Aucun taux pour {name} le {day}. Ajoutez une version de taux dans Paramètres > Taxes : {url}",
+  "documents.err_tax_from_code": "Les détails de la taxe viennent du code de taxe {name} ; changez le code, ou son taux dans Paramètres > Taxes",
   "documents.err_tax_unreadable": "Impossible de lire une taxe de ce document : {tax}. Ses totaux ne peuvent pas être recalculés tant que la taxe n’a pas été supprimée ou sélectionnée à nouveau. Supprimez-la des taxes du document ou sélectionnez de nouveau la taxe de la ligne dans la liste, puis réessayez.",
   "documents.err_tax_unreadable_shared": "Impossible de lire une taxe du document partagé : {tax}. Demandez à l’expéditeur de la corriger et de partager à nouveau le document.",
   "documents.err_line_tax_unset": "Aucune taxe n’a encore été choisie pour la ligne {line} ; elle ne serait donc pas taxée. Sélectionnez sa taxe ou « Aucune taxe » si elle n’est pas imposable, puis réessayez.",

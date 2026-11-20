@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Questo è già stato inviato con dati diversi, forse da un'altra scheda. Seleziona Riprova.",
   "documents.err_peer_synced": "{company} ha inviato questo documento, quindi solo {company} può modificarlo o annullarlo. Per correggerlo qui, registra una scrittura (journal entry).",
   "documents.err_item_missing": "{where} usa un articolo che non esiste più ({ident}). Rimuovi quella riga o scegli un altro articolo, poi salva di nuovo.",
+  "documents.err_no_rate_in_force": "Nessuna aliquota per {name} il {day}. Aggiungi una versione dell'aliquota in Impostazioni > Imposte: {url}",
+  "documents.err_tax_from_code": "I dati dell'imposta derivano dal codice imposta {name}; cambia il codice, o la sua aliquota in Impostazioni > Imposte",
   "documents.err_tax_unreadable": "Impossibile leggere un'imposta di questo documento: {tax}. I totali non possono essere ricalcolati finché non viene rimossa o selezionata nuovamente. Rimuovila dalle imposte del documento oppure seleziona di nuovo l'imposta della riga dall'elenco, poi riprova.",
   "documents.err_tax_unreadable_shared": "Impossibile leggere un'imposta del documento condiviso: {tax}. Chiedi al mittente di correggerla e condividere nuovamente il documento.",
   "documents.err_line_tax_unset": "La riga {line} non ha ancora un'imposta selezionata, quindi non ne verrebbe applicata alcuna. Scegli l'imposta della riga, oppure Nessuna imposta se non è tassata, poi riprova.",

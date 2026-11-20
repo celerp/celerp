@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Isto já foi enviado com outros dados, talvez de outra aba. Selecione Tentar novamente.",
   "documents.err_peer_synced": "{company} enviou este documento, então só {company} pode alterá-lo ou anulá-lo. Para corrigi-lo aqui, registre um lançamento (journal entry).",
   "documents.err_item_missing": "{where} usa um item que não existe mais ({ident}). Remova essa linha ou escolha outro item e salve novamente.",
+  "documents.err_no_rate_in_force": "Não há taxa para {name} em {day}. Adicione uma versão da taxa em Configurações > Impostos: {url}",
+  "documents.err_tax_from_code": "Os dados do imposto vêm do código de imposto {name}; altere o código, ou a sua taxa em Configurações > Impostos",
   "documents.err_tax_unreadable": "Não é possível ler um imposto neste documento: {tax}. Os totais só poderão ser recalculados quando ele for removido ou selecionado novamente. Remova-o dos impostos do documento ou escolha novamente o imposto da linha na lista e tente de novo.",
   "documents.err_tax_unreadable_shared": "Não é possível ler um imposto no documento compartilhado: {tax}. Peça ao remetente para corrigi-lo e compartilhar o documento novamente.",
   "documents.err_line_tax_unset": "A linha {line} ainda não tem imposto selecionado, então nenhum seria cobrado. Escolha o imposto da linha ou Sem imposto, se não for tributada, e tente novamente.",

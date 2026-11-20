@@ -23,7 +23,7 @@ from ui.components.operation_key import operation_key_input
 from ui.components.preview_confirm import binding_input
 from ui.components.table import EMPTY, bulk_toolbar, editable_cell, searchable_select, select_all_th, unwrap_address
 from celerp.localization.taxcodes import NoRateInForce, TaxCode, list_fingerprint, version_on
-from celerp.tax_regimes import TAX_TYPES, country_name, taxes_on
+from celerp.tax_regimes import TAX_LIST_PAGES, TAX_TYPES, country_name, taxes_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -1495,8 +1495,8 @@ def setup_routes(app):
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/general?tab=users"})
 
     # ── Taxes PATCH endpoints ────────────────────────────────────────
-    _register_tax_crud(app, "taxes", "get_taxes", "patch_taxes", "/settings/sales?tab=taxes")
-    _register_tax_crud(app, "purchasing-taxes", "get_purchasing_taxes", "patch_purchasing_taxes", "/settings/purchasing?tab=taxes")
+    _register_tax_crud(app, "taxes", "get_taxes", "patch_taxes", TAX_LIST_PAGES["sales"])
+    _register_tax_crud(app, "purchasing-taxes", "get_purchasing_taxes", "patch_purchasing_taxes", TAX_LIST_PAGES["purchase"])
 
     # ── Payment Terms PATCH endpoints ────────────────────────────────
     _register_terms_crud(app, "terms", "get_payment_terms", "patch_payment_terms", PAYMENT_TERMS_URL)

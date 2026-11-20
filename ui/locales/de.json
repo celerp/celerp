@@ -4505,6 +4505,8 @@
   "documents.err_already_submitted": "Dies wurde bereits mit anderen Angaben gesendet, möglicherweise aus einem anderen Tab. Wählen Sie „Erneut versuchen“.",
   "documents.err_peer_synced": "{company} hat dieses Dokument gesendet, daher kann nur {company} es ändern oder stornieren. Um es hier zu korrigieren, buchen Sie einen Buchungssatz (journal entry).",
   "documents.err_item_missing": "{where} verwendet einen Artikel, den es nicht mehr gibt ({ident}). Entfernen Sie diese Zeile oder wählen Sie einen anderen Artikel und speichern Sie erneut.",
+  "documents.err_no_rate_in_force": "Für {name} gibt es am {day} keinen Steuersatz. Fügen Sie unter Einstellungen > Steuern eine Satzversion hinzu: {url}",
+  "documents.err_tax_from_code": "Die Steuerangaben stammen aus dem Steuercode {name}. Ändern Sie den Code oder seinen Satz unter Einstellungen > Steuern",
   "documents.err_tax_unreadable": "Eine Steuer in diesem Dokument kann nicht gelesen werden: {tax}. Die Summen können erst neu berechnet werden, wenn sie entfernt oder erneut ausgewählt wurde. Entfernen Sie sie aus den Dokumentsteuern oder wählen Sie die Steuer der Position erneut aus der Liste und versuchen Sie es noch einmal.",
   "documents.err_tax_unreadable_shared": "Eine Steuer im freigegebenen Dokument kann nicht gelesen werden: {tax}. Bitten Sie den Absender, die Steuer zu korrigieren und das Dokument erneut freizugeben.",
   "documents.err_line_tax_unset": "Für Position {line} wurde noch keine Steuer gewählt, daher würde keine Steuer berechnet. Wählen Sie die Steuer für die Position oder „Keine Steuer“, wenn sie steuerfrei ist, und versuchen Sie es erneut.",
