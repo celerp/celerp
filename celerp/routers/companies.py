@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import re
 import uuid
 from datetime import date
@@ -14,7 +15,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, JsonValue, ValidationError, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, JsonValue, field_validator, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +25,7 @@ from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import BatchImportResult, record_refused, row_flag, row_n, row_refusal
 from celerp.localization import COUNTRY_CODE
-from celerp.localization.taxcodes import TaxCategory, TaxCode, TaxVersion
+from celerp.localization.taxcodes import TaxCategory, TaxCode, TaxVersion, list_fingerprint
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.agent_markers import agent_excluded, agent_gate
@@ -65,7 +66,7 @@ from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment
 from celerp.services.business_time import business_timezone
 from celerp.services.company_settings import BOOKS_KEYS, record_change, require_general
 from celerp.services.company_lock import lock_company, lock_company_for_deletion, locked_company
-from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS, require_income_account
+from celerp.services.journal_accounts import CATEGORY_INCOME_ACCOUNTS, lock_accounts, require_income_account
 from celerp.services.recognition import GIFT_CATEGORIES
 from celerp.services.tax_seed_notice import reconcile_tax_seed_notices
 from ui.i18n import t
@@ -168,70 +169,20 @@ class ColumnPrefsPatch(BaseModel):
     prefs: dict[str, list[str]]
 
 
-class TaxRate(BaseModel):
-    """One tax of a company's list, as the settings API takes it."""
-    name: str
-    rate: FiniteFloat  # percentage, e.g. 7.0
-    tax_type: Literal[TAX_TYPES] = "both"
-    is_default: bool = False
-    description: str = ""
-    is_compound: bool = False
-    default_order: int = 0
-
-    @field_validator("tax_type", mode="before")
-    @classmethod
-    def _unset_side_is_both(cls, value):
-        # Every reader of a stored list takes a missing or blank side as both.
-        return "both" if value is None or value == "" else value
+class TaxRatesPatch(BaseModel):
+    """A whole tax list and the list_fingerprint of the list it was edited from."""
+    taxes: list[TaxCode]
+    fingerprint: str
 
 
 def _unique_tax_names(taxes: list) -> list:
-    """No two taxes of one list share a name, as tax_name_key compares them."""
+    """No two taxes of one pack share a name, as tax_name_key compares them."""
     seen: set[str] = set()
     for tax in taxes:
         key = tax_name_key(tax.name)
         if key in seen:
             raise ValueError(f"duplicate tax name {tax.name.strip()!r}")
         seen.add(key)
-    return taxes
-
-
-class TaxRatesPatch(BaseModel):
-    """A whole tax list: no two of its taxes share a name, as tax_name_key compares them."""
-    taxes: list[TaxRate]
-
-    _names_unique = field_validator("taxes")(_unique_tax_names)
-
-
-def _import_taxes(held: list[dict], payload: SettingsBatchImportRequest, res: BatchImportResult) -> list[dict]:
-    """The tax list *held* with each new row of an import added as a TaxRate, the model every
-    tax list writer takes: a name already held or earlier in the batch, as tax_name_key compares
-    them, is skipped, and a row TaxRate refuses (a rate that is not a finite number, an unknown
-    side) is refused on its own."""
-    taxes = list(held)
-    names = {tax_name_key(tax.get("name")) for tax in taxes}
-    for i, r in enumerate(rec.data for rec in (payload.records or [])):
-        name = str(r.get("name", "") or "").strip()
-        if not tax_name_key(name):
-            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
-            continue
-        if tax_name_key(name) in names:
-            res.skipped += 1
-            continue
-        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
-        try:
-            tax = TaxRate(name=name, rate=r.get("rate"), tax_type=tax_type,
-                          is_default=row_flag(r.get("is_default", False)),
-                          description=str(r.get("description", "") or "").strip())
-        except ValidationError as exc:
-            if any(err["loc"][:1] == ("rate",) for err in exc.errors()):
-                res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
-            else:
-                res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
-            continue
-        taxes.append(tax.model_dump())
-        names.add(tax_name_key(name))
-        res.created += 1
     return taxes
 
 
@@ -1730,6 +1681,74 @@ async def patch_column_prefs(
 # Tax rates
 # ---------------------------------------------------------------------------
 
+_TAX_LISTS = {"sales": sales_taxes, "purchase": purchasing_taxes}
+
+
+async def _save_tax_list(session: AsyncSession, company_id, side: str, payload: TaxRatesPatch) -> None:
+    """Save the company's ``side`` tax list as one whole list, edited from the list whose
+    fingerprint the payload carries. Refused: a list changed since (409), an id this list does
+    not hold (422), an account not open for posting in the chart (422), removing a code an item
+    or a draft line still carries (409, with the filtered item list), and anything with_taxes
+    refuses (422)."""
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    current = _TAX_LISTS[side](company.settings)
+    if list_fingerprint(current) != payload.fingerprint:
+        raise HTTPException(status_code=409, detail=catalog_refusal("company.err_taxes_stale"))
+    rows = [code.model_dump(mode="json") for code in payload.taxes]
+    held = {row["id"] for row in current if row.get("id")}  # the generic list's rows carry none
+    for row in rows:
+        if row["id"] is not None and row["id"] not in held:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "company.err_tax_id_unknown", name=row["name"], id=row["id"], field="id"))
+    await _require_tax_accounts(session, company_id, rows)
+    await _refuse_removing_used_codes(session, company_id, current, held - {row["id"] for row in rows})
+    try:
+        settings = with_taxes(dict(company.settings), side, rows)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    company.settings = settings
+    await reconcile_tax_seed_notices(session, company_id, settings)
+    await session.commit()
+
+
+async def _require_tax_accounts(session: AsyncSession, company_id, rows: list[dict]) -> None:
+    """Every output_account and input_account a row names is an active account of the chart
+    with no sub-accounts; nothing to check while the accounting module is not running."""
+    named = [(row, field) for row in rows for field in ("output_account", "input_account") if row.get(field)]
+    accounts = await lock_accounts(session, company_id, {row[field] for row, field in named})
+    if accounts is None:
+        return
+    for row, field in named:
+        account = accounts.get(row[field])
+        if account is None or not account["is_active"] or account["has_children"]:
+            raise HTTPException(status_code=422, detail=catalog_refusal(
+                "company.err_tax_account", name=row["name"], code=row[field], field=field))
+
+
+async def _refuse_removing_used_codes(session: AsyncSession, company_id, current: list[dict], removed: set) -> None:
+    """409 when a removed code is on an item's tax_codes or a draft line's taxes, naming both
+    counts and linking the item list filtered to the codes. Issued lines keep their own copy."""
+    if not removed:
+        return
+    from celerp.models.projections import Projection
+
+    items = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    drafts = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list")),
+        Projection.state["status"].as_string() == "draft"))).scalars().all()
+    item_count = sum(1 for state in items if removed & set(state.get("tax_codes") or []))
+    draft_count = sum(1 for state in drafts if any(
+        tax.get("code_id") in removed for line in state.get("line_items") or [] for tax in line.get("taxes") or []))
+    if item_count or draft_count:
+        ids = sorted(removed)
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "company.err_tax_in_use", names=", ".join(row["name"] for row in current if row.get("id") in removed),
+            items=item_count, drafts=draft_count, url=f"/inventory?tax_codes={','.join(ids)}&status=all"))
+
+
 @router.get("/me/taxes", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the company's sales tax rates.")
 async def get_taxes(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
@@ -1745,13 +1764,7 @@ async def patch_taxes(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = with_taxes(dict(company.settings), [t.model_dump() for t in payload.taxes])
-    company.settings = settings
-    await reconcile_tax_seed_notices(session, company_id, settings)
-    await session.commit()
+    await _save_tax_list(session, company_id, "sales", payload)
     return {"ok": True}
 
 
@@ -1764,18 +1777,52 @@ async def import_taxes_batch(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    """Batch import tax rates into company.settings.taxes.
+    """Batch import tax rates into the sales tax list: a name already on the list (as
+    tax_name_key compares it) is skipped, any other row is added with its rate as one version."""
+    return await _import_tax_rows(session, company_id, user.id, "sales", payload)
 
-    Each row is taken as _import_taxes takes it: a name already held is skipped, else created.
-    """
-    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
+
+
+async def _import_tax_rows(session: AsyncSession, company_id, user_id, side: str,
+                           payload: SettingsBatchImportRequest) -> BatchImportResult:
+    """Add the CSV rows to the company's ``side`` tax list through with_taxes: a name already
+    held or earlier in the batch, as tax_name_key compares them, is skipped; a row with no name,
+    a rate that is not a finite number or an unknown side is refused on its own; a list
+    with_taxes refuses saves nothing and names why."""
+    await locked_authority(session, company_id, user_id, ("manage_company_settings", "import_export_data"))
     company = await session.get(Company, company_id)
     res = BatchImportResult(created=0, skipped=0, errors=[])
-
-    settings = dict(company.settings)
-    taxes = _import_taxes(sales_taxes(settings), payload, res)
-
-    settings = with_taxes(settings, taxes)
+    taxes = list(_TAX_LISTS[side](company.settings))
+    names = {tax_name_key(tax["name"]) for tax in taxes}
+    for i, r in enumerate(rec.data for rec in (payload.records or [])):
+        name = str(r.get("name", "") or "").strip()
+        if not tax_name_key(name):
+            res.errors.append(row_refusal(row_n(i), catalog_refusal("settings.name_required")))
+            continue
+        if tax_name_key(name) in names:
+            res.skipped += 1
+            continue
+        try:
+            rate = float(r.get("rate"))
+        except (TypeError, ValueError):
+            rate = math.nan
+        if not math.isfinite(rate):
+            res.errors.append(row_refusal(name, catalog_refusal("settings.rate_must_be_a_number")))
+            continue
+        tax_type = str(r.get("tax_type", "both") or "both").strip() or "both"
+        if tax_type not in TAX_TYPES:
+            res.errors.append(record_refused(name, "invalid_tax_type", value=tax_type))
+            continue
+        taxes.append({"name": name, "rate": rate, "tax_type": tax_type, "is_default": row_flag(r.get("is_default", False)),
+                      "description": str(r.get("description", "") or "").strip()})
+        names.add(tax_name_key(name))
+        res.created += 1
+    try:
+        settings = with_taxes(dict(company.settings), side, taxes)
+    except ValueError as exc:
+        res.errors.append(str(exc))
+        res.created = 0
+        return res
     company.settings = settings
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
@@ -1988,14 +2035,7 @@ async def patch_purchasing_taxes(
     _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = dict(company.settings)
-    settings["purchasing_taxes"] = [t.model_dump() for t in payload.taxes]
-    company.settings = settings
-    await reconcile_tax_seed_notices(session, company_id, settings)
-    await session.commit()
+    await _save_tax_list(session, company_id, "purchase", payload)
     return {"ok": True}
 
 
@@ -2008,16 +2048,7 @@ async def import_purchasing_taxes_batch(
     __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    await locked_authority(session, company_id, user.id, ("manage_company_settings", "import_export_data"))
-    company = await session.get(Company, company_id)
-    res = BatchImportResult(created=0, skipped=0, errors=[])
-    taxes = _import_taxes(purchasing_taxes(company.settings), payload, res)
-    settings = dict(company.settings)
-    settings["purchasing_taxes"] = taxes
-    company.settings = settings
-    await reconcile_tax_seed_notices(session, company_id, settings)
-    await session.commit()
-    return res
+    return await _import_tax_rows(session, company_id, user.id, "purchase", payload)
 
 
 @router.get("/me/purchasing-payment-terms", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-any-role": True}, summary="List the payment terms the company uses with its vendors.")

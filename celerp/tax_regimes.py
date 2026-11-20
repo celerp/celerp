@@ -107,21 +107,20 @@ _NOT_CASH_BASIS = ("withholding", "perception", "reverse_charge", "self_assessed
 
 def with_taxes(settings: dict, side: str, taxes: list[dict]) -> dict:
     """``settings`` with the company's ``side`` ("sales" or "purchase") tax list set to ``taxes``
-    as normalized_list stores it. A cash basis code is refused (TaxListRefused) on a category
-    settled with the document, and when the pack of the localization applied has no cash basis
-    cut-off."""
+    as normalized_list stores it. A cash basis code is refused (TaxListRefused, naming every such
+    code) on a category settled with the document, and when the pack of the localization applied
+    has no cash basis cut-off."""
     from celerp.localization.taxcodes import TaxListRefused, normalized_list
     stored = normalized_list(taxes)
     applied = (settings.get("localization") or {}).get("country")
     cutoff = applied and packs().get(applied, {}).get("cash_basis_cutoff")
-    for code in stored:
-        if not code["cash_basis"]:
-            continue
-        if code["category"] in _NOT_CASH_BASIS:
-            raise TaxListRefused(f"{code['name']}: a {code['category']} code cannot be cash basis")
-        if not cutoff:
-            raise TaxListRefused(f"{code['name']}: cash basis needs a country whose rules set a cash basis "
-                                 "cut-off; apply one in Settings > Taxes > Update localization")
+    refused = [f"{code['name']}: a {code['category']} code cannot be cash basis"
+               if code["category"] in _NOT_CASH_BASIS else
+               f"{code['name']}: cash basis needs a country whose rules set a cash basis cut-off; "
+               "apply one in Settings > Taxes > Update localization"
+               for code in stored if code["cash_basis"] and (code["category"] in _NOT_CASH_BASIS or not cutoff)]
+    if refused:
+        raise TaxListRefused("; ".join(refused))
     return {**settings, "purchasing_taxes" if side == "purchase" else "taxes": stored}
 
 

@@ -21,7 +21,8 @@ from ui.components.cards import section_card
 from ui.components.operation_key import operation_key_input
 from ui.components.preview_confirm import binding_input
 from ui.components.table import EMPTY, bulk_toolbar, editable_cell, searchable_select, select_all_th, unwrap_address
-from celerp.tax_regimes import TAX_TYPES, country_name
+from celerp.localization.taxcodes import list_fingerprint
+from celerp.tax_regimes import TAX_TYPES, country_name, tax_day, taxes_on
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
@@ -280,7 +281,7 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 )
             # Typed fields use the shared cell editor: Enter saves, Escape restores, and an
             # untouched editor puts the shown cell back without a write.
-            val = tax.get(field)
+            val = _rate_today(tax) if field == "rate" else tax.get(field)
             if field == "rate" and val not in (None, ""):
                 val = plain_number(float(val))
             return editable_cell(str(idx), field, val, cell_type="rate" if field == "rate" else "text",
@@ -315,14 +316,15 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     return P(t("settings.rate_must_be_a_number"), cls="cell-error")
             try:
                 taxes = await getattr(api, gname)(token)
+                fingerprint = list_fingerprint(taxes)
                 if idx < len(taxes):
                     if field == "rate":
-                        taxes[idx][field] = float(value)
+                        taxes[idx]["versions"][-1]["rate"] = float(value)
                     elif field in _TAX_BOOL_FIELDS:
                         taxes[idx][field] = _YES_NO[value.strip().lower()]
                     else:
                         taxes[idx][field] = value
-                await getattr(api, pname)(token, taxes)
+                await getattr(api, pname)(token, taxes, fingerprint)
                 taxes = await getattr(api, gname)(token)
             except APIError as e:
                 if e.status == 401:
@@ -340,8 +342,9 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             try:
                 taxes = await getattr(api, gname)(token)
-                taxes.append({"name": "New Tax", "rate": 0.0, "tax_type": "sales", "is_default": False, "description": ""})
-                await getattr(api, pname)(token, taxes)
+                fingerprint = list_fingerprint(taxes)
+                taxes.append({"name": "New Tax", "tax_type": "sales", "versions": [{"rate": 0.0}]})
+                await getattr(api, pname)(token, taxes, fingerprint)
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
@@ -356,8 +359,9 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
             try:
                 taxes = await getattr(api, gname)(token)
                 if 0 <= idx < len(taxes):
+                    fingerprint = list_fingerprint(taxes)
                     taxes.pop(idx)
-                    await getattr(api, pname)(token, taxes)
+                    await getattr(api, pname)(token, taxes, fingerprint)
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": redir})
@@ -2901,8 +2905,14 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
     )
 
 
+def _rate_today(tax: dict) -> float | None:
+    """The rate of a stored tax list row in force today (taxes_on), None when no version is."""
+    [shown] = taxes_on([tax], tax_day(None)) or [{"rate": None}]
+    return shown["rate"]
+
+
 def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") -> FT:
-    val = tax.get(field, "")
+    val = _rate_today(tax) if field == "rate" else tax.get(field, "")
     if field == "rate":
         display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
     elif field in _TAX_BOOL_FIELDS:

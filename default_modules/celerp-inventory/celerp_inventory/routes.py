@@ -1113,6 +1113,7 @@ class ItemListFilters:
     q: str | None = None
     sku: str | None = None
     skus: str | None = None  # comma-separated exact SKU list
+    tax_codes: str | None = None  # comma-separated tax code ids; an item carrying any of them
     barcode: str | None = None
     gtin: str | None = None
     rfid_epc: str | None = None
@@ -1412,6 +1413,10 @@ async def query_items(
     if f.skus:
         sku_set = {s.strip() for s in f.skus.split(",") if s.strip()}
         result = [r for r in result if str(r.get("sku", "")) in sku_set]
+
+    if f.tax_codes:
+        code_set = {c.strip() for c in f.tax_codes.split(",") if c.strip()}
+        result = [r for r in result if code_set & set(r.get("tax_codes") or [])]
 
     if f.barcode:
         result = [r for r in result if str(r.get("barcode", "")) == f.barcode]

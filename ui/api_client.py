@@ -1358,9 +1358,10 @@ async def get_taxes(token: str) -> list[dict]:
         return _raise(await c.get("/companies/me/taxes")).json()
 
 
-async def patch_taxes(token: str, taxes: list[dict]) -> dict:
+async def patch_taxes(token: str, taxes: list[dict], fingerprint: str) -> dict:
+    """Save the whole list, edited from the list whose list_fingerprint is ``fingerprint``."""
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/taxes", json={"taxes": taxes})).json()
+        return _raise(await c.patch("/companies/me/taxes", json={"taxes": taxes, "fingerprint": fingerprint})).json()
 
 
 async def get_payment_terms(token: str) -> list[dict]:
@@ -1378,9 +1379,10 @@ async def get_purchasing_taxes(token: str) -> list[dict]:
         return _raise(await c.get("/companies/me/purchasing-taxes")).json()
 
 
-async def patch_purchasing_taxes(token: str, taxes: list[dict]) -> dict:
+async def patch_purchasing_taxes(token: str, taxes: list[dict], fingerprint: str) -> dict:
+    """Save the whole list, edited from the list whose list_fingerprint is ``fingerprint``."""
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes})).json()
+        return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes, "fingerprint": fingerprint})).json()
 
 
 async def get_document_taxes(token: str, doc_type: str | None, day: dt.date) -> list[dict]:

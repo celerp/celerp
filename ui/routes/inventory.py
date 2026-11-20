@@ -790,6 +790,7 @@ def _page_state(q) -> dict:
     return {
         "q": q.get("q", ""),
         "skus": q.get("skus", ""),  # comma-separated exact SKU filter
+        "tax_codes": q.get("tax_codes", ""),  # comma-separated tax code ids (items carrying any)
         "page": max(1, page),
         "status": q.get("status", ""),
         "category": q.get("category", ""),
@@ -812,7 +813,7 @@ def _page_state(q) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "source", "filter",
+    for k in ("q", "skus", "tax_codes", "status", "category", "inventory_type", "location_id", "source", "filter",
               "on_memo_to", "consigned_from", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
@@ -1220,6 +1221,8 @@ async def _inventory_content(
             row_filters["q"] = p["q"]
         if p.get("skus"):
             row_filters["skus"] = p["skus"]
+        if p.get("tax_codes"):
+            row_filters["tax_codes"] = p["tax_codes"]
         if p["status"]:
             row_filters["status"] = p["status"]
         if p["category"]:
@@ -5406,9 +5409,9 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
     On the sold view that card also carries the realized money total of the
     whole filtered set (sold_total) and says how many rows have no price.
     """
-    # Strip skus/q: clicking a status card is a catalog navigation action and should
+    # Strip skus/tax_codes/q: clicking a status card is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
-    base_state = {k: v for k, v in _base_state(p or {}).items() if k not in ("status", "skus", "q")}
+    base_state = {k: v for k, v in _base_state(p or {}).items() if k not in ("status", "skus", "tax_codes", "q")}
     base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
 
     # When viewing a specific hidden/archived status, the available/reserved card
@@ -5456,9 +5459,9 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
         return ""
     label_map = label_map or {}
 
-    # Strip skus/q: clicking a category tab is a catalog navigation action and should
+    # Strip skus/tax_codes/q: clicking a category tab is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
-    base = {k: v for k, v in _base_state(p).items() if k not in ("category", "skus", "q")}
+    base = {k: v for k, v in _base_state(p).items() if k not in ("category", "skus", "tax_codes", "q")}
 
     def _tab(label: str, cat: str, active: bool) -> FT:
         state = {**base, "category": cat} if cat else base
