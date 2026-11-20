@@ -31831,5 +31831,6 @@
     "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[sent-recipients0-success]": 0.005780842970125377,
     "default_modules/celerp-accounting/tests/test_bank_ui.py::test_an_ask_shows_as_a_success_only_when_its_email_reads_as_sent[unconfirmed-recipients3-warning]": 0.005776065983809531,
     "tests/test_donors_page.py::test_a_send_whose_answer_did_not_come_back_shows_each_statement_as_stored": 1.0129470539977774,
-    "tests/test_donors_page.py::test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out": 0.003983697999501601
+    "tests/test_donors_page.py::test_the_toast_after_a_send_reads_as_success_only_when_a_statement_went_out": 0.003983697999501601,
+    "tests/test_donors_page.py::test_a_pending_sends_status_check_failure_shows_as_pending_with_its_own_error": 1.3103712380107027
 }
