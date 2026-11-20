@@ -31835,5 +31835,6 @@
     "tests/test_donors_page.py::test_a_pending_sends_status_check_failure_shows_as_pending_with_its_own_error": 1.3103712380107027,
     "tests/test_lock_rank_checker.py::test_a_declared_renewals_pending_leaf_survives_a_waitable_take_on_another_connection": 0.02540833002422005,
     "tests/test_lock_rank_checker.py::test_a_waitable_lock_on_the_declared_renewals_own_connection_still_spoils_its_leaf": 0.0025215070054400712,
-    "tests/test_lock_rank_checker.py::test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection": 0.002407986030448228
+    "tests/test_lock_rank_checker.py::test_an_undeclared_pending_leaf_is_still_spoiled_by_a_waitable_take_on_another_connection": 0.002407986030448228,
+    "tests/test_e2e_update_relay.py::test_wheel_build_env_overrides_workflow_pinned_version": 0.024623206991236657
 }
